@@ -1,5 +1,6 @@
-use crate::{BuiltinFunc, LispVal};
+
 use std::cell::RefCell;
+use crate::{BuiltinFunc, LispVal, reader};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -23,7 +24,7 @@ impl Environment {
 
     pub fn new_with_builtins() -> Self {
         let mut env = Environment::new();
-        env.set("t".to_string(), LispVal::Symbol("t".to_string()));
+        env.set("t".to_string(), reader::new_symbol("t"));
         env.set("nil".to_string(), LispVal::Nil);
         env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
         env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
@@ -59,6 +60,16 @@ impl Environment {
         env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
         env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
         env.set("print".to_string(), LispVal::Builtin(BuiltinFunc::Print));
+        env.set("get".to_string(), LispVal::Builtin(BuiltinFunc::Get));
+        env.set("put".to_string(), LispVal::Builtin(BuiltinFunc::Put));
+        env.set(
+            "symbol-plist".to_string(),
+            LispVal::Builtin(BuiltinFunc::SymbolPlist),
+        );
+        env.set(
+            "remprop".to_string(),
+            LispVal::Builtin(BuiltinFunc::Remprop),
+        );
         env
     }
 

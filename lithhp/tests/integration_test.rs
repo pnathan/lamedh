@@ -139,4 +139,35 @@ fn test_pairlis() {
     // Test with both lists empty
     let output5 = eval_line("(pairlis '() '())", &mut env);
     assert_eq!(output5, "()");
+fn test_property_lists() {
+    let mut env = env_with_prologue();
+    eval_line("(put 'my-symbol 'my-prop 123)", &mut env);
+    let result = eval_line("(get 'my-symbol 'my-prop)", &mut env);
+    assert_eq!(result, "123");
+
+    let result_nonexistent = eval_line("(get 'my-symbol 'other-prop)", &mut env);
+    assert_eq!(result_nonexistent, "()");
+
+    let result_other_symbol = eval_line("(get 'other-symbol 'my-prop)", &mut env);
+    assert_eq!(result_other_symbol, "()");
+
+    eval_line("(put 'my-symbol 'my-prop \"hello\")", &mut env);
+    let result_updated = eval_line("(get 'my-symbol 'my-prop)", &mut env);
+    assert_eq!(result_updated, "\"hello\"");
+
+    let plist = eval_line("(symbol-plist 'my-symbol)", &mut env);
+    assert!(plist.contains("my-prop"));
+    assert!(plist.contains("\"hello\""));
+
+    eval_line("(remprop 'my-symbol 'my-prop)", &mut env);
+    let result_removed = eval_line("(get 'my-symbol 'my-prop)", &mut env);
+    assert_eq!(result_removed, "()");
+
+    eval_line("(put 'another-symbol 'prop1 1)", &mut env);
+    eval_line("(put 'another-symbol 'prop2 2)", &mut env);
+    let properties = eval_line(
+        "(get-properties (symbol-plist 'another-symbol) '(prop2))",
+        &mut env,
+    );
+    assert_eq!(properties, "(prop2 2)");
 }

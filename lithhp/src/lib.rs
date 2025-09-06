@@ -1,15 +1,19 @@
+#[macro_use]
+extern crate lazy_static;
+
 pub mod environment;
 pub mod evaluator;
 pub mod printer;
 pub mod reader;
 
 use environment::Environment;
-use std::cell::RefCell;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LispError {
@@ -40,12 +44,15 @@ pub enum BuiltinFunc {
     Not,
     NumericEquals,
     MakeHashTable,
-    Get,
     Set,
     DeleteKey,
     CurrentEnvironment,
     Keys,
     Atom,
+    Get,
+    Put,
+    SymbolPlist,
+    Remprop,
     Print,
 }
 
@@ -70,9 +77,21 @@ pub struct Macro {
     pub env: Environment,
 }
 
+#[derive(Debug)]
+pub struct Symbol {
+    pub name: String,
+    pub plist: Mutex<HashMap<String, LispVal>>,
+}
+
+impl PartialEq for Symbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LispVal {
-    Symbol(String),
+    Symbol(Arc<Symbol>),
     Number(i64),
     String(String),
     Builtin(BuiltinFunc),
@@ -84,7 +103,7 @@ pub enum LispVal {
         cdr: Box<LispVal>,
     },
     Nil,
-    HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
+    HashTable(Arc<Mutex<HashMap<LispVal, LispVal>>>),
 }
 
 impl PartialEq for LispVal {
@@ -104,7 +123,7 @@ impl PartialEq for LispVal {
                 },
             ) => car1 == car2 && cdr1 == cdr2,
             (LispVal::Nil, LispVal::Nil) => true,
-            (LispVal::HashTable(a), LispVal::HashTable(b)) => Rc::ptr_eq(a, b),
+            (LispVal::HashTable(a), LispVal::HashTable(b)) => Arc::ptr_eq(a, b),
             (LispVal::Builtin(a), LispVal::Builtin(b)) => a == b,
             (LispVal::Lambda(_), LispVal::Lambda(_)) => false,
             (LispVal::Fexpr(_), LispVal::Fexpr(_)) => false,
@@ -118,7 +137,7 @@ impl Eq for LispVal {}
 impl Hash for LispVal {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
-            LispVal::Symbol(s) => s.hash(state),
+            LispVal::Symbol(s) => s.name.hash(state),
             LispVal::Number(n) => n.hash(state),
             LispVal::String(s) => s.hash(state),
             LispVal::Cons { car, cdr } => {
@@ -128,7 +147,7 @@ impl Hash for LispVal {
             LispVal::Nil => 0.hash(state),
             LispVal::HashTable(h) => {
                 // Hash the pointer address. This makes each hash table unique.
-                Rc::as_ptr(h).hash(state);
+                Arc::as_ptr(h).hash(state);
             }
             LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) | LispVal::Macro(_) => {
                 // Functions are not hashable.

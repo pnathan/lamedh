@@ -8,7 +8,14 @@ use nom::{
     sequence::{delimited, pair, preceded, terminated},
 };
 
-use crate::LispVal;
+use crate::{LispVal, Symbol};
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+lazy_static! {
+    static ref SYMBOL_TABLE: Mutex<HashMap<String, Arc<Symbol>>> = Mutex::new(HashMap::new());
+}
 
 // A parser for a comment
 fn parse_comment(input: &str) -> IResult<&str, &str> {
@@ -18,6 +25,19 @@ fn parse_comment(input: &str) -> IResult<&str, &str> {
 // A parser for whitespace, including comments
 fn ws(input: &str) -> IResult<&str, &str> {
     recognize(many0(alt((multispace1, parse_comment))))(input)
+}
+
+pub fn new_symbol(s: &str) -> LispVal {
+    let mut table = SYMBOL_TABLE.lock();
+    if let Some(sym) = table.get(s) {
+        return LispVal::Symbol(sym.clone());
+    }
+    let new_sym = Arc::new(Symbol {
+        name: s.to_string(),
+        plist: Mutex::new(HashMap::new()),
+    });
+    table.insert(s.to_string(), new_sym.clone());
+    LispVal::Symbol(new_sym)
 }
 
 fn parse_symbol(input: &str) -> IResult<&str, LispVal> {
@@ -42,7 +62,7 @@ fn parse_symbol(input: &str) -> IResult<&str, LispVal> {
                 tag("="),
             ))),
         )),
-        |s: &str| LispVal::Symbol(s.to_string()),
+        |s: &str| new_symbol(s),
     )(input)
 }
 
@@ -85,7 +105,7 @@ fn parse_list(input: &str) -> IResult<&str, LispVal> {
 
 fn parse_quoted(input: &str) -> IResult<&str, LispVal> {
     map(preceded(char('\''), parse_expr), |expr| LispVal::Cons {
-        car: Box::new(LispVal::Symbol("quote".to_string())),
+        car: Box::new(new_symbol("quote")),
         cdr: Box::new(LispVal::Cons {
             car: Box::new(expr),
             cdr: Box::new(LispVal::Nil),
@@ -95,7 +115,7 @@ fn parse_quoted(input: &str) -> IResult<&str, LispVal> {
 
 fn parse_quasiquoted(input: &str) -> IResult<&str, LispVal> {
     map(preceded(char('`'), parse_expr), |expr| LispVal::Cons {
-        car: Box::new(LispVal::Symbol("quasiquote".to_string())),
+        car: Box::new(new_symbol("quasiquote")),
         cdr: Box::new(LispVal::Cons {
             car: Box::new(expr),
             cdr: Box::new(LispVal::Nil),
@@ -105,7 +125,7 @@ fn parse_quasiquoted(input: &str) -> IResult<&str, LispVal> {
 
 fn parse_unquoted(input: &str) -> IResult<&str, LispVal> {
     map(preceded(char(','), parse_expr), |expr| LispVal::Cons {
-        car: Box::new(LispVal::Symbol("unquote".to_string())),
+        car: Box::new(new_symbol("unquote")),
         cdr: Box::new(LispVal::Cons {
             car: Box::new(expr),
             cdr: Box::new(LispVal::Nil),
@@ -162,7 +182,7 @@ mod tests {
     }
 
     fn symbol(s: &str) -> LispVal {
-        LispVal::Symbol(s.to_string())
+        new_symbol(s)
     }
 
     fn number(n: i64) -> LispVal {

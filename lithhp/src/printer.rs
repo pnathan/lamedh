@@ -10,7 +10,7 @@ fn print_list_contents(cdr: &LispVal) -> String {
 
 pub fn print(val: &LispVal) -> String {
     match val {
-        LispVal::Symbol(s) => s.clone(),
+        LispVal::Symbol(s) => s.name.clone(),
         LispVal::Number(n) => n.to_string(),
         LispVal::String(s) => format!("\"{s}\""),
         LispVal::Builtin(_) => "<builtin>".to_string(),
@@ -28,6 +28,10 @@ pub fn print(val: &LispVal) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Symbol;
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
         LispVal::Cons {
@@ -37,7 +41,10 @@ mod tests {
     }
 
     fn symbol(s: &str) -> LispVal {
-        LispVal::Symbol(s.to_string())
+        LispVal::Symbol(Arc::new(Symbol {
+            name: s.to_string(),
+            plist: Mutex::new(HashMap::new()),
+        }))
     }
 
     fn number(n: i64) -> LispVal {
