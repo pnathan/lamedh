@@ -23,6 +23,8 @@ pub enum BuiltinFunc {
     Concat,
     Index,
     Eval,
+    Eq,
+    Not,
 }
 
 #[derive(Debug, Clone, PartialEq)]

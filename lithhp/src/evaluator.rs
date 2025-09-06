@@ -133,6 +133,32 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
     }
 }
 
+fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Eq => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("eq requires exactly two arguments".to_string()));
+            }
+            if args[0] == args[1] {
+                Ok(LispVal::Symbol("t".to_string()))
+            } else {
+                Ok(LispVal::List(vec![])) // nil
+            }
+        }
+        BuiltinFunc::Not => {
+            if args.len() != 1 {
+                return Err(LispError::Generic("not requires exactly one argument".to_string()));
+            }
+            if is_truthy(&args[0]) {
+                Ok(LispVal::List(vec![])) // nil
+            } else {
+                Ok(LispVal::Symbol("t".to_string()))
+            }
+        }
+        _ => Err(LispError::Generic("Not a logical operation".to_string())),
+    }
+}
+
 fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<LispVal, LispError> {
     match func {
         LispVal::Builtin(builtin) => match builtin {
@@ -150,6 +176,9 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                     return Err(LispError::Generic("eval takes exactly one argument".to_string()));
                 }
                 eval(&args[0], env)
+            }
+            BuiltinFunc::Eq | BuiltinFunc::Not => {
+                apply_logical_op(builtin, args)
             }
         },
         LispVal::Lambda(lambda) => {
@@ -290,6 +319,25 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         } else {
                             eval(else_expr, env)
                         }
+                    }
+                    "and" => {
+                        let mut last_val = LispVal::Symbol("t".to_string());
+                        for expr in rest {
+                            last_val = eval(expr, env)?;
+                            if !is_truthy(&last_val) {
+                                return Ok(LispVal::List(vec![])); // nil
+                            }
+                        }
+                        Ok(last_val)
+                    }
+                    "or" => {
+                        for expr in rest {
+                            let val = eval(expr, env)?;
+                            if is_truthy(&val) {
+                                return Ok(val);
+                            }
+                        }
+                        Ok(LispVal::List(vec![])) // nil
                     }
                     "def" => {
                         if rest.len() != 2 {
@@ -566,5 +614,18 @@ mod tests {
         eval_from_str("(defexpr my-if (args) (if (eval (car args)) (eval (car (cdr args))) (eval (car (cdr (cdr args))))))", &mut env).unwrap();
         let result = eval_from_str("(my-if t 1 2)", &mut env);
         assert_eq!(result, Ok(LispVal::Number(1)));
+    }
+
+    #[test]
+    fn test_logical_ops() {
+        let mut env = Environment::new_with_builtins();
+        assert_eq!(eval_from_str("(eq 1 1)", &mut env), Ok(LispVal::Symbol("t".to_string())));
+        assert_eq!(eval_from_str("(eq 1 2)", &mut env), Ok(LispVal::List(vec![])));
+        assert_eq!(eval_from_str("(not t)", &mut env), Ok(LispVal::List(vec![])));
+        assert_eq!(eval_from_str("(not nil)", &mut env), Ok(LispVal::Symbol("t".to_string())));
+        assert_eq!(eval_from_str("(and t t)", &mut env), Ok(LispVal::Symbol("t".to_string())));
+        assert_eq!(eval_from_str("(and t nil)", &mut env), Ok(LispVal::List(vec![])));
+        assert_eq!(eval_from_str("(or t nil)", &mut env), Ok(LispVal::Symbol("t".to_string())));
+        assert_eq!(eval_from_str("(or nil nil)", &mut env), Ok(LispVal::List(vec![])));
     }
 }

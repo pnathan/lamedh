@@ -34,6 +34,8 @@ impl Environment {
         env.set("++".to_string(), LispVal::Builtin(BuiltinFunc::Concat)); // alias
         env.set("index".to_string(), LispVal::Builtin(BuiltinFunc::Index));
         env.set("eval".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
+        env.set("eq".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
+        env.set("not".to_string(), LispVal::Builtin(BuiltinFunc::Not));
         env
     }
 
