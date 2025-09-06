@@ -83,15 +83,8 @@ fn parse_unquoted(input: &str) -> IResult<&str, LispVal> {
     )(input)
 }
 
-fn parse_bool(input: &str) -> IResult<&str, LispVal> {
-    alt((
-        map(tag("#t"), |_| LispVal::Bool(true)),
-        map(tag("#f"), |_| LispVal::Bool(false)),
-    ))(input)
-}
-
 fn parse_expr(input: &str) -> IResult<&str, LispVal> {
-    preceded(ws, alt((parse_atom, parse_string, parse_list, parse_quoted, parse_quasiquoted, parse_unquoted, parse_bool)))(input)
+    preceded(ws, alt((parse_atom, parse_string, parse_list, parse_quoted, parse_quasiquoted, parse_unquoted)))(input)
 }
 
 pub fn read(input: &str) -> Result<LispVal, String> {
@@ -203,12 +196,6 @@ mod tests {
                 LispVal::Symbol("a".to_string())
             ]))
         );
-    }
-
-    #[test]
-    fn test_read_bool() {
-        assert_eq!(read("#t"), Ok(LispVal::Bool(true)));
-        assert_eq!(read("#f"), Ok(LispVal::Bool(false)));
     }
 
     #[test]

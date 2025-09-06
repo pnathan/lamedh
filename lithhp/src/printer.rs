@@ -5,13 +5,16 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Symbol(s) => s.clone(),
         LispVal::Number(n) => n.to_string(),
         LispVal::String(s) => format!("\"{s}\""),
-        LispVal::Bool(b) => if *b { "#t".to_string() } else { "#f".to_string() },
         LispVal::Builtin(_) => "<builtin>".to_string(),
         LispVal::Lambda(_) => "<lambda>".to_string(),
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
         LispVal::List(list) => {
-            let inner: Vec<String> = list.iter().map(print).collect();
-            format!("({})", inner.join(" "))
+            if list.is_empty() {
+                "()".to_string()
+            } else {
+                let inner: Vec<String> = list.iter().map(print).collect();
+                format!("({})", inner.join(" "))
+            }
         }
     }
 }

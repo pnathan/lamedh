@@ -2,8 +2,8 @@ use crate::{environment::Environment, BuiltinFunc, LispError, LispVal};
 
 fn is_truthy(val: &LispVal) -> bool {
     match val {
-        LispVal::Bool(b) => *b,
-        _ => true, // Everything else is truthy in our Lisp
+        LispVal::List(list) if list.is_empty() => false, // nil is false
+        _ => true, // Everything else is truthy
     }
 }
 
@@ -171,7 +171,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             new_env.pop_scope();
             result
         }
-        _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
+        _ => Err(LispError::Generic(format!("Not a function: {:?}", func))),
     }
 }
 
@@ -234,7 +234,6 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
         // Self-evaluating forms
         LispVal::Number(_) => Ok(val.clone()),
         LispVal::String(_) => Ok(val.clone()),
-        LispVal::Bool(_) => Ok(val.clone()),
         LispVal::Builtin(_) => Ok(val.clone()),
         LispVal::Lambda(_) => Ok(val.clone()),
         LispVal::Fexpr(_) => Ok(val.clone()),
@@ -265,7 +264,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                 "quote takes exactly one argument".to_string(),
                             ));
                         }
-                        Ok(rest[0].clone())
+                        return Ok(rest[0].clone());
                     }
                     "quasiquote" => {
                         if rest.len() != 1 {
@@ -495,11 +494,11 @@ mod tests {
 
     #[test]
     fn test_eval_if() {
-        let mut env = Environment::new();
-        let result_true = eval_from_str("(if #t 1 2)", &mut env);
+        let mut env = Environment::new_with_builtins();
+        let result_true = eval_from_str("(if t 1 2)", &mut env);
         assert_eq!(result_true, Ok(LispVal::Number(1)));
 
-        let result_false = eval_from_str("(if #f 1 2)", &mut env);
+        let result_false = eval_from_str("(if nil 1 2)", &mut env);
         assert_eq!(result_false, Ok(LispVal::Number(2)));
     }
 
@@ -565,7 +564,7 @@ mod tests {
     fn test_defexpr() {
         let mut env = Environment::new_with_builtins();
         eval_from_str("(defexpr my-if (args) (if (eval (car args)) (eval (car (cdr args))) (eval (car (cdr (cdr args))))))", &mut env).unwrap();
-        let result = eval_from_str("(my-if #t 1 2)", &mut env);
+        let result = eval_from_str("(my-if t 1 2)", &mut env);
         assert_eq!(result, Ok(LispVal::Number(1)));
     }
 }

@@ -44,7 +44,6 @@ pub enum LispVal {
     Symbol(String),
     Number(i64),
     String(String),
-    Bool(bool),
     Builtin(BuiltinFunc),
     Lambda(Lambda),
     Fexpr(Fexpr),
@@ -55,7 +54,7 @@ pub fn eval_line(line: &str, env: &mut Environment) -> String {
     match reader::read(line) {
         Ok(lisp_val) => match evaluator::eval(&lisp_val, env) {
             Ok(result) => printer::print(&result),
-            Err(e) => format!("Error: {e:?}"),
+            Err(e) => format!("Error: {:?}", e),
         },
         Err(e) => format!("Error: {e}"),
     }

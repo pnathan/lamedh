@@ -21,6 +21,8 @@ impl Environment {
 
     pub fn new_with_builtins() -> Self {
         let mut env = Environment::new();
+        env.set("t".to_string(), LispVal::Symbol("t".to_string()));
+        env.set("nil".to_string(), LispVal::List(vec![]));
         env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
         env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
         env.set("*".to_string(), LispVal::Builtin(BuiltinFunc::Multiply));
