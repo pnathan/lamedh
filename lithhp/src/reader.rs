@@ -95,6 +95,21 @@ pub fn read(input: &str) -> Result<LispVal, String> {
     }
 }
 
+pub fn read_all(input: &str) -> Result<Vec<LispVal>, String> {
+    let mut results = vec![];
+    let mut current_input = input.trim();
+    while !current_input.is_empty() {
+        match terminated(parse_expr, ws)(current_input) {
+            Ok((rem, val)) => {
+                results.push(val);
+                current_input = rem;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

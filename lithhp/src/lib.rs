@@ -9,10 +9,19 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LispError {
     Generic(String),
+}
+
+impl fmt::Display for LispError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            LispError::Generic(s) => write!(f, "{}", s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +125,20 @@ pub fn eval_line(line: &str, env: &mut Environment) -> String {
         },
         Err(e) => format!("Error: {e}"),
     }
+}
+
+use std::fs;
+
+pub fn load_file(path: &str, env: &mut Environment) -> Result<(), LispError> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| LispError::Generic(format!("Failed to read file {}: {}", path, e)))?;
+    let expressions = reader::read_all(&content)
+        .map_err(|e| LispError::Generic(format!("Failed to parse file {}: {}", path, e)))?;
+
+    for expr in expressions {
+        evaluator::eval(&expr, env)?;
+    }
+    Ok(())
 }
 
 pub fn repl_loop<R: BufRead, W: Write>(in_stream: &mut R, out_stream: &mut W) -> std::io::Result<()> {

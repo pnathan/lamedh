@@ -1,68 +1,60 @@
-use lithhp::repl_loop;
-use std::io::{Cursor, BufReader, BufWriter};
+use lithhp::{environment::Environment, eval_line};
+
+fn env_with_prologue() -> Environment {
+    let mut env = Environment::new_with_builtins();
+    let prologue = "(defmacro defun (name params body) `(def ,name (lambda ,params ,body)))";
+    eval_line(prologue, &mut env);
+    env
+}
 
 #[test]
 fn test_add_two_numbers() {
-    let input = "(+ 1 2)\n";
-    let mut reader = BufReader::new(Cursor::new(input));
-    let mut writer = BufWriter::new(Vec::new());
-    repl_loop(&mut reader, &mut writer).unwrap();
-
-    let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "3\n");
+    let mut env = env_with_prologue();
+    let output = eval_line("(+ 1 2)", &mut env);
+    assert_eq!(output, "3");
 }
 
 #[test]
 fn test_define_and_call_function() {
-    let input = "(defmacro defun (name params body) `(def ,name (lambda ,params ,body)))\n(defun square (x) (* x x))\n(square 5)\n";
-    let mut reader = BufReader::new(Cursor::new(input));
-    let mut writer = BufWriter::new(Vec::new());
-    repl_loop(&mut reader, &mut writer).unwrap();
-
-    let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "defun\nsquare\n25\n");
+    let mut env = env_with_prologue();
+    eval_line("(defun square (x) (* x x))", &mut env);
+    let result = eval_line("(square 5)", &mut env);
+    assert_eq!(result, "25");
 }
 
 #[test]
 fn test_let_binding() {
-    let input = "(let ((x 10)) (* x 2))\n";
-    let mut reader = BufReader::new(Cursor::new(input));
-    let mut writer = BufWriter::new(Vec::new());
-    repl_loop(&mut reader, &mut writer).unwrap();
-
-    let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "20\n");
+    let mut env = env_with_prologue();
+    let output = eval_line("(let ((x 10)) (* x 2))", &mut env);
+    assert_eq!(output, "20");
 }
 
 #[test]
 fn test_eq() {
-    let input = "(eq 1 1)\n(eq 1 2)\n(eq \"a\" \"a\")\n(eq \"a\" \"b\")\n(eq t t)\n(eq nil nil)\n(eq t nil)\n";
-    let mut reader = BufReader::new(Cursor::new(input));
-    let mut writer = BufWriter::new(Vec::new());
-    repl_loop(&mut reader, &mut writer).unwrap();
-
-    let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "t\n()\nt\n()\nt\nt\n()\n");
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(eq 1 1)", &mut env), "t");
+    assert_eq!(eval_line("(eq 1 2)", &mut env), "()");
+    assert_eq!(eval_line("(eq \"a\" \"a\")", &mut env), "t");
+    assert_eq!(eval_line("(eq \"a\" \"b\")", &mut env), "()");
+    assert_eq!(eval_line("(eq t t)", &mut env), "t");
+    assert_eq!(eval_line("(eq nil nil)", &mut env), "t");
+    assert_eq!(eval_line("(eq t nil)", &mut env), "()");
 }
 
 #[test]
 fn test_logical_ops() {
-    let input = "(not t)\n(not nil)\n(and t t)\n(and t nil)\n(or t nil)\n(or nil nil)\n";
-    let mut reader = BufReader::new(Cursor::new(input));
-    let mut writer = BufWriter::new(Vec::new());
-    repl_loop(&mut reader, &mut writer).unwrap();
-
-    let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "()\nt\nt\n()\nt\n()\n");
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(not t)", &mut env), "()");
+    assert_eq!(eval_line("(not nil)", &mut env), "t");
+    assert_eq!(eval_line("(and t t)", &mut env), "t");
+    assert_eq!(eval_line("(and t nil)", &mut env), "()");
+    assert_eq!(eval_line("(or t nil)", &mut env), "t");
+    assert_eq!(eval_line("(or nil nil)", &mut env), "()");
 }
 
 #[test]
 fn test_if_with_t_nil() {
-    let input = "(if t 1 2)\n(if nil 1 2)\n";
-    let mut reader = BufReader::new(Cursor::new(input));
-    let mut writer = BufWriter::new(Vec::new());
-    repl_loop(&mut reader, &mut writer).unwrap();
-
-    let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "1\n2\n");
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(if t 1 2)", &mut env), "1");
+    assert_eq!(eval_line("(if nil 1 2)", &mut env), "2");
 }

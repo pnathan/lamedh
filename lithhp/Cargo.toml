@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 rustyline = "14.0.0"
 nom = "7.1.3"
+clap = { version = "4.5.4", features = ["derive"] }
