@@ -86,12 +86,15 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
             if args.len() != 2 {
                 return Err(LispError::Generic("cons requires exactly two arguments".to_string()));
             }
-            if let LispVal::List(list) = &args[1] {
-                let mut new_list = vec![args[0].clone()];
-                new_list.extend_from_slice(list);
+            let car = args[0].clone();
+            let cdr = args[1].clone();
+
+            if let LispVal::List(list) = cdr {
+                let mut new_list = vec![car];
+                new_list.extend(list);
                 Ok(LispVal::List(new_list))
             } else {
-                Err(LispError::Generic("cons requires a list as its second argument".to_string()))
+                Ok(LispVal::DottedList(Box::new(car), Box::new(cdr)))
             }
         }
         _ => Err(LispError::Generic("Not a list operation".to_string())),
@@ -275,6 +278,16 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             BuiltinFunc::MakeHashTable | BuiltinFunc::Get | BuiltinFunc::Set | BuiltinFunc::DeleteKey | BuiltinFunc::CurrentEnvironment | BuiltinFunc::Keys => {
                 apply_hashtable_op(builtin, args, env)
             }
+            BuiltinFunc::Atom => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic("atom requires exactly one argument".to_string()));
+                }
+                match &args[0] {
+                    LispVal::List(l) if l.is_empty() => Ok(LispVal::Symbol("t".to_string())), // (atom nil) is t
+                    LispVal::List(_) | LispVal::DottedList(_, _) => Ok(LispVal::List(vec![])), // nil
+                    _ => Ok(LispVal::Symbol("t".to_string())),
+                }
+            }
         },
         LispVal::Lambda(lambda) => {
             if lambda.params.len() != args.len() {
@@ -421,6 +434,9 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
             }
         }
 
+        // Dotted lists are not evaluatable
+        LispVal::DottedList(_, _) => Err(LispError::Generic("Cannot evaluate a dotted list".to_string())),
+
         // List: this is where function calls and special forms are handled.
         LispVal::List(list) => {
             if list.is_empty() {
@@ -447,6 +463,32 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             ));
                         }
                         quasiquote_eval(&rest[0], env)
+                    }
+                    "cond" => {
+                        for clause in rest {
+                            if let LispVal::List(clause_list) = clause {
+                                if clause_list.is_empty() {
+                                    return Err(LispError::Generic("cond clause cannot be empty".to_string()));
+                                }
+                                let predicate = &clause_list[0];
+                                let predicate_result = eval(predicate, env)?;
+
+                                if is_truthy(&predicate_result) {
+                                    if clause_list.len() == 1 {
+                                        return Ok(predicate_result);
+                                    } else {
+                                        let mut last_val = LispVal::List(vec![]); // nil
+                                        for expr in &clause_list[1..] {
+                                            last_val = eval(expr, env)?;
+                                        }
+                                        return Ok(last_val);
+                                    }
+                                }
+                            } else {
+                                return Err(LispError::Generic("cond clauses must be lists".to_string()));
+                            }
+                        }
+                        Ok(LispVal::List(vec![])) // No clause was true, return nil
                     }
                     "if" => {
                         if rest.len() != 3 {

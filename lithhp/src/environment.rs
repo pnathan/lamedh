@@ -43,6 +43,7 @@ impl Environment {
         env.set("delete-key!".to_string(), LispVal::Builtin(BuiltinFunc::DeleteKey));
         env.set("current-environment".to_string(), LispVal::Builtin(BuiltinFunc::CurrentEnvironment));
         env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
+        env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
         env
     }
 

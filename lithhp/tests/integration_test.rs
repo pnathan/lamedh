@@ -1,9 +1,17 @@
 use lithhp::{environment::Environment, eval_line};
 
+use lithhp::reader;
+
 fn env_with_prologue() -> Environment {
     let mut env = Environment::new_with_builtins();
-    let prologue = "(defmacro defun (name params body) `(def ,name (lambda ,params ,body)))";
-    eval_line(prologue, &mut env);
+    let prologue = r#"
+        (defmacro defun (name params body) `(def ,name (lambda ,params ,body)))
+        (defun null (x) (eq x nil))
+    "#;
+    let expressions = reader::read_all(prologue).unwrap();
+    for expr in expressions {
+        eval_line(&lithhp::printer::print(&expr), &mut env);
+    }
     env
 }
 
@@ -64,4 +72,43 @@ fn test_numeric_compare() {
     let mut env = env_with_prologue();
     assert_eq!(eval_line("(= 1 1)", &mut env), "t");
     assert_eq!(eval_line("(= 1 2)", &mut env), "()");
+}
+
+#[test]
+fn test_cons_dotted_pair() {
+    let mut env = env_with_prologue();
+    let output = eval_line("(cons 'a 'b)", &mut env);
+    assert_eq!(output, "(a . b)");
+}
+
+#[test]
+fn test_atom() {
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(atom 'a)", &mut env), "t");
+    assert_eq!(eval_line("(atom 1)", &mut env), "t");
+    assert_eq!(eval_line("(atom \"s\")", &mut env), "t");
+    assert_eq!(eval_line("(atom '(1 2))", &mut env), "()");
+    assert_eq!(eval_line("(atom (cons 1 2))", &mut env), "()");
+    assert_eq!(eval_line("(atom nil)", &mut env), "t");
+}
+
+#[test]
+fn test_cond() {
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(cond (t 1))", &mut env), "1");
+    assert_eq!(eval_line("(cond (() 1) (t 2))", &mut env), "2");
+    assert_eq!(eval_line("(cond (nil 1) (t 2))", &mut env), "2");
+    assert_eq!(eval_line("(cond (() 1) (() 2))", &mut env), "()");
+    assert_eq!(eval_line("(cond (t))", &mut env), "t");
+    assert_eq!(eval_line("(cond (1))", &mut env), "1");
+    assert_eq!(eval_line("(cond (t 1 2 3))", &mut env), "3");
+}
+
+#[test]
+fn test_null() {
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(null nil)", &mut env), "t");
+    assert_eq!(eval_line("(null '())", &mut env), "t");
+    assert_eq!(eval_line("(null 1)", &mut env), "()");
+    assert_eq!(eval_line("(null t)", &mut env), "()");
 }

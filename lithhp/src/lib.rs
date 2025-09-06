@@ -45,6 +45,7 @@ pub enum BuiltinFunc {
     DeleteKey,
     CurrentEnvironment,
     Keys,
+    Atom,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +79,7 @@ pub enum LispVal {
     Fexpr(Fexpr),
     Macro(Macro),
     List(Vec<LispVal>),
+    DottedList(Box<LispVal>, Box<LispVal>),
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
 }
 
@@ -88,6 +90,7 @@ impl PartialEq for LispVal {
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
             (LispVal::String(a), LispVal::String(b)) => a == b,
             (LispVal::List(a), LispVal::List(b)) => a == b,
+            (LispVal::DottedList(car1, cdr1), LispVal::DottedList(car2, cdr2)) => car1 == car2 && cdr1 == cdr2,
             (LispVal::HashTable(a), LispVal::HashTable(b)) => Rc::ptr_eq(a, b),
             (LispVal::Builtin(a), LispVal::Builtin(b)) => a == b,
             (LispVal::Lambda(_), LispVal::Lambda(_)) => false,
@@ -106,6 +109,10 @@ impl Hash for LispVal {
             LispVal::Number(n) => n.hash(state),
             LispVal::String(s) => s.hash(state),
             LispVal::List(l) => l.hash(state),
+            LispVal::DottedList(car, cdr) => {
+                car.hash(state);
+                cdr.hash(state);
+            }
             LispVal::HashTable(h) => {
                 // Hash the pointer address. This makes each hash table unique.
                 Rc::as_ptr(h).hash(state);

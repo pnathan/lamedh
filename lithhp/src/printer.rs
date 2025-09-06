@@ -18,6 +18,9 @@ pub fn print(val: &LispVal) -> String {
                 format!("({})", inner.join(" "))
             }
         }
+        LispVal::DottedList(car, cdr) => {
+            format!("({} . {})", print(car), print(cdr))
+        }
     }
 }
 
