@@ -14,13 +14,13 @@ fn test_add_two_numbers() {
 
 #[test]
 fn test_define_and_call_function() {
-    let input = "(defun square (x) (* x x))\n(square 5)\n";
+    let input = "(defmacro defun (name params body) `(def ,name (lambda ,params ,body)))\n(defun square (x) (* x x))\n(square 5)\n";
     let mut reader = BufReader::new(Cursor::new(input));
     let mut writer = BufWriter::new(Vec::new());
     repl_loop(&mut reader, &mut writer).unwrap();
 
     let output = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    assert_eq!(output, "square\n25\n");
+    assert_eq!(output, "defun\nsquare\n25\n");
 }
 
 #[test]

@@ -221,6 +221,17 @@ fn apply_hashtable_op(op: &BuiltinFunc, args: &[LispVal], env: &mut Environment)
             }
             Ok(LispVal::HashTable(Rc::new(RefCell::new(hash_map))))
         }
+        BuiltinFunc::Keys => {
+            if args.len() != 1 {
+                return Err(LispError::Generic("keys requires exactly one argument".to_string()));
+            }
+            if let LispVal::HashTable(h) = &args[0] {
+                let keys = h.borrow().keys().cloned().collect();
+                Ok(LispVal::List(keys))
+            } else {
+                Err(LispError::Generic("keys requires a hash table as its first argument".to_string()))
+            }
+        }
         _ => Err(LispError::Generic("Not a hash table operation".to_string())),
     }
 }
@@ -247,7 +258,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             BuiltinFunc::Eq | BuiltinFunc::Not => {
                 apply_logical_op(builtin, args)
             }
-            BuiltinFunc::MakeHashTable | BuiltinFunc::Get | BuiltinFunc::Set | BuiltinFunc::DeleteKey | BuiltinFunc::CurrentEnvironment => {
+            BuiltinFunc::MakeHashTable | BuiltinFunc::Get | BuiltinFunc::Set | BuiltinFunc::DeleteKey | BuiltinFunc::CurrentEnvironment | BuiltinFunc::Keys => {
                 apply_hashtable_op(builtin, args, env)
             }
         },
@@ -328,6 +339,54 @@ fn make_fexpr(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
     }
 }
 
+fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<LispVal, LispError> {
+    if let LispVal::List(p_list) = params {
+        let params_vec: Result<Vec<String>, _> = p_list
+            .iter()
+            .map(|p| {
+                if let LispVal::Symbol(s) = p {
+                    Ok(s.clone())
+                } else {
+                    Err(LispError::Generic(
+                        "macro parameters must be symbols".to_string(),
+                    ))
+                }
+            })
+            .collect();
+
+        Ok(LispVal::Macro(crate::Macro {
+            params: params_vec?,
+            body: Box::new(body.clone()),
+            env: env.clone(),
+        }))
+    } else {
+        Err(LispError::Generic(
+            "macro requires a list of parameters".to_string(),
+        ))
+    }
+}
+
+fn expand_macro(m: &crate::Macro, args: &[LispVal], _env: &mut Environment) -> Result<LispVal, LispError> {
+    if m.params.len() != args.len() {
+        return Err(LispError::Generic(format!(
+            "macro expected {} arguments, got {}",
+            m.params.len(),
+            args.len()
+        )));
+    }
+
+    let mut macro_env = m.env.clone();
+    macro_env.push_scope();
+    for (param, arg) in m.params.iter().zip(args) {
+        macro_env.set(param.clone(), arg.clone());
+    }
+
+    let expanded = eval(&m.body, &mut macro_env);
+    macro_env.pop_scope();
+    expanded
+}
+
+
 pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     match val {
         // Self-evaluating forms
@@ -337,6 +396,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
         LispVal::Lambda(_) => Ok(val.clone()),
         LispVal::Fexpr(_) => Ok(val.clone()),
         LispVal::HashTable(_) => Ok(val.clone()),
+        LispVal::Macro(_) => Ok(val.clone()),
 
         // Symbol: look it up in the environment
         LispVal::Symbol(s) => {
@@ -437,26 +497,6 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                         make_lambda(&rest[0], &rest[1], env)
                     }
-                    "defun" => {
-                        if rest.len() != 3 {
-                            return Err(LispError::Generic(
-                                "defun takes exactly three arguments".to_string(),
-                            ));
-                        }
-                        let name = &rest[0];
-                        let params = &rest[1];
-                        let body = &rest[2];
-
-                        if let LispVal::Symbol(s) = name {
-                            let lambda = make_lambda(params, body, env)?;
-                            env.set(s.clone(), lambda);
-                            Ok(LispVal::Symbol(s.clone()))
-                        } else {
-                            Err(LispError::Generic(
-                                "defun requires a symbol as its first argument".to_string(),
-                            ))
-                        }
-                    }
                     "defexpr" => {
                         if rest.len() != 3 {
                             return Err(LispError::Generic(
@@ -474,6 +514,26 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         } else {
                             Err(LispError::Generic(
                                 "defexpr requires a symbol as its first argument".to_string(),
+                            ))
+                        }
+                    }
+                    "defmacro" => {
+                        if rest.len() != 3 {
+                            return Err(LispError::Generic(
+                                "defmacro takes exactly three arguments".to_string(),
+                            ));
+                        }
+                        let name = &rest[0];
+                        let params = &rest[1];
+                        let body = &rest[2];
+
+                        if let LispVal::Symbol(s) = name {
+                            let macro_ = make_macro(params, body, env)?;
+                            env.set(s.clone(), macro_);
+                            Ok(LispVal::Symbol(s.clone()))
+                        } else {
+                            Err(LispError::Generic(
+                                "defmacro requires a symbol as its first argument".to_string(),
                             ))
                         }
                     }
@@ -518,6 +578,10 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                     _ => {
                         // Function call
                         let func = eval(first, env)?;
+                        if let LispVal::Macro(m) = &func {
+                            let expanded = expand_macro(m, rest, env)?;
+                            return eval(&expanded, env);
+                        }
                         if let LispVal::Fexpr(fexpr) = &func {
                             let mut new_env = fexpr.env.clone();
                             new_env.push_scope();
@@ -648,8 +712,9 @@ mod tests {
     }
 
     #[test]
-    fn test_defun() {
+    fn test_defun_as_macro() {
         let mut env = Environment::new_with_builtins();
+        eval_from_str("(defmacro defun (name params body) `(def ,name (lambda ,params ,body)))", &mut env).unwrap();
         eval_from_str("(defun square (x) (* x x))", &mut env).unwrap();
         let result = eval_from_str("(square 5)", &mut env);
         assert_eq!(result, Ok(LispVal::Number(25)));
@@ -716,5 +781,21 @@ mod tests {
         eval_from_str("(def x 10)", &mut env).unwrap();
         let result = eval_from_str("(get (current-environment) 'x)", &mut env);
         assert_eq!(result, Ok(LispVal::Number(10)));
+    }
+
+    #[test]
+    fn test_keys() {
+        let mut env = Environment::new_with_builtins();
+        eval_from_str("(def h (make-hash-table))", &mut env).unwrap();
+        eval_from_str("(set! h 'a 1)", &mut env).unwrap();
+        assert_eq!(eval_from_str("(keys h)", &mut env), Ok(LispVal::List(vec![LispVal::Symbol("a".to_string())])));
+    }
+
+    #[test]
+    fn test_defmacro() {
+        let mut env = Environment::new_with_builtins();
+        eval_from_str("(defmacro my-let (bindings body) `(let ,bindings ,body))", &mut env).unwrap();
+        let result = eval_from_str("(my-let ((x 1)) (+ x 1))", &mut env);
+        assert_eq!(result, Ok(LispVal::Number(2)));
     }
 }

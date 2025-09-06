@@ -34,6 +34,7 @@ pub enum BuiltinFunc {
     Set,
     DeleteKey,
     CurrentEnvironment,
+    Keys,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +51,13 @@ pub struct Fexpr {
     pub env: Environment,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Macro {
+    pub params: Vec<String>,
+    pub body: Box<LispVal>,
+    pub env: Environment,
+}
+
 #[derive(Debug, Clone)]
 pub enum LispVal {
     Symbol(String),
@@ -58,6 +66,7 @@ pub enum LispVal {
     Builtin(BuiltinFunc),
     Lambda(Lambda),
     Fexpr(Fexpr),
+    Macro(Macro),
     List(Vec<LispVal>),
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
 }
@@ -91,7 +100,7 @@ impl Hash for LispVal {
                 // Hash the pointer address. This makes each hash table unique.
                 Rc::as_ptr(h).hash(state);
             }
-            LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) => {
+            LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) | LispVal::Macro(_) => {
                 // Functions are not hashable.
             }
         }
