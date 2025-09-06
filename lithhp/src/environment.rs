@@ -22,7 +22,7 @@ impl Environment {
     pub fn new_with_builtins() -> Self {
         let mut env = Environment::new();
         env.set("t".to_string(), LispVal::Symbol("t".to_string()));
-        env.set("nil".to_string(), LispVal::List(vec![]));
+        env.set("nil".to_string(), LispVal::Nil);
         env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
         env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
         env.set("*".to_string(), LispVal::Builtin(BuiltinFunc::Multiply));
@@ -43,6 +43,7 @@ impl Environment {
         env.set("delete-key!".to_string(), LispVal::Builtin(BuiltinFunc::DeleteKey));
         env.set("current-environment".to_string(), LispVal::Builtin(BuiltinFunc::CurrentEnvironment));
         env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
+        env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
         env
     }
 
