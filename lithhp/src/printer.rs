@@ -12,7 +12,7 @@ pub fn print(val: &LispVal) -> String {
     match val {
         LispVal::Symbol(s) => s.clone(),
         LispVal::Number(n) => n.to_string(),
-        LispVal::String(s) => format!("\"{}\"", s),
+        LispVal::String(s) => format!("\"{s}\""),
         LispVal::Builtin(_) => "<builtin>".to_string(),
         LispVal::Lambda(_) => "<lambda>".to_string(),
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
@@ -30,7 +30,10 @@ mod tests {
     use super::*;
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
-        LispVal::Cons { car: Box::new(car), cdr: Box::new(cdr) }
+        LispVal::Cons {
+            car: Box::new(car),
+            cdr: Box::new(cdr),
+        }
     }
 
     fn symbol(s: &str) -> LispVal {
@@ -49,9 +52,9 @@ mod tests {
                 number(10),
                 cons(
                     cons(symbol("*"), cons(number(5), cons(number(2), LispVal::Nil))),
-                    LispVal::Nil
-                )
-            )
+                    LispVal::Nil,
+                ),
+            ),
         );
         assert_eq!(print(&list), "(+ 10 (* 5 2))");
     }

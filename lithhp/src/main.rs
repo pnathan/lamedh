@@ -1,7 +1,7 @@
 use clap::Parser;
 use lithhp::{environment::Environment, eval_line, load_file};
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -22,14 +22,14 @@ fn main() {
     if let Err(e) = load_file("prologue.lisp", &mut env) {
         // It's okay if it doesn't exist, but print an error if it fails for other reasons
         if !e.to_string().contains("No such file or directory") {
-            eprintln!("Error loading prologue.lisp: {:?}", e);
+            eprintln!("Error loading prologue.lisp: {e:?}");
         }
     }
 
     // Load files from -i flag
     for file in args.i {
         if let Err(e) = load_file(&file, &mut env) {
-            eprintln!("Error loading file {}: {:?}", file, e);
+            eprintln!("Error loading file {file}: {e:?}");
             return;
         }
     }
