@@ -58,6 +58,10 @@ impl Environment {
         );
         env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
         env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
+        env.set(
+            "member".to_string(),
+            LispVal::Builtin(BuiltinFunc::Member),
+        );
         env
     }
 

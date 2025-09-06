@@ -46,6 +46,7 @@ pub enum BuiltinFunc {
     CurrentEnvironment,
     Keys,
     Atom,
+    Member,
 }
 
 #[derive(Debug, Clone, PartialEq)]

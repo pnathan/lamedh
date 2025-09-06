@@ -119,6 +119,22 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 cdr: Box::new(args[1].clone()),
             })
         }
+        BuiltinFunc::Member => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "member requires exactly two arguments".to_string(),
+                ));
+            }
+            let item = &args[0];
+            let mut list = &args[1];
+            while let LispVal::Cons { car, cdr } = list {
+                if &**car == item {
+                    return Ok(list.clone());
+                }
+                list = cdr;
+            }
+            Ok(LispVal::Nil)
+        }
         _ => Err(LispError::Generic("Not a list operation".to_string())),
     }
 }
@@ -320,7 +336,9 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             | BuiltinFunc::Minus
             | BuiltinFunc::Multiply
             | BuiltinFunc::Divide => apply_math_op(builtin, args),
-            BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
+            BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons | BuiltinFunc::Member => {
+                apply_list_op(builtin, args)
+            }
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
             BuiltinFunc::Eval => {
                 if args.len() != 1 {

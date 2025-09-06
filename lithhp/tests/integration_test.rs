@@ -140,3 +140,22 @@ fn test_pairlis() {
     let output5 = eval_line("(pairlis '() '())", &mut env);
     assert_eq!(output5, "()");
 }
+
+#[test]
+fn test_member() {
+    let mut env = env_with_prologue();
+    assert_eq!(
+        eval_line("(member 'a '(a b c))", &mut env),
+        "(a b c)"
+    );
+    assert_eq!(
+        eval_line("(member 'b '(a b c))", &mut env),
+        "(b c)"
+    );
+    assert_eq!(eval_line("(member 'd '(a b c))", &mut env), "()");
+    assert_eq!(eval_line("(member 'a '())", &mut env), "()");
+    assert_eq!(
+        eval_line("(member '(a) '((a) (b)))", &mut env),
+        "((a) (b))"
+    );
+}
