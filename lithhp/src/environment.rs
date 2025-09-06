@@ -62,6 +62,7 @@ impl Environment {
             "member".to_string(),
             LispVal::Builtin(BuiltinFunc::Member),
         );
+        env.set("print".to_string(), LispVal::Builtin(BuiltinFunc::Print));
         env
     }
 

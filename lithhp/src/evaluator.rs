@@ -368,6 +368,13 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                     _ => Ok(LispVal::Symbol("t".to_string())),
                 }
             }
+            BuiltinFunc::Print => {
+                for arg in args {
+                    print!("{}", crate::printer::print(arg));
+                }
+                println!();
+                Ok(LispVal::Nil)
+            }
         },
         LispVal::Lambda(lambda) => {
             if lambda.params.len() != args.len() {
