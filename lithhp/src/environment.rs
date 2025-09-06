@@ -1,4 +1,4 @@
-use crate::{BuiltinFunc, LispVal};
+use crate::{BuiltinFunc, LispVal, reader};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +21,7 @@ impl Environment {
 
     pub fn new_with_builtins() -> Self {
         let mut env = Environment::new();
-        env.set("t".to_string(), LispVal::Symbol("t".to_string()));
+        env.set("t".to_string(), reader::new_symbol("t"));
         env.set("nil".to_string(), LispVal::Nil);
         env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
         env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
@@ -35,15 +35,29 @@ impl Environment {
         env.set("index".to_string(), LispVal::Builtin(BuiltinFunc::Index));
         env.set("eval".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
         env.set("eq".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
-        env.set("=".to_string(), LispVal::Builtin(BuiltinFunc::NumericEquals));
+        env.set(
+            "=".to_string(),
+            LispVal::Builtin(BuiltinFunc::NumericEquals),
+        );
         env.set("not".to_string(), LispVal::Builtin(BuiltinFunc::Not));
-        env.set("make-hash-table".to_string(), LispVal::Builtin(BuiltinFunc::MakeHashTable));
+        env.set(
+            "make-hash-table".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeHashTable),
+        );
         env.set("get".to_string(), LispVal::Builtin(BuiltinFunc::Get));
         env.set("set!".to_string(), LispVal::Builtin(BuiltinFunc::Set));
-        env.set("delete-key!".to_string(), LispVal::Builtin(BuiltinFunc::DeleteKey));
-        env.set("current-environment".to_string(), LispVal::Builtin(BuiltinFunc::CurrentEnvironment));
+        env.set(
+            "delete-key!".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeleteKey),
+        );
+        env.set(
+            "current-environment".to_string(),
+            LispVal::Builtin(BuiltinFunc::CurrentEnvironment),
+        );
         env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
         env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
+        env.set("get-p".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
+        env.set("put-p".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
         env
     }
 

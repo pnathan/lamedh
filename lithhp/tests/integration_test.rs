@@ -1,6 +1,6 @@
 use lithhp::{environment::Environment, eval_line};
 
-use lithhp::{reader, evaluator};
+use lithhp::{evaluator, reader};
 
 fn env_with_prologue() -> Environment {
     let mut env = Environment::new_with_builtins();
@@ -118,4 +118,22 @@ fn test_cdr_of_dotted_list() {
     let mut env = env_with_prologue();
     let output = eval_line("(cdr (cons 1 (cons 2 3)))", &mut env);
     assert_eq!(output, "(2 . 3)");
+}
+
+#[test]
+fn test_property_lists() {
+    let mut env = env_with_prologue();
+    eval_line("(put-p 'my-symbol 'my-prop 123)", &mut env);
+    let result = eval_line("(get-p 'my-symbol 'my-prop)", &mut env);
+    assert_eq!(result, "123");
+
+    let result_nonexistent = eval_line("(get-p 'my-symbol 'other-prop)", &mut env);
+    assert_eq!(result_nonexistent, "()");
+
+    let result_other_symbol = eval_line("(get-p 'other-symbol 'my-prop)", &mut env);
+    assert_eq!(result_other_symbol, "()");
+
+    eval_line("(put-p 'my-symbol 'my-prop \"hello\")", &mut env);
+    let result_updated = eval_line("(get-p 'my-symbol 'my-prop)", &mut env);
+    assert_eq!(result_updated, "\"hello\"");
 }

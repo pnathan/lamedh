@@ -1,7 +1,7 @@
-use crate::{environment::Environment, BuiltinFunc, LispError, LispVal};
-use std::cell::RefCell;
+use crate::{BuiltinFunc, LispError, LispVal, environment::Environment, reader};
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 // Helper function to convert a Lisp list (Cons chain) to a Rust Vec.
 fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
@@ -12,23 +12,25 @@ fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
         current = cdr;
     }
     if *current != LispVal::Nil {
-        return Err(LispError::Generic("list_to_vec: not a proper list".to_string()));
+        return Err(LispError::Generic(
+            "list_to_vec: not a proper list".to_string(),
+        ));
     }
     Ok(vec)
 }
 
 // Helper function to convert a Rust Vec to a Lisp list.
 fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
-    vec.into_iter().rev().fold(LispVal::Nil, |cdr, car| {
-        LispVal::Cons { car: Box::new(car), cdr: Box::new(cdr) }
-    })
+    vec.into_iter()
+        .rev()
+        .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
+            car: Box::new(car),
+            cdr: Box::new(cdr),
+        })
 }
 
 fn is_truthy(val: &LispVal) -> bool {
-    match val {
-        LispVal::Nil => false,
-        _ => true,
-    }
+    !matches!(val, LispVal::Nil)
 }
 
 fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
@@ -47,7 +49,9 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
         BuiltinFunc::Plus => Ok(LispVal::Number(nums.iter().sum())),
         BuiltinFunc::Minus => {
             if nums.is_empty() {
-                return Err(LispError::Generic("- requires at least one argument".to_string()));
+                return Err(LispError::Generic(
+                    "- requires at least one argument".to_string(),
+                ));
             }
             if nums.len() == 1 {
                 Ok(LispVal::Number(-nums[0]))
@@ -62,7 +66,9 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
         BuiltinFunc::Multiply => Ok(LispVal::Number(nums.iter().product())),
         BuiltinFunc::Divide => {
             if nums.len() != 2 {
-                return Err(LispError::Generic("/ requires exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "/ requires exactly two arguments".to_string(),
+                ));
             }
             if nums[1] == 0 {
                 return Err(LispError::Generic("Division by zero".to_string()));
@@ -77,7 +83,9 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
     match op {
         BuiltinFunc::Car => {
             if args.len() != 1 {
-                return Err(LispError::Generic("car requires exactly one argument".to_string()));
+                return Err(LispError::Generic(
+                    "car requires exactly one argument".to_string(),
+                ));
             }
             match &args[0] {
                 LispVal::Cons { car, .. } => Ok(*car.clone()),
@@ -87,7 +95,9 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
         }
         BuiltinFunc::Cdr => {
             if args.len() != 1 {
-                return Err(LispError::Generic("cdr requires exactly one argument".to_string()));
+                return Err(LispError::Generic(
+                    "cdr requires exactly one argument".to_string(),
+                ));
             }
             match &args[0] {
                 LispVal::Cons { cdr, .. } => Ok(*cdr.clone()),
@@ -97,7 +107,9 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
         }
         BuiltinFunc::Cons => {
             if args.len() != 2 {
-                return Err(LispError::Generic("cons requires exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "cons requires exactly two arguments".to_string(),
+                ));
             }
             Ok(LispVal::Cons {
                 car: Box::new(args[0].clone()),
@@ -124,17 +136,23 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
         }
         BuiltinFunc::Index => {
             if args.len() != 2 {
-                return Err(LispError::Generic("index requires exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "index requires exactly two arguments".to_string(),
+                ));
             }
             let s = if let LispVal::String(s) = &args[0] {
                 s
             } else {
-                return Err(LispError::Generic("index requires a string as its first argument".to_string()));
+                return Err(LispError::Generic(
+                    "index requires a string as its first argument".to_string(),
+                ));
             };
             let i = if let LispVal::Number(n) = &args[1] {
                 *n as usize
             } else {
-                return Err(LispError::Generic("index requires a number as its second argument".to_string()));
+                return Err(LispError::Generic(
+                    "index requires a number as its second argument".to_string(),
+                ));
             };
             if let Some(ch) = s.chars().nth(i) {
                 Ok(LispVal::String(ch.to_string()))
@@ -150,150 +168,247 @@ fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
     match op {
         BuiltinFunc::Eq => {
             if args.len() != 2 {
-                return Err(LispError::Generic("eq requires exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "eq requires exactly two arguments".to_string(),
+                ));
             }
             if args[0] == args[1] {
-                Ok(LispVal::Symbol("t".to_string()))
+                Ok(reader::new_symbol("t"))
             } else {
                 Ok(LispVal::Nil)
             }
         }
         BuiltinFunc::Not => {
             if args.len() != 1 {
-                return Err(LispError::Generic("not requires exactly one argument".to_string()));
+                return Err(LispError::Generic(
+                    "not requires exactly one argument".to_string(),
+                ));
             }
             if is_truthy(&args[0]) {
                 Ok(LispVal::Nil)
             } else {
-                Ok(LispVal::Symbol("t".to_string()))
+                Ok(reader::new_symbol("t"))
             }
         }
         BuiltinFunc::NumericEquals => {
             if args.len() != 2 {
-                return Err(LispError::Generic("= requires exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "= requires exactly two arguments".to_string(),
+                ));
             }
             if let (LispVal::Number(a), LispVal::Number(b)) = (&args[0], &args[1]) {
                 if a == b {
-                    Ok(LispVal::Symbol("t".to_string()))
+                    Ok(reader::new_symbol("t"))
                 } else {
                     Ok(LispVal::Nil)
                 }
             } else {
-                Err(LispError::Generic("= requires numeric arguments".to_string()))
+                Err(LispError::Generic(
+                    "= requires numeric arguments".to_string(),
+                ))
             }
         }
         _ => Err(LispError::Generic("Not a logical operation".to_string())),
     }
 }
 
-fn apply_hashtable_op(op: &BuiltinFunc, args: &[LispVal], env: &mut Environment) -> Result<LispVal, LispError> {
+fn apply_hashtable_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &mut Environment,
+) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::MakeHashTable => {
             if !args.is_empty() {
-                return Err(LispError::Generic("make-hash-table takes no arguments".to_string()));
+                return Err(LispError::Generic(
+                    "make-hash-table takes no arguments".to_string(),
+                ));
             }
-            Ok(LispVal::HashTable(Rc::new(RefCell::new(HashMap::new()))))
+            Ok(LispVal::HashTable(Arc::new(Mutex::new(HashMap::new()))))
         }
         BuiltinFunc::Set => {
             if args.len() != 3 {
-                return Err(LispError::Generic("set! takes exactly three arguments".to_string()));
+                return Err(LispError::Generic(
+                    "set! takes exactly three arguments".to_string(),
+                ));
             }
             if let LispVal::HashTable(h) = &args[0] {
                 let key = args[1].clone();
                 let val = args[2].clone();
-                h.borrow_mut().insert(key, val);
-                Ok(LispVal::Symbol("t".to_string()))
+                h.lock().insert(key, val);
+                Ok(reader::new_symbol("t"))
             } else {
-                Err(LispError::Generic("set! requires a hash table as its first argument".to_string()))
+                Err(LispError::Generic(
+                    "set! requires a hash table as its first argument".to_string(),
+                ))
             }
         }
         BuiltinFunc::Get => {
             if args.len() != 2 {
-                return Err(LispError::Generic("get takes exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "get takes exactly two arguments".to_string(),
+                ));
             }
             if let LispVal::HashTable(h) = &args[0] {
                 let key = &args[1];
-                if let Some(val) = h.borrow().get(key) {
+                if let Some(val) = h.lock().get(key) {
                     Ok(val.clone())
                 } else {
                     Ok(LispVal::Nil)
                 }
             } else {
-                Err(LispError::Generic("get requires a hash table as its first argument".to_string()))
+                Err(LispError::Generic(
+                    "get requires a hash table as its first argument".to_string(),
+                ))
             }
         }
         BuiltinFunc::DeleteKey => {
             if args.len() != 2 {
-                return Err(LispError::Generic("delete-key! takes exactly two arguments".to_string()));
+                return Err(LispError::Generic(
+                    "delete-key! takes exactly two arguments".to_string(),
+                ));
             }
             if let LispVal::HashTable(h) = &args[0] {
                 let key = &args[1];
-                h.borrow_mut().remove(key);
-                Ok(LispVal::Symbol("t".to_string()))
+                h.lock().remove(key);
+                Ok(reader::new_symbol("t"))
             } else {
-                Err(LispError::Generic("delete-key! requires a hash table as its first argument".to_string()))
+                Err(LispError::Generic(
+                    "delete-key! requires a hash table as its first argument".to_string(),
+                ))
             }
         }
         BuiltinFunc::CurrentEnvironment => {
             if !args.is_empty() {
-                return Err(LispError::Generic("current-environment takes no arguments".to_string()));
+                return Err(LispError::Generic(
+                    "current-environment takes no arguments".to_string(),
+                ));
             }
             let bindings = env.all_bindings();
             let mut hash_map = HashMap::new();
             for (k, v) in bindings {
-                hash_map.insert(LispVal::Symbol(k), v);
+                hash_map.insert(reader::new_symbol(&k), v);
             }
-            Ok(LispVal::HashTable(Rc::new(RefCell::new(hash_map))))
+            Ok(LispVal::HashTable(Arc::new(Mutex::new(hash_map))))
         }
         BuiltinFunc::Keys => {
             if args.len() != 1 {
-                return Err(LispError::Generic("keys requires exactly one argument".to_string()));
+                return Err(LispError::Generic(
+                    "keys requires exactly one argument".to_string(),
+                ));
             }
             if let LispVal::HashTable(h) = &args[0] {
-                let keys = h.borrow().keys().cloned().collect();
+                let keys = h.lock().keys().cloned().collect();
                 Ok(vec_to_list(keys))
             } else {
-                Err(LispError::Generic("keys requires a hash table as its first argument".to_string()))
+                Err(LispError::Generic(
+                    "keys requires a hash table as its first argument".to_string(),
+                ))
             }
         }
         _ => Err(LispError::Generic("Not a hash table operation".to_string())),
     }
 }
 
+fn apply_plist_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::PutP => {
+            if args.len() != 3 {
+                return Err(LispError::Generic(
+                    "put-p takes exactly three arguments".to_string(),
+                ));
+            }
+            let sym = match &args[0] {
+                LispVal::Symbol(s) => s,
+                _ => {
+                    return Err(LispError::Generic(
+                        "put-p requires a symbol as its first argument".to_string(),
+                    ));
+                }
+            };
+            let prop = match &args[1] {
+                LispVal::Symbol(p) => p,
+                _ => {
+                    return Err(LispError::Generic(
+                        "put-p requires a symbol as its second argument".to_string(),
+                    ));
+                }
+            };
+            let val = args[2].clone();
+            sym.plist.lock().insert(prop.name.clone(), val.clone());
+            Ok(val)
+        }
+        BuiltinFunc::GetP => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "get-p takes exactly two arguments".to_string(),
+                ));
+            }
+            let sym = match &args[0] {
+                LispVal::Symbol(s) => s,
+                _ => {
+                    return Err(LispError::Generic(
+                        "get-p requires a symbol as its first argument".to_string(),
+                    ));
+                }
+            };
+            let prop = match &args[1] {
+                LispVal::Symbol(p) => p,
+                _ => {
+                    return Err(LispError::Generic(
+                        "get-p requires a symbol as its second argument".to_string(),
+                    ));
+                }
+            };
+            match sym.plist.lock().get(&prop.name) {
+                Some(val) => Ok(val.clone()),
+                None => Ok(LispVal::Nil),
+            }
+        }
+        _ => Err(LispError::Generic(
+            "Not a property list operation".to_string(),
+        )),
+    }
+}
 
 fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<LispVal, LispError> {
     match func {
         LispVal::Builtin(builtin) => match builtin {
-            BuiltinFunc::Plus | BuiltinFunc::Minus | BuiltinFunc::Multiply | BuiltinFunc::Divide => {
-                apply_math_op(builtin, args)
-            }
-            BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => {
-                apply_list_op(builtin, args)
-            }
-            BuiltinFunc::Concat | BuiltinFunc::Index => {
-                apply_string_op(builtin, args)
-            }
+            BuiltinFunc::Plus
+            | BuiltinFunc::Minus
+            | BuiltinFunc::Multiply
+            | BuiltinFunc::Divide => apply_math_op(builtin, args),
+            BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
+            BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
             BuiltinFunc::Eval => {
                 if args.len() != 1 {
-                    return Err(LispError::Generic("eval takes exactly one argument".to_string()));
+                    return Err(LispError::Generic(
+                        "eval takes exactly one argument".to_string(),
+                    ));
                 }
                 eval(&args[0], env)
             }
             BuiltinFunc::Eq | BuiltinFunc::Not | BuiltinFunc::NumericEquals => {
                 apply_logical_op(builtin, args)
             }
-            BuiltinFunc::MakeHashTable | BuiltinFunc::Get | BuiltinFunc::Set | BuiltinFunc::DeleteKey | BuiltinFunc::CurrentEnvironment | BuiltinFunc::Keys => {
-                apply_hashtable_op(builtin, args, env)
-            }
+            BuiltinFunc::MakeHashTable
+            | BuiltinFunc::Get
+            | BuiltinFunc::Set
+            | BuiltinFunc::DeleteKey
+            | BuiltinFunc::CurrentEnvironment
+            | BuiltinFunc::Keys => apply_hashtable_op(builtin, args, env),
             BuiltinFunc::Atom => {
                 if args.len() != 1 {
-                    return Err(LispError::Generic("atom requires exactly one argument".to_string()));
+                    return Err(LispError::Generic(
+                        "atom requires exactly one argument".to_string(),
+                    ));
                 }
                 match &args[0] {
                     LispVal::Cons { .. } => Ok(LispVal::Nil),
-                    _ => Ok(LispVal::Symbol("t".to_string())),
+                    _ => Ok(reader::new_symbol("t")),
                 }
             }
+            BuiltinFunc::GetP | BuiltinFunc::PutP => apply_plist_op(builtin, args),
         },
         LispVal::Lambda(lambda) => {
             if lambda.params.len() != args.len() {
@@ -314,7 +429,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             new_env.pop_scope();
             result
         }
-        _ => Err(LispError::Generic(format!("Not a function: {:?}", func))),
+        _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
     }
 }
 
@@ -324,7 +439,7 @@ fn make_lambda(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Li
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.clone())
+                Ok(s.name.clone())
             } else {
                 Err(LispError::Generic(
                     "lambda parameters must be symbols".to_string(),
@@ -346,7 +461,7 @@ fn make_fexpr(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.clone())
+                Ok(s.name.clone())
             } else {
                 Err(LispError::Generic(
                     "fexpr parameters must be symbols".to_string(),
@@ -368,7 +483,7 @@ fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.clone())
+                Ok(s.name.clone())
             } else {
                 Err(LispError::Generic(
                     "macro parameters must be symbols".to_string(),
@@ -384,7 +499,11 @@ fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
     }))
 }
 
-fn expand_macro(m: &crate::Macro, args: &[LispVal], _env: &mut Environment) -> Result<LispVal, LispError> {
+fn expand_macro(
+    m: &crate::Macro,
+    args: &[LispVal],
+    _env: &mut Environment,
+) -> Result<LispVal, LispError> {
     if m.params.len() != args.len() {
         return Err(LispError::Generic(format!(
             "macro expected {} arguments, got {}",
@@ -407,32 +526,55 @@ fn expand_macro(m: &crate::Macro, args: &[LispVal], _env: &mut Environment) -> R
 pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
-        LispVal::Symbol(s) => env.get(s).ok_or_else(|| LispError::Generic(format!("Unbound variable: {s}"))),
-        LispVal::Number(_) | LispVal::String(_) | LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) | LispVal::Macro(_) | LispVal::HashTable(_) => Ok(val.clone()),
+        LispVal::Symbol(s) => env
+            .get(&s.name)
+            .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.name))),
+        LispVal::Number(_)
+        | LispVal::String(_)
+        | LispVal::Builtin(_)
+        | LispVal::Lambda(_)
+        | LispVal::Fexpr(_)
+        | LispVal::Macro(_)
+        | LispVal::HashTable(_) => Ok(val.clone()),
 
-        LispVal::Cons { car: first, cdr: rest } => {
+        LispVal::Cons {
+            car: first,
+            cdr: rest,
+        } => {
             if let LispVal::Symbol(s) = &**first {
-                match s.as_str() {
+                match s.name.as_str() {
                     "quote" => {
                         if let LispVal::Cons { car, cdr } = &**rest {
                             if **cdr == LispVal::Nil {
                                 return Ok(*car.clone());
                             }
                         }
-                        Err(LispError::Generic("quote takes exactly one argument".to_string()))
+                        Err(LispError::Generic(
+                            "quote takes exactly one argument".to_string(),
+                        ))
                     }
                     "quasiquote" => {
                         if let LispVal::Cons { car, cdr } = &**rest {
-                             if **cdr == LispVal::Nil {
+                            if **cdr == LispVal::Nil {
                                 return quasiquote_eval(car, env);
                             }
                         }
-                        Err(LispError::Generic("quasiquote takes exactly one argument".to_string()))
+                        Err(LispError::Generic(
+                            "quasiquote takes exactly one argument".to_string(),
+                        ))
                     }
                     "cond" => {
                         let mut current_clause = &**rest;
-                        while let LispVal::Cons{ car: clause, cdr: next_clauses } = current_clause {
-                             if let LispVal::Cons{ car: predicate, cdr: expressions } = &**clause {
+                        while let LispVal::Cons {
+                            car: clause,
+                            cdr: next_clauses,
+                        } = current_clause
+                        {
+                            if let LispVal::Cons {
+                                car: predicate,
+                                cdr: expressions,
+                            } = &**clause
+                            {
                                 let predicate_result = eval(predicate, env)?;
                                 if is_truthy(&predicate_result) {
                                     if **expressions == LispVal::Nil {
@@ -440,7 +582,11 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                     } else {
                                         let mut last_val = LispVal::Nil;
                                         let mut current_expr = &**expressions;
-                                        while let LispVal::Cons{ car: expr, cdr: next_exprs } = current_expr {
+                                        while let LispVal::Cons {
+                                            car: expr,
+                                            cdr: next_exprs,
+                                        } = current_expr
+                                        {
                                             last_val = eval(expr, env)?;
                                             current_expr = next_exprs;
                                         }
@@ -448,7 +594,9 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                     }
                                 }
                             } else {
-                                return Err(LispError::Generic("cond clauses must be lists".to_string()));
+                                return Err(LispError::Generic(
+                                    "cond clauses must be lists".to_string(),
+                                ));
                             }
                             current_clause = next_clauses;
                         }
@@ -457,7 +605,9 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                     "if" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 3 {
-                            return Err(LispError::Generic("if takes exactly three arguments".to_string()));
+                            return Err(LispError::Generic(
+                                "if takes exactly three arguments".to_string(),
+                            ));
                         }
                         let cond_result = eval(&args[0], env)?;
                         if is_truthy(&cond_result) {
@@ -467,9 +617,9 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                     }
                     "and" => {
-                        let mut last_val = LispVal::Symbol("t".to_string());
+                        let mut last_val = reader::new_symbol("t");
                         let mut current = &**rest;
-                        while let LispVal::Cons{ car, cdr } = current {
+                        while let LispVal::Cons { car, cdr } = current {
                             last_val = eval(car, env)?;
                             if !is_truthy(&last_val) {
                                 return Ok(LispVal::Nil);
@@ -480,7 +630,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                     }
                     "or" => {
                         let mut current = &**rest;
-                        while let LispVal::Cons{ car, cdr } = current {
+                        while let LispVal::Cons { car, cdr } = current {
                             let val = eval(car, env)?;
                             if is_truthy(&val) {
                                 return Ok(val);
@@ -492,47 +642,68 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                     "def" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
-                            return Err(LispError::Generic("def takes exactly two arguments".to_string()));
+                            return Err(LispError::Generic(
+                                "def takes exactly two arguments".to_string(),
+                            ));
                         }
                         if let LispVal::Symbol(s) = &args[0] {
                             let val = eval(&args[1], env)?;
-                            env.set(s.clone(), val);
+                            env.set(s.name.clone(), val);
                             Ok(LispVal::Symbol(s.clone()))
                         } else {
-                            Err(LispError::Generic("def requires a symbol as its first argument".to_string()))
+                            Err(LispError::Generic(
+                                "def requires a symbol as its first argument".to_string(),
+                            ))
                         }
                     }
                     "lambda" => {
-                        if let LispVal::Cons { car: params, cdr: body_list } = &**rest {
-                            if let LispVal::Cons { car: body, cdr: rest_body } = &**body_list {
+                        if let LispVal::Cons {
+                            car: params,
+                            cdr: body_list,
+                        } = &**rest
+                        {
+                            if let LispVal::Cons {
+                                car: body,
+                                cdr: rest_body,
+                            } = &**body_list
+                            {
                                 if **rest_body == LispVal::Nil {
                                     return make_lambda(params, body, env);
                                 }
                             }
                         }
-                        Err(LispError::Generic("lambda takes exactly two arguments".to_string()))
+                        Err(LispError::Generic(
+                            "lambda takes exactly two arguments".to_string(),
+                        ))
                     }
                     "defexpr" | "defmacro" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 3 {
-                            return Err(LispError::Generic(format!("{} takes exactly three arguments", s).to_string()));
+                            return Err(LispError::Generic(
+                                format!("{} takes exactly three arguments", s.name).to_string(),
+                            ));
                         }
-                        if let LispVal::Symbol(name_str) = &args[0] {
-                            let func = if s == "defexpr" {
+                        if let LispVal::Symbol(name_sym) = &args[0] {
+                            let func = if s.name == "defexpr" {
                                 make_fexpr(&args[1], &args[2], env)?
                             } else {
                                 make_macro(&args[1], &args[2], env)?
                             };
-                            env.set(name_str.clone(), func);
-                            Ok(LispVal::Symbol(name_str.clone()))
+                            env.set(name_sym.name.clone(), func);
+                            Ok(LispVal::Symbol(name_sym.clone()))
                         } else {
-                            Err(LispError::Generic(format!("{} requires a symbol as its first argument", s).to_string()))
+                            Err(LispError::Generic(
+                                format!("{} requires a symbol as its first argument", s.name)
+                                    .to_string(),
+                            ))
                         }
                     }
                     "let" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
-                            return Err(LispError::Generic("let takes exactly two arguments".to_string()));
+                            return Err(LispError::Generic(
+                                "let takes exactly two arguments".to_string(),
+                            ));
                         }
                         let bindings_vec = list_to_vec(&args[0])?;
                         let body = &args[1];
@@ -542,7 +713,9 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         for binding in bindings_vec {
                             let pair = list_to_vec(&binding)?;
                             if pair.len() != 2 {
-                                return Err(LispError::Generic("let binding must be a pair".to_string()));
+                                return Err(LispError::Generic(
+                                    "let binding must be a pair".to_string(),
+                                ));
                             }
                             params.push(pair[0].clone());
                             arg_exprs.push(pair[1].clone());
@@ -553,7 +726,8 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         application.extend(arg_exprs);
                         eval(&vec_to_list(application), env)
                     }
-                    _ => { // Function call
+                    _ => {
+                        // Function call
                         let func = eval(first, env)?;
                         let args_list = list_to_vec(rest)?;
                         if let LispVal::Macro(m) = &func {
@@ -572,14 +746,16 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             return result;
                         }
 
-                        let eval_args: Result<Vec<LispVal>, LispError> = args_list.iter().map(|arg| eval(arg, env)).collect();
+                        let eval_args: Result<Vec<LispVal>, LispError> =
+                            args_list.iter().map(|arg| eval(arg, env)).collect();
                         apply(&func, &eval_args?, env)
                     }
                 }
             } else {
                 let func = eval(first, env)?;
                 let args_list = list_to_vec(rest)?;
-                let eval_args: Result<Vec<LispVal>, LispError> = args_list.iter().map(|arg| eval(arg, env)).collect();
+                let eval_args: Result<Vec<LispVal>, LispError> =
+                    args_list.iter().map(|arg| eval(arg, env)).collect();
                 apply(&func, &eval_args?, env)
             }
         }
@@ -589,18 +765,27 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
 fn quasiquote_eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
         if let LispVal::Symbol(s) = &**car {
-            if s == "unquote" {
-                if let LispVal::Cons { car: unquoted_val, cdr: rest } = &**cdr {
+            if s.name == "unquote" {
+                if let LispVal::Cons {
+                    car: unquoted_val,
+                    cdr: rest,
+                } = &**cdr
+                {
                     if **rest == LispVal::Nil {
                         return eval(unquoted_val, env);
                     }
                 }
-                return Err(LispError::Generic("unquote takes exactly one argument".to_string()));
+                return Err(LispError::Generic(
+                    "unquote takes exactly one argument".to_string(),
+                ));
             }
         }
         let car_eval = quasiquote_eval(car, env)?;
         let cdr_eval = quasiquote_eval(cdr, env)?;
-        Ok(LispVal::Cons { car: Box::new(car_eval), cdr: Box::new(cdr_eval) })
+        Ok(LispVal::Cons {
+            car: Box::new(car_eval),
+            cdr: Box::new(cdr_eval),
+        })
     } else {
         Ok(val.clone())
     }

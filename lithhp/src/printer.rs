@@ -10,9 +10,9 @@ fn print_list_contents(cdr: &LispVal) -> String {
 
 pub fn print(val: &LispVal) -> String {
     match val {
-        LispVal::Symbol(s) => s.clone(),
+        LispVal::Symbol(s) => s.name.clone(),
         LispVal::Number(n) => n.to_string(),
-        LispVal::String(s) => format!("\"{}\"", s),
+        LispVal::String(s) => format!("\"{s}\""),
         LispVal::Builtin(_) => "<builtin>".to_string(),
         LispVal::Lambda(_) => "<lambda>".to_string(),
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
@@ -28,13 +28,23 @@ pub fn print(val: &LispVal) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Symbol;
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
-        LispVal::Cons { car: Box::new(car), cdr: Box::new(cdr) }
+        LispVal::Cons {
+            car: Box::new(car),
+            cdr: Box::new(cdr),
+        }
     }
 
     fn symbol(s: &str) -> LispVal {
-        LispVal::Symbol(s.to_string())
+        LispVal::Symbol(Arc::new(Symbol {
+            name: s.to_string(),
+            plist: Mutex::new(HashMap::new()),
+        }))
     }
 
     fn number(n: i64) -> LispVal {
@@ -49,9 +59,9 @@ mod tests {
                 number(10),
                 cons(
                     cons(symbol("*"), cons(number(5), cons(number(2), LispVal::Nil))),
-                    LispVal::Nil
-                )
-            )
+                    LispVal::Nil,
+                ),
+            ),
         );
         assert_eq!(print(&list), "(+ 10 (* 5 2))");
     }
