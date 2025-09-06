@@ -51,35 +51,60 @@ fn parse_string(input: &str) -> IResult<&str, LispVal> {
     )(input)
 }
 
+fn parse_list_contents(input: &str) -> IResult<&str, LispVal> {
+    let (input, exprs) = many0(preceded(ws, parse_expr))(input)?;
+    let (input, tail) = opt(preceded(preceded(ws, char('.')), preceded(ws, parse_expr)))(input)?;
+
+    let end = tail.unwrap_or(LispVal::Nil);
+    Ok((input, exprs.into_iter().rev().fold(end, |cdr, car| {
+        LispVal::Cons { car: Box::new(car), cdr: Box::new(cdr) }
+    })))
+}
+
 fn parse_list(input: &str) -> IResult<&str, LispVal> {
-    map(
-        delimited(
-            char('('),
-            many0(preceded(ws, parse_expr)),
-            preceded(ws, char(')')),
-        ),
-        LispVal::List,
+    delimited(
+        char('('),
+        parse_list_contents,
+        preceded(ws, char(')'))
     )(input)
 }
 
 fn parse_quoted(input: &str) -> IResult<&str, LispVal> {
     map(
         preceded(char('\''), parse_expr),
-        |expr| LispVal::List(vec![LispVal::Symbol("quote".to_string()), expr])
+        |expr| LispVal::Cons {
+            car: Box::new(LispVal::Symbol("quote".to_string())),
+            cdr: Box::new(LispVal::Cons {
+                car: Box::new(expr),
+                cdr: Box::new(LispVal::Nil),
+            }),
+        }
     )(input)
 }
 
 fn parse_quasiquoted(input: &str) -> IResult<&str, LispVal> {
     map(
         preceded(char('`'), parse_expr),
-        |expr| LispVal::List(vec![LispVal::Symbol("quasiquote".to_string()), expr])
+        |expr| LispVal::Cons {
+            car: Box::new(LispVal::Symbol("quasiquote".to_string())),
+            cdr: Box::new(LispVal::Cons {
+                car: Box::new(expr),
+                cdr: Box::new(LispVal::Nil),
+            }),
+        }
     )(input)
 }
 
 fn parse_unquoted(input: &str) -> IResult<&str, LispVal> {
     map(
         preceded(char(','), parse_expr),
-        |expr| LispVal::List(vec![LispVal::Symbol("unquote".to_string()), expr])
+        |expr| LispVal::Cons {
+            car: Box::new(LispVal::Symbol("unquote".to_string())),
+            cdr: Box::new(LispVal::Cons {
+                car: Box::new(expr),
+                cdr: Box::new(LispVal::Nil),
+            }),
+        }
     )(input)
 }
 
@@ -114,22 +139,28 @@ pub fn read_all(input: &str) -> Result<Vec<LispVal>, String> {
 mod tests {
     use super::*;
 
+    fn cons(car: LispVal, cdr: LispVal) -> LispVal {
+        LispVal::Cons { car: Box::new(car), cdr: Box::new(cdr) }
+    }
+
+    fn symbol(s: &str) -> LispVal {
+        LispVal::Symbol(s.to_string())
+    }
+
+    fn number(n: i64) -> LispVal {
+        LispVal::Number(n)
+    }
+
     #[test]
     fn test_parse_number() {
-        assert_eq!(parse_number("123"), Ok(("", LispVal::Number(123))));
-        assert_eq!(parse_number("-456"), Ok(("", LispVal::Number(-456))));
+        assert_eq!(parse_number("123"), Ok(("", number(123))));
+        assert_eq!(parse_number("-456"), Ok(("", number(-456))));
     }
 
     #[test]
     fn test_parse_symbol() {
-        assert_eq!(
-            parse_symbol("abc"),
-            Ok(("", LispVal::Symbol("abc".to_string())))
-        );
-        assert_eq!(
-            parse_symbol("+"),
-            Ok(("", LispVal::Symbol("+".to_string())))
-        );
+        assert_eq!(parse_symbol("abc"), Ok(("", symbol("abc"))));
+        assert_eq!(parse_symbol("+"), Ok(("", symbol("+"))));
     }
 
     #[test]
@@ -146,11 +177,7 @@ mod tests {
             parse_list("(+ 1 2)"),
             Ok((
                 "",
-                LispVal::List(vec![
-                    LispVal::Symbol("+".to_string()),
-                    LispVal::Number(1),
-                    LispVal::Number(2)
-                ])
+                cons(symbol("+"), cons(number(1), cons(number(2), LispVal::Nil)))
             ))
         );
     }
@@ -160,11 +187,7 @@ mod tests {
         let result = read("(+ 10 20)");
         assert_eq!(
             result,
-            Ok(LispVal::List(vec![
-                LispVal::Symbol("+".to_string()),
-                LispVal::Number(10),
-                LispVal::Number(20)
-            ]))
+            Ok(cons(symbol("+"), cons(number(10), cons(number(20), LispVal::Nil))))
         );
     }
 
@@ -173,16 +196,29 @@ mod tests {
         let result = read("(+ 10 (* 5 2))");
         assert_eq!(
             result,
-            Ok(LispVal::List(vec![
-                LispVal::Symbol("+".to_string()),
-                LispVal::Number(10),
-                LispVal::List(vec![
-                    LispVal::Symbol("*".to_string()),
-                    LispVal::Number(5),
-                    LispVal::Number(2)
-                ])
-            ]))
+            Ok(cons(
+                symbol("+"),
+                cons(
+                    number(10),
+                    cons(
+                        cons(symbol("*"), cons(number(5), cons(number(2), LispVal::Nil))),
+                        LispVal::Nil
+                    )
+                )
+            ))
         );
+    }
+
+    #[test]
+    fn test_read_dotted_list() {
+        let result = read("(a . b)");
+        assert_eq!(result, Ok(cons(symbol("a"), symbol("b"))));
+    }
+
+    #[test]
+    fn test_read_complex_dotted_list() {
+        let result = read("(a b . c)");
+        assert_eq!(result, Ok(cons(symbol("a"), cons(symbol("b"), symbol("c")))));
     }
 
     #[test]
@@ -193,11 +229,7 @@ mod tests {
         ");
         assert_eq!(
             result,
-            Ok(LispVal::List(vec![
-                LispVal::Symbol("+".to_string()),
-                LispVal::Number(1),
-                LispVal::Number(2)
-            ]))
+            Ok(cons(symbol("+"), cons(number(1), cons(number(2), LispVal::Nil))))
         );
     }
 
@@ -206,10 +238,7 @@ mod tests {
         let result = read("'a");
         assert_eq!(
             result,
-            Ok(LispVal::List(vec![
-                LispVal::Symbol("quote".to_string()),
-                LispVal::Symbol("a".to_string())
-            ]))
+            Ok(cons(symbol("quote"), cons(symbol("a"), LispVal::Nil)))
         );
     }
 
@@ -218,16 +247,19 @@ mod tests {
         let result = read("`(a ,b)");
         assert_eq!(
             result,
-            Ok(LispVal::List(vec![
-                LispVal::Symbol("quasiquote".to_string()),
-                LispVal::List(vec![
-                    LispVal::Symbol("a".to_string()),
-                    LispVal::List(vec![
-                        LispVal::Symbol("unquote".to_string()),
-                        LispVal::Symbol("b".to_string())
-                    ])
-                ])
-            ]))
+            Ok(cons(
+                symbol("quasiquote"),
+                cons(
+                    cons(
+                        symbol("a"),
+                        cons(
+                            cons(symbol("unquote"), cons(symbol("b"), LispVal::Nil)),
+                            LispVal::Nil
+                        )
+                    ),
+                    LispVal::Nil
+                )
+            ))
         );
     }
 }

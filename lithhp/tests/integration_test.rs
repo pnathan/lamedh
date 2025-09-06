@@ -1,6 +1,6 @@
 use lithhp::{environment::Environment, eval_line};
 
-use lithhp::reader;
+use lithhp::{reader, evaluator};
 
 fn env_with_prologue() -> Environment {
     let mut env = Environment::new_with_builtins();
@@ -10,7 +10,7 @@ fn env_with_prologue() -> Environment {
     "#;
     let expressions = reader::read_all(prologue).unwrap();
     for expr in expressions {
-        eval_line(&lithhp::printer::print(&expr), &mut env);
+        evaluator::eval(&expr, &mut env).unwrap();
     }
     env
 }
@@ -111,4 +111,11 @@ fn test_null() {
     assert_eq!(eval_line("(null '())", &mut env), "t");
     assert_eq!(eval_line("(null 1)", &mut env), "()");
     assert_eq!(eval_line("(null t)", &mut env), "()");
+}
+
+#[test]
+fn test_cdr_of_dotted_list() {
+    let mut env = env_with_prologue();
+    let output = eval_line("(cdr (cons 1 (cons 2 3)))", &mut env);
+    assert_eq!(output, "(2 . 3)");
 }
