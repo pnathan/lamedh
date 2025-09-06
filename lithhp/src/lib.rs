@@ -1,15 +1,15 @@
-pub mod reader;
-pub mod printer;
 pub mod environment;
 pub mod evaluator;
+pub mod printer;
+pub mod reader;
 
-use std::io::{BufRead, Write};
 use environment::Environment;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, Write};
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LispError {
@@ -19,7 +19,7 @@ pub enum LispError {
 impl fmt::Display for LispError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            LispError::Generic(s) => write!(f, "{}", s),
+            LispError::Generic(s) => write!(f, "{s}"),
         }
     }
 }
@@ -78,7 +78,10 @@ pub enum LispVal {
     Lambda(Lambda),
     Fexpr(Fexpr),
     Macro(Macro),
-    Cons { car: Box<LispVal>, cdr: Box<LispVal> },
+    Cons {
+        car: Box<LispVal>,
+        cdr: Box<LispVal>,
+    },
     Nil,
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
 }
@@ -89,7 +92,16 @@ impl PartialEq for LispVal {
             (LispVal::Symbol(a), LispVal::Symbol(b)) => a == b,
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
             (LispVal::String(a), LispVal::String(b)) => a == b,
-            (LispVal::Cons{car: car1, cdr: cdr1}, LispVal::Cons{car: car2, cdr: cdr2}) => car1 == car2 && cdr1 == cdr2,
+            (
+                LispVal::Cons {
+                    car: car1,
+                    cdr: cdr1,
+                },
+                LispVal::Cons {
+                    car: car2,
+                    cdr: cdr2,
+                },
+            ) => car1 == car2 && cdr1 == cdr2,
             (LispVal::Nil, LispVal::Nil) => true,
             (LispVal::HashTable(a), LispVal::HashTable(b)) => Rc::ptr_eq(a, b),
             (LispVal::Builtin(a), LispVal::Builtin(b)) => a == b,
@@ -108,7 +120,7 @@ impl Hash for LispVal {
             LispVal::Symbol(s) => s.hash(state),
             LispVal::Number(n) => n.hash(state),
             LispVal::String(s) => s.hash(state),
-            LispVal::Cons{car, cdr} => {
+            LispVal::Cons { car, cdr } => {
                 car.hash(state);
                 cdr.hash(state);
             }
@@ -124,12 +136,11 @@ impl Hash for LispVal {
     }
 }
 
-
 pub fn eval_line(line: &str, env: &mut Environment) -> String {
     match reader::read(line) {
         Ok(lisp_val) => match evaluator::eval(&lisp_val, env) {
             Ok(result) => printer::print(&result),
-            Err(e) => format!("Error: {:?}", e),
+            Err(e) => format!("Error: {e:?}"),
         },
         Err(e) => format!("Error: {e}"),
     }
@@ -139,9 +150,9 @@ use std::fs;
 
 pub fn load_file(path: &str, env: &mut Environment) -> Result<(), LispError> {
     let content = fs::read_to_string(path)
-        .map_err(|e| LispError::Generic(format!("Failed to read file {}: {}", path, e)))?;
+        .map_err(|e| LispError::Generic(format!("Failed to read file {path}: {e}")))?;
     let expressions = reader::read_all(&content)
-        .map_err(|e| LispError::Generic(format!("Failed to parse file {}: {}", path, e)))?;
+        .map_err(|e| LispError::Generic(format!("Failed to parse file {path}: {e}")))?;
 
     for expr in expressions {
         evaluator::eval(&expr, env)?;
@@ -149,13 +160,17 @@ pub fn load_file(path: &str, env: &mut Environment) -> Result<(), LispError> {
     Ok(())
 }
 
-pub fn repl_loop<R: BufRead, W: Write>(in_stream: &mut R, out_stream: &mut W) -> std::io::Result<()> {
+pub fn repl_loop<R: BufRead, W: Write>(
+    in_stream: &mut R,
+    out_stream: &mut W,
+) -> std::io::Result<()> {
     let mut env = Environment::new_with_builtins();
     loop {
         let mut line = String::new();
         let bytes_read = in_stream.read_line(&mut line)?;
 
-        if bytes_read == 0 { // End of stream
+        if bytes_read == 0 {
+            // End of stream
             break;
         }
 

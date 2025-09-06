@@ -1,9 +1,11 @@
 use crate::{BuiltinFunc, LispVal};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
-    scopes: Vec<HashMap<String, LispVal>>,
+    scopes: Rc<RefCell<Vec<HashMap<String, LispVal>>>>,
 }
 
 impl Default for Environment {
@@ -15,7 +17,7 @@ impl Default for Environment {
 impl Environment {
     pub fn new() -> Self {
         Environment {
-            scopes: vec![HashMap::new()],
+            scopes: Rc::new(RefCell::new(vec![HashMap::new()])),
         }
     }
 
@@ -35,20 +37,32 @@ impl Environment {
         env.set("index".to_string(), LispVal::Builtin(BuiltinFunc::Index));
         env.set("eval".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
         env.set("eq".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
-        env.set("=".to_string(), LispVal::Builtin(BuiltinFunc::NumericEquals));
+        env.set(
+            "=".to_string(),
+            LispVal::Builtin(BuiltinFunc::NumericEquals),
+        );
         env.set("not".to_string(), LispVal::Builtin(BuiltinFunc::Not));
-        env.set("make-hash-table".to_string(), LispVal::Builtin(BuiltinFunc::MakeHashTable));
+        env.set(
+            "make-hash-table".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeHashTable),
+        );
         env.set("get".to_string(), LispVal::Builtin(BuiltinFunc::Get));
         env.set("set!".to_string(), LispVal::Builtin(BuiltinFunc::Set));
-        env.set("delete-key!".to_string(), LispVal::Builtin(BuiltinFunc::DeleteKey));
-        env.set("current-environment".to_string(), LispVal::Builtin(BuiltinFunc::CurrentEnvironment));
+        env.set(
+            "delete-key!".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeleteKey),
+        );
+        env.set(
+            "current-environment".to_string(),
+            LispVal::Builtin(BuiltinFunc::CurrentEnvironment),
+        );
         env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
         env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
         env
     }
 
     pub fn get(&self, name: &str) -> Option<LispVal> {
-        for scope in self.scopes.iter().rev() {
+        for scope in self.scopes.borrow().iter().rev() {
             if let Some(val) = scope.get(name) {
                 return Some(val.clone());
             }
@@ -58,20 +72,24 @@ impl Environment {
 
     // `set` defines a variable in the current (innermost) scope.
     pub fn set(&mut self, name: String, val: LispVal) {
-        self.scopes.last_mut().unwrap().insert(name, val);
+        self.scopes
+            .borrow_mut()
+            .last_mut()
+            .unwrap()
+            .insert(name, val);
     }
 
     pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.borrow_mut().push(HashMap::new());
     }
 
     pub fn pop_scope(&mut self) {
-        self.scopes.pop();
+        self.scopes.borrow_mut().pop();
     }
 
     pub fn all_bindings(&self) -> HashMap<String, LispVal> {
         let mut all = HashMap::new();
-        for scope in &self.scopes {
+        for scope in self.scopes.borrow().iter() {
             all.extend(scope.clone());
         }
         all

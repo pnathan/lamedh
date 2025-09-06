@@ -1,14 +1,11 @@
 use lithhp::{environment::Environment, eval_line};
 
-use lithhp::{reader, evaluator};
+use lithhp::{evaluator, reader};
 
 fn env_with_prologue() -> Environment {
     let mut env = Environment::new_with_builtins();
-    let prologue = r#"
-        (defmacro defun (name params body) `(def ,name (lambda ,params ,body)))
-        (defun null (x) (eq x nil))
-    "#;
-    let expressions = reader::read_all(prologue).unwrap();
+    let prologue = std::fs::read_to_string("prologue.lisp").unwrap();
+    let expressions = reader::read_all(&prologue).unwrap();
     for expr in expressions {
         evaluator::eval(&expr, &mut env).unwrap();
     }
@@ -118,4 +115,28 @@ fn test_cdr_of_dotted_list() {
     let mut env = env_with_prologue();
     let output = eval_line("(cdr (cons 1 (cons 2 3)))", &mut env);
     assert_eq!(output, "(2 . 3)");
+}
+
+#[test]
+fn test_pairlis() {
+    let mut env = env_with_prologue();
+    // Test with equal length lists
+    let output1 = eval_line("(pairlis '(a b c) '(1 2 3))", &mut env);
+    assert_eq!(output1, "((a . 1) (b . 2) (c . 3))");
+
+    // Test with keys list shorter
+    let output2 = eval_line("(pairlis '(a b) '(1 2 3))", &mut env);
+    assert_eq!(output2, "((a . 1) (b . 2))");
+
+    // Test with values list shorter
+    let output3 = eval_line("(pairlis '(a b c) '(1 2))", &mut env);
+    assert_eq!(output3, "((a . 1) (b . 2))");
+
+    // Test with one list empty
+    let output4 = eval_line("(pairlis '() '(1 2 3))", &mut env);
+    assert_eq!(output4, "()");
+
+    // Test with both lists empty
+    let output5 = eval_line("(pairlis '() '())", &mut env);
+    assert_eq!(output5, "()");
 }
