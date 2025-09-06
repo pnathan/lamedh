@@ -1,4 +1,7 @@
 use crate::{environment::Environment, BuiltinFunc, LispError, LispVal};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 fn is_truthy(val: &LispVal) -> bool {
     match val {
@@ -159,6 +162,70 @@ fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
     }
 }
 
+fn apply_hashtable_op(op: &BuiltinFunc, args: &[LispVal], env: &mut Environment) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::MakeHashTable => {
+            if !args.is_empty() {
+                return Err(LispError::Generic("make-hash-table takes no arguments".to_string()));
+            }
+            Ok(LispVal::HashTable(Rc::new(RefCell::new(HashMap::new()))))
+        }
+        BuiltinFunc::Set => {
+            if args.len() != 3 {
+                return Err(LispError::Generic("set! takes exactly three arguments".to_string()));
+            }
+            if let LispVal::HashTable(h) = &args[0] {
+                let key = args[1].clone();
+                let val = args[2].clone();
+                h.borrow_mut().insert(key, val);
+                Ok(LispVal::Symbol("t".to_string()))
+            } else {
+                Err(LispError::Generic("set! requires a hash table as its first argument".to_string()))
+            }
+        }
+        BuiltinFunc::Get => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("get takes exactly two arguments".to_string()));
+            }
+            if let LispVal::HashTable(h) = &args[0] {
+                let key = &args[1];
+                if let Some(val) = h.borrow().get(key) {
+                    Ok(val.clone())
+                } else {
+                    Ok(LispVal::List(vec![])) // nil
+                }
+            } else {
+                Err(LispError::Generic("get requires a hash table as its first argument".to_string()))
+            }
+        }
+        BuiltinFunc::DeleteKey => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("delete-key! takes exactly two arguments".to_string()));
+            }
+            if let LispVal::HashTable(h) = &args[0] {
+                let key = &args[1];
+                h.borrow_mut().remove(key);
+                Ok(LispVal::Symbol("t".to_string()))
+            } else {
+                Err(LispError::Generic("delete-key! requires a hash table as its first argument".to_string()))
+            }
+        }
+        BuiltinFunc::CurrentEnvironment => {
+            if !args.is_empty() {
+                return Err(LispError::Generic("current-environment takes no arguments".to_string()));
+            }
+            let bindings = env.all_bindings();
+            let mut hash_map = HashMap::new();
+            for (k, v) in bindings {
+                hash_map.insert(LispVal::Symbol(k), v);
+            }
+            Ok(LispVal::HashTable(Rc::new(RefCell::new(hash_map))))
+        }
+        _ => Err(LispError::Generic("Not a hash table operation".to_string())),
+    }
+}
+
+
 fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<LispVal, LispError> {
     match func {
         LispVal::Builtin(builtin) => match builtin {
@@ -179,6 +246,9 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             }
             BuiltinFunc::Eq | BuiltinFunc::Not => {
                 apply_logical_op(builtin, args)
+            }
+            BuiltinFunc::MakeHashTable | BuiltinFunc::Get | BuiltinFunc::Set | BuiltinFunc::DeleteKey | BuiltinFunc::CurrentEnvironment => {
+                apply_hashtable_op(builtin, args, env)
             }
         },
         LispVal::Lambda(lambda) => {
@@ -266,6 +336,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
         LispVal::Builtin(_) => Ok(val.clone()),
         LispVal::Lambda(_) => Ok(val.clone()),
         LispVal::Fexpr(_) => Ok(val.clone()),
+        LispVal::HashTable(_) => Ok(val.clone()),
 
         // Symbol: look it up in the environment
         LispVal::Symbol(s) => {
@@ -627,5 +698,23 @@ mod tests {
         assert_eq!(eval_from_str("(and t nil)", &mut env), Ok(LispVal::List(vec![])));
         assert_eq!(eval_from_str("(or t nil)", &mut env), Ok(LispVal::Symbol("t".to_string())));
         assert_eq!(eval_from_str("(or nil nil)", &mut env), Ok(LispVal::List(vec![])));
+    }
+
+    #[test]
+    fn test_hashtable() {
+        let mut env = Environment::new_with_builtins();
+        eval_from_str("(def h (make-hash-table))", &mut env).unwrap();
+        eval_from_str("(set! h 'a 1)", &mut env).unwrap();
+        assert_eq!(eval_from_str("(get h 'a)", &mut env), Ok(LispVal::Number(1)));
+        eval_from_str("(delete-key! h 'a)", &mut env).unwrap();
+        assert_eq!(eval_from_str("(get h 'a)", &mut env), Ok(LispVal::List(vec![])));
+    }
+
+    #[test]
+    fn test_current_environment() {
+        let mut env = Environment::new_with_builtins();
+        eval_from_str("(def x 10)", &mut env).unwrap();
+        let result = eval_from_str("(get (current-environment) 'x)", &mut env);
+        assert_eq!(result, Ok(LispVal::Number(10)));
     }
 }

@@ -36,6 +36,11 @@ impl Environment {
         env.set("eval".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
         env.set("eq".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
         env.set("not".to_string(), LispVal::Builtin(BuiltinFunc::Not));
+        env.set("make-hash-table".to_string(), LispVal::Builtin(BuiltinFunc::MakeHashTable));
+        env.set("get".to_string(), LispVal::Builtin(BuiltinFunc::Get));
+        env.set("set!".to_string(), LispVal::Builtin(BuiltinFunc::Set));
+        env.set("delete-key!".to_string(), LispVal::Builtin(BuiltinFunc::DeleteKey));
+        env.set("current-environment".to_string(), LispVal::Builtin(BuiltinFunc::CurrentEnvironment));
         env
     }
 
@@ -59,5 +64,13 @@ impl Environment {
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    pub fn all_bindings(&self) -> HashMap<String, LispVal> {
+        let mut all = HashMap::new();
+        for scope in &self.scopes {
+            all.extend(scope.clone());
+        }
+        all
     }
 }

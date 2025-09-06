@@ -8,6 +8,7 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Builtin(_) => "<builtin>".to_string(),
         LispVal::Lambda(_) => "<lambda>".to_string(),
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
+        LispVal::HashTable(_) => "<hash-table>".to_string(),
         LispVal::List(list) => {
             if list.is_empty() {
                 "()".to_string()

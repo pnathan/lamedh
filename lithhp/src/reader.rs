@@ -24,8 +24,8 @@ fn ws(input: &str) -> IResult<&str, &str> {
 fn parse_symbol(input: &str) -> IResult<&str, LispVal> {
     map(
         recognize(pair(
-            alt((alpha1, tag("+"), tag("-"), tag("*"), tag("/"))),
-            many0(alt((alphanumeric1, tag("+"), tag("-"), tag("*"), tag("/")))),
+            alt((alpha1, tag("+"), tag("-"), tag("*"), tag("/"), tag("!"))),
+            many0(alt((alphanumeric1, tag("+"), tag("-"), tag("*"), tag("/"), tag("!")))),
         )),
         |s: &str| LispVal::Symbol(s.to_string()),
     )(input)
