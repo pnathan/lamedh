@@ -129,7 +129,7 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
             let mut list = &args[1];
             while let LispVal::Cons { car, cdr } = list {
                 if &**car == item {
-                    return Ok(list.clone());
+                    return Ok(LispVal::Symbol("t".to_string()));
                 }
                 list = cdr;
             }
