@@ -158,6 +158,20 @@ fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
                 Ok(LispVal::Symbol("t".to_string()))
             }
         }
+        BuiltinFunc::NumericEquals => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("= requires exactly two arguments".to_string()));
+            }
+            if let (LispVal::Number(a), LispVal::Number(b)) = (&args[0], &args[1]) {
+                if a == b {
+                    Ok(LispVal::Symbol("t".to_string()))
+                } else {
+                    Ok(LispVal::List(vec![])) // nil
+                }
+            } else {
+                Err(LispError::Generic("= requires numeric arguments".to_string()))
+            }
+        }
         _ => Err(LispError::Generic("Not a logical operation".to_string())),
     }
 }
@@ -255,7 +269,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                 }
                 eval(&args[0], env)
             }
-            BuiltinFunc::Eq | BuiltinFunc::Not => {
+            BuiltinFunc::Eq | BuiltinFunc::Not | BuiltinFunc::NumericEquals => {
                 apply_logical_op(builtin, args)
             }
             BuiltinFunc::MakeHashTable | BuiltinFunc::Get | BuiltinFunc::Set | BuiltinFunc::DeleteKey | BuiltinFunc::CurrentEnvironment | BuiltinFunc::Keys => {

@@ -35,6 +35,7 @@ impl Environment {
         env.set("index".to_string(), LispVal::Builtin(BuiltinFunc::Index));
         env.set("eval".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
         env.set("eq".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
+        env.set("=".to_string(), LispVal::Builtin(BuiltinFunc::NumericEquals));
         env.set("not".to_string(), LispVal::Builtin(BuiltinFunc::Not));
         env.set("make-hash-table".to_string(), LispVal::Builtin(BuiltinFunc::MakeHashTable));
         env.set("get".to_string(), LispVal::Builtin(BuiltinFunc::Get));

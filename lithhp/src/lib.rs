@@ -38,6 +38,7 @@ pub enum BuiltinFunc {
     Eval,
     Eq,
     Not,
+    NumericEquals,
     MakeHashTable,
     Get,
     Set,

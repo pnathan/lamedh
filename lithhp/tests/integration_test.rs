@@ -58,3 +58,10 @@ fn test_if_with_t_nil() {
     assert_eq!(eval_line("(if t 1 2)", &mut env), "1");
     assert_eq!(eval_line("(if nil 1 2)", &mut env), "2");
 }
+
+#[test]
+fn test_numeric_compare() {
+    let mut env = env_with_prologue();
+    assert_eq!(eval_line("(= 1 1)", &mut env), "t");
+    assert_eq!(eval_line("(= 1 2)", &mut env), "()");
+}
