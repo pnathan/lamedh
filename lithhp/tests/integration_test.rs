@@ -1,6 +1,4 @@
-use lithhp::{environment::Environment, eval_line};
-
-use lithhp::{evaluator, reader};
+use lithhp::{LispVal, environment::Environment, eval_line, evaluator, printer, reader};
 
 fn env_with_prologue() -> Environment {
     let mut env = Environment::new_with_builtins();
@@ -139,4 +137,16 @@ fn test_pairlis() {
     // Test with both lists empty
     let output5 = eval_line("(pairlis '() '())", &mut env);
     assert_eq!(output5, "()");
+}
+
+#[test]
+fn test_docstrings() {
+    let mut env = env_with_prologue();
+    let test_code = std::fs::read_to_string("tests/docstring_test.lisp").unwrap();
+    let expressions = reader::read_all(&test_code, &mut env).unwrap();
+    let mut result = LispVal::Nil;
+    for expr in expressions {
+        result = evaluator::eval(&expr, &mut env).unwrap();
+    }
+    assert_eq!(printer::print(&result), "t");
 }

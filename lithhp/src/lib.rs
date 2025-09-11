@@ -49,6 +49,7 @@ pub enum BuiltinFunc {
     Print,
     GetP,
     PutP,
+    Stringp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,11 +72,21 @@ pub struct Fexpr {
     pub env: Environment,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Macro {
     pub params: Vec<String>,
+    pub rest_param: Option<String>,
     pub body: Box<LispVal>,
     pub env: Environment,
+}
+
+impl PartialEq for Macro {
+    fn eq(&self, other: &Self) -> bool {
+        self.params == other.params
+            && self.rest_param == other.rest_param
+            && self.body == other.body
+            && self.env == other.env
+    }
 }
 
 #[derive(Debug, Clone)]

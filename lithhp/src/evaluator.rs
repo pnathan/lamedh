@@ -1,3 +1,4 @@
+#![allow(clippy::mutable_key_type)]
 use crate::{BuiltinFunc, LispError, LispVal, environment::Environment};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -359,6 +360,17 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                 Ok(LispVal::Nil)
             }
             BuiltinFunc::GetP | BuiltinFunc::PutP => apply_symbol_op(builtin, args, env),
+            BuiltinFunc::Stringp => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "stringp requires exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::String(_) => Ok(LispVal::Symbol(env.intern_symbol("t"))),
+                    _ => Ok(LispVal::Nil),
+                }
+            }
         },
         LispVal::Lambda(lambda) => {
             if lambda.params.len() != args.len() {
@@ -429,21 +441,39 @@ fn make_fexpr(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
 
 fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
-    let params_vec: Result<Vec<String>, _> = p_list
-        .iter()
-        .map(|p| {
-            if let LispVal::Symbol(s) = p {
-                Ok(s.borrow().name.clone())
+    let mut params_vec = Vec::new();
+    let mut rest_param = None;
+    let mut iter = p_list.iter();
+
+    while let Some(p) = iter.next() {
+        if let LispVal::Symbol(s) = p {
+            if s.borrow().name == "&rest" {
+                if let Some(LispVal::Symbol(rest_p_sym)) = iter.next() {
+                    if iter.next().is_some() {
+                        return Err(LispError::Generic(
+                            "Only one symbol can follow &rest".to_string(),
+                        ));
+                    }
+                    rest_param = Some(rest_p_sym.borrow().name.clone());
+                    break; // No more params after &rest
+                } else {
+                    return Err(LispError::Generic(
+                        "&rest must be followed by a symbol".to_string(),
+                    ));
+                }
             } else {
-                Err(LispError::Generic(
-                    "macro parameters must be symbols".to_string(),
-                ))
+                params_vec.push(s.borrow().name.clone());
             }
-        })
-        .collect();
+        } else {
+            return Err(LispError::Generic(
+                "macro parameters must be symbols".to_string(),
+            ));
+        }
+    }
 
     Ok(LispVal::Macro(crate::Macro {
-        params: params_vec?,
+        params: params_vec,
+        rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
     }))
@@ -454,18 +484,33 @@ fn expand_macro(
     args: &[LispVal],
     _env: &mut Environment,
 ) -> Result<LispVal, LispError> {
-    if m.params.len() != args.len() {
-        return Err(LispError::Generic(format!(
-            "macro expected {} arguments, got {}",
-            m.params.len(),
-            args.len()
-        )));
-    }
-
     let mut macro_env = m.env.clone();
     macro_env.push_scope();
-    for (param, arg) in m.params.iter().zip(args) {
-        macro_env.set(param.clone(), arg.clone());
+
+    if let Some(rest_param_name) = &m.rest_param {
+        if args.len() < m.params.len() {
+            return Err(LispError::Generic(format!(
+                "macro expected at least {} arguments, got {}",
+                m.params.len(),
+                args.len()
+            )));
+        }
+        for (param, arg) in m.params.iter().zip(args.iter()) {
+            macro_env.set(param.clone(), arg.clone());
+        }
+        let rest_args = vec_to_list(args[m.params.len()..].to_vec());
+        macro_env.set(rest_param_name.clone(), rest_args);
+    } else {
+        if m.params.len() != args.len() {
+            return Err(LispError::Generic(format!(
+                "macro expected {} arguments, got {}",
+                m.params.len(),
+                args.len()
+            )));
+        }
+        for (param, arg) in m.params.iter().zip(args) {
+            macro_env.set(param.clone(), arg.clone());
+        }
     }
 
     let expanded = eval(&m.body, &mut macro_env);
@@ -591,18 +636,26 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                     }
                     "def" => {
                         let args = list_to_vec(rest)?;
-                        if args.len() != 2 {
+                        if args.len() != 2 && args.len() != 3 {
                             return Err(LispError::Generic(
-                                "def takes exactly two arguments".to_string(),
+                                "def takes two or three arguments".to_string(),
                             ));
                         }
                         if let LispVal::Symbol(s) = &args[0] {
                             let name = s.borrow().name.clone();
-                            // For recursion, first bind the symbol to a dummy value.
-                            env.set(name.clone(), LispVal::Nil);
-                            // Then, eval the value, which can now capture itself in its closure.
                             let val = eval(&args[1], env)?;
-                            // Now set the actual value.
+                            if args.len() == 3 {
+                                if let LispVal::String(doc) = &args[2] {
+                                    s.borrow_mut().plist.insert(
+                                        "docstring".to_string(),
+                                        LispVal::String(doc.clone()),
+                                    );
+                                } else {
+                                    return Err(LispError::Generic(
+                                        "docstring must be a string".to_string(),
+                                    ));
+                                }
+                            }
                             env.set(name, val);
                             Ok(LispVal::Symbol(s.clone()))
                         } else {
@@ -617,36 +670,51 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             cdr: body_list,
                         } = &**rest
                         {
-                            if let LispVal::Cons {
-                                car: body,
-                                cdr: rest_body,
-                            } = &**body_list
-                            {
-                                if **rest_body == LispVal::Nil {
-                                    return make_lambda(params, body, env);
-                                }
-                            }
+                            let body_exprs = list_to_vec(body_list)?;
+                            let final_body = if body_exprs.len() == 1 {
+                                body_exprs[0].clone()
+                            } else {
+                                let progn_sym = LispVal::Symbol(env.intern_symbol("progn"));
+                                vec_to_list([vec![progn_sym], body_exprs].concat())
+                            };
+                            return make_lambda(params, &final_body, env);
                         }
                         Err(LispError::Generic(
-                            "lambda takes exactly two arguments".to_string(),
+                            "lambda requires params and at least one body expression".to_string(),
                         ))
                     }
                     "defexpr" | "defmacro" => {
                         let args = list_to_vec(rest)?;
-                        if args.len() != 3 {
+                        if args.len() < 3 || args.len() > 4 {
                             return Err(LispError::Generic(
-                                format!("{} takes exactly three arguments", s.borrow().name)
+                                format!("{} takes three or four arguments", s.borrow().name)
                                     .to_string(),
                             ));
                         }
-                        if let LispVal::Symbol(name_str) = &args[0] {
+                        if let LispVal::Symbol(name_sym) = &args[0] {
+                            let params = &args[1];
+                            let mut body_idx = 2;
+                            if args.len() == 4 {
+                                if let LispVal::String(doc) = &args[2] {
+                                    name_sym.borrow_mut().plist.insert(
+                                        "docstring".to_string(),
+                                        LispVal::String(doc.clone()),
+                                    );
+                                    body_idx = 3;
+                                } else {
+                                    return Err(LispError::Generic(
+                                        "docstring must be a string".to_string(),
+                                    ));
+                                }
+                            }
+                            let body = &args[body_idx];
                             let func = if s.borrow().name == "defexpr" {
-                                make_fexpr(&args[1], &args[2], env)?
+                                make_fexpr(params, body, env)?
                             } else {
-                                make_macro(&args[1], &args[2], env)?
+                                make_macro(params, body, env)?
                             };
-                            env.set(name_str.borrow().name.clone(), func);
-                            Ok(LispVal::Symbol(name_str.clone()))
+                            env.set(name_sym.borrow().name.clone(), func);
+                            Ok(LispVal::Symbol(name_sym.clone()))
                         } else {
                             Err(LispError::Generic(
                                 format!(
@@ -656,6 +724,15 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                 .to_string(),
                             ))
                         }
+                    }
+                    "progn" => {
+                        let mut last_val = LispVal::Nil;
+                        let mut current = &**rest;
+                        while let LispVal::Cons { car, cdr } = current {
+                            last_val = eval(car, env)?;
+                            current = cdr;
+                        }
+                        Ok(last_val)
                     }
                     "let" => {
                         let args = list_to_vec(rest)?;
