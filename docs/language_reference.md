@@ -74,27 +74,36 @@ Example: `(if (> 3 2) "yes" "no")` returns `"yes"`.
 
 ### `def`
 
-`(def symbol value)`
+`(def symbol value &optional docstring)`
 
-Binds the `symbol` to the `value` in the current environment.
+Binds the `symbol` to the `value` in the current environment. If the optional `docstring` is provided, it is attached to the `symbol`.
 
 Example: `(def x 10)` binds `x` to the value `10`.
+Example: `(def y 20 "This is the value of y")` binds `y` to `20` and sets its docstring.
 
 ### `lambda`
 
-`(lambda (param1 param2 ...) body)`
+`(lambda (param1 param2 ...) &rest body)`
 
-Creates an anonymous function. When called, it binds the arguments to the parameters and evaluates the `body`.
+Creates an anonymous function. When called, it binds the arguments to the parameters and evaluates the `body` expressions. If there are multiple body expressions, they are implicitly wrapped in a `progn`.
 
 Example: `((lambda (x y) (+ x y)) 10 20)` returns `30`.
+Example: `((lambda () (print "hello") "world"))` prints "hello" and returns `"world"`.
 
 ### `defun`
 
-`(defun name (param1 param2 ...) body)`
+`(defun name (param1 param2 ...) &optional docstring &rest body)`
 
-A convenience macro for defining a named function. It is equivalent to `(def name (lambda (params...) body))`.
+A convenience macro for defining a named function. It supports an optional docstring and multiple expressions in the function body.
 
 Example: `(defun add (x y) (+ x y))` defines a function `add` that takes two arguments and returns their sum.
+Example:
+```lisp
+(defun my-fun (x)
+  "This is a docstring."
+  (print x)
+  (* x x))
+```
 
 ### `let`
 
@@ -103,6 +112,14 @@ Example: `(defun add (x y) (+ x y))` defines a function `add` that takes two arg
 Creates a new lexical scope with variables `var1`, `var2`, etc. bound to the values `val1`, `val2`, etc. and then evaluates the `body` in that scope.
 
 Example: `(let ((x 10) (y 20)) (+ x y))` returns `30`.
+
+### `progn`
+
+`(progn &rest expressions)`
+
+Evaluates a sequence of `expressions` from left to right and returns the value of the last expression.
+
+Example: `(progn (print "hello") (+ 1 2))` prints "hello" and returns `3`.
 
 ### `quasiquote`, `unquote`
 
@@ -114,19 +131,19 @@ Example:
 
 ### `defexpr`
 
-`(defexpr name (param) body)`
+`(defexpr name (param) &optional docstring &rest body)`
 
-Defines a function-like form, an f-expression or "fexpr", where the arguments are not evaluated before being passed to the function. The `param` is a single symbol that will be bound to the list of unevaluated arguments.
+Defines a function-like form, an f-expression or "fexpr", where the arguments are not evaluated before being passed to the function. The `param` is a single symbol that will be bound to the list of unevaluated arguments. It supports an optional docstring.
 
 Example:
-`(defexpr my-if (args) (if (eval (car args)) (eval (cadr args)) (eval (caddr args))))`
+`(defexpr my-if (args) "A custom if-like fexpr." (if (eval (car args)) (eval (cadr args)) (eval (caddr args))))`
 `(my-if (> 1 0) "yes" "no")` returns `"yes"`.
 
 ### `defmacro`
 
-`(defmacro name (param1 param2 ...) body)`
+`(defmacro name (param1 param2 ... &rest rest-params) &optional docstring &rest body)`
 
-Defines a macro. A macro is a function that is called at read time, and its return value is then evaluated in place of the macro call. This allows you to transform code before it is evaluated.
+Defines a macro. A macro is a function that is called at read time, and its return value is then evaluated in place of the macro call. This allows you to transform code before it is evaluated. Macros support `&rest` parameters and an optional docstring.
 
 Example:
 `(defmacro my-unless (condition body) `(if (not ,condition) ,body nil))`
@@ -158,6 +175,7 @@ Example:
 -   `eq` `(eq obj1 obj2)`: Returns `t` if `obj1` and `obj2` are the same object, `nil` otherwise. Example: `(eq 'a 'a)` returns `t`, `(eq 'a 'b)` returns `nil`.
 -   `=` `(= num1 num2)`: Returns `t` if `num1` and `num2` are numerically equal, `nil` otherwise. Example: `(= 1 1)` returns `t`.
 -   `not` `(not object)`: Returns `t` if `object` is `nil`, `nil` otherwise. Example: `(not nil)` returns `t`.
+-   `stringp` `(stringp object)`: Returns `t` if `object` is a string, `nil` otherwise.
 
 ### Hash Table Functions
 
@@ -179,11 +197,14 @@ Example:
 
 - `get-p` `(get-p symbol property-name)`: Retrieves the value of a property from a symbol's property list.
 - `put-p` `(put-p symbol property-name value)`: Sets a property on a symbol's property list.
+- `documentation` `(documentation symbol)`: Retrieves the docstring for a `symbol`.
 
 Example:
 ```lisp
 (put-p 'my-symbol "version" 1)
 (get-p 'my-symbol "version") ; returns 1
+(defun my-fun () "My docstring." nil)
+(documentation 'my-fun) ; returns "My docstring."
 ```
 
 ### Miscellaneous Functions
