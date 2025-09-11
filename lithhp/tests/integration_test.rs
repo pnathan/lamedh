@@ -5,7 +5,7 @@ use lithhp::{evaluator, reader};
 fn env_with_prologue() -> Environment {
     let mut env = Environment::new_with_builtins();
     let prologue = std::fs::read_to_string("prologue.lisp").unwrap();
-    let expressions = reader::read_all(&prologue).unwrap();
+    let expressions = reader::read_all(&prologue, &mut env).unwrap();
     for expr in expressions {
         evaluator::eval(&expr, &mut env).unwrap();
     }

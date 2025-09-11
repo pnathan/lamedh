@@ -47,6 +47,14 @@ pub enum BuiltinFunc {
     Keys,
     Atom,
     Print,
+    GetP,
+    PutP,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Symbol {
+    pub name: String,
+    pub plist: HashMap<String, LispVal>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +80,7 @@ pub struct Macro {
 
 #[derive(Debug, Clone)]
 pub enum LispVal {
-    Symbol(String),
+    Symbol(Rc<RefCell<Symbol>>),
     Number(i64),
     String(String),
     Builtin(BuiltinFunc),
@@ -90,7 +98,7 @@ pub enum LispVal {
 impl PartialEq for LispVal {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (LispVal::Symbol(a), LispVal::Symbol(b)) => a == b,
+            (LispVal::Symbol(a), LispVal::Symbol(b)) => Rc::ptr_eq(a, b),
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
             (LispVal::String(a), LispVal::String(b)) => a == b,
             (
@@ -118,7 +126,7 @@ impl Eq for LispVal {}
 impl Hash for LispVal {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
-            LispVal::Symbol(s) => s.hash(state),
+            LispVal::Symbol(s) => Rc::as_ptr(s).hash(state),
             LispVal::Number(n) => n.hash(state),
             LispVal::String(s) => s.hash(state),
             LispVal::Cons { car, cdr } => {
@@ -138,7 +146,7 @@ impl Hash for LispVal {
 }
 
 pub fn eval_line(line: &str, env: &mut Environment) -> String {
-    match reader::read(line) {
+    match reader::read(line, env) {
         Ok(lisp_val) => match evaluator::eval(&lisp_val, env) {
             Ok(result) => printer::print(&result),
             Err(e) => format!("Error: {e:?}"),
@@ -152,7 +160,7 @@ use std::fs;
 pub fn load_file(path: &str, env: &mut Environment) -> Result<(), LispError> {
     let content = fs::read_to_string(path)
         .map_err(|e| LispError::Generic(format!("Failed to read file {path}: {e}")))?;
-    let expressions = reader::read_all(&content)
+    let expressions = reader::read_all(&content, env)
         .map_err(|e| LispError::Generic(format!("Failed to parse file {path}: {e}")))?;
 
     for expr in expressions {
