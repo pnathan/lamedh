@@ -30,10 +30,7 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
 }
 
 fn is_truthy(val: &LispVal) -> bool {
-    match val {
-        LispVal::Nil => false,
-        _ => true,
-    }
+    !matches!(val, LispVal::Nil)
 }
 
 fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
@@ -167,7 +164,11 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
     }
 }
 
-fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+fn apply_logical_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &mut Environment,
+) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Eq => {
             if args.len() != 2 {
@@ -176,7 +177,7 @@ fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
                 ));
             }
             if args[0] == args[1] {
-                Ok(LispVal::Symbol("t".to_string()))
+                Ok(LispVal::Symbol(env.intern_symbol("t")))
             } else {
                 Ok(LispVal::Nil)
             }
@@ -190,7 +191,7 @@ fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
             if is_truthy(&args[0]) {
                 Ok(LispVal::Nil)
             } else {
-                Ok(LispVal::Symbol("t".to_string()))
+                Ok(LispVal::Symbol(env.intern_symbol("t")))
             }
         }
         BuiltinFunc::NumericEquals => {
@@ -201,7 +202,7 @@ fn apply_logical_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
             }
             if let (LispVal::Number(a), LispVal::Number(b)) = (&args[0], &args[1]) {
                 if a == b {
-                    Ok(LispVal::Symbol("t".to_string()))
+                    Ok(LispVal::Symbol(env.intern_symbol("t")))
                 } else {
                     Ok(LispVal::Nil)
                 }
@@ -239,7 +240,7 @@ fn apply_hashtable_op(
                 let key = args[1].clone();
                 let val = args[2].clone();
                 h.borrow_mut().insert(key, val);
-                Ok(LispVal::Symbol("t".to_string()))
+                Ok(LispVal::Symbol(env.intern_symbol("t")))
             } else {
                 Err(LispError::Generic(
                     "set! requires a hash table as its first argument".to_string(),
@@ -274,7 +275,7 @@ fn apply_hashtable_op(
             if let LispVal::HashTable(h) = &args[0] {
                 let key = &args[1];
                 h.borrow_mut().remove(key);
-                Ok(LispVal::Symbol("t".to_string()))
+                Ok(LispVal::Symbol(env.intern_symbol("t")))
             } else {
                 Err(LispError::Generic(
                     "delete-key! requires a hash table as its first argument".to_string(),
@@ -290,7 +291,7 @@ fn apply_hashtable_op(
             let bindings = env.all_bindings();
             let mut hash_map = HashMap::new();
             for (k, v) in bindings {
-                hash_map.insert(LispVal::Symbol(k), v);
+                hash_map.insert(LispVal::Symbol(env.intern_symbol(&k)), v);
             }
             Ok(LispVal::HashTable(Rc::new(RefCell::new(hash_map))))
         }
@@ -331,7 +332,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                 eval(&args[0], env)
             }
             BuiltinFunc::Eq | BuiltinFunc::Not | BuiltinFunc::NumericEquals => {
-                apply_logical_op(builtin, args)
+                apply_logical_op(builtin, args, env)
             }
             BuiltinFunc::MakeHashTable
             | BuiltinFunc::Get
@@ -347,7 +348,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                 }
                 match &args[0] {
                     LispVal::Cons { .. } => Ok(LispVal::Nil),
-                    _ => Ok(LispVal::Symbol("t".to_string())),
+                    _ => Ok(LispVal::Symbol(env.intern_symbol("t"))),
                 }
             }
             BuiltinFunc::Print => {
@@ -357,6 +358,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                 println!();
                 Ok(LispVal::Nil)
             }
+            BuiltinFunc::GetP | BuiltinFunc::PutP => apply_symbol_op(builtin, args, env),
         },
         LispVal::Lambda(lambda) => {
             if lambda.params.len() != args.len() {
@@ -387,7 +389,7 @@ fn make_lambda(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Li
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.clone())
+                Ok(s.borrow().name.clone())
             } else {
                 Err(LispError::Generic(
                     "lambda parameters must be symbols".to_string(),
@@ -409,7 +411,7 @@ fn make_fexpr(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.clone())
+                Ok(s.borrow().name.clone())
             } else {
                 Err(LispError::Generic(
                     "fexpr parameters must be symbols".to_string(),
@@ -431,7 +433,7 @@ fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.clone())
+                Ok(s.borrow().name.clone())
             } else {
                 Err(LispError::Generic(
                     "macro parameters must be symbols".to_string(),
@@ -475,8 +477,8 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
         LispVal::Symbol(s) => env
-            .get(s)
-            .ok_or_else(|| LispError::Generic(format!("Unbound variable: {s}"))),
+            .get(&s.borrow().name)
+            .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name))),
         LispVal::Number(_)
         | LispVal::String(_)
         | LispVal::Builtin(_)
@@ -490,7 +492,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
             cdr: rest,
         } => {
             if let LispVal::Symbol(s) = &**first {
-                match s.as_str() {
+                match s.borrow().name.as_str() {
                     "quote" => {
                         if let LispVal::Cons { car, cdr } = &**rest {
                             if **cdr == LispVal::Nil {
@@ -565,7 +567,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                     }
                     "and" => {
-                        let mut last_val = LispVal::Symbol("t".to_string());
+                        let mut last_val = LispVal::Symbol(env.intern_symbol("t"));
                         let mut current = &**rest;
                         while let LispVal::Cons { car, cdr } = current {
                             last_val = eval(car, env)?;
@@ -595,12 +597,13 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             ));
                         }
                         if let LispVal::Symbol(s) = &args[0] {
+                            let name = s.borrow().name.clone();
                             // For recursion, first bind the symbol to a dummy value.
-                            env.set(s.clone(), LispVal::Nil);
+                            env.set(name.clone(), LispVal::Nil);
                             // Then, eval the value, which can now capture itself in its closure.
                             let val = eval(&args[1], env)?;
                             // Now set the actual value.
-                            env.set(s.clone(), val);
+                            env.set(name, val);
                             Ok(LispVal::Symbol(s.clone()))
                         } else {
                             Err(LispError::Generic(
@@ -632,21 +635,25 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         let args = list_to_vec(rest)?;
                         if args.len() != 3 {
                             return Err(LispError::Generic(
-                                format!("{s} takes exactly three arguments").to_string(),
+                                format!("{} takes exactly three arguments", s.borrow().name)
+                                    .to_string(),
                             ));
                         }
                         if let LispVal::Symbol(name_str) = &args[0] {
-                            let func = if s == "defexpr" {
+                            let func = if s.borrow().name == "defexpr" {
                                 make_fexpr(&args[1], &args[2], env)?
                             } else {
                                 make_macro(&args[1], &args[2], env)?
                             };
-                            env.set(name_str.clone(), func);
+                            env.set(name_str.borrow().name.clone(), func);
                             Ok(LispVal::Symbol(name_str.clone()))
                         } else {
                             Err(LispError::Generic(
-                                format!("{s} requires a symbol as its first argument")
-                                    .to_string(),
+                                format!(
+                                    "{} requires a symbol as its first argument",
+                                    s.borrow().name
+                                )
+                                .to_string(),
                             ))
                         }
                     }
@@ -717,7 +724,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
 fn quasiquote_eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
         if let LispVal::Symbol(s) = &**car {
-            if s == "unquote" {
+            if s.borrow().name == "unquote" {
                 if let LispVal::Cons {
                     car: unquoted_val,
                     cdr: rest,
@@ -740,5 +747,61 @@ fn quasiquote_eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, Lisp
         })
     } else {
         Ok(val.clone())
+    }
+}
+
+fn apply_symbol_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &mut Environment,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::GetP => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "get-p takes exactly two arguments".to_string(),
+                ));
+            }
+            if let LispVal::Symbol(s) = &args[0] {
+                if let LispVal::String(prop) = &args[1] {
+                    if let Some(val) = s.borrow().plist.get(prop) {
+                        Ok(val.clone())
+                    } else {
+                        Ok(LispVal::Nil)
+                    }
+                } else {
+                    Err(LispError::Generic(
+                        "get-p requires a string as its second argument".to_string(),
+                    ))
+                }
+            } else {
+                Err(LispError::Generic(
+                    "get-p requires a symbol as its first argument".to_string(),
+                ))
+            }
+        }
+        BuiltinFunc::PutP => {
+            if args.len() != 3 {
+                return Err(LispError::Generic(
+                    "put-p takes exactly three arguments".to_string(),
+                ));
+            }
+            if let LispVal::Symbol(s) = &args[0] {
+                if let LispVal::String(prop) = &args[1] {
+                    let val = args[2].clone();
+                    s.borrow_mut().plist.insert(prop.clone(), val);
+                    Ok(LispVal::Symbol(env.intern_symbol("t")))
+                } else {
+                    Err(LispError::Generic(
+                        "put-p requires a string as its second argument".to_string(),
+                    ))
+                }
+            } else {
+                Err(LispError::Generic(
+                    "put-p requires a symbol as its first argument".to_string(),
+                ))
+            }
+        }
+        _ => Err(LispError::Generic("Not a symbol operation".to_string())),
     }
 }
