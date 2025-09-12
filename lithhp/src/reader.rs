@@ -52,6 +52,7 @@ fn parse_symbol(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
                     tag("/"),
                     tag("!"),
                     tag("="),
+                    tag("&"),
                 )),
                 many0(alt((
                     alphanumeric1,
@@ -61,6 +62,7 @@ fn parse_symbol(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
                     tag("/"),
                     tag("!"),
                     tag("="),
+                    tag("&"),
                 ))),
             )),
             |s: &str| LispVal::Symbol(env.borrow_mut().intern_symbol(s)),

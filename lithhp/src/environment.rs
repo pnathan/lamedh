@@ -103,6 +103,10 @@ impl Environment {
         env.set("print".to_string(), LispVal::Builtin(BuiltinFunc::Print));
         env.set("get-p".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
         env.set("put-p".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
+        env.set(
+            "stringp".to_string(),
+            LispVal::Builtin(BuiltinFunc::Stringp),
+        );
         env
     }
 
