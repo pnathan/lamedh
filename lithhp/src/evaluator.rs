@@ -178,7 +178,7 @@ fn apply_logical_op(
                 ));
             }
             if args[0] == args[1] {
-                Ok(LispVal::Symbol(env.intern_symbol("t")))
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
                 Ok(LispVal::Nil)
             }
@@ -192,7 +192,7 @@ fn apply_logical_op(
             if is_truthy(&args[0]) {
                 Ok(LispVal::Nil)
             } else {
-                Ok(LispVal::Symbol(env.intern_symbol("t")))
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
         }
         BuiltinFunc::NumericEquals => {
@@ -203,7 +203,7 @@ fn apply_logical_op(
             }
             if let (LispVal::Number(a), LispVal::Number(b)) = (&args[0], &args[1]) {
                 if a == b {
-                    Ok(LispVal::Symbol(env.intern_symbol("t")))
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
                 } else {
                     Ok(LispVal::Nil)
                 }
@@ -241,7 +241,7 @@ fn apply_hashtable_op(
                 let key = args[1].clone();
                 let val = args[2].clone();
                 h.borrow_mut().insert(key, val);
-                Ok(LispVal::Symbol(env.intern_symbol("t")))
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
                 Err(LispError::Generic(
                     "set! requires a hash table as its first argument".to_string(),
@@ -276,7 +276,7 @@ fn apply_hashtable_op(
             if let LispVal::HashTable(h) = &args[0] {
                 let key = &args[1];
                 h.borrow_mut().remove(key);
-                Ok(LispVal::Symbol(env.intern_symbol("t")))
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
                 Err(LispError::Generic(
                     "delete-key! requires a hash table as its first argument".to_string(),
@@ -349,7 +349,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                 }
                 match &args[0] {
                     LispVal::Cons { .. } => Ok(LispVal::Nil),
-                    _ => Ok(LispVal::Symbol(env.intern_symbol("t"))),
+                    _ => Ok(LispVal::Symbol(env.intern_symbol("T"))),
                 }
             }
             BuiltinFunc::Print => {
@@ -367,7 +367,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                     ));
                 }
                 match &args[0] {
-                    LispVal::String(_) => Ok(LispVal::Symbol(env.intern_symbol("t"))),
+                    LispVal::String(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
                     _ => Ok(LispVal::Nil),
                 }
             }
@@ -395,7 +395,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
     }
 }
 
-fn make_lambda(params: &LispVal, body: &LispVal, env: &Environment) -> Result<LispVal, LispError> {
+fn make_lambda(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
         .iter()
@@ -417,7 +417,7 @@ fn make_lambda(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Li
     }))
 }
 
-fn make_fexpr(params: &LispVal, body: &LispVal, env: &Environment) -> Result<LispVal, LispError> {
+fn make_fexpr(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
         .iter()
@@ -439,7 +439,7 @@ fn make_fexpr(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
     }))
 }
 
-fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<LispVal, LispError> {
+fn make_macro(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
     let mut rest_param = None;
@@ -447,7 +447,7 @@ fn make_macro(params: &LispVal, body: &LispVal, env: &Environment) -> Result<Lis
 
     while let Some(p) = iter.next() {
         if let LispVal::Symbol(s) = p {
-            if s.borrow().name == "&rest" {
+            if s.borrow().name == "&REST" {
                 if let Some(LispVal::Symbol(rest_p_sym)) = iter.next() {
                     if iter.next().is_some() {
                         return Err(LispError::Generic(
@@ -525,6 +525,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
             .get(&s.borrow().name)
             .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name))),
         LispVal::Number(_)
+        | LispVal::Float(_)
         | LispVal::String(_)
         | LispVal::Builtin(_)
         | LispVal::Lambda(_)
@@ -538,7 +539,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
         } => {
             if let LispVal::Symbol(s) = &**first {
                 match s.borrow().name.as_str() {
-                    "quote" => {
+                    "QUOTE" => {
                         if let LispVal::Cons { car, cdr } = &**rest {
                             if **cdr == LispVal::Nil {
                                 return Ok(*car.clone());
@@ -548,7 +549,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             "quote takes exactly one argument".to_string(),
                         ))
                     }
-                    "quasiquote" => {
+                    "QUASIQUOTE" => {
                         if let LispVal::Cons { car, cdr } = &**rest {
                             if **cdr == LispVal::Nil {
                                 return quasiquote_eval(car, env);
@@ -558,7 +559,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             "quasiquote takes exactly one argument".to_string(),
                         ))
                     }
-                    "cond" => {
+                    "COND" => {
                         let mut current_clause = &**rest;
                         while let LispVal::Cons {
                             car: clause,
@@ -597,7 +598,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                         Ok(LispVal::Nil) // No clause was true
                     }
-                    "if" => {
+                    "IF" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 3 {
                             return Err(LispError::Generic(
@@ -611,8 +612,8 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             eval(&args[2], env)
                         }
                     }
-                    "and" => {
-                        let mut last_val = LispVal::Symbol(env.intern_symbol("t"));
+                    "AND" => {
+                        let mut last_val = LispVal::Symbol(env.intern_symbol("T"));
                         let mut current = &**rest;
                         while let LispVal::Cons { car, cdr } = current {
                             last_val = eval(car, env)?;
@@ -623,7 +624,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                         Ok(last_val)
                     }
-                    "or" => {
+                    "OR" => {
                         let mut current = &**rest;
                         while let LispVal::Cons { car, cdr } = current {
                             let val = eval(car, env)?;
@@ -634,7 +635,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                         Ok(LispVal::Nil)
                     }
-                    "def" => {
+                    "DEF" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 && args.len() != 3 {
                             return Err(LispError::Generic(
@@ -664,7 +665,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             ))
                         }
                     }
-                    "lambda" => {
+                    "LAMBDA" => {
                         if let LispVal::Cons {
                             car: params,
                             cdr: body_list,
@@ -674,7 +675,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             let final_body = if body_exprs.len() == 1 {
                                 body_exprs[0].clone()
                             } else {
-                                let progn_sym = LispVal::Symbol(env.intern_symbol("progn"));
+                                let progn_sym = LispVal::Symbol(env.intern_symbol("PROGN"));
                                 vec_to_list([vec![progn_sym], body_exprs].concat())
                             };
                             return make_lambda(params, &final_body, env);
@@ -683,7 +684,63 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             "lambda requires params and at least one body expression".to_string(),
                         ))
                     }
-                    "defexpr" | "defmacro" => {
+                    "LABEL" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() != 2 {
+                            return Err(LispError::Generic(
+                                "LABEL requires a name and an expression".to_string(),
+                            ));
+                        }
+                        let name_val = &args[0];
+                        let expr_val = &args[1];
+
+                        if let LispVal::Symbol(name_sym) = name_val {
+                            let mut new_env = env.clone();
+                            new_env.push_scope();
+                            let label_expr = LispVal::Cons {
+                                car: Box::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
+                                cdr: rest.clone(),
+                            };
+                            new_env.set(name_sym.borrow().name.clone(), label_expr);
+                            let result = eval(expr_val, &mut new_env);
+                            new_env.pop_scope();
+                            result
+                        } else {
+                            return Err(LispError::Generic(
+                                "LABEL name must be a symbol".to_string(),
+                            ));
+                        }
+                    }
+                    "DEFINE" => {
+                        let defs = list_to_vec(rest)?;
+                        if defs.len() != 1 {
+                            return Err(LispError::Generic(
+                                "DEFINE takes a list of definitions".to_string(),
+                            ));
+                        }
+                        let def_list = list_to_vec(&defs[0])?;
+                        let mut defined_names = vec![];
+                        for def in def_list {
+                            let def_pair = list_to_vec(&def)?;
+                            if def_pair.len() != 2 {
+                                return Err(LispError::Generic(
+                                    "Each definition must be a pair of name and value".to_string(),
+                                ));
+                            }
+                            if let LispVal::Symbol(s) = &def_pair[0] {
+                                let name = s.borrow().name.clone();
+                                let val = &def_pair[1];
+                                env.set(name, val.clone());
+                                defined_names.push(LispVal::Symbol(s.clone()));
+                            } else {
+                                return Err(LispError::Generic(
+                                    "Definition name must be a symbol".to_string(),
+                                ));
+                            }
+                        }
+                        Ok(vec_to_list(defined_names))
+                    }
+                    "DEFEXPR" | "DEFMACRO" => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 3 || args.len() > 4 {
                             return Err(LispError::Generic(
@@ -708,7 +765,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                 }
                             }
                             let body = &args[body_idx];
-                            let func = if s.borrow().name == "defexpr" {
+                            let func = if s.borrow().name == "DEFEXPR" {
                                 make_fexpr(params, body, env)?
                             } else {
                                 make_macro(params, body, env)?
@@ -725,7 +782,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             ))
                         }
                     }
-                    "progn" => {
+                    "PROGN" => {
                         let mut last_val = LispVal::Nil;
                         let mut current = &**rest;
                         while let LispVal::Cons { car, cdr } = current {
@@ -734,7 +791,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                         Ok(last_val)
                     }
-                    "let" => {
+                    "LET" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
                             return Err(LispError::Generic(
@@ -801,7 +858,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
 fn quasiquote_eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
         if let LispVal::Symbol(s) = &**car {
-            if s.borrow().name == "unquote" {
+            if s.borrow().name == "UNQUOTE" {
                 if let LispVal::Cons {
                     car: unquoted_val,
                     cdr: rest,
@@ -867,7 +924,7 @@ fn apply_symbol_op(
                 if let LispVal::String(prop) = &args[1] {
                     let val = args[2].clone();
                     s.borrow_mut().plist.insert(prop.clone(), val);
-                    Ok(LispVal::Symbol(env.intern_symbol("t")))
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
                 } else {
                     Err(LispError::Generic(
                         "put-p requires a string as its second argument".to_string(),

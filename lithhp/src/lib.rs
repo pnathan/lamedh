@@ -93,6 +93,7 @@ impl PartialEq for Macro {
 pub enum LispVal {
     Symbol(Rc<RefCell<Symbol>>),
     Number(i64),
+    Float(f64),
     String(String),
     Builtin(BuiltinFunc),
     Lambda(Lambda),
@@ -111,6 +112,7 @@ impl PartialEq for LispVal {
         match (self, other) {
             (LispVal::Symbol(a), LispVal::Symbol(b)) => Rc::ptr_eq(a, b),
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
+            (LispVal::Float(a), LispVal::Float(b)) => a == b,
             (LispVal::String(a), LispVal::String(b)) => a == b,
             (
                 LispVal::Cons {
@@ -139,6 +141,7 @@ impl Hash for LispVal {
         match self {
             LispVal::Symbol(s) => Rc::as_ptr(s).hash(state),
             LispVal::Number(n) => n.hash(state),
+            LispVal::Float(f) => f.to_bits().hash(state),
             LispVal::String(s) => s.hash(state),
             LispVal::Cons { car, cdr } => {
                 car.hash(state);
