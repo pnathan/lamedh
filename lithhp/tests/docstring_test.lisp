@@ -13,13 +13,13 @@
       (def my-var 42 "This is my-var")
       (assert-eq (documentation 'my-var) "This is my-var" "def-var-doc")
 
-      (defun my-fun (x) "This is my-fun" (* x x))
+      (defun my-fun (x) "This is my-fun" (TIMES x x))
       (assert-eq (documentation 'my-fun) "This is my-fun" "defun-doc")
 
-      (defun my-fun2 (x) (* x x))
+      (defun my-fun2 (x) (TIMES x x))
       (assert-eq (documentation 'my-fun2) nil "defun-no-doc")
 
-      (defmacro my-macro (x) "This is my-macro" `(+ ,x ,x))
+      (defmacro my-macro (x) "This is my-macro" `(PLUS ,x ,x))
       (assert-eq (documentation 'my-macro) "This is my-macro" "defmacro-doc")
 
       (defexpr my-fexpr (args) "This is my-fexpr" (car args))

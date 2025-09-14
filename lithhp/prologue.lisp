@@ -16,4 +16,4 @@
 
 (defun documentation (sym)
   "Retrieves the docstring for a symbol."
-  (get-p sym "docstring"))
+  (GETP sym "docstring"))

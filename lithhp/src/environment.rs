@@ -64,47 +64,55 @@ impl Environment {
 
     pub fn new_with_builtins() -> Self {
         let mut env = Environment::new();
-        let t_symbol = env.intern_symbol("t");
-        env.set("t".to_string(), LispVal::Symbol(t_symbol));
-        env.set("nil".to_string(), LispVal::Nil);
-        env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
-        env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
-        env.set("*".to_string(), LispVal::Builtin(BuiltinFunc::Multiply));
-        env.set("/".to_string(), LispVal::Builtin(BuiltinFunc::Divide));
-        env.set("car".to_string(), LispVal::Builtin(BuiltinFunc::Car));
-        env.set("cdr".to_string(), LispVal::Builtin(BuiltinFunc::Cdr));
-        env.set("cons".to_string(), LispVal::Builtin(BuiltinFunc::Cons));
-        env.set("concat".to_string(), LispVal::Builtin(BuiltinFunc::Concat));
-        env.set("++".to_string(), LispVal::Builtin(BuiltinFunc::Concat)); // alias
-        env.set("index".to_string(), LispVal::Builtin(BuiltinFunc::Index));
-        env.set("eval".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
-        env.set("eq".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
+        let t_symbol = env.intern_symbol("T");
+        env.set("T".to_string(), LispVal::Symbol(t_symbol));
+
+        // Lisp 1.5 spec functions
+        env.set("PLUS".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
         env.set(
-            "=".to_string(),
+            "DIFFERENCE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Minus),
+        );
+        env.set("TIMES".to_string(), LispVal::Builtin(BuiltinFunc::Multiply));
+        env.set(
+            "QUOTIENT".to_string(),
+            LispVal::Builtin(BuiltinFunc::Divide),
+        );
+        env.set("CAR".to_string(), LispVal::Builtin(BuiltinFunc::Car));
+        env.set("CDR".to_string(), LispVal::Builtin(BuiltinFunc::Cdr));
+        env.set("CONS".to_string(), LispVal::Builtin(BuiltinFunc::Cons));
+        env.set("EQ".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
+        env.set("ATOM".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
+        env.set("PRINT".to_string(), LispVal::Builtin(BuiltinFunc::Print));
+
+        // Extensions
+        env.set("CONCAT".to_string(), LispVal::Builtin(BuiltinFunc::Concat));
+        env.set("INDEX".to_string(), LispVal::Builtin(BuiltinFunc::Index));
+        env.set("EVAL".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
+        env.set("NOT".to_string(), LispVal::Builtin(BuiltinFunc::Not));
+        env.set(
+            "EQUAL-NUMBER".to_string(),
             LispVal::Builtin(BuiltinFunc::NumericEquals),
         );
-        env.set("not".to_string(), LispVal::Builtin(BuiltinFunc::Not));
         env.set(
-            "make-hash-table".to_string(),
+            "MAKE-HASH-TABLE".to_string(),
             LispVal::Builtin(BuiltinFunc::MakeHashTable),
         );
-        env.set("get".to_string(), LispVal::Builtin(BuiltinFunc::Get));
-        env.set("set!".to_string(), LispVal::Builtin(BuiltinFunc::Set));
+        env.set("GET".to_string(), LispVal::Builtin(BuiltinFunc::Get));
+        env.set("SET-BANG".to_string(), LispVal::Builtin(BuiltinFunc::Set));
         env.set(
-            "delete-key!".to_string(),
+            "DELETE-KEY-BANG".to_string(),
             LispVal::Builtin(BuiltinFunc::DeleteKey),
         );
         env.set(
-            "current-environment".to_string(),
+            "CURRENT-ENVIRONMENT".to_string(),
             LispVal::Builtin(BuiltinFunc::CurrentEnvironment),
         );
-        env.set("keys".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
-        env.set("atom".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
-        env.set("print".to_string(), LispVal::Builtin(BuiltinFunc::Print));
-        env.set("get-p".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
-        env.set("put-p".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
+        env.set("KEYS".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
+        env.set("GETP".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
+        env.set("PUTP".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
         env.set(
-            "stringp".to_string(),
+            "STRINGP".to_string(),
             LispVal::Builtin(BuiltinFunc::Stringp),
         );
         env

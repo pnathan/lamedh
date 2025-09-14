@@ -24,6 +24,7 @@ pub fn print(val: &LispVal) -> String {
             }
         }
         LispVal::Number(n) => n.to_string(),
+        LispVal::Float(f) => f.to_string(),
         LispVal::String(s) => format!("\"{s}\""),
         LispVal::Builtin(_) => "<builtin>".to_string(),
         LispVal::Lambda(_) => "<lambda>".to_string(),
