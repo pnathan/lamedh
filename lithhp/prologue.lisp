@@ -14,6 +14,9 @@
       (cons (cons (car keys) (car vals))
             (pairlis (cdr keys) (cdr vals)))))
 
+(defun list (&rest items)
+  items)
+
 (defun documentation (sym)
   "Retrieves the docstring for a symbol."
   (GETP sym "docstring"))

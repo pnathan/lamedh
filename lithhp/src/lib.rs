@@ -76,6 +76,7 @@ pub struct Symbol {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lambda {
     pub params: Vec<String>,
+    pub rest_param: Option<String>,
     pub body: Box<LispVal>,
     pub env: Environment,
 }

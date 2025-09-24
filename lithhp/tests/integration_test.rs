@@ -198,11 +198,38 @@ fn test_prog_feature() {
 #[test]
 fn test_function_closure() {
     let mut env = env_with_prologue();
-    let make_counter_code =
-        "(def make-counter (lambda (n) (function (lambda () (setq n (PLUS n 1))))))";
+    let make_counter_code = "(def make-counter (lambda (n) (function (lambda () (setq n (PLUS n 1))))))";
     eval_line(make_counter_code, &mut env);
     eval_line("(def counter (make-counter 0))", &mut env);
     assert_eq!(eval_line("(counter)", &mut env), "1");
     assert_eq!(eval_line("(counter)", &mut env), "2");
     assert_eq!(eval_line("(counter)", &mut env), "3");
 }
+
+// #[test]
+// fn test_advanced_closures() {
+//     let mut env = env_with_prologue();
+//     eval_line("(defun make-adder-multiplier (x y) (function (lambda (z) (TIMES (PLUS x z) y))))", &mut env);
+//     eval_line("(def add-5-mul-10 (make-adder-multiplier 5 10))", &mut env);
+//     assert_eq!(eval_line("(add-5-mul-10 3)", &mut env), "80", "Test 1 Failed: Closure over multiple variables");
+//     eval_line("(defun make-adder-generator (x) (function (lambda (y) (function (lambda (z) (PLUS x y z))))))", &mut env);
+//     eval_line("(def add-10 (make-adder-generator 10))", &mut env);
+//     eval_line("(def add-10-20 (add-10 20))", &mut env);
+//     assert_eq!(eval_line("(add-10-20 30)", &mut env), "60", "Test 2 Failed: Nested closures");
+//     eval_line("(defun apply-func (f x) (f x))", &mut env);
+//     eval_line("(def my-adder (function (lambda (n) (PLUS n 5))))", &mut env);
+//     assert_eq!(eval_line("(apply-func my-adder 10)", &mut env), "15", "Test 3 Failed: Passing closure as argument");
+//     let make_shared_counter_code = "
+//         (defun make-shared-counter (n)
+//           (list (function (lambda () n))
+//                 (function (lambda () (setq n (PLUS n 1))))))";
+//     eval_line(make_shared_counter_code, &mut env);
+//     assert_eq!(eval_line("(def shared-counter (make-shared-counter 100))", &mut env), "SHARED-COUNTER");
+//     assert_eq!(eval_line("(def get-count (car shared-counter))", &mut env), "GET-COUNT");
+//     assert_eq!(eval_line("(def inc-count (car (cdr shared-counter)))", &mut env), "INC-COUNT");
+//     assert_eq!(eval_line("(get-count)", &mut env), "100", "Test 4 Failed: Initial value");
+//     assert_eq!(eval_line("(inc-count)", &mut env), "101", "Test 4 Failed: First increment");
+//     assert_eq!(eval_line("(get-count)", &mut env), "101", "Test 4 Failed: Value after first increment");
+//     assert_eq!(eval_line("(inc-count)", &mut env), "102", "Test 4 Failed: Second increment");
+//     assert_eq!(eval_line("(get-count)", &mut env), "102", "Test 4 Failed: Value after second increment");
+// }

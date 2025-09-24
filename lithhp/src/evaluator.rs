@@ -373,18 +373,33 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
             }
         },
         LispVal::Lambda(lambda) => {
-            if lambda.params.len() != args.len() {
-                return Err(LispError::Generic(format!(
-                    "lambda expected {} arguments, got {}",
-                    lambda.params.len(),
-                    args.len()
-                )));
-            }
-
             let mut new_env = lambda.env.clone();
             new_env.push_scope();
-            for (param, arg) in lambda.params.iter().zip(args) {
-                new_env.set(param.clone(), arg.clone());
+
+            if let Some(rest_param_name) = &lambda.rest_param {
+                if args.len() < lambda.params.len() {
+                    return Err(LispError::Generic(format!(
+                        "lambda expected at least {} arguments, got {}",
+                        lambda.params.len(),
+                        args.len()
+                    )));
+                }
+                for (param, arg) in lambda.params.iter().zip(args.iter()) {
+                    new_env.set(param.clone(), arg.clone());
+                }
+                let rest_args = vec_to_list(args[lambda.params.len()..].to_vec());
+                new_env.set(rest_param_name.clone(), rest_args);
+            } else {
+                if lambda.params.len() != args.len() {
+                    return Err(LispError::Generic(format!(
+                        "lambda expected {} arguments, got {}",
+                        lambda.params.len(),
+                        args.len()
+                    )));
+                }
+                for (param, arg) in lambda.params.iter().zip(args) {
+                    new_env.set(param.clone(), arg.clone());
+                }
             }
 
             let result = eval(&lambda.body, &mut new_env);
@@ -401,21 +416,39 @@ fn make_lambda(
     env: &mut Environment,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
-    let params_vec: Result<Vec<String>, _> = p_list
-        .iter()
-        .map(|p| {
-            if let LispVal::Symbol(s) = p {
-                Ok(s.borrow().name.clone())
+    let mut params_vec = Vec::new();
+    let mut rest_param = None;
+    let mut iter = p_list.iter();
+
+    while let Some(p) = iter.next() {
+        if let LispVal::Symbol(s) = p {
+            if s.borrow().name == "&REST" {
+                if let Some(LispVal::Symbol(rest_p_sym)) = iter.next() {
+                    if iter.next().is_some() {
+                        return Err(LispError::Generic(
+                            "Only one symbol can follow &rest".to_string(),
+                        ));
+                    }
+                    rest_param = Some(rest_p_sym.borrow().name.clone());
+                    break; // No more params after &rest
+                } else {
+                    return Err(LispError::Generic(
+                        "&rest must be followed by a symbol".to_string(),
+                    ));
+                }
             } else {
-                Err(LispError::Generic(
-                    "lambda parameters must be symbols".to_string(),
-                ))
+                params_vec.push(s.borrow().name.clone());
             }
-        })
-        .collect();
+        } else {
+            return Err(LispError::Generic(
+                "lambda parameters must be symbols".to_string(),
+            ));
+        }
+    }
 
     Ok(LispVal::Lambda(crate::Lambda {
-        params: params_vec?,
+        params: params_vec,
+        rest_param,
         body: Box::new(body.clone()),
         env: env.snapshot(),
     }))
@@ -705,24 +738,15 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
                         let lambda_expr = &args[0];
 
-                        if let LispVal::Cons {
-                            car: first,
-                            cdr: rest,
-                        } = lambda_expr
-                        {
+                        if let LispVal::Cons { car: first, cdr: rest } = lambda_expr {
                             if let LispVal::Symbol(s) = &**first {
                                 if s.borrow().name.as_str() == "LAMBDA" {
-                                    if let LispVal::Cons {
-                                        car: params,
-                                        cdr: body_list,
-                                    } = &**rest
-                                    {
+                                    if let LispVal::Cons { car: params, cdr: body_list } = &**rest {
                                         let body_exprs = list_to_vec(body_list)?;
                                         let final_body = if body_exprs.len() == 1 {
                                             body_exprs[0].clone()
                                         } else {
-                                            let progn_sym =
-                                                LispVal::Symbol(env.intern_symbol("PROGN"));
+                                            let progn_sym = LispVal::Symbol(env.intern_symbol("PROGN"));
                                             vec_to_list([vec![progn_sym], body_exprs].concat())
                                         };
                                         return make_lambda(params, &final_body, env);
@@ -751,9 +775,6 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             if let LispVal::Lambda(lambda) = &mut value {
                                 lambda.env.set(name, value_clone);
                             }
-                            // For non-lambda values, LABEL just returns the value.
-                            // The binding is only effective during the evaluation of the expression,
-                            // which is already done. For lambdas, we've now made it recursive.
                             Ok(value)
                         } else {
                             Err(LispError::Generic(
