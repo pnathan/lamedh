@@ -194,3 +194,13 @@ fn test_prog_feature() {
     // test-nested-prog: The inner prog returns 10, which is then returned by the outer prog.
     assert_eq!(eval_line("(test-nested-prog)", &mut env), "10");
 }
+
+#[test]
+fn test_cxr_compositions() {
+    let mut env = env_with_prologue();
+    let test_code = std::fs::read_to_string("tests/cxr_test.lisp").unwrap();
+    let expressions = reader::read_all(&test_code, &mut env).unwrap();
+    for expr in expressions {
+        evaluator::eval(&expr, &mut env).unwrap();
+    }
+}
