@@ -1,13 +1,13 @@
-use crate::environment::Environment;
 use crate::LispVal;
+use crate::environment::Environment;
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{is_not, tag},
     character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
     sequence::{delimited, pair, preceded, terminated, tuple},
-    IResult,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -73,7 +73,10 @@ fn parse_atom(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
         alt((
             parse_number,
             map(
-                recognize(pair(alt((alpha1, tag("&"))), many0(alt((alphanumeric1, tag("-")))))),
+                recognize(pair(
+                    alt((alpha1, tag("&"))),
+                    many0(alt((alphanumeric1, tag("-")))),
+                )),
                 |s: &str| {
                     let s_upper = s.to_uppercase();
                     match s_upper.as_str() {
@@ -104,13 +107,10 @@ fn parse_list_contents(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseR
         let end = tail.unwrap_or(LispVal::Nil);
         Ok((
             input,
-            exprs
-                .into_iter()
-                .rev()
-                .fold(end, |cdr, car| LispVal::Cons {
-                    car: Box::new(car),
-                    cdr: Box::new(cdr),
-                }),
+            exprs.into_iter().rev().fold(end, |cdr, car| LispVal::Cons {
+                car: Box::new(car),
+                cdr: Box::new(cdr),
+            }),
         ))
     }
 }

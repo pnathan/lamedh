@@ -140,6 +140,19 @@ impl Environment {
             .insert(name, val);
     }
 
+    // `update` searches for a variable and updates its value.
+    // If not found, it creates it in the current scope.
+    pub fn update(&mut self, name: &str, val: LispVal) {
+        for scope in self.scopes.borrow_mut().iter_mut().rev() {
+            if scope.contains_key(name) {
+                scope.insert(name.to_string(), val);
+                return;
+            }
+        }
+        // Not found, so we set it in the current scope.
+        self.set(name.to_string(), val);
+    }
+
     pub fn push_scope(&mut self) {
         self.scopes.borrow_mut().push(HashMap::new());
     }

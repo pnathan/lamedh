@@ -395,7 +395,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
     }
 }
 
-fn make_lambda(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
+fn make_lambda(
+    params: &LispVal,
+    body: &LispVal,
+    env: &mut Environment,
+) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
         .iter()
@@ -417,7 +421,11 @@ fn make_lambda(params: &LispVal, body: &LispVal, env: &mut Environment) -> Resul
     }))
 }
 
-fn make_fexpr(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
+fn make_fexpr(
+    params: &LispVal,
+    body: &LispVal,
+    env: &mut Environment,
+) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
         .iter()
@@ -439,7 +447,11 @@ fn make_fexpr(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result
     }))
 }
 
-fn make_macro(params: &LispVal, body: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
+fn make_macro(
+    params: &LispVal,
+    body: &LispVal,
+    env: &mut Environment,
+) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
     let mut rest_param = None;
@@ -706,9 +718,9 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             new_env.pop_scope();
                             result
                         } else {
-                            return Err(LispError::Generic(
+                            Err(LispError::Generic(
                                 "LABEL name must be a symbol".to_string(),
-                            ));
+                            ))
                         }
                     }
                     "DEFINE" => {
@@ -790,6 +802,124 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             current = cdr;
                         }
                         Ok(last_val)
+                    }
+                    "SETQ" => {
+                        let args_vec = list_to_vec(rest)?;
+                        if args_vec.len() % 2 != 0 {
+                            return Err(LispError::Generic(
+                                "SETQ requires an even number of arguments".to_string(),
+                            ));
+                        }
+                        let mut last_val = LispVal::Nil;
+                        for chunk in args_vec.chunks(2) {
+                            let var = &chunk[0];
+                            let val_expr = &chunk[1];
+                            if let LispVal::Symbol(s) = var {
+                                let val = eval(val_expr, env)?;
+                                env.update(&s.borrow().name, val.clone());
+                                last_val = val;
+                            } else {
+                                return Err(LispError::Generic(
+                                    "SETQ variable name must be a symbol".to_string(),
+                                ));
+                            }
+                        }
+                        Ok(last_val)
+                    }
+                    "PROG" => {
+                        let args = list_to_vec(rest)?;
+                        if args.is_empty() {
+                            return Err(LispError::Generic(
+                                "PROG requires at least a var list".to_string(),
+                            ));
+                        }
+
+                        let var_list = list_to_vec(&args[0])?;
+                        let body = &args[1..];
+
+                        env.push_scope();
+
+                        for var in var_list {
+                            if let LispVal::Symbol(s) = var {
+                                env.set(s.borrow().name.clone(), LispVal::Nil);
+                            } else {
+                                env.pop_scope();
+                                return Err(LispError::Generic(
+                                    "PROG variable list must contain only symbols".to_string(),
+                                ));
+                            }
+                        }
+
+                        let mut labels = HashMap::new();
+                        for (i, item) in body.iter().enumerate() {
+                            if let LispVal::Symbol(s) = item {
+                                labels.insert(s.borrow().name.clone(), i);
+                            }
+                        }
+
+                        let mut pc = 0;
+                        let result = loop {
+                            if pc >= body.len() {
+                                break Ok(LispVal::Nil); // Fell off the end
+                            }
+
+                            let item = &body[pc];
+
+                            // If it's a label, just skip it.
+                            if let LispVal::Symbol(_) = item {
+                                pc += 1;
+                                continue;
+                            }
+
+                            match eval(item, env) {
+                                Ok(_) => {
+                                    pc += 1;
+                                }
+                                Err(LispError::Return(val)) => {
+                                    break Ok(*val);
+                                }
+                                Err(LispError::Go(label)) => {
+                                    if let Some(new_pc) = labels.get(&label) {
+                                        pc = *new_pc;
+                                    } else {
+                                        break Err(LispError::Generic(format!(
+                                            "GO: label not found in PROG: {label}"
+                                        )));
+                                    }
+                                }
+                                Err(e) => {
+                                    break Err(e);
+                                }
+                            }
+                        };
+
+                        env.pop_scope();
+                        result
+                    }
+                    "RETURN" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() != 1 {
+                            return Err(LispError::Generic(
+                                "RETURN takes exactly one argument".to_string(),
+                            ));
+                        }
+                        let retval = eval(&args[0], env)?;
+                        Err(LispError::Return(Box::new(retval)))
+                    }
+                    "GO" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() != 1 {
+                            return Err(LispError::Generic(
+                                "GO takes exactly one argument".to_string(),
+                            ));
+                        }
+                        if let LispVal::Symbol(s) = &args[0] {
+                            Err(LispError::Go(s.borrow().name.clone()))
+                        } else {
+                            Err(LispError::Generic(
+                                "GO argument must be a symbol".to_string(),
+                            ))
+                        }
                     }
                     "LET" => {
                         let args = list_to_vec(rest)?;

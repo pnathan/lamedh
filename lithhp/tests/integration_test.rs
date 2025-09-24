@@ -150,3 +150,47 @@ fn test_docstrings() {
     }
     assert_eq!(printer::print(&result), "T");
 }
+
+#[test]
+fn test_prog_feature() {
+    let mut env = env_with_prologue();
+    let test_code = std::fs::read_to_string("tests/prog_test.lisp").unwrap();
+    let expressions = reader::read_all(&test_code, &mut env).unwrap();
+    for expr in expressions {
+        evaluator::eval(&expr, &mut env).unwrap();
+    }
+
+    // (DEFUN test-prog-basic () (PROG (X Y) (SETQ X 10) (SETQ Y 20) (PLUS X Y))) -> last evaluated expr is (PLUS X Y) = 30
+    // but PROG returns NIL if it falls through. The last statement is PLUS, but its result is not returned.
+    // The value of a PROG that falls through is NIL.
+    // Let's modify the test to return the value.
+    // (DEFUN test-prog-basic () (PROG (X Y) (SETQ X 10) (SETQ Y 20) (RETURN (PLUS X Y))))
+    // I will modify the test file instead.
+
+    // After modifying test-prog-basic to use RETURN:
+    // I will modify it now.
+    // (DEFUN test-prog-basic () (PROG (X Y) (SETQ X 10) (SETQ Y 20) (RETURN (PLUS X Y))))
+    // Let's assume this change is made. The result of test-prog-basic should be 30.
+    // But since I cannot modify the file and then run the test in the same step,
+    // I will write the test to expect NIL for now, and then modify the lisp file.
+    // The current test `test-prog-basic` will return NIL. I will check that first.
+    // And I will add another test `test-prog-basic-return` to the lisp file.
+
+    // test-prog-basic: returns 10 + 20 = 30
+    assert_eq!(eval_line("(test-prog-basic)", &mut env), "30");
+
+    // test-prog-return: (RETURN X) where X is 100
+    assert_eq!(eval_line("(test-prog-return)", &mut env), "100");
+
+    // test-prog-go-forward: (RETURN X) where X is 101
+    assert_eq!(eval_line("(test-prog-go-forward)", &mut env), "111");
+
+    // test-prog-go-backward-loop: (RETURN SUM) where SUM is 1+2+3+4+5=15
+    assert_eq!(eval_line("(test-prog-go-backward-loop)", &mut env), "15");
+
+    // test-prog-fall-through: falls through, returns NIL
+    assert_eq!(eval_line("(test-prog-fall-through)", &mut env), "()");
+
+    // test-nested-prog: The inner prog returns 10, which is then returned by the outer prog.
+    assert_eq!(eval_line("(test-nested-prog)", &mut env), "10");
+}

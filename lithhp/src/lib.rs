@@ -11,15 +11,30 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum LispError {
     Generic(String),
+    Return(Box<LispVal>),
+    Go(String),
+}
+
+impl PartialEq for LispError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (LispError::Generic(a), LispError::Generic(b)) => a == b,
+            (LispError::Go(a), LispError::Go(b)) => a == b,
+            (LispError::Return(v1), LispError::Return(v2)) => v1 == v2,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for LispError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            LispError::Generic(s) => write!(f, "{s}"),
+            LispError::Generic(s) => write!(f, "Error: {s}"),
+            LispError::Return(_) => write!(f, "Internal LispError: RETURN used outside of PROG."),
+            LispError::Go(_) => write!(f, "Internal LispError: GO used outside of PROG."),
         }
     }
 }
