@@ -194,3 +194,15 @@ fn test_prog_feature() {
     // test-nested-prog: The inner prog returns 10, which is then returned by the outer prog.
     assert_eq!(eval_line("(test-nested-prog)", &mut env), "10");
 }
+
+#[test]
+fn test_function_closure() {
+    let mut env = env_with_prologue();
+    let make_counter_code =
+        "(def make-counter (lambda (n) (function (lambda () (setq n (PLUS n 1))))))";
+    eval_line(make_counter_code, &mut env);
+    eval_line("(def counter (make-counter 0))", &mut env);
+    assert_eq!(eval_line("(counter)", &mut env), "1");
+    assert_eq!(eval_line("(counter)", &mut env), "2");
+    assert_eq!(eval_line("(counter)", &mut env), "3");
+}

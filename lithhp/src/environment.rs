@@ -35,10 +35,19 @@ impl SymbolTable {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Environment {
     scopes: Rc<RefCell<Vec<HashMap<String, LispVal>>>>,
     symbols: Rc<RefCell<SymbolTable>>,
+}
+
+impl Clone for Environment {
+    fn clone(&self) -> Self {
+        Environment {
+            scopes: self.scopes.clone(),
+            symbols: self.symbols.clone(),
+        }
+    }
 }
 
 impl PartialEq for Environment {
@@ -167,5 +176,12 @@ impl Environment {
             all.extend(scope.clone());
         }
         all
+    }
+
+    pub fn snapshot(&self) -> Self {
+        Environment {
+            scopes: Rc::new(RefCell::new(self.scopes.borrow().clone())),
+            symbols: self.symbols.clone(),
+        }
     }
 }

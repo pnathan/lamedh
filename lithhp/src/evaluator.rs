@@ -417,7 +417,7 @@ fn make_lambda(
     Ok(LispVal::Lambda(crate::Lambda {
         params: params_vec?,
         body: Box::new(body.clone()),
-        env: env.clone(),
+        env: env.snapshot(),
     }))
 }
 
@@ -443,7 +443,7 @@ fn make_fexpr(
     Ok(LispVal::Fexpr(crate::Fexpr {
         params: params_vec?,
         body: Box::new(body.clone()),
-        env: env.clone(),
+        env: env.snapshot(),
     }))
 }
 
@@ -487,7 +487,7 @@ fn make_macro(
         params: params_vec,
         rest_param,
         body: Box::new(body.clone()),
-        env: env.clone(),
+        env: env.snapshot(),
     }))
 }
 
@@ -696,6 +696,44 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             "lambda requires params and at least one body expression".to_string(),
                         ))
                     }
+                    "FUNCTION" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() != 1 {
+                            return Err(LispError::Generic(
+                                "FUNCTION takes exactly one argument".to_string(),
+                            ));
+                        }
+                        let lambda_expr = &args[0];
+
+                        if let LispVal::Cons {
+                            car: first,
+                            cdr: rest,
+                        } = lambda_expr
+                        {
+                            if let LispVal::Symbol(s) = &**first {
+                                if s.borrow().name.as_str() == "LAMBDA" {
+                                    if let LispVal::Cons {
+                                        car: params,
+                                        cdr: body_list,
+                                    } = &**rest
+                                    {
+                                        let body_exprs = list_to_vec(body_list)?;
+                                        let final_body = if body_exprs.len() == 1 {
+                                            body_exprs[0].clone()
+                                        } else {
+                                            let progn_sym =
+                                                LispVal::Symbol(env.intern_symbol("PROGN"));
+                                            vec_to_list([vec![progn_sym], body_exprs].concat())
+                                        };
+                                        return make_lambda(params, &final_body, env);
+                                    }
+                                }
+                            }
+                        }
+                        Err(LispError::Generic(
+                            "FUNCTION argument must be a LAMBDA expression".to_string(),
+                        ))
+                    }
                     "LABEL" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
@@ -703,20 +741,20 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                 "LABEL requires a name and an expression".to_string(),
                             ));
                         }
-                        let name_val = &args[0];
-                        let expr_val = &args[1];
+                        if let LispVal::Symbol(name_sym) = &args[0] {
+                            let name = name_sym.borrow().name.clone();
+                            let expr = &args[1];
 
-                        if let LispVal::Symbol(name_sym) = name_val {
-                            let mut new_env = env.clone();
-                            new_env.push_scope();
-                            let label_expr = LispVal::Cons {
-                                car: Box::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
-                                cdr: rest.clone(),
-                            };
-                            new_env.set(name_sym.borrow().name.clone(), label_expr);
-                            let result = eval(expr_val, &mut new_env);
-                            new_env.pop_scope();
-                            result
+                            let mut value = eval(expr, env)?;
+                            let value_clone = value.clone();
+
+                            if let LispVal::Lambda(lambda) = &mut value {
+                                lambda.env.set(name, value_clone);
+                            }
+                            // For non-lambda values, LABEL just returns the value.
+                            // The binding is only effective during the evaluation of the expression,
+                            // which is already done. For lambdas, we've now made it recursive.
+                            Ok(value)
                         } else {
                             Err(LispError::Generic(
                                 "LABEL name must be a symbol".to_string(),
