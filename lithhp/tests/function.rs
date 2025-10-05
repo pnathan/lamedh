@@ -1,5 +1,4 @@
 use lithhp::{environment::Environment, eval_line};
-use std::rc::Rc;
 
 #[test]
 fn test_function_creates_closure() {

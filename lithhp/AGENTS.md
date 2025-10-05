@@ -1,6 +1,6 @@
 # Lithhp Agent Instructions
 
-This document provides instructions for agents working on the Lithhp Lisp interpreter.
+This document provides instructions for agents working on the lamedh Lisp interpreter.
 
 ## Building
 

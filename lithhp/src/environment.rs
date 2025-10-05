@@ -55,6 +55,12 @@ impl PartialEq for Environment {
     }
 }
 
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Environment {
     pub fn new() -> Self {
         Environment {
@@ -88,6 +94,12 @@ impl Environment {
             "QUOTIENT".to_string(),
             LispVal::Builtin(BuiltinFunc::Divide),
         );
+
+        // Common operator aliases
+        env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
+        env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
+        env.set("*".to_string(), LispVal::Builtin(BuiltinFunc::Multiply));
+        env.set("/".to_string(), LispVal::Builtin(BuiltinFunc::Divide));
         env.set("CAR".to_string(), LispVal::Builtin(BuiltinFunc::Car));
         env.set("CDR".to_string(), LispVal::Builtin(BuiltinFunc::Cdr));
         env.set("CONS".to_string(), LispVal::Builtin(BuiltinFunc::Cons));
@@ -104,6 +116,7 @@ impl Environment {
             "EQUAL-NUMBER".to_string(),
             LispVal::Builtin(BuiltinFunc::NumericEquals),
         );
+        env.set("=".to_string(), LispVal::Builtin(BuiltinFunc::NumericEquals));
         env.set(
             "MAKE-HASH-TABLE".to_string(),
             LispVal::Builtin(BuiltinFunc::MakeHashTable),

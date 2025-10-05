@@ -35,11 +35,11 @@ fn parse_comment(input: &str) -> IResult<&str, &str> {
 }
 
 // A parser for whitespace, including comments
-fn ws<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+fn ws(input: &str) -> IResult<&str, &str> {
     recognize(many0(alt((multispace1, parse_comment))))(input)
 }
 
-fn parse_float(input: &str) -> ParseResult {
+fn parse_float(input: &str) -> ParseResult<'_> {
     map(
         map_res(
             recognize(tuple((
@@ -55,7 +55,7 @@ fn parse_float(input: &str) -> ParseResult {
     )(input)
 }
 
-fn parse_number(input: &str) -> ParseResult {
+fn parse_number(input: &str) -> ParseResult<'_> {
     alt((
         parse_float,
         map(
@@ -85,11 +85,16 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                     }
                 },
             ),
+            // Parse operator symbols (+, -, *, /, =, etc.) - after attempting number/alpha parse
+            map(
+                alt((tag("+"), tag("-"), tag("*"), tag("/"), tag("="))),
+                |s: &str| LispVal::Symbol(env.intern_symbol(s)),
+            ),
         ))(input)
     }
 }
 
-fn parse_string(input: &str) -> ParseResult {
+fn parse_string(input: &str) -> ParseResult<'_> {
     map(delimited(char('"'), is_not("\""), char('"')), |s: &str| {
         LispVal::String(s.to_string())
     })(input)

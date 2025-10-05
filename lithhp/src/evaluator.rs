@@ -545,20 +545,20 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
             if let LispVal::Symbol(s) = &**first {
                 match s.borrow().name.as_str() {
                     "QUOTE" => {
-                        if let LispVal::Cons { car, cdr } = &**rest {
-                            if **cdr == LispVal::Nil {
-                                return Ok(*car.clone());
-                            }
+                        if let LispVal::Cons { car, cdr } = &**rest
+                            && **cdr == LispVal::Nil
+                        {
+                            return Ok(*car.clone());
                         }
                         Err(LispError::Generic(
                             "quote takes exactly one argument".to_string(),
                         ))
                     }
                     "QUASIQUOTE" => {
-                        if let LispVal::Cons { car, cdr } = &**rest {
-                            if **cdr == LispVal::Nil {
-                                return quasiquote_eval(car, env);
-                            }
+                        if let LispVal::Cons { car, cdr } = &**rest
+                            && **cdr == LispVal::Nil
+                        {
+                            return quasiquote_eval(car, env);
                         }
                         Err(LispError::Generic(
                             "quasiquote takes exactly one argument".to_string(),
@@ -701,26 +701,22 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             car: lambda_sym,
                             cdr: lambda_body,
                         } = &args[0]
+                            && let LispVal::Symbol(s) = &**lambda_sym
+                            && s.borrow().name == "LAMBDA"
+                            && let LispVal::Cons {
+                                car: params,
+                                cdr: body_list,
+                            } = &**lambda_body
                         {
-                            if let LispVal::Symbol(s) = &**lambda_sym {
-                                if s.borrow().name == "LAMBDA" {
-                                    if let LispVal::Cons {
-                                        car: params,
-                                        cdr: body_list,
-                                    } = &**lambda_body
-                                    {
-                                        let body_exprs = list_to_vec(body_list)?;
-                                        let final_body = if body_exprs.len() == 1 {
-                                            body_exprs[0].clone()
-                                        } else {
-                                            let progn_sym =
-                                                LispVal::Symbol(env.intern_symbol("PROGN"));
-                                            vec_to_list([vec![progn_sym], body_exprs].concat())
-                                        };
-                                        return make_lambda(params, &final_body, env);
-                                    }
-                                }
-                            }
+                            let body_exprs = list_to_vec(body_list)?;
+                            let final_body = if body_exprs.len() == 1 {
+                                body_exprs[0].clone()
+                            } else {
+                                let progn_sym =
+                                    LispVal::Symbol(env.intern_symbol("PROGN"));
+                                vec_to_list([vec![progn_sym], body_exprs].concat())
+                            };
+                            return make_lambda(params, &final_body, env);
                         }
                         Err(LispError::Generic(
                             "FUNCTION argument must be a LAMBDA expression".to_string(),
@@ -884,7 +880,7 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         }
 
                         let mut pc = 0;
-                        let result = loop {
+                        loop {
                             if pc >= body.len() {
                                 break Ok(LispVal::Nil); // Fell off the end
                             }
@@ -917,9 +913,7 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                     break Err(e);
                                 }
                             }
-                        };
-
-                        result
+                        }
                     }
                     "RETURN" => {
                         let args = list_to_vec(rest)?;
@@ -1009,21 +1003,20 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
 
 fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
-        if let LispVal::Symbol(s) = &**car {
-            if s.borrow().name == "UNQUOTE" {
-                if let LispVal::Cons {
-                    car: unquoted_val,
-                    cdr: rest,
-                } = &**cdr
-                {
-                    if **rest == LispVal::Nil {
-                        return eval(unquoted_val, env);
-                    }
-                }
-                return Err(LispError::Generic(
-                    "unquote takes exactly one argument".to_string(),
-                ));
+        if let LispVal::Symbol(s) = &**car
+            && s.borrow().name == "UNQUOTE"
+        {
+            if let LispVal::Cons {
+                car: unquoted_val,
+                cdr: rest,
+            } = &**cdr
+                && **rest == LispVal::Nil
+            {
+                return eval(unquoted_val, env);
             }
+            return Err(LispError::Generic(
+                "unquote takes exactly one argument".to_string(),
+            ));
         }
         let car_eval = quasiquote_eval(car, env)?;
         let cdr_eval = quasiquote_eval(cdr, env)?;

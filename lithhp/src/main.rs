@@ -16,10 +16,10 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let mut env = Environment::new_with_builtins();
+    let env = Environment::new_with_builtins();
 
     // Load prologue.lisp if it exists
-    if let Err(e) = load_file("prologue.lisp", &mut env) {
+    if let Err(e) = load_file("prologue.lisp", &env) {
         // It's okay if it doesn't exist, but print an error if it fails for other reasons
         if !e.to_string().contains("No such file or directory") {
             eprintln!("Error loading prologue.lisp: {e:?}");
@@ -28,7 +28,7 @@ fn main() {
 
     // Load files from -i flag
     for file in args.i {
-        if let Err(e) = load_file(&file, &mut env) {
+        if let Err(e) = load_file(&file, &env) {
             eprintln!("Error loading file {file}: {e:?}");
             return;
         }
@@ -36,7 +36,7 @@ fn main() {
 
     // Execute s-expression from -s flag
     if let Some(sexp) = args.s {
-        let output = eval_line(&sexp, &mut env);
+        let output = eval_line(&sexp, &env);
         println!("{output}");
         return;
     }
@@ -51,7 +51,7 @@ fn main() {
         match readline {
             Ok(line) => {
                 rl.add_history_entry(line.as_str()).unwrap();
-                let output = eval_line(&line, &mut env);
+                let output = eval_line(&line, &env);
                 println!("{output}");
             }
             Err(ReadlineError::Interrupted) => {
