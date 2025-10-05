@@ -371,6 +371,24 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     _ => Ok(LispVal::Nil),
                 }
             }
+            BuiltinFunc::LoadFile => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "load-file requires exactly one argument".to_string(),
+                    ));
+                }
+
+                let filename = if let LispVal::String(path) = &args[0] {
+                    path.clone()
+                } else {
+                    return Err(LispError::Generic(
+                        "load-file requires a string filename".to_string(),
+                    ));
+                };
+
+                crate::load_file(&filename, env)?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
         },
         LispVal::Lambda(lambda) => {
             if lambda.params.len() != args.len() {

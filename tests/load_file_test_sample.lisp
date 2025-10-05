@@ -1,0 +1,1 @@
+(defun loaded-function () 42)
