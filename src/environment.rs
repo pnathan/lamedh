@@ -116,7 +116,10 @@ impl Environment {
             "EQUAL-NUMBER".to_string(),
             LispVal::Builtin(BuiltinFunc::NumericEquals),
         );
-        env.set("=".to_string(), LispVal::Builtin(BuiltinFunc::NumericEquals));
+        env.set(
+            "=".to_string(),
+            LispVal::Builtin(BuiltinFunc::NumericEquals),
+        );
         env.set(
             "MAKE-HASH-TABLE".to_string(),
             LispVal::Builtin(BuiltinFunc::MakeHashTable),
@@ -143,6 +146,26 @@ impl Environment {
             "LOAD-FILE".to_string(),
             LispVal::Builtin(BuiltinFunc::LoadFile),
         );
+
+        env.set(
+            "NUMBERP".to_string(),
+            LispVal::Builtin(BuiltinFunc::Numberp),
+        );
+        // Arithmetic Primitives
+        env.set("<".to_string(), LispVal::Builtin(BuiltinFunc::Lessp));
+        env.set(">".to_string(), LispVal::Builtin(BuiltinFunc::Greaterp));
+        env.set("LESSP".to_string(), LispVal::Builtin(BuiltinFunc::Lessp));
+        env.set(
+            "GREATERP".to_string(),
+            LispVal::Builtin(BuiltinFunc::Greaterp),
+        );
+        env.set("ZEROP".to_string(), LispVal::Builtin(BuiltinFunc::Zerop));
+        env.set(
+            "REMAINDER".to_string(),
+            LispVal::Builtin(BuiltinFunc::Remainder),
+        );
+        env.set("EXPT".to_string(), LispVal::Builtin(BuiltinFunc::Expt));
+
         env
     }
 

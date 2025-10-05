@@ -1,5 +1,5 @@
 #![allow(clippy::mutable_key_type)]
-use crate::{environment::Environment, BuiltinFunc, LispError, LispVal};
+use crate::{BuiltinFunc, LispError, LispVal, environment::Environment};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -51,7 +51,7 @@ fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispE
         Err(_) => {
             return Err(LispError::Generic(
                 "APPLY second argument must be a proper list".to_string(),
-            ))
+            ));
         }
     };
 
@@ -208,6 +208,86 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
             }
         }
         _ => Err(LispError::Generic("Not a string operation".to_string())),
+    }
+}
+
+fn apply_numeric_primitives(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Lessp => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("lessp requires 2 args".to_string()));
+            }
+            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
+                Ok(if x < y {
+                    LispVal::Symbol(env.intern_symbol("T"))
+                } else {
+                    LispVal::Nil
+                })
+            } else {
+                Err(LispError::Generic("lessp requires numbers".to_string()))
+            }
+        }
+        BuiltinFunc::Greaterp => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("greaterp requires 2 args".to_string()));
+            }
+            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
+                Ok(if x > y {
+                    LispVal::Symbol(env.intern_symbol("T"))
+                } else {
+                    LispVal::Nil
+                })
+            } else {
+                Err(LispError::Generic("greaterp requires numbers".to_string()))
+            }
+        }
+        BuiltinFunc::Zerop => {
+            if args.len() != 1 {
+                return Err(LispError::Generic("zerop requires 1 arg".to_string()));
+            }
+            if let LispVal::Number(x) = &args[0] {
+                Ok(if *x == 0 {
+                    LispVal::Symbol(env.intern_symbol("T"))
+                } else {
+                    LispVal::Nil
+                })
+            } else {
+                Err(LispError::Generic("zerop requires number".to_string()))
+            }
+        }
+        BuiltinFunc::Remainder => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("remainder requires 2 args".to_string()));
+            }
+            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
+                if *y == 0 {
+                    return Err(LispError::Generic("Division by zero".to_string()));
+                }
+                Ok(LispVal::Number(x % y))
+            } else {
+                Err(LispError::Generic("remainder requires numbers".to_string()))
+            }
+        }
+        BuiltinFunc::Expt => {
+            if args.len() != 2 {
+                return Err(LispError::Generic("expt requires 2 args".to_string()));
+            }
+            if let (LispVal::Number(base), LispVal::Number(exp)) = (&args[0], &args[1]) {
+                if *exp < 0 {
+                    return Err(LispError::Generic(
+                        "negative exponent not supported".to_string(),
+                    ));
+                }
+                Ok(LispVal::Number(base.pow(*exp as u32)))
+            } else {
+                Err(LispError::Generic("expt requires numbers".to_string()))
+            }
+        }
+        _ => Err(LispError::Generic("Not a numeric primitive".to_string())),
     }
 }
 
@@ -368,6 +448,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Minus
             | BuiltinFunc::Multiply
             | BuiltinFunc::Divide => apply_math_op(builtin, args),
+            BuiltinFunc::Lessp
+            | BuiltinFunc::Greaterp
+            | BuiltinFunc::Zerop
+            | BuiltinFunc::Remainder
+            | BuiltinFunc::Expt => apply_numeric_primitives(builtin, args, env),
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
             BuiltinFunc::Eval => {
@@ -417,6 +502,19 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     _ => Ok(LispVal::Nil),
                 }
             }
+            BuiltinFunc::Numberp => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "numberp requires exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::Number(_) | LispVal::Float(_) => {
+                        Ok(LispVal::Symbol(env.intern_symbol("T")))
+                    }
+                    _ => Ok(LispVal::Nil),
+                }
+            }
 
             BuiltinFunc::Apply => apply_apply(args, env),
 
@@ -440,16 +538,31 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
         },
         LispVal::Lambda(lambda) => {
-            if lambda.params.len() != args.len() {
-                return Err(LispError::Generic(format!(
-                    "lambda expected {} arguments, got {}",
-                    lambda.params.len(),
-                    args.len()
-                )));
-            }
             let new_env = Environment::new_child(&lambda.env);
-            for (param, arg) in lambda.params.iter().zip(args) {
-                new_env.set(param.clone(), arg.clone());
+            if let Some(rest_param_name) = &lambda.rest_param {
+                if args.len() < lambda.params.len() {
+                    return Err(LispError::Generic(format!(
+                        "lambda expected at least {} arguments, got {}",
+                        lambda.params.len(),
+                        args.len()
+                    )));
+                }
+                for (param, arg) in lambda.params.iter().zip(args.iter()) {
+                    new_env.set(param.clone(), arg.clone());
+                }
+                let rest_args = vec_to_list(args[lambda.params.len()..].to_vec());
+                new_env.set(rest_param_name.clone(), rest_args);
+            } else {
+                if lambda.params.len() != args.len() {
+                    return Err(LispError::Generic(format!(
+                        "lambda expected {} arguments, got {}",
+                        lambda.params.len(),
+                        args.len()
+                    )));
+                }
+                for (param, arg) in lambda.params.iter().zip(args) {
+                    new_env.set(param.clone(), arg.clone());
+                }
             }
 
             eval(&lambda.body, &new_env)
@@ -464,21 +577,39 @@ fn make_lambda(
     env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
-    let params_vec: Result<Vec<String>, _> = p_list
-        .iter()
-        .map(|p| {
-            if let LispVal::Symbol(s) = p {
-                Ok(s.borrow().name.clone())
+    let mut params_vec = Vec::new();
+    let mut rest_param = None;
+    let mut iter = p_list.iter();
+
+    while let Some(p) = iter.next() {
+        if let LispVal::Symbol(s) = p {
+            if s.borrow().name == "&REST" {
+                if let Some(LispVal::Symbol(rest_p_sym)) = iter.next() {
+                    if iter.next().is_some() {
+                        return Err(LispError::Generic(
+                            "Only one symbol can follow &rest".to_string(),
+                        ));
+                    }
+                    rest_param = Some(rest_p_sym.borrow().name.clone());
+                    break; // No more params after &rest
+                } else {
+                    return Err(LispError::Generic(
+                        "&rest must be followed by a symbol".to_string(),
+                    ));
+                }
             } else {
-                Err(LispError::Generic(
-                    "lambda parameters must be symbols".to_string(),
-                ))
+                params_vec.push(s.borrow().name.clone());
             }
-        })
-        .collect();
+        } else {
+            return Err(LispError::Generic(
+                "lambda parameters must be symbols".to_string(),
+            ));
+        }
+    }
 
     Ok(LispVal::Lambda(crate::Lambda {
-        params: params_vec?,
+        params: params_vec,
+        rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
     }))
@@ -763,11 +894,13 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 "FUNCTION takes exactly one argument".to_string(),
                             ));
                         }
-                        // The argument must be a LAMBDA expression
+                        let arg = &args[0];
+
+                        // Case 1: Argument is a literal LAMBDA expression
                         if let LispVal::Cons {
                             car: lambda_sym,
                             cdr: lambda_body,
-                        } = &args[0]
+                        } = arg
                             && let LispVal::Symbol(s) = &**lambda_sym
                             && s.borrow().name == "LAMBDA"
                             && let LispVal::Cons {
@@ -779,14 +912,38 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             let final_body = if body_exprs.len() == 1 {
                                 body_exprs[0].clone()
                             } else {
-                                let progn_sym =
-                                    LispVal::Symbol(env.intern_symbol("PROGN"));
+                                let progn_sym = LispVal::Symbol(env.intern_symbol("PROGN"));
                                 vec_to_list([vec![progn_sym], body_exprs].concat())
                             };
                             return make_lambda(params, &final_body, env);
                         }
+
+                        // Case 2: Argument is a symbol bound to a function
+                        if let LispVal::Symbol(s) = arg {
+                            let func = env.get(&s.borrow().name).ok_or_else(|| {
+                                LispError::Generic(format!(
+                                    "Undefined function: {}",
+                                    s.borrow().name
+                                ))
+                            })?;
+
+                            match func {
+                                LispVal::Lambda(_)
+                                | LispVal::Builtin(_)
+                                | LispVal::Fexpr(_)
+                                | LispVal::Macro(_) => return Ok(func),
+                                _ => {
+                                    return Err(LispError::Generic(format!(
+                                        "Symbol '{}' is not bound to a function",
+                                        s.borrow().name
+                                    )));
+                                }
+                            }
+                        }
+
                         Err(LispError::Generic(
-                            "FUNCTION argument must be a LAMBDA expression".to_string(),
+                            "FUNCTION argument must be a LAMBDA expression or a symbol bound to a function"
+                                .to_string(),
                         ))
                     }
                     "LABEL" => {

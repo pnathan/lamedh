@@ -78,8 +78,14 @@ fn test_equal_nested_lists() {
     eval_line(equal_def, &env);
 
     // Test with nested lists
-    assert_eq!(eval_line("(equal '((1 2) (3 4)) '((1 2) (3 4)))", &env), "T");
-    assert_eq!(eval_line("(equal '((1 2) (3 4)) '((1 2) (3 5)))", &env), "()");
+    assert_eq!(
+        eval_line("(equal '((1 2) (3 4)) '((1 2) (3 4)))", &env),
+        "T"
+    );
+    assert_eq!(
+        eval_line("(equal '((1 2) (3 4)) '((1 2) (3 5)))", &env),
+        "()"
+    );
     assert_eq!(eval_line("(equal '(a (b c) d) '(a (b c) d))", &env), "T");
 }
 
@@ -99,14 +105,26 @@ fn test_cxr_3level() {
     let env = env_with_prologue();
 
     // Test 3-level cxr functions
-    assert_eq!(eval_line("(caaar '(((1 2) (3 4)) ((5 6) (7 8))))", &env), "1");
+    assert_eq!(
+        eval_line("(caaar '(((1 2) (3 4)) ((5 6) (7 8))))", &env),
+        "1"
+    );
 
     assert_eq!(eval_line("(caadr '((1 2) (3 4) (5 6)))", &env), "3");
-    assert_eq!(eval_line("(cadar '(((1 2) (3 4)) ((5 6) (7 8))))", &env), "(3 4)");
+    assert_eq!(
+        eval_line("(cadar '(((1 2) (3 4)) ((5 6) (7 8))))", &env),
+        "(3 4)"
+    );
     assert_eq!(eval_line("(caddr '(1 2 3 4 5))", &env), "3");
-    assert_eq!(eval_line("(cdaar '(((1 2 3) (4 5)) ((6 7) (8 9))))", &env), "(2 3)");
+    assert_eq!(
+        eval_line("(cdaar '(((1 2 3) (4 5)) ((6 7) (8 9))))", &env),
+        "(2 3)"
+    );
     assert_eq!(eval_line("(cdadr '((1 2) (3 4 5) (6 7)))", &env), "(4 5)");
-    assert_eq!(eval_line("(cddar '(((1 2) (3 4 5)) ((6 7) (8 9))))", &env), "()");
+    assert_eq!(
+        eval_line("(cddar '(((1 2) (3 4 5)) ((6 7) (8 9))))", &env),
+        "()"
+    );
     assert_eq!(eval_line("(cdddr '(1 2 3 4 5 6))", &env), "(4 5 6)");
 }
 
@@ -115,7 +133,13 @@ fn test_cxr_4level() {
     let env = env_with_prologue();
 
     // Test a few 4-level cxr functions
-    assert_eq!(eval_line("(caaaar '((((1 2) (3 4)) ((5 6) (7 8))) (((9 10) (11 12)) ((13 14) (15 16)))))", &env), "1");
+    assert_eq!(
+        eval_line(
+            "(caaaar '((((1 2) (3 4)) ((5 6) (7 8))) (((9 10) (11 12)) ((13 14) (15 16)))))",
+            &env
+        ),
+        "1"
+    );
     assert_eq!(eval_line("(cadddr '(1 2 3 4 5))", &env), "4");
     assert_eq!(eval_line("(cddddr '(1 2 3 4 5 6 7))", &env), "(5 6 7)");
 }

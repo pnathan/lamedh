@@ -67,6 +67,12 @@ pub enum BuiltinFunc {
     Stringp,
     Apply,
     LoadFile,
+    Lessp,
+    Greaterp,
+    Zerop,
+    Remainder,
+    Expt,
+    Numberp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,13 +84,17 @@ pub struct Symbol {
 #[derive(Debug, Clone)]
 pub struct Lambda {
     pub params: Vec<String>,
+    pub rest_param: Option<String>,
     pub body: Box<LispVal>,
     pub env: Rc<Environment>,
 }
 
 impl PartialEq for Lambda {
     fn eq(&self, other: &Self) -> bool {
-        self.params == other.params && self.body == other.body && Rc::ptr_eq(&self.env, &other.env)
+        self.params == other.params
+            && self.rest_param == other.rest_param
+            && self.body == other.body
+            && Rc::ptr_eq(&self.env, &other.env)
     }
 }
 

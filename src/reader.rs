@@ -1,13 +1,13 @@
-use crate::environment::Environment;
 use crate::LispVal;
+use crate::environment::Environment;
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{is_not, tag},
     character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
     sequence::{delimited, pair, preceded, terminated, tuple},
-    IResult,
 };
 use std::rc::Rc;
 
@@ -24,6 +24,7 @@ fn parse_expr(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                 parse_quoted(env.clone()),
                 parse_quasiquoted(env.clone()),
                 parse_unquoted(env.clone()),
+                parse_function_shorthand(env.clone()),
             )),
         )(input)
     }
@@ -87,7 +88,15 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             ),
             // Parse operator symbols (+, -, *, /, =, etc.) - after attempting number/alpha parse
             map(
-                alt((tag("+"), tag("-"), tag("*"), tag("/"), tag("="))),
+                alt((
+                    tag("+"),
+                    tag("-"),
+                    tag("*"),
+                    tag("/"),
+                    tag("="),
+                    tag("<"),
+                    tag(">"),
+                )),
                 |s: &str| LispVal::Symbol(env.intern_symbol(s)),
             ),
         ))(input)
@@ -150,6 +159,21 @@ fn parse_quasiquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
         map(preceded(char('`'), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
                 car: Box::new(quasiquote_symbol.clone()),
+                cdr: Box::new(LispVal::Cons {
+                    car: Box::new(expr),
+                    cdr: Box::new(LispVal::Nil),
+                }),
+            }
+        })(input)
+    }
+}
+
+fn parse_function_shorthand(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    let function_symbol = LispVal::Symbol(env.intern_symbol("FUNCTION"));
+    move |input: &str| {
+        map(preceded(tag("#'"), parse_expr(env.clone())), |expr| {
+            LispVal::Cons {
+                car: Box::new(function_symbol.clone()),
                 cdr: Box::new(LispVal::Cons {
                     car: Box::new(expr),
                     cdr: Box::new(LispVal::Nil),

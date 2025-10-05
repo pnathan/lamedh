@@ -1,5 +1,5 @@
 mod test_helpers;
-use lamedh::{eval_line, evaluator, printer, reader, LispVal};
+use lamedh::{LispVal, eval_line, evaluator, printer, reader};
 use test_helpers::env_with_prologue;
 
 #[test]
