@@ -138,6 +138,7 @@ impl Environment {
             "STRINGP".to_string(),
             LispVal::Builtin(BuiltinFunc::Stringp),
         );
+        env.set("APPLY".to_string(), LispVal::Builtin(BuiltinFunc::Apply));
         env
     }
 
