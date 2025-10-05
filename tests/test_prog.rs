@@ -1,10 +1,10 @@
 mod test_helpers;
 use lamedh::{eval_line, evaluator, reader};
-use test_helpers::env_with_prologue;
+use test_helpers::env_with_stdlib;
 
 #[test]
 fn test_prog_feature() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     let test_code = std::fs::read_to_string("tests/prog_test.lisp").unwrap();
     let expressions = reader::read_all(&test_code, &env).unwrap();
     for expr in expressions {

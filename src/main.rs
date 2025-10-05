@@ -1,7 +1,8 @@
 use clap::Parser;
-use lamedh::{environment::Environment, eval_line, load_file};
+use lamedh::{environment::Environment, eval_line, load_directory, load_file};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use std::fs;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -25,11 +26,31 @@ fn main() {
             eprintln!("Error loading prologue.lisp: {e:?}");
         }
     }
+
+    // Load lib/ directory if it exists
+    if let Err(e) = load_directory("lib", &env) {
+        if !e.to_string().contains("Failed to read directory") {
+            eprintln!("Error loading lib/: {e:?}");
+        }
+    }
     // Load files from -i flag
-    for file in args.i {
-        if let Err(e) = load_file(&file, &env) {
-            eprintln!("Error loading file {file}: {e:?}");
-            return;
+    for path in args.i {
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error getting metadata for {path}: {e}");
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
+            if let Err(e) = load_directory(&path, &env) {
+                eprintln!("Error loading directory {path}: {e:?}");
+            }
+        } else if metadata.is_file() {
+            if let Err(e) = load_file(&path, &env) {
+                eprintln!("Error loading file {path}: {e:?}");
+            }
         }
     }
 

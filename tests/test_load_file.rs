@@ -1,10 +1,10 @@
 mod test_helpers;
 use lamedh::eval_line;
-use test_helpers::env_with_prologue;
+use test_helpers::env_with_stdlib;
 
 #[test]
 fn test_load_file() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     let load_output = eval_line("(load-file \"tests/load_file_test_sample.lisp\")", &env);
     assert_eq!(load_output, "T");
     let output = eval_line("(loaded-function)", &env);
