@@ -1,5 +1,5 @@
 use clap::Parser;
-use lithhp::{environment::Environment, eval_line, load_file};
+use lamedh::{environment::Environment, eval_line, load_file};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
@@ -25,7 +25,6 @@ fn main() {
             eprintln!("Error loading prologue.lisp: {e:?}");
         }
     }
-
     // Load files from -i flag
     for file in args.i {
         if let Err(e) = load_file(&file, &env) {
@@ -43,11 +42,11 @@ fn main() {
 
     // If no -s flag, start REPL
     let mut rl = DefaultEditor::new().unwrap();
-    println!("Lithhp Lisp 1.5");
+    println!("Lamed (ל) Lisp 1.5");
     println!("Press Ctrl+C or Ctrl+D to exit");
 
     loop {
-        let readline = rl.readline("lithhp> ");
+        let readline = rl.readline(r"(ל)> ");
         match readline {
             Ok(line) => {
                 rl.add_history_entry(line.as_str()).unwrap();

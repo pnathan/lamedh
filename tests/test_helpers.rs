@@ -1,4 +1,4 @@
-use lithhp::{environment::Environment, evaluator, reader};
+use lamedh::{environment::Environment, evaluator, reader};
 use std::rc::Rc;
 
 pub fn env_with_prologue() -> Rc<Environment> {

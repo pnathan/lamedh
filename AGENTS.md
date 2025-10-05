@@ -4,7 +4,7 @@ This document provides instructions for agents working on the lamedh Lisp interp
 
 ## Building
 
-To build the project, run the following command from the `lithhp` directory:
+To build the project, run the following command:
 
 ```bash
 cargo build

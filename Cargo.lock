@@ -180,6 +180,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
+name = "lamedh"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "nom",
+ "rustyline",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,15 +199,6 @@ name = "linux-raw-sys"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
-
-[[package]]
-name = "lithhp"
-version = "0.1.0"
-dependencies = [
- "clap",
- "nom",
- "rustyline",
-]
 
 [[package]]
 name = "log"

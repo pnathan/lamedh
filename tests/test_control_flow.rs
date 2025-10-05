@@ -1,5 +1,5 @@
 mod test_helpers;
-use lithhp::eval_line;
+use lamedh::eval_line;
 use test_helpers::env_with_prologue;
 
 #[test]

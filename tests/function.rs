@@ -1,4 +1,4 @@
-use lithhp::{environment::Environment, eval_line};
+use lamedh::{environment::Environment, eval_line};
 
 #[test]
 fn test_function_creates_closure() {
