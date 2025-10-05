@@ -73,18 +73,30 @@ pub struct Symbol {
     pub plist: HashMap<String, LispVal>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Lambda {
     pub params: Vec<String>,
     pub body: Box<LispVal>,
-    pub env: Environment,
+    pub env: Rc<Environment>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl PartialEq for Lambda {
+    fn eq(&self, other: &Self) -> bool {
+        self.params == other.params && self.body == other.body && Rc::ptr_eq(&self.env, &other.env)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Fexpr {
     pub params: Vec<String>,
     pub body: Box<LispVal>,
-    pub env: Environment,
+    pub env: Rc<Environment>,
+}
+
+impl PartialEq for Fexpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.params == other.params && self.body == other.body && Rc::ptr_eq(&self.env, &other.env)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +104,7 @@ pub struct Macro {
     pub params: Vec<String>,
     pub rest_param: Option<String>,
     pub body: Box<LispVal>,
-    pub env: Environment,
+    pub env: Rc<Environment>,
 }
 
 impl PartialEq for Macro {
@@ -100,7 +112,7 @@ impl PartialEq for Macro {
         self.params == other.params
             && self.rest_param == other.rest_param
             && self.body == other.body
-            && self.env == other.env
+            && Rc::ptr_eq(&self.env, &other.env)
     }
 }
 
@@ -142,8 +154,9 @@ impl PartialEq for LispVal {
             (LispVal::Nil, LispVal::Nil) => true,
             (LispVal::HashTable(a), LispVal::HashTable(b)) => Rc::ptr_eq(a, b),
             (LispVal::Builtin(a), LispVal::Builtin(b)) => a == b,
-            (LispVal::Lambda(_), LispVal::Lambda(_)) => false,
-            (LispVal::Fexpr(_), LispVal::Fexpr(_)) => false,
+            (LispVal::Lambda(a), LispVal::Lambda(b)) => a == b,
+            (LispVal::Fexpr(a), LispVal::Fexpr(b)) => a == b,
+            (LispVal::Macro(a), LispVal::Macro(b)) => a == b,
             _ => false,
         }
     }
@@ -174,7 +187,7 @@ impl Hash for LispVal {
     }
 }
 
-pub fn eval_line(line: &str, env: &mut Environment) -> String {
+pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
     match reader::read(line, env) {
         Ok(lisp_val) => match evaluator::eval(&lisp_val, env) {
             Ok(result) => printer::print(&result),
@@ -186,7 +199,7 @@ pub fn eval_line(line: &str, env: &mut Environment) -> String {
 
 use std::fs;
 
-pub fn load_file(path: &str, env: &mut Environment) -> Result<(), LispError> {
+pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
     let content = fs::read_to_string(path)
         .map_err(|e| LispError::Generic(format!("Failed to read file {path}: {e}")))?;
     let expressions = reader::read_all(&content, env)
@@ -202,7 +215,7 @@ pub fn repl_loop<R: BufRead, W: Write>(
     in_stream: &mut R,
     out_stream: &mut W,
 ) -> std::io::Result<()> {
-    let mut env = Environment::new_with_builtins();
+    let env = Environment::new_with_builtins();
     loop {
         let mut line = String::new();
         let bytes_read = in_stream.read_line(&mut line)?;
@@ -217,7 +230,7 @@ pub fn repl_loop<R: BufRead, W: Write>(
             continue;
         }
 
-        let output = eval_line(line, &mut env);
+        let output = eval_line(line, &env);
         writeln!(out_stream, "{output}")?;
         out_stream.flush()?;
     }

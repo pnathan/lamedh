@@ -37,13 +37,21 @@ impl SymbolTable {
 
 #[derive(Debug, Clone)]
 pub struct Environment {
-    scopes: Rc<RefCell<Vec<HashMap<String, LispVal>>>>,
-    symbols: Rc<RefCell<SymbolTable>>,
+    parent: Option<Rc<Environment>>,
+    bindings: Rc<RefCell<HashMap<String, LispVal>>>,
+    pub symbols: Rc<RefCell<SymbolTable>>,
 }
 
 impl PartialEq for Environment {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.scopes, &other.scopes) && Rc::ptr_eq(&self.symbols, &other.symbols)
+        let parents_equal = match (&self.parent, &other.parent) {
+            (Some(p1), Some(p2)) => Rc::ptr_eq(p1, p2),
+            (None, None) => true,
+            _ => false,
+        };
+        parents_equal
+            && Rc::ptr_eq(&self.bindings, &other.bindings)
+            && Rc::ptr_eq(&self.symbols, &other.symbols)
     }
 }
 
@@ -55,15 +63,23 @@ impl Default for Environment {
 
 impl Environment {
     pub fn new() -> Self {
-        let symbols = Rc::new(RefCell::new(SymbolTable::new()));
         Environment {
-            scopes: Rc::new(RefCell::new(vec![HashMap::new()])),
-            symbols,
+            parent: None,
+            bindings: Rc::new(RefCell::new(HashMap::new())),
+            symbols: Rc::new(RefCell::new(SymbolTable::new())),
         }
     }
 
-    pub fn new_with_builtins() -> Self {
-        let mut env = Environment::new();
+    pub fn new_child(parent: &Rc<Environment>) -> Rc<Environment> {
+        Rc::new(Environment {
+            parent: Some(parent.clone()),
+            bindings: Rc::new(RefCell::new(HashMap::new())),
+            symbols: parent.symbols.clone(),
+        })
+    }
+
+    pub fn new_with_builtins() -> Rc<Environment> {
+        let env = Rc::new(Environment::new());
         let t_symbol = env.intern_symbol("T");
         env.set("T".to_string(), LispVal::Symbol(t_symbol));
 
@@ -78,6 +94,12 @@ impl Environment {
             "QUOTIENT".to_string(),
             LispVal::Builtin(BuiltinFunc::Divide),
         );
+
+        // Common operator aliases
+        env.set("+".to_string(), LispVal::Builtin(BuiltinFunc::Plus));
+        env.set("-".to_string(), LispVal::Builtin(BuiltinFunc::Minus));
+        env.set("*".to_string(), LispVal::Builtin(BuiltinFunc::Multiply));
+        env.set("/".to_string(), LispVal::Builtin(BuiltinFunc::Divide));
         env.set("CAR".to_string(), LispVal::Builtin(BuiltinFunc::Car));
         env.set("CDR".to_string(), LispVal::Builtin(BuiltinFunc::Cdr));
         env.set("CONS".to_string(), LispVal::Builtin(BuiltinFunc::Cons));
@@ -94,6 +116,7 @@ impl Environment {
             "EQUAL-NUMBER".to_string(),
             LispVal::Builtin(BuiltinFunc::NumericEquals),
         );
+        env.set("=".to_string(), LispVal::Builtin(BuiltinFunc::NumericEquals));
         env.set(
             "MAKE-HASH-TABLE".to_string(),
             LispVal::Builtin(BuiltinFunc::MakeHashTable),
@@ -118,54 +141,45 @@ impl Environment {
         env
     }
 
-    pub fn intern_symbol(&mut self, name: &str) -> Rc<RefCell<Symbol>> {
+    pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
         self.symbols.borrow_mut().intern(name)
     }
 
     pub fn get(&self, name: &str) -> Option<LispVal> {
-        for scope in self.scopes.borrow().iter().rev() {
-            if let Some(val) = scope.get(name) {
-                return Some(val.clone());
-            }
+        if let Some(val) = self.bindings.borrow().get(name) {
+            return Some(val.clone());
+        }
+        if let Some(parent) = &self.parent {
+            return parent.get(name);
         }
         None
     }
 
-    // `set` defines a variable in the current (innermost) scope.
-    pub fn set(&mut self, name: String, val: LispVal) {
-        self.scopes
-            .borrow_mut()
-            .last_mut()
-            .unwrap()
-            .insert(name, val);
+    pub fn set(&self, name: String, val: LispVal) {
+        self.bindings.borrow_mut().insert(name, val);
     }
 
-    // `update` searches for a variable and updates its value.
-    // If not found, it creates it in the current scope.
-    pub fn update(&mut self, name: &str, val: LispVal) {
-        for scope in self.scopes.borrow_mut().iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), val);
+    pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
+        let mut maybe_env = Some(env.clone());
+        while let Some(current_env) = maybe_env {
+            if current_env.bindings.borrow().contains_key(name) {
+                current_env
+                    .bindings
+                    .borrow_mut()
+                    .insert(name.to_string(), val);
                 return;
             }
+            maybe_env = current_env.parent.clone();
         }
-        // Not found, so we set it in the current scope.
-        self.set(name.to_string(), val);
-    }
-
-    pub fn push_scope(&mut self) {
-        self.scopes.borrow_mut().push(HashMap::new());
-    }
-
-    pub fn pop_scope(&mut self) {
-        self.scopes.borrow_mut().pop();
+        env.set(name.to_string(), val);
     }
 
     pub fn all_bindings(&self) -> HashMap<String, LispVal> {
         let mut all = HashMap::new();
-        for scope in self.scopes.borrow().iter() {
-            all.extend(scope.clone());
+        if let Some(parent) = &self.parent {
+            all.extend(parent.all_bindings());
         }
+        all.extend(self.bindings.borrow().clone());
         all
     }
 }

@@ -1,5 +1,5 @@
 #![allow(clippy::mutable_key_type)]
-use crate::{BuiltinFunc, LispError, LispVal, environment::Environment};
+use crate::{environment::Environment, BuiltinFunc, LispError, LispVal};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -168,7 +168,7 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
 fn apply_logical_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &mut Environment,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Eq => {
@@ -220,7 +220,7 @@ fn apply_logical_op(
 fn apply_hashtable_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &mut Environment,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::MakeHashTable => {
@@ -315,7 +315,7 @@ fn apply_hashtable_op(
     }
 }
 
-fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<LispVal, LispError> {
+fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     match func {
         LispVal::Builtin(builtin) => match builtin {
             BuiltinFunc::Plus
@@ -380,16 +380,12 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
                     args.len()
                 )));
             }
-
-            let mut new_env = lambda.env.clone();
-            new_env.push_scope();
+            let new_env = Environment::new_child(&lambda.env);
             for (param, arg) in lambda.params.iter().zip(args) {
                 new_env.set(param.clone(), arg.clone());
             }
 
-            let result = eval(&lambda.body, &mut new_env);
-            new_env.pop_scope();
-            result
+            eval(&lambda.body, &new_env)
         }
         _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
     }
@@ -398,7 +394,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &mut Environment) -> Result<Lisp
 fn make_lambda(
     params: &LispVal,
     body: &LispVal,
-    env: &mut Environment,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
@@ -424,7 +420,7 @@ fn make_lambda(
 fn make_fexpr(
     params: &LispVal,
     body: &LispVal,
-    env: &mut Environment,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
@@ -450,7 +446,7 @@ fn make_fexpr(
 fn make_macro(
     params: &LispVal,
     body: &LispVal,
-    env: &mut Environment,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
@@ -494,10 +490,9 @@ fn make_macro(
 fn expand_macro(
     m: &crate::Macro,
     args: &[LispVal],
-    _env: &mut Environment,
+    _env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
-    let mut macro_env = m.env.clone();
-    macro_env.push_scope();
+    let macro_env = Environment::new_child(&m.env);
 
     if let Some(rest_param_name) = &m.rest_param {
         if args.len() < m.params.len() {
@@ -525,12 +520,10 @@ fn expand_macro(
         }
     }
 
-    let expanded = eval(&m.body, &mut macro_env);
-    macro_env.pop_scope();
-    expanded
+    eval(&m.body, &macro_env)
 }
 
-pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
+pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
         LispVal::Symbol(s) => env
@@ -552,20 +545,20 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
             if let LispVal::Symbol(s) = &**first {
                 match s.borrow().name.as_str() {
                     "QUOTE" => {
-                        if let LispVal::Cons { car, cdr } = &**rest {
-                            if **cdr == LispVal::Nil {
-                                return Ok(*car.clone());
-                            }
+                        if let LispVal::Cons { car, cdr } = &**rest
+                            && **cdr == LispVal::Nil
+                        {
+                            return Ok(*car.clone());
                         }
                         Err(LispError::Generic(
                             "quote takes exactly one argument".to_string(),
                         ))
                     }
                     "QUASIQUOTE" => {
-                        if let LispVal::Cons { car, cdr } = &**rest {
-                            if **cdr == LispVal::Nil {
-                                return quasiquote_eval(car, env);
-                            }
+                        if let LispVal::Cons { car, cdr } = &**rest
+                            && **cdr == LispVal::Nil
+                        {
+                            return quasiquote_eval(car, env);
                         }
                         Err(LispError::Generic(
                             "quasiquote takes exactly one argument".to_string(),
@@ -696,6 +689,39 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             "lambda requires params and at least one body expression".to_string(),
                         ))
                     }
+                    "FUNCTION" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() != 1 {
+                            return Err(LispError::Generic(
+                                "FUNCTION takes exactly one argument".to_string(),
+                            ));
+                        }
+                        // The argument must be a LAMBDA expression
+                        if let LispVal::Cons {
+                            car: lambda_sym,
+                            cdr: lambda_body,
+                        } = &args[0]
+                            && let LispVal::Symbol(s) = &**lambda_sym
+                            && s.borrow().name == "LAMBDA"
+                            && let LispVal::Cons {
+                                car: params,
+                                cdr: body_list,
+                            } = &**lambda_body
+                        {
+                            let body_exprs = list_to_vec(body_list)?;
+                            let final_body = if body_exprs.len() == 1 {
+                                body_exprs[0].clone()
+                            } else {
+                                let progn_sym =
+                                    LispVal::Symbol(env.intern_symbol("PROGN"));
+                                vec_to_list([vec![progn_sym], body_exprs].concat())
+                            };
+                            return make_lambda(params, &final_body, env);
+                        }
+                        Err(LispError::Generic(
+                            "FUNCTION argument must be a LAMBDA expression".to_string(),
+                        ))
+                    }
                     "LABEL" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
@@ -707,16 +733,13 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         let expr_val = &args[1];
 
                         if let LispVal::Symbol(name_sym) = name_val {
-                            let mut new_env = env.clone();
-                            new_env.push_scope();
+                            let new_env = Environment::new_child(env);
                             let label_expr = LispVal::Cons {
                                 car: Box::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
                                 cdr: rest.clone(),
                             };
                             new_env.set(name_sym.borrow().name.clone(), label_expr);
-                            let result = eval(expr_val, &mut new_env);
-                            new_env.pop_scope();
-                            result
+                            eval(expr_val, &new_env)
                         } else {
                             Err(LispError::Generic(
                                 "LABEL name must be a symbol".to_string(),
@@ -816,7 +839,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             let val_expr = &chunk[1];
                             if let LispVal::Symbol(s) = var {
                                 let val = eval(val_expr, env)?;
-                                env.update(&s.borrow().name, val.clone());
+                                Environment::update(env, &s.borrow().name, val.clone());
                                 last_val = val;
                             } else {
                                 return Err(LispError::Generic(
@@ -837,13 +860,12 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         let var_list = list_to_vec(&args[0])?;
                         let body = &args[1..];
 
-                        env.push_scope();
+                        let prog_env = Environment::new_child(env);
 
                         for var in var_list {
                             if let LispVal::Symbol(s) = var {
-                                env.set(s.borrow().name.clone(), LispVal::Nil);
+                                prog_env.set(s.borrow().name.clone(), LispVal::Nil);
                             } else {
-                                env.pop_scope();
                                 return Err(LispError::Generic(
                                     "PROG variable list must contain only symbols".to_string(),
                                 ));
@@ -858,7 +880,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                         }
 
                         let mut pc = 0;
-                        let result = loop {
+                        loop {
                             if pc >= body.len() {
                                 break Ok(LispVal::Nil); // Fell off the end
                             }
@@ -871,7 +893,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                 continue;
                             }
 
-                            match eval(item, env) {
+                            match eval(item, &prog_env) {
                                 Ok(_) => {
                                     pc += 1;
                                 }
@@ -891,10 +913,7 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                                     break Err(e);
                                 }
                             }
-                        };
-
-                        env.pop_scope();
-                        result
+                        }
                     }
                     "RETURN" => {
                         let args = list_to_vec(rest)?;
@@ -958,15 +977,12 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
                             return eval(&expanded, env);
                         }
                         if let LispVal::Fexpr(fexpr) = &func {
-                            let mut new_env = fexpr.env.clone();
-                            new_env.push_scope();
                             if fexpr.params.len() != 1 {
                                 return Err(LispError::Generic("fexpr must have exactly one parameter for the list of arguments".to_string()));
                             }
+                            let new_env = Environment::new_child(&fexpr.env);
                             new_env.set(fexpr.params[0].clone(), *rest.clone());
-                            let result = eval(&fexpr.body, &mut new_env);
-                            new_env.pop_scope();
-                            return result;
+                            return eval(&fexpr.body, &new_env);
                         }
 
                         let eval_args: Result<Vec<LispVal>, LispError> =
@@ -985,23 +1001,22 @@ pub fn eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> 
     }
 }
 
-fn quasiquote_eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, LispError> {
+fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
-        if let LispVal::Symbol(s) = &**car {
-            if s.borrow().name == "UNQUOTE" {
-                if let LispVal::Cons {
-                    car: unquoted_val,
-                    cdr: rest,
-                } = &**cdr
-                {
-                    if **rest == LispVal::Nil {
-                        return eval(unquoted_val, env);
-                    }
-                }
-                return Err(LispError::Generic(
-                    "unquote takes exactly one argument".to_string(),
-                ));
+        if let LispVal::Symbol(s) = &**car
+            && s.borrow().name == "UNQUOTE"
+        {
+            if let LispVal::Cons {
+                car: unquoted_val,
+                cdr: rest,
+            } = &**cdr
+                && **rest == LispVal::Nil
+            {
+                return eval(unquoted_val, env);
             }
+            return Err(LispError::Generic(
+                "unquote takes exactly one argument".to_string(),
+            ));
         }
         let car_eval = quasiquote_eval(car, env)?;
         let cdr_eval = quasiquote_eval(cdr, env)?;
@@ -1017,7 +1032,7 @@ fn quasiquote_eval(val: &LispVal, env: &mut Environment) -> Result<LispVal, Lisp
 fn apply_symbol_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &mut Environment,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::GetP => {

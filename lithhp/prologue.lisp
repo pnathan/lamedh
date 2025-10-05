@@ -31,7 +31,7 @@
 (defmacro defcxr (name operations)
   "Generate a CAR/CDR composition function"
   `(defun ,name (x)
-     ,(build-cxr-expr operations)))
+     ,(build-cxr-expr (eval operations))))
 
 ;; Generate all 2-level combinations
 (defcxr caar '(a a))
