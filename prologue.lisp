@@ -66,3 +66,34 @@
 (defcxr cddadr '(d d a d))
 (defcxr cdddar '(d d d a))
 (defcxr cddddr '(d d d d))
+
+(defun equal (a b)
+  (if (atom a)
+      (eq a b)
+      (if (atom b)
+          nil
+          (if (equal (car a) (car b))
+              (equal (cdr a) (cdr b))
+              nil))))
+
+;; Essential list functions
+(defun append (x y)
+  (cond ((null x) y)
+        (t (cons (car x) (append (cdr x) y)))))
+
+(defun member (item list)
+  (cond ((null list) nil)
+        ((equal item (car list)) list)
+        (t (member item (cdr list)))))
+
+(defun length (list)
+  (cond ((null list) 0)
+        (t (+ 1 (length (cdr list))))))
+
+(defun reverse-aux (lst acc)
+  (if (null lst)
+      acc
+      (reverse-aux (cdr lst) (cons (car lst) acc))))
+
+(defun reverse (list)
+  (reverse-aux list nil))
