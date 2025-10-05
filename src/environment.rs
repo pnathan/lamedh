@@ -139,6 +139,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::Stringp),
         );
         env.set("APPLY".to_string(), LispVal::Builtin(BuiltinFunc::Apply));
+        env.set(
+            "LOAD-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::LoadFile),
+        );
         env
     }
 
