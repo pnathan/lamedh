@@ -1,20 +1,19 @@
-use crate::LispVal;
 use crate::environment::Environment;
+use crate::LispVal;
 use nom::{
-    IResult,
     branch::alt,
     bytes::complete::{is_not, tag},
     character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
     sequence::{delimited, pair, preceded, terminated, tuple},
+    IResult,
 };
-use std::cell::RefCell;
 use std::rc::Rc;
 
 type ParseResult<'a> = IResult<&'a str, LispVal>;
 
-fn parse_expr(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
+fn parse_expr(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         preceded(
             ws,
@@ -36,7 +35,7 @@ fn parse_comment(input: &str) -> IResult<&str, &str> {
 }
 
 // A parser for whitespace, including comments
-fn ws(input: &str) -> IResult<&str, &str> {
+fn ws<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
     recognize(many0(alt((multispace1, parse_comment))))(input)
 }
 
@@ -68,7 +67,7 @@ fn parse_number(input: &str) -> ParseResult {
     ))(input)
 }
 
-fn parse_atom(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
+fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
             parse_number,
@@ -80,9 +79,9 @@ fn parse_atom(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
                 |s: &str| {
                     let s_upper = s.to_uppercase();
                     match s_upper.as_str() {
-                        "T" => LispVal::Symbol(env.borrow_mut().intern_symbol("T")),
+                        "T" => LispVal::Symbol(env.intern_symbol("T")),
                         "NIL" => LispVal::Nil,
-                        _ => LispVal::Symbol(env.borrow_mut().intern_symbol(&s_upper)),
+                        _ => LispVal::Symbol(env.intern_symbol(&s_upper)),
                     }
                 },
             ),
@@ -96,7 +95,7 @@ fn parse_string(input: &str) -> ParseResult {
     })(input)
 }
 
-fn parse_list_contents(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
+fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (input, exprs) = many0(preceded(ws, parse_expr(env.clone())))(input)?;
         let (input, tail) = opt(preceded(
@@ -115,7 +114,7 @@ fn parse_list_contents(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseR
     }
 }
 
-fn parse_list(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
+fn parse_list(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         delimited(
             char('('),
@@ -125,8 +124,8 @@ fn parse_list(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
-fn parse_quoted(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
-    let quote_symbol = LispVal::Symbol(env.borrow_mut().intern_symbol("QUOTE"));
+fn parse_quoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    let quote_symbol = LispVal::Symbol(env.intern_symbol("QUOTE"));
     move |input: &str| {
         map(preceded(char('\''), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
@@ -140,8 +139,8 @@ fn parse_quoted(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
-fn parse_quasiquoted(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
-    let quasiquote_symbol = LispVal::Symbol(env.borrow_mut().intern_symbol("QUASIQUOTE"));
+fn parse_quasiquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    let quasiquote_symbol = LispVal::Symbol(env.intern_symbol("QUASIQUOTE"));
     move |input: &str| {
         map(preceded(char('`'), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
@@ -155,8 +154,8 @@ fn parse_quasiquoted(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseRes
     }
 }
 
-fn parse_unquoted(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult {
-    let unquote_symbol = LispVal::Symbol(env.borrow_mut().intern_symbol("UNQUOTE"));
+fn parse_unquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    let unquote_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE"));
     move |input: &str| {
         map(preceded(char(','), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
@@ -170,21 +169,19 @@ fn parse_unquoted(env: Rc<RefCell<Environment>>) -> impl Fn(&str) -> ParseResult
     }
 }
 
-pub fn read(input: &str, env: &mut Environment) -> Result<LispVal, String> {
-    let env_rc = Rc::new(RefCell::new(env.clone()));
-    match terminated(parse_expr(env_rc), ws)(input.trim()) {
+pub fn read(input: &str, env: &Rc<Environment>) -> Result<LispVal, String> {
+    match terminated(parse_expr(env.clone()), ws)(input.trim()) {
         Ok(("", val)) => Ok(val),
         Ok((rem, _)) => Err(format!("Unexpected input: {rem}")),
         Err(e) => Err(e.to_string()),
     }
 }
 
-pub fn read_all(input: &str, env: &mut Environment) -> Result<Vec<LispVal>, String> {
-    let env_rc = Rc::new(RefCell::new(env.clone()));
+pub fn read_all(input: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, String> {
     let mut results = vec![];
     let mut current_input = input.trim();
     while !current_input.is_empty() {
-        match terminated(parse_expr(env_rc.clone()), ws)(current_input) {
+        match terminated(parse_expr(env.clone()), ws)(current_input) {
             Ok((rem, val)) => {
                 results.push(val);
                 current_input = rem;
@@ -206,7 +203,7 @@ mod tests {
         }
     }
 
-    fn symbol(s: &str, env: &mut Environment) -> LispVal {
+    fn symbol(s: &str, env: &Rc<Environment>) -> LispVal {
         LispVal::Symbol(env.intern_symbol(s))
     }
 
@@ -232,15 +229,14 @@ mod tests {
 
     #[test]
     fn test_parse_atom() {
-        let mut env = Environment::new();
-        let env_rc = Rc::new(RefCell::new(env.clone()));
+        let env = Rc::new(Environment::new());
         assert_eq!(
-            parse_atom(env_rc.clone())("abc"),
-            Ok(("", symbol("ABC", &mut env)))
+            parse_atom(env.clone())("abc"),
+            Ok(("", symbol("ABC", &env)))
         );
         assert_eq!(
-            parse_atom(env_rc.clone())("with-hyphen"),
-            Ok(("", symbol("WITH-HYPHEN", &mut env)))
+            parse_atom(env.clone())("with-hyphen"),
+            Ok(("", symbol("WITH-HYPHEN", &env)))
         );
     }
 
@@ -254,14 +250,13 @@ mod tests {
 
     #[test]
     fn test_parse_list() {
-        let mut env = Environment::new();
-        let env_rc = Rc::new(RefCell::new(env.clone()));
+        let env = Rc::new(Environment::new());
         assert_eq!(
-            parse_list(env_rc)("(PLUS 1 2)"),
+            parse_list(env.clone())("(PLUS 1 2)"),
             Ok((
                 "",
                 cons(
-                    symbol("PLUS", &mut env),
+                    symbol("PLUS", &env),
                     cons(number(1), cons(number(2), LispVal::Nil))
                 )
             ))
@@ -270,12 +265,12 @@ mod tests {
 
     #[test]
     fn test_read_simple_list() {
-        let mut env = Environment::new();
-        let result = read("(PLUS 10 20)", &mut env);
+        let env = Rc::new(Environment::new());
+        let result = read("(PLUS 10 20)", &env);
         assert_eq!(
             result,
             Ok(cons(
-                symbol("PLUS", &mut env),
+                symbol("PLUS", &env),
                 cons(number(10), cons(number(20), LispVal::Nil))
             ))
         );
@@ -283,17 +278,17 @@ mod tests {
 
     #[test]
     fn test_read_nested_list() {
-        let mut env = Environment::new();
-        let result = read("(PLUS 10 (TIMES 5 2))", &mut env);
+        let env = Rc::new(Environment::new());
+        let result = read("(PLUS 10 (TIMES 5 2))", &env);
         assert_eq!(
             result,
             Ok(cons(
-                symbol("PLUS", &mut env),
+                symbol("PLUS", &env),
                 cons(
                     number(10),
                     cons(
                         cons(
-                            symbol("TIMES", &mut env),
+                            symbol("TIMES", &env),
                             cons(number(5), cons(number(2), LispVal::Nil))
                         ),
                         LispVal::Nil
@@ -305,41 +300,38 @@ mod tests {
 
     #[test]
     fn test_read_dotted_list() {
-        let mut env = Environment::new();
-        let result = read("(a . b)", &mut env);
-        assert_eq!(
-            result,
-            Ok(cons(symbol("A", &mut env), symbol("B", &mut env)))
-        );
+        let env = Rc::new(Environment::new());
+        let result = read("(a . b)", &env);
+        assert_eq!(result, Ok(cons(symbol("A", &env), symbol("B", &env))));
     }
 
     #[test]
     fn test_read_complex_dotted_list() {
-        let mut env = Environment::new();
-        let result = read("(a b . c)", &mut env);
+        let env = Rc::new(Environment::new());
+        let result = read("(a b . c)", &env);
         assert_eq!(
             result,
             Ok(cons(
-                symbol("A", &mut env),
-                cons(symbol("B", &mut env), symbol("C", &mut env))
+                symbol("A", &env),
+                cons(symbol("B", &env), symbol("C", &env))
             ))
         );
     }
 
     #[test]
     fn test_comment() {
-        let mut env = Environment::new();
+        let env = Rc::new(Environment::new());
         let result = read(
             "
             ; this is a comment
             (PLUS 1 2) ; another comment
         ",
-            &mut env,
+            &env,
         );
         assert_eq!(
             result,
             Ok(cons(
-                symbol("PLUS", &mut env),
+                symbol("PLUS", &env),
                 cons(number(1), cons(number(2), LispVal::Nil))
             ))
         );
@@ -347,32 +339,32 @@ mod tests {
 
     #[test]
     fn test_read_quoted() {
-        let mut env = Environment::new();
-        let result = read("'a", &mut env);
+        let env = Rc::new(Environment::new());
+        let result = read("'a", &env);
         assert_eq!(
             result,
             Ok(cons(
-                symbol("QUOTE", &mut env),
-                cons(symbol("A", &mut env), LispVal::Nil)
+                symbol("QUOTE", &env),
+                cons(symbol("A", &env), LispVal::Nil)
             ))
         );
     }
 
     #[test]
     fn test_read_quasiquote() {
-        let mut env = Environment::new();
-        let result = read("`(a ,b)", &mut env);
+        let env = Rc::new(Environment::new());
+        let result = read("`(a ,b)", &env);
         assert_eq!(
             result,
             Ok(cons(
-                symbol("QUASIQUOTE", &mut env),
+                symbol("QUASIQUOTE", &env),
                 cons(
                     cons(
-                        symbol("A", &mut env),
+                        symbol("A", &env),
                         cons(
                             cons(
-                                symbol("UNQUOTE", &mut env),
-                                cons(symbol("B", &mut env), LispVal::Nil)
+                                symbol("UNQUOTE", &env),
+                                cons(symbol("B", &env), LispVal::Nil)
                             ),
                             LispVal::Nil
                         )
@@ -385,13 +377,13 @@ mod tests {
 
     #[test]
     fn test_read_nil() {
-        let mut env = Environment::new();
-        assert_eq!(read("NIL", &mut env), Ok(LispVal::Nil));
+        let env = Rc::new(Environment::new());
+        assert_eq!(read("NIL", &env), Ok(LispVal::Nil));
     }
 
     #[test]
     fn test_read_t() {
-        let mut env = Environment::new();
-        assert_eq!(read("T", &mut env), Ok(symbol("T", &mut env)));
+        let env = Rc::new(Environment::new());
+        assert_eq!(read("T", &env), Ok(symbol("T", &env)));
     }
 }
