@@ -30,6 +30,52 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
         })
 }
 
+fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+    if args.len() != 2 {
+        return Err(LispError::Generic(
+            "APPLY requires exactly two arguments".to_string(),
+        ));
+    }
+    let func_arg = &args[0];
+    let arg_list = &args[1];
+
+    let func = match func_arg {
+        LispVal::Symbol(s) => env
+            .get(&s.borrow().name)
+            .ok_or_else(|| LispError::Generic(format!("Function not found: {}", s.borrow().name))),
+        _ => Ok(func_arg.clone()),
+    }?;
+
+    let unpacked_args = match list_to_vec(arg_list) {
+        Ok(vec) => vec,
+        Err(_) => {
+            return Err(LispError::Generic(
+                "APPLY second argument must be a proper list".to_string(),
+            ))
+        }
+    };
+
+    match &func {
+        LispVal::Macro(m) => {
+            let expanded = expand_macro(m, &unpacked_args, env)?;
+            eval(&expanded, env)
+        }
+        LispVal::Fexpr(f) => {
+            if f.params.len() != 1 {
+                return Err(LispError::Generic(
+                    "APPLY: fexpr must have exactly one parameter for the list of arguments"
+                        .to_string(),
+                ));
+            }
+            let new_env = Environment::new_child(&f.env);
+            let fexpr_arg_list = vec_to_list(unpacked_args);
+            new_env.set(f.params[0].clone(), fexpr_arg_list);
+            eval(&f.body, &new_env)
+        }
+        _ => apply(&func, &unpacked_args, env),
+    }
+}
+
 fn is_truthy(val: &LispVal) -> bool {
     !matches!(val, LispVal::Nil)
 }
@@ -371,6 +417,9 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     _ => Ok(LispVal::Nil),
                 }
             }
+
+            BuiltinFunc::Apply => apply_apply(args, env),
+
             BuiltinFunc::LoadFile => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(

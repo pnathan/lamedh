@@ -18,6 +18,8 @@ jobs:
 
     - name: Build
       run: cargo build --verbose
+      working-directory: ./lithhp
 
     - name: Test
       run: cargo test --verbose
+      working-directory: ./lithhp
