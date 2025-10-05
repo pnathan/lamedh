@@ -65,6 +65,7 @@ pub enum BuiltinFunc {
     GetP,
     PutP,
     Stringp,
+    LoadFile,
 }
 
 #[derive(Debug, Clone, PartialEq)]
