@@ -28,6 +28,9 @@ fn test_apply_with_lambda() {
     lamedh::eval_line("(def my-add (lambda (x y) (+ x y)))", &env);
     let result = lamedh::eval_line("(APPLY my-add '(3 4))", &env);
     assert_eq!(result, "7");
+
+    let result = lamedh::eval_line("(APPLY (lambda (x y) (* x y)) '(5 10))", &env);
+    assert_eq!(result, "50");
 }
 
 #[test]
