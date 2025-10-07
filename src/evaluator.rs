@@ -93,7 +93,10 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
     let nums = nums?;
 
     match op {
-        BuiltinFunc::Plus => Ok(LispVal::Number(nums.iter().sum())),
+        BuiltinFunc::Plus => {
+            let result = nums.iter().fold(0i64, |acc, &x| acc.wrapping_add(x));
+            Ok(LispVal::Number(result))
+        }
         BuiltinFunc::Minus => {
             if nums.is_empty() {
                 return Err(LispError::Generic(
@@ -101,16 +104,19 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 ));
             }
             if nums.len() == 1 {
-                Ok(LispVal::Number(-nums[0]))
+                Ok(LispVal::Number(nums[0].wrapping_neg()))
             } else {
                 let mut result = nums[0];
                 for &num in &nums[1..] {
-                    result -= num;
+                    result = result.wrapping_sub(num);
                 }
                 Ok(LispVal::Number(result))
             }
         }
-        BuiltinFunc::Multiply => Ok(LispVal::Number(nums.iter().product())),
+        BuiltinFunc::Multiply => {
+            let result = nums.iter().fold(1i64, |acc, &x| acc.wrapping_mul(x));
+            Ok(LispVal::Number(result))
+        }
         BuiltinFunc::Divide => {
             if nums.len() != 2 {
                 return Err(LispError::Generic(

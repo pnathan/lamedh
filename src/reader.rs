@@ -2,7 +2,7 @@ use crate::environment::Environment;
 use crate::LispVal;
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag},
+    bytes::complete::{is_not, tag, take_while},
     character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
@@ -95,9 +95,10 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
 }
 
 fn parse_string(input: &str) -> ParseResult<'_> {
-    map(delimited(char('"'), is_not("\""), char('"')), |s: &str| {
-        LispVal::String(s.to_string())
-    })(input)
+    map(
+        delimited(char('"'), take_while(|c| c != '"'), char('"')),
+        |s: &str| LispVal::String(s.to_string()),
+    )(input)
 }
 
 fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
