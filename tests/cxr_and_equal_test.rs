@@ -1,32 +1,16 @@
-use lamedh::{environment::Environment, eval_line, evaluator, reader};
+use lamedh::{self, environment::Environment, eval_line};
 use std::rc::Rc;
 
-fn env_with_prologue() -> Rc<Environment> {
+fn env_with_stdlib() -> Rc<Environment> {
     let env = Environment::new_with_builtins();
-    let prologue = std::fs::read_to_string("prologue.lisp").unwrap();
-    let expressions = reader::read_all(&prologue, &env).unwrap();
-    for expr in expressions {
-        evaluator::eval(&expr, &env).unwrap();
-    }
+    //    lamedh::load_file("prologue.lisp", &env).unwrap();
+    lamedh::load_directory("lib", &env).unwrap();
     env
 }
 
 #[test]
 fn test_equal_atoms() {
-    let env = env_with_prologue();
-
-    // Define equal function
-    let equal_def = r#"
-    (defun equal (a b)
-      (if (atom a)
-          (eq a b)
-          (if (atom b)
-              nil
-              (if (equal (car a) (car b))
-                  (equal (cdr a) (cdr b))
-                  nil))))
-    "#;
-    eval_line(equal_def, &env);
+    let env = env_with_stdlib();
 
     // Test with atoms
     assert_eq!(eval_line("(equal 4 4)", &env), "T");
@@ -37,19 +21,7 @@ fn test_equal_atoms() {
 
 #[test]
 fn test_equal_lists() {
-    let env = env_with_prologue();
-
-    let equal_def = r#"
-    (defun equal (a b)
-      (if (atom a)
-          (eq a b)
-          (if (atom b)
-              nil
-              (if (equal (car a) (car b))
-                  (equal (cdr a) (cdr b))
-                  nil))))
-    "#;
-    eval_line(equal_def, &env);
+    let env = env_with_stdlib();
 
     // Test with lists of increasing complexity
     assert_eq!(eval_line("(equal '(4) '(4))", &env), "T");
@@ -63,19 +35,7 @@ fn test_equal_lists() {
 
 #[test]
 fn test_equal_nested_lists() {
-    let env = env_with_prologue();
-
-    let equal_def = r#"
-    (defun equal (a b)
-      (if (atom a)
-          (eq a b)
-          (if (atom b)
-              nil
-              (if (equal (car a) (car b))
-                  (equal (cdr a) (cdr b))
-                  nil))))
-    "#;
-    eval_line(equal_def, &env);
+    let env = env_with_stdlib();
 
     // Test with nested lists
     assert_eq!(
@@ -91,7 +51,7 @@ fn test_equal_nested_lists() {
 
 #[test]
 fn test_cxr_2level() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     // Test 2-level cxr functions
     assert_eq!(eval_line("(caar '((1 2) (3 4)))", &env), "1");
@@ -102,7 +62,7 @@ fn test_cxr_2level() {
 
 #[test]
 fn test_cxr_3level() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     // Test 3-level cxr functions
     assert_eq!(
@@ -130,7 +90,7 @@ fn test_cxr_3level() {
 
 #[test]
 fn test_cxr_4level() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     // Test a few 4-level cxr functions
     assert_eq!(
@@ -146,7 +106,7 @@ fn test_cxr_4level() {
 
 #[test]
 fn test_recursive_factorial() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     let factorial_def = r#"
     (defun factorial (n)
@@ -164,7 +124,7 @@ fn test_recursive_factorial() {
 
 #[test]
 fn test_recursive_fibonacci() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     let fib_def = r#"
     (defun fib (n)
@@ -187,7 +147,7 @@ fn test_recursive_fibonacci() {
 
 #[test]
 fn test_recursive_list_length() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     let length_def = r#"
     (defun length (lst)
@@ -205,7 +165,7 @@ fn test_recursive_list_length() {
 
 #[test]
 fn test_recursive_reverse() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     let reverse_def = r#"
     (defun reverse (lst)
@@ -225,7 +185,7 @@ fn test_recursive_reverse() {
 
 #[test]
 fn test_deeply_nested_recursion() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
 
     // Test deeply nested list recursion
     let sum_nested_def = r#"

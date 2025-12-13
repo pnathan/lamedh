@@ -1,12 +1,19 @@
-use lamedh::{environment::Environment, evaluator, reader};
+use lamedh::{self, environment::Environment};
 use std::rc::Rc;
 
-pub fn env_with_prologue() -> Rc<Environment> {
+pub fn env_with_stdlib() -> Rc<Environment> {
     let env = Environment::new_with_builtins();
-    let prologue = std::fs::read_to_string("prologue.lisp").unwrap();
-    let expressions = reader::read_all(&prologue, &env).unwrap();
-    for expr in expressions {
-        evaluator::eval(&expr, &env).unwrap();
-    }
+    match lamedh::load_file("prologue.lisp", &env) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("error loading prologue.lisp: {:?}", e);
+        }
+    };
+    match lamedh::load_directory("lib", &env) {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("error loading lib directory: {:?}", e);
+        }
+    };
     env
 }

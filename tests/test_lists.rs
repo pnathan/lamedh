@@ -1,17 +1,17 @@
 mod test_helpers;
 use lamedh::eval_line;
-use test_helpers::env_with_prologue;
+use test_helpers::env_with_stdlib;
 
 #[test]
 fn test_cons_dotted_pair() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     let output = eval_line("(cons 'a 'b)", &env);
     assert_eq!(output, "(A . B)");
 }
 
 #[test]
 fn test_atom() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     assert_eq!(eval_line("(atom 'a)", &env), "T");
     assert_eq!(eval_line("(atom 1)", &env), "T");
     assert_eq!(eval_line("(atom \"s\")", &env), "T");
@@ -22,7 +22,7 @@ fn test_atom() {
 
 #[test]
 fn test_null() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     assert_eq!(eval_line("(null nil)", &env), "T");
     assert_eq!(eval_line("(null '())", &env), "T");
     assert_eq!(eval_line("(null 1)", &env), "()");
@@ -31,14 +31,14 @@ fn test_null() {
 
 #[test]
 fn test_cdr_of_dotted_list() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     let output = eval_line("(cdr (cons 1 (cons 2 3)))", &env);
     assert_eq!(output, "(2 . 3)");
 }
 
 #[test]
 fn test_pairlis() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     // Test with equal length lists
     let output1 = eval_line("(pairlis '(a b c) '(1 2 3))", &env);
     assert_eq!(output1, "((A . 1) (B . 2) (C . 3))");

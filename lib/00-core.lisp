@@ -1,0 +1,6 @@
+(defmacro defun (name params &rest body)
+  (if (stringp (car body))
+    (let ((lambda-expr (cons 'lambda (cons params (cdr body)))))
+      `(def ,name ,lambda-expr ,(car body)))
+    (let ((lambda-expr (cons 'lambda (cons params body))))
+      `(def ,name ,lambda-expr))))

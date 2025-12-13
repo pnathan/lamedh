@@ -1,10 +1,10 @@
 mod test_helpers;
 use lamedh::eval_line;
-use test_helpers::env_with_prologue;
+use test_helpers::env_with_stdlib;
 
 #[test]
 fn test_rust_primitives() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     assert_eq!(eval_line("(< 2 3)", &env), "T");
     assert_eq!(eval_line("(< 3 2)", &env), "()");
     assert_eq!(eval_line("(> 5 3)", &env), "T");
@@ -19,7 +19,7 @@ fn test_rust_primitives() {
 
 #[test]
 fn test_lisp_derived_functions() {
-    let env = env_with_prologue();
+    let env = env_with_stdlib();
     assert_eq!(eval_line("(onep 1)", &env), "T");
     assert_eq!(eval_line("(onep 0)", &env), "()");
     assert_eq!(eval_line("(minusp -5)", &env), "T");

@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 fn env_with_prologue() -> Rc<Environment> {
     let env = Environment::new_with_builtins();
+    lamedh::load_directory("lib", &env).unwrap();
     let prologue = std::fs::read_to_string("prologue.lisp").unwrap();
     let expressions = reader::read_all(&prologue, &env).unwrap();
     for expr in expressions {

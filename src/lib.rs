@@ -7,6 +7,7 @@ use environment::Environment;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::rc::Rc;
@@ -209,8 +210,6 @@ pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
     }
 }
 
-use std::fs;
-
 pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
     let content = fs::read_to_string(path)
         .map_err(|e| LispError::Generic(format!("Failed to read file {path}: {e}")))?;
@@ -219,6 +218,26 @@ pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
 
     for expr in expressions {
         evaluator::eval(&expr, env)?;
+    }
+    Ok(())
+}
+
+pub fn load_directory(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| LispError::Generic(format!("Failed to read directory {path}: {e}")))?;
+
+    let mut files: Vec<_> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file() && path.extension().map_or(false, |ext| ext == "lisp")
+        })
+        .collect();
+
+    files.sort_by_key(|entry| entry.file_name());
+
+    for entry in files {
+        load_file(&entry.path().to_string_lossy(), env)?;
     }
     Ok(())
 }
