@@ -282,7 +282,16 @@ fn apply_numeric_primitives(
                         "negative exponent not supported".to_string(),
                     ));
                 }
-                Ok(LispVal::Number(base.pow(*exp as u32)))
+                // Check if exponent fits in u32
+                if *exp > u32::MAX as i64 {
+                    return Err(LispError::Generic(
+                        "exponent too large".to_string(),
+                    ));
+                }
+                // Use checked_pow to detect overflow
+                base.checked_pow(*exp as u32)
+                    .map(LispVal::Number)
+                    .ok_or_else(|| LispError::Generic("exponentiation overflow".to_string()))
             } else {
                 Err(LispError::Generic("expt requires numbers".to_string()))
             }
@@ -773,9 +782,23 @@ fn expand_macro(
 pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
-        LispVal::Symbol(s) => env
-            .get(&s.borrow().name)
-            .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name))),
+        LispVal::Symbol(s) => {
+            let value = env
+                .get(&s.borrow().name)
+                .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name)))?;
+
+            // If the value is a LABEL expression, evaluate it
+            // This handles recursive LABEL definitions
+            if let LispVal::Cons { car, cdr: _ } = &value {
+                if let LispVal::Symbol(sym) = &**car {
+                    if sym.borrow().name == "LABEL" {
+                        return eval(&value, env);
+                    }
+                }
+            }
+
+            Ok(value)
+        }
         LispVal::Number(_)
         | LispVal::Float(_)
         | LispVal::String(_)
