@@ -74,6 +74,32 @@ pub enum BuiltinFunc {
     Remainder,
     Expt,
     Numberp,
+    // I/O functions
+    Read,
+    Prin1,
+    Princ,
+    Terpri,
+    // Error handling
+    Error,
+    Errorset,
+    // List processing
+    Subst,
+    Assoc,
+    Maplist,
+    Mapcar,
+    Rplaca,
+    Rplacd,
+    // Bitwise operations
+    Logor,
+    Logand,
+    Logxor,
+    Leftshift,
+    // Property list functions
+    Remprop,
+    Deflist,
+    // Type predicates
+    Fixp,
+    Floatp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
