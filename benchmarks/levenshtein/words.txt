@@ -1,0 +1,10 @@
+hello
+world
+test
+benchmark
+algorithm
+distance
+levenshtein
+compute
+performance
+speed

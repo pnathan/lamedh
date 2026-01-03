@@ -1,0 +1,22 @@
+# Rust build artifacts
+**/target/
+**/*.rs.bk
+**/Cargo.lock
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+
+# Editor files
+**/.vscode/
+**/.idea/
+**/*.swp
+**/*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
