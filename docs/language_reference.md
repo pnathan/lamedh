@@ -160,10 +160,24 @@ Example:
 
 ### List Functions
 
+#### Basic List Operations
+
 -   `car` `(car list)`: Returns the first element of a `list`. Example: `(car '(1 2 3))` returns `1`.
 -   `cdr` `(cdr list)`: Returns the rest of a `list`. Example: `(cdr '(1 2 3))` returns `(2 3)`.
 -   `cons` `(cons element list)`: Creates a new cons cell with `element` as the car and `list` as the cdr. Example: `(cons 1 '(2 3))` returns `(1 2 3)`.
 -   `atom` `(atom object)`: Returns `t` if `object` is an atom (not a cons cell), `nil` otherwise. Example: `(atom 1)` returns `t`, `(atom '(1 2))` returns `nil`.
+
+#### Advanced List Processing
+
+-   `subst` `(subst new old tree)`: Substitutes all occurrences of `old` with `new` in `tree`. Example: `(subst 'x 'a '(a b a c))` returns `(x b x c)`.
+-   `assoc` `(assoc key alist)`: Searches an association list for a pair whose car is `key`. Returns the pair if found, `nil` otherwise. Example: `(assoc 'b '((a 1) (b 2) (c 3)))` returns `(b 2)`.
+-   `maplist` `(maplist list function)`: Applies `function` to successive sublists of `list` and returns a list of results. Example: `(maplist '(1 2 3) (lambda (x) (car x)))` returns `(1 2 3)`.
+-   `mapcar` `(mapcar list function)`: Applies `function` to each element of `list` and returns a list of results. Example: `(mapcar '(1 2 3) (lambda (x) (* x 2)))` returns `(2 4 6)`.
+
+#### Destructive List Operations
+
+-   `rplaca` `(rplaca cons-cell new-car)`: Returns a new cons cell with the car replaced by `new-car`. Example: `(rplaca '(1 . 2) 3)` returns `(3 . 2)`.
+-   `rplacd` `(rplacd cons-cell new-cdr)`: Returns a new cons cell with the cdr replaced by `new-cdr`. Example: `(rplacd '(1 . 2) 3)` returns `(1 . 3)`.
 
 ### String Functions
 
@@ -175,7 +189,14 @@ Example:
 -   `eq` `(eq obj1 obj2)`: Returns `t` if `obj1` and `obj2` are the same object, `nil` otherwise. Example: `(eq 'a 'a)` returns `t`, `(eq 'a 'b)` returns `nil`.
 -   `=` `(= num1 num2)`: Returns `t` if `num1` and `num2` are numerically equal, `nil` otherwise. Example: `(= 1 1)` returns `t`.
 -   `not` `(not object)`: Returns `t` if `object` is `nil`, `nil` otherwise. Example: `(not nil)` returns `t`.
+
+### Type Predicates
+
+-   `atom` `(atom object)`: Returns `t` if `object` is an atom (not a cons cell), `nil` otherwise.
 -   `stringp` `(stringp object)`: Returns `t` if `object` is a string, `nil` otherwise.
+-   `numberp` `(numberp object)`: Returns `t` if `object` is a number (integer or float), `nil` otherwise.
+-   `fixp` `(fixp object)`: Returns `t` if `object` is a fixed-point integer, `nil` otherwise. Example: `(fixp 42)` returns `t`.
+-   `floatp` `(floatp object)`: Returns `t` if `object` is a floating-point number, `nil` otherwise. Example: `(floatp 3.14)` returns `t`.
 
 ### Hash Table Functions
 
@@ -193,19 +214,60 @@ Example:
 (keys my-table) ; returns ("name")
 ```
 
-### Symbol Functions
+### Property List Functions
+
+Symbol property lists allow you to attach arbitrary key-value pairs to symbols.
 
 - `get-p` `(get-p symbol property-name)`: Retrieves the value of a property from a symbol's property list.
 - `put-p` `(put-p symbol property-name value)`: Sets a property on a symbol's property list.
+- `remprop` `(remprop symbol property-name)`: Removes a property from a symbol's property list. Returns `t` if successful, `nil` if the property didn't exist.
+- `deflist` `(deflist pairs indicator)`: Defines properties for multiple symbols at once. `pairs` is a list of `((symbol value) ...)` pairs.
 - `documentation` `(documentation symbol)`: Retrieves the docstring for a `symbol`.
 
 Example:
 ```lisp
 (put-p 'my-symbol "version" 1)
 (get-p 'my-symbol "version") ; returns 1
+(remprop 'my-symbol "version") ; returns T
+(deflist '((foo "a") (bar "b")) "type")
 (defun my-fun () "My docstring." nil)
 (documentation 'my-fun) ; returns "My docstring."
 ```
+
+### I/O Functions
+
+-   `read` `(read)`: Reads an s-expression from standard input and returns it. Example: If the user types `(+ 1 2)`, `read` returns the list `(+ 1 2)`.
+-   `prin1` `(prin1 object)`: Prints `object` in a readable form (with escape characters for strings) and returns it. Does not print a newline.
+-   `princ` `(princ object)`: Prints `object` without escape characters (strings print without quotes). Does not print a newline.
+-   `terpri` `(terpri)`: Prints a newline and returns `nil`.
+
+Example:
+```lisp
+(prin1 "hello")  ; prints: "hello" and returns "hello"
+(princ "hello")  ; prints: hello and returns "hello"
+(terpri)         ; prints a newline
+```
+
+### Error Handling
+
+-   `error` `(error message)`: Raises an error with the given `message`. The message can be a string or any other object.
+-   `errorset` `(errorset form)`: Evaluates `form` in an error-catching context. If evaluation succeeds, returns a list containing the result. If an error occurs, returns `nil`.
+
+Example:
+```lisp
+(errorset '(+ 1 2))        ; returns (3)
+(errorset '(/ 1 0))        ; returns NIL (division by zero)
+(errorset '(error "oops")) ; returns NIL
+```
+
+### Bitwise Operations
+
+All bitwise operations work on integers.
+
+-   `logor` `(logor &rest numbers)`: Bitwise OR of all `numbers`. Example: `(logor 5 3)` returns `7`.
+-   `logand` `(logand &rest numbers)`: Bitwise AND of all `numbers`. Example: `(logand 5 3)` returns `1`.
+-   `logxor` `(logxor &rest numbers)`: Bitwise XOR of all `numbers`. Example: `(logxor 5 3)` returns `6`.
+-   `leftshift` `(leftshift number shift)`: Shifts `number` left by `shift` bits. If `shift` is negative, shifts right instead. Example: `(leftshift 1 3)` returns `8`, `(leftshift 8 -3)` returns `1`.
 
 ### Miscellaneous Functions
 

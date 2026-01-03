@@ -518,6 +518,55 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 
             BuiltinFunc::Apply => apply_apply(args, env),
 
+            // I/O functions
+            BuiltinFunc::Read | BuiltinFunc::Prin1 | BuiltinFunc::Princ | BuiltinFunc::Terpri => {
+                apply_io_op(builtin, args, env)
+            }
+
+            // Error handling
+            BuiltinFunc::Error | BuiltinFunc::Errorset => apply_error_op(builtin, args, env),
+
+            // List processing
+            BuiltinFunc::Subst
+            | BuiltinFunc::Assoc
+            | BuiltinFunc::Maplist
+            | BuiltinFunc::Mapcar
+            | BuiltinFunc::Rplaca
+            | BuiltinFunc::Rplacd => apply_list_processing(builtin, args, env),
+
+            // Bitwise operations
+            BuiltinFunc::Logor
+            | BuiltinFunc::Logand
+            | BuiltinFunc::Logxor
+            | BuiltinFunc::Leftshift => apply_bitwise_op(builtin, args, env),
+
+            // Property list functions
+            BuiltinFunc::Remprop | BuiltinFunc::Deflist => apply_plist_op(builtin, args, env),
+
+            // Type predicates
+            BuiltinFunc::Fixp => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "fixp requires exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::Number(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
+                    _ => Ok(LispVal::Nil),
+                }
+            }
+            BuiltinFunc::Floatp => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "floatp requires exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::Float(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
+                    _ => Ok(LispVal::Nil),
+                }
+            }
+
             BuiltinFunc::LoadFile => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
@@ -1306,5 +1355,375 @@ fn apply_symbol_op(
             }
         }
         _ => Err(LispError::Generic("Not a symbol operation".to_string())),
+    }
+}
+
+// I/O operations
+fn apply_io_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Read => {
+            if !args.is_empty() {
+                return Err(LispError::Generic("read takes no arguments".to_string()));
+            }
+            use std::io::{self, BufRead};
+            let stdin = io::stdin();
+            let mut line = String::new();
+            stdin
+                .lock()
+                .read_line(&mut line)
+                .map_err(|e| LispError::Generic(format!("Failed to read input: {}", e)))?;
+            crate::reader::read(&line, env)
+                .map_err(|e| LispError::Generic(format!("Failed to parse input: {}", e)))
+        }
+        BuiltinFunc::Prin1 => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "prin1 requires exactly one argument".to_string(),
+                ));
+            }
+            print!("{}", crate::printer::print(&args[0]));
+            use std::io::{self, Write};
+            io::stdout()
+                .flush()
+                .map_err(|e| LispError::Generic(format!("Failed to flush output: {}", e)))?;
+            Ok(args[0].clone())
+        }
+        BuiltinFunc::Princ => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "princ requires exactly one argument".to_string(),
+                ));
+            }
+            let output = match &args[0] {
+                LispVal::String(s) => s.clone(),
+                other => crate::printer::print(other),
+            };
+            print!("{}", output);
+            use std::io::{self, Write};
+            io::stdout()
+                .flush()
+                .map_err(|e| LispError::Generic(format!("Failed to flush output: {}", e)))?;
+            Ok(args[0].clone())
+        }
+        BuiltinFunc::Terpri => {
+            if !args.is_empty() {
+                return Err(LispError::Generic("terpri takes no arguments".to_string()));
+            }
+            println!();
+            Ok(LispVal::Nil)
+        }
+        _ => Err(LispError::Generic("Not an I/O operation".to_string())),
+    }
+}
+
+// Error handling operations
+fn apply_error_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Error => {
+            if args.is_empty() {
+                return Err(LispError::Generic("Error".to_string()));
+            }
+            let msg = if let LispVal::String(s) = &args[0] {
+                s.clone()
+            } else {
+                crate::printer::print(&args[0])
+            };
+            Err(LispError::Generic(msg))
+        }
+        BuiltinFunc::Errorset => {
+            if args.len() != 1 && args.len() != 2 {
+                return Err(LispError::Generic(
+                    "errorset requires one or two arguments".to_string(),
+                ));
+            }
+            let form = &args[0];
+            match eval(form, env) {
+                Ok(result) => Ok(vec_to_list(vec![result])),
+                Err(_) => Ok(LispVal::Nil),
+            }
+        }
+        _ => Err(LispError::Generic(
+            "Not an error handling operation".to_string(),
+        )),
+    }
+}
+
+// List processing operations
+fn apply_list_processing(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Subst => {
+            if args.len() != 3 {
+                return Err(LispError::Generic(
+                    "subst requires exactly three arguments".to_string(),
+                ));
+            }
+            let new_val = &args[0];
+            let old_val = &args[1];
+            let tree = &args[2];
+            fn subst_helper(new: &LispVal, old: &LispVal, tree: &LispVal) -> LispVal {
+                if tree == old {
+                    new.clone()
+                } else if let LispVal::Cons { car, cdr } = tree {
+                    LispVal::Cons {
+                        car: Box::new(subst_helper(new, old, car)),
+                        cdr: Box::new(subst_helper(new, old, cdr)),
+                    }
+                } else {
+                    tree.clone()
+                }
+            }
+            Ok(subst_helper(new_val, old_val, tree))
+        }
+        BuiltinFunc::Assoc => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "assoc requires exactly two arguments".to_string(),
+                ));
+            }
+            let key = &args[0];
+            let mut alist = &args[1];
+            while let LispVal::Cons { car, cdr } = alist {
+                if let LispVal::Cons {
+                    car: pair_car,
+                    cdr: _,
+                } = &**car
+                {
+                    if **pair_car == *key {
+                        return Ok(*car.clone());
+                    }
+                }
+                alist = cdr;
+            }
+            Ok(LispVal::Nil)
+        }
+        BuiltinFunc::Maplist => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "maplist requires exactly two arguments".to_string(),
+                ));
+            }
+            let list = &args[0];
+            let func = &args[1];
+            let mut result = Vec::new();
+            let mut current = list.clone();
+            while let LispVal::Cons { car: _, cdr } = &current {
+                let applied = apply(func, &[current.clone()], env)?;
+                result.push(applied);
+                current = *cdr.clone();
+            }
+            Ok(vec_to_list(result))
+        }
+        BuiltinFunc::Mapcar => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "mapcar requires exactly two arguments".to_string(),
+                ));
+            }
+            let list = &args[0];
+            let func = &args[1];
+            let mut result = Vec::new();
+            let mut current = list;
+            while let LispVal::Cons { car, cdr } = current {
+                let applied = apply(func, &[*car.clone()], env)?;
+                result.push(applied);
+                current = cdr;
+            }
+            Ok(vec_to_list(result))
+        }
+        BuiltinFunc::Rplaca => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "rplaca requires exactly two arguments".to_string(),
+                ));
+            }
+            if let LispVal::Cons { car: _, cdr } = &args[0] {
+                Ok(LispVal::Cons {
+                    car: Box::new(args[1].clone()),
+                    cdr: cdr.clone(),
+                })
+            } else {
+                Err(LispError::Generic(
+                    "rplaca requires a cons cell as its first argument".to_string(),
+                ))
+            }
+        }
+        BuiltinFunc::Rplacd => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "rplacd requires exactly two arguments".to_string(),
+                ));
+            }
+            if let LispVal::Cons { car, cdr: _ } = &args[0] {
+                Ok(LispVal::Cons {
+                    car: car.clone(),
+                    cdr: Box::new(args[1].clone()),
+                })
+            } else {
+                Err(LispError::Generic(
+                    "rplacd requires a cons cell as its first argument".to_string(),
+                ))
+            }
+        }
+        _ => Err(LispError::Generic(
+            "Not a list processing operation".to_string(),
+        )),
+    }
+}
+
+// Bitwise operations
+fn apply_bitwise_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    _env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Logor => {
+            let mut result = 0i64;
+            for arg in args {
+                if let LispVal::Number(n) = arg {
+                    result |= n;
+                } else {
+                    return Err(LispError::Generic(
+                        "logor requires integer arguments".to_string(),
+                    ));
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
+        BuiltinFunc::Logand => {
+            if args.is_empty() {
+                return Ok(LispVal::Number(-1));
+            }
+            let mut result = if let LispVal::Number(n) = &args[0] {
+                *n
+            } else {
+                return Err(LispError::Generic(
+                    "logand requires integer arguments".to_string(),
+                ));
+            };
+            for arg in &args[1..] {
+                if let LispVal::Number(n) = arg {
+                    result &= n;
+                } else {
+                    return Err(LispError::Generic(
+                        "logand requires integer arguments".to_string(),
+                    ));
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
+        BuiltinFunc::Logxor => {
+            let mut result = 0i64;
+            for arg in args {
+                if let LispVal::Number(n) = arg {
+                    result ^= n;
+                } else {
+                    return Err(LispError::Generic(
+                        "logxor requires integer arguments".to_string(),
+                    ));
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
+        BuiltinFunc::Leftshift => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "leftshift requires exactly two arguments".to_string(),
+                ));
+            }
+            if let (LispVal::Number(n), LispVal::Number(shift)) = (&args[0], &args[1]) {
+                if *shift < 0 {
+                    Ok(LispVal::Number(n >> (-shift)))
+                } else {
+                    Ok(LispVal::Number(n << shift))
+                }
+            } else {
+                Err(LispError::Generic(
+                    "leftshift requires integer arguments".to_string(),
+                ))
+            }
+        }
+        _ => Err(LispError::Generic("Not a bitwise operation".to_string())),
+    }
+}
+
+// Property list operations
+fn apply_plist_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Remprop => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "remprop requires exactly two arguments".to_string(),
+                ));
+            }
+            if let LispVal::Symbol(s) = &args[0] {
+                if let LispVal::String(prop) = &args[1] {
+                    let removed = s.borrow_mut().plist.remove(prop);
+                    if removed.is_some() {
+                        Ok(LispVal::Symbol(env.intern_symbol("T")))
+                    } else {
+                        Ok(LispVal::Nil)
+                    }
+                } else {
+                    Err(LispError::Generic(
+                        "remprop requires a string as its second argument".to_string(),
+                    ))
+                }
+            } else {
+                Err(LispError::Generic(
+                    "remprop requires a symbol as its first argument".to_string(),
+                ))
+            }
+        }
+        BuiltinFunc::Deflist => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "deflist requires exactly two arguments".to_string(),
+                ));
+            }
+            let pairs = &args[0];
+            let indicator = if let LispVal::String(s) = &args[1] {
+                s.clone()
+            } else {
+                return Err(LispError::Generic(
+                    "deflist requires a string as its second argument".to_string(),
+                ));
+            };
+            let mut current = pairs;
+            while let LispVal::Cons { car, cdr } = current {
+                if let LispVal::Cons {
+                    car: sym,
+                    cdr: rest,
+                } = &**car
+                {
+                    if let LispVal::Symbol(s) = &**sym {
+                        if let LispVal::Cons { car: val, cdr: _ } = &**rest {
+                            s.borrow_mut().plist.insert(indicator.clone(), *val.clone());
+                        }
+                    }
+                }
+                current = cdr;
+            }
+            Ok(LispVal::Symbol(env.intern_symbol("T")))
+        }
+        _ => Err(LispError::Generic(
+            "Not a property list operation".to_string(),
+        )),
     }
 }

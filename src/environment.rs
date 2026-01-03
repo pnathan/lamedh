@@ -166,6 +166,53 @@ impl Environment {
         );
         env.set("EXPT".to_string(), LispVal::Builtin(BuiltinFunc::Expt));
 
+        // I/O functions
+        env.set("READ".to_string(), LispVal::Builtin(BuiltinFunc::Read));
+        env.set("PRIN1".to_string(), LispVal::Builtin(BuiltinFunc::Prin1));
+        env.set("PRINC".to_string(), LispVal::Builtin(BuiltinFunc::Princ));
+        env.set("TERPRI".to_string(), LispVal::Builtin(BuiltinFunc::Terpri));
+
+        // Error handling
+        env.set("ERROR".to_string(), LispVal::Builtin(BuiltinFunc::Error));
+        env.set(
+            "ERRORSET".to_string(),
+            LispVal::Builtin(BuiltinFunc::Errorset),
+        );
+
+        // List processing
+        env.set("SUBST".to_string(), LispVal::Builtin(BuiltinFunc::Subst));
+        env.set("ASSOC".to_string(), LispVal::Builtin(BuiltinFunc::Assoc));
+        env.set(
+            "MAPLIST".to_string(),
+            LispVal::Builtin(BuiltinFunc::Maplist),
+        );
+        env.set("MAPCAR".to_string(), LispVal::Builtin(BuiltinFunc::Mapcar));
+        env.set("RPLACA".to_string(), LispVal::Builtin(BuiltinFunc::Rplaca));
+        env.set("RPLACD".to_string(), LispVal::Builtin(BuiltinFunc::Rplacd));
+
+        // Bitwise operations
+        env.set("LOGOR".to_string(), LispVal::Builtin(BuiltinFunc::Logor));
+        env.set("LOGAND".to_string(), LispVal::Builtin(BuiltinFunc::Logand));
+        env.set("LOGXOR".to_string(), LispVal::Builtin(BuiltinFunc::Logxor));
+        env.set(
+            "LEFTSHIFT".to_string(),
+            LispVal::Builtin(BuiltinFunc::Leftshift),
+        );
+
+        // Property list functions
+        env.set(
+            "REMPROP".to_string(),
+            LispVal::Builtin(BuiltinFunc::Remprop),
+        );
+        env.set(
+            "DEFLIST".to_string(),
+            LispVal::Builtin(BuiltinFunc::Deflist),
+        );
+
+        // Type predicates
+        env.set("FIXP".to_string(), LispVal::Builtin(BuiltinFunc::Fixp));
+        env.set("FLOATP".to_string(), LispVal::Builtin(BuiltinFunc::Floatp));
+
         env
     }
 
