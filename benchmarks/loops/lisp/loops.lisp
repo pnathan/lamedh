@@ -10,7 +10,7 @@
     (setq a 1103515245)
     (setq c 12345)
     (setq m 2147483648)
-    (return (% (+ (* seed a) c) max))))
+    (return (remainder (+ (* seed a) c) max))))
 
 (defun loops-benchmark (divisor)
   "Run nested loops benchmark with given divisor"
@@ -48,7 +48,7 @@
     (cond ((< j 100000) (go inner-continue)))
     (go inner-done)
     inner-continue
-    (setq sum (+ sum (% j divisor)))
+    (setq sum (+ sum (remainder j divisor)))
     (setq j (+ j 1))
     (go inner-loop)
 

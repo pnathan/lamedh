@@ -39,15 +39,42 @@ Naive recursive Fibonacci calculation, summing fibonacci(1) through fibonacci(19
 
 ---
 
-## Loops Benchmark
+## Loops Benchmark (10k × 100k iterations)
 
-*Note: This benchmark (10k × 100k nested loops) takes a very long time in Lamedh due to the PROG loop implementation. Results pending.*
+**Rust and Python results:**
+
+| Language | Mean (ms) | Iterations | Result |
+|----------|-----------|------------|--------|
+| **Rust** | 1,786 | 1 | 499,956,027 |
+| **Python** | 50,301 | 1 | 499,950,409 |
+
+**Lamedh: Not tested at full scale**
+
+The full benchmark is impractical for Lamedh. Based on a scaled-down version (100 × 1,000 iterations, 10,000× smaller):
+- Scaled-down execution time: ~470ms
+- **Extrapolated full benchmark time: ~83 minutes** (5,000 seconds)
+
+This benchmark heavily exercises PROG-based loops which have significant overhead in the current interpreter implementation.
 
 ---
 
 ## Levenshtein Distance Benchmark
 
-*Note: Lamedh has limited string support, so this benchmark is aspirational. The Lisp implementation demonstrates what would be needed for full string operations.*
+**Rust and Python results (10 words):**
+
+| Language | Mean (ms) | Iterations | Result |
+|----------|-----------|------------|--------|
+| **Rust** | 0.006 | 156,067 | 351 |
+| **Python** | 0.585 | 1,710 | 351 |
+
+**Lamedh: Not implemented**
+
+While Lamedh has basic string primitives (`concat`, `index`, `stringp`), the Levenshtein benchmark has not been adapted to use Lamedh's string API. This benchmark requires:
+- String length calculation
+- Character-by-character comparison
+- Multi-dimensional array operations
+
+The Lisp implementation in this repository is aspirational and demonstrates what would be needed for full string operation support.
 
 ---
 
@@ -101,10 +128,16 @@ python3 ./fibonacci/lisp/benchmark.py 1000 100 20
 ./run_benchmarks.sh
 ```
 
+## Benchmark Completion Status
+
+- ✅ **Fibonacci**: Complete for all 3 languages
+- ⚠️ **Loops**: Complete for Rust/Python, impractical for Lamedh at full scale
+- ❌ **Levenshtein**: Complete for Rust/Python, not implemented for Lamedh
+
 ## Future Work
 
-- [ ] Implement loops benchmark for Lamedh (requires optimization)
-- [ ] Add string primitives for Levenshtein benchmark
+- [ ] Optimize PROG loops to make full loops benchmark feasible
+- [ ] Implement Levenshtein for Lamedh's string API
 - [ ] Implement bytecode compiler for performance improvement
 - [ ] Add tail call optimization
 - [ ] Create performance regression tracking
