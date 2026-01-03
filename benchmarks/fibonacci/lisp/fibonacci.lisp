@@ -15,7 +15,9 @@
     (setq result 0)
     (setq i 1)
     loop
-    (cond ((>= i n) (return result)))
+    (cond ((< i n) (go continue)))
+    (return result)
+    continue
     (setq result (+ result (fibonacci i)))
     (setq i (+ i 1))
     (go loop)))

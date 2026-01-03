@@ -23,7 +23,9 @@
     (setq arr nil)
     (setq i 0)
     init-loop
-    (cond ((>= i 10000) (go init-done)))
+    (cond ((< i 10000) (go init-continue)))
+    (go init-done)
+    init-continue
     (setq arr (cons 0 arr))
     (setq i (+ i 1))
     (go init-loop)
@@ -35,13 +37,17 @@
     ;; Outer loop: 10k iterations
     (setq i 0)
     outer-loop
-    (cond ((>= i 10000) (go outer-done)))
+    (cond ((< i 10000) (go outer-continue)))
+    (go outer-done)
+    outer-continue
 
     ;; Inner loop: 100k iterations per outer loop
     (setq sum 0)
     (setq j 0)
     inner-loop
-    (cond ((>= j 100000) (go inner-done)))
+    (cond ((< j 100000) (go inner-continue)))
+    (go inner-done)
+    inner-continue
     (setq sum (+ sum (% j divisor)))
     (setq j (+ j 1))
     (go inner-loop)
