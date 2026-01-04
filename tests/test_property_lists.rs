@@ -168,7 +168,10 @@ fn test_deflist_symbol_values() {
     let env = env_with_stdlib();
     eval_line("(deflist '((north 'up) (south 'down)) \"direction\")", &env);
     assert_eq!(eval_line("(getp 'north \"direction\")", &env), "(QUOTE UP)");
-    assert_eq!(eval_line("(getp 'south \"direction\")", &env), "(QUOTE DOWN)");
+    assert_eq!(
+        eval_line("(getp 'south \"direction\")", &env),
+        "(QUOTE DOWN)"
+    );
 }
 
 // Combined property list operations
@@ -176,7 +179,10 @@ fn test_deflist_symbol_values() {
 fn test_property_workflow() {
     let env = env_with_stdlib();
     // Define some properties with deflist
-    eval_line("(deflist '((red \"#FF0000\") (green \"#00FF00\") (blue \"#0000FF\")) \"color\")", &env);
+    eval_line(
+        "(deflist '((red \"#FF0000\") (green \"#00FF00\") (blue \"#0000FF\")) \"color\")",
+        &env,
+    );
 
     // Add another property manually
     eval_line("(putp 'red \"name\" \"Red Color\")", &env);
@@ -226,6 +232,9 @@ fn test_numeric_property_values() {
     eval_line("(deflist '((zero 0) (one 1) (two 2)) \"number\")", &env);
 
     // Use the properties in calculations
-    let output = eval_line("(+ (getp 'zero \"number\") (getp 'one \"number\") (getp 'two \"number\"))", &env);
+    let output = eval_line(
+        "(+ (getp 'zero \"number\") (getp 'one \"number\") (getp 'two \"number\"))",
+        &env,
+    );
     assert_eq!(output, "3");
 }

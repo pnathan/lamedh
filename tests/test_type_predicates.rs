@@ -206,7 +206,10 @@ fn test_type_predicate_with_mapcar() {
 fn test_type_predicate_filter() {
     let env = env_with_stdlib();
     // Define a simple filter function
-    eval_line("(defun filter-fixp (lst) (if (null lst) nil (if (fixp (car lst)) (cons (car lst) (filter-fixp (cdr lst))) (filter-fixp (cdr lst)))))", &env);
+    eval_line(
+        "(defun filter-fixp (lst) (if (null lst) nil (if (fixp (car lst)) (cons (car lst) (filter-fixp (cdr lst))) (filter-fixp (cdr lst)))))",
+        &env,
+    );
 
     let output = eval_line("(filter-fixp '(1 2.5 3 4.0 5))", &env);
     assert_eq!(output, "(1 3 5)");
@@ -236,7 +239,10 @@ fn test_type_predicates_on_arithmetic_results() {
 fn test_type_check_before_operation() {
     let env = env_with_stdlib();
     // Safe division that checks types
-    eval_line("(defun safe-div (a b) (if (and (numberp a) (numberp b) (not (zerop b))) (/ a b) nil))", &env);
+    eval_line(
+        "(defun safe-div (a b) (if (and (numberp a) (numberp b) (not (zerop b))) (/ a b) nil))",
+        &env,
+    );
 
     assert_eq!(eval_line("(safe-div 10 2)", &env), "5");
     assert_eq!(eval_line("(safe-div 10 0)", &env), "()");
@@ -246,7 +252,10 @@ fn test_type_check_before_operation() {
 fn test_numberp_vs_fixp_floatp() {
     let env = env_with_stdlib();
     // numberp should be true for both fixp and floatp
-    eval_line("(defun is-number-type (x) (and (numberp x) (or (fixp x) (floatp x))))", &env);
+    eval_line(
+        "(defun is-number-type (x) (and (numberp x) (or (fixp x) (floatp x))))",
+        &env,
+    );
 
     assert_eq!(eval_line("(is-number-type 42)", &env), "T");
     assert_eq!(eval_line("(is-number-type 3.14)", &env), "T");
@@ -256,7 +265,10 @@ fn test_numberp_vs_fixp_floatp() {
 #[test]
 fn test_type_dispatch() {
     let env = env_with_stdlib();
-    eval_line("(defun describe-type (x) (cond ((fixp x) 'integer) ((floatp x) 'float) ((stringp x) 'string) ((atom x) 'atom) (t 'list)))", &env);
+    eval_line(
+        "(defun describe-type (x) (cond ((fixp x) 'integer) ((floatp x) 'float) ((stringp x) 'string) ((atom x) 'atom) (t 'list)))",
+        &env,
+    );
 
     assert_eq!(eval_line("(describe-type 42)", &env), "INTEGER");
     assert_eq!(eval_line("(describe-type 3.14)", &env), "FLOAT");

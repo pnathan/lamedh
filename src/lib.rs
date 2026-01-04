@@ -100,6 +100,38 @@ pub enum BuiltinFunc {
     // Type predicates
     Fixp,
     Floatp,
+    Symbolp,
+    Boundp,
+    Functionp,
+    Macrop,
+    // List functions
+    List,
+    Last,
+    Nth,
+    Nthcdr,
+    Efface,
+    // Numeric functions
+    Mod,
+    Plusp,
+    Evenp,
+    Oddp,
+    Add1,
+    Sub1,
+    Random,
+    // Bitwise
+    Ash,
+    Lognot,
+    Rot,
+    // Function operations
+    Funcall,
+    Macroexpand,
+    // String/Symbol functions
+    Explode,
+    Implode,
+    Maknam,
+    Gensym,
+    Intern,
+    Plist,
 }
 
 #[derive(Debug, Clone, PartialEq)]
