@@ -132,6 +132,15 @@ pub enum BuiltinFunc {
     Gensym,
     Intern,
     Plist,
+    // Float comparisons
+    FloatEqual,
+    FloatLessp,
+    FloatGreaterp,
+    // Condition flags
+    SetFlag,
+    ClearFlag,
+    FlagSetP,
+    ClearAllFlags,
 }
 
 #[derive(Debug, Clone, PartialEq)]
