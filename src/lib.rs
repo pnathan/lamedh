@@ -70,7 +70,6 @@ pub enum BuiltinFunc {
     LoadFile,
     Lessp,
     Greaterp,
-    Zerop,
     Remainder,
     Expt,
     Numberp,
@@ -83,10 +82,6 @@ pub enum BuiltinFunc {
     Error,
     Errorset,
     // List processing
-    Subst,
-    Assoc,
-    Maplist,
-    Mapcar,
     Rplaca,
     Rplacd,
     // Bitwise operations
@@ -106,17 +101,9 @@ pub enum BuiltinFunc {
     Macrop,
     // List functions
     List,
-    Last,
-    Nth,
-    Nthcdr,
     Efface,
     // Numeric functions
     Mod,
-    Plusp,
-    Evenp,
-    Oddp,
-    Add1,
-    Sub1,
     Random,
     // Bitwise
     Ash,

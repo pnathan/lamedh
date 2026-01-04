@@ -1,8 +1,10 @@
 use lamedh::environment::Environment;
-use lamedh::eval_line;
+use lamedh::{eval_line, load_directory};
 
 fn eval(expr: &str) -> String {
     let env = Environment::new_with_builtins();
+    // Load the standard library
+    load_directory("lib", &env).expect("Failed to load lib directory");
     eval_line(expr, &env)
 }
 

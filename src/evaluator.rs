@@ -287,20 +287,6 @@ fn apply_numeric_primitives(
                 Err(LispError::Generic("greaterp requires numbers".to_string()))
             }
         }
-        BuiltinFunc::Zerop => {
-            if args.len() != 1 {
-                return Err(LispError::Generic("zerop requires 1 arg".to_string()));
-            }
-            if let LispVal::Number(x) = &args[0] {
-                Ok(if *x == 0 {
-                    LispVal::Symbol(env.intern_symbol("T"))
-                } else {
-                    LispVal::Nil
-                })
-            } else {
-                Err(LispError::Generic("zerop requires number".to_string()))
-            }
-        }
         BuiltinFunc::Remainder => {
             if args.len() != 2 {
                 return Err(LispError::Generic("remainder requires 2 args".to_string()));
@@ -507,7 +493,6 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Divide => apply_math_op(builtin, args, env),
             BuiltinFunc::Lessp
             | BuiltinFunc::Greaterp
-            | BuiltinFunc::Zerop
             | BuiltinFunc::Remainder
             | BuiltinFunc::Expt => apply_numeric_primitives(builtin, args, env),
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
@@ -584,12 +569,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             BuiltinFunc::Error | BuiltinFunc::Errorset => apply_error_op(builtin, args, env),
 
             // List processing
-            BuiltinFunc::Subst
-            | BuiltinFunc::Assoc
-            | BuiltinFunc::Maplist
-            | BuiltinFunc::Mapcar
-            | BuiltinFunc::Rplaca
-            | BuiltinFunc::Rplacd => apply_list_processing(builtin, args, env),
+            BuiltinFunc::Rplaca | BuiltinFunc::Rplacd => apply_list_processing(builtin, args, env),
 
             // Bitwise operations
             BuiltinFunc::Logor
@@ -631,20 +611,10 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Macrop => apply_type_predicates(builtin, args, env),
 
             // New list operations
-            BuiltinFunc::List
-            | BuiltinFunc::Last
-            | BuiltinFunc::Nth
-            | BuiltinFunc::Nthcdr
-            | BuiltinFunc::Efface => apply_new_list_ops(builtin, args, env),
+            BuiltinFunc::List | BuiltinFunc::Efface => apply_new_list_ops(builtin, args, env),
 
             // New numeric operations
-            BuiltinFunc::Mod
-            | BuiltinFunc::Plusp
-            | BuiltinFunc::Evenp
-            | BuiltinFunc::Oddp
-            | BuiltinFunc::Add1
-            | BuiltinFunc::Sub1
-            | BuiltinFunc::Random => apply_new_numeric_ops(builtin, args, env),
+            BuiltinFunc::Mod | BuiltinFunc::Random => apply_new_numeric_ops(builtin, args, env),
 
             // New bitwise operations
             BuiltinFunc::Ash | BuiltinFunc::Lognot | BuiltinFunc::Rot => {
@@ -1731,96 +1701,9 @@ fn apply_error_op(
 fn apply_list_processing(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    _env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
-        BuiltinFunc::Subst => {
-            if args.len() != 3 {
-                return Err(LispError::Generic(
-                    "subst requires exactly three arguments".to_string(),
-                ));
-            }
-            let new_val = &args[0];
-            let old_val = &args[1];
-            let tree = &args[2];
-            fn subst_helper(new: &LispVal, old: &LispVal, tree: &LispVal) -> LispVal {
-                if tree == old {
-                    new.clone()
-                } else if let LispVal::Cons { car, cdr } = tree {
-                    LispVal::Cons {
-                        car: Box::new(subst_helper(new, old, car)),
-                        cdr: Box::new(subst_helper(new, old, cdr)),
-                    }
-                } else {
-                    tree.clone()
-                }
-            }
-            Ok(subst_helper(new_val, old_val, tree))
-        }
-        BuiltinFunc::Assoc => {
-            // ASSOC: Search an association list for a key
-            // (ASSOC key alist)
-            // Returns the first pair (key . value) where the car equals key.
-            // NOTE: Malformed alist elements (non-cons) are skipped with a warning.
-            // This is intentional to allow graceful degradation with imperfect data.
-            if args.len() != 2 {
-                return Err(LispError::Generic(
-                    "assoc requires exactly two arguments".to_string(),
-                ));
-            }
-            let key = &args[0];
-            let mut alist = &args[1];
-            while let LispVal::Cons { car, cdr } = alist {
-                if let LispVal::Cons {
-                    car: pair_car,
-                    cdr: _,
-                } = &**car
-                {
-                    if **pair_car == *key {
-                        return Ok(*car.clone());
-                    }
-                } else {
-                    // Warn about malformed alist element
-                    eprintln!("Warning: ASSOC skipping non-cons alist element: {:?}", car);
-                }
-                alist = cdr;
-            }
-            Ok(LispVal::Nil)
-        }
-        BuiltinFunc::Maplist => {
-            if args.len() != 2 {
-                return Err(LispError::Generic(
-                    "maplist requires exactly two arguments".to_string(),
-                ));
-            }
-            let list = &args[0];
-            let func = &args[1];
-            let mut result = Vec::new();
-            let mut current = list.clone();
-            while let LispVal::Cons { car: _, cdr } = &current {
-                let applied = apply(func, &[current.clone()], env)?;
-                result.push(applied);
-                current = *cdr.clone();
-            }
-            Ok(vec_to_list(result))
-        }
-        BuiltinFunc::Mapcar => {
-            if args.len() != 2 {
-                return Err(LispError::Generic(
-                    "mapcar requires exactly two arguments".to_string(),
-                ));
-            }
-            let list = &args[0];
-            let func = &args[1];
-            let mut result = Vec::new();
-            let mut current = list;
-            while let LispVal::Cons { car, cdr } = current {
-                let applied = apply(func, &[*car.clone()], env)?;
-                result.push(applied);
-                current = cdr;
-            }
-            Ok(vec_to_list(result))
-        }
         BuiltinFunc::Rplaca => {
             // RPLACA: Replace the CAR of a cons cell
             // (RPLACA cons new-car)
@@ -1977,71 +1860,6 @@ fn apply_new_list_ops(
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::List => Ok(vec_to_list(args.to_vec())),
-        BuiltinFunc::Last => {
-            if args.len() != 1 {
-                return Err(LispError::Generic(
-                    "last requires exactly one argument".to_string(),
-                ));
-            }
-            let mut current = &args[0];
-            while let LispVal::Cons { car: _, cdr } = current {
-                if **cdr == LispVal::Nil {
-                    return Ok(current.clone());
-                }
-                current = cdr;
-            }
-            Ok(LispVal::Nil)
-        }
-        BuiltinFunc::Nth => {
-            if args.len() != 2 {
-                return Err(LispError::Generic(
-                    "nth requires exactly two arguments".to_string(),
-                ));
-            }
-            let n = if let LispVal::Number(n) = &args[0] {
-                *n as usize
-            } else {
-                return Err(LispError::Generic(
-                    "nth requires a number as first argument".to_string(),
-                ));
-            };
-            let mut current = &args[1];
-            for _ in 0..n {
-                if let LispVal::Cons { car: _, cdr } = current {
-                    current = cdr;
-                } else {
-                    return Ok(LispVal::Nil);
-                }
-            }
-            if let LispVal::Cons { car, cdr: _ } = current {
-                Ok(*car.clone())
-            } else {
-                Ok(LispVal::Nil)
-            }
-        }
-        BuiltinFunc::Nthcdr => {
-            if args.len() != 2 {
-                return Err(LispError::Generic(
-                    "nthcdr requires exactly two arguments".to_string(),
-                ));
-            }
-            let n = if let LispVal::Number(n) = &args[0] {
-                *n as usize
-            } else {
-                return Err(LispError::Generic(
-                    "nthcdr requires a number as first argument".to_string(),
-                ));
-            };
-            let mut current = args[1].clone();
-            for _ in 0..n {
-                if let LispVal::Cons { car: _, cdr } = current {
-                    current = *cdr;
-                } else {
-                    return Ok(LispVal::Nil);
-                }
-            }
-            Ok(current)
-        }
         BuiltinFunc::Efface => {
             if args.len() != 2 {
                 return Err(LispError::Generic(
@@ -2075,7 +1893,7 @@ fn apply_new_list_ops(
 fn apply_new_numeric_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    _env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Mod => {
@@ -2094,86 +1912,6 @@ fn apply_new_numeric_ops(
                 Err(LispError::Generic(
                     "mod requires integer arguments".to_string(),
                 ))
-            }
-        }
-        BuiltinFunc::Plusp => {
-            if args.len() != 1 {
-                return Err(LispError::Generic(
-                    "plusp requires exactly one argument".to_string(),
-                ));
-            }
-            match &args[0] {
-                LispVal::Number(n) => {
-                    if *n > 0 {
-                        Ok(LispVal::Symbol(env.intern_symbol("T")))
-                    } else {
-                        Ok(LispVal::Nil)
-                    }
-                }
-                LispVal::Float(f) => {
-                    if *f > 0.0 {
-                        Ok(LispVal::Symbol(env.intern_symbol("T")))
-                    } else {
-                        Ok(LispVal::Nil)
-                    }
-                }
-                _ => Err(LispError::Generic("plusp requires a number".to_string())),
-            }
-        }
-        BuiltinFunc::Evenp => {
-            if args.len() != 1 {
-                return Err(LispError::Generic(
-                    "evenp requires exactly one argument".to_string(),
-                ));
-            }
-            if let LispVal::Number(n) = &args[0] {
-                if n % 2 == 0 {
-                    Ok(LispVal::Symbol(env.intern_symbol("T")))
-                } else {
-                    Ok(LispVal::Nil)
-                }
-            } else {
-                Err(LispError::Generic("evenp requires an integer".to_string()))
-            }
-        }
-        BuiltinFunc::Oddp => {
-            if args.len() != 1 {
-                return Err(LispError::Generic(
-                    "oddp requires exactly one argument".to_string(),
-                ));
-            }
-            if let LispVal::Number(n) = &args[0] {
-                if n % 2 != 0 {
-                    Ok(LispVal::Symbol(env.intern_symbol("T")))
-                } else {
-                    Ok(LispVal::Nil)
-                }
-            } else {
-                Err(LispError::Generic("oddp requires an integer".to_string()))
-            }
-        }
-        BuiltinFunc::Add1 => {
-            if args.len() != 1 {
-                return Err(LispError::Generic(
-                    "add1 requires exactly one argument".to_string(),
-                ));
-            }
-            match &args[0] {
-                LispVal::Number(n) => Ok(LispVal::Number(n + 1)),
-                LispVal::Float(f) => Ok(LispVal::Float(f + 1.0)),
-                _ => Err(LispError::Generic("add1 requires a number".to_string())),
-            }
-        }
-        BuiltinFunc::Sub1 => {
-            if args.len() != 1 {
-                return Err(LispError::Generic(
-                    "sub1 requires exactly one argument".to_string(),
-                ));
-            }
-            match &args[0] {
-                LispVal::Number(n) => Ok(LispVal::Number(n - 1)),
-                LispVal::Float(f) => Ok(LispVal::Float(f - 1.0)),
-                _ => Err(LispError::Generic("sub1 requires a number".to_string())),
             }
         }
         BuiltinFunc::Random => {

@@ -179,7 +179,6 @@ impl Environment {
             "GREATERP".to_string(),
             LispVal::Builtin(BuiltinFunc::Greaterp),
         );
-        env.set("ZEROP".to_string(), LispVal::Builtin(BuiltinFunc::Zerop));
         env.set(
             "REMAINDER".to_string(),
             LispVal::Builtin(BuiltinFunc::Remainder),
@@ -200,13 +199,6 @@ impl Environment {
         );
 
         // List processing
-        env.set("SUBST".to_string(), LispVal::Builtin(BuiltinFunc::Subst));
-        env.set("ASSOC".to_string(), LispVal::Builtin(BuiltinFunc::Assoc));
-        env.set(
-            "MAPLIST".to_string(),
-            LispVal::Builtin(BuiltinFunc::Maplist),
-        );
-        env.set("MAPCAR".to_string(), LispVal::Builtin(BuiltinFunc::Mapcar));
         env.set("RPLACA".to_string(), LispVal::Builtin(BuiltinFunc::Rplaca));
         env.set("RPLACD".to_string(), LispVal::Builtin(BuiltinFunc::Rplacd));
 
@@ -245,21 +237,11 @@ impl Environment {
 
         // List functions
         env.set("LIST".to_string(), LispVal::Builtin(BuiltinFunc::List));
-        env.set("LAST".to_string(), LispVal::Builtin(BuiltinFunc::Last));
-        env.set("NTH".to_string(), LispVal::Builtin(BuiltinFunc::Nth));
-        env.set("NTHCDR".to_string(), LispVal::Builtin(BuiltinFunc::Nthcdr));
         env.set("EFFACE".to_string(), LispVal::Builtin(BuiltinFunc::Efface));
         env.set("DELETE".to_string(), LispVal::Builtin(BuiltinFunc::Efface)); // Alias
 
         // Numeric functions
         env.set("MOD".to_string(), LispVal::Builtin(BuiltinFunc::Mod));
-        env.set("PLUSP".to_string(), LispVal::Builtin(BuiltinFunc::Plusp));
-        env.set("EVENP".to_string(), LispVal::Builtin(BuiltinFunc::Evenp));
-        env.set("ODDP".to_string(), LispVal::Builtin(BuiltinFunc::Oddp));
-        env.set("ADD1".to_string(), LispVal::Builtin(BuiltinFunc::Add1));
-        env.set("SUB1".to_string(), LispVal::Builtin(BuiltinFunc::Sub1));
-        env.set("1+".to_string(), LispVal::Builtin(BuiltinFunc::Add1)); // Alias
-        env.set("1-".to_string(), LispVal::Builtin(BuiltinFunc::Sub1)); // Alias
         env.set("RANDOM".to_string(), LispVal::Builtin(BuiltinFunc::Random));
 
         // Bitwise operations

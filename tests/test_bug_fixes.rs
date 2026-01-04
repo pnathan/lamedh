@@ -1,10 +1,12 @@
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
 use lamedh::reader::read;
-use lamedh::LispVal;
+use lamedh::{load_directory, LispVal};
 
 fn eval_str(input: &str) -> Result<LispVal, String> {
     let env = Environment::new_with_builtins();
+    // Load the standard library
+    load_directory("lib", &env).map_err(|e| format!("Load error: {:?}", e))?;
     let expr = read(input, &env).map_err(|e| format!("Parse error: {}", e))?;
     eval(&expr, &env).map_err(|e| format!("Eval error: {:?}", e))
 }
