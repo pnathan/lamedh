@@ -240,12 +240,14 @@ Example:
 -   `prin1` `(prin1 object)`: Prints `object` in a readable form (with escape characters for strings) and returns it. Does not print a newline.
 -   `princ` `(princ object)`: Prints `object` without escape characters (strings print without quotes). Does not print a newline.
 -   `terpri` `(terpri)`: Prints a newline and returns `nil`.
+-   `load-file` `(load-file filename)`: Loads and evaluates a Lisp file. The `filename` must be a string. Returns `t` on success. See the [File I/O documentation](file_io.md) for details.
 
 Example:
 ```lisp
 (prin1 "hello")  ; prints: "hello" and returns "hello"
 (princ "hello")  ; prints: hello and returns "hello"
 (terpri)         ; prints a newline
+(load-file "myfile.lisp")  ; loads and evaluates myfile.lisp, returns T
 ```
 
 ### Error Handling
