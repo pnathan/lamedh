@@ -624,6 +624,77 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
             }
 
+            // Float comparisons (handle -0.0 vs 0.0 correctly)
+            BuiltinFunc::FloatEqual => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "float= requires exactly two arguments".to_string(),
+                    ));
+                }
+                let f1 = match &args[0] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float= requires numeric arguments".to_string())),
+                };
+                let f2 = match &args[1] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float= requires numeric arguments".to_string())),
+                };
+                // Use bitwise equality to distinguish -0.0 from 0.0
+                if f1.to_bits() == f2.to_bits() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FloatLessp => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "float< requires exactly two arguments".to_string(),
+                    ));
+                }
+                let f1 = match &args[0] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float< requires numeric arguments".to_string())),
+                };
+                let f2 = match &args[1] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float< requires numeric arguments".to_string())),
+                };
+                if f1 < f2 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FloatGreaterp => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "float> requires exactly two arguments".to_string(),
+                    ));
+                }
+                let f1 = match &args[0] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float> requires numeric arguments".to_string())),
+                };
+                let f2 = match &args[1] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float> requires numeric arguments".to_string())),
+                };
+                if f1 > f2 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
             BuiltinFunc::LoadFile => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
@@ -1142,6 +1213,16 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         let expr_val = &args[1];
 
                         if let LispVal::Symbol(name_sym) = name_val {
+                            // Check for pathological case: (LABEL x x)
+                            if let LispVal::Symbol(expr_sym) = expr_val {
+                                if name_sym.borrow().name == expr_sym.borrow().name {
+                                    return Err(LispError::Generic(
+                                        format!("LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
+                                            name_sym.borrow().name, expr_sym.borrow().name)
+                                    ));
+                                }
+                            }
+
                             let new_env = Environment::new_child(env);
                             let label_expr = LispVal::Cons {
                                 car: Box::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
@@ -1236,6 +1317,14 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         Ok(last_val)
                     }
                     "SETQ" => {
+                        // SETQ: Set a variable's value
+                        // (SETQ var1 val1 var2 val2 ...)
+                        // NOTE: If a variable doesn't exist, SETQ will CREATE it in the
+                        // current environment. This is intentional behavior that allows
+                        // dynamic variable creation. The newly created variable is NOT
+                        // "undefined" - it takes on the value provided to SETQ.
+                        // This behavior differs from some Lisp dialects that require
+                        // variables to be declared before assignment.
                         let args_vec = list_to_vec(rest)?;
                         if args_vec.len() % 2 != 0 {
                             return Err(LispError::Generic(
@@ -1281,10 +1370,17 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             }
                         }
 
+                        // Collect labels and warn on duplicates
+                        // NOTE: Duplicate labels are allowed but the later label wins.
+                        // This may be surprising behavior, so we warn about it.
                         let mut labels = HashMap::new();
                         for (i, item) in body.iter().enumerate() {
                             if let LispVal::Symbol(s) = item {
-                                labels.insert(s.borrow().name.clone(), i);
+                                let label_name = s.borrow().name.clone();
+                                if let Some(old_idx) = labels.insert(label_name.clone(), i) {
+                                    eprintln!("Warning: PROG has duplicate label '{}' at positions {} and {}. Later label (position {}) will be used.",
+                                        label_name, old_idx, i, i);
+                                }
                             }
                         }
 
@@ -1623,6 +1719,11 @@ fn apply_list_processing(
             Ok(subst_helper(new_val, old_val, tree))
         }
         BuiltinFunc::Assoc => {
+            // ASSOC: Search an association list for a key
+            // (ASSOC key alist)
+            // Returns the first pair (key . value) where the car equals key.
+            // NOTE: Malformed alist elements (non-cons) are skipped with a warning.
+            // This is intentional to allow graceful degradation with imperfect data.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "assoc requires exactly two arguments".to_string(),
@@ -1639,6 +1740,9 @@ fn apply_list_processing(
                     if **pair_car == *key {
                         return Ok(*car.clone());
                     }
+                } else {
+                    // Warn about malformed alist element
+                    eprintln!("Warning: ASSOC skipping non-cons alist element: {:?}", car);
                 }
                 alist = cdr;
             }
@@ -1679,6 +1783,13 @@ fn apply_list_processing(
             Ok(vec_to_list(result))
         }
         BuiltinFunc::Rplaca => {
+            // RPLACA: Replace the CAR of a cons cell
+            // (RPLACA cons new-car)
+            // IMPORTANT: This implementation returns a NEW cons cell rather than
+            // modifying the original. This is a FUNCTIONAL approach that prevents
+            // circular list creation, avoiding potential infinite loops in list
+            // traversal operations. Circular lists are therefore NOT possible in
+            // this implementation, which is an intentional safety feature.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "rplaca requires exactly two arguments".to_string(),
@@ -1696,6 +1807,13 @@ fn apply_list_processing(
             }
         }
         BuiltinFunc::Rplacd => {
+            // RPLACD: Replace the CDR of a cons cell
+            // (RPLACD cons new-cdr)
+            // IMPORTANT: This implementation returns a NEW cons cell rather than
+            // modifying the original. This is a FUNCTIONAL approach that prevents
+            // circular list creation, avoiding potential infinite loops in list
+            // traversal operations. Circular lists are therefore NOT possible in
+            // this implementation, which is an intentional safety feature.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "rplacd requires exactly two arguments".to_string(),

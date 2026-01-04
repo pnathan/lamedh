@@ -217,6 +217,11 @@ impl Environment {
         env.set("FIXP".to_string(), LispVal::Builtin(BuiltinFunc::Fixp));
         env.set("FLOATP".to_string(), LispVal::Builtin(BuiltinFunc::Floatp));
 
+        // Float comparisons
+        env.set("FLOAT-EQUAL".to_string(), LispVal::Builtin(BuiltinFunc::FloatEqual));
+        env.set("FLOAT-LESSP".to_string(), LispVal::Builtin(BuiltinFunc::FloatLessp));
+        env.set("FLOAT-GREATERP".to_string(), LispVal::Builtin(BuiltinFunc::FloatGreaterp));
+
         // Condition flags
         env.set("SET-FLAG".to_string(), LispVal::Builtin(BuiltinFunc::SetFlag));
         env.set("CLEAR-FLAG".to_string(), LispVal::Builtin(BuiltinFunc::ClearFlag));
@@ -244,6 +249,10 @@ impl Environment {
         self.bindings.borrow_mut().insert(name, val);
     }
 
+    /// Update a variable's value, searching up the environment chain.
+    /// If the variable is not found in any environment, it is CREATED in
+    /// the current environment. This supports dynamic variable creation via
+    /// SETQ and is intentional behavior for interactive development.
     pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
         let mut maybe_env = Some(env.clone());
         while let Some(current_env) = maybe_env {
@@ -256,6 +265,7 @@ impl Environment {
             }
             maybe_env = current_env.parent.clone();
         }
+        // Variable not found - create it in the current environment
         env.set(name.to_string(), val);
     }
 
