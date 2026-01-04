@@ -624,6 +624,45 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
             }
 
+            // New type predicates
+            BuiltinFunc::Symbolp
+            | BuiltinFunc::Boundp
+            | BuiltinFunc::Functionp
+            | BuiltinFunc::Macrop => apply_type_predicates(builtin, args, env),
+
+            // New list operations
+            BuiltinFunc::List
+            | BuiltinFunc::Last
+            | BuiltinFunc::Nth
+            | BuiltinFunc::Nthcdr
+            | BuiltinFunc::Efface => apply_new_list_ops(builtin, args, env),
+
+            // New numeric operations
+            BuiltinFunc::Mod
+            | BuiltinFunc::Plusp
+            | BuiltinFunc::Evenp
+            | BuiltinFunc::Oddp
+            | BuiltinFunc::Add1
+            | BuiltinFunc::Sub1
+            | BuiltinFunc::Random => apply_new_numeric_ops(builtin, args, env),
+
+            // New bitwise operations
+            BuiltinFunc::Ash | BuiltinFunc::Lognot | BuiltinFunc::Rot => {
+                apply_new_bitwise_ops(builtin, args, env)
+            }
+
+            // Function operations
+            BuiltinFunc::Funcall | BuiltinFunc::Macroexpand => {
+                apply_function_ops(builtin, args, env)
+            }
+
+            // String/Symbol operations
+            BuiltinFunc::Explode
+            | BuiltinFunc::Implode
+            | BuiltinFunc::Maknam
+            | BuiltinFunc::Gensym
+            | BuiltinFunc::Intern
+            | BuiltinFunc::Plist => apply_string_symbol_ops(builtin, args, env),
             // Float comparisons (handle -0.0 vs 0.0 correctly)
             BuiltinFunc::FloatEqual => {
                 if args.len() != 2 {
@@ -1923,6 +1962,515 @@ fn apply_bitwise_op(
             } else {
                 Err(LispError::Generic(
                     "leftshift requires integer arguments".to_string(),
+                ))
+            }
+        }
+        _ => Err(LispError::Generic("Not a bitwise operation".to_string())),
+    }
+}
+
+// New list operations
+fn apply_new_list_ops(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    _env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::List => Ok(vec_to_list(args.to_vec())),
+        BuiltinFunc::Last => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "last requires exactly one argument".to_string(),
+                ));
+            }
+            let mut current = &args[0];
+            while let LispVal::Cons { car: _, cdr } = current {
+                if **cdr == LispVal::Nil {
+                    return Ok(current.clone());
+                }
+                current = cdr;
+            }
+            Ok(LispVal::Nil)
+        }
+        BuiltinFunc::Nth => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "nth requires exactly two arguments".to_string(),
+                ));
+            }
+            let n = if let LispVal::Number(n) = &args[0] {
+                *n as usize
+            } else {
+                return Err(LispError::Generic(
+                    "nth requires a number as first argument".to_string(),
+                ));
+            };
+            let mut current = &args[1];
+            for _ in 0..n {
+                if let LispVal::Cons { car: _, cdr } = current {
+                    current = cdr;
+                } else {
+                    return Ok(LispVal::Nil);
+                }
+            }
+            if let LispVal::Cons { car, cdr: _ } = current {
+                Ok(*car.clone())
+            } else {
+                Ok(LispVal::Nil)
+            }
+        }
+        BuiltinFunc::Nthcdr => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "nthcdr requires exactly two arguments".to_string(),
+                ));
+            }
+            let n = if let LispVal::Number(n) = &args[0] {
+                *n as usize
+            } else {
+                return Err(LispError::Generic(
+                    "nthcdr requires a number as first argument".to_string(),
+                ));
+            };
+            let mut current = args[1].clone();
+            for _ in 0..n {
+                if let LispVal::Cons { car: _, cdr } = current {
+                    current = *cdr;
+                } else {
+                    return Ok(LispVal::Nil);
+                }
+            }
+            Ok(current)
+        }
+        BuiltinFunc::Efface => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "efface requires exactly two arguments".to_string(),
+                ));
+            }
+            let item = &args[0];
+            let list = &args[1];
+
+            // Build a new list without the first occurrence of item
+            let items = list_to_vec(list)?;
+            let mut found = false;
+            let result: Vec<LispVal> = items
+                .into_iter()
+                .filter(|x| {
+                    if !found && x == item {
+                        found = true;
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            Ok(vec_to_list(result))
+        }
+        _ => Err(LispError::Generic("Not a list operation".to_string())),
+    }
+}
+
+// New numeric operations
+fn apply_new_numeric_ops(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Mod => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "mod requires exactly two arguments".to_string(),
+                ));
+            }
+            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
+                if *y == 0 {
+                    return Err(LispError::Generic("Division by zero".to_string()));
+                }
+                // MOD uses floored division (different from remainder for negative numbers)
+                Ok(LispVal::Number(x.rem_euclid(*y)))
+            } else {
+                Err(LispError::Generic(
+                    "mod requires integer arguments".to_string(),
+                ))
+            }
+        }
+        BuiltinFunc::Plusp => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "plusp requires exactly one argument".to_string(),
+                ));
+            }
+            match &args[0] {
+                LispVal::Number(n) => {
+                    if *n > 0 {
+                        Ok(LispVal::Symbol(env.intern_symbol("T")))
+                    } else {
+                        Ok(LispVal::Nil)
+                    }
+                }
+                LispVal::Float(f) => {
+                    if *f > 0.0 {
+                        Ok(LispVal::Symbol(env.intern_symbol("T")))
+                    } else {
+                        Ok(LispVal::Nil)
+                    }
+                }
+                _ => Err(LispError::Generic("plusp requires a number".to_string())),
+            }
+        }
+        BuiltinFunc::Evenp => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "evenp requires exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Number(n) = &args[0] {
+                if n % 2 == 0 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            } else {
+                Err(LispError::Generic("evenp requires an integer".to_string()))
+            }
+        }
+        BuiltinFunc::Oddp => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "oddp requires exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Number(n) = &args[0] {
+                if n % 2 != 0 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            } else {
+                Err(LispError::Generic("oddp requires an integer".to_string()))
+            }
+        }
+        BuiltinFunc::Add1 => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "add1 requires exactly one argument".to_string(),
+                ));
+            }
+            match &args[0] {
+                LispVal::Number(n) => Ok(LispVal::Number(n + 1)),
+                LispVal::Float(f) => Ok(LispVal::Float(f + 1.0)),
+                _ => Err(LispError::Generic("add1 requires a number".to_string())),
+            }
+        }
+        BuiltinFunc::Sub1 => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "sub1 requires exactly one argument".to_string(),
+                ));
+            }
+            match &args[0] {
+                LispVal::Number(n) => Ok(LispVal::Number(n - 1)),
+                LispVal::Float(f) => Ok(LispVal::Float(f - 1.0)),
+                _ => Err(LispError::Generic("sub1 requires a number".to_string())),
+            }
+        }
+        BuiltinFunc::Random => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "random requires exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Number(n) = &args[0] {
+                if *n <= 0 {
+                    return Err(LispError::Generic(
+                        "random requires a positive integer".to_string(),
+                    ));
+                }
+                // Simple linear congruential generator using system time as seed
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let seed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64;
+                let random_val = (seed % (*n as u64)) as i64;
+                Ok(LispVal::Number(random_val))
+            } else {
+                Err(LispError::Generic("random requires an integer".to_string()))
+            }
+        }
+        _ => Err(LispError::Generic("Not a numeric operation".to_string())),
+    }
+}
+
+// Type predicate operations
+fn apply_type_predicates(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    if args.len() != 1 {
+        return Err(LispError::Generic(
+            "Type predicate requires exactly one argument".to_string(),
+        ));
+    }
+    let arg = &args[0];
+    let result = match op {
+        BuiltinFunc::Symbolp => matches!(arg, LispVal::Symbol(_)),
+        BuiltinFunc::Boundp => {
+            if let LispVal::Symbol(s) = arg {
+                env.is_bound(&s.borrow().name)
+            } else {
+                return Err(LispError::Generic("boundp requires a symbol".to_string()));
+            }
+        }
+        BuiltinFunc::Functionp => matches!(
+            arg,
+            LispVal::Lambda(_) | LispVal::Builtin(_) | LispVal::Fexpr(_)
+        ),
+        BuiltinFunc::Macrop => matches!(arg, LispVal::Macro(_)),
+        _ => return Err(LispError::Generic("Not a type predicate".to_string())),
+    };
+    if result {
+        Ok(LispVal::Symbol(env.intern_symbol("T")))
+    } else {
+        Ok(LispVal::Nil)
+    }
+}
+
+// Function operations
+fn apply_function_ops(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Funcall => {
+            if args.is_empty() {
+                return Err(LispError::Generic(
+                    "funcall requires at least one argument".to_string(),
+                ));
+            }
+            // If the first arg is a symbol, look it up to get the function
+            let func = match &args[0] {
+                LispVal::Symbol(s) => env.get(&s.borrow().name).ok_or_else(|| {
+                    LispError::Generic(format!("Function not found: {}", s.borrow().name))
+                })?,
+                other => other.clone(),
+            };
+            let func_args = &args[1..];
+            apply(&func, func_args, env)
+        }
+        BuiltinFunc::Macroexpand => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "macroexpand requires exactly one argument".to_string(),
+                ));
+            }
+            let form = &args[0];
+            if let LispVal::Cons { car, cdr } = form
+                && let LispVal::Symbol(s) = &**car
+                && let Some(LispVal::Macro(m)) = env.get(&s.borrow().name)
+            {
+                let macro_args = list_to_vec(cdr)?;
+                return expand_macro(&m, &macro_args, env);
+            }
+            // Not a macro call, return as-is
+            Ok(form.clone())
+        }
+        _ => Err(LispError::Generic("Not a function operation".to_string())),
+    }
+}
+
+// String/Symbol operations
+fn apply_string_symbol_ops(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Explode => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "explode requires exactly one argument".to_string(),
+                ));
+            }
+            let chars: Vec<LispVal> = match &args[0] {
+                LispVal::Symbol(s) => s
+                    .borrow()
+                    .name
+                    .chars()
+                    .map(|c| LispVal::Symbol(env.intern_symbol(&c.to_string())))
+                    .collect(),
+                LispVal::String(s) => s
+                    .chars()
+                    .map(|c| LispVal::Symbol(env.intern_symbol(&c.to_string())))
+                    .collect(),
+                LispVal::Number(n) => n
+                    .to_string()
+                    .chars()
+                    .map(|c| LispVal::Symbol(env.intern_symbol(&c.to_string())))
+                    .collect(),
+                _ => {
+                    return Err(LispError::Generic(
+                        "explode requires a symbol, string, or number".to_string(),
+                    ));
+                }
+            };
+            Ok(vec_to_list(chars))
+        }
+        BuiltinFunc::Implode => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "implode requires exactly one argument".to_string(),
+                ));
+            }
+            let chars = list_to_vec(&args[0])?;
+            let mut result = String::new();
+            for ch in chars {
+                match ch {
+                    LispVal::Symbol(s) => result.push_str(&s.borrow().name),
+                    LispVal::String(s) => result.push_str(&s),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "implode requires a list of symbols or strings".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(LispVal::Symbol(env.intern_symbol(&result)))
+        }
+        BuiltinFunc::Maknam => {
+            // Same as implode in our implementation
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "maknam requires exactly one argument".to_string(),
+                ));
+            }
+            let chars = list_to_vec(&args[0])?;
+            let mut result = String::new();
+            for ch in chars {
+                match ch {
+                    LispVal::Symbol(s) => result.push_str(&s.borrow().name),
+                    LispVal::String(s) => result.push_str(&s),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "maknam requires a list of symbols or strings".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(LispVal::Symbol(env.intern_symbol(&result)))
+        }
+        BuiltinFunc::Gensym => {
+            if !args.is_empty() {
+                return Err(LispError::Generic("gensym takes no arguments".to_string()));
+            }
+            Ok(LispVal::Symbol(env.gensym()))
+        }
+        BuiltinFunc::Intern => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "intern requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::String(s) => s.to_uppercase(),
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                _ => {
+                    return Err(LispError::Generic(
+                        "intern requires a string or symbol".to_string(),
+                    ));
+                }
+            };
+            Ok(LispVal::Symbol(env.intern_symbol(&name)))
+        }
+        BuiltinFunc::Plist => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "plist requires exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Symbol(s) = &args[0] {
+                let plist = &s.borrow().plist;
+                let mut result = Vec::new();
+                for (key, val) in plist.iter() {
+                    result.push(LispVal::String(key.clone()));
+                    result.push(val.clone());
+                }
+                Ok(vec_to_list(result))
+            } else {
+                Err(LispError::Generic(
+                    "plist requires a symbol as its argument".to_string(),
+                ))
+            }
+        }
+        _ => Err(LispError::Generic(
+            "Not a string/symbol operation".to_string(),
+        )),
+    }
+}
+
+// New bitwise operations
+fn apply_new_bitwise_ops(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    _env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::Ash => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "ash requires exactly two arguments".to_string(),
+                ));
+            }
+            if let (LispVal::Number(n), LispVal::Number(shift)) = (&args[0], &args[1]) {
+                if *shift < 0 {
+                    Ok(LispVal::Number(n >> (-shift)))
+                } else {
+                    Ok(LispVal::Number(n << shift))
+                }
+            } else {
+                Err(LispError::Generic(
+                    "ash requires integer arguments".to_string(),
+                ))
+            }
+        }
+        BuiltinFunc::Lognot => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "lognot requires exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Number(n) = &args[0] {
+                Ok(LispVal::Number(!n))
+            } else {
+                Err(LispError::Generic(
+                    "lognot requires an integer argument".to_string(),
+                ))
+            }
+        }
+        BuiltinFunc::Rot => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "rot requires exactly two arguments".to_string(),
+                ));
+            }
+            if let (LispVal::Number(n), LispVal::Number(count)) = (&args[0], &args[1]) {
+                // Rotate within 64 bits
+                let bits = 64;
+                let count = count.rem_euclid(bits);
+                if count >= 0 {
+                    let count = count as u32;
+                    Ok(LispVal::Number(((*n as u64).rotate_left(count)) as i64))
+                } else {
+                    let count = (-count) as u32;
+                    Ok(LispVal::Number(((*n as u64).rotate_right(count)) as i64))
+                }
+            } else {
+                Err(LispError::Generic(
+                    "rot requires integer arguments".to_string(),
                 ))
             }
         }

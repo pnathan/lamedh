@@ -6,6 +6,7 @@ use std::rc::Rc;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolTable {
     symbols: HashMap<String, Rc<RefCell<Symbol>>>,
+    gensym_counter: u64,
 }
 
 impl Default for SymbolTable {
@@ -18,7 +19,22 @@ impl SymbolTable {
     pub fn new() -> Self {
         SymbolTable {
             symbols: HashMap::new(),
+            gensym_counter: 0,
         }
+    }
+
+    pub fn gensym(&mut self) -> Rc<RefCell<Symbol>> {
+        let name = format!("G{:04}", self.gensym_counter);
+        self.gensym_counter += 1;
+        // Create an uninterned symbol (not stored in the hash table)
+        Rc::new(RefCell::new(Symbol {
+            name,
+            plist: HashMap::new(),
+        }))
+    }
+
+    pub fn all_symbols(&self) -> Vec<Rc<RefCell<Symbol>>> {
+        self.symbols.values().cloned().collect()
     }
 
     pub fn intern(&mut self, name: &str) -> Rc<RefCell<Symbol>> {
@@ -216,6 +232,67 @@ impl Environment {
         // Type predicates
         env.set("FIXP".to_string(), LispVal::Builtin(BuiltinFunc::Fixp));
         env.set("FLOATP".to_string(), LispVal::Builtin(BuiltinFunc::Floatp));
+        env.set(
+            "SYMBOLP".to_string(),
+            LispVal::Builtin(BuiltinFunc::Symbolp),
+        );
+        env.set("BOUNDP".to_string(), LispVal::Builtin(BuiltinFunc::Boundp));
+        env.set(
+            "FUNCTIONP".to_string(),
+            LispVal::Builtin(BuiltinFunc::Functionp),
+        );
+        env.set("MACROP".to_string(), LispVal::Builtin(BuiltinFunc::Macrop));
+
+        // List functions
+        env.set("LIST".to_string(), LispVal::Builtin(BuiltinFunc::List));
+        env.set("LAST".to_string(), LispVal::Builtin(BuiltinFunc::Last));
+        env.set("NTH".to_string(), LispVal::Builtin(BuiltinFunc::Nth));
+        env.set("NTHCDR".to_string(), LispVal::Builtin(BuiltinFunc::Nthcdr));
+        env.set("EFFACE".to_string(), LispVal::Builtin(BuiltinFunc::Efface));
+        env.set("DELETE".to_string(), LispVal::Builtin(BuiltinFunc::Efface)); // Alias
+
+        // Numeric functions
+        env.set("MOD".to_string(), LispVal::Builtin(BuiltinFunc::Mod));
+        env.set("PLUSP".to_string(), LispVal::Builtin(BuiltinFunc::Plusp));
+        env.set("EVENP".to_string(), LispVal::Builtin(BuiltinFunc::Evenp));
+        env.set("ODDP".to_string(), LispVal::Builtin(BuiltinFunc::Oddp));
+        env.set("ADD1".to_string(), LispVal::Builtin(BuiltinFunc::Add1));
+        env.set("SUB1".to_string(), LispVal::Builtin(BuiltinFunc::Sub1));
+        env.set("1+".to_string(), LispVal::Builtin(BuiltinFunc::Add1)); // Alias
+        env.set("1-".to_string(), LispVal::Builtin(BuiltinFunc::Sub1)); // Alias
+        env.set("RANDOM".to_string(), LispVal::Builtin(BuiltinFunc::Random));
+
+        // Bitwise operations
+        env.set("ASH".to_string(), LispVal::Builtin(BuiltinFunc::Ash));
+        env.set("LOGNOT".to_string(), LispVal::Builtin(BuiltinFunc::Lognot));
+        env.set("ROT".to_string(), LispVal::Builtin(BuiltinFunc::Rot));
+
+        // Function operations
+        env.set(
+            "FUNCALL".to_string(),
+            LispVal::Builtin(BuiltinFunc::Funcall),
+        );
+        env.set(
+            "MACROEXPAND".to_string(),
+            LispVal::Builtin(BuiltinFunc::Macroexpand),
+        );
+
+        // String/Symbol functions
+        env.set(
+            "EXPLODE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Explode),
+        );
+        env.set(
+            "IMPLODE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Implode),
+        );
+        env.set("MAKNAM".to_string(), LispVal::Builtin(BuiltinFunc::Maknam));
+        env.set("GENSYM".to_string(), LispVal::Builtin(BuiltinFunc::Gensym));
+        env.set("INTERN".to_string(), LispVal::Builtin(BuiltinFunc::Intern));
+        env.set("PLIST".to_string(), LispVal::Builtin(BuiltinFunc::Plist));
+
+        // PUT as alias for PUTP (classic Lisp 1.5 name)
+        env.set("PUT".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
 
         // Float comparisons
         env.set("FLOAT-EQUAL".to_string(), LispVal::Builtin(BuiltinFunc::FloatEqual));
@@ -233,6 +310,18 @@ impl Environment {
 
     pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
         self.symbols.borrow_mut().intern(name)
+    }
+
+    pub fn gensym(&self) -> Rc<RefCell<Symbol>> {
+        self.symbols.borrow_mut().gensym()
+    }
+
+    pub fn all_symbols(&self) -> Vec<Rc<RefCell<Symbol>>> {
+        self.symbols.borrow().all_symbols()
+    }
+
+    pub fn is_bound(&self, name: &str) -> bool {
+        self.get(name).is_some()
     }
 
     pub fn get(&self, name: &str) -> Option<LispVal> {
