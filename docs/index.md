@@ -6,7 +6,10 @@ Welcome to the documentation for Lithhp, a Lisp interpreter written in Rust.
 
 Lithhp is a lightweight Lisp interpreter that supports a subset of the Lisp language. It is designed to be a simple, embeddable interpreter that can be used to run Lisp code.
 
-For a detailed description of the language, see the [Litthp Lisp Language Reference](language_reference.md).
+## Documentation
+
+- [Litthp Lisp Language Reference](language_reference.md) - Complete language reference with all built-in functions and special forms
+- [File I/O and Loading System](file_io.md) - Guide to loading files, directories, and understanding the file system interface
 
 ## Building and Running
 
