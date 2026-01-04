@@ -201,6 +201,7 @@ impl Environment {
 
         // List processing
         env.set("SUBST".to_string(), LispVal::Builtin(BuiltinFunc::Subst));
+        env.set("SUBLIS".to_string(), LispVal::Builtin(BuiltinFunc::Sublis));
         env.set("ASSOC".to_string(), LispVal::Builtin(BuiltinFunc::Assoc));
         env.set(
             "MAPLIST".to_string(),

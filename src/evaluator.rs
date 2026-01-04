@@ -585,6 +585,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 
             // List processing
             BuiltinFunc::Subst
+            | BuiltinFunc::Sublis
             | BuiltinFunc::Assoc
             | BuiltinFunc::Maplist
             | BuiltinFunc::Mapcar
@@ -1756,6 +1757,55 @@ fn apply_list_processing(
                 }
             }
             Ok(subst_helper(new_val, old_val, tree))
+        }
+        BuiltinFunc::Sublis => {
+            // SUBLIS: Perform multiple substitutions using an association list
+            // (SUBLIS alist tree)
+            // Returns tree with all atoms that appear as keys in alist replaced with their values
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "sublis requires exactly two arguments".to_string(),
+                ));
+            }
+            let alist = &args[0];
+            let tree = &args[1];
+
+            // Helper function to look up a value in the alist
+            fn lookup_in_alist(key: &LispVal, alist: &LispVal) -> Option<LispVal> {
+                let mut current = alist;
+                while let LispVal::Cons { car, cdr } = current {
+                    if let LispVal::Cons {
+                        car: pair_key,
+                        cdr: pair_val,
+                    } = &**car
+                    {
+                        if **pair_key == *key {
+                            return Some(*pair_val.clone());
+                        }
+                    }
+                    current = cdr;
+                }
+                None
+            }
+
+            // Recursive substitution helper
+            fn sublis_helper(alist: &LispVal, tree: &LispVal) -> LispVal {
+                match tree {
+                    LispVal::Cons { car, cdr } => {
+                        // Recursively process both car and cdr
+                        LispVal::Cons {
+                            car: Box::new(sublis_helper(alist, car)),
+                            cdr: Box::new(sublis_helper(alist, cdr)),
+                        }
+                    }
+                    _ => {
+                        // For atoms, try to find replacement in alist
+                        lookup_in_alist(tree, alist).unwrap_or_else(|| tree.clone())
+                    }
+                }
+            }
+
+            Ok(sublis_helper(alist, tree))
         }
         BuiltinFunc::Assoc => {
             // ASSOC: Search an association list for a key
