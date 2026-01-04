@@ -16,13 +16,12 @@ fn eval_str(input: &str) -> Result<LispVal, String> {
 // ============================================================================
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn test_index_negative_number_panics() {
-    // CRITICAL: This will panic or access wrong memory
+fn test_index_negative_number_errors_gracefully() {
+    // FIXED: Now properly returns an error instead of panicking
     let result = eval_str("(INDEX \"hello\" -1)");
     println!("Negative index result: {:?}", result);
-    // Currently: likely panics or wraps to huge number
-    // Expected: should error gracefully
+    assert!(result.is_err(), "Negative index should error gracefully");
+    assert!(result.unwrap_err().contains("out of bounds"), "Error should mention bounds");
 }
 
 #[test]
@@ -125,11 +124,20 @@ fn test_float_zero_overwrite() {
 // ============================================================================
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "overflow")]
-fn test_plus_overflow_debug_panics() {
-    // In debug mode, this will panic
-    let _ = eval_str("(PLUS 9223372036854775807 1)");
+fn test_plus_overflow_sets_flag() {
+    // Now uses wrapping arithmetic with OVERFLOW flag
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (PLUS 9223372036854775807 1)
+            (FLAG-SET-P 'OVERFLOW))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "Overflow should wrap and set flag, not panic");
+    match result.unwrap() {
+        LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
+        _ => panic!("Expected OVERFLOW flag to be set"),
+    }
 }
 
 #[test]
@@ -171,18 +179,42 @@ fn test_cascading_overflow() {
 // ============================================================================
 
 #[test]
-#[should_panic(expected = "overflow")]
-fn test_division_min_by_neg_one_panics() {
-    // CRITICAL: This will panic even in release mode
-    let _ = eval_str("(QUOTIENT -9223372036854775808 -1)");
+fn test_division_min_by_neg_one_sets_flag() {
+    // Now wraps and sets OVERFLOW flag instead of panicking
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (QUOTIENT -9223372036854775808 -1)
+            (FLAG-SET-P 'OVERFLOW))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "i64::MIN / -1 should wrap and set flag, not panic");
+    match result.unwrap() {
+        LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
+        _ => panic!("Expected OVERFLOW flag to be set"),
+    }
 }
 
 #[test]
-fn test_division_min_by_neg_one_should_error() {
-    let result = eval_str("(QUOTIENT -9223372036854775808 -1)");
-    // Expected: graceful error
-    // Actual: panics
-    assert!(result.is_err(), "i64::MIN / -1 should error gracefully");
+fn test_division_min_by_neg_one_wraps_with_flag() {
+    // Now returns Ok with wrapped value and OVERFLOW flag set
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (DEF result (QUOTIENT -9223372036854775808 -1))
+            (CONS (FLAG-SET-P 'OVERFLOW) result))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "i64::MIN / -1 should succeed with wrapping");
+    // The flag should be set (T in CAR) and result wrapped in CDR
+    if let Ok(LispVal::Cons { car, cdr: _ }) = result {
+        match *car {
+            LispVal::Symbol(ref s) => assert_eq!(s.borrow().name, "T", "OVERFLOW flag should be set"),
+            _ => panic!("Expected OVERFLOW flag (T) in car"),
+        }
+    } else {
+        panic!("Expected cons of (flag . result)");
+    }
 }
 
 #[test]
@@ -197,26 +229,59 @@ fn test_remainder_min_by_neg_one() {
 // ============================================================================
 
 #[test]
-#[should_panic]
-fn test_leftshift_64_panics() {
-    // Shifting by 64 bits panics
-    let _ = eval_str("(LEFTSHIFT 1 64)");
+fn test_leftshift_64_sets_flag() {
+    // Shifting by 64 bits now wraps and sets OVERFLOW flag
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (LEFTSHIFT 1 64)
+            (FLAG-SET-P 'OVERFLOW))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "Shift by 64 should wrap and set flag, not panic");
+    match result.unwrap() {
+        LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
+        _ => panic!("Expected OVERFLOW flag to be set"),
+    }
 }
 
 #[test]
-#[should_panic]
-fn test_leftshift_large_amount_panics() {
-    let _ = eval_str("(LEFTSHIFT 5 100)");
+fn test_leftshift_large_amount_sets_flag() {
+    // Large shift amounts now wrap and set OVERFLOW flag
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (LEFTSHIFT 5 100)
+            (FLAG-SET-P 'OVERFLOW))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "Large shift should wrap and set flag, not panic");
+    match result.unwrap() {
+        LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
+        _ => panic!("Expected OVERFLOW flag to be set"),
+    }
 }
 
 #[test]
-fn test_leftshift_large_amount_should_error() {
-    let result = eval_str("(LEFTSHIFT 5 100)");
-    assert!(
-        result.is_err(),
-        "Shift by 100 should error, not panic: {:?}",
-        result
-    );
+fn test_leftshift_large_amount_wraps_with_flag() {
+    // Now returns Ok with wrapped value and OVERFLOW flag set
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (DEF result (LEFTSHIFT 5 100))
+            (CONS (FLAG-SET-P 'OVERFLOW) result))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "Large shift should succeed with wrapping");
+    // The flag should be set (T in CAR)
+    if let Ok(LispVal::Cons { car, cdr: _ }) = result {
+        match *car {
+            LispVal::Symbol(ref s) => assert_eq!(s.borrow().name, "T", "OVERFLOW flag should be set"),
+            _ => panic!("Expected OVERFLOW flag (T) in car"),
+        }
+    } else {
+        panic!("Expected cons of (flag . result)");
+    }
 }
 
 #[test]
@@ -332,9 +397,11 @@ fn test_define_with_symbol() {
 
 #[test]
 fn test_define_empty_list() {
-    let result = eval_str("(DEFINE '())");
+    // DEFINE is a special form that doesn't evaluate its argument
+    // so '() (which is (QUOTE ())) doesn't work. Use () directly.
+    let result = eval_str("(DEFINE ())");
     assert!(result.is_ok(), "DEFINE with empty list should work");
-    println!("DEFINE empty: {:?}", result);
+    assert_eq!(result.unwrap(), LispVal::Nil, "Empty DEFINE should return NIL");
 }
 
 // ============================================================================
