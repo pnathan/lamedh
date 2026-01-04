@@ -100,6 +100,15 @@ pub enum BuiltinFunc {
     // Type predicates
     Fixp,
     Floatp,
+    // Float comparisons
+    FloatEqual,
+    FloatLessp,
+    FloatGreaterp,
+    // Condition flags
+    SetFlag,
+    ClearFlag,
+    FlagSetP,
+    ClearAllFlags,
 }
 
 #[derive(Debug, Clone, PartialEq)]

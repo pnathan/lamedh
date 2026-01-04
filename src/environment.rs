@@ -40,6 +40,7 @@ pub struct Environment {
     parent: Option<Rc<Environment>>,
     bindings: Rc<RefCell<HashMap<String, LispVal>>>,
     pub symbols: Rc<RefCell<SymbolTable>>,
+    condition_flags: Rc<RefCell<HashMap<String, bool>>>,
 }
 
 impl PartialEq for Environment {
@@ -52,6 +53,7 @@ impl PartialEq for Environment {
         parents_equal
             && Rc::ptr_eq(&self.bindings, &other.bindings)
             && Rc::ptr_eq(&self.symbols, &other.symbols)
+            && Rc::ptr_eq(&self.condition_flags, &other.condition_flags)
     }
 }
 
@@ -67,6 +69,7 @@ impl Environment {
             parent: None,
             bindings: Rc::new(RefCell::new(HashMap::new())),
             symbols: Rc::new(RefCell::new(SymbolTable::new())),
+            condition_flags: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -75,6 +78,7 @@ impl Environment {
             parent: Some(parent.clone()),
             bindings: Rc::new(RefCell::new(HashMap::new())),
             symbols: parent.symbols.clone(),
+            condition_flags: parent.condition_flags.clone(), // Share flags with parent
         })
     }
 
@@ -213,6 +217,17 @@ impl Environment {
         env.set("FIXP".to_string(), LispVal::Builtin(BuiltinFunc::Fixp));
         env.set("FLOATP".to_string(), LispVal::Builtin(BuiltinFunc::Floatp));
 
+        // Float comparisons
+        env.set("FLOAT-EQUAL".to_string(), LispVal::Builtin(BuiltinFunc::FloatEqual));
+        env.set("FLOAT-LESSP".to_string(), LispVal::Builtin(BuiltinFunc::FloatLessp));
+        env.set("FLOAT-GREATERP".to_string(), LispVal::Builtin(BuiltinFunc::FloatGreaterp));
+
+        // Condition flags
+        env.set("SET-FLAG".to_string(), LispVal::Builtin(BuiltinFunc::SetFlag));
+        env.set("CLEAR-FLAG".to_string(), LispVal::Builtin(BuiltinFunc::ClearFlag));
+        env.set("FLAG-SET-P".to_string(), LispVal::Builtin(BuiltinFunc::FlagSetP));
+        env.set("CLEAR-ALL-FLAGS".to_string(), LispVal::Builtin(BuiltinFunc::ClearAllFlags));
+
         env
     }
 
@@ -234,6 +249,10 @@ impl Environment {
         self.bindings.borrow_mut().insert(name, val);
     }
 
+    /// Update a variable's value, searching up the environment chain.
+    /// If the variable is not found in any environment, it is CREATED in
+    /// the current environment. This supports dynamic variable creation via
+    /// SETQ and is intentional behavior for interactive development.
     pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
         let mut maybe_env = Some(env.clone());
         while let Some(current_env) = maybe_env {
@@ -246,6 +265,7 @@ impl Environment {
             }
             maybe_env = current_env.parent.clone();
         }
+        // Variable not found - create it in the current environment
         env.set(name.to_string(), val);
     }
 
@@ -256,5 +276,22 @@ impl Environment {
         }
         all.extend(self.bindings.borrow().clone());
         all
+    }
+
+    // Condition flag operations (dynamically scoped)
+    pub fn set_flag(&self, flag: &str) {
+        self.condition_flags.borrow_mut().insert(flag.to_string(), true);
+    }
+
+    pub fn clear_flag(&self, flag: &str) {
+        self.condition_flags.borrow_mut().insert(flag.to_string(), false);
+    }
+
+    pub fn flag_set(&self, flag: &str) -> bool {
+        self.condition_flags.borrow().get(flag).copied().unwrap_or(false)
+    }
+
+    pub fn clear_all_flags(&self) {
+        self.condition_flags.borrow_mut().clear();
     }
 }

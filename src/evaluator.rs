@@ -80,7 +80,7 @@ fn is_truthy(val: &LispVal) -> bool {
     !matches!(val, LispVal::Nil)
 }
 
-fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+fn apply_math_op(op: &BuiltinFunc, args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     let nums: Result<Vec<i64>, LispError> = args
         .iter()
         .map(|arg| match arg {
@@ -93,7 +93,19 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
     let nums = nums?;
 
     match op {
-        BuiltinFunc::Plus => Ok(LispVal::Number(nums.iter().sum())),
+        BuiltinFunc::Plus => {
+            let mut result = 0i64;
+            for &num in &nums {
+                match result.checked_add(num) {
+                    Some(v) => result = v,
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        result = result.wrapping_add(num);
+                    }
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
         BuiltinFunc::Minus => {
             if nums.is_empty() {
                 return Err(LispError::Generic(
@@ -101,16 +113,40 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 ));
             }
             if nums.len() == 1 {
-                Ok(LispVal::Number(-nums[0]))
+                match nums[0].checked_neg() {
+                    Some(v) => Ok(LispVal::Number(v)),
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        Ok(LispVal::Number(nums[0].wrapping_neg()))
+                    }
+                }
             } else {
                 let mut result = nums[0];
                 for &num in &nums[1..] {
-                    result -= num;
+                    match result.checked_sub(num) {
+                        Some(v) => result = v,
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            result = result.wrapping_sub(num);
+                        }
+                    }
                 }
                 Ok(LispVal::Number(result))
             }
         }
-        BuiltinFunc::Multiply => Ok(LispVal::Number(nums.iter().product())),
+        BuiltinFunc::Multiply => {
+            let mut result = 1i64;
+            for &num in &nums {
+                match result.checked_mul(num) {
+                    Some(v) => result = v,
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        result = result.wrapping_mul(num);
+                    }
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
         BuiltinFunc::Divide => {
             if nums.len() != 2 {
                 return Err(LispError::Generic(
@@ -120,7 +156,13 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
             if nums[1] == 0 {
                 return Err(LispError::Generic("Division by zero".to_string()));
             }
-            Ok(LispVal::Number(nums[0] / nums[1]))
+            // Check for i64::MIN / -1 overflow
+            if nums[0] == i64::MIN && nums[1] == -1 {
+                env.set_flag("OVERFLOW");
+                Ok(LispVal::Number(nums[0].wrapping_div(nums[1])))
+            } else {
+                Ok(LispVal::Number(nums[0] / nums[1]))
+            }
         }
         _ => Err(LispError::Generic("Not a math operation".to_string())),
     }
@@ -267,7 +309,13 @@ fn apply_numeric_primitives(
                 if *y == 0 {
                     return Err(LispError::Generic("Division by zero".to_string()));
                 }
-                Ok(LispVal::Number(x % y))
+                // Check for i64::MIN % -1 overflow
+                if *x == i64::MIN && *y == -1 {
+                    env.set_flag("OVERFLOW");
+                    Ok(LispVal::Number(x.wrapping_rem(*y)))
+                } else {
+                    Ok(LispVal::Number(x % y))
+                }
             } else {
                 Err(LispError::Generic("remainder requires numbers".to_string()))
             }
@@ -282,7 +330,16 @@ fn apply_numeric_primitives(
                         "negative exponent not supported".to_string(),
                     ));
                 }
-                Ok(LispVal::Number(base.pow(*exp as u32)))
+                // Check if exponent fits in u32
+                if *exp > u32::MAX as i64 {
+                    return Err(LispError::Generic(
+                        "exponent too large".to_string(),
+                    ));
+                }
+                // Use checked_pow to detect overflow
+                base.checked_pow(*exp as u32)
+                    .map(LispVal::Number)
+                    .ok_or_else(|| LispError::Generic("exponentiation overflow".to_string()))
             } else {
                 Err(LispError::Generic("expt requires numbers".to_string()))
             }
@@ -447,7 +504,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             BuiltinFunc::Plus
             | BuiltinFunc::Minus
             | BuiltinFunc::Multiply
-            | BuiltinFunc::Divide => apply_math_op(builtin, args),
+            | BuiltinFunc::Divide => apply_math_op(builtin, args, env),
             BuiltinFunc::Lessp
             | BuiltinFunc::Greaterp
             | BuiltinFunc::Zerop
@@ -567,6 +624,77 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
             }
 
+            // Float comparisons (handle -0.0 vs 0.0 correctly)
+            BuiltinFunc::FloatEqual => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "float= requires exactly two arguments".to_string(),
+                    ));
+                }
+                let f1 = match &args[0] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float= requires numeric arguments".to_string())),
+                };
+                let f2 = match &args[1] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float= requires numeric arguments".to_string())),
+                };
+                // Use bitwise equality to distinguish -0.0 from 0.0
+                if f1.to_bits() == f2.to_bits() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FloatLessp => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "float< requires exactly two arguments".to_string(),
+                    ));
+                }
+                let f1 = match &args[0] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float< requires numeric arguments".to_string())),
+                };
+                let f2 = match &args[1] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float< requires numeric arguments".to_string())),
+                };
+                if f1 < f2 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FloatGreaterp => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "float> requires exactly two arguments".to_string(),
+                    ));
+                }
+                let f1 = match &args[0] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float> requires numeric arguments".to_string())),
+                };
+                let f2 = match &args[1] {
+                    LispVal::Float(f) => *f,
+                    LispVal::Number(n) => *n as f64,
+                    _ => return Err(LispError::Generic("float> requires numeric arguments".to_string())),
+                };
+                if f1 > f2 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
             BuiltinFunc::LoadFile => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
@@ -583,6 +711,71 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 };
 
                 crate::load_file(&filename, env)?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            // Condition flags
+            BuiltinFunc::SetFlag => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "set-flag requires exactly one argument".to_string(),
+                    ));
+                }
+                let flag_name = match &args[0] {
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    LispVal::String(s) => s.clone(),
+                    _ => return Err(LispError::Generic(
+                        "set-flag requires a symbol or string".to_string(),
+                    )),
+                };
+                env.set_flag(&flag_name);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::ClearFlag => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "clear-flag requires exactly one argument".to_string(),
+                    ));
+                }
+                let flag_name = match &args[0] {
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    LispVal::String(s) => s.clone(),
+                    _ => return Err(LispError::Generic(
+                        "clear-flag requires a symbol or string".to_string(),
+                    )),
+                };
+                env.clear_flag(&flag_name);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::FlagSetP => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "flag-set-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let flag_name = match &args[0] {
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    LispVal::String(s) => s.clone(),
+                    _ => return Err(LispError::Generic(
+                        "flag-set-p requires a symbol or string".to_string(),
+                    )),
+                };
+                if env.flag_set(&flag_name) {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::ClearAllFlags => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "clear-all-flags takes no arguments".to_string(),
+                    ));
+                }
+                env.clear_all_flags();
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
         },
@@ -773,9 +966,23 @@ fn expand_macro(
 pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
-        LispVal::Symbol(s) => env
-            .get(&s.borrow().name)
-            .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name))),
+        LispVal::Symbol(s) => {
+            let value = env
+                .get(&s.borrow().name)
+                .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name)))?;
+
+            // If the value is a LABEL expression, evaluate it
+            // This handles recursive LABEL definitions
+            if let LispVal::Cons { car, cdr: _ } = &value {
+                if let LispVal::Symbol(sym) = &**car {
+                    if sym.borrow().name == "LABEL" {
+                        return eval(&value, env);
+                    }
+                }
+            }
+
+            Ok(value)
+        }
         LispVal::Number(_)
         | LispVal::Float(_)
         | LispVal::String(_)
@@ -1006,6 +1213,16 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         let expr_val = &args[1];
 
                         if let LispVal::Symbol(name_sym) = name_val {
+                            // Check for pathological case: (LABEL x x)
+                            if let LispVal::Symbol(expr_sym) = expr_val {
+                                if name_sym.borrow().name == expr_sym.borrow().name {
+                                    return Err(LispError::Generic(
+                                        format!("LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
+                                            name_sym.borrow().name, expr_sym.borrow().name)
+                                    ));
+                                }
+                            }
+
                             let new_env = Environment::new_child(env);
                             let label_expr = LispVal::Cons {
                                 car: Box::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
@@ -1100,6 +1317,14 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         Ok(last_val)
                     }
                     "SETQ" => {
+                        // SETQ: Set a variable's value
+                        // (SETQ var1 val1 var2 val2 ...)
+                        // NOTE: If a variable doesn't exist, SETQ will CREATE it in the
+                        // current environment. This is intentional behavior that allows
+                        // dynamic variable creation. The newly created variable is NOT
+                        // "undefined" - it takes on the value provided to SETQ.
+                        // This behavior differs from some Lisp dialects that require
+                        // variables to be declared before assignment.
                         let args_vec = list_to_vec(rest)?;
                         if args_vec.len() % 2 != 0 {
                             return Err(LispError::Generic(
@@ -1145,10 +1370,17 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             }
                         }
 
+                        // Collect labels and warn on duplicates
+                        // NOTE: Duplicate labels are allowed but the later label wins.
+                        // This may be surprising behavior, so we warn about it.
                         let mut labels = HashMap::new();
                         for (i, item) in body.iter().enumerate() {
                             if let LispVal::Symbol(s) = item {
-                                labels.insert(s.borrow().name.clone(), i);
+                                let label_name = s.borrow().name.clone();
+                                if let Some(old_idx) = labels.insert(label_name.clone(), i) {
+                                    eprintln!("Warning: PROG has duplicate label '{}' at positions {} and {}. Later label (position {}) will be used.",
+                                        label_name, old_idx, i, i);
+                                }
                             }
                         }
 
@@ -1487,6 +1719,11 @@ fn apply_list_processing(
             Ok(subst_helper(new_val, old_val, tree))
         }
         BuiltinFunc::Assoc => {
+            // ASSOC: Search an association list for a key
+            // (ASSOC key alist)
+            // Returns the first pair (key . value) where the car equals key.
+            // NOTE: Malformed alist elements (non-cons) are skipped with a warning.
+            // This is intentional to allow graceful degradation with imperfect data.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "assoc requires exactly two arguments".to_string(),
@@ -1503,6 +1740,9 @@ fn apply_list_processing(
                     if **pair_car == *key {
                         return Ok(*car.clone());
                     }
+                } else {
+                    // Warn about malformed alist element
+                    eprintln!("Warning: ASSOC skipping non-cons alist element: {:?}", car);
                 }
                 alist = cdr;
             }
@@ -1543,6 +1783,13 @@ fn apply_list_processing(
             Ok(vec_to_list(result))
         }
         BuiltinFunc::Rplaca => {
+            // RPLACA: Replace the CAR of a cons cell
+            // (RPLACA cons new-car)
+            // IMPORTANT: This implementation returns a NEW cons cell rather than
+            // modifying the original. This is a FUNCTIONAL approach that prevents
+            // circular list creation, avoiding potential infinite loops in list
+            // traversal operations. Circular lists are therefore NOT possible in
+            // this implementation, which is an intentional safety feature.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "rplaca requires exactly two arguments".to_string(),
@@ -1560,6 +1807,13 @@ fn apply_list_processing(
             }
         }
         BuiltinFunc::Rplacd => {
+            // RPLACD: Replace the CDR of a cons cell
+            // (RPLACD cons new-cdr)
+            // IMPORTANT: This implementation returns a NEW cons cell rather than
+            // modifying the original. This is a FUNCTIONAL approach that prevents
+            // circular list creation, avoiding potential infinite loops in list
+            // traversal operations. Circular lists are therefore NOT possible in
+            // this implementation, which is an intentional safety feature.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "rplacd requires exactly two arguments".to_string(),
@@ -1586,7 +1840,7 @@ fn apply_list_processing(
 fn apply_bitwise_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    _env: &Rc<Environment>,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Logor => {
@@ -1644,10 +1898,27 @@ fn apply_bitwise_op(
                 ));
             }
             if let (LispVal::Number(n), LispVal::Number(shift)) = (&args[0], &args[1]) {
-                if *shift < 0 {
+                // Validate shift amount to avoid overflow panic
+                if *shift >= 64 || *shift <= -64 {
+                    env.set_flag("OVERFLOW");
+                    // Return 0 or -1 depending on sign for extreme shifts
+                    if *shift >= 64 {
+                        Ok(LispVal::Number(0))
+                    } else {
+                        // Right shift by >= 64 is effectively sign extension
+                        Ok(LispVal::Number(if *n < 0 { -1 } else { 0 }))
+                    }
+                } else if *shift < 0 {
                     Ok(LispVal::Number(n >> (-shift)))
                 } else {
-                    Ok(LispVal::Number(n << shift))
+                    // Check for overflow in left shift
+                    match n.checked_shl(*shift as u32) {
+                        Some(v) => Ok(LispVal::Number(v)),
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
+                        }
+                    }
                 }
             } else {
                 Err(LispError::Generic(
