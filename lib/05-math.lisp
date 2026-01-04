@@ -6,14 +6,6 @@
   "Test if x is negative"
   (< x 0))
 
-(defun add1 (x)
-  "Add 1 to x"
-  (+ x 1))
-
-(defun sub1 (x)
-  "Subtract 1 from x"
-  (- x 1))
-
 (defun max (&rest numbers)
   "Return maximum of numbers"
   (cond ((null numbers) (error "MAX requires at least one argument"))
