@@ -81,90 +81,145 @@ fn is_truthy(val: &LispVal) -> bool {
 }
 
 fn apply_math_op(op: &BuiltinFunc, args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
-    let nums: Result<Vec<i64>, LispError> = args
-        .iter()
-        .map(|arg| match arg {
-            LispVal::Number(n) => Ok(*n),
-            _ => Err(LispError::Generic(
-                "Math functions only accept numbers".to_string(),
-            )),
-        })
-        .collect();
-    let nums = nums?;
+    // Check if any argument is a float - if so, use float arithmetic
+    let has_float = args.iter().any(|arg| matches!(arg, LispVal::Float(_)));
 
-    match op {
-        BuiltinFunc::Plus => {
-            let mut result = 0i64;
-            for &num in &nums {
-                match result.checked_add(num) {
-                    Some(v) => result = v,
-                    None => {
-                        env.set_flag("OVERFLOW");
-                        result = result.wrapping_add(num);
-                    }
+    if has_float {
+        // Float arithmetic path
+        let nums: Result<Vec<f64>, LispError> = args
+            .iter()
+            .map(|arg| match arg {
+                LispVal::Number(n) => Ok(*n as f64),
+                LispVal::Float(f) => Ok(*f),
+                _ => Err(LispError::Generic(
+                    "Math functions only accept numbers".to_string(),
+                )),
+            })
+            .collect();
+        let nums = nums?;
+
+        match op {
+            BuiltinFunc::Plus => {
+                let result: f64 = nums.iter().sum();
+                Ok(LispVal::Float(result))
+            }
+            BuiltinFunc::Minus => {
+                if nums.is_empty() {
+                    return Err(LispError::Generic(
+                        "- requires at least one argument".to_string(),
+                    ));
+                }
+                if nums.len() == 1 {
+                    Ok(LispVal::Float(-nums[0]))
+                } else {
+                    let result = nums[1..].iter().fold(nums[0], |acc, &x| acc - x);
+                    Ok(LispVal::Float(result))
                 }
             }
-            Ok(LispVal::Number(result))
+            BuiltinFunc::Multiply => {
+                let result: f64 = nums.iter().product();
+                Ok(LispVal::Float(result))
+            }
+            BuiltinFunc::Divide => {
+                if nums.len() != 2 {
+                    return Err(LispError::Generic(
+                        "/ requires exactly two arguments".to_string(),
+                    ));
+                }
+                if nums[1] == 0.0 {
+                    return Err(LispError::Generic("Division by zero".to_string()));
+                }
+                Ok(LispVal::Float(nums[0] / nums[1]))
+            }
+            _ => Err(LispError::Generic("Not a math operation".to_string())),
         }
-        BuiltinFunc::Minus => {
-            if nums.is_empty() {
-                return Err(LispError::Generic(
-                    "- requires at least one argument".to_string(),
-                ));
-            }
-            if nums.len() == 1 {
-                match nums[0].checked_neg() {
-                    Some(v) => Ok(LispVal::Number(v)),
-                    None => {
-                        env.set_flag("OVERFLOW");
-                        Ok(LispVal::Number(nums[0].wrapping_neg()))
-                    }
-                }
-            } else {
-                let mut result = nums[0];
-                for &num in &nums[1..] {
-                    match result.checked_sub(num) {
+    } else {
+        // Integer arithmetic path (with overflow checking)
+        let nums: Result<Vec<i64>, LispError> = args
+            .iter()
+            .map(|arg| match arg {
+                LispVal::Number(n) => Ok(*n),
+                _ => Err(LispError::Generic(
+                    "Math functions only accept numbers".to_string(),
+                )),
+            })
+            .collect();
+        let nums = nums?;
+
+        match op {
+            BuiltinFunc::Plus => {
+                let mut result = 0i64;
+                for &num in &nums {
+                    match result.checked_add(num) {
                         Some(v) => result = v,
                         None => {
                             env.set_flag("OVERFLOW");
-                            result = result.wrapping_sub(num);
+                            result = result.wrapping_add(num);
                         }
                     }
                 }
                 Ok(LispVal::Number(result))
             }
-        }
-        BuiltinFunc::Multiply => {
-            let mut result = 1i64;
-            for &num in &nums {
-                match result.checked_mul(num) {
-                    Some(v) => result = v,
-                    None => {
-                        env.set_flag("OVERFLOW");
-                        result = result.wrapping_mul(num);
+            BuiltinFunc::Minus => {
+                if nums.is_empty() {
+                    return Err(LispError::Generic(
+                        "- requires at least one argument".to_string(),
+                    ));
+                }
+                if nums.len() == 1 {
+                    match nums[0].checked_neg() {
+                        Some(v) => Ok(LispVal::Number(v)),
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            Ok(LispVal::Number(nums[0].wrapping_neg()))
+                        }
                     }
+                } else {
+                    let mut result = nums[0];
+                    for &num in &nums[1..] {
+                        match result.checked_sub(num) {
+                            Some(v) => result = v,
+                            None => {
+                                env.set_flag("OVERFLOW");
+                                result = result.wrapping_sub(num);
+                            }
+                        }
+                    }
+                    Ok(LispVal::Number(result))
                 }
             }
-            Ok(LispVal::Number(result))
+            BuiltinFunc::Multiply => {
+                let mut result = 1i64;
+                for &num in &nums {
+                    match result.checked_mul(num) {
+                        Some(v) => result = v,
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            result = result.wrapping_mul(num);
+                        }
+                    }
+                }
+                Ok(LispVal::Number(result))
+            }
+            BuiltinFunc::Divide => {
+                if nums.len() != 2 {
+                    return Err(LispError::Generic(
+                        "/ requires exactly two arguments".to_string(),
+                    ));
+                }
+                if nums[1] == 0 {
+                    return Err(LispError::Generic("Division by zero".to_string()));
+                }
+                // Check for i64::MIN / -1 overflow
+                if nums[0] == i64::MIN && nums[1] == -1 {
+                    env.set_flag("OVERFLOW");
+                    Ok(LispVal::Number(nums[0].wrapping_div(nums[1])))
+                } else {
+                    Ok(LispVal::Number(nums[0] / nums[1]))
+                }
+            }
+            _ => Err(LispError::Generic("Not a math operation".to_string())),
         }
-        BuiltinFunc::Divide => {
-            if nums.len() != 2 {
-                return Err(LispError::Generic(
-                    "/ requires exactly two arguments".to_string(),
-                ));
-            }
-            if nums[1] == 0 {
-                return Err(LispError::Generic("Division by zero".to_string()));
-            }
-            // Check for i64::MIN / -1 overflow
-            if nums[0] == i64::MIN && nums[1] == -1 {
-                env.set_flag("OVERFLOW");
-                Ok(LispVal::Number(nums[0].wrapping_div(nums[1])))
-            } else {
-                Ok(LispVal::Number(nums[0] / nums[1]))
-            }
-        }
-        _ => Err(LispError::Generic("Not a math operation".to_string())),
     }
 }
 
@@ -263,29 +318,35 @@ fn apply_numeric_primitives(
             if args.len() != 2 {
                 return Err(LispError::Generic("lessp requires 2 args".to_string()));
             }
-            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
-                Ok(if x < y {
-                    LispVal::Symbol(env.intern_symbol("T"))
-                } else {
-                    LispVal::Nil
-                })
+            let (x, y) = match (&args[0], &args[1]) {
+                (LispVal::Number(a), LispVal::Number(b)) => (*a as f64, *b as f64),
+                (LispVal::Float(a), LispVal::Number(b)) => (*a, *b as f64),
+                (LispVal::Number(a), LispVal::Float(b)) => (*a as f64, *b),
+                (LispVal::Float(a), LispVal::Float(b)) => (*a, *b),
+                _ => return Err(LispError::Generic("lessp requires numbers".to_string())),
+            };
+            Ok(if x < y {
+                LispVal::Symbol(env.intern_symbol("T"))
             } else {
-                Err(LispError::Generic("lessp requires numbers".to_string()))
-            }
+                LispVal::Nil
+            })
         }
         BuiltinFunc::Greaterp => {
             if args.len() != 2 {
                 return Err(LispError::Generic("greaterp requires 2 args".to_string()));
             }
-            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
-                Ok(if x > y {
-                    LispVal::Symbol(env.intern_symbol("T"))
-                } else {
-                    LispVal::Nil
-                })
+            let (x, y) = match (&args[0], &args[1]) {
+                (LispVal::Number(a), LispVal::Number(b)) => (*a as f64, *b as f64),
+                (LispVal::Float(a), LispVal::Number(b)) => (*a, *b as f64),
+                (LispVal::Number(a), LispVal::Float(b)) => (*a as f64, *b),
+                (LispVal::Float(a), LispVal::Float(b)) => (*a, *b),
+                _ => return Err(LispError::Generic("greaterp requires numbers".to_string())),
+            };
+            Ok(if x > y {
+                LispVal::Symbol(env.intern_symbol("T"))
             } else {
-                Err(LispError::Generic("greaterp requires numbers".to_string()))
-            }
+                LispVal::Nil
+            })
         }
         BuiltinFunc::Remainder => {
             if args.len() != 2 {
