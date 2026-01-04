@@ -229,7 +229,10 @@ fn test_rplacd_create_dotted_pair() {
 #[test]
 fn test_mapcar_with_subst() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '((a b) (c a) (a a)) (lambda (lst) (subst 'x 'a lst)))", &env);
+    let output = eval_line(
+        "(mapcar '((a b) (c a) (a a)) (lambda (lst) (subst 'x 'a lst)))",
+        &env,
+    );
     assert_eq!(output, "((X B) (C X) (X X))");
 }
 

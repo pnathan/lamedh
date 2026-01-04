@@ -1,0 +1,211 @@
+;;; Documentation Renderer
+;;; Generates Markdown documentation from the help database
+;;; Usage: (render-markdown-docs "path/to/docs/")
+
+;;; Note: This requires file writing capability which Lamedh doesn't have.
+;;; For now, this outputs to stdout and can be redirected.
+
+(defun render-markdown-header (title level)
+  "Output a markdown header."
+  (let ((prefix (cond ((= level 1) "# ")
+                      ((= level 2) "## ")
+                      ((= level 3) "### ")
+                      ((= level 4) "#### ")
+                      (t "##### "))))
+    (progn
+      (princ prefix)
+      (princ title)
+      (terpri)
+      (terpri))))
+
+(defun render-markdown-code (code)
+  "Output code in markdown format."
+  (princ "```lisp")
+  (terpri)
+  (prin1 code)
+  (terpri)
+  (princ "```")
+  (terpri))
+
+(defun render-doc-entry-md (entry)
+  "Render a single documentation entry as markdown."
+  (let ((name (doc-get entry 'NAME))
+        (type (doc-get entry 'TYPE))
+        (syntax (doc-get entry 'SYNTAX))
+        (desc (doc-get entry 'DESCRIPTION))
+        (args (doc-get entry 'ARGS))
+        (returns (doc-get entry 'RETURNS))
+        (examples (doc-get entry 'EXAMPLES))
+        (see-also (doc-get entry 'SEE-ALSO)))
+    (progn
+      ;; Header - print directly to avoid string issues
+      (princ "### ")
+      (princ name)
+      (terpri)
+      (terpri)
+      ;; Type badge
+      (princ "**Type:** `")
+      (princ type)
+      (princ "`")
+      (terpri)
+      (terpri)
+      ;; Syntax
+      (if syntax
+          (progn
+            (princ "**Syntax:** `")
+            (princ syntax)
+            (princ "`")
+            (terpri)
+            (terpri))
+          nil)
+      ;; Description
+      (if desc
+          (progn
+            (princ desc)
+            (terpri)
+            (terpri))
+          nil)
+      ;; Arguments
+      (if args
+          (progn
+            (princ "**Arguments:**")
+            (terpri)
+            (mapcar args
+                    (lambda (arg)
+                      (princ "- `")
+                      (princ (car arg))
+                      (princ "` - ")
+                      (princ (cadr arg))
+                      (terpri)))
+            (terpri))
+          nil)
+      ;; Returns
+      (if returns
+          (progn
+            (princ "**Returns:** ")
+            (princ returns)
+            (terpri)
+            (terpri))
+          nil)
+      ;; Examples
+      (if examples
+          (progn
+            (princ "**Examples:**")
+            (terpri)
+            (princ "```lisp")
+            (terpri)
+            (mapcar examples
+                    (lambda (ex)
+                      (prin1 (car ex))
+                      (princ "  ; => ")
+                      (prin1 (cadr ex))
+                      (terpri)))
+            (princ "```")
+            (terpri)
+            (terpri))
+          nil)
+      ;; See also
+      (if see-also
+          (progn
+            (princ "**See also:** ")
+            (princ (car see-also))
+            (mapcar (cdr see-also)
+                    (lambda (s)
+                      (princ ", ")
+                      (princ s)))
+            (terpri)
+            (terpri))
+          nil)
+      ;; Separator
+      (princ "---")
+      (terpri)
+      (terpri))))
+
+(defun princ-to-string (x)
+  "Convert x to string representation (crude)."
+  ;; This is a hack since we don't have proper string conversion
+  (cond ((stringp x) x)
+        ((symbolp x) (implode (explode x)))
+        (t "?")))
+
+(defun render-category-md (cat-name)
+  "Render all docs in a category as markdown."
+  (let ((cat (assoc cat-name HELP-CATEGORIES)))
+    (if cat
+        (progn
+          ;; Print header manually to avoid string conversion issues
+          (princ "# ")
+          (princ cat-name)
+          (princ " Functions")
+          (terpri)
+          (terpri)
+          (princ (cadr cat))
+          (terpri)
+          (terpri)
+          (princ "---")
+          (terpri)
+          (terpri)
+          (mapcar (caddr cat)
+                  (lambda (sym)
+                    (let ((entry (get-doc sym)))
+                      (if entry
+                          (render-doc-entry-md entry)
+                          nil)))))
+        nil)))
+
+(defun render-all-docs-md ()
+  "Render all documentation categories to markdown (to stdout)."
+  (render-markdown-header "Lamedh Reference Manual" 1)
+  (princ "Auto-generated from Lisp documentation database.")
+  (terpri)
+  (terpri)
+  (princ "---")
+  (terpri)
+  (terpri)
+  ;; Table of contents
+  (render-markdown-header "Categories" 2)
+  (mapcar (list-categories)
+          (lambda (cat)
+            (princ "- ")
+            (princ (car cat))
+            (princ " - ")
+            (princ (cadr cat))
+            (terpri)))
+  (terpri)
+  (princ "---")
+  (terpri)
+  (terpri)
+  ;; Each category
+  (mapcar (list-categories)
+          (lambda (cat)
+            (render-category-md (car cat))))
+  (princ "---")
+  (terpri)
+  (princ "*Generated by Lamedh documentation system*")
+  (terpri))
+
+(defun render-function-index-md ()
+  "Render alphabetical function index."
+  (render-markdown-header "Function Index" 1)
+  (terpri)
+  (princ "| Function | Type | Category |")
+  (terpri)
+  (princ "|----------|------|----------|")
+  (terpri)
+  (mapcar (keys HELP-DB)
+          (lambda (name)
+            (let ((entry (get-doc name)))
+              (progn
+                (princ "| `")
+                (princ name)
+                (princ "` | ")
+                (princ (doc-get entry 'TYPE))
+                (princ " | ")
+                (princ (doc-get entry 'CATEGORY))
+                (princ " |")
+                (terpri))))))
+
+;;; Convenience function to dump docs
+(defun dump-docs ()
+  "Dump all documentation to stdout in markdown format."
+  (render-all-docs-md))

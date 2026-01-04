@@ -68,9 +68,18 @@ fn parse_number(input: &str) -> ParseResult<'_> {
     ))(input)
 }
 
+fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, sym) = alt((tag("1+"), tag("1-")))(input)?;
+        Ok((rest, LispVal::Symbol(env.intern_symbol(sym))))
+    }
+}
+
 fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
+            // Parse special numeric symbols like 1+ and 1- BEFORE numbers
+            parse_one_plus_minus(env.clone()),
             parse_number,
             map(
                 recognize(pair(

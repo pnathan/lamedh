@@ -1,47 +1,61 @@
-# Lithhp
+# Lamedh
+
 A Lisp 1.5 implementation in Rust.
 
 ## Features
 
-### Core Language
 - **Read-Eval-Print Loop (REPL)** with rustyline
 - **S-expression syntax** with reader macros: `'` (quote), `` ` `` (quasiquote), `,` (unquote)
 - **Lexically scoped environments** with symbol interning
 - **Property lists** for symbol metadata
+- **Hash tables** for key-value storage
+- **Standard library** with common Lisp functions
 
-### Data Types
-- Numbers (64-bit integers and floats)
-- Strings
-- Symbols (interned)
-- Cons cells and lists
-- Hash tables
-- Functions (lambdas, fexprs, macros)
+## Quick Start
 
-### Special Forms
-- **Control flow**: `IF`, `COND`, `AND`, `OR`, `PROG` (with `GO`/`RETURN`)
-- **Functions**: `LAMBDA`, `DEFUN`, `LABEL`, `FUNCTION`
-- **Macros**: `DEFMACRO`, `DEFEXPR` (fexprs)
-- **Variables**: `DEF`, `SETQ`, `LET`
-- **Quoting**: `QUOTE`, `QUASIQUOTE`/`UNQUOTE`
+```bash
+# Build
+cargo build
 
-### Built-in Functions
+# Run REPL
+cargo run
 
-**Arithmetic**: `+`, `-`, `*`, `/`, `REMAINDER`, `EXPT`, `<`, `>`, `ZEROP`
+# Load a file
+cargo run -- -i myfile.lisp
 
-**Lists**: `CAR`, `CDR`, `CONS`, `SUBST`, `ASSOC`, `MAPLIST`, `MAPCAR`, `RPLACA`, `RPLACD`
+# Execute expression
+cargo run -- -s "(+ 1 2)"
+```
 
-**Strings**: `CONCAT`, `INDEX`
+## Documentation
 
-**I/O**: `READ`, `PRIN1`, `PRINC`, `TERPRI`, `PRINT`
+See the **[Reference Manual](docs/index.md)** for complete documentation:
 
-**Error Handling**: `ERROR`, `ERRORSET`
+- [Introduction](docs/introduction.md)
+- [Getting Started](docs/getting_started.md)
+- [Data Types](docs/data_types.md)
+- [Special Forms](docs/special_forms.md)
+- [Function Reference](docs/appendix_function_index.md)
 
-**Type Predicates**: `ATOM`, `NUMBERP`, `FIXP`, `FLOATP`, `STRINGP`
+## Example
 
-**Bitwise**: `LOGOR`, `LOGAND`, `LOGXOR`, `LEFTSHIFT`
+```lisp
+;; Define a function
+(defun factorial (n)
+  "Compute factorial of N."
+  (if (= n 0)
+      1
+      (* n (factorial (- n 1)))))
 
-**Property Lists**: `GETP`, `PUTP`, `REMPROP`, `DEFLIST`
+;; Use it
+(factorial 10)  ; => 3628800
 
-**Meta**: `EVAL`, `APPLY`, `LOAD-FILE`
+;; Higher-order functions
+(mapcar '(1 2 3 4 5)
+        (lambda (x) (* x x)))
+; => (1 4 9 16 25)
+```
 
-See [Language Reference](docs/language_reference.md) for complete documentation. 
+## License
+
+See LICENSE file.
