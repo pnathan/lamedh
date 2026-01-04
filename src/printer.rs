@@ -11,17 +11,8 @@ fn print_list_contents(cdr: &LispVal) -> String {
 pub fn print(val: &LispVal) -> String {
     match val {
         LispVal::Symbol(s) => {
-            let symbol = s.borrow();
-            if symbol.plist.is_empty() {
-                symbol.name.clone()
-            } else {
-                let mut plist_str = "(".to_string();
-                for (key, val) in &symbol.plist {
-                    plist_str.push_str(&format!("{} {}", key, print(val)));
-                }
-                plist_str.push(')');
-                format!("#<symbol-name: {} plist: {}>", symbol.name, plist_str)
-            }
+            // Always print just the symbol name, regardless of plist
+            s.borrow().name.clone()
         }
         LispVal::Number(n) => n.to_string(),
         LispVal::Float(f) => f.to_string(),
@@ -113,6 +104,7 @@ mod tests {
             .plist
             .insert("key".to_string(), LispVal::String("value".to_string()));
         let lisp_val = LispVal::Symbol(s);
-        assert_eq!(print(&lisp_val), "#<symbol-name: a plist: (key \"value\")>");
+        // Symbols always print as just their name, regardless of plist
+        assert_eq!(print(&lisp_val), "a");
     }
 }
