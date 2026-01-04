@@ -4,7 +4,13 @@
       "Bash(cargo run:*)",
       "Bash(cargo test)",
       "Bash(cargo clippy:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(chmod:*)",
+      "Bash(ls:*)",
+      "Bash(for f in /home/pnathan/src/lamedh/lib/*.lisp)",
+      "Bash(do echo \"Testing $f\")",
+      "Bash(done)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
