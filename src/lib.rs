@@ -84,6 +84,7 @@ pub enum BuiltinFunc {
     Errorset,
     // List processing
     Subst,
+    Sublis,
     Assoc,
     Maplist,
     Mapcar,
