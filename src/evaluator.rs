@@ -80,7 +80,7 @@ fn is_truthy(val: &LispVal) -> bool {
     !matches!(val, LispVal::Nil)
 }
 
-fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+fn apply_math_op(op: &BuiltinFunc, args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     let nums: Result<Vec<i64>, LispError> = args
         .iter()
         .map(|arg| match arg {
@@ -93,7 +93,19 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
     let nums = nums?;
 
     match op {
-        BuiltinFunc::Plus => Ok(LispVal::Number(nums.iter().sum())),
+        BuiltinFunc::Plus => {
+            let mut result = 0i64;
+            for &num in &nums {
+                match result.checked_add(num) {
+                    Some(v) => result = v,
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        result = result.wrapping_add(num);
+                    }
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
         BuiltinFunc::Minus => {
             if nums.is_empty() {
                 return Err(LispError::Generic(
@@ -101,16 +113,40 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 ));
             }
             if nums.len() == 1 {
-                Ok(LispVal::Number(-nums[0]))
+                match nums[0].checked_neg() {
+                    Some(v) => Ok(LispVal::Number(v)),
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        Ok(LispVal::Number(nums[0].wrapping_neg()))
+                    }
+                }
             } else {
                 let mut result = nums[0];
                 for &num in &nums[1..] {
-                    result -= num;
+                    match result.checked_sub(num) {
+                        Some(v) => result = v,
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            result = result.wrapping_sub(num);
+                        }
+                    }
                 }
                 Ok(LispVal::Number(result))
             }
         }
-        BuiltinFunc::Multiply => Ok(LispVal::Number(nums.iter().product())),
+        BuiltinFunc::Multiply => {
+            let mut result = 1i64;
+            for &num in &nums {
+                match result.checked_mul(num) {
+                    Some(v) => result = v,
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        result = result.wrapping_mul(num);
+                    }
+                }
+            }
+            Ok(LispVal::Number(result))
+        }
         BuiltinFunc::Divide => {
             if nums.len() != 2 {
                 return Err(LispError::Generic(
@@ -120,7 +156,13 @@ fn apply_math_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
             if nums[1] == 0 {
                 return Err(LispError::Generic("Division by zero".to_string()));
             }
-            Ok(LispVal::Number(nums[0] / nums[1]))
+            // Check for i64::MIN / -1 overflow
+            if nums[0] == i64::MIN && nums[1] == -1 {
+                env.set_flag("OVERFLOW");
+                Ok(LispVal::Number(nums[0].wrapping_div(nums[1])))
+            } else {
+                Ok(LispVal::Number(nums[0] / nums[1]))
+            }
         }
         _ => Err(LispError::Generic("Not a math operation".to_string())),
     }
@@ -267,7 +309,13 @@ fn apply_numeric_primitives(
                 if *y == 0 {
                     return Err(LispError::Generic("Division by zero".to_string()));
                 }
-                Ok(LispVal::Number(x % y))
+                // Check for i64::MIN % -1 overflow
+                if *x == i64::MIN && *y == -1 {
+                    env.set_flag("OVERFLOW");
+                    Ok(LispVal::Number(x.wrapping_rem(*y)))
+                } else {
+                    Ok(LispVal::Number(x % y))
+                }
             } else {
                 Err(LispError::Generic("remainder requires numbers".to_string()))
             }
@@ -456,7 +504,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             BuiltinFunc::Plus
             | BuiltinFunc::Minus
             | BuiltinFunc::Multiply
-            | BuiltinFunc::Divide => apply_math_op(builtin, args),
+            | BuiltinFunc::Divide => apply_math_op(builtin, args, env),
             BuiltinFunc::Lessp
             | BuiltinFunc::Greaterp
             | BuiltinFunc::Zerop
@@ -592,6 +640,71 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 };
 
                 crate::load_file(&filename, env)?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            // Condition flags
+            BuiltinFunc::SetFlag => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "set-flag requires exactly one argument".to_string(),
+                    ));
+                }
+                let flag_name = match &args[0] {
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    LispVal::String(s) => s.clone(),
+                    _ => return Err(LispError::Generic(
+                        "set-flag requires a symbol or string".to_string(),
+                    )),
+                };
+                env.set_flag(&flag_name);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::ClearFlag => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "clear-flag requires exactly one argument".to_string(),
+                    ));
+                }
+                let flag_name = match &args[0] {
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    LispVal::String(s) => s.clone(),
+                    _ => return Err(LispError::Generic(
+                        "clear-flag requires a symbol or string".to_string(),
+                    )),
+                };
+                env.clear_flag(&flag_name);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::FlagSetP => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "flag-set-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let flag_name = match &args[0] {
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    LispVal::String(s) => s.clone(),
+                    _ => return Err(LispError::Generic(
+                        "flag-set-p requires a symbol or string".to_string(),
+                    )),
+                };
+                if env.flag_set(&flag_name) {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::ClearAllFlags => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "clear-all-flags takes no arguments".to_string(),
+                    ));
+                }
+                env.clear_all_flags();
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
         },
@@ -1609,7 +1722,7 @@ fn apply_list_processing(
 fn apply_bitwise_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    _env: &Rc<Environment>,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Logor => {
@@ -1667,10 +1780,27 @@ fn apply_bitwise_op(
                 ));
             }
             if let (LispVal::Number(n), LispVal::Number(shift)) = (&args[0], &args[1]) {
-                if *shift < 0 {
+                // Validate shift amount to avoid overflow panic
+                if *shift >= 64 || *shift <= -64 {
+                    env.set_flag("OVERFLOW");
+                    // Return 0 or -1 depending on sign for extreme shifts
+                    if *shift >= 64 {
+                        Ok(LispVal::Number(0))
+                    } else {
+                        // Right shift by >= 64 is effectively sign extension
+                        Ok(LispVal::Number(if *n < 0 { -1 } else { 0 }))
+                    }
+                } else if *shift < 0 {
                     Ok(LispVal::Number(n >> (-shift)))
                 } else {
-                    Ok(LispVal::Number(n << shift))
+                    // Check for overflow in left shift
+                    match n.checked_shl(*shift as u32) {
+                        Some(v) => Ok(LispVal::Number(v)),
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
+                        }
+                    }
                 }
             } else {
                 Err(LispError::Generic(
