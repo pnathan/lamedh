@@ -92,7 +92,7 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             parse_earmuff_symbol(env.clone()),
             map(
                 recognize(pair(
-                    alt((alpha1, tag("&"))),
+                    alt((alpha1, tag("&"), tag("$"))),
                     many0(alt((alphanumeric1, tag("-")))),
                 )),
                 |s: &str| {

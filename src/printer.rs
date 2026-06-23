@@ -37,6 +37,7 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Lambda(_) => "<lambda>".to_string(),
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
         LispVal::Macro(_) => "<macro>".to_string(),
+        LispVal::Vau(_) => "<vau>".to_string(),
         LispVal::HashTable(_) => "<hash-table>".to_string(),
         LispVal::Native(_) => "<native>".to_string(),
         LispVal::Environment(_) => "<environment>".to_string(),
