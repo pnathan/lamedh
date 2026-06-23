@@ -170,9 +170,11 @@ is called.  You can also expose custom flags to Lisp scripts via
 
 Current built-in feature flags:
 
-| Flag    | Description                              |
-|---------|------------------------------------------|
-| `SHELL` | Allow `(shell ...)` to run subprocesses  |
+| Flag      | Description                                                |
+|-----------|------------------------------------------------------------|
+| `SHELL`   | Allow `(shell ...)` to run subprocesses                    |
+| `FILE-IO` | Allow `(load-file ...)` to read and evaluate Lisp files    |
+| `IO`      | Allow `(read)` to read an s-expression from standard input |
 
 ## Condition flags
 

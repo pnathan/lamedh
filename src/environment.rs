@@ -407,6 +407,28 @@ impl Environment {
         env
     }
 
+    /// Create a sandboxed environment with all builtins registered but all
+    /// dangerous capabilities disabled.
+    ///
+    /// All potentially dangerous feature flags (`SHELL`, `FILE-IO`, `IO`) are
+    /// off by default in every environment, so this is semantically equivalent
+    /// to `new_with_builtins()`.  The explicit name communicates intent clearly
+    /// to embedders: scripts loaded into this environment cannot access the
+    /// filesystem, spawn subprocesses, or read from stdin unless the host
+    /// explicitly calls `enable_feature`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let env = Environment::new_sandboxed();
+    /// // All of SHELL, FILE-IO, IO are disabled.
+    /// assert!(!env.feature_enabled("SHELL"));
+    /// assert!(!env.feature_enabled("FILE-IO"));
+    /// assert!(!env.feature_enabled("IO"));
+    /// ```
+    pub fn new_sandboxed() -> Rc<Environment> {
+        Self::new_with_builtins()
+    }
+
     pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
         self.symbols.borrow_mut().intern(name)
     }
