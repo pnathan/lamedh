@@ -656,12 +656,21 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
             BuiltinFunc::Eval => {
-                if args.len() != 1 {
-                    return Err(LispError::Generic(
-                        "eval takes exactly one argument".to_string(),
-                    ));
+                match args.len() {
+                    1 => eval(&args[0], env),
+                    2 => {
+                        if let LispVal::Environment(eval_env) = &args[1] {
+                            eval(&args[0], eval_env)
+                        } else {
+                            Err(LispError::Generic(
+                                "eval: second argument must be an environment".to_string(),
+                            ))
+                        }
+                    }
+                    _ => Err(LispError::Generic(
+                        "eval takes 1 or 2 arguments".to_string(),
+                    )),
                 }
-                eval(&args[0], env)
             }
             BuiltinFunc::Eq | BuiltinFunc::Not | BuiltinFunc::NumericEquals => {
                 apply_logical_op(builtin, args, env)
@@ -1035,6 +1044,31 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 Ok(list)
             }
             BuiltinFunc::Shell => apply_shell(args, env),
+            BuiltinFunc::TheEnvironment => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "the-environment takes no arguments".to_string(),
+                    ));
+                }
+                Ok(LispVal::Environment(Rc::clone(env)))
+            }
+            BuiltinFunc::MakeEnvironment => {
+                match args.len() {
+                    0 => Ok(LispVal::Environment(Environment::new_with_builtins())),
+                    1 => {
+                        if let LispVal::Environment(parent) = &args[0] {
+                            Ok(LispVal::Environment(Environment::new_child(parent)))
+                        } else {
+                            Err(LispError::Generic(
+                                "make-environment: argument must be an environment".to_string(),
+                            ))
+                        }
+                    }
+                    _ => Err(LispError::Generic(
+                        "make-environment takes 0 or 1 arguments".to_string(),
+                    )),
+                }
+            }
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:
@@ -1311,7 +1345,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
         | LispVal::Fexpr(_)
         | LispVal::Macro(_)
         | LispVal::HashTable(_)
-        | LispVal::Native(_) => Ok(TcoStep::Done(Ok(val.clone()))),
+        | LispVal::Native(_)
+        | LispVal::Environment(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
         LispVal::Cons {
             car: first,
