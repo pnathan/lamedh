@@ -1081,6 +1081,14 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     "make-environment takes 0 or 1 arguments".to_string(),
                 )),
             },
+            BuiltinFunc::Optimize => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "optimize takes exactly one argument".to_string(),
+                    ));
+                }
+                Ok(crate::optimizer::optimize(&args[0]))
+            }
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:

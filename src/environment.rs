@@ -401,6 +401,11 @@ impl Environment {
             "MAKE-ENVIRONMENT".to_string(),
             LispVal::Builtin(BuiltinFunc::MakeEnvironment),
         );
+        // Source optimizer
+        env.set(
+            "OPTIMIZE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Optimize),
+        );
 
         env
     }
