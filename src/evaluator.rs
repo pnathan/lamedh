@@ -423,6 +423,11 @@ fn apply_logical_op(
                     "eq requires exactly two arguments".to_string(),
                 ));
             }
+            // EQ is defined only for atoms (Lisp 1.5 manual). Cons cells are never EQ.
+            let is_atom = |v: &LispVal| !matches!(v, LispVal::Cons { .. });
+            if !is_atom(&args[0]) || !is_atom(&args[1]) {
+                return Ok(LispVal::Nil);
+            }
             if args[0] == args[1] {
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
