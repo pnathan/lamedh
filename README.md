@@ -36,6 +36,7 @@ See the **[Reference Manual](docs/index.md)** for complete documentation:
 - [Data Types](docs/data_types.md)
 - [Special Forms](docs/special_forms.md)
 - [Function Reference](docs/appendix_function_index.md)
+- [Embedding Guide](docs/embedding.md)
 
 ## Example
 
