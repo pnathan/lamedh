@@ -68,7 +68,13 @@ fn run(args: Args) {
     }
 
     // If no -s flag, start REPL
-    let mut rl = DefaultEditor::new().unwrap();
+    let mut rl = match DefaultEditor::new() {
+        Ok(editor) => editor,
+        Err(e) => {
+            eprintln!("Failed to initialize line editor: {e}");
+            std::process::exit(1);
+        }
+    };
     println!("Lamed (ל) Lisp 1.5");
     println!("Press Ctrl+C or Ctrl+D to exit");
 
@@ -76,7 +82,7 @@ fn run(args: Args) {
         let readline = rl.readline(r"(ל)> ");
         match readline {
             Ok(line) => {
-                rl.add_history_entry(line.as_str()).unwrap();
+                let _ = rl.add_history_entry(line.as_str());
                 let output = eval_line(&line, &env);
                 println!("{output}");
             }
