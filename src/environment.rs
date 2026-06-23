@@ -392,6 +392,16 @@ impl Environment {
         // SHELL: gated behind the SHELL capability (off by default)
         env.set("SHELL".to_string(), LispVal::Builtin(BuiltinFunc::Shell));
 
+        // First-class environments
+        env.set(
+            "THE-ENVIRONMENT".to_string(),
+            LispVal::Builtin(BuiltinFunc::TheEnvironment),
+        );
+        env.set(
+            "MAKE-ENVIRONMENT".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeEnvironment),
+        );
+
         env
     }
 

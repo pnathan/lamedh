@@ -176,6 +176,9 @@ pub enum BuiltinFunc {
     Features,
     // Shell (gated behind the SHELL feature)
     Shell,
+    // First-class environments
+    MakeEnvironment,
+    TheEnvironment,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +254,8 @@ pub enum LispVal {
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
     /// A host-registered Rust closure callable from Lisp.
     Native(Rc<NativeFn>),
+    /// A first-class environment value.
+    Environment(Rc<Environment>),
 }
 
 impl fmt::Debug for LispVal {
@@ -268,6 +273,7 @@ impl fmt::Debug for LispVal {
             LispVal::Nil => write!(f, "Nil"),
             LispVal::HashTable(_) => write!(f, "HashTable(...)"),
             LispVal::Native(_) => write!(f, "Native(...)"),
+            LispVal::Environment(_) => write!(f, "Environment(...)"),
         }
     }
 }
@@ -290,6 +296,7 @@ impl Clone for LispVal {
             LispVal::Nil => LispVal::Nil,
             LispVal::HashTable(h) => LispVal::HashTable(Rc::clone(h)),
             LispVal::Native(f) => LispVal::Native(Rc::clone(f)),
+            LispVal::Environment(e) => LispVal::Environment(Rc::clone(e)),
         }
     }
 }
@@ -318,6 +325,7 @@ impl PartialEq for LispVal {
             (LispVal::Fexpr(a), LispVal::Fexpr(b)) => a == b,
             (LispVal::Macro(a), LispVal::Macro(b)) => a == b,
             (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
+            (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -342,6 +350,9 @@ impl Hash for LispVal {
             }
             LispVal::Native(f) => {
                 Rc::as_ptr(f).hash(state);
+            }
+            LispVal::Environment(e) => {
+                Rc::as_ptr(e).hash(state);
             }
             LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) | LispVal::Macro(_) => {
                 // Functions are not hashable by value.
