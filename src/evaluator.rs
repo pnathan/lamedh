@@ -1049,6 +1049,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 
             eval(&lambda.body, &new_env)
         }
+        LispVal::Native(f) => f(args, env),
         _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
     }
 }
@@ -1236,7 +1237,8 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
         | LispVal::Lambda(_)
         | LispVal::Fexpr(_)
         | LispVal::Macro(_)
-        | LispVal::HashTable(_) => Ok(val.clone()),
+        | LispVal::HashTable(_)
+        | LispVal::Native(_) => Ok(val.clone()),
 
         LispVal::Cons {
             car: first,
@@ -1486,7 +1488,8 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 LispVal::Lambda(_)
                                 | LispVal::Builtin(_)
                                 | LispVal::Fexpr(_)
-                                | LispVal::Macro(_) => return Ok(func),
+                                | LispVal::Macro(_)
+                                | LispVal::Native(_) => return Ok(func),
                                 _ => {
                                     return Err(LispError::Generic(format!(
                                         "Symbol '{}' is not bound to a function",
@@ -2533,7 +2536,7 @@ fn apply_type_predicates(
         }
         BuiltinFunc::Functionp => matches!(
             arg,
-            LispVal::Lambda(_) | LispVal::Builtin(_) | LispVal::Fexpr(_)
+            LispVal::Lambda(_) | LispVal::Builtin(_) | LispVal::Fexpr(_) | LispVal::Native(_)
         ),
         BuiltinFunc::Macrop => matches!(arg, LispVal::Macro(_)),
         _ => return Err(LispError::Generic("Not a type predicate".to_string())),

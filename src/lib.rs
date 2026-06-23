@@ -231,7 +231,9 @@ impl PartialEq for Macro {
     }
 }
 
-#[derive(Debug, Clone)]
+/// The function signature for host-registered (native) Lisp callables.
+pub type NativeFn = dyn Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError>;
+
 pub enum LispVal {
     Symbol(Rc<RefCell<Symbol>>),
     Number(i64),
@@ -247,6 +249,49 @@ pub enum LispVal {
     },
     Nil,
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
+    /// A host-registered Rust closure callable from Lisp.
+    Native(Rc<NativeFn>),
+}
+
+impl fmt::Debug for LispVal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LispVal::Symbol(s) => write!(f, "Symbol({:?})", s.borrow().name),
+            LispVal::Number(n) => write!(f, "Number({n})"),
+            LispVal::Float(v) => write!(f, "Float({v})"),
+            LispVal::String(s) => write!(f, "String({s:?})"),
+            LispVal::Builtin(b) => write!(f, "Builtin({b:?})"),
+            LispVal::Lambda(_) => write!(f, "Lambda(...)"),
+            LispVal::Fexpr(_) => write!(f, "Fexpr(...)"),
+            LispVal::Macro(_) => write!(f, "Macro(...)"),
+            LispVal::Cons { car, cdr } => write!(f, "Cons({car:?}, {cdr:?})"),
+            LispVal::Nil => write!(f, "Nil"),
+            LispVal::HashTable(_) => write!(f, "HashTable(...)"),
+            LispVal::Native(_) => write!(f, "Native(...)"),
+        }
+    }
+}
+
+impl Clone for LispVal {
+    fn clone(&self) -> Self {
+        match self {
+            LispVal::Symbol(s) => LispVal::Symbol(Rc::clone(s)),
+            LispVal::Number(n) => LispVal::Number(*n),
+            LispVal::Float(f) => LispVal::Float(*f),
+            LispVal::String(s) => LispVal::String(s.clone()),
+            LispVal::Builtin(b) => LispVal::Builtin(b.clone()),
+            LispVal::Lambda(l) => LispVal::Lambda(l.clone()),
+            LispVal::Fexpr(x) => LispVal::Fexpr(x.clone()),
+            LispVal::Macro(m) => LispVal::Macro(m.clone()),
+            LispVal::Cons { car, cdr } => LispVal::Cons {
+                car: car.clone(),
+                cdr: cdr.clone(),
+            },
+            LispVal::Nil => LispVal::Nil,
+            LispVal::HashTable(h) => LispVal::HashTable(Rc::clone(h)),
+            LispVal::Native(f) => LispVal::Native(Rc::clone(f)),
+        }
+    }
 }
 
 impl PartialEq for LispVal {
@@ -272,6 +317,7 @@ impl PartialEq for LispVal {
             (LispVal::Lambda(a), LispVal::Lambda(b)) => a == b,
             (LispVal::Fexpr(a), LispVal::Fexpr(b)) => a == b,
             (LispVal::Macro(a), LispVal::Macro(b)) => a == b,
+            (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -292,11 +338,13 @@ impl Hash for LispVal {
             }
             LispVal::Nil => 0.hash(state),
             LispVal::HashTable(h) => {
-                // Hash the pointer address. This makes each hash table unique.
                 Rc::as_ptr(h).hash(state);
             }
+            LispVal::Native(f) => {
+                Rc::as_ptr(f).hash(state);
+            }
             LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) | LispVal::Macro(_) => {
-                // Functions are not hashable.
+                // Functions are not hashable by value.
             }
         }
     }

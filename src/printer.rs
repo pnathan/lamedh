@@ -38,6 +38,7 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
         LispVal::Macro(_) => "<macro>".to_string(),
         LispVal::HashTable(_) => "<hash-table>".to_string(),
+        LispVal::Native(_) => "<native>".to_string(),
         LispVal::Nil => "()".to_string(),
         LispVal::Cons { car, cdr } => {
             format!("({}{})", print(car), print_list_contents(cdr))
