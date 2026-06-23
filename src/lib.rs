@@ -512,6 +512,46 @@ impl LispVal {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Embedded standard library
+// ---------------------------------------------------------------------------
+
+/// The standard library sources embedded at compile time, in load order.
+///
+/// Each entry is `(filename, source)`. The filename is used only for error messages.
+const STDLIB_SOURCES: &[(&str, &str)] = &[
+    ("00-core.lisp",         include_str!("../lib/00-core.lisp")),
+    ("01-list.lisp",         include_str!("../lib/01-list.lisp")),
+    ("02-cxr.lisp",          include_str!("../lib/02-cxr.lisp")),
+    ("03-meta.lisp",         include_str!("../lib/03-meta.lisp")),
+    ("04-predicates.lisp",   include_str!("../lib/04-predicates.lisp")),
+    ("05-math.lisp",         include_str!("../lib/05-math.lisp")),
+    ("06-builtin-docs.lisp", include_str!("../lib/06-builtin-docs.lisp")),
+    ("07-shell.lisp",        include_str!("../lib/07-shell.lisp")),
+    ("10-testing.lisp",      include_str!("../lib/10-testing.lisp")),
+    ("97-doc-renderer.lisp", include_str!("../lib/97-doc-renderer.lisp")),
+    ("98-help-system.lisp",  include_str!("../lib/98-help-system.lisp")),
+    ("99-help-data.lisp",    include_str!("../lib/99-help-data.lisp")),
+];
+
+/// Evaluate the embedded standard library into `env`.
+///
+/// This is called by [`Environment::with_stdlib`]; call it directly if you want
+/// to load the stdlib into an environment you already have.
+pub fn load_stdlib(env: &Rc<Environment>) -> Result<(), LispError> {
+    for (filename, src) in STDLIB_SOURCES {
+        let exprs = reader::read_all(src, env).map_err(|e| {
+            LispError::Generic(format!("stdlib parse error in {filename}: {e}"))
+        })?;
+        for expr in exprs {
+            evaluator::eval(&expr, env).map_err(|e| {
+                LispError::Generic(format!("stdlib eval error in {filename}: {e}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Evaluate a single s-expression string, returning the typed value.
 ///
 /// The input must contain exactly one form; use [`eval_all`] for programs with

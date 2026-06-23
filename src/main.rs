@@ -23,22 +23,10 @@ fn main() {
 }
 
 fn run(args: Args) {
-    let env = Environment::new_with_builtins();
+    // Use the embedded stdlib so the interpreter is self-contained. A lib/
+    // directory on disk can still override or extend it via -i.
+    let env = Environment::with_stdlib();
 
-    // Load prologue.lisp if it exists
-    if let Err(e) = load_file("prologue.lisp", &env) {
-        // It's okay if it doesn't exist, but print an error if it fails for other reasons
-        if !e.to_string().contains("No such file or directory") {
-            eprintln!("Error loading prologue.lisp: {e:?}");
-        }
-    }
-
-    // Load lib/ directory if it exists
-    if let Err(e) = load_directory("lib", &env) {
-        if !e.to_string().contains("Failed to read directory") {
-            eprintln!("Error loading lib/: {e:?}");
-        }
-    }
     // Load files from -i flag
     for path in args.i {
         let metadata = match fs::metadata(&path) {

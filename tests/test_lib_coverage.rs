@@ -596,3 +596,31 @@ fn test_eval_line_error_returns_string() {
     let result = eval_line("(car)", &env);
     assert!(result.starts_with("Error"), "got: {result}");
 }
+
+// ---------------------------------------------------------------------------
+// Environment::with_stdlib — embedded standard library
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_with_stdlib_append() {
+    // Acceptance criterion from issue #55: a test using only the library API
+    // (no CWD files) can call (append (list 1) (list 2)).
+    let env = Environment::with_stdlib();
+    let result = eval_line("(append (list 1) (list 2))", &env);
+    assert_eq!(result, "(1 2)", "append should work with embedded stdlib; got: {result}");
+}
+
+#[test]
+fn test_with_stdlib_defun() {
+    let env = Environment::with_stdlib();
+    eval_line("(defun square (x) (* x x))", &env);
+    let result = eval_line("(square 7)", &env);
+    assert_eq!(result, "49", "defun should work with embedded stdlib; got: {result}");
+}
+
+#[test]
+fn test_with_stdlib_equal() {
+    let env = Environment::with_stdlib();
+    let result = eval_line("(equal '(1 2 3) '(1 2 3))", &env);
+    assert_eq!(result, "T", "equal should work with embedded stdlib; got: {result}");
+}

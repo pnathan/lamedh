@@ -395,6 +395,18 @@ impl Environment {
         env
     }
 
+    /// Create a new environment with all builtins **and** the embedded standard
+    /// library pre-loaded. This is the recommended entry point for host code
+    /// that wants a fully-featured Lisp interpreter without shipping .lisp files.
+    ///
+    /// Panics if the embedded stdlib fails to parse or evaluate (which would be
+    /// a compile-time bug, not a runtime condition).
+    pub fn with_stdlib() -> Rc<Environment> {
+        let env = Self::new_with_builtins();
+        crate::load_stdlib(&env).expect("embedded stdlib should always load cleanly");
+        env
+    }
+
     pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
         self.symbols.borrow_mut().intern(name)
     }
