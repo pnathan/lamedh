@@ -2878,3 +2878,76 @@ fn apply_plist_op(
         )),
     }
 }
+
+#[cfg(test)]
+mod evaluator_internal_tests {
+    use super::*;
+
+    fn dummy_env() -> Rc<Environment> {
+        Environment::new_with_builtins()
+    }
+
+    // ---- apply_math_op fallthrough ----
+    // Pass a BuiltinFunc that is not handled by apply_math_op (e.g. Car)
+    // to hit the `_ => Err(...)` arm at line ~223.
+    #[test]
+    fn test_apply_math_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_math_op(&BuiltinFunc::Car, &[LispVal::Number(1)], &env);
+        assert!(result.is_err(), "apply_math_op with Car should error");
+    }
+
+    // ---- apply_list_op fallthrough ----
+    // Pass a BuiltinFunc not handled by apply_list_op (e.g. Plus)
+    // to hit the `_ => Err(...)` arm at line ~264.
+    #[test]
+    fn test_apply_list_op_fallthrough() {
+        let result = apply_list_op(&BuiltinFunc::Plus, &[]);
+        assert!(result.is_err(), "apply_list_op with Plus should error");
+    }
+
+    // ---- apply_string_op fallthrough ----
+    // Pass a BuiltinFunc not handled by apply_string_op (e.g. Car)
+    // to hit the `_ => Err(...)` arm at line ~308.
+    #[test]
+    fn test_apply_string_op_fallthrough() {
+        let result = apply_string_op(&BuiltinFunc::Car, &[]);
+        assert!(result.is_err(), "apply_string_op with Car should error");
+    }
+
+    // ---- apply_numeric_primitives fallthrough ----
+    // Pass a BuiltinFunc not handled by apply_numeric_primitives (e.g. Car)
+    // to hit the `_ => Err(...)` arm at line ~401.
+    #[test]
+    fn test_apply_numeric_primitives_fallthrough() {
+        let env = dummy_env();
+        let result = apply_numeric_primitives(&BuiltinFunc::Car, &[], &env);
+        assert!(
+            result.is_err(),
+            "apply_numeric_primitives with Car should error"
+        );
+    }
+
+    // ---- apply_logical_op fallthrough ----
+    // Pass a BuiltinFunc not handled by apply_logical_op (e.g. Car)
+    // to hit the `_ => Err(...)` arm at line ~453.
+    #[test]
+    fn test_apply_logical_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_logical_op(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_logical_op with Car should error");
+    }
+
+    // ---- apply_hashtable_op fallthrough ----
+    // Pass a BuiltinFunc not handled by apply_hashtable_op (e.g. Car)
+    // to hit the `_ => Err(...)` arm at line ~551.
+    #[test]
+    fn test_apply_hashtable_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_hashtable_op(&BuiltinFunc::Car, &[], &env);
+        assert!(
+            result.is_err(),
+            "apply_hashtable_op with Car should error"
+        );
+    }
+}
