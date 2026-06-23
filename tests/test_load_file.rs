@@ -5,6 +5,8 @@ use test_helpers::env_with_stdlib;
 #[test]
 fn test_load_file() {
     let env = env_with_stdlib();
+    // Enable FILE-IO so the feature gate passes.
+    eval_line("(enable-feature \"FILE-IO\")", &env);
     let load_output = eval_line("(load-file \"tests/load_file_test_sample.lisp\")", &env);
     assert_eq!(load_output, "T");
     let output = eval_line("(loaded-function)", &env);

@@ -889,6 +889,12 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::LoadFile => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "load-file requires exactly one argument".to_string(),
@@ -1903,6 +1909,11 @@ fn apply_io_op(
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Read => {
+            if !env.feature_enabled("IO") {
+                return Err(LispError::Generic(
+                    "IO capability is not enabled; call (enable-feature \"IO\") first".to_string(),
+                ));
+            }
             if !args.is_empty() {
                 return Err(LispError::Generic("read takes no arguments".to_string()));
             }

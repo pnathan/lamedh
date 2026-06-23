@@ -298,6 +298,8 @@ fn test_putp_non_string_second_arg_error() {
 fn test_read_with_arg_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
+        // Enable IO so the feature gate passes and we reach the arity check.
+        eval_line("(enable-feature \"IO\")", &env);
         let result = eval_line("(read 1)", &env);
         assert!(
             result.contains("Error"),
