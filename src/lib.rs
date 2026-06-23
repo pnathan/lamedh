@@ -350,6 +350,168 @@ impl Hash for LispVal {
     }
 }
 
+// ---------------------------------------------------------------------------
+// From<T> for LispVal — infallible conversions from Rust primitives
+// ---------------------------------------------------------------------------
+
+impl From<i64> for LispVal {
+    fn from(n: i64) -> Self {
+        LispVal::Number(n)
+    }
+}
+
+impl From<f64> for LispVal {
+    fn from(f: f64) -> Self {
+        LispVal::Float(f)
+    }
+}
+
+impl From<bool> for LispVal {
+    fn from(b: bool) -> Self {
+        if b { LispVal::Symbol(Rc::new(RefCell::new(Symbol { name: "T".to_string(), plist: HashMap::new() }))) }
+        else { LispVal::Nil }
+    }
+}
+
+impl From<String> for LispVal {
+    fn from(s: String) -> Self {
+        LispVal::String(s)
+    }
+}
+
+impl From<&str> for LispVal {
+    fn from(s: &str) -> Self {
+        LispVal::String(s.to_string())
+    }
+}
+
+impl From<Vec<LispVal>> for LispVal {
+    fn from(v: Vec<LispVal>) -> Self {
+        v.into_iter()
+            .rev()
+            .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
+                car: Box::new(car),
+                cdr: Box::new(cdr),
+            })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TryFrom<LispVal> for Rust primitives — fallible extractions
+// ---------------------------------------------------------------------------
+
+impl TryFrom<LispVal> for i64 {
+    type Error = LispError;
+    fn try_from(val: LispVal) -> Result<Self, Self::Error> {
+        match val {
+            LispVal::Number(n) => Ok(n),
+            other => Err(LispError::Generic(format!("expected integer, got {other:?}"))),
+        }
+    }
+}
+
+impl TryFrom<LispVal> for f64 {
+    type Error = LispError;
+    fn try_from(val: LispVal) -> Result<Self, Self::Error> {
+        match val {
+            LispVal::Float(f) => Ok(f),
+            LispVal::Number(n) => Ok(n as f64),
+            other => Err(LispError::Generic(format!("expected number, got {other:?}"))),
+        }
+    }
+}
+
+impl TryFrom<LispVal> for bool {
+    type Error = LispError;
+    fn try_from(val: LispVal) -> Result<Self, Self::Error> {
+        Ok(val.is_truthy())
+    }
+}
+
+impl TryFrom<LispVal> for String {
+    type Error = LispError;
+    fn try_from(val: LispVal) -> Result<Self, Self::Error> {
+        match val {
+            LispVal::String(s) => Ok(s),
+            other => Err(LispError::Generic(format!("expected string, got {other:?}"))),
+        }
+    }
+}
+
+impl TryFrom<LispVal> for Vec<LispVal> {
+    type Error = LispError;
+    fn try_from(val: LispVal) -> Result<Self, Self::Error> {
+        val.as_list_vec()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LispVal helpers
+// ---------------------------------------------------------------------------
+
+impl LispVal {
+    /// Build a Lisp list from any iterator of items convertible to LispVal.
+    pub fn list<I, T>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<LispVal>,
+    {
+        let items: Vec<LispVal> = iter.into_iter().map(Into::into).collect();
+        LispVal::from(items)
+    }
+
+    /// Extract the integer value, or return an error.
+    pub fn as_number(&self) -> Result<i64, LispError> {
+        match self {
+            LispVal::Number(n) => Ok(*n),
+            other => Err(LispError::Generic(format!("expected integer, got {other:?}"))),
+        }
+    }
+
+    /// Extract the float value (also accepts integers, coercing to f64).
+    pub fn as_float(&self) -> Result<f64, LispError> {
+        match self {
+            LispVal::Float(f) => Ok(*f),
+            LispVal::Number(n) => Ok(*n as f64),
+            other => Err(LispError::Generic(format!("expected number, got {other:?}"))),
+        }
+    }
+
+    /// Extract the string value, or return an error.
+    pub fn as_str_val(&self) -> Result<&str, LispError> {
+        match self {
+            LispVal::String(s) => Ok(s.as_str()),
+            other => Err(LispError::Generic(format!("expected string, got {other:?}"))),
+        }
+    }
+
+    /// Collect a proper Lisp list into a Vec, or return an error if not a list.
+    pub fn as_list_vec(&self) -> Result<Vec<LispVal>, LispError> {
+        let mut result = Vec::new();
+        let mut current = self;
+        loop {
+            match current {
+                LispVal::Nil => break,
+                LispVal::Cons { car, cdr } => {
+                    result.push(*car.clone());
+                    current = cdr;
+                }
+                _ => {
+                    return Err(LispError::Generic(format!(
+                        "not a proper list: dotted pair ending in {current:?}"
+                    )));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Lisp truthiness: everything except Nil is truthy.
+    pub fn is_truthy(&self) -> bool {
+        !matches!(self, LispVal::Nil)
+    }
+}
+
 /// Evaluate a single s-expression string, returning the typed value.
 ///
 /// The input must contain exactly one form; use [`eval_all`] for programs with
