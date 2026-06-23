@@ -1,4 +1,4 @@
-use lamedh::{LispError, LispVal, eval_line, load_directory, load_file, repl_loop};
+use lamedh::{LispError, LispVal, eval_all, eval_line, eval_str, load_directory, load_file, repl_loop};
 use lamedh::environment::Environment;
 use std::collections::HashSet;
 use std::io::BufReader;
@@ -521,8 +521,68 @@ fn test_repl_loop_returns_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// eval_line convenience smoke-tests (exercises the public API entry point)
+// eval_str / eval_all / eval_line API tests
 // ---------------------------------------------------------------------------
+
+#[test]
+fn test_eval_str_success() {
+    let env = Environment::new_with_builtins();
+    let result = eval_str("(+ 2 3)", &env);
+    assert_eq!(result, Ok(LispVal::Number(5)));
+}
+
+#[test]
+fn test_eval_str_error() {
+    let env = Environment::new_with_builtins();
+    let result = eval_str("(car)", &env);
+    assert!(result.is_err(), "car with no args should error; got: {result:?}");
+}
+
+#[test]
+fn test_eval_str_parse_error() {
+    let env = Environment::new_with_builtins();
+    let result = eval_str("(", &env);
+    assert!(result.is_err(), "unclosed paren should error");
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("Parse error") || msg.contains("Error"), "got: {msg}");
+}
+
+#[test]
+fn test_eval_all_multiple_forms() {
+    let env = Environment::new_with_builtins();
+    let result = eval_all("(+ 1 2) (* 3 4)", &env).expect("eval_all should succeed");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], LispVal::Number(3));
+    assert_eq!(result[1], LispVal::Number(12));
+}
+
+#[test]
+fn test_eval_all_single_form() {
+    let env = Environment::new_with_builtins();
+    let result = eval_all("(+ 10 20)", &env).expect("eval_all should succeed");
+    assert_eq!(result, vec![LispVal::Number(30)]);
+}
+
+#[test]
+fn test_eval_all_stops_on_first_error() {
+    let env = Environment::new_with_builtins();
+    let result = eval_all("(car) (+ 1 2)", &env);
+    assert!(result.is_err(), "eval_all should stop on error");
+}
+
+#[test]
+fn test_eval_all_parse_error() {
+    let env = Environment::new_with_builtins();
+    let result = eval_all("(", &env);
+    assert!(result.is_err(), "unclosed paren should error");
+}
+
+#[test]
+fn test_eval_all_empty() {
+    let env = Environment::new_with_builtins();
+    let result = eval_all("", &env).expect("empty input should return empty vec");
+    assert!(result.is_empty());
+}
 
 #[test]
 fn test_eval_line_simple() {
