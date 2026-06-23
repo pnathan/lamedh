@@ -82,6 +82,7 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
         })
 }
 
+#[inline(never)]
 fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if args.len() != 2 {
         return Err(LispError::Generic(
@@ -149,6 +150,7 @@ fn is_truthy(val: &LispVal) -> bool {
     !matches!(val, LispVal::Nil)
 }
 
+#[inline(never)]
 fn apply_math_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -241,6 +243,7 @@ fn apply_math_op(
     }
 }
 
+#[inline(never)]
 fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Car => {
@@ -282,6 +285,7 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
     }
 }
 
+#[inline(never)]
 fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Concat => {
@@ -326,6 +330,7 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
     }
 }
 
+#[inline(never)]
 fn apply_numeric_primitives(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -419,6 +424,7 @@ fn apply_numeric_primitives(
     }
 }
 
+#[inline(never)]
 fn apply_logical_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -476,6 +482,7 @@ fn apply_logical_op(
     }
 }
 
+#[inline(never)]
 fn apply_hashtable_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -596,6 +603,7 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
 /// - `(SHELL "prog" a b)` -> exec program with args, no shell interpolation
 ///
 /// Returns `(exit-code stdout-string stderr-string)`.
+#[inline(never)]
 fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if !env.feature_enabled("SHELL") {
         return Err(LispError::Generic(
@@ -1112,6 +1120,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
     }
 }
 
+#[inline(never)]
 fn make_lambda(
     params: &LispVal,
     body: &LispVal,
@@ -1156,6 +1165,7 @@ fn make_lambda(
     }))
 }
 
+#[inline(never)]
 fn make_fexpr(
     params: &LispVal,
     body: &LispVal,
@@ -1182,6 +1192,7 @@ fn make_fexpr(
     }))
 }
 
+#[inline(never)]
 fn make_macro(
     params: &LispVal,
     body: &LispVal,
@@ -1226,6 +1237,7 @@ fn make_macro(
     }))
 }
 
+#[inline(never)]
 fn expand_macro(
     m: &crate::Macro,
     args: &[LispVal],
@@ -2147,6 +2159,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
     }
 }
 
+#[inline(never)]
 fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
         if let LispVal::Symbol(s) = &**car
@@ -2175,6 +2188,7 @@ fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, Lisp
     }
 }
 
+#[inline(never)]
 fn apply_symbol_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2232,6 +2246,7 @@ fn apply_symbol_op(
 }
 
 // I/O operations
+#[inline(never)]
 fn apply_io_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2299,6 +2314,7 @@ fn apply_io_op(
 }
 
 // Error handling operations
+#[inline(never)]
 fn apply_error_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2335,6 +2351,7 @@ fn apply_error_op(
 }
 
 // List processing operations
+#[inline(never)]
 fn apply_list_processing(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2532,6 +2549,7 @@ fn apply_list_processing(
 }
 
 // Bitwise operations
+#[inline(never)]
 fn apply_bitwise_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2620,6 +2638,7 @@ fn apply_bitwise_op(
 }
 
 // New list operations
+#[inline(never)]
 fn apply_new_list_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2722,6 +2741,7 @@ fn apply_new_list_ops(
 }
 
 // New numeric operations
+#[inline(never)]
 fn apply_new_numeric_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2855,6 +2875,7 @@ fn apply_new_numeric_ops(
 }
 
 // Type predicate operations
+#[inline(never)]
 fn apply_type_predicates(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2894,6 +2915,7 @@ fn apply_type_predicates(
 }
 
 // Function operations
+#[inline(never)]
 fn apply_function_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2938,6 +2960,7 @@ fn apply_function_ops(
 }
 
 // String/Symbol operations
+#[inline(never)]
 fn apply_string_symbol_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -3067,6 +3090,7 @@ fn apply_string_symbol_ops(
 }
 
 // New bitwise operations
+#[inline(never)]
 fn apply_new_bitwise_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -3141,6 +3165,7 @@ fn apply_new_bitwise_ops(
 }
 
 // Property list operations
+#[inline(never)]
 fn apply_plist_op(
     op: &BuiltinFunc,
     args: &[LispVal],
