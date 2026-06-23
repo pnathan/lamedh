@@ -1,5 +1,5 @@
 use clap::Parser;
-use lamedh::{environment::Environment, eval_line, load_directory, load_file};
+use lamedh::{environment::Environment, eval_all, eval_line, load_directory, load_file, printer};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::fs;
@@ -60,10 +60,19 @@ fn run(args: Args) {
         }
     }
 
-    // Execute s-expression from -s flag
+    // Execute s-expression(s) from -s flag
     if let Some(sexp) = args.s {
-        let output = eval_line(&sexp, &env);
-        println!("{output}");
+        match eval_all(&sexp, &env) {
+            Ok(results) => {
+                for r in results {
+                    println!("{}", printer::print(&r));
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
 

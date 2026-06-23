@@ -302,13 +302,37 @@ impl Hash for LispVal {
     }
 }
 
+/// Evaluate a single s-expression string, returning the typed value.
+///
+/// The input must contain exactly one form; use [`eval_all`] for programs with
+/// multiple top-level forms.
+pub fn eval_str(src: &str, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+    let form = reader::read(src, env)
+        .map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
+    evaluator::eval(&form, env)
+}
+
+/// Evaluate all s-expressions in `src` and return the results.
+///
+/// Expressions are evaluated in order; if any expression fails the error is
+/// returned immediately and subsequent expressions are not evaluated.
+pub fn eval_all(src: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, LispError> {
+    let forms = reader::read_all(src, env)
+        .map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
+    forms
+        .iter()
+        .map(|form| evaluator::eval(form, env))
+        .collect()
+}
+
+/// Evaluate a single line for REPL display, returning a printable string.
+///
+/// This is a thin wrapper over [`eval_str`] for use in the REPL; host code
+/// should prefer [`eval_str`] or [`eval_all`] to get typed results.
 pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
-    match reader::read(line, env) {
-        Ok(lisp_val) => match evaluator::eval(&lisp_val, env) {
-            Ok(result) => printer::print(&result),
-            Err(e) => format!("Error: {e:?}"),
-        },
-        Err(e) => format!("Error: {e}"),
+    match eval_str(line, env) {
+        Ok(result) => printer::print(&result),
+        Err(e) => format!("{e}"),
     }
 }
 
