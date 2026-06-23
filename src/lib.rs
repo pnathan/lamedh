@@ -237,6 +237,29 @@ impl PartialEq for Macro {
 /// The function signature for host-registered (native) Lisp callables.
 pub type NativeFn = dyn Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError>;
 
+/// A Kernel-style vau operative closure.
+///
+/// When called, `operands_param` is bound to the **unevaluated** operand list
+/// and `env_param` is bound to the **caller's lexical environment** as a
+/// `LispVal::Environment`.  The body is then evaluated in the extended closure
+/// env, which gives full access to both.
+#[derive(Debug, Clone)]
+pub struct Vau {
+    pub operands_param: String,
+    pub env_param: String,
+    pub body: Box<LispVal>,
+    pub env: Rc<Environment>,
+}
+
+impl PartialEq for Vau {
+    fn eq(&self, other: &Self) -> bool {
+        self.operands_param == other.operands_param
+            && self.env_param == other.env_param
+            && self.body == other.body
+            && Rc::ptr_eq(&self.env, &other.env)
+    }
+}
+
 pub enum LispVal {
     Symbol(Rc<RefCell<Symbol>>),
     Number(i64),
@@ -246,6 +269,7 @@ pub enum LispVal {
     Lambda(Lambda),
     Fexpr(Fexpr),
     Macro(Macro),
+    Vau(Vau),
     Cons {
         car: Box<LispVal>,
         cdr: Box<LispVal>,
@@ -269,6 +293,7 @@ impl fmt::Debug for LispVal {
             LispVal::Lambda(_) => write!(f, "Lambda(...)"),
             LispVal::Fexpr(_) => write!(f, "Fexpr(...)"),
             LispVal::Macro(_) => write!(f, "Macro(...)"),
+            LispVal::Vau(_) => write!(f, "Vau(...)"),
             LispVal::Cons { car, cdr } => write!(f, "Cons({car:?}, {cdr:?})"),
             LispVal::Nil => write!(f, "Nil"),
             LispVal::HashTable(_) => write!(f, "HashTable(...)"),
@@ -289,6 +314,7 @@ impl Clone for LispVal {
             LispVal::Lambda(l) => LispVal::Lambda(l.clone()),
             LispVal::Fexpr(x) => LispVal::Fexpr(x.clone()),
             LispVal::Macro(m) => LispVal::Macro(m.clone()),
+            LispVal::Vau(v) => LispVal::Vau(v.clone()),
             LispVal::Cons { car, cdr } => LispVal::Cons {
                 car: car.clone(),
                 cdr: cdr.clone(),
@@ -324,6 +350,7 @@ impl PartialEq for LispVal {
             (LispVal::Lambda(a), LispVal::Lambda(b)) => a == b,
             (LispVal::Fexpr(a), LispVal::Fexpr(b)) => a == b,
             (LispVal::Macro(a), LispVal::Macro(b)) => a == b,
+            (LispVal::Vau(a), LispVal::Vau(b)) => a == b,
             (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
             (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
             _ => false,
@@ -354,7 +381,11 @@ impl Hash for LispVal {
             LispVal::Environment(e) => {
                 Rc::as_ptr(e).hash(state);
             }
-            LispVal::Builtin(_) | LispVal::Lambda(_) | LispVal::Fexpr(_) | LispVal::Macro(_) => {
+            LispVal::Builtin(_)
+            | LispVal::Lambda(_)
+            | LispVal::Fexpr(_)
+            | LispVal::Macro(_)
+            | LispVal::Vau(_) => {
                 // Functions are not hashable by value.
             }
         }
@@ -379,8 +410,14 @@ impl From<f64> for LispVal {
 
 impl From<bool> for LispVal {
     fn from(b: bool) -> Self {
-        if b { LispVal::Symbol(Rc::new(RefCell::new(Symbol { name: "T".to_string(), plist: HashMap::new() }))) }
-        else { LispVal::Nil }
+        if b {
+            LispVal::Symbol(Rc::new(RefCell::new(Symbol {
+                name: "T".to_string(),
+                plist: HashMap::new(),
+            })))
+        } else {
+            LispVal::Nil
+        }
     }
 }
 
@@ -416,7 +453,9 @@ impl TryFrom<LispVal> for i64 {
     fn try_from(val: LispVal) -> Result<Self, Self::Error> {
         match val {
             LispVal::Number(n) => Ok(n),
-            other => Err(LispError::Generic(format!("expected integer, got {other:?}"))),
+            other => Err(LispError::Generic(format!(
+                "expected integer, got {other:?}"
+            ))),
         }
     }
 }
@@ -427,7 +466,9 @@ impl TryFrom<LispVal> for f64 {
         match val {
             LispVal::Float(f) => Ok(f),
             LispVal::Number(n) => Ok(n as f64),
-            other => Err(LispError::Generic(format!("expected number, got {other:?}"))),
+            other => Err(LispError::Generic(format!(
+                "expected number, got {other:?}"
+            ))),
         }
     }
 }
@@ -444,7 +485,9 @@ impl TryFrom<LispVal> for String {
     fn try_from(val: LispVal) -> Result<Self, Self::Error> {
         match val {
             LispVal::String(s) => Ok(s),
-            other => Err(LispError::Generic(format!("expected string, got {other:?}"))),
+            other => Err(LispError::Generic(format!(
+                "expected string, got {other:?}"
+            ))),
         }
     }
 }
@@ -475,7 +518,9 @@ impl LispVal {
     pub fn as_number(&self) -> Result<i64, LispError> {
         match self {
             LispVal::Number(n) => Ok(*n),
-            other => Err(LispError::Generic(format!("expected integer, got {other:?}"))),
+            other => Err(LispError::Generic(format!(
+                "expected integer, got {other:?}"
+            ))),
         }
     }
 
@@ -484,7 +529,9 @@ impl LispVal {
         match self {
             LispVal::Float(f) => Ok(*f),
             LispVal::Number(n) => Ok(*n as f64),
-            other => Err(LispError::Generic(format!("expected number, got {other:?}"))),
+            other => Err(LispError::Generic(format!(
+                "expected number, got {other:?}"
+            ))),
         }
     }
 
@@ -492,7 +539,9 @@ impl LispVal {
     pub fn as_str_val(&self) -> Result<&str, LispError> {
         match self {
             LispVal::String(s) => Ok(s.as_str()),
-            other => Err(LispError::Generic(format!("expected string, got {other:?}"))),
+            other => Err(LispError::Generic(format!(
+                "expected string, got {other:?}"
+            ))),
         }
     }
 
@@ -531,18 +580,34 @@ impl LispVal {
 ///
 /// Each entry is `(filename, source)`. The filename is used only for error messages.
 const STDLIB_SOURCES: &[(&str, &str)] = &[
-    ("00-core.lisp",         include_str!("../lib/00-core.lisp")),
-    ("01-list.lisp",         include_str!("../lib/01-list.lisp")),
-    ("02-cxr.lisp",          include_str!("../lib/02-cxr.lisp")),
-    ("03-meta.lisp",         include_str!("../lib/03-meta.lisp")),
-    ("04-predicates.lisp",   include_str!("../lib/04-predicates.lisp")),
-    ("05-math.lisp",         include_str!("../lib/05-math.lisp")),
-    ("06-builtin-docs.lisp", include_str!("../lib/06-builtin-docs.lisp")),
-    ("07-shell.lisp",        include_str!("../lib/07-shell.lisp")),
-    ("10-testing.lisp",      include_str!("../lib/10-testing.lisp")),
-    ("97-doc-renderer.lisp", include_str!("../lib/97-doc-renderer.lisp")),
-    ("98-help-system.lisp",  include_str!("../lib/98-help-system.lisp")),
-    ("99-help-data.lisp",    include_str!("../lib/99-help-data.lisp")),
+    ("00-core.lisp", include_str!("../lib/00-core.lisp")),
+    ("01-list.lisp", include_str!("../lib/01-list.lisp")),
+    ("02-cxr.lisp", include_str!("../lib/02-cxr.lisp")),
+    ("03-meta.lisp", include_str!("../lib/03-meta.lisp")),
+    (
+        "04-predicates.lisp",
+        include_str!("../lib/04-predicates.lisp"),
+    ),
+    ("05-math.lisp", include_str!("../lib/05-math.lisp")),
+    (
+        "06-builtin-docs.lisp",
+        include_str!("../lib/06-builtin-docs.lisp"),
+    ),
+    ("07-shell.lisp", include_str!("../lib/07-shell.lisp")),
+    ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
+    ("10-testing.lisp", include_str!("../lib/10-testing.lisp")),
+    (
+        "97-doc-renderer.lisp",
+        include_str!("../lib/97-doc-renderer.lisp"),
+    ),
+    (
+        "98-help-system.lisp",
+        include_str!("../lib/98-help-system.lisp"),
+    ),
+    (
+        "99-help-data.lisp",
+        include_str!("../lib/99-help-data.lisp"),
+    ),
 ];
 
 /// Evaluate the embedded standard library into `env`.
@@ -551,13 +616,11 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
 /// to load the stdlib into an environment you already have.
 pub fn load_stdlib(env: &Rc<Environment>) -> Result<(), LispError> {
     for (filename, src) in STDLIB_SOURCES {
-        let exprs = reader::read_all(src, env).map_err(|e| {
-            LispError::Generic(format!("stdlib parse error in {filename}: {e}"))
-        })?;
+        let exprs = reader::read_all(src, env)
+            .map_err(|e| LispError::Generic(format!("stdlib parse error in {filename}: {e}")))?;
         for expr in exprs {
-            evaluator::eval(&expr, env).map_err(|e| {
-                LispError::Generic(format!("stdlib eval error in {filename}: {e}"))
-            })?;
+            evaluator::eval(&expr, env)
+                .map_err(|e| LispError::Generic(format!("stdlib eval error in {filename}: {e}")))?;
         }
     }
     Ok(())
@@ -568,8 +631,8 @@ pub fn load_stdlib(env: &Rc<Environment>) -> Result<(), LispError> {
 /// The input must contain exactly one form; use [`eval_all`] for programs with
 /// multiple top-level forms.
 pub fn eval_str(src: &str, env: &Rc<Environment>) -> Result<LispVal, LispError> {
-    let form = reader::read(src, env)
-        .map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
+    let form =
+        reader::read(src, env).map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
     evaluator::eval(&form, env)
 }
 
@@ -578,8 +641,8 @@ pub fn eval_str(src: &str, env: &Rc<Environment>) -> Result<LispVal, LispError> 
 /// Expressions are evaluated in order; if any expression fails the error is
 /// returned immediately and subsequent expressions are not evaluated.
 pub fn eval_all(src: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, LispError> {
-    let forms = reader::read_all(src, env)
-        .map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
+    let forms =
+        reader::read_all(src, env).map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
     forms
         .iter()
         .map(|form| evaluator::eval(form, env))
