@@ -82,6 +82,7 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
         })
 }
 
+#[inline(never)]
 fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if args.len() != 2 {
         return Err(LispError::Generic(
@@ -141,6 +142,7 @@ fn is_truthy(val: &LispVal) -> bool {
     !matches!(val, LispVal::Nil)
 }
 
+#[inline(never)]
 fn apply_math_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -233,6 +235,7 @@ fn apply_math_op(
     }
 }
 
+#[inline(never)]
 fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Car => {
@@ -274,6 +277,7 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
     }
 }
 
+#[inline(never)]
 fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Concat => {
@@ -318,6 +322,7 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
     }
 }
 
+#[inline(never)]
 fn apply_numeric_primitives(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -411,6 +416,7 @@ fn apply_numeric_primitives(
     }
 }
 
+#[inline(never)]
 fn apply_logical_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -468,6 +474,7 @@ fn apply_logical_op(
     }
 }
 
+#[inline(never)]
 fn apply_hashtable_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -588,6 +595,7 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
 /// - `(SHELL "prog" a b)` -> exec program with args, no shell interpolation
 ///
 /// Returns `(exit-code stdout-string stderr-string)`.
+#[inline(never)]
 fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if !env.feature_enabled("SHELL") {
         return Err(LispError::Generic(
@@ -655,23 +663,21 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Expt => apply_numeric_primitives(builtin, args, env),
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
-            BuiltinFunc::Eval => {
-                match args.len() {
-                    1 => eval(&args[0], env),
-                    2 => {
-                        if let LispVal::Environment(eval_env) = &args[1] {
-                            eval(&args[0], eval_env)
-                        } else {
-                            Err(LispError::Generic(
-                                "eval: second argument must be an environment".to_string(),
-                            ))
-                        }
+            BuiltinFunc::Eval => match args.len() {
+                1 => eval(&args[0], env),
+                2 => {
+                    if let LispVal::Environment(eval_env) = &args[1] {
+                        eval(&args[0], eval_env)
+                    } else {
+                        Err(LispError::Generic(
+                            "eval: second argument must be an environment".to_string(),
+                        ))
                     }
-                    _ => Err(LispError::Generic(
-                        "eval takes 1 or 2 arguments".to_string(),
-                    )),
                 }
-            }
+                _ => Err(LispError::Generic(
+                    "eval takes 1 or 2 arguments".to_string(),
+                )),
+            },
             BuiltinFunc::Eq | BuiltinFunc::Not | BuiltinFunc::NumericEquals => {
                 apply_logical_op(builtin, args, env)
             }
@@ -1052,23 +1058,21 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
                 Ok(LispVal::Environment(Rc::clone(env)))
             }
-            BuiltinFunc::MakeEnvironment => {
-                match args.len() {
-                    0 => Ok(LispVal::Environment(Environment::new_with_builtins())),
-                    1 => {
-                        if let LispVal::Environment(parent) = &args[0] {
-                            Ok(LispVal::Environment(Environment::new_child(parent)))
-                        } else {
-                            Err(LispError::Generic(
-                                "make-environment: argument must be an environment".to_string(),
-                            ))
-                        }
+            BuiltinFunc::MakeEnvironment => match args.len() {
+                0 => Ok(LispVal::Environment(Environment::new_with_builtins())),
+                1 => {
+                    if let LispVal::Environment(parent) = &args[0] {
+                        Ok(LispVal::Environment(Environment::new_child(parent)))
+                    } else {
+                        Err(LispError::Generic(
+                            "make-environment: argument must be an environment".to_string(),
+                        ))
                     }
-                    _ => Err(LispError::Generic(
-                        "make-environment takes 0 or 1 arguments".to_string(),
-                    )),
                 }
-            }
+                _ => Err(LispError::Generic(
+                    "make-environment takes 0 or 1 arguments".to_string(),
+                )),
+            },
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:
@@ -1108,6 +1112,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
     }
 }
 
+#[inline(never)]
 fn make_lambda(
     params: &LispVal,
     body: &LispVal,
@@ -1152,6 +1157,7 @@ fn make_lambda(
     }))
 }
 
+#[inline(never)]
 fn make_fexpr(
     params: &LispVal,
     body: &LispVal,
@@ -1178,6 +1184,7 @@ fn make_fexpr(
     }))
 }
 
+#[inline(never)]
 fn make_macro(
     params: &LispVal,
     body: &LispVal,
@@ -1222,6 +1229,7 @@ fn make_macro(
     }))
 }
 
+#[inline(never)]
 fn expand_macro(
     m: &crate::Macro,
     args: &[LispVal],
@@ -1378,7 +1386,10 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         let mut current_clause = &**rest;
                         loop {
                             match current_clause {
-                                LispVal::Cons { car: clause, cdr: next_clauses } => {
+                                LispVal::Cons {
+                                    car: clause,
+                                    cdr: next_clauses,
+                                } => {
                                     if let LispVal::Cons {
                                         car: predicate,
                                         cdr: expressions,
@@ -1393,20 +1404,27 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                                 let mut current_expr = &**expressions;
                                                 loop {
                                                     match current_expr {
-                                                        LispVal::Cons { car: expr, cdr: next_exprs }
-                                                            if **next_exprs != LispVal::Nil =>
-                                                        {
+                                                        LispVal::Cons {
+                                                            car: expr,
+                                                            cdr: next_exprs,
+                                                        } if **next_exprs != LispVal::Nil => {
                                                             eval(expr, env)?;
                                                             current_expr = next_exprs;
                                                         }
-                                                        LispVal::Cons { car: last_expr, .. } => {
+                                                        LispVal::Cons {
+                                                            car: last_expr, ..
+                                                        } => {
                                                             // Last expression in the clause body: TCO
                                                             return Ok(TcoStep::TailCall(
                                                                 *last_expr.clone(),
                                                                 env.clone(),
                                                             ));
                                                         }
-                                                        _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))),
+                                                        _ => {
+                                                            return Ok(TcoStep::Done(Ok(
+                                                                LispVal::Nil,
+                                                            )));
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1945,7 +1963,9 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                         unevaluated_args.len()
                                     )))));
                                 }
-                                for (param, arg) in fexpr.params.iter().zip(unevaluated_args.into_iter()) {
+                                for (param, arg) in
+                                    fexpr.params.iter().zip(unevaluated_args.into_iter())
+                                {
                                     new_env.set(param.clone(), arg);
                                 }
                             }
@@ -1971,7 +1991,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
                                     new_env.set(param.clone(), arg.clone());
                                 }
-                                let rest_args = vec_to_list(eval_args[lambda.params.len()..].to_vec());
+                                let rest_args =
+                                    vec_to_list(eval_args[lambda.params.len()..].to_vec());
                                 new_env.set(rest_param_name.clone(), rest_args);
                             } else {
                                 if lambda.params.len() != eval_args.len() {
@@ -2037,6 +2058,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
     }
 }
 
+#[inline(never)]
 fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
         if let LispVal::Symbol(s) = &**car
@@ -2065,6 +2087,7 @@ fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, Lisp
     }
 }
 
+#[inline(never)]
 fn apply_symbol_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2122,6 +2145,7 @@ fn apply_symbol_op(
 }
 
 // I/O operations
+#[inline(never)]
 fn apply_io_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2189,6 +2213,7 @@ fn apply_io_op(
 }
 
 // Error handling operations
+#[inline(never)]
 fn apply_error_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2225,6 +2250,7 @@ fn apply_error_op(
 }
 
 // List processing operations
+#[inline(never)]
 fn apply_list_processing(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2422,6 +2448,7 @@ fn apply_list_processing(
 }
 
 // Bitwise operations
+#[inline(never)]
 fn apply_bitwise_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2510,6 +2537,7 @@ fn apply_bitwise_op(
 }
 
 // New list operations
+#[inline(never)]
 fn apply_new_list_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2612,6 +2640,7 @@ fn apply_new_list_ops(
 }
 
 // New numeric operations
+#[inline(never)]
 fn apply_new_numeric_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2745,6 +2774,7 @@ fn apply_new_numeric_ops(
 }
 
 // Type predicate operations
+#[inline(never)]
 fn apply_type_predicates(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2780,6 +2810,7 @@ fn apply_type_predicates(
 }
 
 // Function operations
+#[inline(never)]
 fn apply_function_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2824,6 +2855,7 @@ fn apply_function_ops(
 }
 
 // String/Symbol operations
+#[inline(never)]
 fn apply_string_symbol_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -2953,6 +2985,7 @@ fn apply_string_symbol_ops(
 }
 
 // New bitwise operations
+#[inline(never)]
 fn apply_new_bitwise_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -3027,6 +3060,7 @@ fn apply_new_bitwise_ops(
 }
 
 // Property list operations
+#[inline(never)]
 fn apply_plist_op(
     op: &BuiltinFunc,
     args: &[LispVal],
@@ -3161,10 +3195,7 @@ mod evaluator_internal_tests {
     fn test_apply_hashtable_op_fallthrough() {
         let env = dummy_env();
         let result = apply_hashtable_op(&BuiltinFunc::Car, &[], &env);
-        assert!(
-            result.is_err(),
-            "apply_hashtable_op with Car should error"
-        );
+        assert!(result.is_err(), "apply_hashtable_op with Car should error");
     }
 
     #[test]
@@ -3192,7 +3223,10 @@ mod evaluator_internal_tests {
     fn test_apply_list_processing_fallthrough() {
         let env = dummy_env();
         let result = apply_list_processing(&BuiltinFunc::Car, &[], &env);
-        assert!(result.is_err(), "apply_list_processing with Car should error");
+        assert!(
+            result.is_err(),
+            "apply_list_processing with Car should error"
+        );
     }
 
     #[test]
@@ -3213,14 +3247,20 @@ mod evaluator_internal_tests {
     fn test_apply_new_numeric_ops_fallthrough() {
         let env = dummy_env();
         let result = apply_new_numeric_ops(&BuiltinFunc::Car, &[], &env);
-        assert!(result.is_err(), "apply_new_numeric_ops with Car should error");
+        assert!(
+            result.is_err(),
+            "apply_new_numeric_ops with Car should error"
+        );
     }
 
     #[test]
     fn test_apply_type_predicates_fallthrough() {
         let env = dummy_env();
         let result = apply_type_predicates(&BuiltinFunc::Car, &[LispVal::Nil], &env);
-        assert!(result.is_err(), "apply_type_predicates with Car should error");
+        assert!(
+            result.is_err(),
+            "apply_type_predicates with Car should error"
+        );
     }
 
     #[test]
@@ -3234,14 +3274,20 @@ mod evaluator_internal_tests {
     fn test_apply_string_symbol_ops_fallthrough() {
         let env = dummy_env();
         let result = apply_string_symbol_ops(&BuiltinFunc::Car, &[], &env);
-        assert!(result.is_err(), "apply_string_symbol_ops with Car should error");
+        assert!(
+            result.is_err(),
+            "apply_string_symbol_ops with Car should error"
+        );
     }
 
     #[test]
     fn test_apply_new_bitwise_ops_fallthrough() {
         let env = dummy_env();
         let result = apply_new_bitwise_ops(&BuiltinFunc::Car, &[], &env);
-        assert!(result.is_err(), "apply_new_bitwise_ops with Car should error");
+        assert!(
+            result.is_err(),
+            "apply_new_bitwise_ops with Car should error"
+        );
     }
 
     #[test]
