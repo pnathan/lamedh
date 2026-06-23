@@ -1219,31 +1219,84 @@ fn expand_macro(
     eval(&m.body, &macro_env)
 }
 
+/// Public entry point for evaluation. Acquires a depth-guard frame (issue #61)
+/// for the outermost call, then delegates to `eval_impl` which performs a
+/// trampoline loop for tail-call optimization (issue #62).
+///
+/// Non-tail recursive calls inside `eval_impl` call back into this function so
+/// that the depth guard is applied to every non-tail frame.
 pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     // Bound recursion so deep/infinite recursion is a recoverable error rather
     // than a native stack overflow that aborts the whole process (issue #61).
     let _depth_guard = DepthGuard::enter()?;
+    eval_impl(val.clone(), env.clone())
+}
+
+/// Represents the outcome of one iteration of the TCO trampoline.
+/// Either we have a final value/error, or we have a tail call to continue with.
+enum TcoStep {
+    /// Evaluation is complete; return this value.
+    Done(Result<LispVal, LispError>),
+    /// Tail call: evaluate `val` in `env` next, reusing this stack frame.
+    TailCall(LispVal, Rc<Environment>),
+}
+
+/// Internal trampoline evaluator. Runs a loop that reuses the current Rust
+/// stack frame for tail calls, achieving proper TCO without consuming extra
+/// native stack depth for each Lisp tail-recursive call.
+///
+/// All non-tail recursive calls (e.g. evaluating an IF condition, evaluating
+/// function arguments) still go through the public `eval()` so that the depth
+/// guard is correctly applied to non-tail frames.
+fn eval_impl(initial_val: LispVal, initial_env: Rc<Environment>) -> Result<LispVal, LispError> {
+    let mut current_val: LispVal = initial_val;
+    let mut current_env: Rc<Environment> = initial_env;
+
+    loop {
+        // Each iteration computes a TcoStep, then either returns or loops.
+        // All borrows of current_val/current_env are scoped inside this block
+        // so they are released before we potentially assign to them.
+        let step = {
+            let val = &current_val;
+            let env = &current_env;
+            eval_step(val, env)
+        }?;
+
+        match step {
+            TcoStep::Done(result) => return result,
+            TcoStep::TailCall(new_val, new_env) => {
+                current_val = new_val;
+                current_env = new_env;
+                // continue the loop
+            }
+        }
+    }
+}
+
+/// Perform one evaluation step. Returns `TcoStep::Done` for final results
+/// and `TcoStep::TailCall` for tail positions (caller loops instead of recursing).
+fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
     match val {
-        LispVal::Nil => Ok(LispVal::Nil),
+        LispVal::Nil => Ok(TcoStep::Done(Ok(LispVal::Nil))),
         LispVal::Symbol(s) => {
-            let name = &s.borrow().name;
+            let name = s.borrow().name.clone();
 
             // Use get_var which handles both dynamic and lexical scoping
             let value = env
-                .get_var(name)
+                .get_var(&name)
                 .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", name)))?;
 
-            // If the value is a LABEL expression, evaluate it
-            // This handles recursive LABEL definitions
+            // If the value is a LABEL expression, tail-call evaluate it
+            // This handles recursive LABEL definitions (TCO: TailCall instead of recurse)
             if let LispVal::Cons { car, cdr: _ } = &value {
                 if let LispVal::Symbol(sym) = &**car {
                     if sym.borrow().name == "LABEL" {
-                        return eval(&value, env);
+                        return Ok(TcoStep::TailCall(value, env.clone()));
                     }
                 }
             }
 
-            Ok(value)
+            Ok(TcoStep::Done(Ok(value)))
         }
         LispVal::Number(_)
         | LispVal::Float(_)
@@ -1253,7 +1306,7 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
         | LispVal::Fexpr(_)
         | LispVal::Macro(_)
         | LispVal::HashTable(_)
-        | LispVal::Native(_) => Ok(val.clone()),
+        | LispVal::Native(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
         LispVal::Cons {
             car: first,
@@ -1265,74 +1318,86 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         if let LispVal::Cons { car, cdr } = &**rest
                             && **cdr == LispVal::Nil
                         {
-                            return Ok(*car.clone());
+                            return Ok(TcoStep::Done(Ok(*car.clone())));
                         }
-                        Err(LispError::Generic(
+                        Ok(TcoStep::Done(Err(LispError::Generic(
                             "quote takes exactly one argument".to_string(),
-                        ))
+                        ))))
                     }
                     "QUASIQUOTE" => {
                         if let LispVal::Cons { car, cdr } = &**rest
                             && **cdr == LispVal::Nil
                         {
-                            return quasiquote_eval(car, env);
+                            return Ok(TcoStep::Done(quasiquote_eval(car, env)));
                         }
-                        Err(LispError::Generic(
+                        Ok(TcoStep::Done(Err(LispError::Generic(
                             "quasiquote takes exactly one argument".to_string(),
-                        ))
+                        ))))
                     }
                     "COND" => {
                         let mut current_clause = &**rest;
-                        while let LispVal::Cons {
-                            car: clause,
-                            cdr: next_clauses,
-                        } = current_clause
-                        {
-                            if let LispVal::Cons {
-                                car: predicate,
-                                cdr: expressions,
-                            } = &**clause
-                            {
-                                let predicate_result = eval(predicate, env)?;
-                                if is_truthy(&predicate_result) {
-                                    if **expressions == LispVal::Nil {
-                                        return Ok(predicate_result);
-                                    } else {
-                                        let mut last_val = LispVal::Nil;
-                                        let mut current_expr = &**expressions;
-                                        while let LispVal::Cons {
-                                            car: expr,
-                                            cdr: next_exprs,
-                                        } = current_expr
-                                        {
-                                            last_val = eval(expr, env)?;
-                                            current_expr = next_exprs;
+                        loop {
+                            match current_clause {
+                                LispVal::Cons { car: clause, cdr: next_clauses } => {
+                                    if let LispVal::Cons {
+                                        car: predicate,
+                                        cdr: expressions,
+                                    } = &**clause
+                                    {
+                                        let predicate_result = eval(predicate, env)?;
+                                        if is_truthy(&predicate_result) {
+                                            if **expressions == LispVal::Nil {
+                                                return Ok(TcoStep::Done(Ok(predicate_result)));
+                                            } else {
+                                                // Eval all but last normally; TCO for last expr
+                                                let mut current_expr = &**expressions;
+                                                loop {
+                                                    match current_expr {
+                                                        LispVal::Cons { car: expr, cdr: next_exprs }
+                                                            if **next_exprs != LispVal::Nil =>
+                                                        {
+                                                            eval(expr, env)?;
+                                                            current_expr = next_exprs;
+                                                        }
+                                                        LispVal::Cons { car: last_expr, .. } => {
+                                                            // Last expression in the clause body: TCO
+                                                            return Ok(TcoStep::TailCall(
+                                                                *last_expr.clone(),
+                                                                env.clone(),
+                                                            ));
+                                                        }
+                                                        _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))),
+                                                    }
+                                                }
+                                            }
                                         }
-                                        return Ok(last_val);
+                                    } else {
+                                        return Ok(TcoStep::Done(Err(LispError::Generic(
+                                            "cond clauses must be lists".to_string(),
+                                        ))));
                                     }
+                                    current_clause = next_clauses;
                                 }
-                            } else {
-                                return Err(LispError::Generic(
-                                    "cond clauses must be lists".to_string(),
-                                ));
+                                _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))), // No clause was true
                             }
-                            current_clause = next_clauses;
                         }
-                        Ok(LispVal::Nil) // No clause was true
                     }
                     "IF" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 3 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "if takes exactly three arguments".to_string(),
-                            ));
+                            ))));
                         }
+                        // Evaluate condition normally (non-tail)
                         let cond_result = eval(&args[0], env)?;
-                        if is_truthy(&cond_result) {
-                            eval(&args[1], env)
+                        // TCO: tail position is either branch
+                        let next_val = if is_truthy(&cond_result) {
+                            args[1].clone()
                         } else {
-                            eval(&args[2], env)
-                        }
+                            args[2].clone()
+                        };
+                        Ok(TcoStep::TailCall(next_val, env.clone()))
                     }
                     "AND" => {
                         let mut last_val = LispVal::Symbol(env.intern_symbol("T"));
@@ -1340,33 +1405,33 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         while let LispVal::Cons { car, cdr } = current {
                             last_val = eval(car, env)?;
                             if !is_truthy(&last_val) {
-                                return Ok(LispVal::Nil);
+                                return Ok(TcoStep::Done(Ok(LispVal::Nil)));
                             }
                             current = cdr;
                         }
-                        Ok(last_val)
+                        Ok(TcoStep::Done(Ok(last_val)))
                     }
                     "OR" => {
                         let mut current = &**rest;
                         while let LispVal::Cons { car, cdr } = current {
-                            let val = eval(car, env)?;
-                            if is_truthy(&val) {
-                                return Ok(val);
+                            let v = eval(car, env)?;
+                            if is_truthy(&v) {
+                                return Ok(TcoStep::Done(Ok(v)));
                             }
                             current = cdr;
                         }
-                        Ok(LispVal::Nil)
+                        Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
                     "DEF" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 && args.len() != 3 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "def takes two or three arguments".to_string(),
-                            ));
+                            ))));
                         }
                         if let LispVal::Symbol(s) = &args[0] {
                             let name = s.borrow().name.clone();
-                            let val = eval(&args[1], env)?;
+                            let v = eval(&args[1], env)?;
                             if args.len() == 3 {
                                 if let LispVal::String(doc) = &args[2] {
                                     s.borrow_mut().plist.insert(
@@ -1374,35 +1439,35 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                         LispVal::String(doc.clone()),
                                     );
                                 } else {
-                                    return Err(LispError::Generic(
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
                                         "docstring must be a string".to_string(),
-                                    ));
+                                    ))));
                                 }
                             }
-                            env.set(name, val);
-                            Ok(LispVal::Symbol(s.clone()))
+                            env.set(name, v);
+                            Ok(TcoStep::Done(Ok(LispVal::Symbol(s.clone()))))
                         } else {
-                            Err(LispError::Generic(
+                            Ok(TcoStep::Done(Err(LispError::Generic(
                                 "def requires a symbol as its first argument".to_string(),
-                            ))
+                            ))))
                         }
                     }
                     "DEFDYNAMIC" | "DEFVAR" => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 2 || args.len() > 3 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "defdynamic requires 2 or 3 arguments: (defdynamic symbol value [docstring])"
                                     .to_string(),
-                            ));
+                            ))));
                         }
 
                         // Get symbol
                         let symbol = if let LispVal::Symbol(s) = &args[0] {
                             s
                         } else {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "defdynamic first argument must be a symbol".to_string(),
-                            ));
+                            ))));
                         };
 
                         let name = symbol.borrow().name.clone();
@@ -1432,13 +1497,13 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                     .plist
                                     .insert("docstring".to_string(), LispVal::String(doc.clone()));
                             } else {
-                                return Err(LispError::Generic(
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "defdynamic docstring must be a string".to_string(),
-                                ));
+                                ))));
                             }
                         }
 
-                        Ok(LispVal::Symbol(symbol.clone()))
+                        Ok(TcoStep::Done(Ok(LispVal::Symbol(symbol.clone()))))
                     }
                     "LAMBDA" => {
                         if let LispVal::Cons {
@@ -1453,18 +1518,18 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 let progn_sym = LispVal::Symbol(env.intern_symbol("PROGN"));
                                 vec_to_list([vec![progn_sym], body_exprs].concat())
                             };
-                            return make_lambda(params, &final_body, env);
+                            return Ok(TcoStep::Done(make_lambda(params, &final_body, env)));
                         }
-                        Err(LispError::Generic(
+                        Ok(TcoStep::Done(Err(LispError::Generic(
                             "lambda requires params and at least one body expression".to_string(),
-                        ))
+                        ))))
                     }
                     "FUNCTION" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 1 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "FUNCTION takes exactly one argument".to_string(),
-                            ));
+                            ))));
                         }
                         let arg = &args[0];
 
@@ -1487,7 +1552,7 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 let progn_sym = LispVal::Symbol(env.intern_symbol("PROGN"));
                                 vec_to_list([vec![progn_sym], body_exprs].concat())
                             };
-                            return make_lambda(params, &final_body, env);
+                            return Ok(TcoStep::Done(make_lambda(params, &final_body, env)));
                         }
 
                         // Case 2: Argument is a symbol bound to a function
@@ -1504,27 +1569,27 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 | LispVal::Builtin(_)
                                 | LispVal::Fexpr(_)
                                 | LispVal::Macro(_)
-                                | LispVal::Native(_) => return Ok(func),
+                                | LispVal::Native(_) => return Ok(TcoStep::Done(Ok(func))),
                                 _ => {
-                                    return Err(LispError::Generic(format!(
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
                                         "Symbol '{}' is not bound to a function",
                                         s.borrow().name
-                                    )));
+                                    )))));
                                 }
                             }
                         }
 
-                        Err(LispError::Generic(
+                        Ok(TcoStep::Done(Err(LispError::Generic(
                             "FUNCTION argument must be a LAMBDA expression or a symbol bound to a function"
                                 .to_string(),
-                        ))
+                        ))))
                     }
                     "LABEL" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "LABEL requires a name and an expression".to_string(),
-                            ));
+                            ))));
                         }
                         let name_val = &args[0];
                         let expr_val = &args[1];
@@ -1533,11 +1598,11 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             // Check for pathological case: (LABEL x x)
                             if let LispVal::Symbol(expr_sym) = expr_val {
                                 if name_sym.borrow().name == expr_sym.borrow().name {
-                                    return Err(LispError::Generic(format!(
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
                                         "LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
                                         name_sym.borrow().name,
                                         expr_sym.borrow().name
-                                    )));
+                                    )))));
                                 }
                             }
 
@@ -1547,49 +1612,50 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 cdr: rest.clone(),
                             };
                             new_env.set(name_sym.borrow().name.clone(), label_expr);
-                            eval(expr_val, &new_env)
+                            // TCO: tail call into expr_val with new_env
+                            Ok(TcoStep::TailCall(expr_val.clone(), new_env))
                         } else {
-                            Err(LispError::Generic(
+                            Ok(TcoStep::Done(Err(LispError::Generic(
                                 "LABEL name must be a symbol".to_string(),
-                            ))
+                            ))))
                         }
                     }
                     "DEFINE" => {
                         let defs = list_to_vec(rest)?;
                         if defs.len() != 1 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "DEFINE takes a list of definitions".to_string(),
-                            ));
+                            ))));
                         }
                         let def_list = list_to_vec(&defs[0])?;
                         let mut defined_names = vec![];
                         for def in def_list {
                             let def_pair = list_to_vec(&def)?;
                             if def_pair.len() != 2 {
-                                return Err(LispError::Generic(
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "Each definition must be a pair of name and value".to_string(),
-                                ));
+                                ))));
                             }
                             if let LispVal::Symbol(s) = &def_pair[0] {
                                 let name = s.borrow().name.clone();
-                                let val = &def_pair[1];
-                                env.set(name, val.clone());
+                                let v = &def_pair[1];
+                                env.set(name, v.clone());
                                 defined_names.push(LispVal::Symbol(s.clone()));
                             } else {
-                                return Err(LispError::Generic(
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "Definition name must be a symbol".to_string(),
-                                ));
+                                ))));
                             }
                         }
-                        Ok(vec_to_list(defined_names))
+                        Ok(TcoStep::Done(Ok(vec_to_list(defined_names))))
                     }
                     "DEFEXPR" | "DEFMACRO" => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 3 || args.len() > 4 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 format!("{} takes three or four arguments", s.borrow().name)
                                     .to_string(),
-                            ));
+                            ))));
                         }
                         if let LispVal::Symbol(name_sym) = &args[0] {
                             let params = &args[1];
@@ -1602,9 +1668,9 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                     );
                                     body_idx = 3;
                                 } else {
-                                    return Err(LispError::Generic(
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
                                         "docstring must be a string".to_string(),
-                                    ));
+                                    ))));
                                 }
                             }
                             let body = &args[body_idx];
@@ -1614,25 +1680,33 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 make_macro(params, body, env)?
                             };
                             env.set(name_sym.borrow().name.clone(), func);
-                            Ok(LispVal::Symbol(name_sym.clone()))
+                            Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym.clone()))))
                         } else {
-                            Err(LispError::Generic(
+                            Ok(TcoStep::Done(Err(LispError::Generic(
                                 format!(
                                     "{} requires a symbol as its first argument",
                                     s.borrow().name
                                 )
                                 .to_string(),
-                            ))
+                            ))))
                         }
                     }
                     "PROGN" => {
-                        let mut last_val = LispVal::Nil;
                         let mut current = &**rest;
-                        while let LispVal::Cons { car, cdr } = current {
-                            last_val = eval(car, env)?;
-                            current = cdr;
+                        loop {
+                            match current {
+                                LispVal::Cons { car, cdr } if **cdr != LispVal::Nil => {
+                                    // Non-last form: evaluate normally
+                                    eval(car, env)?;
+                                    current = cdr;
+                                }
+                                LispVal::Cons { car: last_expr, .. } => {
+                                    // Last form: TCO
+                                    return Ok(TcoStep::TailCall(*last_expr.clone(), env.clone()));
+                                }
+                                _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))),
+                            }
                         }
-                        Ok(last_val)
                     }
                     "SETQ" => {
                         // SETQ: Set a variable's value
@@ -1645,32 +1719,32 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         // variables to be declared before assignment.
                         let args_vec = list_to_vec(rest)?;
                         if args_vec.len() % 2 != 0 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "SETQ requires an even number of arguments".to_string(),
-                            ));
+                            ))));
                         }
                         let mut last_val = LispVal::Nil;
                         for chunk in args_vec.chunks(2) {
                             let var = &chunk[0];
                             let val_expr = &chunk[1];
                             if let LispVal::Symbol(s) = var {
-                                let val = eval(val_expr, env)?;
-                                Environment::update(env, &s.borrow().name, val.clone());
-                                last_val = val;
+                                let v = eval(val_expr, env)?;
+                                Environment::update(env, &s.borrow().name, v.clone());
+                                last_val = v;
                             } else {
-                                return Err(LispError::Generic(
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "SETQ variable name must be a symbol".to_string(),
-                                ));
+                                ))));
                             }
                         }
-                        Ok(last_val)
+                        Ok(TcoStep::Done(Ok(last_val)))
                     }
                     "PROG" => {
                         let args = list_to_vec(rest)?;
                         if args.is_empty() {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "PROG requires at least a var list".to_string(),
-                            ));
+                            ))));
                         }
 
                         let var_list = list_to_vec(&args[0])?;
@@ -1682,9 +1756,9 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             if let LispVal::Symbol(s) = var {
                                 prog_env.set(s.borrow().name.clone(), LispVal::Nil);
                             } else {
-                                return Err(LispError::Generic(
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "PROG variable list must contain only symbols".to_string(),
-                                ));
+                                ))));
                             }
                         }
 
@@ -1705,7 +1779,7 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         }
 
                         let mut pc = 0;
-                        loop {
+                        let result = loop {
                             if pc >= body.len() {
                                 break Ok(LispVal::Nil); // Fell off the end
                             }
@@ -1738,69 +1812,84 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                     break Err(e);
                                 }
                             }
-                        }
+                        };
+                        Ok(TcoStep::Done(result))
                     }
                     "RETURN" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 1 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "RETURN takes exactly one argument".to_string(),
-                            ));
+                            ))));
                         }
                         let retval = eval(&args[0], env)?;
-                        Err(LispError::Return(Box::new(retval)))
+                        Ok(TcoStep::Done(Err(LispError::Return(Box::new(retval)))))
                     }
                     "GO" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 1 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "GO takes exactly one argument".to_string(),
-                            ));
+                            ))));
                         }
                         if let LispVal::Symbol(s) = &args[0] {
-                            Err(LispError::Go(s.borrow().name.clone()))
+                            Ok(TcoStep::Done(Err(LispError::Go(s.borrow().name.clone()))))
                         } else {
-                            Err(LispError::Generic(
+                            Ok(TcoStep::Done(Err(LispError::Generic(
                                 "GO argument must be a symbol".to_string(),
-                            ))
+                            ))))
                         }
                     }
                     "LET" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
-                            return Err(LispError::Generic(
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "let takes exactly two arguments".to_string(),
-                            ));
+                            ))));
                         }
                         let bindings_vec = list_to_vec(&args[0])?;
-                        let body = &args[1];
+                        let body = args[1].clone();
 
                         let mut params = vec![];
                         let mut arg_exprs = vec![];
                         for binding in bindings_vec {
                             let pair = list_to_vec(&binding)?;
                             if pair.len() != 2 {
-                                return Err(LispError::Generic(
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let binding must be a pair".to_string(),
-                                ));
+                                ))));
                             }
                             params.push(pair[0].clone());
                             arg_exprs.push(pair[1].clone());
                         }
 
-                        let lambda = make_lambda(&vec_to_list(params), body, env)?;
-                        let mut application = vec![lambda];
-                        application.extend(arg_exprs);
-                        eval(&vec_to_list(application), env)
+                        // TCO: Instead of calling eval on an application form, inline the
+                        // binding setup and continue the loop with the body expression.
+                        let let_env = Environment::new_child(env);
+                        for (param, arg_expr) in params.iter().zip(arg_exprs.iter()) {
+                            if let LispVal::Symbol(s) = param {
+                                let v = eval(arg_expr, env)?;
+                                let_env.set(s.borrow().name.clone(), v);
+                            } else {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "let binding name must be a symbol".to_string(),
+                                ))));
+                            }
+                        }
+                        Ok(TcoStep::TailCall(body, let_env))
                     }
                     _ => {
-                        // Function call
+                        // Function call: evaluate the function head
                         let func = eval(first, env)?;
                         let args_list = list_to_vec(rest)?;
+
+                        // Macro expansion: TCO — continue with the expanded form
                         if let LispVal::Macro(m) = &func {
                             let expanded = expand_macro(m, &args_list, env)?;
-                            return eval(&expanded, env);
+                            return Ok(TcoStep::TailCall(expanded, env.clone()));
                         }
+
+                        // Fexpr application: TCO — continue with fexpr body
                         if let LispVal::Fexpr(fexpr) = &func {
                             let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
                             if fexpr.params.len() == 1 {
@@ -1810,30 +1899,99 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 // Multi-param: bind each unevaluated arg to its parameter.
                                 let unevaluated_args = list_to_vec(rest)?;
                                 if unevaluated_args.len() != fexpr.params.len() {
-                                    return Err(LispError::Generic(format!(
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
                                         "fexpr expected {} arguments, got {}",
                                         fexpr.params.len(),
                                         unevaluated_args.len()
-                                    )));
+                                    )))));
                                 }
                                 for (param, arg) in fexpr.params.iter().zip(unevaluated_args.into_iter()) {
                                     new_env.set(param.clone(), arg);
                                 }
                             }
-                            return eval(&fexpr.body, &new_env);
+                            return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
                         }
 
+                        // Evaluate arguments (non-tail)
                         let eval_args: Result<Vec<LispVal>, LispError> =
                             args_list.iter().map(|arg| eval(arg, env)).collect();
-                        apply(&func, &eval_args?, env)
+                        let eval_args = eval_args?;
+
+                        // Lambda application: TCO — set up new env and continue with body
+                        if let LispVal::Lambda(lambda) = &func {
+                            let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+                            if let Some(rest_param_name) = &lambda.rest_param {
+                                if eval_args.len() < lambda.params.len() {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                        "lambda expected at least {} arguments, got {}",
+                                        lambda.params.len(),
+                                        eval_args.len()
+                                    )))));
+                                }
+                                for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
+                                    new_env.set(param.clone(), arg.clone());
+                                }
+                                let rest_args = vec_to_list(eval_args[lambda.params.len()..].to_vec());
+                                new_env.set(rest_param_name.clone(), rest_args);
+                            } else {
+                                if lambda.params.len() != eval_args.len() {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                        "lambda expected {} arguments, got {}",
+                                        lambda.params.len(),
+                                        eval_args.len()
+                                    )))));
+                                }
+                                for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
+                                    new_env.set(param.clone(), arg.clone());
+                                }
+                            }
+                            return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
+                        }
+
+                        // All other callables (builtins, natives): no TCO needed
+                        Ok(TcoStep::Done(apply(&func, &eval_args, env)))
                     }
                 }
             } else {
+                // Non-symbol head: evaluate the head expression, then apply
                 let func = eval(first, env)?;
                 let args_list = list_to_vec(rest)?;
                 let eval_args: Result<Vec<LispVal>, LispError> =
                     args_list.iter().map(|arg| eval(arg, env)).collect();
-                apply(&func, &eval_args?, env)
+                let eval_args = eval_args?;
+
+                // Lambda application: TCO
+                if let LispVal::Lambda(lambda) = &func {
+                    let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+                    if let Some(rest_param_name) = &lambda.rest_param {
+                        if eval_args.len() < lambda.params.len() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                "lambda expected at least {} arguments, got {}",
+                                lambda.params.len(),
+                                eval_args.len()
+                            )))));
+                        }
+                        for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
+                            new_env.set(param.clone(), arg.clone());
+                        }
+                        let rest_args = vec_to_list(eval_args[lambda.params.len()..].to_vec());
+                        new_env.set(rest_param_name.clone(), rest_args);
+                    } else {
+                        if lambda.params.len() != eval_args.len() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                "lambda expected {} arguments, got {}",
+                                lambda.params.len(),
+                                eval_args.len()
+                            )))));
+                        }
+                        for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
+                            new_env.set(param.clone(), arg.clone());
+                        }
+                    }
+                    return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
+                }
+
+                Ok(TcoStep::Done(apply(&func, &eval_args, env)))
             }
         }
     }
