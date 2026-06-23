@@ -131,24 +131,34 @@ fn test_let_binding_single_element_error() {
 }
 
 // ============================================================================
-// Group 4: Fexpr parameter error in APPLY path (line 1788)
+// Group 4: Multi-param fexpr direct call (now supported)
 // ============================================================================
 
 #[test]
-fn test_fexpr_two_params_direct_call_error() {
+fn test_fexpr_two_params_direct_call_works() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        // defexpr with two params, then call it directly
-        // fexpr must have exactly one parameter for the list of arguments
+        // Multi-param fexpr: each unevaluated argument is bound to its parameter.
+        // (f 1 2) → a=(unevaluated 1)=1, b=(unevaluated 2)=2 → (list 1 2) = (1 2)
         let result =
             eval_line("(progn (defexpr f (a b) (list a b)) (f 1 2))", &env);
+        assert_eq!(
+            result, "(1 2)",
+            "multi-param fexpr direct call should bind each arg; got: {result}"
+        );
+    });
+}
+
+#[test]
+fn test_fexpr_two_params_direct_call_arity_error() {
+    with_large_stack(|| {
+        let env = env_with_stdlib();
+        // Wrong arg count should still error.
+        let result =
+            eval_line("(progn (defexpr f (a b) (list a b)) (f 1))", &env);
         assert!(
             result.contains("Error"),
-            "fexpr with 2 params called directly should error; got: {result}"
-        );
-        assert!(
-            result.contains("fexpr must have exactly one parameter"),
-            "expected 'fexpr must have exactly one parameter...'; got: {result}"
+            "fexpr arity mismatch should error; got: {result}"
         );
     });
 }

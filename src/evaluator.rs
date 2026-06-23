@@ -113,15 +113,24 @@ fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispE
             eval(&expanded, env)
         }
         LispVal::Fexpr(f) => {
-            if f.params.len() != 1 {
-                return Err(LispError::Generic(
-                    "APPLY: fexpr must have exactly one parameter for the list of arguments"
-                        .to_string(),
-                ));
-            }
             let new_env = Environment::new_child_with_dynamic(&f.env, env);
-            let fexpr_arg_list = vec_to_list(unpacked_args);
-            new_env.set(f.params[0].clone(), fexpr_arg_list);
+            if f.params.len() == 1 {
+                // Single-param fexpr: bind the whole arg list to the one parameter.
+                let fexpr_arg_list = vec_to_list(unpacked_args);
+                new_env.set(f.params[0].clone(), fexpr_arg_list);
+            } else {
+                // Multi-param fexpr: bind each arg to the corresponding parameter.
+                if unpacked_args.len() != f.params.len() {
+                    return Err(LispError::Generic(format!(
+                        "APPLY: fexpr expected {} arguments, got {}",
+                        f.params.len(),
+                        unpacked_args.len()
+                    )));
+                }
+                for (param, arg) in f.params.iter().zip(unpacked_args.into_iter()) {
+                    new_env.set(param.clone(), arg);
+                }
+            }
             eval(&f.body, &new_env)
         }
         _ => apply(&func, &unpacked_args, env),
@@ -1793,11 +1802,24 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             return eval(&expanded, env);
                         }
                         if let LispVal::Fexpr(fexpr) = &func {
-                            if fexpr.params.len() != 1 {
-                                return Err(LispError::Generic("fexpr must have exactly one parameter for the list of arguments".to_string()));
-                            }
                             let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
-                            new_env.set(fexpr.params[0].clone(), *rest.clone());
+                            if fexpr.params.len() == 1 {
+                                // Single-param: bind entire unevaluated arg list to the one parameter.
+                                new_env.set(fexpr.params[0].clone(), *rest.clone());
+                            } else {
+                                // Multi-param: bind each unevaluated arg to its parameter.
+                                let unevaluated_args = list_to_vec(rest)?;
+                                if unevaluated_args.len() != fexpr.params.len() {
+                                    return Err(LispError::Generic(format!(
+                                        "fexpr expected {} arguments, got {}",
+                                        fexpr.params.len(),
+                                        unevaluated_args.len()
+                                    )));
+                                }
+                                for (param, arg) in fexpr.params.iter().zip(unevaluated_args.into_iter()) {
+                                    new_env.set(param.clone(), arg);
+                                }
+                            }
                             return eval(&fexpr.body, &new_env);
                         }
 
