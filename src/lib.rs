@@ -1,5 +1,6 @@
 pub mod environment;
 pub mod evaluator;
+pub mod optimizer;
 pub mod printer;
 pub mod reader;
 
@@ -179,6 +180,8 @@ pub enum BuiltinFunc {
     // First-class environments
     MakeEnvironment,
     TheEnvironment,
+    // Source optimizer
+    Optimize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
