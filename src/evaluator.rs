@@ -80,7 +80,11 @@ fn is_truthy(val: &LispVal) -> bool {
     !matches!(val, LispVal::Nil)
 }
 
-fn apply_math_op(op: &BuiltinFunc, args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+fn apply_math_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
     let nums: Result<Vec<i64>, LispError> = args
         .iter()
         .map(|arg| match arg {
@@ -332,9 +336,7 @@ fn apply_numeric_primitives(
                 }
                 // Check if exponent fits in u32
                 if *exp > u32::MAX as i64 {
-                    return Err(LispError::Generic(
-                        "exponent too large".to_string(),
-                    ));
+                    return Err(LispError::Generic("exponent too large".to_string()));
                 }
                 // Use checked_pow to detect overflow
                 base.checked_pow(*exp as u32)
@@ -496,6 +498,81 @@ fn apply_hashtable_op(
         }
         _ => Err(LispError::Generic("Not a hash table operation".to_string())),
     }
+}
+
+/// Extract a feature name (symbol or string) from a single-argument builtin.
+fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
+    if args.len() != 1 {
+        return Err(LispError::Generic(format!(
+            "{who} requires exactly one argument"
+        )));
+    }
+    match &args[0] {
+        LispVal::Symbol(s) => Ok(s.borrow().name.clone()),
+        LispVal::String(s) => Ok(s.clone()),
+        _ => Err(LispError::Generic(format!(
+            "{who} requires a symbol or string"
+        ))),
+    }
+}
+
+/// Run an external program. Gated behind the SHELL capability (off by default).
+///
+/// - `(SHELL "cmd ...")`  -> run the single string via `sh -c`
+/// - `(SHELL "prog" a b)` -> exec program with args, no shell interpolation
+///
+/// Returns `(exit-code stdout-string stderr-string)`.
+fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+    if !env.feature_enabled("SHELL") {
+        return Err(LispError::Generic(
+            "SHELL capability is not enabled; call (enable-feature \"SHELL\") first".to_string(),
+        ));
+    }
+    if args.is_empty() {
+        return Err(LispError::Generic(
+            "shell requires at least one argument".to_string(),
+        ));
+    }
+
+    let mut parts: Vec<String> = Vec::with_capacity(args.len());
+    for a in args {
+        match a {
+            LispVal::String(s) => parts.push(s.clone()),
+            LispVal::Symbol(s) => parts.push(s.borrow().name.clone()),
+            LispVal::Number(n) => parts.push(n.to_string()),
+            LispVal::Float(f) => parts.push(f.to_string()),
+            _ => {
+                return Err(LispError::Generic(
+                    "shell arguments must be strings, symbols, or numbers".to_string(),
+                ));
+            }
+        }
+    }
+
+    use std::process::Command;
+    let result = if parts.len() == 1 {
+        Command::new("sh").arg("-c").arg(&parts[0]).output()
+    } else {
+        Command::new(&parts[0]).args(&parts[1..]).output()
+    };
+    let output =
+        result.map_err(|e| LispError::Generic(format!("shell: failed to run command: {e}")))?;
+
+    let code = output.status.code().unwrap_or(-1) as i64;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    // Build (code stdout stderr) so Lisp can compose on the result.
+    Ok(LispVal::Cons {
+        car: Box::new(LispVal::Number(code)),
+        cdr: Box::new(LispVal::Cons {
+            car: Box::new(LispVal::String(stdout)),
+            cdr: Box::new(LispVal::Cons {
+                car: Box::new(LispVal::String(stderr)),
+                cdr: Box::new(LispVal::Nil),
+            }),
+        }),
+    })
 }
 
 fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
@@ -674,12 +751,20 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let f1 = match &args[0] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
-                    _ => return Err(LispError::Generic("float= requires numeric arguments".to_string())),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "float= requires numeric arguments".to_string(),
+                        ));
+                    }
                 };
                 let f2 = match &args[1] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
-                    _ => return Err(LispError::Generic("float= requires numeric arguments".to_string())),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "float= requires numeric arguments".to_string(),
+                        ));
+                    }
                 };
                 // Use bitwise equality to distinguish -0.0 from 0.0
                 if f1.to_bits() == f2.to_bits() {
@@ -698,12 +783,20 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let f1 = match &args[0] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
-                    _ => return Err(LispError::Generic("float< requires numeric arguments".to_string())),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "float< requires numeric arguments".to_string(),
+                        ));
+                    }
                 };
                 let f2 = match &args[1] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
-                    _ => return Err(LispError::Generic("float< requires numeric arguments".to_string())),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "float< requires numeric arguments".to_string(),
+                        ));
+                    }
                 };
                 if f1 < f2 {
                     Ok(LispVal::Symbol(env.intern_symbol("T")))
@@ -721,12 +814,20 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let f1 = match &args[0] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
-                    _ => return Err(LispError::Generic("float> requires numeric arguments".to_string())),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "float> requires numeric arguments".to_string(),
+                        ));
+                    }
                 };
                 let f2 = match &args[1] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
-                    _ => return Err(LispError::Generic("float> requires numeric arguments".to_string())),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "float> requires numeric arguments".to_string(),
+                        ));
+                    }
                 };
                 if f1 > f2 {
                     Ok(LispVal::Symbol(env.intern_symbol("T")))
@@ -764,9 +865,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let flag_name = match &args[0] {
                     LispVal::Symbol(s) => s.borrow().name.clone(),
                     LispVal::String(s) => s.clone(),
-                    _ => return Err(LispError::Generic(
-                        "set-flag requires a symbol or string".to_string(),
-                    )),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "set-flag requires a symbol or string".to_string(),
+                        ));
+                    }
                 };
                 env.set_flag(&flag_name);
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
@@ -781,9 +884,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let flag_name = match &args[0] {
                     LispVal::Symbol(s) => s.borrow().name.clone(),
                     LispVal::String(s) => s.clone(),
-                    _ => return Err(LispError::Generic(
-                        "clear-flag requires a symbol or string".to_string(),
-                    )),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "clear-flag requires a symbol or string".to_string(),
+                        ));
+                    }
                 };
                 env.clear_flag(&flag_name);
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
@@ -798,9 +903,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let flag_name = match &args[0] {
                     LispVal::Symbol(s) => s.borrow().name.clone(),
                     LispVal::String(s) => s.clone(),
-                    _ => return Err(LispError::Generic(
-                        "flag-set-p requires a symbol or string".to_string(),
-                    )),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "flag-set-p requires a symbol or string".to_string(),
+                        ));
+                    }
                 };
                 if env.flag_set(&flag_name) {
                     Ok(LispVal::Symbol(env.intern_symbol("T")))
@@ -818,6 +925,44 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 env.clear_all_flags();
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
+
+            // Capabilities / features
+            BuiltinFunc::EnableFeature => {
+                let name = feature_name_arg(args, "enable-feature")?;
+                env.enable_feature(&name);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+            BuiltinFunc::DisableFeature => {
+                let name = feature_name_arg(args, "disable-feature")?;
+                env.disable_feature(&name);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+            BuiltinFunc::FeatureEnabledP => {
+                let name = feature_name_arg(args, "feature-enabled-p")?;
+                if env.feature_enabled(&name) {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+            BuiltinFunc::Features => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "features takes no arguments".to_string(),
+                    ));
+                }
+                let mut names = env.features_list();
+                names.sort();
+                let list = names
+                    .into_iter()
+                    .rev()
+                    .fold(LispVal::Nil, |cdr, n| LispVal::Cons {
+                        car: Box::new(LispVal::String(n)),
+                        cdr: Box::new(cdr),
+                    });
+                Ok(list)
+            }
+            BuiltinFunc::Shell => apply_shell(args, env),
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:
@@ -1315,10 +1460,11 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             // Check for pathological case: (LABEL x x)
                             if let LispVal::Symbol(expr_sym) = expr_val {
                                 if name_sym.borrow().name == expr_sym.borrow().name {
-                                    return Err(LispError::Generic(
-                                        format!("LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
-                                            name_sym.borrow().name, expr_sym.borrow().name)
-                                    ));
+                                    return Err(LispError::Generic(format!(
+                                        "LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
+                                        name_sym.borrow().name,
+                                        expr_sym.borrow().name
+                                    )));
                                 }
                             }
 
@@ -1477,8 +1623,10 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             if let LispVal::Symbol(s) = item {
                                 let label_name = s.borrow().name.clone();
                                 if let Some(old_idx) = labels.insert(label_name.clone(), i) {
-                                    eprintln!("Warning: PROG has duplicate label '{}' at positions {} and {}. Later label (position {}) will be used.",
-                                        label_name, old_idx, i, i);
+                                    eprintln!(
+                                        "Warning: PROG has duplicate label '{}' at positions {} and {}. Later label (position {}) will be used.",
+                                        label_name, old_idx, i, i
+                                    );
                                 }
                             }
                         }

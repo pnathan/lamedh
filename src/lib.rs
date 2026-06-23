@@ -142,6 +142,13 @@ pub enum BuiltinFunc {
     ClearFlag,
     FlagSetP,
     ClearAllFlags,
+    // Capabilities / features
+    EnableFeature,
+    DisableFeature,
+    FeatureEnabledP,
+    Features,
+    // Shell (gated behind the SHELL feature)
+    Shell,
 }
 
 #[derive(Debug, Clone, PartialEq)]

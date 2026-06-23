@@ -63,6 +63,10 @@ pub struct Environment {
     /// Dynamic parent environment (caller's environment for dynamic scoping).
     /// This is used to look up dynamic variables from the call chain.
     dynamic_parent: Option<Rc<Environment>>,
+    /// Set of enabled capabilities/features (e.g. "SHELL"). Shared across the
+    /// whole environment chain. Off by default; the host or a Lisp program must
+    /// opt in. This is the foundation for sandboxing (see issue #64).
+    features: Rc<RefCell<HashSet<String>>>,
 }
 
 impl PartialEq for Environment {
@@ -83,6 +87,7 @@ impl PartialEq for Environment {
             && Rc::ptr_eq(&self.symbols, &other.symbols)
             && Rc::ptr_eq(&self.condition_flags, &other.condition_flags)
             && Rc::ptr_eq(&self.dynamic_vars, &other.dynamic_vars)
+            && Rc::ptr_eq(&self.features, &other.features)
     }
 }
 
@@ -101,6 +106,7 @@ impl Environment {
             condition_flags: Rc::new(RefCell::new(HashMap::new())),
             dynamic_vars: Rc::new(RefCell::new(HashSet::new())),
             dynamic_parent: None,
+            features: Rc::new(RefCell::new(HashSet::new())),
         }
     }
 
@@ -114,6 +120,7 @@ impl Environment {
             condition_flags: parent.condition_flags.clone(),
             dynamic_vars: parent.dynamic_vars.clone(),
             dynamic_parent: parent.dynamic_parent.clone(),
+            features: parent.features.clone(),
         })
     }
 
@@ -131,6 +138,7 @@ impl Environment {
             condition_flags: lexical_parent.condition_flags.clone(),
             dynamic_vars: lexical_parent.dynamic_vars.clone(),
             dynamic_parent: Some(caller_env.clone()),
+            features: lexical_parent.features.clone(),
         })
     }
 
@@ -332,15 +340,57 @@ impl Environment {
         env.set("PUT".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
 
         // Float comparisons
-        env.set("FLOAT-EQUAL".to_string(), LispVal::Builtin(BuiltinFunc::FloatEqual));
-        env.set("FLOAT-LESSP".to_string(), LispVal::Builtin(BuiltinFunc::FloatLessp));
-        env.set("FLOAT-GREATERP".to_string(), LispVal::Builtin(BuiltinFunc::FloatGreaterp));
+        env.set(
+            "FLOAT-EQUAL".to_string(),
+            LispVal::Builtin(BuiltinFunc::FloatEqual),
+        );
+        env.set(
+            "FLOAT-LESSP".to_string(),
+            LispVal::Builtin(BuiltinFunc::FloatLessp),
+        );
+        env.set(
+            "FLOAT-GREATERP".to_string(),
+            LispVal::Builtin(BuiltinFunc::FloatGreaterp),
+        );
 
         // Condition flags
-        env.set("SET-FLAG".to_string(), LispVal::Builtin(BuiltinFunc::SetFlag));
-        env.set("CLEAR-FLAG".to_string(), LispVal::Builtin(BuiltinFunc::ClearFlag));
-        env.set("FLAG-SET-P".to_string(), LispVal::Builtin(BuiltinFunc::FlagSetP));
-        env.set("CLEAR-ALL-FLAGS".to_string(), LispVal::Builtin(BuiltinFunc::ClearAllFlags));
+        env.set(
+            "SET-FLAG".to_string(),
+            LispVal::Builtin(BuiltinFunc::SetFlag),
+        );
+        env.set(
+            "CLEAR-FLAG".to_string(),
+            LispVal::Builtin(BuiltinFunc::ClearFlag),
+        );
+        env.set(
+            "FLAG-SET-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FlagSetP),
+        );
+        env.set(
+            "CLEAR-ALL-FLAGS".to_string(),
+            LispVal::Builtin(BuiltinFunc::ClearAllFlags),
+        );
+
+        // Capabilities / features
+        env.set(
+            "ENABLE-FEATURE".to_string(),
+            LispVal::Builtin(BuiltinFunc::EnableFeature),
+        );
+        env.set(
+            "DISABLE-FEATURE".to_string(),
+            LispVal::Builtin(BuiltinFunc::DisableFeature),
+        );
+        env.set(
+            "FEATURE-ENABLED-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FeatureEnabledP),
+        );
+        env.set(
+            "FEATURES".to_string(),
+            LispVal::Builtin(BuiltinFunc::Features),
+        );
+
+        // SHELL: gated behind the SHELL capability (off by default)
+        env.set("SHELL".to_string(), LispVal::Builtin(BuiltinFunc::Shell));
 
         env
     }
@@ -443,15 +493,23 @@ impl Environment {
 
     // Condition flag operations (dynamically scoped)
     pub fn set_flag(&self, flag: &str) {
-        self.condition_flags.borrow_mut().insert(flag.to_string(), true);
+        self.condition_flags
+            .borrow_mut()
+            .insert(flag.to_string(), true);
     }
 
     pub fn clear_flag(&self, flag: &str) {
-        self.condition_flags.borrow_mut().insert(flag.to_string(), false);
+        self.condition_flags
+            .borrow_mut()
+            .insert(flag.to_string(), false);
     }
 
     pub fn flag_set(&self, flag: &str) -> bool {
-        self.condition_flags.borrow().get(flag).copied().unwrap_or(false)
+        self.condition_flags
+            .borrow()
+            .get(flag)
+            .copied()
+            .unwrap_or(false)
     }
 
     pub fn clear_all_flags(&self) {
@@ -505,5 +563,28 @@ impl Environment {
         }
 
         None
+    }
+
+    // Capability / feature operations.
+    // Features are shared across the whole environment chain and default off.
+
+    /// Enable a capability (e.g. "SHELL"). Names are case-normalized to uppercase.
+    pub fn enable_feature(&self, name: &str) {
+        self.features.borrow_mut().insert(name.to_uppercase());
+    }
+
+    /// Disable a capability.
+    pub fn disable_feature(&self, name: &str) {
+        self.features.borrow_mut().remove(&name.to_uppercase());
+    }
+
+    /// Check whether a capability is enabled.
+    pub fn feature_enabled(&self, name: &str) -> bool {
+        self.features.borrow().contains(&name.to_uppercase())
+    }
+
+    /// List enabled capabilities.
+    pub fn features_list(&self) -> Vec<String> {
+        self.features.borrow().iter().cloned().collect()
     }
 }
