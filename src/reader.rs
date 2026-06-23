@@ -56,6 +56,21 @@ fn parse_float(input: &str) -> ParseResult<'_> {
     )(input)
 }
 
+fn parse_octal_integer(input: &str) -> ParseResult<'_> {
+    // Lisp 1.5: digits followed by Q means octal, e.g. 177Q = 127
+    let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
+    let (rest, _) = tag("Q")(rest)?;
+    let negative = s.starts_with('-');
+    let digits = if negative { &s[1..] } else { s };
+    match i64::from_str_radix(digits, 8) {
+        Ok(n) => Ok((rest, LispVal::Number(if negative { -n } else { n }))),
+        Err(_) => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Digit,
+        ))),
+    }
+}
+
 fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
     let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
     if let Ok(n) = s.parse::<i64>() {
@@ -71,7 +86,11 @@ fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
 }
 
 fn parse_number(input: &str) -> ParseResult<'_> {
-    alt((parse_float, parse_integer_or_overflow_float))(input)
+    alt((
+        parse_float,
+        parse_octal_integer,
+        parse_integer_or_overflow_float,
+    ))(input)
 }
 
 fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
@@ -319,6 +338,20 @@ mod tests {
     fn test_parse_number() {
         assert_eq!(parse_number("123"), Ok(("", number(123))));
         assert_eq!(parse_number("-456"), Ok(("", number(-456))));
+    }
+
+    #[test]
+    fn test_parse_octal() {
+        // 177Q = 1*64 + 7*8 + 7 = 127 decimal
+        assert_eq!(parse_number("177Q"), Ok(("", number(127))));
+        // 10Q = 8 decimal
+        assert_eq!(parse_number("10Q"), Ok(("", number(8))));
+        // 0Q = 0
+        assert_eq!(parse_number("0Q"), Ok(("", number(0))));
+        // negative octal
+        assert_eq!(parse_number("-10Q"), Ok(("", number(-8))));
+        // non-octal digits still parse as decimal (no trailing Q)
+        assert_eq!(parse_number("177"), Ok(("", number(177))));
     }
 
     #[test]
