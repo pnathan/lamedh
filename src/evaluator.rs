@@ -2262,14 +2262,8 @@ fn apply_bitwise_op(
                 } else if *shift < 0 {
                     Ok(LispVal::Number(n >> (-shift)))
                 } else {
-                    // Check for overflow in left shift
-                    match n.checked_shl(*shift as u32) {
-                        Some(v) => Ok(LispVal::Number(v)),
-                        None => {
-                            env.set_flag("OVERFLOW");
-                            Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
-                        }
-                    }
+                    // shift is in [0, 63]; wrapping_shl never panics here
+                    Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
                 }
             } else {
                 Err(LispError::Generic(
@@ -2754,13 +2748,8 @@ fn apply_new_bitwise_ops(
                         env.set_flag("OVERFLOW");
                         Ok(LispVal::Number(0))
                     } else {
-                        match n.checked_shl(*shift as u32) {
-                            Some(v) => Ok(LispVal::Number(v)),
-                            None => {
-                                env.set_flag("OVERFLOW");
-                                Ok(LispVal::Number(0))
-                            }
-                        }
+                        // shift is in [0, 63]; wrapping_shl never panics here
+                        Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
                     }
                 }
             } else {
@@ -2790,16 +2779,9 @@ fn apply_new_bitwise_ops(
                 ));
             }
             if let (LispVal::Number(n), LispVal::Number(count)) = (&args[0], &args[1]) {
-                // Rotate within 64 bits
-                let bits = 64;
-                let count = count.rem_euclid(bits);
-                if count >= 0 {
-                    let count = count as u32;
-                    Ok(LispVal::Number(((*n as u64).rotate_left(count)) as i64))
-                } else {
-                    let count = (-count) as u32;
-                    Ok(LispVal::Number(((*n as u64).rotate_right(count)) as i64))
-                }
+                // rem_euclid on i64 always returns a value in [0, 63]
+                let count = count.rem_euclid(64) as u32;
+                Ok(LispVal::Number(((*n as u64).rotate_left(count)) as i64))
             } else {
                 Err(LispError::Generic(
                     "rot requires integer arguments".to_string(),
@@ -2949,5 +2931,89 @@ mod evaluator_internal_tests {
             result.is_err(),
             "apply_hashtable_op with Car should error"
         );
+    }
+
+    #[test]
+    fn test_apply_symbol_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_symbol_op(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_symbol_op with Car should error");
+    }
+
+    #[test]
+    fn test_apply_io_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_io_op(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_io_op with Car should error");
+    }
+
+    #[test]
+    fn test_apply_error_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_error_op(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_error_op with Car should error");
+    }
+
+    #[test]
+    fn test_apply_list_processing_fallthrough() {
+        let env = dummy_env();
+        let result = apply_list_processing(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_list_processing with Car should error");
+    }
+
+    #[test]
+    fn test_apply_bitwise_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_bitwise_op(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_bitwise_op with Car should error");
+    }
+
+    #[test]
+    fn test_apply_new_list_ops_fallthrough() {
+        let env = dummy_env();
+        let result = apply_new_list_ops(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_new_list_ops with Car should error");
+    }
+
+    #[test]
+    fn test_apply_new_numeric_ops_fallthrough() {
+        let env = dummy_env();
+        let result = apply_new_numeric_ops(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_new_numeric_ops with Car should error");
+    }
+
+    #[test]
+    fn test_apply_type_predicates_fallthrough() {
+        let env = dummy_env();
+        let result = apply_type_predicates(&BuiltinFunc::Car, &[LispVal::Nil], &env);
+        assert!(result.is_err(), "apply_type_predicates with Car should error");
+    }
+
+    #[test]
+    fn test_apply_function_ops_fallthrough() {
+        let env = dummy_env();
+        let result = apply_function_ops(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_function_ops with Car should error");
+    }
+
+    #[test]
+    fn test_apply_string_symbol_ops_fallthrough() {
+        let env = dummy_env();
+        let result = apply_string_symbol_ops(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_string_symbol_ops with Car should error");
+    }
+
+    #[test]
+    fn test_apply_new_bitwise_ops_fallthrough() {
+        let env = dummy_env();
+        let result = apply_new_bitwise_ops(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_new_bitwise_ops with Car should error");
+    }
+
+    #[test]
+    fn test_apply_plist_op_fallthrough() {
+        let env = dummy_env();
+        let result = apply_plist_op(&BuiltinFunc::Car, &[], &env);
+        assert!(result.is_err(), "apply_plist_op with Car should error");
     }
 }
