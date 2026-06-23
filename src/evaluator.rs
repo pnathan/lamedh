@@ -1,8 +1,60 @@
 #![allow(clippy::mutable_key_type)]
 use crate::{BuiltinFunc, LispError, LispVal, environment::Environment};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// Default maximum recursion depth (number of nested `eval` frames) before a
+/// recoverable error is returned instead of overflowing the native stack.
+///
+/// The tree-walking interpreter uses large stack frames, so this is calibrated
+/// to fit comfortably within the large stack provided by [`crate::with_large_stack`]
+/// (~512 MiB). Hosts that run the interpreter on a smaller stack should lower it
+/// via [`set_eval_depth_limit`]. See issues #61 (this guard) and #62 (TCO).
+pub const DEFAULT_EVAL_DEPTH_LIMIT: usize = 10_000;
+
+thread_local! {
+    static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static EVAL_DEPTH_LIMIT: Cell<usize> = const { Cell::new(DEFAULT_EVAL_DEPTH_LIMIT) };
+}
+
+/// Set the maximum `eval` recursion depth for the current thread.
+pub fn set_eval_depth_limit(limit: usize) {
+    EVAL_DEPTH_LIMIT.with(|l| l.set(limit));
+}
+
+/// Get the current thread's maximum `eval` recursion depth.
+pub fn eval_depth_limit() -> usize {
+    EVAL_DEPTH_LIMIT.with(|l| l.get())
+}
+
+/// RAII guard that bumps the recursion depth on entry to `eval` and restores it
+/// on every exit path (including `?` early returns and caught errors).
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter() -> Result<DepthGuard, LispError> {
+        EVAL_DEPTH.with(|depth| {
+            let next = depth.get() + 1;
+            let limit = EVAL_DEPTH_LIMIT.with(|l| l.get());
+            if next > limit {
+                Err(LispError::Generic(format!(
+                    "recursion limit exceeded ({limit} eval frames); \
+                     rewrite iteratively or raise it with set_eval_depth_limit"
+                )))
+            } else {
+                depth.set(next);
+                Ok(DepthGuard)
+            }
+        })
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EVAL_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
 
 // Helper function to convert a Lisp list (Cons chain) to a Rust Vec.
 fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
@@ -1152,6 +1204,9 @@ fn expand_macro(
 }
 
 pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+    // Bound recursion so deep/infinite recursion is a recoverable error rather
+    // than a native stack overflow that aborts the whole process (issue #61).
+    let _depth_guard = DepthGuard::enter()?;
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
         LispVal::Symbol(s) => {
@@ -1355,10 +1410,10 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                         // Optional docstring
                         if args.len() == 3 {
                             if let LispVal::String(doc) = &args[2] {
-                                symbol.borrow_mut().plist.insert(
-                                    "docstring".to_string(),
-                                    LispVal::String(doc.clone()),
-                                );
+                                symbol
+                                    .borrow_mut()
+                                    .plist
+                                    .insert("docstring".to_string(), LispVal::String(doc.clone()));
                             } else {
                                 return Err(LispError::Generic(
                                     "defdynamic docstring must be a string".to_string(),

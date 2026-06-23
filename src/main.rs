@@ -16,7 +16,13 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    // The tree-walking interpreter uses large stack frames; run it on a big
+    // stack so reasonable recursion depths work, while the depth guard (#61)
+    // turns runaway recursion into a recoverable error instead of an abort.
+    lamedh::with_large_stack(move || run(args));
+}
 
+fn run(args: Args) {
     let env = Environment::new_with_builtins();
 
     // Load prologue.lisp if it exists

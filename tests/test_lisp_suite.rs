@@ -5,15 +5,14 @@
 // (run-tests) returns T iff every assertion passed. Failure detail is printed
 // to stdout by the framework (visible with `cargo test -- --nocapture`).
 //
-// NOTE: the suite runs on a dedicated thread with a large stack. The
-// tree-walking interpreter recurses deeply with heavy frames, and the default
-// `cargo test` thread stack (~2 MB) is far smaller than the 8 MB main-thread
-// stack the CLI uses, so it overflows there. The real fix is a recursion
-// depth guard / tail-call optimization (issues #61, #62); until then the big
-// stack keeps the harness honest without masking assertion failures.
+// NOTE: the suite runs via `with_large_stack`. The tree-walking interpreter
+// uses large stack frames (see issue #76), and the default `cargo test` thread
+// stack (~2 MB) is far smaller than the CLI's, so it would overflow there. The
+// big stack keeps the harness honest without masking assertion failures; the
+// depth guard (#61) bounds runaway recursion within it.
 
 mod test_helpers;
-use lamedh::{eval_line, load_directory};
+use lamedh::{eval_line, load_directory, with_large_stack};
 use test_helpers::env_with_stdlib;
 
 fn run_suite() {
@@ -33,9 +32,5 @@ fn run_suite() {
 
 #[test]
 fn lisp_test_suite_passes() {
-    let child = std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(run_suite)
-        .expect("failed to spawn suite thread");
-    child.join().expect("Lisp test suite thread failed");
+    with_large_stack(run_suite);
 }
