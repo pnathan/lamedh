@@ -3,6 +3,33 @@ pub mod evaluator;
 pub mod printer;
 pub mod reader;
 
+pub use evaluator::{DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, set_eval_depth_limit};
+
+/// Stack size used by [`with_large_stack`]. The tree-walking interpreter uses
+/// large stack frames, so deep recursion needs substantial headroom (the
+/// recursion-depth guard fires before this is exhausted; see issue #61).
+pub const INTERPRETER_STACK_SIZE: usize = 512 * 1024 * 1024;
+
+/// Run `f` on a freshly spawned thread with a large stack ([`INTERPRETER_STACK_SIZE`]).
+///
+/// The default thread stack (often 2–8 MiB) is too small for the interpreter's
+/// large frames to recurse meaningfully. The CLI and the test harness use this;
+/// embedders running the interpreter from a small-stack thread should too (or
+/// lower [`set_eval_depth_limit`]). Because `LispVal`/`Environment` are `!Send`,
+/// create the environment *inside* `f`.
+pub fn with_large_stack<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::Builder::new()
+        .stack_size(INTERPRETER_STACK_SIZE)
+        .spawn(f)
+        .expect("failed to spawn interpreter thread")
+        .join()
+        .expect("interpreter thread panicked")
+}
+
 use environment::Environment;
 use std::cell::RefCell;
 use std::collections::HashMap;
