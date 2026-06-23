@@ -56,16 +56,22 @@ fn parse_float(input: &str) -> ParseResult<'_> {
     )(input)
 }
 
+fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
+    let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
+    if let Ok(n) = s.parse::<i64>() {
+        Ok((rest, LispVal::Number(n)))
+    } else if let Ok(f) = s.parse::<f64>() {
+        Ok((rest, LispVal::Float(f)))
+    } else {
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Digit,
+        )))
+    }
+}
+
 fn parse_number(input: &str) -> ParseResult<'_> {
-    alt((
-        parse_float,
-        map(
-            map_res(recognize(pair(opt(tag("-")), digit1)), |s: &str| {
-                s.parse::<i64>()
-            }),
-            LispVal::Number,
-        ),
-    ))(input)
+    alt((parse_float, parse_integer_or_overflow_float))(input)
 }
 
 fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {

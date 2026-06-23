@@ -2504,7 +2504,7 @@ fn apply_new_numeric_ops(
                 use std::time::{SystemTime, UNIX_EPOCH};
                 let seed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_nanos() as u64;
                 let random_val = (seed % (*n as u64)) as i64;
                 Ok(LispVal::Number(random_val))
@@ -2728,7 +2728,7 @@ fn apply_string_symbol_ops(
 fn apply_new_bitwise_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    _env: &Rc<Environment>,
+    env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Ash => {
@@ -2738,10 +2738,30 @@ fn apply_new_bitwise_ops(
                 ));
             }
             if let (LispVal::Number(n), LispVal::Number(shift)) = (&args[0], &args[1]) {
-                if *shift < 0 {
-                    Ok(LispVal::Number(n >> (-shift)))
+                if *shift == 0 {
+                    Ok(LispVal::Number(*n))
+                } else if *shift < 0 {
+                    // Right shift: if -shift >= 64, sign-extend to 0 or -1
+                    let rshift = -*shift;
+                    if rshift >= 64 {
+                        Ok(LispVal::Number(if *n < 0 { -1 } else { 0 }))
+                    } else {
+                        Ok(LispVal::Number(n >> (rshift as u32)))
+                    }
                 } else {
-                    Ok(LispVal::Number(n << shift))
+                    // Left shift: guard against shift >= 64
+                    if *shift >= 64 {
+                        env.set_flag("OVERFLOW");
+                        Ok(LispVal::Number(0))
+                    } else {
+                        match n.checked_shl(*shift as u32) {
+                            Some(v) => Ok(LispVal::Number(v)),
+                            None => {
+                                env.set_flag("OVERFLOW");
+                                Ok(LispVal::Number(0))
+                            }
+                        }
+                    }
                 }
             } else {
                 Err(LispError::Generic(
