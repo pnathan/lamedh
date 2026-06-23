@@ -67,7 +67,7 @@ fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispE
                         .to_string(),
                 ));
             }
-            let new_env = Environment::new_child(&f.env);
+            let new_env = Environment::new_child_with_dynamic(&f.env, env);
             let fexpr_arg_list = vec_to_list(unpacked_args);
             new_env.set(f.params[0].clone(), fexpr_arg_list);
             eval(&f.body, &new_env)
@@ -820,7 +820,10 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
         },
         LispVal::Lambda(lambda) => {
-            let new_env = Environment::new_child(&lambda.env);
+            // Create new environment with:
+            // - Lexical parent: lambda.env (captured closure environment)
+            // - Dynamic parent: env (caller's environment for dynamic variable lookup)
+            let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
             if let Some(rest_param_name) = &lambda.rest_param {
                 if args.len() < lambda.params.len() {
                     return Err(LispError::Generic(format!(
@@ -1007,9 +1010,12 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
     match val {
         LispVal::Nil => Ok(LispVal::Nil),
         LispVal::Symbol(s) => {
+            let name = &s.borrow().name;
+
+            // Use get_var which handles both dynamic and lexical scoping
             let value = env
-                .get(&s.borrow().name)
-                .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", s.borrow().name)))?;
+                .get_var(name)
+                .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", name)))?;
 
             // If the value is a LABEL expression, evaluate it
             // This handles recursive LABEL definitions
@@ -1163,6 +1169,59 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                                 "def requires a symbol as its first argument".to_string(),
                             ))
                         }
+                    }
+                    "DEFDYNAMIC" | "DEFVAR" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() < 2 || args.len() > 3 {
+                            return Err(LispError::Generic(
+                                "defdynamic requires 2 or 3 arguments: (defdynamic symbol value [docstring])"
+                                    .to_string(),
+                            ));
+                        }
+
+                        // Get symbol
+                        let symbol = if let LispVal::Symbol(s) = &args[0] {
+                            s
+                        } else {
+                            return Err(LispError::Generic(
+                                "defdynamic first argument must be a symbol".to_string(),
+                            ));
+                        };
+
+                        let name = symbol.borrow().name.clone();
+
+                        // Check naming convention (*earmuffs*)
+                        if !name.starts_with('*') || !name.ends_with('*') || name.len() < 3 {
+                            eprintln!(
+                                "Warning: Dynamic variable '{}' does not follow naming convention *NAME*",
+                                name
+                            );
+                        }
+
+                        // Mark as dynamic
+                        env.mark_dynamic(name.clone());
+
+                        // Evaluate initial value
+                        let value = eval(&args[1], env)?;
+
+                        // Set global value
+                        env.set(name, value);
+
+                        // Optional docstring
+                        if args.len() == 3 {
+                            if let LispVal::String(doc) = &args[2] {
+                                symbol.borrow_mut().plist.insert(
+                                    "docstring".to_string(),
+                                    LispVal::String(doc.clone()),
+                                );
+                            } else {
+                                return Err(LispError::Generic(
+                                    "defdynamic docstring must be a string".to_string(),
+                                ));
+                            }
+                        }
+
+                        Ok(LispVal::Symbol(symbol.clone()))
                     }
                     "LAMBDA" => {
                         if let LispVal::Cons {
@@ -1525,7 +1584,7 @@ pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> 
                             if fexpr.params.len() != 1 {
                                 return Err(LispError::Generic("fexpr must have exactly one parameter for the list of arguments".to_string()));
                             }
-                            let new_env = Environment::new_child(&fexpr.env);
+                            let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
                             new_env.set(fexpr.params[0].clone(), *rest.clone());
                             return eval(&fexpr.body, &new_env);
                         }

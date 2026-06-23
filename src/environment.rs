@@ -1,6 +1,6 @@
 use crate::{BuiltinFunc, LispVal, Symbol};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +57,12 @@ pub struct Environment {
     bindings: Rc<RefCell<HashMap<String, LispVal>>>,
     pub symbols: Rc<RefCell<SymbolTable>>,
     condition_flags: Rc<RefCell<HashMap<String, bool>>>,
+    /// Set of variable names that are marked as dynamic (special variables).
+    /// This is shared globally across all environments.
+    dynamic_vars: Rc<RefCell<HashSet<String>>>,
+    /// Dynamic parent environment (caller's environment for dynamic scoping).
+    /// This is used to look up dynamic variables from the call chain.
+    dynamic_parent: Option<Rc<Environment>>,
 }
 
 impl PartialEq for Environment {
@@ -66,10 +72,17 @@ impl PartialEq for Environment {
             (None, None) => true,
             _ => false,
         };
+        let dynamic_parents_equal = match (&self.dynamic_parent, &other.dynamic_parent) {
+            (Some(p1), Some(p2)) => Rc::ptr_eq(p1, p2),
+            (None, None) => true,
+            _ => false,
+        };
         parents_equal
+            && dynamic_parents_equal
             && Rc::ptr_eq(&self.bindings, &other.bindings)
             && Rc::ptr_eq(&self.symbols, &other.symbols)
             && Rc::ptr_eq(&self.condition_flags, &other.condition_flags)
+            && Rc::ptr_eq(&self.dynamic_vars, &other.dynamic_vars)
     }
 }
 
@@ -86,15 +99,38 @@ impl Environment {
             bindings: Rc::new(RefCell::new(HashMap::new())),
             symbols: Rc::new(RefCell::new(SymbolTable::new())),
             condition_flags: Rc::new(RefCell::new(HashMap::new())),
+            dynamic_vars: Rc::new(RefCell::new(HashSet::new())),
+            dynamic_parent: None,
         }
     }
 
+    /// Create a new child environment for lexical scoping.
+    /// The child inherits the parent's dynamic_parent by default.
     pub fn new_child(parent: &Rc<Environment>) -> Rc<Environment> {
         Rc::new(Environment {
             parent: Some(parent.clone()),
             bindings: Rc::new(RefCell::new(HashMap::new())),
             symbols: parent.symbols.clone(),
-            condition_flags: parent.condition_flags.clone(), // Share flags with parent
+            condition_flags: parent.condition_flags.clone(),
+            dynamic_vars: parent.dynamic_vars.clone(),
+            dynamic_parent: parent.dynamic_parent.clone(),
+        })
+    }
+
+    /// Create a new child environment for function application with dynamic scoping.
+    /// The lexical parent is `lexical_parent` (the captured closure environment),
+    /// and the dynamic parent is `caller_env` (for dynamic variable lookup).
+    pub fn new_child_with_dynamic(
+        lexical_parent: &Rc<Environment>,
+        caller_env: &Rc<Environment>,
+    ) -> Rc<Environment> {
+        Rc::new(Environment {
+            parent: Some(lexical_parent.clone()),
+            bindings: Rc::new(RefCell::new(HashMap::new())),
+            symbols: lexical_parent.symbols.clone(),
+            condition_flags: lexical_parent.condition_flags.clone(),
+            dynamic_vars: lexical_parent.dynamic_vars.clone(),
+            dynamic_parent: Some(caller_env.clone()),
         })
     }
 
@@ -340,10 +376,23 @@ impl Environment {
     }
 
     /// Update a variable's value, searching up the environment chain.
+    /// For dynamic variables, this searches the dynamic parent chain.
+    /// For lexical variables, this searches the lexical parent chain.
     /// If the variable is not found in any environment, it is CREATED in
     /// the current environment. This supports dynamic variable creation via
     /// SETQ and is intentional behavior for interactive development.
     pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
+        if env.is_dynamic(name) {
+            // For dynamic variables, search the dynamic parent chain
+            Self::update_dynamic(env, name, val);
+        } else {
+            // For lexical variables, search the lexical parent chain
+            Self::update_lexical(env, name, val);
+        }
+    }
+
+    /// Update a lexical variable by walking the lexical parent chain.
+    fn update_lexical(env: &Rc<Environment>, name: &str, val: LispVal) {
         let mut maybe_env = Some(env.clone());
         while let Some(current_env) = maybe_env {
             if current_env.bindings.borrow().contains_key(name) {
@@ -355,6 +404,30 @@ impl Environment {
             }
             maybe_env = current_env.parent.clone();
         }
+        // Variable not found - create it in the current environment
+        env.set(name.to_string(), val);
+    }
+
+    /// Update a dynamic variable by walking the dynamic parent chain.
+    fn update_dynamic(env: &Rc<Environment>, name: &str, val: LispVal) {
+        // First check current bindings
+        if env.bindings.borrow().contains_key(name) {
+            env.bindings.borrow_mut().insert(name.to_string(), val);
+            return;
+        }
+
+        // Then walk the dynamic parent chain
+        if let Some(dyn_parent) = &env.dynamic_parent {
+            Self::update_dynamic(dyn_parent, name, val);
+            return;
+        }
+
+        // Fall back to lexical parent chain
+        if let Some(parent) = &env.parent {
+            Self::update_dynamic(parent, name, val);
+            return;
+        }
+
         // Variable not found - create it in the current environment
         env.set(name.to_string(), val);
     }
@@ -383,5 +456,54 @@ impl Environment {
 
     pub fn clear_all_flags(&self) {
         self.condition_flags.borrow_mut().clear();
+    }
+
+    // Dynamic variable operations
+
+    /// Check if a variable is marked as dynamic (special variable)
+    pub fn is_dynamic(&self, name: &str) -> bool {
+        self.dynamic_vars.borrow().contains(name)
+    }
+
+    /// Mark a variable as dynamic (global registration)
+    pub fn mark_dynamic(&self, name: String) {
+        self.dynamic_vars.borrow_mut().insert(name);
+    }
+
+    /// Get variable value, handling both dynamic and lexical scoping.
+    /// For dynamic variables, this searches the dynamic parent chain (caller's env).
+    /// For lexical variables, this uses the standard get() method (parent chain).
+    pub fn get_var(&self, name: &str) -> Option<LispVal> {
+        if self.is_dynamic(name) {
+            // Dynamic lookup: first check current bindings, then dynamic parent chain
+            self.get_dynamic(name)
+        } else {
+            // Lexical lookup: walk the lexical parent chain
+            self.get(name)
+        }
+    }
+
+    /// Dynamic lookup: search current bindings, then walk dynamic parent chain.
+    /// This implements dynamic scoping where variables are resolved based on
+    /// the call stack rather than the lexical definition site.
+    fn get_dynamic(&self, name: &str) -> Option<LispVal> {
+        // First check current bindings
+        if let Some(val) = self.bindings.borrow().get(name) {
+            return Some(val.clone());
+        }
+
+        // For dynamic variables, walk the dynamic parent chain first (caller's environment)
+        // This is the key difference from lexical scoping
+        if let Some(dyn_parent) = &self.dynamic_parent {
+            return dyn_parent.get_dynamic(name);
+        }
+
+        // Fall back to lexical parent chain for global bindings
+        // (when there's no dynamic parent, or at the bottom of the dynamic chain)
+        if let Some(parent) = &self.parent {
+            return parent.get_dynamic(name);
+        }
+
+        None
     }
 }

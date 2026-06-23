@@ -81,6 +81,9 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             // Parse special numeric symbols like 1+ and 1- BEFORE numbers
             parse_one_plus_minus(env.clone()),
             parse_number,
+            // Parse earmuff symbols (*name*) - dynamic variable naming convention
+            // Must come before regular symbols and operators
+            parse_earmuff_symbol(env.clone()),
             map(
                 recognize(pair(
                     alt((alpha1, tag("&"))),
@@ -109,6 +112,22 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                 |s: &str| LispVal::Symbol(env.intern_symbol(s)),
             ),
         ))(input)
+    }
+}
+
+/// Parse earmuff symbols: *name* (dynamic variable naming convention)
+/// Examples: *debug*, *print-level*, *foo123*
+fn parse_earmuff_symbol(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        map(
+            recognize(tuple((
+                tag("*"),
+                alpha1,
+                many0(alt((alphanumeric1, tag("-")))),
+                tag("*"),
+            ))),
+            |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
+        )(input)
     }
 }
 
