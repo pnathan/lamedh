@@ -518,10 +518,10 @@ fn test_moderately_nested_quasiquote() {
 
 #[test]
 fn test_string_with_escaped_quote() {
-    // This will fail to parse because escaping isn't supported
+    // Escape sequences are now supported
     let result = eval_str(r#""hello \"world\"""#);
-    println!("String with escape: {:?}", result);
-    assert!(result.is_err(), "Escaped quotes not supported");
+    assert!(result.is_ok(), "Escaped quotes should parse: {:?}", result);
+    assert_eq!(result.unwrap(), LispVal::String("hello \"world\"".to_string()));
 }
 
 #[test]

@@ -3,7 +3,7 @@ use crate::environment::Environment;
 use nom::{
     IResult,
     branch::alt,
-    bytes::complete::{is_not, tag},
+    bytes::complete::{is_not, tag, take_while},
     character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
@@ -138,9 +138,46 @@ fn parse_earmuff_symbol(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
 }
 
 fn parse_string(input: &str) -> ParseResult<'_> {
-    map(delimited(char('"'), is_not("\""), char('"')), |s: &str| {
-        LispVal::String(s.to_string())
-    })(input)
+    let (input, _) = char('"')(input)?;
+    let mut result = String::new();
+    let mut remaining = input;
+    loop {
+        let (rest, literal) = take_while(|c| c != '"' && c != '\\')(remaining)?;
+        result.push_str(literal);
+        remaining = rest;
+        if remaining.starts_with('\\') {
+            let after_backslash = &remaining[1..];
+            if after_backslash.is_empty() {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    remaining,
+                    nom::error::ErrorKind::Char,
+                )));
+            }
+            let c = after_backslash.chars().next().unwrap();
+            remaining = &after_backslash[c.len_utf8()..];
+            match c {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                '\\' => result.push('\\'),
+                '"' => result.push('"'),
+                '0' => result.push('\0'),
+                _ => {
+                    result.push('\\');
+                    result.push(c);
+                }
+            }
+        } else if remaining.starts_with('"') {
+            remaining = &remaining[1..];
+            break;
+        } else {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        }
+    }
+    Ok((remaining, LispVal::String(result)))
 }
 
 fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {

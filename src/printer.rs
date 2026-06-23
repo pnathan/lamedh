@@ -16,7 +16,23 @@ pub fn print(val: &LispVal) -> String {
         }
         LispVal::Number(n) => n.to_string(),
         LispVal::Float(f) => f.to_string(),
-        LispVal::String(s) => format!("\"{s}\""),
+        LispVal::String(s) => {
+            let mut out = String::with_capacity(s.len() + 2);
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    '\0' => out.push_str("\\0"),
+                    _ => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
         LispVal::Builtin(_) => "<builtin>".to_string(),
         LispVal::Lambda(_) => "<lambda>".to_string(),
         LispVal::Fexpr(_) => "<fexpr>".to_string(),
