@@ -149,21 +149,36 @@ fn test_macro_too_few_args_error() {
 }
 
 // ============================================================================
-// Group 4: apply_apply fexpr bad param count
+// Group 4: apply_apply fexpr multi-param (now supported)
 // ============================================================================
 
-/// APPLY on a fexpr that has more than one parameter should error,
-/// because fexprs must have exactly one parameter to receive the argument list.
+/// Multi-param fexprs via APPLY: each element of the arg list is bound to its
+/// corresponding parameter (already-evaluated since APPLY evaluates its arg list).
 #[test]
-fn test_apply_fexpr_multi_param_error() {
+fn test_apply_fexpr_multi_param_works() {
     let env = env_with_stdlib();
+    // fexpr2 has params (a b); apply with '(1 2) → a=1, b=2 → returns a=1
     let result = eval_line(
         "(progn (defexpr fexpr2 (a b) a) (apply 'fexpr2 '(1 2)))",
         &env,
     );
+    assert_eq!(
+        result, "1",
+        "multi-param fexpr via APPLY should bind each arg, got: {result}"
+    );
+}
+
+/// Multi-param fexpr via APPLY: arity mismatch should still error.
+#[test]
+fn test_apply_fexpr_multi_param_arity_error() {
+    let env = env_with_stdlib();
+    let result = eval_line(
+        "(progn (defexpr fexpr2 (a b) a) (apply 'fexpr2 '(1)))",
+        &env,
+    );
     assert!(
         result.contains("Error"),
-        "expected error — fexpr must have exactly one parameter, got: {result}"
+        "wrong arg count for multi-param fexpr should error, got: {result}"
     );
 }
 
