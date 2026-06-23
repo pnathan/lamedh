@@ -1,4 +1,4 @@
-use crate::{BuiltinFunc, LispVal, Symbol};
+use crate::{BuiltinFunc, LispError, LispVal, Symbol};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -423,6 +423,17 @@ impl Environment {
 
     pub fn set(&self, name: String, val: LispVal) {
         self.bindings.borrow_mut().insert(name, val);
+    }
+
+    /// Register a host Rust closure as a callable Lisp function named `name`.
+    ///
+    /// The name is uppercased to match Lisp convention. After registration,
+    /// `(NAME arg1 arg2 ...)` calls the closure with evaluated arguments.
+    pub fn register_fn<F>(&self, name: &str, f: F)
+    where
+        F: Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError> + 'static,
+    {
+        self.set(name.to_uppercase(), LispVal::Native(Rc::new(f)));
     }
 
     /// Update a variable's value, searching up the environment chain.
