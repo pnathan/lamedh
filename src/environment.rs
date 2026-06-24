@@ -51,22 +51,48 @@ impl SymbolTable {
     }
 }
 
+/// Interpreter state that is shared globally across every environment in a
+/// chain (and across lexical/dynamic links): the symbol table, condition
+/// flags, the set of dynamic variable names, and enabled capabilities.
+///
+/// These were previously four independent `Rc<RefCell<...>>` fields on
+/// `Environment`. Bundling them behind a single `Rc` means creating a child
+/// frame clones **one** `Rc` handle instead of four — a per-call win that
+/// matters because a frame is allocated on every user-defined function call
+/// (see issue #111, Tier-1 item D1).
+#[derive(Debug)]
+struct SharedState {
+    symbols: RefCell<SymbolTable>,
+    condition_flags: RefCell<HashMap<String, bool>>,
+    /// Set of variable names that are marked as dynamic (special variables).
+    dynamic_vars: RefCell<HashSet<String>>,
+    /// Set of enabled capabilities/features (e.g. "SHELL"). Off by default; the
+    /// host or a Lisp program must opt in. This is the foundation for
+    /// sandboxing (see issue #64).
+    features: RefCell<HashSet<String>>,
+}
+
+impl SharedState {
+    fn new() -> Self {
+        SharedState {
+            symbols: RefCell::new(SymbolTable::new()),
+            condition_flags: RefCell::new(HashMap::new()),
+            dynamic_vars: RefCell::new(HashSet::new()),
+            features: RefCell::new(HashSet::new()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Environment {
     parent: Option<Rc<Environment>>,
     bindings: Rc<RefCell<HashMap<String, LispVal>>>,
-    pub symbols: Rc<RefCell<SymbolTable>>,
-    condition_flags: Rc<RefCell<HashMap<String, bool>>>,
-    /// Set of variable names that are marked as dynamic (special variables).
-    /// This is shared globally across all environments.
-    dynamic_vars: Rc<RefCell<HashSet<String>>>,
+    /// Globally-shared interpreter state (symbols, flags, dynamic vars,
+    /// features). Shared across the whole environment chain via a single `Rc`.
+    shared: Rc<SharedState>,
     /// Dynamic parent environment (caller's environment for dynamic scoping).
     /// This is used to look up dynamic variables from the call chain.
     dynamic_parent: Option<Rc<Environment>>,
-    /// Set of enabled capabilities/features (e.g. "SHELL"). Shared across the
-    /// whole environment chain. Off by default; the host or a Lisp program must
-    /// opt in. This is the foundation for sandboxing (see issue #64).
-    features: Rc<RefCell<HashSet<String>>>,
 }
 
 impl PartialEq for Environment {
@@ -84,10 +110,7 @@ impl PartialEq for Environment {
         parents_equal
             && dynamic_parents_equal
             && Rc::ptr_eq(&self.bindings, &other.bindings)
-            && Rc::ptr_eq(&self.symbols, &other.symbols)
-            && Rc::ptr_eq(&self.condition_flags, &other.condition_flags)
-            && Rc::ptr_eq(&self.dynamic_vars, &other.dynamic_vars)
-            && Rc::ptr_eq(&self.features, &other.features)
+            && Rc::ptr_eq(&self.shared, &other.shared)
     }
 }
 
@@ -102,11 +125,8 @@ impl Environment {
         Environment {
             parent: None,
             bindings: Rc::new(RefCell::new(HashMap::new())),
-            symbols: Rc::new(RefCell::new(SymbolTable::new())),
-            condition_flags: Rc::new(RefCell::new(HashMap::new())),
-            dynamic_vars: Rc::new(RefCell::new(HashSet::new())),
+            shared: Rc::new(SharedState::new()),
             dynamic_parent: None,
-            features: Rc::new(RefCell::new(HashSet::new())),
         }
     }
 
@@ -116,11 +136,8 @@ impl Environment {
         Rc::new(Environment {
             parent: Some(parent.clone()),
             bindings: Rc::new(RefCell::new(HashMap::new())),
-            symbols: parent.symbols.clone(),
-            condition_flags: parent.condition_flags.clone(),
-            dynamic_vars: parent.dynamic_vars.clone(),
+            shared: parent.shared.clone(),
             dynamic_parent: parent.dynamic_parent.clone(),
-            features: parent.features.clone(),
         })
     }
 
@@ -134,11 +151,8 @@ impl Environment {
         Rc::new(Environment {
             parent: Some(lexical_parent.clone()),
             bindings: Rc::new(RefCell::new(HashMap::new())),
-            symbols: lexical_parent.symbols.clone(),
-            condition_flags: lexical_parent.condition_flags.clone(),
-            dynamic_vars: lexical_parent.dynamic_vars.clone(),
+            shared: lexical_parent.shared.clone(),
             dynamic_parent: Some(caller_env.clone()),
-            features: lexical_parent.features.clone(),
         })
     }
 
@@ -482,15 +496,15 @@ impl Environment {
     }
 
     pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
-        self.symbols.borrow_mut().intern(name)
+        self.shared.symbols.borrow_mut().intern(name)
     }
 
     pub fn gensym(&self) -> Rc<RefCell<Symbol>> {
-        self.symbols.borrow_mut().gensym()
+        self.shared.symbols.borrow_mut().gensym()
     }
 
     pub fn all_symbols(&self) -> Vec<Rc<RefCell<Symbol>>> {
-        self.symbols.borrow().all_symbols()
+        self.shared.symbols.borrow().all_symbols()
     }
 
     pub fn is_bound(&self, name: &str) -> bool {
@@ -590,19 +604,22 @@ impl Environment {
 
     // Condition flag operations (dynamically scoped)
     pub fn set_flag(&self, flag: &str) {
-        self.condition_flags
+        self.shared
+            .condition_flags
             .borrow_mut()
             .insert(flag.to_string(), true);
     }
 
     pub fn clear_flag(&self, flag: &str) {
-        self.condition_flags
+        self.shared
+            .condition_flags
             .borrow_mut()
             .insert(flag.to_string(), false);
     }
 
     pub fn flag_set(&self, flag: &str) -> bool {
-        self.condition_flags
+        self.shared
+            .condition_flags
             .borrow()
             .get(flag)
             .copied()
@@ -610,19 +627,19 @@ impl Environment {
     }
 
     pub fn clear_all_flags(&self) {
-        self.condition_flags.borrow_mut().clear();
+        self.shared.condition_flags.borrow_mut().clear();
     }
 
     // Dynamic variable operations
 
     /// Check if a variable is marked as dynamic (special variable)
     pub fn is_dynamic(&self, name: &str) -> bool {
-        self.dynamic_vars.borrow().contains(name)
+        self.shared.dynamic_vars.borrow().contains(name)
     }
 
     /// Mark a variable as dynamic (global registration)
     pub fn mark_dynamic(&self, name: String) {
-        self.dynamic_vars.borrow_mut().insert(name);
+        self.shared.dynamic_vars.borrow_mut().insert(name);
     }
 
     /// Get variable value, handling both dynamic and lexical scoping.
@@ -667,21 +684,27 @@ impl Environment {
 
     /// Enable a capability (e.g. "SHELL"). Names are case-normalized to uppercase.
     pub fn enable_feature(&self, name: &str) {
-        self.features.borrow_mut().insert(name.to_uppercase());
+        self.shared
+            .features
+            .borrow_mut()
+            .insert(name.to_uppercase());
     }
 
     /// Disable a capability.
     pub fn disable_feature(&self, name: &str) {
-        self.features.borrow_mut().remove(&name.to_uppercase());
+        self.shared
+            .features
+            .borrow_mut()
+            .remove(&name.to_uppercase());
     }
 
     /// Check whether a capability is enabled.
     pub fn feature_enabled(&self, name: &str) -> bool {
-        self.features.borrow().contains(&name.to_uppercase())
+        self.shared.features.borrow().contains(&name.to_uppercase())
     }
 
     /// List enabled capabilities.
     pub fn features_list(&self) -> Vec<String> {
-        self.features.borrow().iter().cloned().collect()
+        self.shared.features.borrow().iter().cloned().collect()
     }
 }
