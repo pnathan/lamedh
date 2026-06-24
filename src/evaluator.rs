@@ -728,6 +728,40 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Expt => apply_numeric_primitives(builtin, args, env),
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
+            BuiltinFunc::Evlis => {
+                // evlis[m;a] — evaluate each element of m in environment a
+                let (list, eval_env) = match args.len() {
+                    1 => (&args[0], env.clone()),
+                    2 => {
+                        if let LispVal::Environment(e) = &args[1] {
+                            (&args[0], e.clone())
+                        } else {
+                            return Err(LispError::Generic(
+                                "evlis: second argument must be an environment".to_string(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(LispError::Generic(
+                            "evlis takes 1 or 2 arguments".to_string(),
+                        ))
+                    }
+                };
+                let mut result = vec![];
+                let mut cur = list.clone();
+                while let LispVal::Cons { car, cdr } = cur {
+                    result.push(eval(&car, &eval_env)?);
+                    cur = *cdr;
+                }
+                let mut out = LispVal::Nil;
+                for v in result.into_iter().rev() {
+                    out = LispVal::Cons {
+                        car: Box::new(v),
+                        cdr: Box::new(out),
+                    };
+                }
+                Ok(out)
+            }
             BuiltinFunc::Eval => match args.len() {
                 1 => eval(&args[0], env),
                 2 => {
@@ -853,7 +887,22 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Boundp
             | BuiltinFunc::Functionp
             | BuiltinFunc::Macrop
-            | BuiltinFunc::Arrayp => apply_type_predicates(builtin, args, env),
+            | BuiltinFunc::Arrayp
+            | BuiltinFunc::Extensionp => apply_type_predicates(builtin, args, env),
+            BuiltinFunc::ExtensionTypeName => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "extension-type takes exactly one argument".to_string(),
+                    ));
+                }
+                if let LispVal::Extension(e) = &args[0] {
+                    Ok(LispVal::String(e.type_name().to_string()))
+                } else {
+                    Err(LispError::Generic(
+                        "extension-type: argument must be an extension value".to_string(),
+                    ))
+                }
+            }
 
             // New list operations
             BuiltinFunc::List
@@ -1522,7 +1571,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
         | LispVal::HashTable(_)
         | LispVal::Native(_)
         | LispVal::Environment(_)
-        | LispVal::Array(_) => Ok(TcoStep::Done(Ok(val.clone()))),
+        | LispVal::Array(_)
+        | LispVal::Extension(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
         LispVal::Cons {
             car: first,
@@ -3111,6 +3161,7 @@ fn apply_type_predicates(
         ),
         BuiltinFunc::Macrop => matches!(arg, LispVal::Macro(_)),
         BuiltinFunc::Arrayp => matches!(arg, LispVal::Array(_)),
+        BuiltinFunc::Extensionp => matches!(arg, LispVal::Extension(_)),
         _ => return Err(LispError::Generic("Not a type predicate".to_string())),
     };
     if result {

@@ -175,6 +175,7 @@ impl Environment {
         env.set("CONCAT".to_string(), LispVal::Builtin(BuiltinFunc::Concat));
         env.set("INDEX".to_string(), LispVal::Builtin(BuiltinFunc::Index));
         env.set("EVAL".to_string(), LispVal::Builtin(BuiltinFunc::Eval));
+        env.set("EVLIS".to_string(), LispVal::Builtin(BuiltinFunc::Evlis));
         env.set("NOT".to_string(), LispVal::Builtin(BuiltinFunc::Not));
         env.set(
             "EQUAL-NUMBER".to_string(),
@@ -427,6 +428,14 @@ impl Environment {
         env.set(
             "ARRAYP".to_string(),
             LispVal::Builtin(BuiltinFunc::Arrayp),
+        );
+        env.set(
+            "EXTENSION-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::Extensionp),
+        );
+        env.set(
+            "EXTENSION-TYPE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ExtensionTypeName),
         );
 
         env

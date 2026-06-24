@@ -198,7 +198,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
         | LispVal::HashTable(_)
         | LispVal::Native(_)
         | LispVal::Environment(_)
-        | LispVal::Array(_) => expr.clone(),
+        | LispVal::Array(_)
+        | LispVal::Extension(_) => expr.clone(),
 
         LispVal::Cons {
             car: head,

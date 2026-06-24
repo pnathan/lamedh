@@ -47,6 +47,7 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Vau(_) => "<vau>".to_string(),
         LispVal::HashTable(_) => "<hash-table>".to_string(),
         LispVal::Array(a) => format!("<array:{}>", a.borrow().len()),
+        LispVal::Extension(e) => e.display(),
         LispVal::Native(_) => "<native>".to_string(),
         LispVal::Environment(_) => "<environment>".to_string(),
         LispVal::Nil => "()".to_string(),
