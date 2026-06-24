@@ -30,9 +30,58 @@
 //! feature enabled anywhere is visible everywhere.
 
 use crate::{BuiltinFunc, LispError, LispVal, Symbol};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
+
+/// A small, fast, non-cryptographic hasher (FxHash-style) used for the
+/// per-frame variable-binding map.
+///
+/// The default `HashMap` uses SipHash, which is DoS-resistant but slow for the
+/// short symbol-name keys that dominate variable lookup — and lookup runs on
+/// every variable reference in the interpreter's hot path. Binding keys are
+/// internal interpreter data (symbol names), not attacker-controlled in a way
+/// that makes hash-flooding a concern, so trading SipHash for a multiply-rotate
+/// hash is a safe, large win on lookup-heavy code.
+#[derive(Default)]
+struct FxHasher {
+    hash: u64,
+}
+
+const FX_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.hash = (self.hash.rotate_left(5) ^ word).wrapping_mul(FX_SEED);
+    }
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, mut bytes: &[u8]) {
+        while bytes.len() >= 8 {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&bytes[..8]);
+            self.add(u64::from_le_bytes(buf));
+            bytes = &bytes[8..];
+        }
+        if !bytes.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            self.add(u64::from_le_bytes(buf));
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+/// `HashMap` specialised to the fast [`FxHasher`] for variable bindings.
+type BindingMap = HashMap<String, LispVal, BuildHasherDefault<FxHasher>>;
 
 /// Global symbol table shared by all environments in an interpreter session.
 ///
@@ -114,6 +163,12 @@ struct SharedState {
     condition_flags: RefCell<HashMap<String, bool>>,
     /// Set of variable names that are marked as dynamic (special variables).
     dynamic_vars: RefCell<HashSet<String>>,
+    /// Fast-path flag: `true` once any variable has ever been marked dynamic.
+    /// While this is `false`, variable resolution can skip the dynamic-set
+    /// membership probe entirely (a `HashSet` borrow + string hash that every
+    /// reference would otherwise pay). Most programs register zero dynamic
+    /// variables, so this keeps the common case to a single `Cell` read.
+    has_dynamic: Cell<bool>,
     /// Set of enabled capabilities/features (e.g. "SHELL"). Off by default; the
     /// host or a Lisp program must opt in. This is the foundation for
     /// sandboxing (see issue #64).
@@ -126,6 +181,7 @@ impl SharedState {
             symbols: RefCell::new(SymbolTable::new()),
             condition_flags: RefCell::new(HashMap::new()),
             dynamic_vars: RefCell::new(HashSet::new()),
+            has_dynamic: Cell::new(false),
             features: RefCell::new(HashSet::new()),
         }
     }
@@ -134,7 +190,7 @@ impl SharedState {
 #[derive(Debug, Clone)]
 pub struct Environment {
     parent: Option<Rc<Environment>>,
-    bindings: Rc<RefCell<HashMap<String, LispVal>>>,
+    bindings: Rc<RefCell<BindingMap>>,
     /// Globally-shared interpreter state (symbols, flags, dynamic vars,
     /// features). Shared across the whole environment chain via a single `Rc`.
     shared: Rc<SharedState>,
@@ -176,7 +232,7 @@ impl Environment {
     pub fn new() -> Self {
         Environment {
             parent: None,
-            bindings: Rc::new(RefCell::new(HashMap::new())),
+            bindings: Rc::new(RefCell::new(BindingMap::default())),
             shared: Rc::new(SharedState::new()),
             dynamic_parent: None,
         }
@@ -187,7 +243,7 @@ impl Environment {
     pub fn new_child(parent: &Rc<Environment>) -> Rc<Environment> {
         Rc::new(Environment {
             parent: Some(parent.clone()),
-            bindings: Rc::new(RefCell::new(HashMap::new())),
+            bindings: Rc::new(RefCell::new(BindingMap::default())),
             shared: parent.shared.clone(),
             dynamic_parent: parent.dynamic_parent.clone(),
         })
@@ -202,7 +258,7 @@ impl Environment {
     ) -> Rc<Environment> {
         Rc::new(Environment {
             parent: Some(lexical_parent.clone()),
-            bindings: Rc::new(RefCell::new(HashMap::new())),
+            bindings: Rc::new(RefCell::new(BindingMap::default())),
             shared: lexical_parent.shared.clone(),
             dynamic_parent: Some(caller_env.clone()),
         })
@@ -614,7 +670,7 @@ impl Environment {
     /// the current environment. This supports dynamic variable creation via
     /// SETQ and is intentional behavior for interactive development.
     pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
-        if env.is_dynamic(name) {
+        if env.shared.has_dynamic.get() && env.is_dynamic(name) {
             // For dynamic variables, search the dynamic parent chain
             Self::update_dynamic(env, name, val);
         } else {
@@ -720,12 +776,22 @@ impl Environment {
     /// Mark a variable as dynamic (global registration)
     pub fn mark_dynamic(&self, name: String) {
         self.shared.dynamic_vars.borrow_mut().insert(name);
+        // Flip the fast-path flag so future lookups take the dynamic-aware path.
+        self.shared.has_dynamic.set(true);
     }
 
     /// Get variable value, handling both dynamic and lexical scoping.
     /// For dynamic variables, this searches the dynamic parent chain (caller's env).
     /// For lexical variables, this uses the standard get() method (parent chain).
     pub fn get_var(&self, name: &str) -> Option<LispVal> {
+        // Fast path: if nothing has ever been marked dynamic, every variable is
+        // lexical — skip the dynamic-set membership probe and go straight to the
+        // lexical chain walk. This is the overwhelmingly common case and runs on
+        // every variable reference, so the saved HashSet borrow + string hash
+        // matters in tight loops.
+        if !self.shared.has_dynamic.get() {
+            return self.get(name);
+        }
         if self.is_dynamic(name) {
             // Dynamic lookup: first check current bindings, then dynamic parent chain
             self.get_dynamic(name)

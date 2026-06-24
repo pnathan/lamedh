@@ -256,21 +256,24 @@ fn apply_math_op(
         };
     }
 
-    let nums: Result<Vec<i64>, LispError> = args
-        .iter()
-        .map(|arg| match arg {
+    // Integer path: fold directly over the arguments without materialising an
+    // intermediate `Vec<i64>`. Arithmetic runs in every loop body, so avoiding
+    // a per-call allocation here is a measurable hot-path win.
+    #[inline]
+    fn as_int(arg: &LispVal) -> Result<i64, LispError> {
+        match arg {
             LispVal::Number(n) => Ok(*n),
             _ => Err(LispError::Generic(
                 "Math functions only accept numbers".to_string(),
             )),
-        })
-        .collect();
-    let nums = nums?;
+        }
+    }
 
     match op {
         BuiltinFunc::Plus => {
             let mut result = 0i64;
-            for &num in &nums {
+            for arg in args {
+                let num = as_int(arg)?;
                 match result.checked_add(num) {
                     Some(v) => result = v,
                     None => {
@@ -282,22 +285,24 @@ fn apply_math_op(
             Ok(LispVal::Number(result))
         }
         BuiltinFunc::Minus => {
-            if nums.is_empty() {
+            if args.is_empty() {
                 return Err(LispError::Generic(
                     "- requires at least one argument".to_string(),
                 ));
             }
-            if nums.len() == 1 {
-                match nums[0].checked_neg() {
+            let first = as_int(&args[0])?;
+            if args.len() == 1 {
+                match first.checked_neg() {
                     Some(v) => Ok(LispVal::Number(v)),
                     None => {
                         env.set_flag("OVERFLOW");
-                        Ok(LispVal::Number(nums[0].wrapping_neg()))
+                        Ok(LispVal::Number(first.wrapping_neg()))
                     }
                 }
             } else {
-                let mut result = nums[0];
-                for &num in &nums[1..] {
+                let mut result = first;
+                for arg in &args[1..] {
+                    let num = as_int(arg)?;
                     match result.checked_sub(num) {
                         Some(v) => result = v,
                         None => {
@@ -311,7 +316,8 @@ fn apply_math_op(
         }
         BuiltinFunc::Multiply => {
             let mut result = 1i64;
-            for &num in &nums {
+            for arg in args {
+                let num = as_int(arg)?;
                 match result.checked_mul(num) {
                     Some(v) => result = v,
                     None => {
@@ -323,20 +329,22 @@ fn apply_math_op(
             Ok(LispVal::Number(result))
         }
         BuiltinFunc::Divide => {
-            if nums.len() != 2 {
+            if args.len() != 2 {
                 return Err(LispError::Generic(
                     "/ requires exactly two arguments".to_string(),
                 ));
             }
-            if nums[1] == 0 {
+            let x = as_int(&args[0])?;
+            let y = as_int(&args[1])?;
+            if y == 0 {
                 return Err(LispError::Generic("Division by zero".to_string()));
             }
             // Check for i64::MIN / -1 overflow
-            if nums[0] == i64::MIN && nums[1] == -1 {
+            if x == i64::MIN && y == -1 {
                 env.set_flag("OVERFLOW");
-                Ok(LispVal::Number(nums[0].wrapping_div(nums[1])))
+                Ok(LispVal::Number(x.wrapping_div(y)))
             } else {
-                Ok(LispVal::Number(nums[0] / nums[1]))
+                Ok(LispVal::Number(x / y))
             }
         }
         _ => Err(LispError::Generic("Not a math operation".to_string())),
@@ -1895,12 +1903,14 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
     match val {
         LispVal::Nil => Ok(TcoStep::Done(Ok(LispVal::Nil))),
         LispVal::Symbol(s) => {
-            let name = s.borrow().name.clone();
-
-            // Use get_var which handles both dynamic and lexical scoping
-            let value = env
-                .get_var(&name)
-                .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", name)))?;
+            // Resolve without cloning the interned name on the hot path: borrow it
+            // just long enough to look up. Only the cold unbound-variable path
+            // formats the name into a String.
+            let value = {
+                let sym = s.borrow();
+                env.get_var(&sym.name)
+                    .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", sym.name)))?
+            };
 
             // If the value is a LABEL expression, tail-call evaluate it
             // This handles recursive LABEL definitions (TCO: TailCall instead of recurse)
@@ -2012,21 +2022,35 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         }
                     }
                     "IF" => {
-                        let args = list_to_vec(rest)?;
-                        if args.len() != 3 {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(
-                                "if takes exactly three arguments".to_string(),
-                            ))));
+                        // Destructure (cond then else) directly off the cons cells —
+                        // IF runs on every conditional and loop iteration, so we skip
+                        // the `list_to_vec` allocation the general path would do.
+                        if let LispVal::Cons {
+                            car: cond_expr,
+                            cdr: rest1,
+                        } = &**rest
+                            && let LispVal::Cons {
+                                car: then_expr,
+                                cdr: rest2,
+                            } = &**rest1
+                            && let LispVal::Cons {
+                                car: else_expr,
+                                cdr: rest3,
+                            } = &**rest2
+                            && **rest3 == LispVal::Nil
+                        {
+                            // Evaluate condition normally (non-tail), then TCO into the branch.
+                            let cond_result = eval(cond_expr, env)?;
+                            let next_val = if is_truthy(&cond_result) {
+                                then_expr.as_ref().clone()
+                            } else {
+                                else_expr.as_ref().clone()
+                            };
+                            return Ok(TcoStep::TailCall(next_val, env.clone()));
                         }
-                        // Evaluate condition normally (non-tail)
-                        let cond_result = eval(&args[0], env)?;
-                        // TCO: tail position is either branch
-                        let next_val = if is_truthy(&cond_result) {
-                            args[1].clone()
-                        } else {
-                            args[2].clone()
-                        };
-                        Ok(TcoStep::TailCall(next_val, env.clone()))
+                        Ok(TcoStep::Done(Err(LispError::Generic(
+                            "if takes exactly three arguments".to_string(),
+                        ))))
                     }
                     "AND" => {
                         let mut last_val = LispVal::Symbol(env.intern_symbol("T"));
