@@ -1,6 +1,6 @@
 [package]
 name = "lamedh"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "An embeddable Lisp 1.5 interpreter written in Rust"
 license = "AGPL-3.0"
