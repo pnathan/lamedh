@@ -15,7 +15,14 @@ pub fn print(val: &LispVal) -> String {
             s.borrow().name.clone()
         }
         LispVal::Number(n) => n.to_string(),
-        LispVal::Float(f) => f.to_string(),
+        LispVal::Float(f) => {
+            let s = f.to_string();
+            if s.contains('.') || s.contains('e') || s.contains('E') || s.contains("inf") || s.contains("NaN") {
+                s
+            } else {
+                format!("{}.0", s)
+            }
+        }
         LispVal::String(s) => {
             let mut out = String::with_capacity(s.len() + 2);
             out.push('"');

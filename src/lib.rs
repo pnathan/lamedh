@@ -598,6 +598,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ),
     ("07-shell.lisp", include_str!("../lib/07-shell.lisp")),
     ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
+    ("09-lisp15.lisp", include_str!("../lib/09-lisp15.lisp")),
     ("10-testing.lisp", include_str!("../lib/10-testing.lisp")),
     (
         "97-doc-renderer.lisp",

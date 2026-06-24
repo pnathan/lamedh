@@ -763,8 +763,8 @@ fn test_remprop_non_string_second_arg() {
             "remprop with non-string second arg should error; got: {result}"
         );
         assert!(
-            result.contains("remprop requires a string"),
-            "expected 'remprop requires a string'; got: {result}"
+            result.contains("remprop requires a symbol or string"),
+            "expected 'remprop requires a symbol or string'; got: {result}"
         );
     });
 }
@@ -803,8 +803,8 @@ fn test_deflist_non_string_second_arg() {
             "deflist with non-string second arg should error; got: {result}"
         );
         assert!(
-            result.contains("deflist requires a string"),
-            "expected 'deflist requires a string'; got: {result}"
+            result.contains("deflist requires a symbol or string"),
+            "expected 'deflist requires a symbol or string'; got: {result}"
         );
     });
 }
@@ -843,6 +843,9 @@ fn test_sublis_multi_entry_alist_no_match() {
             !result.contains("Error"),
             "sublis with no-match alist should succeed; got: {result}"
         );
-        assert_eq!(result, "E", "sublis with no-match should return original symbol");
+        assert_eq!(
+            result, "E",
+            "sublis with no-match should return original symbol"
+        );
     });
 }

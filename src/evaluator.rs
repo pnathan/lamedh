@@ -156,6 +156,54 @@ fn apply_math_op(
     args: &[LispVal],
     env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
+    // If any argument is a float, promote all to float arithmetic
+    let has_float = args
+        .iter()
+        .any(|a| matches!(a, LispVal::Float(_)));
+    if has_float {
+        let floats: Result<Vec<f64>, LispError> = args
+            .iter()
+            .map(|arg| match arg {
+                LispVal::Number(n) => Ok(*n as f64),
+                LispVal::Float(f) => Ok(*f),
+                _ => Err(LispError::Generic(
+                    "Math functions only accept numbers".to_string(),
+                )),
+            })
+            .collect();
+        let floats = floats?;
+        return match op {
+            BuiltinFunc::Plus => Ok(LispVal::Float(floats.iter().sum())),
+            BuiltinFunc::Minus => {
+                if floats.is_empty() {
+                    return Err(LispError::Generic(
+                        "- requires at least one argument".to_string(),
+                    ));
+                }
+                if floats.len() == 1 {
+                    Ok(LispVal::Float(-floats[0]))
+                } else {
+                    Ok(LispVal::Float(
+                        floats[0] - floats[1..].iter().sum::<f64>(),
+                    ))
+                }
+            }
+            BuiltinFunc::Multiply => Ok(LispVal::Float(floats.iter().product())),
+            BuiltinFunc::Divide => {
+                if floats.len() != 2 {
+                    return Err(LispError::Generic(
+                        "/ requires exactly two arguments".to_string(),
+                    ));
+                }
+                if floats[1] == 0.0 {
+                    return Err(LispError::Generic("Division by zero".to_string()));
+                }
+                Ok(LispVal::Float(floats[0] / floats[1]))
+            }
+            _ => Err(LispError::Generic("Not a math operation".to_string())),
+        };
+    }
+
     let nums: Result<Vec<i64>, LispError> = args
         .iter()
         .map(|arg| match arg {
@@ -402,22 +450,31 @@ fn apply_numeric_primitives(
             if args.len() != 2 {
                 return Err(LispError::Generic("expt requires 2 args".to_string()));
             }
-            if let (LispVal::Number(base), LispVal::Number(exp)) = (&args[0], &args[1]) {
-                if *exp < 0 {
-                    return Err(LispError::Generic(
-                        "negative exponent not supported".to_string(),
-                    ));
+            match (&args[0], &args[1]) {
+                (LispVal::Number(base), LispVal::Number(exp)) => {
+                    if *exp < 0 {
+                        // negative integer exponent → float result
+                        return Ok(LispVal::Float(
+                            (*base as f64).powi(*exp as i32),
+                        ));
+                    }
+                    if *exp > u32::MAX as i64 {
+                        return Err(LispError::Generic("exponent too large".to_string()));
+                    }
+                    base.checked_pow(*exp as u32)
+                        .map(LispVal::Number)
+                        .ok_or_else(|| LispError::Generic("exponentiation overflow".to_string()))
                 }
-                // Check if exponent fits in u32
-                if *exp > u32::MAX as i64 {
-                    return Err(LispError::Generic("exponent too large".to_string()));
+                (LispVal::Float(base), LispVal::Number(exp)) => {
+                    Ok(LispVal::Float(base.powi(*exp as i32)))
                 }
-                // Use checked_pow to detect overflow
-                base.checked_pow(*exp as u32)
-                    .map(LispVal::Number)
-                    .ok_or_else(|| LispError::Generic("exponentiation overflow".to_string()))
-            } else {
-                Err(LispError::Generic("expt requires numbers".to_string()))
+                (LispVal::Number(base), LispVal::Float(exp)) => {
+                    Ok(LispVal::Float((*base as f64).powf(*exp)))
+                }
+                (LispVal::Float(base), LispVal::Float(exp)) => {
+                    Ok(LispVal::Float(base.powf(*exp)))
+                }
+                _ => Err(LispError::Generic("expt requires numbers".to_string())),
             }
         }
         _ => Err(LispError::Generic("Not a numeric primitive".to_string())),
@@ -2209,17 +2266,20 @@ fn apply_symbol_op(
                     "get-p takes exactly two arguments".to_string(),
                 ));
             }
-            if let LispVal::Symbol(s) = &args[0] {
-                if let LispVal::String(prop) = &args[1] {
-                    if let Some(val) = s.borrow().plist.get(prop) {
-                        Ok(val.clone())
-                    } else {
-                        Ok(LispVal::Nil)
-                    }
-                } else {
-                    Err(LispError::Generic(
-                        "get-p requires a string as its second argument".to_string(),
+            let prop = match &args[1] {
+                LispVal::String(s) => s.clone(),
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                _ => {
+                    return Err(LispError::Generic(
+                        "get-p requires a symbol or string as its second argument".to_string(),
                     ))
+                }
+            };
+            if let LispVal::Symbol(s) = &args[0] {
+                if let Some(val) = s.borrow().plist.get(&prop) {
+                    Ok(val.clone())
+                } else {
+                    Ok(LispVal::Nil)
                 }
             } else {
                 Err(LispError::Generic(
@@ -2233,16 +2293,19 @@ fn apply_symbol_op(
                     "put-p takes exactly three arguments".to_string(),
                 ));
             }
-            if let LispVal::Symbol(s) = &args[0] {
-                if let LispVal::String(prop) = &args[1] {
-                    let val = args[2].clone();
-                    s.borrow_mut().plist.insert(prop.clone(), val);
-                    Ok(LispVal::Symbol(env.intern_symbol("T")))
-                } else {
-                    Err(LispError::Generic(
-                        "put-p requires a string as its second argument".to_string(),
+            let prop = match &args[1] {
+                LispVal::String(s) => s.clone(),
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                _ => {
+                    return Err(LispError::Generic(
+                        "put-p requires a symbol or string as its second argument".to_string(),
                     ))
                 }
+            };
+            if let LispVal::Symbol(s) = &args[0] {
+                let val = args[2].clone();
+                s.borrow_mut().plist.insert(prop, val);
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
                 Err(LispError::Generic(
                     "put-p requires a symbol as its first argument".to_string(),
@@ -3194,18 +3257,21 @@ fn apply_plist_op(
                     "remprop requires exactly two arguments".to_string(),
                 ));
             }
-            if let LispVal::Symbol(s) = &args[0] {
-                if let LispVal::String(prop) = &args[1] {
-                    let removed = s.borrow_mut().plist.remove(prop);
-                    if removed.is_some() {
-                        Ok(LispVal::Symbol(env.intern_symbol("T")))
-                    } else {
-                        Ok(LispVal::Nil)
-                    }
-                } else {
-                    Err(LispError::Generic(
-                        "remprop requires a string as its second argument".to_string(),
+            let prop = match &args[1] {
+                LispVal::String(s) => s.clone(),
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                _ => {
+                    return Err(LispError::Generic(
+                        "remprop requires a symbol or string as its second argument".to_string(),
                     ))
+                }
+            };
+            if let LispVal::Symbol(s) = &args[0] {
+                let removed = s.borrow_mut().plist.remove(&prop);
+                if removed.is_some() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
                 }
             } else {
                 Err(LispError::Generic(
@@ -3220,12 +3286,14 @@ fn apply_plist_op(
                 ));
             }
             let pairs = &args[0];
-            let indicator = if let LispVal::String(s) = &args[1] {
-                s.clone()
-            } else {
-                return Err(LispError::Generic(
-                    "deflist requires a string as its second argument".to_string(),
-                ));
+            let indicator = match &args[1] {
+                LispVal::String(s) => s.clone(),
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                _ => {
+                    return Err(LispError::Generic(
+                        "deflist requires a symbol or string as its second argument".to_string(),
+                    ))
+                }
             };
             let mut current = pairs;
             while let LispVal::Cons { car, cdr } = current {

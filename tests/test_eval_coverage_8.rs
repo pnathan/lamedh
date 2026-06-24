@@ -140,8 +140,7 @@ fn test_fexpr_two_params_direct_call_works() {
         let env = env_with_stdlib();
         // Multi-param fexpr: each unevaluated argument is bound to its parameter.
         // (f 1 2) → a=(unevaluated 1)=1, b=(unevaluated 2)=2 → (list 1 2) = (1 2)
-        let result =
-            eval_line("(progn (defexpr f (a b) (list a b)) (f 1 2))", &env);
+        let result = eval_line("(progn (defexpr f (a b) (list a b)) (f 1 2))", &env);
         assert_eq!(
             result, "(1 2)",
             "multi-param fexpr direct call should bind each arg; got: {result}"
@@ -154,8 +153,7 @@ fn test_fexpr_two_params_direct_call_arity_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         // Wrong arg count should still error.
-        let result =
-            eval_line("(progn (defexpr f (a b) (list a b)) (f 1))", &env);
+        let result = eval_line("(progn (defexpr f (a b) (list a b)) (f 1))", &env);
         assert!(
             result.contains("Error"),
             "fexpr arity mismatch should error; got: {result}"
@@ -246,8 +244,8 @@ fn test_getp_non_string_second_arg_error() {
             "getp with number second arg should error; got: {result}"
         );
         assert!(
-            result.contains("get-p requires a string as its second argument"),
-            "expected 'get-p requires a string as its second argument'; got: {result}"
+            result.contains("get-p requires a symbol or string as its second argument"),
+            "expected 'get-p requires a symbol or string as its second argument'; got: {result}"
         );
     });
 }
@@ -294,8 +292,8 @@ fn test_putp_non_string_second_arg_error() {
             "putp with number second arg should error; got: {result}"
         );
         assert!(
-            result.contains("put-p requires a string as its second argument"),
-            "expected 'put-p requires a string as its second argument'; got: {result}"
+            result.contains("put-p requires a symbol or string as its second argument"),
+            "expected 'put-p requires a symbol or string as its second argument'; got: {result}"
         );
     });
 }
