@@ -28,7 +28,7 @@
 //! `QUOTE`, `QUASIQUOTE`/`UNQUOTE`, `IF`, `COND`, `AND`, `OR`,
 //! `DEF`, `DEFDYNAMIC`/`DEFVAR`, `LAMBDA`, `FUNCTION`, `LABEL`,
 //! `DEFINE`, `DEFEXPR`, `DEFMACRO`, `DEFSTRUCT`,
-//! `PROGN`, `SETQ`, `PROG`, `RETURN`, `GO`,
+//! `PROGN`, `SETQ`, `PROG`, `RETURN`, `GO`, `FOR`, `WHILE`,
 //! `LET`, `LET*`, `VAU`/`$VAU`.
 //!
 //! ## Builtin functions
@@ -1750,6 +1750,127 @@ fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, Lisp
     Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym))))
 }
 
+/// Handle the `FOR` special form: a fast integer-counted loop.
+///
+/// `(for (var start end [step]) body...)`
+///
+/// `var` is bound to successive integers from `start` to `end` **inclusive**,
+/// advancing by `step` (default `1`). A positive step counts up while
+/// `var <= end`; a negative step counts down while `var >= end`; a zero step is
+/// an error. `start`, `end`, and `step` are each evaluated **once** before the
+/// loop begins and must be integers.
+///
+/// Speed notes (this is the whole point of `FOR`): a single child environment
+/// frame is allocated for the entire loop and the counter slot is mutated in
+/// place each iteration — no per-iteration frame allocation, no `COND`/`GO`
+/// dispatch, and no error-unwinding jumps the way a `PROG`/`GO` loop pays.
+///
+/// Because the one frame is reused, closures created inside the body all share
+/// the same `var` slot (they observe its final value), and assigning to `var`
+/// inside the body does not change the iteration sequence — the loop driver
+/// overwrites the slot at the top of each pass. `FOR` always returns `NIL`.
+#[inline(never)]
+fn eval_for(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+    let args = list_to_vec(rest)?;
+    if args.is_empty() {
+        return Ok(TcoStep::Done(Err(LispError::Generic(
+            "for requires a spec list (var start end [step]) and a body".to_string(),
+        ))));
+    }
+
+    let spec = list_to_vec(&args[0])?;
+    if spec.len() != 3 && spec.len() != 4 {
+        return Ok(TcoStep::Done(Err(LispError::Generic(
+            "for spec must be (var start end [step])".to_string(),
+        ))));
+    }
+
+    let var_name = if let LispVal::Symbol(s) = &spec[0] {
+        s.borrow().name.clone()
+    } else {
+        return Ok(TcoStep::Done(Err(LispError::Generic(
+            "for loop variable must be a symbol".to_string(),
+        ))));
+    };
+
+    // Evaluate the bounds once, up front.
+    let as_int = |v: &LispVal, who: &str| -> Result<i64, LispError> {
+        match v {
+            LispVal::Number(n) => Ok(*n),
+            other => Err(LispError::Generic(format!(
+                "for {who} must be an integer, got {other:?}"
+            ))),
+        }
+    };
+    let start = as_int(&eval(&spec[1], env)?, "start")?;
+    let end = as_int(&eval(&spec[2], env)?, "end")?;
+    let step = if spec.len() == 4 {
+        as_int(&eval(&spec[3], env)?, "step")?
+    } else {
+        1
+    };
+    if step == 0 {
+        return Ok(TcoStep::Done(Err(LispError::Generic(
+            "for step must be non-zero".to_string(),
+        ))));
+    }
+
+    let body = &args[1..];
+    let loop_env = Environment::new_child(env);
+
+    let mut i = start;
+    loop {
+        // Inclusive bound; direction depends on the sign of step.
+        if (step > 0 && i > end) || (step < 0 && i < end) {
+            break;
+        }
+        loop_env.set(var_name.clone(), LispVal::Number(i));
+        for form in body {
+            eval(form, &loop_env)?;
+        }
+        // Guard against overflow so a runaway step can't panic in release-with-checks
+        // or silently wrap into an infinite loop.
+        match i.checked_add(step) {
+            Some(n) => i = n,
+            None => break,
+        }
+    }
+
+    Ok(TcoStep::Done(Ok(LispVal::Nil)))
+}
+
+/// Handle the `WHILE` special form.
+///
+/// `(while cond body...)` — evaluate `cond`; while it is truthy, evaluate each
+/// body form in order, then re-test `cond`. The body runs in the current
+/// environment (like `PROGN`), so no per-iteration frame is allocated. Returns
+/// `NIL` once `cond` becomes false (which is immediately if it starts false).
+#[inline(never)]
+fn eval_while(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+    if let LispVal::Cons {
+        car: cond_expr,
+        cdr: body_list,
+    } = rest
+    {
+        loop {
+            let test = eval(cond_expr, env)?;
+            if !is_truthy(&test) {
+                break;
+            }
+            let mut current = &**body_list;
+            while let LispVal::Cons { car, cdr } = current {
+                eval(car, env)?;
+                current = cdr;
+            }
+        }
+        Ok(TcoStep::Done(Ok(LispVal::Nil)))
+    } else {
+        Ok(TcoStep::Done(Err(LispError::Generic(
+            "while requires a condition and a body".to_string(),
+        ))))
+    }
+}
+
 /// Perform one evaluation step. Returns `TcoStep::Done` for final results
 /// and `TcoStep::TailCall` for tail positions (caller loops instead of recursing).
 fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
@@ -2345,6 +2466,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             ))))
                         }
                     }
+                    "FOR" => eval_for(rest, env),
+                    "WHILE" => eval_while(rest, env),
                     "LET" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
