@@ -1,3 +1,28 @@
+//! Format [`LispVal`] values as readable Lisp text.
+//!
+//! The single public function [`print`] converts any [`LispVal`] to a `String`
+//! suitable for display in a REPL or written to a file.  The output is valid
+//! input for the [`crate::reader`] for all self-representing types (numbers,
+//! strings, symbols, lists) — with the exception of opaque types like
+//! `<lambda>`, `<builtin>`, and `<hash-table>` which are not readable.
+//!
+//! ## Format rules
+//!
+//! | Value | Output |
+//! |-------|--------|
+//! | `Symbol("FOO")` | `FOO` |
+//! | `Number(42)` | `42` |
+//! | `Float(3.0)` | `3.0` (always includes `.`) |
+//! | `String("hi\n")` | `"hi\n"` (escaped) |
+//! | `Nil` | `()` |
+//! | Proper list `(a b c)` | `(A B C)` |
+//! | Dotted pair `(a . b)` | `(A . B)` |
+//! | `Lambda` | `<lambda>` |
+//! | `Builtin` | `<builtin>` |
+//! | `HashTable` | `<hash-table>` |
+//! | `Array(n)` | `<array:n>` |
+//! | `Extension` | via [`crate::LispValExtension::display`] |
+
 use crate::LispVal;
 
 fn print_list_contents(cdr: &LispVal) -> String {
@@ -8,6 +33,12 @@ fn print_list_contents(cdr: &LispVal) -> String {
     }
 }
 
+/// Format `val` as readable Lisp text.
+///
+/// The result is suitable for display in a REPL (`PRIN1` semantics: strings
+/// are double-quoted with escapes).  For most self-representing types the
+/// output round-trips through [`crate::reader::read`]; opaque types emit
+/// non-readable tags like `<lambda>`.
 pub fn print(val: &LispVal) -> String {
     match val {
         LispVal::Symbol(s) => {
