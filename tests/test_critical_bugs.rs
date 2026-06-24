@@ -1,9 +1,9 @@
+use lamedh::LispVal;
 /// Comprehensive test suite for critical bugs and edge cases
 /// This file contains tests that SHOULD FAIL or expose bugs in the current implementation
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
 use lamedh::reader::read;
-use lamedh::LispVal;
 
 fn eval_str(input: &str) -> Result<LispVal, String> {
     let env = Environment::new_with_builtins();
@@ -21,7 +21,10 @@ fn test_index_negative_number_errors_gracefully() {
     let result = eval_str("(INDEX \"hello\" -1)");
     println!("Negative index result: {:?}", result);
     assert!(result.is_err(), "Negative index should error gracefully");
-    assert!(result.unwrap_err().contains("out of bounds"), "Error should mention bounds");
+    assert!(
+        result.unwrap_err().contains("out of bounds"),
+        "Error should mention bounds"
+    );
 }
 
 #[test]
@@ -133,7 +136,10 @@ fn test_plus_overflow_sets_flag() {
             (FLAG-SET-P 'OVERFLOW))
     "#;
     let result = eval_str(input);
-    assert!(result.is_ok(), "Overflow should wrap and set flag, not panic");
+    assert!(
+        result.is_ok(),
+        "Overflow should wrap and set flag, not panic"
+    );
     match result.unwrap() {
         LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
         _ => panic!("Expected OVERFLOW flag to be set"),
@@ -170,7 +176,9 @@ fn test_minus_underflow() {
 #[test]
 fn test_cascading_overflow() {
     // Multiple operations that compound overflow
-    let result = eval_str("(PLUS 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000)");
+    let result = eval_str(
+        "(PLUS 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000 1000000000000)",
+    );
     println!("Cascading addition overflow: {:?}", result);
 }
 
@@ -188,7 +196,10 @@ fn test_division_min_by_neg_one_sets_flag() {
             (FLAG-SET-P 'OVERFLOW))
     "#;
     let result = eval_str(input);
-    assert!(result.is_ok(), "i64::MIN / -1 should wrap and set flag, not panic");
+    assert!(
+        result.is_ok(),
+        "i64::MIN / -1 should wrap and set flag, not panic"
+    );
     match result.unwrap() {
         LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
         _ => panic!("Expected OVERFLOW flag to be set"),
@@ -209,7 +220,9 @@ fn test_division_min_by_neg_one_wraps_with_flag() {
     // The flag should be set (T in CAR) and result wrapped in CDR
     if let Ok(LispVal::Cons { car, cdr: _ }) = result {
         match *car {
-            LispVal::Symbol(ref s) => assert_eq!(s.borrow().name, "T", "OVERFLOW flag should be set"),
+            LispVal::Symbol(ref s) => {
+                assert_eq!(s.borrow().name, "T", "OVERFLOW flag should be set")
+            }
             _ => panic!("Expected OVERFLOW flag (T) in car"),
         }
     } else {
@@ -238,7 +251,10 @@ fn test_leftshift_64_sets_flag() {
             (FLAG-SET-P 'OVERFLOW))
     "#;
     let result = eval_str(input);
-    assert!(result.is_ok(), "Shift by 64 should wrap and set flag, not panic");
+    assert!(
+        result.is_ok(),
+        "Shift by 64 should wrap and set flag, not panic"
+    );
     match result.unwrap() {
         LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
         _ => panic!("Expected OVERFLOW flag to be set"),
@@ -255,7 +271,10 @@ fn test_leftshift_large_amount_sets_flag() {
             (FLAG-SET-P 'OVERFLOW))
     "#;
     let result = eval_str(input);
-    assert!(result.is_ok(), "Large shift should wrap and set flag, not panic");
+    assert!(
+        result.is_ok(),
+        "Large shift should wrap and set flag, not panic"
+    );
     match result.unwrap() {
         LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
         _ => panic!("Expected OVERFLOW flag to be set"),
@@ -276,7 +295,9 @@ fn test_leftshift_large_amount_wraps_with_flag() {
     // The flag should be set (T in CAR)
     if let Ok(LispVal::Cons { car, cdr: _ }) = result {
         match *car {
-            LispVal::Symbol(ref s) => assert_eq!(s.borrow().name, "T", "OVERFLOW flag should be set"),
+            LispVal::Symbol(ref s) => {
+                assert_eq!(s.borrow().name, "T", "OVERFLOW flag should be set")
+            }
             _ => panic!("Expected OVERFLOW flag (T) in car"),
         }
     } else {
@@ -401,7 +422,11 @@ fn test_define_empty_list() {
     // so '() (which is (QUOTE ())) doesn't work. Use () directly.
     let result = eval_str("(DEFINE ())");
     assert!(result.is_ok(), "DEFINE with empty list should work");
-    assert_eq!(result.unwrap(), LispVal::Nil, "Empty DEFINE should return NIL");
+    assert_eq!(
+        result.unwrap(),
+        LispVal::Nil,
+        "Empty DEFINE should return NIL"
+    );
 }
 
 // ============================================================================
@@ -521,7 +546,10 @@ fn test_string_with_escaped_quote() {
     // Escape sequences are now supported
     let result = eval_str(r#""hello \"world\"""#);
     assert!(result.is_ok(), "Escaped quotes should parse: {:?}", result);
-    assert_eq!(result.unwrap(), LispVal::String("hello \"world\"".to_string()));
+    assert_eq!(
+        result.unwrap(),
+        LispVal::String("hello \"world\"".to_string())
+    );
 }
 
 #[test]
@@ -573,11 +601,9 @@ fn test_remainder_by_zero() {
 
 #[test]
 fn test_expt_negative_exponent() {
-    let result = eval_str("(EXPT 2 -1)");
-    assert!(
-        result.is_err(),
-        "Negative exponent should error (not supported)"
-    );
+    let result = eval_str("(EXPT 2 -1)").unwrap();
+    // negative integer exponent promotes to float: 2^-1 = 0.5
+    assert_eq!(result, LispVal::Float(0.5));
 }
 
 #[test]
@@ -591,21 +617,28 @@ fn test_if_with_wrong_arg_count() {
 
 #[test]
 fn test_lambda_wrong_arg_count() {
-    let result = eval_str(r#"
+    let result = eval_str(
+        r#"
         (PROGN
             (DEF f (LAMBDA (x y) (+ x y)))
             (f 1))
-    "#);
-    assert!(result.is_err(), "Calling lambda with wrong arg count should error");
+    "#,
+    );
+    assert!(
+        result.is_err(),
+        "Calling lambda with wrong arg count should error"
+    );
 }
 
 #[test]
 fn test_lambda_too_many_args() {
-    let result = eval_str(r#"
+    let result = eval_str(
+        r#"
         (PROGN
             (DEF f (LAMBDA (x) x))
             (f 1 2 3))
-    "#);
+    "#,
+    );
     assert!(result.is_err(), "Too many args to lambda should error");
 }
 

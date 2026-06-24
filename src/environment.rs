@@ -407,6 +407,28 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::Optimize),
         );
 
+        // Arrays (Lisp 1.5)
+        env.set(
+            "ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeArray),
+        );
+        env.set(
+            "FETCH".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayFetch),
+        );
+        env.set(
+            "STORE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayStore),
+        );
+        env.set(
+            "ARRAY-LENGTH".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayLength),
+        );
+        env.set(
+            "ARRAYP".to_string(),
+            LispVal::Builtin(BuiltinFunc::Arrayp),
+        );
+
         env
     }
 
