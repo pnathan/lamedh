@@ -61,7 +61,7 @@ fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
     let mut vec = Vec::new();
     let mut current = list;
     while let LispVal::Cons { car, cdr } = current {
-        vec.push(*car.clone());
+        vec.push(car.as_ref().clone());
         current = cdr;
     }
     if *current != LispVal::Nil {
@@ -77,8 +77,8 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
     vec.into_iter()
         .rev()
         .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
-            car: Box::new(car),
-            cdr: Box::new(cdr),
+            car: Rc::new(car),
+            cdr: Rc::new(cdr),
         })
 }
 
@@ -297,7 +297,7 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 ));
             }
             match &args[0] {
-                LispVal::Cons { car, .. } => Ok(*car.clone()),
+                LispVal::Cons { car, .. } => Ok(car.as_ref().clone()),
                 LispVal::Nil => Ok(LispVal::Nil),
                 _ => Err(LispError::Generic("car requires a list".to_string())),
             }
@@ -309,7 +309,7 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 ));
             }
             match &args[0] {
-                LispVal::Cons { cdr, .. } => Ok(*cdr.clone()),
+                LispVal::Cons { cdr, .. } => Ok(cdr.as_ref().clone()),
                 LispVal::Nil => Ok(LispVal::Nil),
                 _ => Err(LispError::Generic("cdr requires a list".to_string())),
             }
@@ -321,8 +321,8 @@ fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispErro
                 ));
             }
             Ok(LispVal::Cons {
-                car: Box::new(args[0].clone()),
-                cdr: Box::new(args[1].clone()),
+                car: Rc::new(args[0].clone()),
+                cdr: Rc::new(args[1].clone()),
             })
         }
         _ => Err(LispError::Generic("Not a list operation".to_string())),
@@ -695,12 +695,12 @@ fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispE
 
     // Build (code stdout stderr) so Lisp can compose on the result.
     Ok(LispVal::Cons {
-        car: Box::new(LispVal::Number(code)),
-        cdr: Box::new(LispVal::Cons {
-            car: Box::new(LispVal::String(stdout)),
-            cdr: Box::new(LispVal::Cons {
-                car: Box::new(LispVal::String(stderr)),
-                cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(code)),
+        cdr: Rc::new(LispVal::Cons {
+            car: Rc::new(LispVal::String(stdout)),
+            cdr: Rc::new(LispVal::Cons {
+                car: Rc::new(LispVal::String(stderr)),
+                cdr: Rc::new(LispVal::Nil),
             }),
         }),
     })
@@ -743,13 +743,13 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 let mut cur = list.clone();
                 while let LispVal::Cons { car, cdr } = cur {
                     result.push(eval(&car, &eval_env)?);
-                    cur = *cdr;
+                    cur = cdr.as_ref().clone();
                 }
                 let mut out = LispVal::Nil;
                 for v in result.into_iter().rev() {
                     out = LispVal::Cons {
-                        car: Box::new(v),
-                        cdr: Box::new(out),
+                        car: Rc::new(v),
+                        cdr: Rc::new(out),
                     };
                 }
                 Ok(out)
@@ -789,7 +789,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                             if test != LispVal::Nil {
                                 return eval(&clause[1], &eval_env);
                             }
-                            cur = *cdr;
+                            cur = cdr.as_ref().clone();
                         }
                         _ => {
                             return Err(LispError::Generic(
@@ -1198,8 +1198,8 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     .into_iter()
                     .rev()
                     .fold(LispVal::Nil, |cdr, n| LispVal::Cons {
-                        car: Box::new(LispVal::String(n)),
-                        cdr: Box::new(cdr),
+                        car: Rc::new(LispVal::String(n)),
+                        cdr: Rc::new(cdr),
                     });
                 Ok(list)
             }
@@ -1632,38 +1632,38 @@ fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, Lisp
         }
         stmts.push(LispVal::Symbol(env.intern_symbol("S")));
         let progn = LispVal::Cons {
-            car: Box::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
-            cdr: Box::new(vec_to_list(stmts)),
+            car: Rc::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
+            cdr: Rc::new(vec_to_list(stmts)),
         };
         let let_form = crate::reader::read(&format!("(array {})", n_fields + 1), env)
             .map_err(LispError::Generic)?;
         let binding = LispVal::Cons {
-            car: Box::new(LispVal::Cons {
-                car: Box::new(LispVal::Symbol(env.intern_symbol("S"))),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(let_form),
-                    cdr: Box::new(LispVal::Nil),
+            car: Rc::new(LispVal::Cons {
+                car: Rc::new(LispVal::Symbol(env.intern_symbol("S"))),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(let_form),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }),
-            cdr: Box::new(LispVal::Nil),
+            cdr: Rc::new(LispVal::Nil),
         };
         let full_let = LispVal::Cons {
-            car: Box::new(LispVal::Symbol(env.intern_symbol("LET"))),
-            cdr: Box::new(LispVal::Cons {
-                car: Box::new(binding),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(progn),
-                    cdr: Box::new(LispVal::Nil),
+            car: Rc::new(LispVal::Symbol(env.intern_symbol("LET"))),
+            cdr: Rc::new(LispVal::Cons {
+                car: Rc::new(binding),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(progn),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }),
         };
         let lambda_form = LispVal::Cons {
-            car: Box::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
-            cdr: Box::new(LispVal::Cons {
-                car: Box::new(vec_to_list(params)),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(full_let),
-                    cdr: Box::new(LispVal::Nil),
+            car: Rc::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
+            cdr: Rc::new(LispVal::Cons {
+                car: Rc::new(vec_to_list(params)),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(full_let),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }),
         };
@@ -1748,7 +1748,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         if let LispVal::Cons { car, cdr } = &**rest
                             && **cdr == LispVal::Nil
                         {
-                            return Ok(TcoStep::Done(Ok(*car.clone())));
+                            return Ok(TcoStep::Done(Ok(car.as_ref().clone())));
                         }
                         Ok(TcoStep::Done(Err(LispError::Generic(
                             "quote takes exactly one argument".to_string(),
@@ -1798,7 +1798,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                                         } => {
                                                             // Last expression in the clause body: TCO
                                                             return Ok(TcoStep::TailCall(
-                                                                *last_expr.clone(),
+                                                                last_expr.as_ref().clone(),
                                                                 env.clone(),
                                                             ));
                                                         }
@@ -2048,7 +2048,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
 
                             let new_env = Environment::new_child(env);
                             let label_expr = LispVal::Cons {
-                                car: Box::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
+                                car: Rc::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
                                 cdr: rest.clone(),
                             };
                             new_env.set(name_sym.borrow().name.clone(), label_expr);
@@ -2154,7 +2154,10 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 }
                                 LispVal::Cons { car: last_expr, .. } => {
                                     // Last form: TCO
-                                    return Ok(TcoStep::TailCall(*last_expr.clone(), env.clone()));
+                                    return Ok(TcoStep::TailCall(
+                                        last_expr.as_ref().clone(),
+                                        env.clone(),
+                                    ));
                                 }
                                 _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))),
                             }
@@ -2400,13 +2403,13 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             let mut progn = LispVal::Nil;
                             for form in args[1..].iter().rev() {
                                 progn = LispVal::Cons {
-                                    car: Box::new(form.clone()),
-                                    cdr: Box::new(progn),
+                                    car: Rc::new(form.clone()),
+                                    cdr: Rc::new(progn),
                                 };
                             }
                             LispVal::Cons {
-                                car: Box::new(progn_sym),
-                                cdr: Box::new(progn),
+                                car: Rc::new(progn_sym),
+                                cdr: Rc::new(progn),
                             }
                         };
                         Ok(TcoStep::Done(Ok(LispVal::Vau(crate::Vau {
@@ -2430,7 +2433,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         // Vau application: bind operands (unevaluated) and caller env, TCO into body
                         if let LispVal::Vau(vau) = &func {
                             let new_env = Environment::new_child(&vau.env);
-                            new_env.set(vau.operands_param.clone(), *rest.clone());
+                            new_env.set(vau.operands_param.clone(), rest.as_ref().clone());
                             new_env.set(vau.env_param.clone(), LispVal::Environment(env.clone()));
                             return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
                         }
@@ -2440,7 +2443,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
                             if fexpr.params.len() == 1 {
                                 // Single-param: bind entire unevaluated arg list to the one parameter.
-                                new_env.set(fexpr.params[0].clone(), *rest.clone());
+                                new_env.set(fexpr.params[0].clone(), rest.as_ref().clone());
                             } else {
                                 // Multi-param: bind each unevaluated arg to its parameter.
                                 let unevaluated_args = list_to_vec(rest)?;
@@ -2508,7 +2511,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                 // Vau: must intercept BEFORE evaluating args
                 if let LispVal::Vau(vau) = &func {
                     let new_env = Environment::new_child(&vau.env);
-                    new_env.set(vau.operands_param.clone(), *rest.clone());
+                    new_env.set(vau.operands_param.clone(), rest.as_ref().clone());
                     new_env.set(vau.env_param.clone(), LispVal::Environment(env.clone()));
                     return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
                 }
@@ -2517,7 +2520,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                 if let LispVal::Fexpr(fexpr) = &func {
                     let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
                     if fexpr.params.len() == 1 {
-                        new_env.set(fexpr.params[0].clone(), *rest.clone());
+                        new_env.set(fexpr.params[0].clone(), rest.as_ref().clone());
                     } else {
                         let unevaluated_args = list_to_vec(rest)?;
                         if unevaluated_args.len() != fexpr.params.len() {
@@ -2597,8 +2600,8 @@ fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, Lisp
         let car_eval = quasiquote_eval(car, env)?;
         let cdr_eval = quasiquote_eval(cdr, env)?;
         Ok(LispVal::Cons {
-            car: Box::new(car_eval),
-            cdr: Box::new(cdr_eval),
+            car: Rc::new(car_eval),
+            cdr: Rc::new(cdr_eval),
         })
     } else {
         Ok(val.clone())
@@ -2813,8 +2816,8 @@ fn apply_list_processing(
                     new.clone()
                 } else if let LispVal::Cons { car, cdr } = tree {
                     LispVal::Cons {
-                        car: Box::new(subst_helper(new, old, car)),
-                        cdr: Box::new(subst_helper(new, old, cdr)),
+                        car: Rc::new(subst_helper(new, old, car)),
+                        cdr: Rc::new(subst_helper(new, old, cdr)),
                     }
                 } else {
                     tree.clone()
@@ -2844,7 +2847,7 @@ fn apply_list_processing(
                     } = &**car
                         && **pair_key == *key
                     {
-                        return Some(*pair_val.clone());
+                        return Some(pair_val.as_ref().clone());
                     }
                     current = cdr;
                 }
@@ -2857,8 +2860,8 @@ fn apply_list_processing(
                     LispVal::Cons { car, cdr } => {
                         // Recursively process both car and cdr
                         LispVal::Cons {
-                            car: Box::new(sublis_helper(alist, car)),
-                            cdr: Box::new(sublis_helper(alist, cdr)),
+                            car: Rc::new(sublis_helper(alist, car)),
+                            cdr: Rc::new(sublis_helper(alist, cdr)),
                         }
                     }
                     _ => {
@@ -2890,7 +2893,7 @@ fn apply_list_processing(
                 } = &**car
                 {
                     if **pair_car == *key {
-                        return Ok(*car.clone());
+                        return Ok(car.as_ref().clone());
                     }
                 } else {
                     // Warn about malformed alist element
@@ -2917,7 +2920,7 @@ fn apply_list_processing(
             while let LispVal::Cons { car: _, cdr } = &current {
                 let applied = apply(func, &[current.clone()], env)?;
                 result.push(applied);
-                current = *cdr.clone();
+                current = cdr.as_ref().clone();
             }
             Ok(vec_to_list(result))
         }
@@ -2936,7 +2939,7 @@ fn apply_list_processing(
             let mut result = Vec::new();
             let mut current = list;
             while let LispVal::Cons { car, cdr } = current {
-                let applied = apply(func, &[*car.clone()], env)?;
+                let applied = apply(func, &[car.as_ref().clone()], env)?;
                 result.push(applied);
                 current = cdr;
             }
@@ -2957,7 +2960,7 @@ fn apply_list_processing(
             }
             if let LispVal::Cons { car: _, cdr } = &args[0] {
                 Ok(LispVal::Cons {
-                    car: Box::new(args[1].clone()),
+                    car: Rc::new(args[1].clone()),
                     cdr: cdr.clone(),
                 })
             } else {
@@ -2982,7 +2985,7 @@ fn apply_list_processing(
             if let LispVal::Cons { car, cdr: _ } = &args[0] {
                 Ok(LispVal::Cons {
                     car: car.clone(),
-                    cdr: Box::new(args[1].clone()),
+                    cdr: Rc::new(args[1].clone()),
                 })
             } else {
                 Err(LispError::Generic(
@@ -3131,7 +3134,7 @@ fn apply_new_list_ops(
                 }
             }
             if let LispVal::Cons { car, cdr: _ } = current {
-                Ok(*car.clone())
+                Ok(car.as_ref().clone())
             } else {
                 Ok(LispVal::Nil)
             }
@@ -3152,7 +3155,7 @@ fn apply_new_list_ops(
             let mut current = args[1].clone();
             for _ in 0..n {
                 if let LispVal::Cons { car: _, cdr } = current {
-                    current = *cdr;
+                    current = cdr.as_ref().clone();
                 } else {
                     return Ok(LispVal::Nil);
                 }
@@ -3675,7 +3678,9 @@ fn apply_plist_op(
                     && let LispVal::Symbol(s) = &**sym
                     && let LispVal::Cons { car: val, cdr: _ } = &**rest
                 {
-                    s.borrow_mut().plist.insert(indicator.clone(), *val.clone());
+                    s.borrow_mut()
+                        .plist
+                        .insert(indicator.clone(), val.as_ref().clone());
                 }
                 current = cdr;
             }

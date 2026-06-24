@@ -211,8 +211,8 @@ fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
         Ok((
             input,
             exprs.into_iter().rev().fold(end, |cdr, car| LispVal::Cons {
-                car: Box::new(car),
-                cdr: Box::new(cdr),
+                car: Rc::new(car),
+                cdr: Rc::new(cdr),
             }),
         ))
     }
@@ -233,10 +233,10 @@ fn parse_quoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(preceded(char('\''), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Box::new(quote_symbol.clone()),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(expr),
-                    cdr: Box::new(LispVal::Nil),
+                car: Rc::new(quote_symbol.clone()),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(expr),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }
         })(input)
@@ -248,10 +248,10 @@ fn parse_quasiquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(preceded(char('`'), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Box::new(quasiquote_symbol.clone()),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(expr),
-                    cdr: Box::new(LispVal::Nil),
+                car: Rc::new(quasiquote_symbol.clone()),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(expr),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }
         })(input)
@@ -263,10 +263,10 @@ fn parse_function_shorthand(env: Rc<Environment>) -> impl Fn(&str) -> ParseResul
     move |input: &str| {
         map(preceded(tag("#'"), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Box::new(function_symbol.clone()),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(expr),
-                    cdr: Box::new(LispVal::Nil),
+                car: Rc::new(function_symbol.clone()),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(expr),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }
         })(input)
@@ -278,10 +278,10 @@ fn parse_unquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(preceded(char(','), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Box::new(unquote_symbol.clone()),
-                cdr: Box::new(LispVal::Cons {
-                    car: Box::new(expr),
-                    cdr: Box::new(LispVal::Nil),
+                car: Rc::new(unquote_symbol.clone()),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(expr),
+                    cdr: Rc::new(LispVal::Nil),
                 }),
             }
         })(input)
@@ -317,8 +317,8 @@ mod tests {
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
         LispVal::Cons {
-            car: Box::new(car),
-            cdr: Box::new(cdr),
+            car: Rc::new(car),
+            cdr: Rc::new(cdr),
         }
     }
 

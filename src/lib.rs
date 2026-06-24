@@ -326,9 +326,13 @@ pub enum LispVal {
     Fexpr(Fexpr),
     Macro(Macro),
     Vau(Vau),
+    /// A cons cell. Children are `Rc` (not `Box`) so cloning a list is an O(1)
+    /// refcount bump instead of a deep copy — cons cells are immutable in this
+    /// implementation (rplaca/rplacd are non-mutating), so structural sharing
+    /// is sound. See issue #111.
     Cons {
-        car: Box<LispVal>,
-        cdr: Box<LispVal>,
+        car: Rc<LispVal>,
+        cdr: Rc<LispVal>,
     },
     Nil,
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
@@ -517,8 +521,8 @@ impl From<Vec<LispVal>> for LispVal {
         v.into_iter()
             .rev()
             .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
-                car: Box::new(car),
-                cdr: Box::new(cdr),
+                car: Rc::new(car),
+                cdr: Rc::new(cdr),
             })
     }
 }
@@ -632,7 +636,7 @@ impl LispVal {
             match current {
                 LispVal::Nil => break,
                 LispVal::Cons { car, cdr } => {
-                    result.push(*car.clone());
+                    result.push(car.as_ref().clone());
                     current = cdr;
                 }
                 _ => {

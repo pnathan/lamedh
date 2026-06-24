@@ -8,6 +8,7 @@ use lamedh::{
 };
 use std::collections::HashSet;
 use std::io::BufReader;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // LispError::Display
@@ -144,12 +145,12 @@ fn test_lispval_cross_type_not_eq() {
 #[test]
 fn test_lispval_cons_eq() {
     let c1 = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Nil),
     };
     let c2 = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Nil),
     };
     assert_eq!(c1, c2);
 }
@@ -157,12 +158,12 @@ fn test_lispval_cons_eq() {
 #[test]
 fn test_lispval_cons_neq_car() {
     let c1 = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Nil),
     };
     let c2 = LispVal::Cons {
-        car: Box::new(LispVal::Number(2)),
-        cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(2)),
+        cdr: Rc::new(LispVal::Nil),
     };
     assert_ne!(c1, c2);
 }
@@ -170,8 +171,8 @@ fn test_lispval_cons_neq_car() {
 #[test]
 fn test_lispval_cons_neq_nil() {
     let c = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Nil),
     };
     assert_ne!(c, LispVal::Nil);
 }
@@ -215,7 +216,6 @@ fn test_lispval_symbol_different_intern() {
 fn test_lispval_hashtable_pointer_equality() {
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
 
     // Two separately created hash tables are not equal (pointer comparison).
     let ht1 = LispVal::HashTable(Rc::new(RefCell::new(HashMap::new())));
@@ -234,7 +234,6 @@ fn test_lispval_hashtable_pointer_equality() {
 #[test]
 fn test_lambda_partialeq_same_env() {
     use lamedh::LispVal;
-    use std::rc::Rc;
 
     let env = Environment::new_with_builtins();
     let lam1 = lamedh::Lambda {
@@ -255,7 +254,6 @@ fn test_lambda_partialeq_same_env() {
 #[test]
 fn test_lambda_partialeq_different_env() {
     use lamedh::LispVal;
-    use std::rc::Rc;
 
     // Two independently created environments → different Rc pointers → not equal.
     let env1 = Environment::new_with_builtins();
@@ -277,8 +275,6 @@ fn test_lambda_partialeq_different_env() {
 
 #[test]
 fn test_fexpr_partialeq_same_env() {
-    use std::rc::Rc;
-
     let env = Environment::new_with_builtins();
     let f1 = lamedh::Fexpr {
         params: vec!["ARGS".to_string()],
@@ -295,8 +291,6 @@ fn test_fexpr_partialeq_same_env() {
 
 #[test]
 fn test_macro_partialeq_same_env() {
-    use std::rc::Rc;
-
     let env = Environment::new_with_builtins();
     let m1 = lamedh::Macro {
         params: vec!["X".to_string()],
@@ -354,8 +348,8 @@ fn test_lispval_hash_nil() {
 fn test_lispval_hash_cons() {
     let mut set: HashSet<LispVal> = HashSet::new();
     let c = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Nil),
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Nil),
     };
     set.insert(c.clone());
     assert!(set.contains(&c));
@@ -375,7 +369,6 @@ fn test_lispval_hash_symbol() {
 fn test_lispval_hash_hashtable_no_panic() {
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
 
     let ht = LispVal::HashTable(Rc::new(RefCell::new(HashMap::new())));
     let mut set: HashSet<LispVal> = HashSet::new();
@@ -398,8 +391,6 @@ fn test_lispval_hash_builtin_no_panic() {
 
 #[test]
 fn test_lispval_hash_lambda_no_panic() {
-    use std::rc::Rc;
-
     let env = Environment::new_with_builtins();
     let lam = LispVal::Lambda(lamedh::Lambda {
         params: vec![],

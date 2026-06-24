@@ -1,5 +1,6 @@
 /// Tests for From/TryFrom conversions and LispVal helpers (issue #56).
 use lamedh::{LispError, LispVal};
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // From<T> for LispVal
@@ -57,8 +58,8 @@ fn test_from_vec_one() {
     assert_eq!(
         list,
         LispVal::Cons {
-            car: Box::new(LispVal::Number(1)),
-            cdr: Box::new(LispVal::Nil),
+            car: Rc::new(LispVal::Number(1)),
+            cdr: Rc::new(LispVal::Nil),
         }
     );
 }
@@ -176,8 +177,8 @@ fn test_try_from_vec_nil_is_empty() {
 #[test]
 fn test_try_from_vec_dotted_pair_err() {
     let dotted = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Number(2)), // not a proper list
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Number(2)), // not a proper list
     };
     let r: Result<Vec<LispVal>, LispError> = dotted.try_into();
     assert!(r.is_err());

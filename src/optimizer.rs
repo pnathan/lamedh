@@ -160,8 +160,8 @@ fn vec_to_list(v: Vec<LispVal>) -> LispVal {
     v.into_iter()
         .rev()
         .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
-            car: Box::new(car),
-            cdr: Box::new(cdr),
+            car: Rc::new(car),
+            cdr: Rc::new(cdr),
         })
 }
 
@@ -173,7 +173,7 @@ fn list_to_vec(v: &LispVal) -> Option<Vec<LispVal>> {
         match cur {
             LispVal::Nil => return Some(result),
             LispVal::Cons { car, cdr } => {
-                result.push(*car.clone());
+                result.push(car.as_ref().clone());
                 cur = cdr;
             }
             _ => return None, // improper list
@@ -251,8 +251,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                                         parts.push(else_opt);
                                     }
                                     return LispVal::Cons {
-                                        car: Box::new(parts[0].clone()),
-                                        cdr: Box::new(vec_to_list(parts[1..].to_vec())),
+                                        car: Rc::new(parts[0].clone()),
+                                        cdr: Rc::new(vec_to_list(parts[1..].to_vec())),
                                     };
                                 }
                             }
@@ -278,8 +278,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                             let mut all = kept;
                             all.push(last);
                             return LispVal::Cons {
-                                car: Box::new(head.as_ref().clone()),
-                                cdr: Box::new(vec_to_list(all)),
+                                car: Rc::new(head.as_ref().clone()),
+                                cdr: Rc::new(vec_to_list(all)),
                             };
                         }
                     }
@@ -298,8 +298,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                             }
                             // Rebuild with optimized args
                             return LispVal::Cons {
-                                car: Box::new(head.as_ref().clone()),
-                                cdr: Box::new(vec_to_list(opt_args)),
+                                car: Rc::new(head.as_ref().clone()),
+                                cdr: Rc::new(vec_to_list(opt_args)),
                             };
                         }
                     }
@@ -317,8 +317,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                         if let Some(args) = list_to_vec(rest) {
                             let opt_args: Vec<LispVal> = args.iter().map(optimize).collect();
                             return LispVal::Cons {
-                                car: Box::new(opt_head),
-                                cdr: Box::new(vec_to_list(opt_args)),
+                                car: Rc::new(opt_head),
+                                cdr: Rc::new(vec_to_list(opt_args)),
                             };
                         }
                     }
@@ -330,14 +330,14 @@ pub fn optimize(expr: &LispVal) -> LispVal {
             if let Some(args) = list_to_vec(rest) {
                 let opt_args: Vec<LispVal> = args.iter().map(optimize).collect();
                 LispVal::Cons {
-                    car: Box::new(opt_head),
-                    cdr: Box::new(vec_to_list(opt_args)),
+                    car: Rc::new(opt_head),
+                    cdr: Rc::new(vec_to_list(opt_args)),
                 }
             } else {
                 // Improper list (dotted pair): optimize both sides
                 LispVal::Cons {
-                    car: Box::new(opt_head),
-                    cdr: Box::new(optimize(rest)),
+                    car: Rc::new(opt_head),
+                    cdr: Rc::new(optimize(rest)),
                 }
             }
         }
