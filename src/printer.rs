@@ -66,11 +66,12 @@ pub fn print(val: &LispVal) -> String {
 mod tests {
     use super::*;
     use crate::environment::Environment;
+    use std::rc::Rc;
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
         LispVal::Cons {
-            car: Box::new(car),
-            cdr: Box::new(cdr),
+            car: Rc::new(car),
+            cdr: Rc::new(cdr),
         }
     }
 

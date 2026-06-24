@@ -142,12 +142,12 @@ fn test_print_deeply_nested_dotted_pair() {
     // ((a . b) . c)
     let env = Environment::new();
     let inner = LispVal::Cons {
-        car: Box::new(LispVal::Symbol(env.intern_symbol("A"))),
-        cdr: Box::new(LispVal::Symbol(env.intern_symbol("B"))),
+        car: Rc::new(LispVal::Symbol(env.intern_symbol("A"))),
+        cdr: Rc::new(LispVal::Symbol(env.intern_symbol("B"))),
     };
     let outer = LispVal::Cons {
-        car: Box::new(inner),
-        cdr: Box::new(LispVal::Symbol(env.intern_symbol("C"))),
+        car: Rc::new(inner),
+        cdr: Rc::new(LispVal::Symbol(env.intern_symbol("C"))),
     };
     assert_eq!(print(&outer), "((A . B) . C)");
 }
@@ -156,10 +156,10 @@ fn test_print_deeply_nested_dotted_pair() {
 fn test_print_list_with_dotted_tail() {
     // (1 2 . 3)
     let list = LispVal::Cons {
-        car: Box::new(LispVal::Number(1)),
-        cdr: Box::new(LispVal::Cons {
-            car: Box::new(LispVal::Number(2)),
-            cdr: Box::new(LispVal::Number(3)),
+        car: Rc::new(LispVal::Number(1)),
+        cdr: Rc::new(LispVal::Cons {
+            car: Rc::new(LispVal::Number(2)),
+            cdr: Rc::new(LispVal::Number(3)),
         }),
     };
     assert_eq!(print(&list), "(1 2 . 3)");
