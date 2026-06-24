@@ -2469,6 +2469,10 @@ fn apply_list_processing(
             Ok(LispVal::Nil)
         }
         BuiltinFunc::Maplist => {
+            // Arg order: (maplist list fn) — list first.
+            // Lisp 1.5 manual has maplist[fn;x] (fn first), but our arg order
+            // matches Common Lisp convention and is used consistently throughout
+            // the stdlib. Intentional deviation from the 1.5 manual (issue #66).
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "maplist requires exactly two arguments".to_string(),
@@ -2486,6 +2490,10 @@ fn apply_list_processing(
             Ok(vec_to_list(result))
         }
         BuiltinFunc::Mapcar => {
+            // Arg order: (mapcar list fn) — list first.
+            // Lisp 1.5 manual has mapcar[fn;x] (fn first), but our arg order
+            // matches Common Lisp convention and is used consistently throughout
+            // the stdlib. Intentional deviation from the 1.5 manual (issue #66).
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "mapcar requires exactly two arguments".to_string(),
