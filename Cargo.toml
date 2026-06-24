@@ -2,8 +2,23 @@
 name = "lamedh"
 version = "0.1.0"
 edition = "2024"
+description = "An embeddable Lisp 1.5 interpreter written in Rust"
+
+# The library crate. The CLI/REPL driver lives in the `lamedh-cli` member.
+[lib]
+name = "lamedh"
+path = "src/lib.rs"
 
 [dependencies]
-rustyline = "14.0.0"
 nom = "7.1.3"
-clap = { version = "4.5.4", features = ["derive"] }
+
+[workspace]
+members = ["cli"]
+default-members = [".", "cli"]
+# Benchmark comparison crates are standalone; they are built directly by
+# benchmarks/run_benchmarks.sh and are not part of this workspace.
+exclude = [
+    "benchmarks/fibonacci/rust",
+    "benchmarks/loops/rust",
+    "benchmarks/levenshtein/rust",
+]
