@@ -120,6 +120,24 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
         })
 }
 
+/// Wrap a body of one or more forms into a single evaluable expression.
+///
+/// A lone form is returned as-is; several forms are wrapped in `(PROGN ...)`
+/// so the existing `PROGN` trampoline sequences them and keeps TCO on the last
+/// form. Used by the binding special forms (`LET`/`LET*`) to accept multi-form
+/// bodies. `forms` is expected to be non-empty; an empty slice yields `(PROGN)`,
+/// which evaluates to `NIL`.
+fn wrap_body_forms(forms: &[LispVal], env: &Rc<Environment>) -> LispVal {
+    if forms.len() == 1 {
+        forms[0].clone()
+    } else {
+        let mut list = Vec::with_capacity(forms.len() + 1);
+        list.push(LispVal::Symbol(env.intern_symbol("PROGN")));
+        list.extend_from_slice(forms);
+        vec_to_list(list)
+    }
+}
+
 #[inline(never)]
 fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if args.len() != 2 {
@@ -2470,13 +2488,14 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                     "WHILE" => eval_while(rest, env),
                     "LET" => {
                         let args = list_to_vec(rest)?;
-                        if args.len() != 2 {
+                        if args.len() < 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
-                                "let takes exactly two arguments".to_string(),
+                                "let requires a binding list and at least one body form"
+                                    .to_string(),
                             ))));
                         }
                         let bindings_vec = list_to_vec(&args[0])?;
-                        let body = args[1].clone();
+                        let body = wrap_body_forms(&args[1..], env);
 
                         let mut params = vec![];
                         let mut arg_exprs = vec![];
@@ -2506,18 +2525,22 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         }
                         Ok(TcoStep::TailCall(body, let_env))
                     }
-                    // let* evaluates bindings sequentially; each binding sees prior ones
+                    // let* binds sequentially in a SINGLE frame: each binding is
+                    // evaluated in that frame and then written into it, so later
+                    // bindings see earlier ones without allocating a frame per
+                    // binding (the difference from desugaring to nested LETs).
                     "LET*" => {
                         let args = list_to_vec(rest)?;
-                        if args.len() != 2 {
+                        if args.len() < 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
-                                "let* takes exactly two arguments".to_string(),
+                                "let* requires a binding list and at least one body form"
+                                    .to_string(),
                             ))));
                         }
                         let bindings_vec = list_to_vec(&args[0])?;
-                        let body = args[1].clone();
+                        let body = wrap_body_forms(&args[1..], env);
 
-                        let mut cur_env = Environment::new_child(env);
+                        let let_env = Environment::new_child(env);
                         for binding in bindings_vec {
                             let pair = list_to_vec(&binding)?;
                             if pair.len() != 2 {
@@ -2526,17 +2549,15 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 ))));
                             }
                             if let LispVal::Symbol(s) = &pair[0] {
-                                let v = eval(&pair[1], &cur_env)?;
-                                let next_env = Environment::new_child(&cur_env);
-                                next_env.set(s.borrow().name.clone(), v);
-                                cur_env = next_env;
+                                let v = eval(&pair[1], &let_env)?;
+                                let_env.set(s.borrow().name.clone(), v);
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let* binding name must be a symbol".to_string(),
                                 ))));
                             }
                         }
-                        Ok(TcoStep::TailCall(body, cur_env))
+                        Ok(TcoStep::TailCall(body, let_env))
                     }
                     "VAU" | "$VAU" => {
                         // (vau (operands-param env-param) body...)
