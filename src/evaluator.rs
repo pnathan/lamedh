@@ -1,3 +1,41 @@
+//! Core evaluation engine: special forms, builtin primitives, and TCO trampoline.
+//!
+//! ## Architecture
+//!
+//! Evaluation is split into three layers:
+//!
+//! 1. **[`eval`]** — public entry point.  Acquires a recursion-depth guard and
+//!    delegates to `eval_impl`.
+//! 2. **`eval_impl`** — a loop that repeatedly calls `eval_step`.  When
+//!    `eval_step` returns `TcoStep::TailCall` the loop replaces the current
+//!    expression and environment without growing the Rust stack (trampolining
+//!    TCO).  `TcoStep::Done` exits the loop.
+//! 3. **`eval_step`** — the actual pattern-match on the expression.  Returns
+//!    either a finished value or a tail-call request.
+//!
+//! ## Recursion depth guard
+//!
+//! A thread-local counter tracks the nesting level of `eval` calls.  Once the
+//! counter reaches [`DEFAULT_EVAL_DEPTH_LIMIT`] a [`LispError::Generic`] is
+//! returned instead of overflowing the native stack.  The limit is adjustable
+//! via [`set_eval_depth_limit`].
+//!
+//! ## Special forms
+//!
+//! Special forms are handled directly in `eval_step` before the general
+//! function-application path:
+//!
+//! `QUOTE`, `QUASIQUOTE`/`UNQUOTE`, `IF`, `COND`, `AND`, `OR`,
+//! `DEF`, `DEFDYNAMIC`/`DEFVAR`, `LAMBDA`, `FUNCTION`, `LABEL`,
+//! `DEFINE`, `DEFEXPR`, `DEFMACRO`, `DEFSTRUCT`,
+//! `PROGN`, `SETQ`, `PROG`, `RETURN`, `GO`,
+//! `LET`, `LET*`, `VAU`/`$VAU`.
+//!
+//! ## Builtin functions
+//!
+//! 100+ primitives are dispatched in `apply_builtin` from the [`BuiltinFunc`]
+//! discriminant stored in [`LispVal::Builtin`] values.
+
 #![allow(clippy::mutable_key_type)]
 use crate::{BuiltinFunc, LispError, LispVal, environment::Environment};
 use std::cell::{Cell, RefCell};
@@ -1521,11 +1559,23 @@ fn expand_macro(
 }
 
 /// Public entry point for evaluation. Acquires a depth-guard frame (issue #61)
-/// for the outermost call, then delegates to `eval_impl` which performs a
-/// trampoline loop for tail-call optimization (issue #62).
+/// Evaluate a single Lisp expression in `env`.
 ///
-/// Non-tail recursive calls inside `eval_impl` call back into this function so
-/// that the depth guard is applied to every non-tail frame.
+/// This is the primary entry point for evaluation.  It acquires a
+/// recursion-depth guard and delegates to `eval_impl`, which uses a trampoline
+/// loop for tail-call optimisation: tail positions (`IF` branches, `PROGN`
+/// last form, `LET` body, lambda bodies) are handled without growing the Rust
+/// call stack.
+///
+/// Non-tail recursive calls (e.g. evaluating function arguments) go through
+/// `eval` again so the depth guard applies.
+///
+/// # Errors
+///
+/// Returns [`LispError::Generic`] on any runtime error, including recursion
+/// depth exceeded.  [`LispError::Return`] and [`LispError::Go`] are internal
+/// control-flow signals for `PROG`/`RETURN`/`GO` and should not escape a
+/// top-level `eval` call under normal use.
 pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     // Bound recursion so deep/infinite recursion is a recoverable error rather
     // than a native stack overflow that aborts the whole process (issue #61).

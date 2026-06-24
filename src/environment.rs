@@ -1,8 +1,47 @@
+//! Variable binding, symbol interning, dynamic scoping, and capability management.
+//!
+//! An [`Environment`] is a frame in the interpreter's variable-binding chain.
+//! Each frame holds a `HashMap<String, LispVal>` of local bindings and a
+//! pointer to a lexical parent frame.  When a function is called, a new child
+//! frame is created whose lexical parent is the closure's captured environment
+//! and whose *dynamic* parent is the caller's frame (for special-variable
+//! propagation).
+//!
+//! ## Symbol interning
+//!
+//! All symbol names are stored once in the global [`SymbolTable`].  Two
+//! occurrences of the name `"FOO"` share the same `Rc<RefCell<Symbol>>`
+//! allocation.  This makes `EQ` (pointer equality) an O(1) test.
+//!
+//! ## Scoping
+//!
+//! - **Lexical** (default): lookup walks `parent` pointers — the chain of
+//!   frames from the closure's definition site to the global frame.
+//! - **Dynamic** (opt-in): variables marked via [`Environment::mark_dynamic`]
+//!   are looked up by walking `dynamic_parent` pointers — the actual call
+//!   stack.  Use the `DEFDYNAMIC`/`DEFVAR` special forms or `*EARMUFF*`
+//!   naming to signal dynamic intent.
+//!
+//! ## Capabilities
+//!
+//! Dangerous operations (`SHELL`, `FILE-IO`, `IO`) are gated behind feature
+//! flags that are all **off by default**.  Call [`Environment::enable_feature`]
+//! to opt in.  Because `SharedState` is shared across the whole chain, a
+//! feature enabled anywhere is visible everywhere.
+
 use crate::{BuiltinFunc, LispError, LispVal, Symbol};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+/// Global symbol table shared by all environments in an interpreter session.
+///
+/// Maintains a `HashMap<String, Rc<RefCell<Symbol>>>` so that every distinct
+/// symbol name maps to exactly one heap allocation.  Pointer equality of the
+/// `Rc` handles is the Lisp `EQ` predicate for symbols.
+///
+/// Uninterned symbols (created by [`SymbolTable::gensym`]) are *not* stored in
+/// the table — they are guaranteed unique but not sharable by name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolTable {
     symbols: HashMap<String, Rc<RefCell<Symbol>>>,
@@ -16,6 +55,7 @@ impl Default for SymbolTable {
 }
 
 impl SymbolTable {
+    /// Create an empty symbol table.
     pub fn new() -> Self {
         SymbolTable {
             symbols: HashMap::new(),
@@ -23,6 +63,10 @@ impl SymbolTable {
         }
     }
 
+    /// Create a fresh uninterned symbol with a unique name (`G0000`, `G0001`, …).
+    ///
+    /// Uninterned symbols are *not* stored in the table, so two `gensym` calls
+    /// always return distinct `Rc` pointers even if the names collide.
     pub fn gensym(&mut self) -> Rc<RefCell<Symbol>> {
         let name = format!("G{:04}", self.gensym_counter);
         self.gensym_counter += 1;
@@ -37,6 +81,10 @@ impl SymbolTable {
         self.symbols.values().cloned().collect()
     }
 
+    /// Return the interned `Rc` for `name`, creating a new `Symbol` if needed.
+    ///
+    /// The name must already be uppercased; callers are responsible for
+    /// normalisation (the environment does this via [`Environment::intern_symbol`]).
     pub fn intern(&mut self, name: &str) -> Rc<RefCell<Symbol>> {
         if let Some(symbol) = self.symbols.get(name) {
             return symbol.clone();
@@ -121,6 +169,10 @@ impl Default for Environment {
 }
 
 impl Environment {
+    /// Create a root environment with no parent and no builtins.
+    ///
+    /// Prefer [`Environment::new_with_builtins`] or [`Environment::with_stdlib`]
+    /// for a usable interpreter environment.
     pub fn new() -> Self {
         Environment {
             parent: None,
@@ -156,6 +208,12 @@ impl Environment {
         })
     }
 
+    /// Create a root environment with all 100+ built-in primitives registered.
+    ///
+    /// This does **not** load the Lisp standard library (`defun`, `append`,
+    /// etc.).  Use [`Environment::with_stdlib`] for a fully-featured environment.
+    ///
+    /// All capability flags (`SHELL`, `FILE-IO`, `IO`) are disabled by default.
     pub fn new_with_builtins() -> Rc<Environment> {
         let env = Rc::new(Environment::new());
         let t_symbol = env.intern_symbol("T");
@@ -495,10 +553,15 @@ impl Environment {
         Self::new_with_builtins()
     }
 
+    /// Intern `name` (uppercased) into the global symbol table.
+    ///
+    /// Returns the shared `Rc<RefCell<Symbol>>` for this name, creating a new
+    /// entry if the name has not been seen before.
     pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
         self.shared.symbols.borrow_mut().intern(name)
     }
 
+    /// Generate a fresh uninterned symbol.  Equivalent to `(gensym)` in Lisp.
     pub fn gensym(&self) -> Rc<RefCell<Symbol>> {
         self.shared.symbols.borrow_mut().gensym()
     }
@@ -507,10 +570,14 @@ impl Environment {
         self.shared.symbols.borrow().all_symbols()
     }
 
+    /// Return `true` if `name` is bound anywhere in the lexical chain.
     pub fn is_bound(&self, name: &str) -> bool {
         self.get(name).is_some()
     }
 
+    /// Lexical variable lookup.  Walks the `parent` chain; does **not** check
+    /// the dynamic-parent chain.  Use [`Environment::get_var`] for the
+    /// scoping-aware lookup that respects dynamic variables.
     pub fn get(&self, name: &str) -> Option<LispVal> {
         if let Some(val) = self.bindings.borrow().get(name) {
             return Some(val.clone());
@@ -521,6 +588,10 @@ impl Environment {
         None
     }
 
+    /// Bind `name` to `val` in this environment frame (not in any parent).
+    ///
+    /// Use [`Environment::update`] to modify an existing binding that may live
+    /// in a parent frame.
     pub fn set(&self, name: String, val: LispVal) {
         self.bindings.borrow_mut().insert(name, val);
     }
@@ -593,6 +664,8 @@ impl Environment {
         env.set(name.to_string(), val);
     }
 
+    /// Collect all bindings visible from this frame (including parent frames).
+    /// Parent bindings are shadowed by child bindings.
     pub fn all_bindings(&self) -> HashMap<String, LispVal> {
         let mut all = HashMap::new();
         if let Some(parent) = &self.parent {
@@ -602,7 +675,11 @@ impl Environment {
         all
     }
 
-    // Condition flag operations (dynamically scoped)
+    /// Set the boolean condition flag `flag` to `true`.
+    ///
+    /// Flags are global (shared across the whole chain) and are used to signal
+    /// exceptional conditions such as arithmetic overflow (`"OVERFLOW"`).
+    /// Check with [`Environment::flag_set`]; clear with [`Environment::clear_flag`].
     pub fn set_flag(&self, flag: &str) {
         self.shared
             .condition_flags
@@ -610,6 +687,7 @@ impl Environment {
             .insert(flag.to_string(), true);
     }
 
+    /// Set condition flag `flag` to `false`.
     pub fn clear_flag(&self, flag: &str) {
         self.shared
             .condition_flags
@@ -617,6 +695,7 @@ impl Environment {
             .insert(flag.to_string(), false);
     }
 
+    /// Return `true` if condition flag `flag` has been set.
     pub fn flag_set(&self, flag: &str) -> bool {
         self.shared
             .condition_flags
@@ -626,6 +705,7 @@ impl Environment {
             .unwrap_or(false)
     }
 
+    /// Clear all condition flags.
     pub fn clear_all_flags(&self) {
         self.shared.condition_flags.borrow_mut().clear();
     }
