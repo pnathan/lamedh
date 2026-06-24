@@ -97,7 +97,7 @@ fn test_float_negative_zero_hash_key() {
         (PROGN
             (DEF h (MAKE-HASH-TABLE))
             (SET-BANG h 0.0 "positive zero")
-            (GET h -0.0))
+            (GETHASH h -0.0))
     "#;
     let result = eval_str(input);
     println!("Get -0.0 after setting 0.0: {:?}", result);

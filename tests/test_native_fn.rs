@@ -33,7 +33,10 @@ fn test_register_fn_name_uppercased() {
         let env = Environment::new_with_builtins();
         env.register_fn("my-fn", |_args, _env| Ok(LispVal::Number(42)));
         let result = eval_line("(my-fn)", &env);
-        assert_eq!(result, "42", "lowercase name should be uppercased; got: {result}");
+        assert_eq!(
+            result, "42",
+            "lowercase name should be uppercased; got: {result}"
+        );
     });
 }
 
@@ -54,7 +57,9 @@ fn test_register_fn_propagates_error() {
     with_large_stack(|| {
         let env = Environment::new_with_builtins();
         env.register_fn("FAIL-FN", |_args, _env| {
-            Err(lamedh::LispError::Generic("intentional failure".to_string()))
+            Err(lamedh::LispError::Generic(
+                "intentional failure".to_string(),
+            ))
         });
         let result = eval_line("(fail-fn)", &env);
         assert!(
@@ -78,7 +83,10 @@ fn test_register_fn_receives_evaluated_args() {
         });
         // Arg is an expression that evaluates to 5
         let result = eval_line("(double (+ 2 3))", &env);
-        assert_eq!(result, "10", "native fn should get evaluated args; got: {result}");
+        assert_eq!(
+            result, "10",
+            "native fn should get evaluated args; got: {result}"
+        );
     });
 }
 
@@ -93,7 +101,10 @@ fn test_native_is_functionp() {
         env.register_fn("NOOP", |_args, _env| Ok(LispVal::Nil));
         // noop (unquoted) evaluates to the native fn value
         let result = eval_line("(functionp noop)", &env);
-        assert_eq!(result, "T", "native fn should satisfy functionp; got: {result}");
+        assert_eq!(
+            result, "T",
+            "native fn should satisfy functionp; got: {result}"
+        );
     });
 }
 
@@ -129,7 +140,10 @@ fn test_native_prints_as_native() {
         env.register_fn("SHOW-ME", |_args, _env| Ok(LispVal::Nil));
         // Evaluating the symbol bound to a native fn should print "<native>"
         let result = eval_line("show-me", &env);
-        assert_eq!(result, "<native>", "native fn should print as <native>; got: {result}");
+        assert_eq!(
+            result, "<native>",
+            "native fn should print as <native>; got: {result}"
+        );
     });
 }
 

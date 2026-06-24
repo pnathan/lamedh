@@ -13,7 +13,7 @@ fn test_from_i64() {
 
 #[test]
 fn test_from_f64() {
-    assert_eq!(LispVal::from(3.14f64), LispVal::Float(3.14));
+    assert_eq!(LispVal::from(3.25f64), LispVal::Float(3.25));
 }
 
 #[test]
@@ -72,10 +72,16 @@ fn test_from_vec_multiple() {
         LispVal::Cons { car, cdr } => {
             assert_eq!(**car, LispVal::Number(1));
             match cdr.as_ref() {
-                LispVal::Cons { car: car2, cdr: cdr2 } => {
+                LispVal::Cons {
+                    car: car2,
+                    cdr: cdr2,
+                } => {
                     assert_eq!(**car2, LispVal::Number(2));
                     match cdr2.as_ref() {
-                        LispVal::Cons { car: car3, cdr: tail } => {
+                        LispVal::Cons {
+                            car: car3,
+                            cdr: tail,
+                        } => {
                             assert_eq!(**car3, LispVal::Number(3));
                             assert_eq!(**tail, LispVal::Nil);
                         }
@@ -185,7 +191,10 @@ fn test_try_from_vec_dotted_pair_err() {
 fn test_list_from_i64_iter() {
     let list = LispVal::list([1i64, 2, 3]);
     let vec: Vec<LispVal> = list.try_into().unwrap();
-    assert_eq!(vec, vec![LispVal::Number(1), LispVal::Number(2), LispVal::Number(3)]);
+    assert_eq!(
+        vec,
+        vec![LispVal::Number(1), LispVal::Number(2), LispVal::Number(3)]
+    );
 }
 
 #[test]
@@ -277,7 +286,11 @@ fn test_round_trip_i64() {
 
 #[test]
 fn test_round_trip_vec() {
-    let original = vec![LispVal::Number(1), LispVal::String("x".to_string()), LispVal::Nil];
+    let original = vec![
+        LispVal::Number(1),
+        LispVal::String("x".to_string()),
+        LispVal::Nil,
+    ];
     let list = LispVal::from(original.clone());
     let recovered: Vec<LispVal> = list.try_into().unwrap();
     assert_eq!(original, recovered);

@@ -1,5 +1,11 @@
-use lamedh::{LispError, LispVal, eval_all, eval_line, eval_str, load_directory, load_file, repl_loop};
+// LispVal is intentionally used as a HashSet/HashMap key; its interior
+// mutability (Rc<RefCell>) is by design, so silence clippy::mutable_key_type.
+#![allow(clippy::mutable_key_type)]
+
 use lamedh::environment::Environment;
+use lamedh::{
+    LispError, LispVal, eval_all, eval_line, eval_str, load_directory, load_file, repl_loop,
+};
 use std::collections::HashSet;
 use std::io::BufReader;
 
@@ -100,7 +106,7 @@ fn test_lispval_number_eq() {
 
 #[test]
 fn test_lispval_float_eq() {
-    assert_eq!(LispVal::Float(3.14), LispVal::Float(3.14));
+    assert_eq!(LispVal::Float(3.25), LispVal::Float(3.25));
     assert_ne!(LispVal::Float(1.0), LispVal::Float(2.0));
 }
 
@@ -173,8 +179,14 @@ fn test_lispval_cons_neq_nil() {
 #[test]
 fn test_lispval_builtin_eq() {
     use lamedh::BuiltinFunc;
-    assert_eq!(LispVal::Builtin(BuiltinFunc::Plus), LispVal::Builtin(BuiltinFunc::Plus));
-    assert_ne!(LispVal::Builtin(BuiltinFunc::Plus), LispVal::Builtin(BuiltinFunc::Minus));
+    assert_eq!(
+        LispVal::Builtin(BuiltinFunc::Plus),
+        LispVal::Builtin(BuiltinFunc::Plus)
+    );
+    assert_ne!(
+        LispVal::Builtin(BuiltinFunc::Plus),
+        LispVal::Builtin(BuiltinFunc::Minus)
+    );
 }
 
 #[test]
@@ -535,7 +547,10 @@ fn test_eval_str_success() {
 fn test_eval_str_error() {
     let env = Environment::new_with_builtins();
     let result = eval_str("(car)", &env);
-    assert!(result.is_err(), "car with no args should error; got: {result:?}");
+    assert!(
+        result.is_err(),
+        "car with no args should error; got: {result:?}"
+    );
 }
 
 #[test]
@@ -544,7 +559,10 @@ fn test_eval_str_parse_error() {
     let result = eval_str("(", &env);
     assert!(result.is_err(), "unclosed paren should error");
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("Parse error") || msg.contains("Error"), "got: {msg}");
+    assert!(
+        msg.contains("Parse error") || msg.contains("Error"),
+        "got: {msg}"
+    );
 }
 
 #[test]
@@ -607,7 +625,10 @@ fn test_with_stdlib_append() {
     // (no CWD files) can call (append (list 1) (list 2)).
     let env = Environment::with_stdlib();
     let result = eval_line("(append (list 1) (list 2))", &env);
-    assert_eq!(result, "(1 2)", "append should work with embedded stdlib; got: {result}");
+    assert_eq!(
+        result, "(1 2)",
+        "append should work with embedded stdlib; got: {result}"
+    );
 }
 
 #[test]
@@ -615,12 +636,18 @@ fn test_with_stdlib_defun() {
     let env = Environment::with_stdlib();
     eval_line("(defun square (x) (* x x))", &env);
     let result = eval_line("(square 7)", &env);
-    assert_eq!(result, "49", "defun should work with embedded stdlib; got: {result}");
+    assert_eq!(
+        result, "49",
+        "defun should work with embedded stdlib; got: {result}"
+    );
 }
 
 #[test]
 fn test_with_stdlib_equal() {
     let env = Environment::with_stdlib();
     let result = eval_line("(equal '(1 2 3) '(1 2 3))", &env);
-    assert_eq!(result, "T", "equal should work with embedded stdlib; got: {result}");
+    assert_eq!(
+        result, "T",
+        "equal should work with embedded stdlib; got: {result}"
+    );
 }

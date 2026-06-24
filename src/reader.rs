@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_parse_float() {
-        assert_eq!(parse_float("3.14"), Ok(("", float(3.14))));
+        assert_eq!(parse_float("3.25"), Ok(("", float(3.25))));
         assert_eq!(parse_float("-0.5"), Ok(("", float(-0.5))));
     }
 

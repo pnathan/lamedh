@@ -10,7 +10,7 @@
   (let ((h (make-hash-table)))
     (progn
       (set-bang h 'hkey 42)
-      (assert-equal (get h 'hkey) 42))))
+      (assert-equal (gethash h 'hkey) 42))))
 
 (deftest hash-keys
   (let ((h (make-hash-table)))
@@ -23,7 +23,7 @@
     (progn
       (set-bang h 'hdel-key 7)
       (delete-key-bang h 'hdel-key)
-      (assert-nil (get h 'hdel-key)))))
+      (assert-nil (gethash h 'hdel-key)))))
 
 (deftest plist-putp-getp
   ;; putp/getp use string keys

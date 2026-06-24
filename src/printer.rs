@@ -17,7 +17,12 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Number(n) => n.to_string(),
         LispVal::Float(f) => {
             let s = f.to_string();
-            if s.contains('.') || s.contains('e') || s.contains('E') || s.contains("inf") || s.contains("NaN") {
+            if s.contains('.')
+                || s.contains('e')
+                || s.contains('E')
+                || s.contains("inf")
+                || s.contains("NaN")
+            {
                 s
             } else {
                 format!("{}.0", s)
@@ -126,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_print_symbol_with_plist() {
-        let mut env = Environment::new();
+        let env = Environment::new();
         let s = env.intern_symbol("a");
         s.borrow_mut()
             .plist

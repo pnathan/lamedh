@@ -81,10 +81,10 @@ fn try_algebraic_identity(op: &str, args: &[LispVal]) -> Option<LispVal> {
             if let LispVal::Number(0) = b {
                 return Some(a.clone());
             }
-            if op == "+" {
-                if let LispVal::Number(0) = a {
-                    return Some(b.clone());
-                }
+            if op == "+"
+                && let LispVal::Number(0) = a
+            {
+                return Some(b.clone());
             }
             None
         }
@@ -121,10 +121,10 @@ fn is_pure(expr: &LispVal) -> bool {
         LispVal::Symbol(_) => true, // reading a variable is pure (no side effects)
         LispVal::Cons { car, cdr } => {
             // (quote ...) is always pure
-            if let LispVal::Symbol(s) = car.as_ref() {
-                if s.borrow().name == "QUOTE" {
-                    return true;
-                }
+            if let LispVal::Symbol(s) = car.as_ref()
+                && s.borrow().name == "QUOTE"
+            {
+                return true;
             }
             // (+ ...) (- ...) (* ...) (/) on pure args — pure
             if let LispVal::Symbol(s) = car.as_ref() {
@@ -217,43 +217,43 @@ pub fn optimize(expr: &LispVal) -> LispVal {
 
                     // IF: branch elimination on literal condition
                     "IF" => {
-                        if let Some(args) = list_to_vec(rest) {
-                            if args.len() >= 2 {
-                                let cond = optimize(&args[0]);
-                                match &cond {
-                                    LispVal::Nil => {
-                                        // (if nil then else) -> else (or nil if no else)
-                                        if args.len() >= 3 {
-                                            return optimize(&args[2]);
-                                        } else {
-                                            return LispVal::Nil;
-                                        }
+                        if let Some(args) = list_to_vec(rest)
+                            && args.len() >= 2
+                        {
+                            let cond = optimize(&args[0]);
+                            match &cond {
+                                LispVal::Nil => {
+                                    // (if nil then else) -> else (or nil if no else)
+                                    if args.len() >= 3 {
+                                        return optimize(&args[2]);
+                                    } else {
+                                        return LispVal::Nil;
                                     }
-                                    LispVal::Number(_) | LispVal::String(_) | LispVal::Float(_) => {
-                                        // Truthy literal condition: (if <truthy> then else) -> then
-                                        return optimize(&args[1]);
+                                }
+                                LispVal::Number(_) | LispVal::String(_) | LispVal::Float(_) => {
+                                    // Truthy literal condition: (if <truthy> then else) -> then
+                                    return optimize(&args[1]);
+                                }
+                                LispVal::Symbol(sym) if sym.borrow().name == "T" => {
+                                    // (if t then else) -> then
+                                    return optimize(&args[1]);
+                                }
+                                _ => {
+                                    // Unknown condition: optimize both branches
+                                    let then_opt = optimize(&args[1]);
+                                    let else_opt = if args.len() >= 3 {
+                                        optimize(&args[2])
+                                    } else {
+                                        LispVal::Nil
+                                    };
+                                    let mut parts = vec![head.as_ref().clone(), cond, then_opt];
+                                    if args.len() >= 3 {
+                                        parts.push(else_opt);
                                     }
-                                    LispVal::Symbol(sym) if sym.borrow().name == "T" => {
-                                        // (if t then else) -> then
-                                        return optimize(&args[1]);
-                                    }
-                                    _ => {
-                                        // Unknown condition: optimize both branches
-                                        let then_opt = optimize(&args[1]);
-                                        let else_opt = if args.len() >= 3 {
-                                            optimize(&args[2])
-                                        } else {
-                                            LispVal::Nil
-                                        };
-                                        let mut parts = vec![head.as_ref().clone(), cond, then_opt];
-                                        if args.len() >= 3 {
-                                            parts.push(else_opt);
-                                        }
-                                        return LispVal::Cons {
-                                            car: Box::new(parts[0].clone()),
-                                            cdr: Box::new(vec_to_list(parts[1..].to_vec())),
-                                        };
-                                    }
+                                    return LispVal::Cons {
+                                        car: Box::new(parts[0].clone()),
+                                        cdr: Box::new(vec_to_list(parts[1..].to_vec())),
+                                    };
                                 }
                             }
                         }

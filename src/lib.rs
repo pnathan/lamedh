@@ -231,6 +231,10 @@ pub enum BuiltinFunc {
     Arrayp,
     Extensionp,
     ExtensionTypeName,
+    // Lisp 1.5 EVCON
+    Evcon,
+    // I/O
+    Spaces,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -760,7 +764,7 @@ pub fn load_directory(path: &str, env: &Rc<Environment>) -> Result<(), LispError
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
             let path = entry.path();
-            path.is_file() && path.extension().map_or(false, |ext| ext == "lisp")
+            path.is_file() && path.extension().is_some_and(|ext| ext == "lisp")
         })
         .collect();
 

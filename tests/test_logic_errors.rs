@@ -1,7 +1,7 @@
+use lamedh::LispVal;
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
 use lamedh::reader::read;
-use lamedh::LispVal;
 
 fn eval_str(input: &str) -> Result<LispVal, String> {
     let env = Environment::new_with_builtins();
@@ -15,7 +15,10 @@ fn test_expt_overflow() {
     let result = eval_str("(EXPT 2 63)");
     // 2^63 would overflow i64, should error
     assert!(result.is_err(), "2^63 should return an overflow error");
-    assert!(result.unwrap_err().contains("overflow"), "Error should mention overflow");
+    assert!(
+        result.unwrap_err().contains("overflow"),
+        "Error should mention overflow"
+    );
 
     // Test 2^62 which should work
     let result = eval_str("(EXPT 2 62)");
@@ -32,7 +35,10 @@ fn test_expt_large_exponent_cast() {
     let result = eval_str("(EXPT 2 4294967296)"); // 2^32
     // This should error with "exponent too large"
     assert!(result.is_err(), "Exponent > u32::MAX should error");
-    assert!(result.unwrap_err().contains("too large"), "Error should mention exponent too large");
+    assert!(
+        result.unwrap_err().contains("too large"),
+        "Error should mention exponent too large"
+    );
 }
 
 #[test]
@@ -189,7 +195,7 @@ fn test_float_hash_as_key() {
         (PROGN
             (DEF h (MAKE-HASH-TABLE))
             (SET-BANG h 3.14 "pi")
-            (GET h 3.14))
+            (GETHASH h 3.14))
     "#;
     let result = eval_str(input);
     println!("Float hash key result: {:?}", result);
@@ -208,7 +214,10 @@ fn test_cond_empty_consequent() {
     let result = eval_str(input);
     assert!(result.is_ok());
     if let Ok(LispVal::Number(n)) = result {
-        assert_eq!(n, 3, "COND with no consequent should return predicate value");
+        assert_eq!(
+            n, 3,
+            "COND with no consequent should return predicate value"
+        );
     }
 }
 

@@ -117,7 +117,10 @@ fn test_dynamic_across_multiple_functions() {
     eval_line("(defdynamic *context* 'global)", &env);
     eval_line("(defun inner () *context*)", &env);
     eval_line("(defun middle () (inner))", &env);
-    eval_line("(defun outer () (let ((*context* 'outer-bound)) (middle)))", &env);
+    eval_line(
+        "(defun outer () (let ((*context* 'outer-bound)) (middle)))",
+        &env,
+    );
 
     let result = eval_line("(outer)", &env);
     assert_eq!(result, "OUTER-BOUND");
@@ -131,7 +134,10 @@ fn test_dynamic_with_recursive_function() {
     let env = env_with_stdlib();
 
     eval_line("(defdynamic *depth* 0)", &env);
-    eval_line("(defun max-depth (n) (if (zerop n) *depth* (let ((*depth* (+ *depth* 1))) (max-depth (- n 1)))))", &env);
+    eval_line(
+        "(defun max-depth (n) (if (zerop n) *depth* (let ((*depth* (+ *depth* 1))) (max-depth (- n 1)))))",
+        &env,
+    );
 
     let result = eval_line("(max-depth 5)", &env);
     assert_eq!(result, "5");
@@ -145,7 +151,10 @@ fn test_dynamic_with_recursive_function() {
 fn test_docstring_on_dynamic_variable() {
     let env = env_with_stdlib();
 
-    eval_line("(defdynamic *documented* 42 \"This is a test variable\")", &env);
+    eval_line(
+        "(defdynamic *documented* 42 \"This is a test variable\")",
+        &env,
+    );
 
     let result = eval_line("(getp '*documented* \"docstring\")", &env);
     assert_eq!(result, "\"This is a test variable\"");
@@ -190,5 +199,9 @@ fn test_run_comprehensive_lisp_tests() {
     // This will run all the tests in the Lisp file
     // The file should complete without errors
     let result = load_file("tests/dynamic_variables_test.lisp", &env);
-    assert!(result.is_ok(), "Dynamic variables test file should run without errors: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Dynamic variables test file should run without errors: {:?}",
+        result
+    );
 }

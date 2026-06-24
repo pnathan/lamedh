@@ -1,7 +1,7 @@
+use lamedh::LispVal;
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
 use lamedh::reader::read;
-use lamedh::LispVal;
 
 fn eval_str(input: &str) -> Result<LispVal, String> {
     let env = Environment::new_with_builtins();
@@ -14,12 +14,24 @@ fn eval_str(input: &str) -> Result<LispVal, String> {
 fn test_float_equal_distinguishes_negative_zero() {
     // FLOAT-EQUAL uses bitwise comparison, so -0.0 != 0.0
     let result = eval_str("(FLOAT-EQUAL 0.0 -0.0)");
-    assert!(result.is_ok(), "Failed to evaluate FLOAT-EQUAL: {:?}", result);
-    assert_eq!(result.unwrap(), LispVal::Nil, "-0.0 and 0.0 should not be float equal");
+    assert!(
+        result.is_ok(),
+        "Failed to evaluate FLOAT-EQUAL: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        LispVal::Nil,
+        "-0.0 and 0.0 should not be float equal"
+    );
 
     // But they are numerically equal in regular comparison
     let result = eval_str("(FLOAT-EQUAL 0.0 0.0)");
-    assert!(result.is_ok(), "Failed to evaluate FLOAT-EQUAL with same values: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Failed to evaluate FLOAT-EQUAL with same values: {:?}",
+        result
+    );
     match result.unwrap() {
         LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
         _ => panic!("Expected T"),
@@ -71,8 +83,16 @@ fn test_label_self_reference_error() {
     let result = eval_str("(LABEL x x)");
     assert!(result.is_err(), "LABEL x x should be an error");
     let err_msg = result.unwrap_err();
-    assert!(err_msg.contains("pathological"), "Error should mention pathological: {}", err_msg);
-    assert!(err_msg.contains("infinite recursion"), "Should mention infinite recursion: {}", err_msg);
+    assert!(
+        err_msg.contains("pathological"),
+        "Error should mention pathological: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("infinite recursion"),
+        "Should mention infinite recursion: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -97,7 +117,10 @@ fn test_assoc_with_malformed_alist() {
     // This should print warning to stderr but return NIL
     let input = "(ASSOC 'x '(1 2 3))";
     let result = eval_str(input);
-    assert!(result.is_ok(), "ASSOC should continue despite malformed alist");
+    assert!(
+        result.is_ok(),
+        "ASSOC should continue despite malformed alist"
+    );
     assert_eq!(result.unwrap(), LispVal::Nil);
 }
 
@@ -219,5 +242,9 @@ fn test_all_fixes_together() {
             (CONS float-test (CONS dynamic-var (CONS (CDR assoc-result) NIL))))
     "#;
     let result = eval_str(input);
-    assert!(result.is_ok(), "Integration test should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Integration test should succeed: {:?}",
+        result
+    );
 }

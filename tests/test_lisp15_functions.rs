@@ -104,7 +104,11 @@ fn test_sassoc_empty_alist() {
 fn test_mapc_returns_list() {
     let e = env();
     eval_str("(def result '())", &e).unwrap();
-    let v = eval_str("(mapc '(1 2 3) (lambda (x) (setq result (cons x result))))", &e).unwrap();
+    let v = eval_str(
+        "(mapc '(1 2 3) (lambda (x) (setq result (cons x result))))",
+        &e,
+    )
+    .unwrap();
     let expected = eval_str("'(1 2 3)", &e).unwrap();
     assert_eq!(v, expected);
 }

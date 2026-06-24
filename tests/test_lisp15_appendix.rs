@@ -1,9 +1,9 @@
 /// Tests for Lisp 1.5 Appendix A functions added in lib/09-lisp15.lisp
 /// and related Rust-level fixes.
 mod test_helpers;
+use lamedh::eval_line;
 use lamedh::with_large_stack;
 use test_helpers::env_with_stdlib;
-use lamedh::eval_line;
 
 // ─── PAIR ────────────────────────────────────────────────────────────────────
 
@@ -107,7 +107,10 @@ fn test_map_side_effects() {
         let env = env_with_stdlib();
         // use map to collect cars of sublists via setq
         eval_line("(setq acc '())", &env);
-        eval_line("(map '(1 2 3) (lambda (x) (setq acc (cons (car x) acc))))", &env);
+        eval_line(
+            "(map '(1 2 3) (lambda (x) (setq acc (cons (car x) acc))))",
+            &env,
+        );
         // acc should be (3 2 1) - reversed because cons prepends
         assert_eq!(eval_line("acc", &env), "(3 2 1)");
     });

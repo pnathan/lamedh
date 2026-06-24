@@ -1,7 +1,7 @@
+use lamedh::LispVal;
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
 use lamedh::reader::read;
-use lamedh::LispVal;
 
 fn eval_str(input: &str) -> Result<LispVal, String> {
     let env = Environment::new_with_builtins();

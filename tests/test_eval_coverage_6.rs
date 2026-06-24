@@ -88,7 +88,7 @@ fn test_set_bang_two_args_error() {
 fn test_get_one_arg_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(get (make-hash-table))", &env);
+        let result = eval_line("(gethash (make-hash-table))", &env);
         assert!(
             result.contains("Error"),
             "get with 1 arg should error; got: {result}"
@@ -100,7 +100,7 @@ fn test_get_one_arg_error() {
 fn test_get_three_args_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(get (make-hash-table) 'k 'extra)", &env);
+        let result = eval_line("(gethash (make-hash-table) 'k 'extra)", &env);
         assert!(
             result.contains("Error"),
             "get with 3 args should error; got: {result}"

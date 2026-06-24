@@ -157,9 +157,7 @@ fn apply_math_op(
     env: &Rc<Environment>,
 ) -> Result<LispVal, LispError> {
     // If any argument is a float, promote all to float arithmetic
-    let has_float = args
-        .iter()
-        .any(|a| matches!(a, LispVal::Float(_)));
+    let has_float = args.iter().any(|a| matches!(a, LispVal::Float(_)));
     if has_float {
         let floats: Result<Vec<f64>, LispError> = args
             .iter()
@@ -183,9 +181,7 @@ fn apply_math_op(
                 if floats.len() == 1 {
                     Ok(LispVal::Float(-floats[0]))
                 } else {
-                    Ok(LispVal::Float(
-                        floats[0] - floats[1..].iter().sum::<f64>(),
-                    ))
+                    Ok(LispVal::Float(floats[0] - floats[1..].iter().sum::<f64>()))
                 }
             }
             BuiltinFunc::Multiply => Ok(LispVal::Float(floats.iter().product())),
@@ -454,9 +450,7 @@ fn apply_numeric_primitives(
                 (LispVal::Number(base), LispVal::Number(exp)) => {
                     if *exp < 0 {
                         // negative integer exponent → float result
-                        return Ok(LispVal::Float(
-                            (*base as f64).powi(*exp as i32),
-                        ));
+                        return Ok(LispVal::Float((*base as f64).powi(*exp as i32)));
                     }
                     if *exp > u32::MAX as i64 {
                         return Err(LispError::Generic("exponent too large".to_string()));
@@ -471,9 +465,7 @@ fn apply_numeric_primitives(
                 (LispVal::Number(base), LispVal::Float(exp)) => {
                     Ok(LispVal::Float((*base as f64).powf(*exp)))
                 }
-                (LispVal::Float(base), LispVal::Float(exp)) => {
-                    Ok(LispVal::Float(base.powf(*exp)))
-                }
+                (LispVal::Float(base), LispVal::Float(exp)) => Ok(LispVal::Float(base.powf(*exp))),
                 _ => Err(LispError::Generic("expt requires numbers".to_string())),
             }
         }
@@ -744,7 +736,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     _ => {
                         return Err(LispError::Generic(
                             "evlis takes 1 or 2 arguments".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let mut result = vec![];
@@ -761,6 +753,51 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     };
                 }
                 Ok(out)
+            }
+            BuiltinFunc::Evcon => {
+                // evcon[c;a] — evaluate clauses until one passes, return its value
+                // Clauses: ((test value) ...) evaluated in env a
+                let (clauses, eval_env) = match args.len() {
+                    1 => (&args[0], env.clone()),
+                    2 => {
+                        if let LispVal::Environment(e) = &args[1] {
+                            (&args[0], e.clone())
+                        } else {
+                            return Err(LispError::Generic(
+                                "evcon: second argument must be an environment".to_string(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(LispError::Generic(
+                            "evcon takes 1 or 2 arguments".to_string(),
+                        ));
+                    }
+                };
+                let mut cur = clauses.clone();
+                loop {
+                    match cur {
+                        LispVal::Nil => return Ok(LispVal::Nil),
+                        LispVal::Cons { car, cdr } => {
+                            let clause = list_to_vec(&car)?;
+                            if clause.len() != 2 {
+                                return Err(LispError::Generic(
+                                    "evcon: each clause must be (test value)".to_string(),
+                                ));
+                            }
+                            let test = eval(&clause[0], &eval_env)?;
+                            if test != LispVal::Nil {
+                                return eval(&clause[1], &eval_env);
+                            }
+                            cur = *cdr;
+                        }
+                        _ => {
+                            return Err(LispError::Generic(
+                                "evcon: clauses must be a proper list".to_string(),
+                            ));
+                        }
+                    }
+                }
             }
             BuiltinFunc::Eval => match args.len() {
                 1 => eval(&args[0], env),
@@ -833,9 +870,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             BuiltinFunc::Apply => apply_apply(args, env),
 
             // I/O functions
-            BuiltinFunc::Read | BuiltinFunc::Prin1 | BuiltinFunc::Princ | BuiltinFunc::Terpri => {
-                apply_io_op(builtin, args, env)
-            }
+            BuiltinFunc::Read
+            | BuiltinFunc::Prin1
+            | BuiltinFunc::Princ
+            | BuiltinFunc::Terpri
+            | BuiltinFunc::Spaces => apply_io_op(builtin, args, env),
 
             // Error handling
             BuiltinFunc::Error | BuiltinFunc::Errorset => apply_error_op(builtin, args, env),
@@ -1208,7 +1247,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     _ => {
                         return Err(LispError::Generic(
                             "array: size must be a non-negative integer".to_string(),
-                        ))
+                        ));
                     }
                 };
                 let v = vec![LispVal::Nil; n];
@@ -1226,7 +1265,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                         _ => {
                             return Err(LispError::Generic(
                                 "fetch: index must be a non-negative integer".to_string(),
-                            ))
+                            ));
                         }
                     };
                     let v = a.borrow();
@@ -1255,7 +1294,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                         _ => {
                             return Err(LispError::Generic(
                                 "store: index must be a non-negative integer".to_string(),
-                            ))
+                            ));
                         }
                     };
                     let val = args[2].clone();
@@ -1550,12 +1589,11 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
 
             // If the value is a LABEL expression, tail-call evaluate it
             // This handles recursive LABEL definitions (TCO: TailCall instead of recurse)
-            if let LispVal::Cons { car, cdr: _ } = &value {
-                if let LispVal::Symbol(sym) = &**car {
-                    if sym.borrow().name == "LABEL" {
-                        return Ok(TcoStep::TailCall(value, env.clone()));
-                    }
-                }
+            if let LispVal::Cons { car, cdr: _ } = &value
+                && let LispVal::Symbol(sym) = &**car
+                && sym.borrow().name == "LABEL"
+            {
+                return Ok(TcoStep::TailCall(value, env.clone()));
             }
 
             Ok(TcoStep::Done(Ok(value)))
@@ -1872,14 +1910,14 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
 
                         if let LispVal::Symbol(name_sym) = name_val {
                             // Check for pathological case: (LABEL x x)
-                            if let LispVal::Symbol(expr_sym) = expr_val {
-                                if name_sym.borrow().name == expr_sym.borrow().name {
-                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                        "LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
-                                        name_sym.borrow().name,
-                                        expr_sym.borrow().name
-                                    )))));
-                                }
+                            if let LispVal::Symbol(expr_sym) = expr_val
+                                && name_sym.borrow().name == expr_sym.borrow().name
+                            {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                    "LABEL: pathological self-reference (LABEL {} {}) would cause infinite recursion",
+                                    name_sym.borrow().name,
+                                    expr_sym.borrow().name
+                                )))));
                             }
 
                             let new_env = Environment::new_child(env);
@@ -1903,7 +1941,16 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 "DEFINE takes a list of definitions".to_string(),
                             ))));
                         }
-                        let def_list = list_to_vec(&defs[0])?;
+                        // DEFINE may be called with or without a quote:
+                        //   (define '((name val) ...))  — evaluate (strips the quote)
+                        //   (define  ((name val) ...))  — raw list, use directly
+                        let def_list_val = match &defs[0] {
+                            LispVal::Cons { car, .. } if matches!(car.as_ref(), LispVal::Symbol(s) if s.borrow().name == "QUOTE") => {
+                                eval(&defs[0], env)?
+                            }
+                            _ => defs[0].clone(),
+                        };
+                        let def_list = list_to_vec(&def_list_val)?;
                         let mut defined_names = vec![];
                         for def in def_list {
                             let def_pair = list_to_vec(&def)?;
@@ -1914,8 +1961,10 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             }
                             if let LispVal::Symbol(s) = &def_pair[0] {
                                 let name = s.borrow().name.clone();
-                                let v = &def_pair[1];
-                                env.set(name, v.clone());
+                                let v = eval(&def_pair[1], env)?;
+                                env.set(name.clone(), v.clone());
+                                // Also set EXPR on the symbol's plist (Lisp 1.5: define = deflist[x;EXPR])
+                                s.borrow_mut().plist.insert("EXPR".to_string(), v);
                                 defined_names.push(LispVal::Symbol(s.clone()));
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1966,6 +2015,142 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 .to_string(),
                             ))))
                         }
+                    }
+                    "DEFSTRUCT" => {
+                        // (defstruct Name field1 field2 ...)
+                        // Representation: mutable Array where
+                        //   index 0 = type tag (Symbol)
+                        //   index 1..n = field values (initially NIL)
+                        // Generates:
+                        //   (make-Name v1 v2 ...) — positional constructor
+                        //   (Name-p x)            — type predicate
+                        //   (Name-field x)        — field accessor
+                        //   (set-Name-field! x v) — mutating field setter
+                        let sargs = list_to_vec(rest)?;
+                        if sargs.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "defstruct requires a name".to_string(),
+                            ))));
+                        }
+                        let name_sym = if let LispVal::Symbol(s) = &sargs[0] {
+                            s.clone()
+                        } else {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "defstruct: first argument must be a symbol".to_string(),
+                            ))));
+                        };
+                        let type_name = name_sym.borrow().name.clone();
+                        let fields: Vec<String> = sargs[1..]
+                            .iter()
+                            .map(|f| {
+                                if let LispVal::Symbol(s) = f {
+                                    Ok(s.borrow().name.clone())
+                                } else {
+                                    Err(LispError::Generic(
+                                        "defstruct: fields must be symbols".to_string(),
+                                    ))
+                                }
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let n_fields = fields.len();
+
+                        // Constructor: (make-NAME v1 v2 ...) — positional
+                        {
+                            let tn = type_name.clone();
+                            let nf = n_fields;
+                            let params: Vec<LispVal> = fields
+                                .iter()
+                                .map(|f| LispVal::Symbol(env.intern_symbol(f)))
+                                .collect();
+                            // Build lambda that creates array and stores values
+                            // (lambda (f1 f2 ...) (let ((s (array N+1))) (store s 0 'TYPE) (store s 1 f1) ... s))
+                            let mut stmts: Vec<LispVal> = vec![];
+                            // (store s 0 'TypeName)
+                            stmts.push(
+                                crate::reader::read(&format!("(store s 0 '{tn})"), env)
+                                    .map_err(LispError::Generic)?,
+                            );
+                            for (i, f) in fields.iter().enumerate() {
+                                stmts.push(
+                                    crate::reader::read(&format!("(store s {} {f})", i + 1), env)
+                                        .map_err(LispError::Generic)?,
+                                );
+                            }
+                            stmts.push(LispVal::Symbol(env.intern_symbol("S")));
+                            let let_body = vec_to_list(stmts);
+                            // Build the let manually to splice in stmts
+                            let progn = LispVal::Cons {
+                                car: Box::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
+                                cdr: Box::new(let_body),
+                            };
+                            let let_form = crate::reader::read(&format!("(array {})", nf + 1), env)
+                                .map_err(LispError::Generic)?;
+                            let binding = LispVal::Cons {
+                                car: Box::new(LispVal::Cons {
+                                    car: Box::new(LispVal::Symbol(env.intern_symbol("S"))),
+                                    cdr: Box::new(LispVal::Cons {
+                                        car: Box::new(let_form),
+                                        cdr: Box::new(LispVal::Nil),
+                                    }),
+                                }),
+                                cdr: Box::new(LispVal::Nil),
+                            };
+                            let full_let = LispVal::Cons {
+                                car: Box::new(LispVal::Symbol(env.intern_symbol("LET"))),
+                                cdr: Box::new(LispVal::Cons {
+                                    car: Box::new(binding),
+                                    cdr: Box::new(LispVal::Cons {
+                                        car: Box::new(progn),
+                                        cdr: Box::new(LispVal::Nil),
+                                    }),
+                                }),
+                            };
+                            let lambda_form = LispVal::Cons {
+                                car: Box::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
+                                cdr: Box::new(LispVal::Cons {
+                                    car: Box::new(vec_to_list(params)),
+                                    cdr: Box::new(LispVal::Cons {
+                                        car: Box::new(full_let),
+                                        cdr: Box::new(LispVal::Nil),
+                                    }),
+                                }),
+                            };
+                            let ctor = eval(&lambda_form, env)?;
+                            env.set(format!("MAKE-{}", tn), ctor);
+                        }
+
+                        // Predicate: (arrayp x) && (eq (fetch x 0) 'TypeName)
+                        {
+                            let tn = type_name.clone();
+                            let form = crate::reader::read(
+                                &format!("(lambda (x) (and (arrayp x) (eq (fetch x 0) '{tn})))"),
+                                env,
+                            )
+                            .map_err(LispError::Generic)?;
+                            let pred = eval(&form, env)?;
+                            env.set(format!("{}-P", tn), pred);
+                        }
+
+                        // Accessors: (Name-field s) → (fetch s idx)
+                        // Mutators:  (set-Name-field! s v) → (store s idx v)
+                        for (i, field) in fields.iter().enumerate() {
+                            let idx = i + 1;
+                            let acc_form =
+                                crate::reader::read(&format!("(lambda (s) (fetch s {idx}))"), env)
+                                    .map_err(LispError::Generic)?;
+                            env.set(format!("{}-{}", type_name, field), eval(&acc_form, env)?);
+
+                            let mut_form = crate::reader::read(
+                                &format!("(lambda (s v) (store s {idx} v))"),
+                                env,
+                            )
+                            .map_err(LispError::Generic)?;
+                            env.set(
+                                format!("SET-{}-{}!", type_name, field),
+                                eval(&mut_form, env)?,
+                            );
+                        }
+                        Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym))))
                     }
                     "PROGN" => {
                         let mut current = &**rest;
@@ -2191,7 +2376,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         // operands-param receives the unevaluated operand list;
                         // env-param receives the caller's environment.
                         let args = list_to_vec(rest)?;
-                        if args.len() < 1 {
+                        if args.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau requires at least a parameter list".to_string(),
                             ))));
@@ -2448,7 +2633,7 @@ fn apply_symbol_op(
                 _ => {
                     return Err(LispError::Generic(
                         "get-p requires a symbol or string as its second argument".to_string(),
-                    ))
+                    ));
                 }
             };
             if let LispVal::Symbol(s) = &args[0] {
@@ -2475,7 +2660,7 @@ fn apply_symbol_op(
                 _ => {
                     return Err(LispError::Generic(
                         "put-p requires a symbol or string as its second argument".to_string(),
-                    ))
+                    ));
                 }
             };
             if let LispVal::Symbol(s) = &args[0] {
@@ -2555,6 +2740,24 @@ fn apply_io_op(
             }
             println!();
             Ok(LispVal::Nil)
+        }
+        BuiltinFunc::Spaces => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "spaces takes exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Number(n) = &args[0] {
+                let n = (*n).max(0) as usize;
+                print!("{}", " ".repeat(n));
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                Ok(LispVal::Nil)
+            } else {
+                Err(LispError::Generic(
+                    "spaces requires a number argument".to_string(),
+                ))
+            }
         }
         _ => Err(LispError::Generic("Not an I/O operation".to_string())),
     }
@@ -2648,10 +2851,9 @@ fn apply_list_processing(
                         car: pair_key,
                         cdr: pair_val,
                     } = &**car
+                        && **pair_key == *key
                     {
-                        if **pair_key == *key {
-                            return Some(*pair_val.clone());
-                        }
+                        return Some(*pair_val.clone());
                     }
                     current = cdr;
                 }
@@ -3013,8 +3215,8 @@ fn apply_new_numeric_ops(
                 if *y == 0 {
                     return Err(LispError::Generic("Division by zero".to_string()));
                 }
-                // MOD uses floored division (different from remainder for negative numbers)
-                Ok(LispVal::Number(x.rem_euclid(*y)))
+                // Use checked_rem_euclid to handle i64::MIN % -1 (overflow)
+                Ok(LispVal::Number(x.checked_rem_euclid(*y).unwrap_or(0)))
             } else {
                 Err(LispError::Generic(
                     "mod requires integer arguments".to_string(),
@@ -3441,7 +3643,7 @@ fn apply_plist_op(
                 _ => {
                     return Err(LispError::Generic(
                         "remprop requires a symbol or string as its second argument".to_string(),
-                    ))
+                    ));
                 }
             };
             if let LispVal::Symbol(s) = &args[0] {
@@ -3470,7 +3672,7 @@ fn apply_plist_op(
                 _ => {
                     return Err(LispError::Generic(
                         "deflist requires a symbol or string as its second argument".to_string(),
-                    ))
+                    ));
                 }
             };
             let mut current = pairs;
@@ -3479,12 +3681,10 @@ fn apply_plist_op(
                     car: sym,
                     cdr: rest,
                 } = &**car
+                    && let LispVal::Symbol(s) = &**sym
+                    && let LispVal::Cons { car: val, cdr: _ } = &**rest
                 {
-                    if let LispVal::Symbol(s) = &**sym {
-                        if let LispVal::Cons { car: val, cdr: _ } = &**rest {
-                            s.borrow_mut().plist.insert(indicator.clone(), *val.clone());
-                        }
-                    }
+                    s.borrow_mut().plist.insert(indicator.clone(), *val.clone());
                 }
                 current = cdr;
             }
