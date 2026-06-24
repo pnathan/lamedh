@@ -112,7 +112,7 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             map(
                 recognize(pair(
                     alt((alpha1, tag("&"), tag("$"))),
-                    many0(alt((alphanumeric1, tag("-")))),
+                    many0(alt((alphanumeric1, tag("-"), tag("*"), tag("?"), tag("!")))),
                 )),
                 |s: &str| {
                     let s_upper = s.to_uppercase();

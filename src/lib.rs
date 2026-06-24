@@ -182,6 +182,12 @@ pub enum BuiltinFunc {
     TheEnvironment,
     // Source optimizer
     Optimize,
+    // Arrays (Lisp 1.5 Appendix A)
+    MakeArray,
+    ArrayFetch,
+    ArrayStore,
+    ArrayLength,
+    Arrayp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -283,6 +289,8 @@ pub enum LispVal {
     Native(Rc<NativeFn>),
     /// A first-class environment value.
     Environment(Rc<Environment>),
+    /// A 0-indexed mutable vector (Lisp 1.5 `array`).
+    Array(Rc<RefCell<Vec<LispVal>>>),
 }
 
 impl fmt::Debug for LispVal {
@@ -302,6 +310,7 @@ impl fmt::Debug for LispVal {
             LispVal::HashTable(_) => write!(f, "HashTable(...)"),
             LispVal::Native(_) => write!(f, "Native(...)"),
             LispVal::Environment(_) => write!(f, "Environment(...)"),
+            LispVal::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
         }
     }
 }
@@ -326,6 +335,7 @@ impl Clone for LispVal {
             LispVal::HashTable(h) => LispVal::HashTable(Rc::clone(h)),
             LispVal::Native(f) => LispVal::Native(Rc::clone(f)),
             LispVal::Environment(e) => LispVal::Environment(Rc::clone(e)),
+            LispVal::Array(a) => LispVal::Array(Rc::clone(a)),
         }
     }
 }
@@ -356,6 +366,7 @@ impl PartialEq for LispVal {
             (LispVal::Vau(a), LispVal::Vau(b)) => a == b,
             (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
             (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
+            (LispVal::Array(a), LispVal::Array(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -383,6 +394,9 @@ impl Hash for LispVal {
             }
             LispVal::Environment(e) => {
                 Rc::as_ptr(e).hash(state);
+            }
+            LispVal::Array(a) => {
+                Rc::as_ptr(a).hash(state);
             }
             LispVal::Builtin(_)
             | LispVal::Lambda(_)
@@ -600,6 +614,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
     ("09-lisp15.lisp", include_str!("../lib/09-lisp15.lisp")),
     ("10-testing.lisp", include_str!("../lib/10-testing.lisp")),
+    (
+        "11-optimizer-vau.lisp",
+        include_str!("../lib/11-optimizer-vau.lisp"),
+    ),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),

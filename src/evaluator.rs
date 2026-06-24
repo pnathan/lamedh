@@ -852,7 +852,8 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             BuiltinFunc::Symbolp
             | BuiltinFunc::Boundp
             | BuiltinFunc::Functionp
-            | BuiltinFunc::Macrop => apply_type_predicates(builtin, args, env),
+            | BuiltinFunc::Macrop
+            | BuiltinFunc::Arrayp => apply_type_predicates(builtin, args, env),
 
             // New list operations
             BuiltinFunc::List
@@ -1146,6 +1147,98 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
                 Ok(crate::optimizer::optimize(&args[0]))
             }
+            // ── Arrays ─────────────────────────────────────────────────────
+            BuiltinFunc::MakeArray => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "array takes exactly one argument".to_string(),
+                    ));
+                }
+                let n = match &args[0] {
+                    LispVal::Number(n) if *n >= 0 => *n as usize,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "array: size must be a non-negative integer".to_string(),
+                        ))
+                    }
+                };
+                let v = vec![LispVal::Nil; n];
+                Ok(LispVal::Array(Rc::new(RefCell::new(v))))
+            }
+            BuiltinFunc::ArrayFetch => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "fetch takes exactly two arguments".to_string(),
+                    ));
+                }
+                if let LispVal::Array(a) = &args[0] {
+                    let idx = match &args[1] {
+                        LispVal::Number(n) if *n >= 0 => *n as usize,
+                        _ => {
+                            return Err(LispError::Generic(
+                                "fetch: index must be a non-negative integer".to_string(),
+                            ))
+                        }
+                    };
+                    let v = a.borrow();
+                    if idx >= v.len() {
+                        return Err(LispError::Generic(format!(
+                            "fetch: index {idx} out of bounds (length {})",
+                            v.len()
+                        )));
+                    }
+                    Ok(v[idx].clone())
+                } else {
+                    Err(LispError::Generic(
+                        "fetch: first argument must be an array".to_string(),
+                    ))
+                }
+            }
+            BuiltinFunc::ArrayStore => {
+                if args.len() != 3 {
+                    return Err(LispError::Generic(
+                        "store takes exactly three arguments".to_string(),
+                    ));
+                }
+                if let LispVal::Array(a) = &args[0] {
+                    let idx = match &args[1] {
+                        LispVal::Number(n) if *n >= 0 => *n as usize,
+                        _ => {
+                            return Err(LispError::Generic(
+                                "store: index must be a non-negative integer".to_string(),
+                            ))
+                        }
+                    };
+                    let val = args[2].clone();
+                    let mut v = a.borrow_mut();
+                    if idx >= v.len() {
+                        return Err(LispError::Generic(format!(
+                            "store: index {idx} out of bounds (length {})",
+                            v.len()
+                        )));
+                    }
+                    v[idx] = val.clone();
+                    Ok(val)
+                } else {
+                    Err(LispError::Generic(
+                        "store: first argument must be an array".to_string(),
+                    ))
+                }
+            }
+            BuiltinFunc::ArrayLength => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "array-length takes exactly one argument".to_string(),
+                    ));
+                }
+                if let LispVal::Array(a) = &args[0] {
+                    Ok(LispVal::Number(a.borrow().len() as i64))
+                } else {
+                    Err(LispError::Generic(
+                        "array-length: argument must be an array".to_string(),
+                    ))
+                }
+            }
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:
@@ -1428,7 +1521,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
         | LispVal::Vau(_)
         | LispVal::HashTable(_)
         | LispVal::Native(_)
-        | LispVal::Environment(_) => Ok(TcoStep::Done(Ok(val.clone()))),
+        | LispVal::Environment(_)
+        | LispVal::Array(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
         LispVal::Cons {
             car: first,
@@ -2009,6 +2103,38 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             }
                         }
                         Ok(TcoStep::TailCall(body, let_env))
+                    }
+                    // let* evaluates bindings sequentially; each binding sees prior ones
+                    "LET*" => {
+                        let args = list_to_vec(rest)?;
+                        if args.len() != 2 {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "let* takes exactly two arguments".to_string(),
+                            ))));
+                        }
+                        let bindings_vec = list_to_vec(&args[0])?;
+                        let body = args[1].clone();
+
+                        let mut cur_env = Environment::new_child(env);
+                        for binding in bindings_vec {
+                            let pair = list_to_vec(&binding)?;
+                            if pair.len() != 2 {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "let* binding must be a pair".to_string(),
+                                ))));
+                            }
+                            if let LispVal::Symbol(s) = &pair[0] {
+                                let v = eval(&pair[1], &cur_env)?;
+                                let next_env = Environment::new_child(&cur_env);
+                                next_env.set(s.borrow().name.clone(), v);
+                                cur_env = next_env;
+                            } else {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "let* binding name must be a symbol".to_string(),
+                                ))));
+                            }
+                        }
+                        Ok(TcoStep::TailCall(body, cur_env))
                     }
                     "VAU" | "$VAU" => {
                         // (vau (operands-param env-param) body...)
@@ -2984,6 +3110,7 @@ fn apply_type_predicates(
                 | LispVal::Vau(_)
         ),
         BuiltinFunc::Macrop => matches!(arg, LispVal::Macro(_)),
+        BuiltinFunc::Arrayp => matches!(arg, LispVal::Array(_)),
         _ => return Err(LispError::Generic("Not a type predicate".to_string())),
     };
     if result {
