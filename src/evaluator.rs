@@ -1574,6 +1574,132 @@ fn eval_impl(initial_val: LispVal, initial_env: Rc<Environment>) -> Result<LispV
     }
 }
 
+/// Handle the `DEFSTRUCT` special form. Kept out-of-line (`#[inline(never)]`)
+/// so its large stack frame does not bloat the recursive `eval_step` hot path
+/// (see issue #76 — a fat `eval_step` frame exhausts the native stack before
+/// the recursion-depth guard can fire).
+///
+/// `(defstruct Name field1 field2 ...)` defines, via the embedded array ops:
+///   - `(make-Name v1 v2 ...)` positional constructor (array, index 0 = type tag)
+///   - `(Name-p x)` type predicate
+///   - `(Name-field x)` field accessor and `(set-Name-field! x v)` mutator
+#[inline(never)]
+fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+    let sargs = list_to_vec(rest)?;
+    if sargs.is_empty() {
+        return Ok(TcoStep::Done(Err(LispError::Generic(
+            "defstruct requires a name".to_string(),
+        ))));
+    }
+    let name_sym = if let LispVal::Symbol(s) = &sargs[0] {
+        s.clone()
+    } else {
+        return Ok(TcoStep::Done(Err(LispError::Generic(
+            "defstruct: first argument must be a symbol".to_string(),
+        ))));
+    };
+    let type_name = name_sym.borrow().name.clone();
+    let fields: Vec<String> = sargs[1..]
+        .iter()
+        .map(|f| {
+            if let LispVal::Symbol(s) = f {
+                Ok(s.borrow().name.clone())
+            } else {
+                Err(LispError::Generic(
+                    "defstruct: fields must be symbols".to_string(),
+                ))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let n_fields = fields.len();
+
+    // Constructor: (make-NAME v1 v2 ...) — positional.
+    // Builds (lambda (f1 ...) (let ((s (array N+1))) (store s 0 'TYPE) (store s i fi) ... s))
+    {
+        let tn = type_name.clone();
+        let params: Vec<LispVal> = fields
+            .iter()
+            .map(|f| LispVal::Symbol(env.intern_symbol(f)))
+            .collect();
+        let mut stmts: Vec<LispVal> = vec![
+            crate::reader::read(&format!("(store s 0 '{tn})"), env).map_err(LispError::Generic)?,
+        ];
+        for (i, f) in fields.iter().enumerate() {
+            stmts.push(
+                crate::reader::read(&format!("(store s {} {f})", i + 1), env)
+                    .map_err(LispError::Generic)?,
+            );
+        }
+        stmts.push(LispVal::Symbol(env.intern_symbol("S")));
+        let progn = LispVal::Cons {
+            car: Box::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
+            cdr: Box::new(vec_to_list(stmts)),
+        };
+        let let_form = crate::reader::read(&format!("(array {})", n_fields + 1), env)
+            .map_err(LispError::Generic)?;
+        let binding = LispVal::Cons {
+            car: Box::new(LispVal::Cons {
+                car: Box::new(LispVal::Symbol(env.intern_symbol("S"))),
+                cdr: Box::new(LispVal::Cons {
+                    car: Box::new(let_form),
+                    cdr: Box::new(LispVal::Nil),
+                }),
+            }),
+            cdr: Box::new(LispVal::Nil),
+        };
+        let full_let = LispVal::Cons {
+            car: Box::new(LispVal::Symbol(env.intern_symbol("LET"))),
+            cdr: Box::new(LispVal::Cons {
+                car: Box::new(binding),
+                cdr: Box::new(LispVal::Cons {
+                    car: Box::new(progn),
+                    cdr: Box::new(LispVal::Nil),
+                }),
+            }),
+        };
+        let lambda_form = LispVal::Cons {
+            car: Box::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
+            cdr: Box::new(LispVal::Cons {
+                car: Box::new(vec_to_list(params)),
+                cdr: Box::new(LispVal::Cons {
+                    car: Box::new(full_let),
+                    cdr: Box::new(LispVal::Nil),
+                }),
+            }),
+        };
+        let ctor = eval(&lambda_form, env)?;
+        env.set(format!("MAKE-{}", tn), ctor);
+    }
+
+    // Predicate: (lambda (x) (and (arrayp x) (eq (fetch x 0) 'TypeName)))
+    {
+        let tn = type_name.clone();
+        let form = crate::reader::read(
+            &format!("(lambda (x) (and (arrayp x) (eq (fetch x 0) '{tn})))"),
+            env,
+        )
+        .map_err(LispError::Generic)?;
+        let pred = eval(&form, env)?;
+        env.set(format!("{}-P", tn), pred);
+    }
+
+    // Accessors: (Name-field s) → (fetch s idx); mutators: (set-Name-field! s v) → (store s idx v)
+    for (i, field) in fields.iter().enumerate() {
+        let idx = i + 1;
+        let acc_form = crate::reader::read(&format!("(lambda (s) (fetch s {idx}))"), env)
+            .map_err(LispError::Generic)?;
+        env.set(format!("{}-{}", type_name, field), eval(&acc_form, env)?);
+
+        let mut_form = crate::reader::read(&format!("(lambda (s v) (store s {idx} v))"), env)
+            .map_err(LispError::Generic)?;
+        env.set(
+            format!("SET-{}-{}!", type_name, field),
+            eval(&mut_form, env)?,
+        );
+    }
+    Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym))))
+}
+
 /// Perform one evaluation step. Returns `TcoStep::Done` for final results
 /// and `TcoStep::TailCall` for tail positions (caller loops instead of recursing).
 fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
@@ -2016,142 +2142,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             ))))
                         }
                     }
-                    "DEFSTRUCT" => {
-                        // (defstruct Name field1 field2 ...)
-                        // Representation: mutable Array where
-                        //   index 0 = type tag (Symbol)
-                        //   index 1..n = field values (initially NIL)
-                        // Generates:
-                        //   (make-Name v1 v2 ...) — positional constructor
-                        //   (Name-p x)            — type predicate
-                        //   (Name-field x)        — field accessor
-                        //   (set-Name-field! x v) — mutating field setter
-                        let sargs = list_to_vec(rest)?;
-                        if sargs.is_empty() {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(
-                                "defstruct requires a name".to_string(),
-                            ))));
-                        }
-                        let name_sym = if let LispVal::Symbol(s) = &sargs[0] {
-                            s.clone()
-                        } else {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(
-                                "defstruct: first argument must be a symbol".to_string(),
-                            ))));
-                        };
-                        let type_name = name_sym.borrow().name.clone();
-                        let fields: Vec<String> = sargs[1..]
-                            .iter()
-                            .map(|f| {
-                                if let LispVal::Symbol(s) = f {
-                                    Ok(s.borrow().name.clone())
-                                } else {
-                                    Err(LispError::Generic(
-                                        "defstruct: fields must be symbols".to_string(),
-                                    ))
-                                }
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let n_fields = fields.len();
-
-                        // Constructor: (make-NAME v1 v2 ...) — positional
-                        {
-                            let tn = type_name.clone();
-                            let nf = n_fields;
-                            let params: Vec<LispVal> = fields
-                                .iter()
-                                .map(|f| LispVal::Symbol(env.intern_symbol(f)))
-                                .collect();
-                            // Build lambda that creates array and stores values
-                            // (lambda (f1 f2 ...) (let ((s (array N+1))) (store s 0 'TYPE) (store s 1 f1) ... s))
-                            let mut stmts: Vec<LispVal> = vec![];
-                            // (store s 0 'TypeName)
-                            stmts.push(
-                                crate::reader::read(&format!("(store s 0 '{tn})"), env)
-                                    .map_err(LispError::Generic)?,
-                            );
-                            for (i, f) in fields.iter().enumerate() {
-                                stmts.push(
-                                    crate::reader::read(&format!("(store s {} {f})", i + 1), env)
-                                        .map_err(LispError::Generic)?,
-                                );
-                            }
-                            stmts.push(LispVal::Symbol(env.intern_symbol("S")));
-                            let let_body = vec_to_list(stmts);
-                            // Build the let manually to splice in stmts
-                            let progn = LispVal::Cons {
-                                car: Box::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
-                                cdr: Box::new(let_body),
-                            };
-                            let let_form = crate::reader::read(&format!("(array {})", nf + 1), env)
-                                .map_err(LispError::Generic)?;
-                            let binding = LispVal::Cons {
-                                car: Box::new(LispVal::Cons {
-                                    car: Box::new(LispVal::Symbol(env.intern_symbol("S"))),
-                                    cdr: Box::new(LispVal::Cons {
-                                        car: Box::new(let_form),
-                                        cdr: Box::new(LispVal::Nil),
-                                    }),
-                                }),
-                                cdr: Box::new(LispVal::Nil),
-                            };
-                            let full_let = LispVal::Cons {
-                                car: Box::new(LispVal::Symbol(env.intern_symbol("LET"))),
-                                cdr: Box::new(LispVal::Cons {
-                                    car: Box::new(binding),
-                                    cdr: Box::new(LispVal::Cons {
-                                        car: Box::new(progn),
-                                        cdr: Box::new(LispVal::Nil),
-                                    }),
-                                }),
-                            };
-                            let lambda_form = LispVal::Cons {
-                                car: Box::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
-                                cdr: Box::new(LispVal::Cons {
-                                    car: Box::new(vec_to_list(params)),
-                                    cdr: Box::new(LispVal::Cons {
-                                        car: Box::new(full_let),
-                                        cdr: Box::new(LispVal::Nil),
-                                    }),
-                                }),
-                            };
-                            let ctor = eval(&lambda_form, env)?;
-                            env.set(format!("MAKE-{}", tn), ctor);
-                        }
-
-                        // Predicate: (arrayp x) && (eq (fetch x 0) 'TypeName)
-                        {
-                            let tn = type_name.clone();
-                            let form = crate::reader::read(
-                                &format!("(lambda (x) (and (arrayp x) (eq (fetch x 0) '{tn})))"),
-                                env,
-                            )
-                            .map_err(LispError::Generic)?;
-                            let pred = eval(&form, env)?;
-                            env.set(format!("{}-P", tn), pred);
-                        }
-
-                        // Accessors: (Name-field s) → (fetch s idx)
-                        // Mutators:  (set-Name-field! s v) → (store s idx v)
-                        for (i, field) in fields.iter().enumerate() {
-                            let idx = i + 1;
-                            let acc_form =
-                                crate::reader::read(&format!("(lambda (s) (fetch s {idx}))"), env)
-                                    .map_err(LispError::Generic)?;
-                            env.set(format!("{}-{}", type_name, field), eval(&acc_form, env)?);
-
-                            let mut_form = crate::reader::read(
-                                &format!("(lambda (s v) (store s {idx} v))"),
-                                env,
-                            )
-                            .map_err(LispError::Generic)?;
-                            env.set(
-                                format!("SET-{}-{}!", type_name, field),
-                                eval(&mut_form, env)?,
-                            );
-                        }
-                        Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym))))
-                    }
+                    "DEFSTRUCT" => eval_defstruct(rest, env),
                     "PROGN" => {
                         let mut current = &**rest;
                         loop {
