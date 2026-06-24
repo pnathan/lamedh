@@ -253,7 +253,7 @@ fn test_random_range() {
     let env = Environment::new_with_builtins();
     let result = eval_with_env("(random 100)", &env);
     let num: i64 = result.parse().expect("Expected a number");
-    assert!(num >= 0 && num < 100);
+    assert!((0..100).contains(&num));
 }
 
 // ============================================================================

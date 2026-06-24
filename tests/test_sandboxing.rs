@@ -40,7 +40,10 @@ fn test_load_file_passes_feature_check_when_enabled() {
     // error rather than a capability error.
     let env = env_with_stdlib();
     eval_line("(enable-feature \"FILE-IO\")", &env);
-    let out = eval_line("(load-file \"/nonexistent/path/that/does/not/exist.lisp\")", &env);
+    let out = eval_line(
+        "(load-file \"/nonexistent/path/that/does/not/exist.lisp\")",
+        &env,
+    );
     assert!(
         !out.contains("FILE-IO capability"),
         "should not get capability error after enabling, got: {out}"
@@ -125,7 +128,10 @@ fn test_new_sandboxed_features_list_is_empty() {
     let env = Environment::new_sandboxed();
     // No features enabled; the Lisp (features) builtin should return ()
     let out = eval_line("(features)", &env);
-    assert_eq!(out, "()", "sandboxed env should start with no features enabled, got: {out}");
+    assert_eq!(
+        out, "()",
+        "sandboxed env should start with no features enabled, got: {out}"
+    );
 }
 
 #[test]

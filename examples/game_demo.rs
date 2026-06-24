@@ -19,8 +19,8 @@
 //! objects.
 
 use lamedh::{
-    environment::Environment, eval_str, evaluator, load_file, printer, reader, LispError, LispVal,
-    LispValExtension,
+    LispError, LispVal, LispValExtension, environment::Environment, eval_str, evaluator, load_file,
+    printer, reader,
 };
 use std::cell::RefCell;
 use std::hash::Hasher;

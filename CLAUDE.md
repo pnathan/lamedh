@@ -6,17 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Lamedh** (ל, "Lamed") is a Lisp 1.5 implementation written in Rust. It provides a REPL and supports loading/evaluating Lisp files. The interpreter follows classic Lisp 1.5 semantics with modern extensions.
 
+## Workspace Layout
+
+The project is a Cargo workspace with two crates:
+
+- **`lamedh`** (repo root, `src/`): the reusable interpreter **library**. Depends only on `nom`. This is what embedders depend on; it has no CLI/terminal dependencies.
+- **`lamedh-cli`** (`cli/`): the **CLI/REPL driver** binary (named `lamedh`). Depends on `lamedh`, `clap`, and `rustyline`. This is the only crate that knows about argument parsing and the terminal.
+
+`default-members` is set so plain `cargo run`/`cargo build`/`cargo test` from the repo root operate on both crates (and `cargo run` launches the `lamedh` binary). The benchmark comparison crates under `benchmarks/*/rust` are `exclude`d from the workspace.
+
 ## Build, Test, and Run Commands
 
-- **Build**: `cargo build`
-- **Run REPL**: `cargo run`
+- **Build**: `cargo build` (whole workspace)
+- **Run REPL**: `cargo run` (launches the `lamedh` binary from `lamedh-cli`)
 - **Load file(s)**: `cargo run -- -i <file.lisp>` (can be used multiple times, also accepts directories)
 - **Execute s-expression**: `cargo run -- -s "<expression>"`
 - **Run all tests**: `cargo test`
 - **Run specific test**: `cargo test <test_name>`
 - **Run benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
-- **Lint**: `cargo clippy`
-- **Format**: `cargo fmt`
+- **Lint**: `cargo clippy --workspace --all-targets`
+- **Format**: `cargo fmt --all`
+
+> Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before every commit; treat a clean clippy run as part of "done".
 
 ## Architecture
 
@@ -61,12 +72,12 @@ The codebase follows a classic interpreter architecture with four main modules:
 
 ### Entry Points
 
-- **main.rs**: CLI with rustyline REPL
+- **cli/src/main.rs**: CLI with rustyline REPL (the `lamedh-cli` crate)
   - Automatically loads `prologue.lisp` and `lib/` directory at startup if present
   - `-i <path>`: Load file or directory (can be used multiple times)
   - `-s "<expr>"`: Execute single s-expression and exit
 
-- **lib.rs**: Provides `eval_line()`, `load_file()`, `load_directory()` for library usage
+- **src/lib.rs**: The `lamedh` library — provides `eval_line()`, `load_file()`, `load_directory()`, `with_large_stack()` and the `LispValExtension` trait for embedders
 
 ### Standard Library
 

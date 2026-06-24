@@ -9,10 +9,7 @@
 ///   473-483: update_dynamic via dynamic_parent / lexical fallback
 ///   488    : all_bindings() with parent chain
 ///   557-565: get_dynamic() dynamic/lexical parent chain fallbacks
-use lamedh::{
-    environment::Environment,
-    LispVal,
-};
+use lamedh::{LispVal, environment::Environment};
 use std::rc::Rc;
 
 // ── SymbolTable::default() ────────────────────────────────────────────────────

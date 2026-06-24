@@ -1,3 +1,6 @@
+// LispVal is intentionally used as a HashMap key (interior mutability is by design).
+#![allow(clippy::mutable_key_type)]
+
 /// Tests targeting uncovered lines in printer.rs to improve coverage.
 ///
 /// Uncovered lines identified from llvm-cov output:
@@ -7,11 +10,7 @@
 ///
 /// LispVal::HashTable -> "<hash-table>" (line 40) is also tested here for
 /// completeness even if already covered.
-use lamedh::{
-    environment::Environment,
-    printer::print,
-    Fexpr, Lambda, LispVal, Macro,
-};
+use lamedh::{Fexpr, Lambda, LispVal, Macro, environment::Environment, printer::print};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -170,7 +169,7 @@ fn test_print_list_with_dotted_tail() {
 
 #[test]
 fn test_print_float() {
-    assert_eq!(print(&LispVal::Float(3.14)), "3.14");
+    assert_eq!(print(&LispVal::Float(3.25)), "3.25");
 }
 
 #[test]
@@ -180,5 +179,8 @@ fn test_print_negative_number() {
 
 #[test]
 fn test_print_builtin() {
-    assert_eq!(print(&LispVal::Builtin(lamedh::BuiltinFunc::Plus)), "<builtin>");
+    assert_eq!(
+        print(&LispVal::Builtin(lamedh::BuiltinFunc::Plus)),
+        "<builtin>"
+    );
 }

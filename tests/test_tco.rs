@@ -18,7 +18,10 @@ fn test_tco_self_recursion_million() {
             &env,
         );
         let result = eval_line("(loopy 1000000)", &env);
-        assert_eq!(result, "DONE", "expected DONE from (loopy 1000000), got: {result}");
+        assert_eq!(
+            result, "DONE",
+            "expected DONE from (loopy 1000000), got: {result}"
+        );
     });
 }
 
@@ -97,7 +100,10 @@ fn test_tco_even_odd() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         eval_line("(defun my-even (n) (if (= n 0) t (my-odd (- n 1))))", &env);
-        eval_line("(defun my-odd (n) (if (= n 0) nil (my-even (- n 1))))", &env);
+        eval_line(
+            "(defun my-odd (n) (if (= n 0) nil (my-even (- n 1))))",
+            &env,
+        );
         // 200000 calls alternating between my-even and my-odd
         assert_eq!(eval_line("(my-even 200000)", &env), "T");
         assert_eq!(eval_line("(my-odd 200001)", &env), "T");

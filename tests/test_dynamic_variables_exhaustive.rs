@@ -33,7 +33,10 @@ fn test_lexical_vs_dynamic_basic() {
     assert_eq!(eval_line("(get-dyn)", &env), "DYNAMIC-GLOBAL");
 
     // Shadow lexical - function still sees original (lexical scoping)
-    eval_line("(def test-lex (lambda () (progn (def lex-var 'lexical-local) (get-lex))))", &env);
+    eval_line(
+        "(def test-lex (lambda () (progn (def lex-var 'lexical-local) (get-lex))))",
+        &env,
+    );
     assert_eq!(eval_line("(test-lex)", &env), "LEXICAL-GLOBAL");
 
     // Shadow dynamic - function sees new binding (dynamic scoping)
@@ -55,7 +58,10 @@ fn test_dynamic_follows_call_stack() {
     // Three levels of function calls
     eval_line("(defun level-3 () *marker*)", &env);
     eval_line("(defun level-2 () (level-3))", &env);
-    eval_line("(defun level-1 () (let ((*marker* 'from-level-1)) (level-2)))", &env);
+    eval_line(
+        "(defun level-1 () (let ((*marker* 'from-level-1)) (level-2)))",
+        &env,
+    );
 
     // level-3 sees binding from level-1, not global
     assert_eq!(eval_line("(level-1)", &env), "FROM-LEVEL-1");
@@ -111,7 +117,10 @@ fn test_setq_in_deeply_nested_call() {
     eval_line("(defdynamic *deep-val* 0)", &env);
     eval_line("(defun modify-deep () (setq *deep-val* 999))", &env);
     eval_line("(defun middle () (modify-deep))", &env);
-    eval_line("(defun outer () (let ((*deep-val* 1)) (progn (middle) *deep-val*)))", &env);
+    eval_line(
+        "(defun outer () (let ((*deep-val* 1)) (progn (middle) *deep-val*)))",
+        &env,
+    );
 
     // modify-deep changes the binding from outer's LET
     assert_eq!(eval_line("(outer)", &env), "999");
@@ -321,10 +330,7 @@ fn test_mapcar_with_dynamic() {
     eval_line("(defun mul-factor (x) (* x *factor*))", &env);
 
     // Note: lamedh mapcar is (mapcar list function), not (mapcar function list)
-    assert_eq!(
-        eval_line("(mapcar '(1 2 3) #'mul-factor)", &env),
-        "(1 2 3)"
-    );
+    assert_eq!(eval_line("(mapcar '(1 2 3) #'mul-factor)", &env), "(1 2 3)");
     assert_eq!(
         eval_line("(let ((*factor* 10)) (mapcar '(1 2 3) #'mul-factor))", &env),
         "(10 20 30)"
@@ -400,7 +406,11 @@ fn test_dynamic_nil_binding() {
 
     // null returns () for non-nil, T for nil
     let result = eval_line("(is-nil)", &env);
-    assert!(result == "NIL" || result == "()", "Expected NIL or (), got {}", result);
+    assert!(
+        result == "NIL" || result == "()",
+        "Expected NIL or (), got {}",
+        result
+    );
 
     let result = eval_line("(let ((*nilable* nil)) (is-nil))", &env);
     assert_eq!(result, "T");
@@ -464,7 +474,11 @@ fn test_dynamic_without_docstring() {
 
     // No docstring should return NIL (printed as () in lamedh)
     let result = eval_line("(getp '*no-doc* \"docstring\")", &env);
-    assert!(result == "NIL" || result == "()", "Expected NIL or (), got {}", result);
+    assert!(
+        result == "NIL" || result == "()",
+        "Expected NIL or (), got {}",
+        result
+    );
 }
 
 // =============================================================================

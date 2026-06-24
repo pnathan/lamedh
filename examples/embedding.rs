@@ -8,11 +8,7 @@
 //!   3. Evaluate a multi-expression Lisp script and read back typed values.
 //!   4. Handle a Lisp error gracefully.
 
-use lamedh::{
-    LispError, LispVal,
-    environment::Environment,
-    eval_all, eval_str,
-};
+use lamedh::{LispError, LispVal, environment::Environment, eval_all, eval_str};
 use std::convert::TryFrom;
 
 fn main() {
@@ -44,7 +40,7 @@ fn run() {
     println!("--- 1. Calling a registered host function from Lisp ---");
     let result = eval_str("(rust-add 10 32)", &env).expect("eval failed");
     let n = i64::try_from(result).expect("expected integer");
-    println!("(rust-add 10 32) => {n}");   // 42
+    println!("(rust-add 10 32) => {n}"); // 42
 
     // ------------------------------------------------------------------
     // 3. Evaluate a multi-expression script; read back typed values.
@@ -64,7 +60,7 @@ fn run() {
     // The last expression evaluated to 42.
     let last = results.last().expect("no results");
     let doubled: i64 = i64::try_from(last.clone()).expect("expected integer");
-    println!("doubled 21 = {doubled}");    // 42
+    println!("doubled 21 = {doubled}"); // 42
 
     // Read a variable we defined in the script.
     let greeting = eval_str("*greeting*", &env).expect("eval failed");
@@ -76,14 +72,14 @@ fn run() {
     // ------------------------------------------------------------------
     println!("\n--- 3. Handling a Lisp error ---");
     match eval_str("(/ 1 0)", &env) {
-        Ok(v)  => println!("unexpected success: {v:?}"),
+        Ok(v) => println!("unexpected success: {v:?}"),
         Err(LispError::Generic(msg)) => println!("caught error: {msg}"),
         Err(e) => println!("other error: {e}"),
     }
 
     // Undefined variable.
     match eval_str("undefined-variable", &env) {
-        Ok(v)  => println!("unexpected success: {v:?}"),
+        Ok(v) => println!("unexpected success: {v:?}"),
         Err(LispError::Generic(msg)) => println!("caught error: {msg}"),
         Err(e) => println!("other error: {e}"),
     }
@@ -95,7 +91,10 @@ fn run() {
     // SHELL is disabled by default; enable it only when you trust the script.
     println!("SHELL enabled: {}", env.feature_enabled("SHELL"));
     env.enable_feature("SHELL");
-    println!("SHELL enabled after grant: {}", env.feature_enabled("SHELL"));
+    println!(
+        "SHELL enabled after grant: {}",
+        env.feature_enabled("SHELL")
+    );
     env.disable_feature("SHELL");
 
     println!("\nAll done.");

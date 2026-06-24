@@ -41,10 +41,10 @@ fn run(args: Args) {
             if let Err(e) = load_directory(&path, &env) {
                 eprintln!("Error loading directory {path}: {e:?}");
             }
-        } else if metadata.is_file() {
-            if let Err(e) = load_file(&path, &env) {
-                eprintln!("Error loading file {path}: {e:?}");
-            }
+        } else if metadata.is_file()
+            && let Err(e) = load_file(&path, &env)
+        {
+            eprintln!("Error loading file {path}: {e:?}");
         }
     }
 

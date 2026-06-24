@@ -13,7 +13,7 @@ fn evals(src: &str, env: &std::rc::Rc<Environment>) -> String {
     match eval_all(src, env) {
         Ok(results) => results
             .last()
-            .map(|v| lamedh::printer::print(v))
+            .map(lamedh::printer::print)
             .unwrap_or_default(),
         Err(e) => format!("{e}"),
     }

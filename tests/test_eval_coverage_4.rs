@@ -28,15 +28,15 @@ fn test_function_multi_body_lambda_returns_last() {
     let env = env_with_stdlib();
     // The function has two body forms: (+ x 1) and (* x 2).
     // When called with x=5, it should return (* 5 2) = 10.
-    let result = eval_line(
-        "((function (lambda (x) (+ x 1) (* x 2))) 5)",
-        &env,
-    );
+    let result = eval_line("((function (lambda (x) (+ x 1) (* x 2))) 5)", &env);
     assert!(
         !result.contains("Error"),
         "expected non-error calling multi-body lambda, got: {result}"
     );
-    assert_eq!(result, "10", "multi-body lambda should return last body result");
+    assert_eq!(
+        result, "10",
+        "multi-body lambda should return last body result"
+    );
 }
 
 /// FUNCTION with a multi-body lambda yields a callable lambda value.
@@ -98,10 +98,7 @@ fn test_function_symbol_bound_to_lambda() {
     let env = env_with_stdlib();
     // def stores unevaluated, but lambda creates an actual Lambda value.
     // We use defun (via stdlib) which properly stores a Lambda.
-    let result = eval_line(
-        "(progn (defun sq (x) (* x x)) (function sq))",
-        &env,
-    );
+    let result = eval_line("(progn (defun sq (x) (* x x)) (function sq))", &env);
     assert!(
         !result.contains("Error"),
         "expected non-error when function symbol is bound to a lambda, got: {result}"
@@ -131,25 +128,22 @@ fn test_function_symbol_bound_to_builtin() {
 #[test]
 fn test_define_single_pair_returns_name_list() {
     let env = env_with_stdlib();
-    let result = eval_line(
-        "(define ((foo (lambda (x) (+ x 1)))))",
-        &env,
-    );
+    let result = eval_line("(define ((foo (lambda (x) (+ x 1)))))", &env);
     assert!(
         !result.contains("Error"),
         "expected non-error for DEFINE, got: {result}"
     );
-    assert_eq!(result, "(FOO)", "expected (FOO) as the list of defined names");
+    assert_eq!(
+        result, "(FOO)",
+        "expected (FOO) as the list of defined names"
+    );
 }
 
 /// DEFINE with multiple (name value) pairs returns all names.
 #[test]
 fn test_define_multiple_pairs_returns_all_names() {
     let env = env_with_stdlib();
-    let result = eval_line(
-        "(define ((bar (lambda (x) x)) (baz (lambda (y) y))))",
-        &env,
-    );
+    let result = eval_line("(define ((bar (lambda (x) x)) (baz (lambda (y) y))))", &env);
     assert!(
         !result.contains("Error"),
         "expected non-error for multi-pair DEFINE, got: {result}"
@@ -221,7 +215,10 @@ fn test_apply_macro_expands_and_evals() {
         !result.contains("Error"),
         "expected non-error for apply with macro, got: {result}"
     );
-    assert_eq!(result, "42", "apply on double-it macro with 21 should give 42");
+    assert_eq!(
+        result, "42",
+        "apply on double-it macro with 21 should give 42"
+    );
 }
 
 // ============================================================================
@@ -241,7 +238,10 @@ fn test_apply_fexpr_receives_arg_list() {
         !result.contains("Error"),
         "expected non-error for apply with fexpr, got: {result}"
     );
-    assert_eq!(result, "HELLO", "fexpr's (car args) should return first arg HELLO");
+    assert_eq!(
+        result, "HELLO",
+        "fexpr's (car args) should return first arg HELLO"
+    );
 }
 
 // ============================================================================
@@ -253,10 +253,7 @@ fn test_apply_fexpr_receives_arg_list() {
 #[test]
 fn test_defexpr_args_is_proper_list_with_all_args() {
     let env = env_with_stdlib();
-    let result = eval_line(
-        "(progn (defexpr f (args) (length args)) (f a b c d))",
-        &env,
-    );
+    let result = eval_line("(progn (defexpr f (args) (length args)) (f a b c d))", &env);
     assert!(
         !result.contains("Error"),
         "expected non-error for defexpr with 4 args, got: {result}"
@@ -268,10 +265,7 @@ fn test_defexpr_args_is_proper_list_with_all_args() {
 #[test]
 fn test_defexpr_args_empty_when_no_args() {
     let env = env_with_stdlib();
-    let result = eval_line(
-        "(progn (defexpr f (args) (length args)) (f))",
-        &env,
-    );
+    let result = eval_line("(progn (defexpr f (args) (length args)) (f))", &env);
     assert!(
         !result.contains("Error"),
         "expected non-error for defexpr with 0 args, got: {result}"

@@ -189,7 +189,9 @@ impl Environment {
             "MAKE-HASH-TABLE".to_string(),
             LispVal::Builtin(BuiltinFunc::MakeHashTable),
         );
-        env.set("GET".to_string(), LispVal::Builtin(BuiltinFunc::Get));
+        // GETHASH for hash-table lookup; GET is the Lisp 1.5 plist lookup (= GETP)
+        env.set("GETHASH".to_string(), LispVal::Builtin(BuiltinFunc::Get));
+        env.set("GET".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
         env.set("SET-BANG".to_string(), LispVal::Builtin(BuiltinFunc::Set));
         env.set(
             "DELETE-KEY-BANG".to_string(),
@@ -425,10 +427,7 @@ impl Environment {
             "ARRAY-LENGTH".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
-        env.set(
-            "ARRAYP".to_string(),
-            LispVal::Builtin(BuiltinFunc::Arrayp),
-        );
+        env.set("ARRAYP".to_string(), LispVal::Builtin(BuiltinFunc::Arrayp));
         env.set(
             "EXTENSION-P".to_string(),
             LispVal::Builtin(BuiltinFunc::Extensionp),
@@ -437,6 +436,13 @@ impl Environment {
             "EXTENSION-TYPE".to_string(),
             LispVal::Builtin(BuiltinFunc::ExtensionTypeName),
         );
+
+        // EVCON: evaluate clauses (Lisp 1.5 Appendix A)
+        env.set("EVCON".to_string(), LispVal::Builtin(BuiltinFunc::Evcon));
+        // SPACES: print N spaces (Lisp 1.5 I/O)
+        env.set("SPACES".to_string(), LispVal::Builtin(BuiltinFunc::Spaces));
+        // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER
+        // are registered above with the other Lisp 1.5 spec functions.
 
         env
     }

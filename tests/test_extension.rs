@@ -1,27 +1,38 @@
-/// Tests for LispValExtension trait and EVLIS builtin.
-use lamedh::{LispVal, LispValExtension, with_large_stack};
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
 use lamedh::printer::print;
+/// Tests for LispValExtension trait and EVLIS builtin.
+use lamedh::{LispVal, LispValExtension, with_large_stack};
 use std::hash::Hasher;
 
 // ─── Example host type ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
-struct Point { x: f64, y: f64 }
+struct Point {
+    x: f64,
+    y: f64,
+}
 
 impl LispValExtension for Point {
-    fn type_name(&self) -> &str { "point" }
-    fn display(&self) -> String { format!("#<point {},{}>", self.x, self.y) }
+    fn type_name(&self) -> &str {
+        "point"
+    }
+    fn display(&self) -> String {
+        format!("#<point {},{}>", self.x, self.y)
+    }
     fn eq_ext(&self, other: &dyn LispValExtension) -> bool {
-        other.as_any().downcast_ref::<Point>()
-            .map_or(false, |p| p.x == self.x && p.y == self.y)
+        other
+            .as_any()
+            .downcast_ref::<Point>()
+            .is_some_and(|p| p.x == self.x && p.y == self.y)
     }
     fn hash_ext(&self, state: &mut dyn Hasher) {
         state.write_u64(self.x.to_bits());
         state.write_u64(self.y.to_bits());
     }
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ─── Extension trait tests ───────────────────────────────────────────────────
@@ -95,8 +106,8 @@ fn test_extension_type_name_builtin() {
 // ─── EVLIS tests ─────────────────────────────────────────────────────────────
 
 mod test_helpers;
-use test_helpers::env_with_stdlib;
 use lamedh::eval_line;
+use test_helpers::env_with_stdlib;
 
 #[test]
 fn test_evlis_basic() {

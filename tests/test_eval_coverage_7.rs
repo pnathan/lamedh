@@ -112,7 +112,10 @@ fn test_flag_set_p_number_arg_error() {
 fn test_set_flag_with_string_succeeds() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line(r#"(progn (set-flag "my-flag") (flag-set-p "my-flag"))"#, &env);
+        let result = eval_line(
+            r#"(progn (set-flag "my-flag") (flag-set-p "my-flag"))"#,
+            &env,
+        );
         assert_eq!(
             result.trim(),
             "T",
@@ -125,8 +128,10 @@ fn test_set_flag_with_string_succeeds() {
 fn test_clear_flag_with_string_succeeds() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result =
-            eval_line(r#"(progn (set-flag "my-flag") (clear-flag "my-flag") (flag-set-p "my-flag"))"#, &env);
+        let result = eval_line(
+            r#"(progn (set-flag "my-flag") (clear-flag "my-flag") (flag-set-p "my-flag"))"#,
+            &env,
+        );
         assert_eq!(
             result.trim(),
             "()",
@@ -377,7 +382,10 @@ fn test_shell_with_string_and_number_args() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         // Number coercion path — shell "echo" 42 should run and return 0 exit code
-        let result = eval_line(r#"(progn (enable-feature "SHELL") (shell "echo" 42))"#, &env);
+        let result = eval_line(
+            r#"(progn (enable-feature "SHELL") (shell "echo" 42))"#,
+            &env,
+        );
         assert!(
             !result.contains("Error"),
             "shell with string and number args should succeed; got: {result}"

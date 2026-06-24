@@ -61,7 +61,10 @@ fn test_eval_with_child_env_inherits_parent() {
     // Define a variable in current env
     eval_line("(setq inherited-val 99)", &env);
     // A child of the-environment should see that binding
-    let output = eval_line("(eval 'inherited-val (make-environment (the-environment)))", &env);
+    let output = eval_line(
+        "(eval 'inherited-val (make-environment (the-environment)))",
+        &env,
+    );
     assert_eq!(output, "99");
 }
 

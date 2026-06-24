@@ -52,7 +52,7 @@
 
 (defun get-doc (name)
   "Get documentation for a symbol."
-  (get HELP-DB name))
+  (gethash HELP-DB name))
 
 (defun list-categories ()
   "List all documentation categories."
