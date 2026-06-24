@@ -595,10 +595,7 @@ pub enum LispVal {
     /// O(1) refcount bump instead of a deep copy — cons cells are immutable in
     /// this implementation (`rplaca`/`rplacd` return new cells), so structural
     /// sharing is sound.
-    Cons {
-        car: Rc<LispVal>,
-        cdr: Rc<LispVal>,
-    },
+    Cons { car: Rc<LispVal>, cdr: Rc<LispVal> },
     /// The empty list / boolean false.  `()` and `NIL` are the same object.
     Nil,
     /// A mutable hash table, used as `(make-hash-table)`.  Keys and values are
