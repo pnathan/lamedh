@@ -42,7 +42,8 @@ The codebase follows a classic interpreter architecture with four main modules:
    - All symbols are interned and case-normalized to uppercase
 
 2. **evaluator.rs**: Evaluation engine
-   - Special forms: QUOTE, QUASIQUOTE, IF, COND, AND, OR, DEF, LAMBDA, FUNCTION, LABEL, DEFINE, DEFEXPR, DEFMACRO, PROGN, SETQ, PROG, RETURN, GO, LET
+   - Special forms: QUOTE, QUASIQUOTE, IF, COND, AND, OR, DEF, LAMBDA, FUNCTION, LABEL, DEFINE, DEFEXPR, DEFMACRO, PROGN, SETQ, PROG, RETURN, GO, FOR, WHILE, LET
+   - `FOR`/`WHILE` are fast iterative loops: `(for (var start end [step]) body...)` (inclusive integer range, one reused frame, in-place counter mutation) and `(while cond body...)`
    - Applies built-in functions and user-defined lambdas/fexprs/macros
    - Supports fexprs (unevaluated argument functions) and macros with &REST
    - PROG provides labeled statements with GO/RETURN for non-local control flow
