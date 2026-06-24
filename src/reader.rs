@@ -31,7 +31,7 @@ use crate::environment::Environment;
 use nom::{
     IResult,
     branch::alt,
-    bytes::complete::{is_not, tag, take_while},
+    bytes::complete::{is_not, tag, take_while, take_while1},
     character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
@@ -128,6 +128,10 @@ fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
+fn is_operator_char(c: char) -> bool {
+    matches!(c, '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '~')
+}
+
 fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
@@ -140,7 +144,17 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             map(
                 recognize(pair(
                     alt((alpha1, tag("&"), tag("$"))),
-                    many0(alt((alphanumeric1, tag("-"), tag("*"), tag("?"), tag("!")))),
+                    many0(alt((
+                        alphanumeric1,
+                        tag("-"),
+                        tag("*"),
+                        tag("?"),
+                        tag("!"),
+                        tag("+"),
+                        tag("="),
+                        tag("<"),
+                        tag(">"),
+                    ))),
                 )),
                 |s: &str| {
                     let s_upper = s.to_uppercase();
@@ -151,19 +165,10 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                     }
                 },
             ),
-            // Parse operator symbols (+, -, *, /, =, etc.) - after attempting number/alpha parse
-            map(
-                alt((
-                    tag("+"),
-                    tag("-"),
-                    tag("*"),
-                    tag("/"),
-                    tag("="),
-                    tag("<"),
-                    tag(">"),
-                )),
-                |s: &str| LispVal::Symbol(env.intern_symbol(s)),
-            ),
+            // Parse operator symbol sequences (>=, !=, /=, +, -, etc.)
+            map(take_while1(is_operator_char), |s: &str| {
+                LispVal::Symbol(env.intern_symbol(s))
+            }),
         ))(input)
     }
 }
@@ -408,6 +413,22 @@ mod tests {
             parse_atom(env.clone())("with-hyphen"),
             Ok(("", symbol("WITH-HYPHEN", &env)))
         );
+    }
+
+    #[test]
+    fn test_parse_multichar_symbols() {
+        let env = Rc::new(Environment::new());
+        // alpha + operator suffix
+        assert_eq!(parse_atom(env.clone())("v+"), Ok(("", symbol("V+", &env))));
+        assert_eq!(parse_atom(env.clone())("v-"), Ok(("", symbol("V-", &env))));
+        // multi-char operator sequences
+        assert_eq!(parse_atom(env.clone())(">="), Ok(("", symbol(">=", &env))));
+        assert_eq!(parse_atom(env.clone())("<="), Ok(("", symbol("<=", &env))));
+        assert_eq!(parse_atom(env.clone())("!="), Ok(("", symbol("!=", &env))));
+        assert_eq!(parse_atom(env.clone())("/="), Ok(("", symbol("/=", &env))));
+        // single operators still work
+        assert_eq!(parse_atom(env.clone())("+"), Ok(("", symbol("+", &env))));
+        assert_eq!(parse_atom(env.clone())("-"), Ok(("", symbol("-", &env))));
     }
 
     #[test]
