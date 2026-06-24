@@ -1,3 +1,147 @@
+//! # Lamedh — an embeddable Lisp 1.5 interpreter
+//!
+//! Lamedh (Hebrew: ל, "Lamed") is a complete, embeddable Lisp 1.5 interpreter
+//! written in Rust.  It provides:
+//!
+//! - A tree-walking evaluator with trampolining tail-call optimisation (TCO)
+//! - Lexical closures, macros, fexprs, and Kernel-style vau operatives
+//! - Both lexical and dynamic (special) variable scoping
+//! - An extensible type system via [`LispValExtension`]
+//! - A capability-gated sandbox (filesystem, shell, stdin — all off by default)
+//! - A full standard library embedded in the binary (no `.lisp` files needed)
+//!
+//! ## Quick start
+//!
+//! Add to `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! lamedh = "0.1"
+//! ```
+//!
+//! Evaluate Lisp expressions from Rust:
+//!
+//! ```rust,ignore
+//! use lamedh::{eval_str, LispVal};
+//! use lamedh::environment::Environment;
+//!
+//! lamedh::with_large_stack(|| {
+//!     let env = Environment::with_stdlib();
+//!
+//!     // Evaluate a simple expression
+//!     let val = eval_str("(+ 1 2 3)", &env).unwrap();
+//!     assert_eq!(val, LispVal::Number(6));
+//!
+//!     // Define a function and call it
+//!     eval_str("(defun factorial (n) (if (zerop n) 1 (* n (factorial (sub1 n)))))", &env).unwrap();
+//!     let result = eval_str("(factorial 10)", &env).unwrap();
+//!     assert_eq!(result, LispVal::Number(3628800));
+//! });
+//! ```
+//!
+//! ## Stack size
+//!
+//! The tree-walking evaluator recurses in Rust for non-tail calls.  The default
+//! system thread stack (2–8 MiB) overflows before the recursion-depth guard
+//! fires.  Always wrap the interpreter entry point in [`with_large_stack`], which
+//! spawns a 512 MiB thread.  Because [`LispVal`] and [`environment::Environment`]
+//! are `!Send`, create the environment *inside* the closure.
+//!
+//! ## Embedding pattern
+//!
+//! ```rust,ignore
+//! use lamedh::{eval_str, LispError, LispVal};
+//! use lamedh::environment::Environment;
+//!
+//! fn run_script(src: &str) -> Result<LispVal, LispError> {
+//!     lamedh::with_large_stack(move || {
+//!         let env = Environment::with_stdlib();
+//!
+//!         // Register a host function
+//!         env.register_fn("greet", |args, _env| {
+//!             let name = args[0].as_str_val()?;
+//!             Ok(LispVal::from(format!("Hello, {name}!")))
+//!         });
+//!
+//!         eval_str(src, &env)
+//!     })
+//! }
+//! ```
+//!
+//! ## Sandboxing
+//!
+//! All potentially dangerous capabilities are disabled by default.  Use
+//! [`environment::Environment::enable_feature`] to opt in:
+//!
+//! ```rust,ignore
+//! // Allow scripts to call (shell "ls")
+//! env.enable_feature("SHELL");
+//!
+//! // Allow (load-file "path.lisp")
+//! env.enable_feature("FILE-IO");
+//!
+//! // Allow (read) to consume stdin
+//! env.enable_feature("IO");
+//! ```
+//!
+//! ## Module structure
+//!
+//! | Module | Role |
+//! |--------|------|
+//! | [`environment`] | Variable binding, symbol interning, dynamic scoping |
+//! | [`reader`] | nom-based s-expression parser |
+//! | [`evaluator`] | Core eval loop with TCO, special forms, 100+ builtins |
+//! | [`printer`] | Format [`LispVal`] back to readable text |
+//! | [`optimizer`] | Constant-folding source-level optimizer |
+//!
+//! ## Language overview
+//!
+//! Lamedh is a Lisp 1.5 dialect with modern extensions:
+//!
+//! | Feature | Lisp form |
+//! |---------|-----------|
+//! | Variable binding | `(def x 42)`, `(setq x 99)` |
+//! | Function definition | `(defun square (n) (* n n))` |
+//! | Conditionals | `(if p a b)`, `(cond (p1 e1) (p2 e2))` |
+//! | Local scope | `(let ((x 1) (y 2)) (+ x y))` |
+//! | Closures | `(lambda (x) (* x x))` |
+//! | Tail-recursive loops | `(defun loop (n) (if (zerop n) t (loop (sub1 n))))` |
+//! | Macros | `(defmacro when (p &rest b) \`(if ,p (progn ,@b) nil))` |
+//! | Fexprs | `(defexpr my-quote (args) (car args))` |
+//! | Kernel vau | `(vau (ops e) (eval (car ops) e))` |
+//! | Hash tables | `(let ((h (make-hash-table))) (set-bang h 'x 1) (gethash h 'x))` |
+//! | Arrays | `(let ((a (array 5))) (store a 0 99) (fetch a 0))` |
+//! | Property lists | `(putp 'foo "doc" "A foo.") (getp 'foo "doc")` |
+//! | Structs | `(defstruct point x y) (make-point :x 1 :y 2)` |
+//!
+//! ## Standard library
+//!
+//! [`environment::Environment::with_stdlib`] loads the following modules in order,
+//! all embedded in the binary at compile time (no `.lisp` files are needed at
+//! runtime):
+//!
+//! | Module | Key functions |
+//! |--------|--------------|
+//! | `00-core.lisp` | `DEFUN`, `PROG2`, `CSET`, `CSETQ` |
+//! | `01-list.lisp` | `APPEND`, `MEMBER`, `LENGTH`, `REVERSE`, `PAIRLIS`, `NULL`, `NCONC`, `COPY`, `SASSOC`, `MAPC`, `MAPCON` |
+//! | `02-cxr.lisp` | All 30 CAR/CDR compositions `CAAR`…`CDDDDR` |
+//! | `03-meta.lisp` | `DOCUMENTATION` |
+//! | `04-predicates.lisp` | `EQUAL` (structural equality) |
+//! | `05-math.lisp` | `ONEP`, `MINUSP`, `ADD1`, `SUB1`, `MAX`, `MIN`, `ABS` |
+//! | `06-builtin-docs.lisp` | Docstrings for all built-in functions (via `(documentation 'fn)`) |
+//! | `07-shell.lisp` | `SH`, `SHELL-STDOUT`, `SHELL-STDERR`, `SHELL-EXIT-CODE`, `SHELL-OK-P` |
+//! | `08-vau.lisp` | Kernel-style derived forms: `$IF`, `$AND`, `$OR`, `$SEQUENCE` |
+//! | `09-lisp15.lisp` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
+//! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
+//! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
+//! | `97-doc-renderer.lisp` | REPL documentation renderer |
+//! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
+//! | `99-help-data.lisp` | Structured documentation database for all built-ins |
+//!
+//! Shell helpers (`07-shell.lisp`) require `(enable-feature "SHELL")` before use.
+//! The testing framework (`10-testing.lisp`) is automatically available when
+//! you call [`environment::Environment::with_stdlib`].
+
 pub mod environment;
 pub mod evaluator;
 pub mod optimizer;
@@ -79,10 +223,21 @@ pub trait LispValExtension: fmt::Debug {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+/// Runtime error type for the Lisp interpreter.
+///
+/// Most user-visible errors are [`LispError::Generic`].  The other variants are
+/// internal control-flow signals used by `PROG`/`RETURN`/`GO` and should never
+/// escape a top-level [`eval_str`] call under normal circumstances; if they do,
+/// treat them as bugs.
 #[derive(Debug, Clone)]
 pub enum LispError {
+    /// A runtime error with a human-readable message.
     Generic(String),
+    /// Carries a value out of a `PROG` form via `(RETURN val)`.
+    /// Not a true error; caught by the `PROG` evaluator.
     Return(Box<LispVal>),
+    /// Carries a label name out of a `PROG` form via `(GO label)`.
+    /// Not a true error; caught by the `PROG` evaluator.
     Go(String),
 }
 
@@ -107,6 +262,15 @@ impl fmt::Display for LispError {
     }
 }
 
+/// Discriminants for the built-in primitive functions.
+///
+/// Each variant corresponds to a Lisp function registered in
+/// [`environment::Environment::new_with_builtins`].  The mapping from Lisp name
+/// to variant is defined there; the actual implementation lives in
+/// `evaluator::apply_builtin`.
+///
+/// You do not normally construct `BuiltinFunc` values directly — they are
+/// created by the environment initialiser and stored as [`LispVal::Builtin`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BuiltinFunc {
     Plus,
@@ -237,17 +401,45 @@ pub enum BuiltinFunc {
     Spaces,
 }
 
+/// An interned Lisp symbol.
+///
+/// Symbols are the atomic identifiers of Lisp programs — names like `FOO`,
+/// `+`, `CAR`, or `*MY-VAR*`.  Every distinct name is stored exactly once in
+/// the [`environment::SymbolTable`]; two occurrences of the same name share the
+/// same `Rc<RefCell<Symbol>>` allocation, making [`LispVal`] `EQ` comparison
+/// a pointer-equality test.
+///
+/// Each symbol carries a **property list** (`plist`) — a `HashMap` of
+/// indicator→value pairs.  The standard library uses `"docstring"` to store
+/// documentation accessible via `(documentation 'sym)`.  You can store
+/// arbitrary metadata from Rust via [`environment::Environment::intern_symbol`]
+/// and then mutate `sym.borrow_mut().plist`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Symbol {
+    /// Uppercased canonical name.
     pub name: String,
+    /// Arbitrary key/value metadata attached to this symbol.
     pub plist: HashMap<String, LispVal>,
 }
 
+/// A lexical closure created by `(lambda (params…) body…)` or `defun`.
+///
+/// When called, a new child environment is created whose lexical parent is
+/// `env` (the definition site) and whose dynamic parent is the caller's
+/// environment (so dynamic/special variables propagate correctly).  Parameters
+/// are bound in this child env before `body` is evaluated.
+///
+/// If `rest_param` is `Some(name)`, any arguments beyond the fixed `params`
+/// are collected into a list and bound to that name (the `&REST` convention).
 #[derive(Debug, Clone)]
 pub struct Lambda {
+    /// Fixed parameter names, in order.
     pub params: Vec<String>,
+    /// Optional variadic parameter name (`&REST rest`).
     pub rest_param: Option<String>,
+    /// Body expression (typically `(PROGN ...)` for multi-form bodies).
     pub body: Box<LispVal>,
+    /// Captured lexical environment (definition site).
     pub env: Rc<Environment>,
 }
 
@@ -260,10 +452,23 @@ impl PartialEq for Lambda {
     }
 }
 
+/// A fexpr ("function expression") created by `(defexpr name (args-sym) body…)`.
+///
+/// Unlike a lambda, a fexpr receives its arguments **unevaluated** — the
+/// entire argument list is passed as a single `LispVal` list bound to the
+/// name in `params[0]`.  The fexpr body can then selectively call `(eval …)`
+/// on whichever arguments it chooses.
+///
+/// Fexprs are the classic Lisp mechanism for user-defined special forms.
+/// They differ from macros in that they compute a *value* directly rather
+/// than returning code to be evaluated.
 #[derive(Debug, Clone)]
 pub struct Fexpr {
+    /// Single-element vec containing the name for the unevaluated arg list.
     pub params: Vec<String>,
+    /// Body expression.
     pub body: Box<LispVal>,
+    /// Captured lexical environment.
     pub env: Rc<Environment>,
 }
 
@@ -273,11 +478,23 @@ impl PartialEq for Fexpr {
     }
 }
 
+/// A macro created by `(defmacro name (params…) body…)`.
+///
+/// Macros receive their arguments **unevaluated** and return a Lisp form
+/// (the *expansion*) which is then evaluated in the caller's environment.
+/// This two-phase design (expand-then-eval) distinguishes macros from fexprs.
+///
+/// Supports `&REST` for variadic parameter lists, enabling patterns like
+/// `(defmacro when (test &rest body) \`(if ,test (progn ,@body) nil))`.
 #[derive(Debug, Clone)]
 pub struct Macro {
+    /// Fixed parameter names.
     pub params: Vec<String>,
+    /// Optional `&REST` parameter for remaining arguments.
     pub rest_param: Option<String>,
+    /// Body expression; evaluating it must produce a valid Lisp form.
     pub body: Box<LispVal>,
+    /// Captured lexical environment (definition site).
     pub env: Rc<Environment>,
 }
 
@@ -316,33 +533,88 @@ impl PartialEq for Vau {
     }
 }
 
+// NOTE: the crate-level doc block is at the very top of this file (//! lines).
+// Additional sections are appended here so that rustdoc renders them in order.
+
+/// The universal value type of the Lamedh Lisp interpreter.
+///
+/// Every Lisp object — numbers, strings, lists, functions, hash tables — is
+/// represented as a `LispVal`.  The variants map directly to the types defined
+/// in the Lisp 1.5 manual, extended with modern additions.
+///
+/// ## Memory model
+///
+/// - **Cons cells** use `Rc<LispVal>` (not `Box`) so sharing a list head is
+///   O(1) refcount bump.  Cons cells are immutable; `RPLACA`/`RPLACD` return
+///   new cells rather than mutating in place.
+/// - **Symbols** are interned: two occurrences of `FOO` share one
+///   `Rc<RefCell<Symbol>>`.  [`LispVal::eq`] for symbols uses pointer equality,
+///   matching the Lisp `EQ` predicate.
+/// - **Hash tables**, **arrays**, **environments**, and **natives** all use `Rc`
+///   for shared ownership.
+///
+/// ## Truthiness
+///
+/// [`LispVal::Nil`] is the only falsy value.  Everything else — including `0`,
+/// `""`, and empty string — is truthy.  Use [`LispVal::is_truthy`] in Rust code
+/// and `(not x)` in Lisp code.
+///
+/// ## Conversion
+///
+/// Use the `From<T>` impls for Rust→Lisp conversion and `TryFrom<LispVal>` for
+/// Lisp→Rust:
+///
+/// ```rust,ignore
+/// let n: LispVal = LispVal::from(42i64);         // Number(42)
+/// let s: LispVal = LispVal::from("hello");        // String("hello")
+/// let lst = LispVal::list([1i64, 2, 3]);          // (1 2 3)
+///
+/// let x: i64 = i64::try_from(n)?;                // 42
+/// let v: Vec<LispVal> = Vec::try_from(lst)?;     // [Number(1), Number(2), Number(3)]
+/// ```
 pub enum LispVal {
+    /// An interned symbol such as `FOO`, `+`, or `*MY-VAR*`.
     Symbol(Rc<RefCell<Symbol>>),
+    /// A 64-bit signed integer.
     Number(i64),
+    /// A 64-bit IEEE 754 floating-point number.
     Float(f64),
+    /// A UTF-8 string literal.
     String(String),
+    /// A built-in primitive function.  See [`BuiltinFunc`].
     Builtin(BuiltinFunc),
+    /// A lexical closure.  See [`Lambda`].
     Lambda(Lambda),
+    /// A fexpr (unevaluated-argument function).  See [`Fexpr`].
     Fexpr(Fexpr),
+    /// A macro (code-returning function).  See [`Macro`].
     Macro(Macro),
+    /// A Kernel-style vau operative.  See [`Vau`].
     Vau(Vau),
-    /// A cons cell. Children are `Rc` (not `Box`) so cloning a list is an O(1)
-    /// refcount bump instead of a deep copy — cons cells are immutable in this
-    /// implementation (rplaca/rplacd are non-mutating), so structural sharing
-    /// is sound. See issue #111.
+    /// A cons cell.  Children are `Rc` (not `Box`) so cloning a list is an
+    /// O(1) refcount bump instead of a deep copy — cons cells are immutable in
+    /// this implementation (`rplaca`/`rplacd` return new cells), so structural
+    /// sharing is sound.
     Cons {
         car: Rc<LispVal>,
         cdr: Rc<LispVal>,
     },
+    /// The empty list / boolean false.  `()` and `NIL` are the same object.
     Nil,
+    /// A mutable hash table, used as `(make-hash-table)`.  Keys and values are
+    /// arbitrary `LispVal`s.
     HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
-    /// A host-registered Rust closure callable from Lisp.
+    /// A host-registered Rust closure callable from Lisp.  See
+    /// [`environment::Environment::register_fn`].
     Native(Rc<NativeFn>),
-    /// A first-class environment value.
+    /// A first-class environment.  Obtained via `(the-environment)` or
+    /// `(make-environment)`.  Can be passed to `(eval expr env)`.
     Environment(Rc<Environment>),
-    /// A 0-indexed mutable vector (Lisp 1.5 `array`).
+    /// A 0-indexed mutable vector (Lisp 1.5 `array`).  Created by `(array n)`;
+    /// accessed with `(fetch a i)` / `(store a i v)`.
     Array(Rc<RefCell<Vec<LispVal>>>),
-    /// A host-defined extension value.  Use `LispVal::ext(v)` to construct.
+    /// A host-defined extension value.  Use [`LispVal::ext`] to construct.
+    /// See [`LispValExtension`].
     Extension(Rc<dyn LispValExtension>),
 }
 
@@ -659,6 +931,10 @@ impl LispVal {
 // Embedded standard library
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Embedded standard library
+// ---------------------------------------------------------------------------
+
 /// The standard library sources embedded at compile time, in load order.
 ///
 /// Each entry is `(filename, source)`. The filename is used only for error messages.
@@ -748,6 +1024,17 @@ pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
     }
 }
 
+/// Load and evaluate a single Lisp source file.
+///
+/// Reads the file at `path`, parses all top-level expressions, and evaluates
+/// them in `env` in order.  The `FILE-IO` capability must be enabled in `env`
+/// for the Lisp builtin `(LOAD-FILE path)` to call this; Rust host code can
+/// call it directly regardless of feature flags.
+///
+/// # Errors
+///
+/// Returns the first parse or evaluation error encountered.  Subsequent
+/// expressions in the file are **not** evaluated after a failure.
 pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
     let content = fs::read_to_string(path)
         .map_err(|e| LispError::Generic(format!("Failed to read file {path}: {e}")))?;
@@ -760,6 +1047,14 @@ pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
     Ok(())
 }
 
+/// Load and evaluate all `*.lisp` files in a directory, sorted by name.
+///
+/// Files are sorted by filename, so numeric prefixes (`00-core.lisp`,
+/// `01-list.lisp`, …) control load order.  Subdirectories are ignored.
+///
+/// # Errors
+///
+/// Returns the first error from any file; subsequent files are not loaded.
 pub fn load_directory(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
     let entries = std::fs::read_dir(path)
         .map_err(|e| LispError::Generic(format!("Failed to read directory {path}: {e}")))?;
@@ -780,6 +1075,11 @@ pub fn load_directory(path: &str, env: &Rc<Environment>) -> Result<(), LispError
     Ok(())
 }
 
+/// Run a minimal read-eval-print loop over `in_stream`/`out_stream`.
+///
+/// Reads one line at a time, evaluates it, and writes the result.  Used by
+/// tests and simple embeddings that don't need rustyline's history and
+/// completion.  For the interactive REPL, see the `lamedh-cli` crate.
 pub fn repl_loop<R: BufRead, W: Write>(
     in_stream: &mut R,
     out_stream: &mut W,

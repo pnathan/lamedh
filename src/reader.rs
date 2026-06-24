@@ -1,3 +1,31 @@
+//! S-expression parser built with [nom](https://docs.rs/nom) combinator library.
+//!
+//! The public entry points are [`read`] (one form) and [`read_all`] (zero or
+//! more forms).  Both require an [`Environment`] reference so that symbol names
+//! can be interned into the global [`crate::environment::SymbolTable`] during
+//! parsing — this ensures that two occurrences of the same name share one `Rc`
+//! allocation and that `EQ` comparisons are pointer-equality tests.
+//!
+//! ## Syntax summary
+//!
+//! | Input | Parsed as |
+//! |-------|-----------|
+//! | `123`, `-456` | `LispVal::Number(i64)` |
+//! | `3.14`, `-1e5` | `LispVal::Float(f64)` |
+//! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
+//! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
+//! | `FOO`, `+`, `*x*` | `LispVal::Symbol` (uppercased, interned) |
+//! | `(a b c)` | Proper list (cons chain ending in Nil) |
+//! | `(a . b)` | Dotted pair |
+//! | `'e` | `(QUOTE e)` |
+//! | `` `e `` | `(QUASIQUOTE e)` |
+//! | `,e` | `(UNQUOTE e)` |
+//! | `#'f` | `(FUNCTION f)` |
+//! | `; comment` | Ignored to end of line |
+//!
+//! Symbols are **always** uppercased during interning, so `foo`, `FOO`, and
+//! `Foo` all resolve to the same interned `Symbol` named `"FOO"`.
+
 use crate::LispVal;
 use crate::environment::Environment;
 use nom::{
@@ -288,6 +316,11 @@ fn parse_unquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
+/// Parse a single s-expression from `input`.
+///
+/// Symbols are interned into `env`'s symbol table and uppercased.
+/// Returns an error if the input contains trailing non-whitespace text after
+/// the first expression — use [`read_all`] to parse multiple forms.
 pub fn read(input: &str, env: &Rc<Environment>) -> Result<LispVal, String> {
     match terminated(parse_expr(env.clone()), ws)(input.trim()) {
         Ok(("", val)) => Ok(val),
@@ -296,6 +329,10 @@ pub fn read(input: &str, env: &Rc<Environment>) -> Result<LispVal, String> {
     }
 }
 
+/// Parse zero or more s-expressions from `input` and return them in order.
+///
+/// This is the function used for loading files and multi-expression strings.
+/// Stops at EOF; returns an error on the first malformed expression.
 pub fn read_all(input: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, String> {
     let mut results = vec![];
     let mut current_input = input.trim();
