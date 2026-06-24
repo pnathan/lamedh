@@ -40,6 +40,45 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::rc::Rc;
 
+/// Trait for host-defined value types that can participate in the Lisp system.
+///
+/// Implement this trait on your Rust type and wrap it with
+/// `LispVal::ext(value)` to make it available to Lisp code.
+///
+/// ```rust,ignore
+/// use lamedh::{LispVal, LispValExtension, LispError};
+///
+/// struct MyPoint { x: f64, y: f64 }
+///
+/// impl LispValExtension for MyPoint {
+///     fn type_name(&self) -> &str { "point" }
+///     fn display(&self) -> String { format!("#<point {},{}>", self.x, self.y) }
+///     fn eq_ext(&self, other: &dyn LispValExtension) -> bool {
+///         other.as_any().downcast_ref::<MyPoint>()
+///             .map_or(false, |p| p.x == self.x && p.y == self.y)
+///     }
+///     fn hash_ext(&self, state: &mut dyn std::hash::Hasher) {
+///         self.x.to_bits().hash(state);
+///         self.y.to_bits().hash(state);
+///     }
+///     fn as_any(&self) -> &dyn std::any::Any { self }
+/// }
+///
+/// let pt = LispVal::ext(MyPoint { x: 1.0, y: 2.0 });
+/// ```
+pub trait LispValExtension: fmt::Debug {
+    /// Short type tag shown in error messages and the printer.
+    fn type_name(&self) -> &str;
+    /// Human-readable representation (used by PRINT/PRIN1).
+    fn display(&self) -> String;
+    /// Value equality with another extension value.
+    fn eq_ext(&self, other: &dyn LispValExtension) -> bool;
+    /// Hash for use as a hash-table key.
+    fn hash_ext(&self, state: &mut dyn Hasher);
+    /// Downcast support — return `self` as `Any`.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 #[derive(Debug, Clone)]
 pub enum LispError {
     Generic(String),
@@ -182,12 +221,16 @@ pub enum BuiltinFunc {
     TheEnvironment,
     // Source optimizer
     Optimize,
+    // Lisp 1.5 EVLIS
+    Evlis,
     // Arrays (Lisp 1.5 Appendix A)
     MakeArray,
     ArrayFetch,
     ArrayStore,
     ArrayLength,
     Arrayp,
+    Extensionp,
+    ExtensionTypeName,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -291,6 +334,15 @@ pub enum LispVal {
     Environment(Rc<Environment>),
     /// A 0-indexed mutable vector (Lisp 1.5 `array`).
     Array(Rc<RefCell<Vec<LispVal>>>),
+    /// A host-defined extension value.  Use `LispVal::ext(v)` to construct.
+    Extension(Rc<dyn LispValExtension>),
+}
+
+impl LispVal {
+    /// Wrap a host value implementing [`LispValExtension`] into a `LispVal`.
+    pub fn ext<T: LispValExtension + 'static>(v: T) -> Self {
+        LispVal::Extension(Rc::new(v))
+    }
 }
 
 impl fmt::Debug for LispVal {
@@ -311,6 +363,7 @@ impl fmt::Debug for LispVal {
             LispVal::Native(_) => write!(f, "Native(...)"),
             LispVal::Environment(_) => write!(f, "Environment(...)"),
             LispVal::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
+            LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
         }
     }
 }
@@ -336,6 +389,7 @@ impl Clone for LispVal {
             LispVal::Native(f) => LispVal::Native(Rc::clone(f)),
             LispVal::Environment(e) => LispVal::Environment(Rc::clone(e)),
             LispVal::Array(a) => LispVal::Array(Rc::clone(a)),
+            LispVal::Extension(e) => LispVal::Extension(Rc::clone(e)),
         }
     }
 }
@@ -367,6 +421,7 @@ impl PartialEq for LispVal {
             (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
             (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
             (LispVal::Array(a), LispVal::Array(b)) => Rc::ptr_eq(a, b),
+            (LispVal::Extension(a), LispVal::Extension(b)) => a.eq_ext(b.as_ref()),
             _ => false,
         }
     }
@@ -397,6 +452,9 @@ impl Hash for LispVal {
             }
             LispVal::Array(a) => {
                 Rc::as_ptr(a).hash(state);
+            }
+            LispVal::Extension(e) => {
+                e.hash_ext(state);
             }
             LispVal::Builtin(_)
             | LispVal::Lambda(_)
