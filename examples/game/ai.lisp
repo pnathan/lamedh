@@ -25,6 +25,23 @@
   (max (abs (- (entity-x a) (entity-x b)))
        (abs (- (entity-y a) (entity-y b)))))
 
+;; --- Faster variants of the same distance ------------------------------------
+;; The stdlib `max` is `&rest` AND recurses through `(apply #'max ...)`, and
+;; `abs` calls `minusp` (another defun). Fixed-arity helpers built straight from
+;; builtins do the identical math with far less interpreter overhead.
+(defun abs1 (x)
+  "Single-argument abs with no helper calls."
+  (if (< x 0) (- 0 x) x))
+
+(defun max2 (a b)
+  "Two-argument max with no &rest / apply."
+  (if (> a b) a b))
+
+(defun chebyshev-fast (a b)
+  "Same result as CHEBYSHEV, using the fixed-arity helpers."
+  (max2 (abs1 (- (entity-x a) (entity-x b)))
+        (abs1 (- (entity-y a) (entity-y b)))))
+
 (defun adjacent? (a b)
   (not (> (chebyshev a b) 1)))
 

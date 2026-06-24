@@ -19,11 +19,13 @@
 //! objects.
 
 use lamedh::{
-    LispError, LispVal, LispValExtension, environment::Environment, eval_str, load_file, printer,
+    environment::Environment, eval_str, evaluator, load_file, printer, reader, LispError, LispVal,
+    LispValExtension,
 };
 use std::cell::RefCell;
 use std::hash::Hasher;
 use std::rc::Rc;
+use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // 1. The host object type.
@@ -186,6 +188,17 @@ fn register_game_api(env: &Rc<Environment>) {
         let e = entity_arg(&args[0], "entity-alive?")?;
         Ok(LispVal::from(e.data.borrow().hp > 0))
     });
+    // (entity-distance a b) -> king-move (Chebyshev) distance.
+    // The same math the Lisp `chebyshev` does, but computed host-side in one
+    // call instead of ~7 interpreted ones — see the perf section in main.
+    env.register_fn("entity-distance", |args, _env| {
+        expect_args(args, 2, "entity-distance")?;
+        let a = entity_arg(&args[0], "entity-distance")?;
+        let b = entity_arg(&args[1], "entity-distance")?;
+        let (a, b) = (a.data.borrow(), b.data.borrow());
+        let d = (a.x - b.x).abs().max((a.y - b.y).abs());
+        Ok(LispVal::from(d))
+    });
 
     // --- mutators (the interesting part) ---------------------------------
     // (move-entity! e dx dy) -> e   ; clamped to the grid by the host
@@ -308,6 +321,94 @@ fn run() {
         (false, false) => "Both fell.",
     };
     println!("{winner}");
+
+    // Same world, now measured: how expensive is the Rust<->Lisp boundary?
+    perf_comparison(&env, &hero, &goblin);
+}
+
+/// Measure the cost of computing one king-move distance several ways, so the
+/// optimized and un-optimized paths sit side by side.
+///
+/// The point of the demo is *how* to call Lisp from Rust; this is *what it
+/// costs*. Two independent levers show up:
+///   - parse once (cache the form) vs. re-parse every call (`eval_str`)
+///   - do hot math host-side (one boundary call) vs. in interpreted Lisp
+fn perf_comparison(env: &Rc<Environment>, hero: &LispVal, goblin: &LispVal) {
+    const N: u32 = 200_000;
+
+    // Pull the raw structs back out for a pure-Rust baseline.
+    let h = entity_arg(hero, "perf").unwrap();
+    let g = entity_arg(goblin, "perf").unwrap();
+
+    // Helper: time `N` evaluations of an already-parsed form (the cached path).
+    let bench_form = |src: &str| -> f64 {
+        let form = reader::read(src, env).expect("parse");
+        let t = Instant::now();
+        for _ in 0..N {
+            std::hint::black_box(evaluator::eval(&form, env).expect("eval"));
+        }
+        t.elapsed().as_nanos() as f64 / N as f64
+    };
+
+    // 1. Native baseline — the same Chebyshev distance, straight Rust.
+    let t = Instant::now();
+    let mut acc = 0i64;
+    for _ in 0..N {
+        let (a, b) = (h.data.borrow(), g.data.borrow());
+        acc += (a.x - b.x).abs().max((a.y - b.y).abs());
+    }
+    let native = t.elapsed().as_nanos() as f64 / N as f64;
+    std::hint::black_box(acc);
+
+    // 2. Host-side helper: one boundary crossing, math done in Rust.
+    let host_side = bench_form("(entity-distance *HERO* *GOBLIN*)");
+    // 3. Fixed-arity Lisp helpers (max2 / abs1) — cached form.
+    let fast_lisp = bench_form("(chebyshev-fast *HERO* *GOBLIN*)");
+    // 4. Variadic stdlib (max / abs) in Lisp — cached form.
+    let std_lisp = bench_form("(chebyshev *HERO* *GOBLIN*)");
+
+    // 5. Same as (4) but re-parsing the string on every call (the slow pattern
+    //    the naive turn loop above uses for readability).
+    let reparse = {
+        let t = Instant::now();
+        for _ in 0..N {
+            std::hint::black_box(eval_str("(chebyshev *HERO* *GOBLIN*)", env).expect("eval"));
+        }
+        t.elapsed().as_nanos() as f64 / N as f64
+    };
+
+    let x = |v: f64| v / native;
+    println!("\n== Performance: one king-move distance, {N} iterations ==");
+    println!("  {:<46}{:>9.1} ns/op", "1. native Rust (baseline)", native);
+    println!(
+        "  {:<46}{:>9.1} ns/op  ({:.0}x)",
+        "2. host-side (entity-distance), cached form",
+        host_side,
+        x(host_side)
+    );
+    println!(
+        "  {:<46}{:>9.1} ns/op  ({:.0}x)",
+        "3. Lisp fixed-arity (chebyshev-fast), cached",
+        fast_lisp,
+        x(fast_lisp)
+    );
+    println!(
+        "  {:<46}{:>9.1} ns/op  ({:.0}x)",
+        "4. Lisp variadic stdlib (chebyshev), cached",
+        std_lisp,
+        x(std_lisp)
+    );
+    println!(
+        "  {:<46}{:>9.1} ns/op  ({:.0}x)",
+        "5. same as 4, but eval_str re-parses each call",
+        reparse,
+        x(reparse)
+    );
+    println!(
+        "\n  caching the parse saves {:.1} ns/op; moving the math host-side is the\n  big lever ({:.0}x faster than interpreted Lisp).",
+        reparse - std_lisp,
+        std_lisp / host_side
+    );
 }
 
 /// Query an entity's liveness from Rust by evaluating a tiny Lisp expression.

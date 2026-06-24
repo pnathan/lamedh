@@ -54,3 +54,39 @@ The engine — turn order, the grid, the win condition — stays in compiled Rus
 The behaviour — how a goblin chases and fights — lives in plain text Lisp you
 can edit and reload without recompiling. Swap in a different `ai.lisp` (one that
 flees at low hp, say) and the engine is none the wiser.
+
+## Performance
+
+After the fight, the demo measures one king-move (Chebyshev) distance 200k
+times, several ways. Representative numbers (release build; absolute values
+vary by machine, the *ratios* are the point):
+
+```
+1. native Rust (baseline)                            1.9 ns/op
+2. host-side (entity-distance), cached form        758   ns/op  (~400x)
+3. Lisp fixed-arity (chebyshev-fast), cached     31600   ns/op  (~16000x)
+4. Lisp variadic stdlib (chebyshev), cached      87700   ns/op  (~46000x)
+5. same as 4, but eval_str re-parses each call   90600   ns/op  (~48000x)
+```
+
+Reading it:
+
+- **The host/Lisp boundary is cheap.** A bare host accessor (`entity-x`) costs
+  about the same as a built-in (~0.5 µs). The trait-object downcast plus `Rc`
+  refcount bump that retrieves the entity is ~1–3% of that — not worth
+  optimizing. The interpreter's per-call cost (env allocation, symbol lookup)
+  dominates, not the boundary.
+- **`&rest` is expensive.** The stdlib `max` is variadic *and* recurses through
+  `(apply #'max ...)`. Replacing it with a fixed-arity `max2` (and `abs1` for
+  `abs`, which calls `minusp`) is ~2.8x faster (row 4 → row 3) for identical
+  results. See `abs1` / `max2` / `chebyshev-fast` in `ai.lisp`.
+- **Caching the parse is a free win.** `eval_str` re-parses the source every
+  call (~3 µs of nom parsing). Parse once with `reader::read` and call
+  `evaluator::eval(&form, env)` repeatedly (rebinding globals as needed) to skip
+  it. The naive turn loop uses `eval_str` for readability; the perf section
+  shows the cached path.
+- **Pushing hot math host-side is the big lever.** `entity-distance` does the
+  whole computation in Rust in one boundary crossing — ~115x faster than the
+  best interpreted version. Rule of thumb: every line of arithmetic in a
+  per-frame Lisp path costs ~5–60 µs; the same work behind one `register_fn` is
+  ~0.5 µs. Keep behaviour/decisions in Lisp; keep tight numeric loops in Rust.
