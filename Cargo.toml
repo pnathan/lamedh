@@ -3,7 +3,7 @@ name = "lamedh"
 version = "0.1.0"
 edition = "2024"
 description = "An embeddable Lisp 1.5 interpreter written in Rust"
-
+license = "AGPL3.0"
 # The library crate. The CLI/REPL driver lives in the `lamedh-cli` member.
 [lib]
 name = "lamedh"
