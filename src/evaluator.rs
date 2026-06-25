@@ -457,6 +457,320 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
     }
 }
 
+/// Coerce a numeric `LispVal` (Number or Float) to `f64`.
+fn as_f64(v: &LispVal, ctx: &str) -> Result<f64, LispError> {
+    match v {
+        LispVal::Number(n) => Ok(*n as f64),
+        LispVal::Float(f) => Ok(*f),
+        _ => Err(LispError::Generic(format!("{ctx} requires a number"))),
+    }
+}
+
+/// Math library builtins implemented in Rust (issue #148).
+///
+/// Transcendentals (`sqrt`/`sin`/`cos`/`tan`/`log`/`exp`) accept any number and
+/// return an `f64`. Rounding (`floor`/`ceiling`/`round`/`truncate`) accepts any
+/// number and returns an `i64`. Integer ops (`gcd`/`lcm`/`isqrt`) require
+/// integers; `signum` preserves the input's int/float kind.
+#[inline(never)]
+fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+    // gcd/lcm are variadic in spirit but we keep them binary here; the rest are unary.
+    let want = |n: usize, name: &str| -> Result<(), LispError> {
+        if args.len() != n {
+            Err(LispError::Generic(format!(
+                "{name} requires exactly {n} argument(s)"
+            )))
+        } else {
+            Ok(())
+        }
+    };
+    match op {
+        BuiltinFunc::Sqrt => {
+            want(1, "sqrt")?;
+            Ok(LispVal::Float(as_f64(&args[0], "sqrt")?.sqrt()))
+        }
+        BuiltinFunc::Sin => {
+            want(1, "sin")?;
+            Ok(LispVal::Float(as_f64(&args[0], "sin")?.sin()))
+        }
+        BuiltinFunc::Cos => {
+            want(1, "cos")?;
+            Ok(LispVal::Float(as_f64(&args[0], "cos")?.cos()))
+        }
+        BuiltinFunc::Tan => {
+            want(1, "tan")?;
+            Ok(LispVal::Float(as_f64(&args[0], "tan")?.tan()))
+        }
+        BuiltinFunc::Exp => {
+            want(1, "exp")?;
+            Ok(LispVal::Float(as_f64(&args[0], "exp")?.exp()))
+        }
+        BuiltinFunc::Log => {
+            // (log x) -> natural log; (log x base) -> log base b
+            match args.len() {
+                1 => Ok(LispVal::Float(as_f64(&args[0], "log")?.ln())),
+                2 => {
+                    let x = as_f64(&args[0], "log")?;
+                    let b = as_f64(&args[1], "log")?;
+                    Ok(LispVal::Float(x.log(b)))
+                }
+                _ => Err(LispError::Generic("log takes 1 or 2 arguments".to_string())),
+            }
+        }
+        BuiltinFunc::Floor => {
+            want(1, "floor")?;
+            Ok(LispVal::Number(as_f64(&args[0], "floor")?.floor() as i64))
+        }
+        BuiltinFunc::Ceiling => {
+            want(1, "ceiling")?;
+            Ok(LispVal::Number(as_f64(&args[0], "ceiling")?.ceil() as i64))
+        }
+        BuiltinFunc::Round => {
+            want(1, "round")?;
+            // Round half away from zero (Rust f64::round semantics).
+            Ok(LispVal::Number(as_f64(&args[0], "round")?.round() as i64))
+        }
+        BuiltinFunc::Truncate => {
+            want(1, "truncate")?;
+            Ok(LispVal::Number(as_f64(&args[0], "truncate")?.trunc() as i64))
+        }
+        BuiltinFunc::Gcd => {
+            want(2, "gcd")?;
+            match (&args[0], &args[1]) {
+                (LispVal::Number(a), LispVal::Number(b)) => Ok(LispVal::Number(gcd_i64(*a, *b))),
+                _ => Err(LispError::Generic("gcd requires integers".to_string())),
+            }
+        }
+        BuiltinFunc::Lcm => {
+            want(2, "lcm")?;
+            match (&args[0], &args[1]) {
+                (LispVal::Number(a), LispVal::Number(b)) => {
+                    if *a == 0 || *b == 0 {
+                        Ok(LispVal::Number(0))
+                    } else {
+                        let g = gcd_i64(*a, *b);
+                        Ok(LispVal::Number((a / g * b).abs()))
+                    }
+                }
+                _ => Err(LispError::Generic("lcm requires integers".to_string())),
+            }
+        }
+        BuiltinFunc::Isqrt => {
+            want(1, "isqrt")?;
+            match &args[0] {
+                LispVal::Number(n) if *n >= 0 => Ok(LispVal::Number((*n as f64).sqrt() as i64)),
+                LispVal::Number(_) => Err(LispError::Generic(
+                    "isqrt requires a non-negative integer".to_string(),
+                )),
+                _ => Err(LispError::Generic("isqrt requires an integer".to_string())),
+            }
+        }
+        BuiltinFunc::Signum => {
+            want(1, "signum")?;
+            match &args[0] {
+                LispVal::Number(n) => Ok(LispVal::Number(n.signum())),
+                LispVal::Float(f) => Ok(LispVal::Float(if *f == 0.0 { 0.0 } else { f.signum() })),
+                _ => Err(LispError::Generic("signum requires a number".to_string())),
+            }
+        }
+        _ => Err(LispError::Generic("Not a math operation".to_string())),
+    }
+}
+
+fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
+    a = a.abs();
+    b = b.abs();
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+/// String-operation kernel primitives (issue #147). These cannot be expressed
+/// in pure Lisp; the convenience layer (split/join/trim/upcase/...) is built on
+/// top of them in `lib/`.
+#[inline(never)]
+fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+    let get_str = |i: usize, name: &str| -> Result<String, LispError> {
+        match args.get(i) {
+            Some(LispVal::String(s)) => Ok(s.clone()),
+            _ => Err(LispError::Generic(format!(
+                "{name} requires a string argument"
+            ))),
+        }
+    };
+    match op {
+        BuiltinFunc::StringLength => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "string-length requires exactly one argument".to_string(),
+                ));
+            }
+            Ok(LispVal::Number(
+                get_str(0, "string-length")?.chars().count() as i64,
+            ))
+        }
+        BuiltinFunc::Substring => {
+            // (substring s start [end]) — char indices, end exclusive, end
+            // defaults to the string length. Clamped to valid bounds.
+            if args.len() != 2 && args.len() != 3 {
+                return Err(LispError::Generic(
+                    "substring takes 2 or 3 arguments: (substring s start [end])".to_string(),
+                ));
+            }
+            let s = get_str(0, "substring")?;
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len();
+            let start = match &args[1] {
+                LispVal::Number(n) if *n >= 0 => (*n as usize).min(len),
+                _ => {
+                    return Err(LispError::Generic(
+                        "substring start must be a non-negative integer".to_string(),
+                    ));
+                }
+            };
+            let end = if args.len() == 3 {
+                match &args[2] {
+                    LispVal::Number(n) if *n >= 0 => (*n as usize).min(len),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "substring end must be a non-negative integer".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                len
+            };
+            if start > end {
+                return Err(LispError::Generic(
+                    "substring start must not exceed end".to_string(),
+                ));
+            }
+            Ok(LispVal::String(chars[start..end].iter().collect()))
+        }
+        BuiltinFunc::CharCode => {
+            // (char-code s) — code point of the first character of s.
+            let s = get_str(0, "char-code")?;
+            match s.chars().next() {
+                Some(c) => Ok(LispVal::Number(c as i64)),
+                None => Err(LispError::Generic(
+                    "char-code requires a non-empty string".to_string(),
+                )),
+            }
+        }
+        BuiltinFunc::CodeChar => {
+            // (code-char n) — one-character string for code point n.
+            match args.first() {
+                Some(LispVal::Number(n)) if *n >= 0 => char::from_u32(*n as u32)
+                    .map(|c| LispVal::String(c.to_string()))
+                    .ok_or_else(|| {
+                        LispError::Generic(format!("code-char: {n} is not a valid code point"))
+                    }),
+                _ => Err(LispError::Generic(
+                    "code-char requires a non-negative integer".to_string(),
+                )),
+            }
+        }
+        BuiltinFunc::StringToNumber => {
+            // (string->number s) — parse as integer, else float, else NIL.
+            let s = get_str(0, "string->number")?;
+            let t = s.trim();
+            if let Ok(n) = t.parse::<i64>() {
+                Ok(LispVal::Number(n))
+            } else if let Ok(f) = t.parse::<f64>() {
+                Ok(LispVal::Float(f))
+            } else {
+                Ok(LispVal::Nil)
+            }
+        }
+        BuiltinFunc::NumberToString => match args.first() {
+            Some(LispVal::Number(n)) => Ok(LispVal::String(n.to_string())),
+            Some(LispVal::Float(f)) => Ok(LispVal::String(f.to_string())),
+            _ => Err(LispError::Generic(
+                "number->string requires a number".to_string(),
+            )),
+        },
+        BuiltinFunc::Prin1ToString => match args.first() {
+            // Readable representation (strings are quoted), via the printer.
+            Some(v) => Ok(LispVal::String(crate::printer::print(v))),
+            None => Err(LispError::Generic(
+                "prin1-to-string requires one argument".to_string(),
+            )),
+        },
+        BuiltinFunc::PrincToString => match args.first() {
+            // Human representation: a top-level string yields its raw contents,
+            // mirroring PRINC; everything else uses the printer.
+            Some(LispVal::String(s)) => Ok(LispVal::String(s.clone())),
+            Some(v) => Ok(LispVal::String(crate::printer::print(v))),
+            None => Err(LispError::Generic(
+                "princ-to-string requires one argument".to_string(),
+            )),
+        },
+        _ => Err(LispError::Generic("Not a string operation".to_string())),
+    }
+}
+
+/// `(sort list comparator)` — stable, non-destructive sort (issue #144).
+///
+/// The comparator is a `lessp`-style strict-ordering predicate: it receives two
+/// elements and returns non-NIL iff the first should come before the second.
+/// Returns a freshly built list; the input is never mutated (consistent with
+/// the deferred-mutation decision, see #114).
+#[inline(never)]
+fn apply_sort(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+    if args.len() != 2 {
+        return Err(LispError::Generic(
+            "sort requires exactly two arguments: (sort list comparator)".to_string(),
+        ));
+    }
+    let mut items = list_to_vec(&args[0])?;
+    // Resolve a symbol comparator to its function value, like funcall does.
+    let cmp = match &args[1] {
+        LispVal::Symbol(s) => env.get(&s.borrow().name).ok_or_else(|| {
+            LispError::Generic(format!("sort: comparator not found: {}", s.borrow().name))
+        })?,
+        other => other.clone(),
+    };
+    // sort_by needs a total order via Ordering; we derive it from the strict
+    // less-than predicate. We surface comparator errors after sorting since
+    // sort_by's closure cannot return Result.
+    let mut err: Option<LispError> = None;
+    items.sort_by(|a, b| {
+        use std::cmp::Ordering;
+        if err.is_some() {
+            return Ordering::Equal;
+        }
+        let a_lt_b = match apply(&cmp, &[a.clone(), b.clone()], env) {
+            Ok(v) => v != LispVal::Nil,
+            Err(e) => {
+                err = Some(e);
+                return Ordering::Equal;
+            }
+        };
+        if a_lt_b {
+            return Ordering::Less;
+        }
+        let b_lt_a = match apply(&cmp, &[b.clone(), a.clone()], env) {
+            Ok(v) => v != LispVal::Nil,
+            Err(e) => {
+                err = Some(e);
+                return Ordering::Equal;
+            }
+        };
+        if b_lt_a {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    Ok(vec_to_list(items))
+}
+
 #[inline(never)]
 fn apply_numeric_primitives(
     op: &BuiltinFunc,
@@ -468,29 +782,30 @@ fn apply_numeric_primitives(
             if args.len() != 2 {
                 return Err(LispError::Generic("lessp requires 2 args".to_string()));
             }
-            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
-                Ok(if x < y {
-                    LispVal::Symbol(env.intern_symbol("T"))
-                } else {
-                    LispVal::Nil
-                })
+            // Integer fast path; fall back to f64 for any int/float mix.
+            let less = match (&args[0], &args[1]) {
+                (LispVal::Number(x), LispVal::Number(y)) => x < y,
+                _ => as_f64(&args[0], "lessp")? < as_f64(&args[1], "lessp")?,
+            };
+            Ok(if less {
+                LispVal::Symbol(env.intern_symbol("T"))
             } else {
-                Err(LispError::Generic("lessp requires numbers".to_string()))
-            }
+                LispVal::Nil
+            })
         }
         BuiltinFunc::Greaterp => {
             if args.len() != 2 {
                 return Err(LispError::Generic("greaterp requires 2 args".to_string()));
             }
-            if let (LispVal::Number(x), LispVal::Number(y)) = (&args[0], &args[1]) {
-                Ok(if x > y {
-                    LispVal::Symbol(env.intern_symbol("T"))
-                } else {
-                    LispVal::Nil
-                })
+            let greater = match (&args[0], &args[1]) {
+                (LispVal::Number(x), LispVal::Number(y)) => x > y,
+                _ => as_f64(&args[0], "greaterp")? > as_f64(&args[1], "greaterp")?,
+            };
+            Ok(if greater {
+                LispVal::Symbol(env.intern_symbol("T"))
             } else {
-                Err(LispError::Generic("greaterp requires numbers".to_string()))
-            }
+                LispVal::Nil
+            })
         }
         BuiltinFunc::Zerop => {
             if args.len() != 1 {
@@ -857,6 +1172,29 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Expt => apply_numeric_primitives(builtin, args, env),
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
+            BuiltinFunc::Sort => apply_sort(args, env),
+            BuiltinFunc::Sqrt
+            | BuiltinFunc::Sin
+            | BuiltinFunc::Cos
+            | BuiltinFunc::Tan
+            | BuiltinFunc::Log
+            | BuiltinFunc::Exp
+            | BuiltinFunc::Floor
+            | BuiltinFunc::Ceiling
+            | BuiltinFunc::Round
+            | BuiltinFunc::Truncate
+            | BuiltinFunc::Gcd
+            | BuiltinFunc::Lcm
+            | BuiltinFunc::Isqrt
+            | BuiltinFunc::Signum => apply_math_lib(builtin, args),
+            BuiltinFunc::StringLength
+            | BuiltinFunc::Substring
+            | BuiltinFunc::CharCode
+            | BuiltinFunc::CodeChar
+            | BuiltinFunc::StringToNumber
+            | BuiltinFunc::NumberToString
+            | BuiltinFunc::Prin1ToString
+            | BuiltinFunc::PrincToString => apply_string_lib(builtin, args),
             BuiltinFunc::Evlis => {
                 // evlis[m;a] — evaluate each element of m in environment a
                 let (list, eval_env) = match args.len() {
@@ -1496,11 +1834,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     let executable = std::fs::metadata(&path)
                         .map(|m| m.permissions().mode() & 0o111 != 0)
                         .unwrap_or(false);
-                    if executable {
-                        return Ok(LispVal::Symbol(env.intern_symbol("T")));
+                    Ok(if executable {
+                        LispVal::Symbol(env.intern_symbol("T"))
                     } else {
-                        return Ok(LispVal::Nil);
-                    }
+                        LispVal::Nil
+                    })
                 }
                 #[cfg(not(unix))]
                 Ok(LispVal::Nil)
@@ -1619,7 +1957,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     let perms = std::fs::Permissions::from_mode(mode);
                     std::fs::set_permissions(&path, perms)
                         .map_err(|e| LispError::Generic(format!("chmod: {e}")))?;
-                    return Ok(LispVal::Symbol(env.intern_symbol("T")));
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
                 }
                 #[cfg(not(unix))]
                 Err(LispError::Generic(
@@ -2693,6 +3031,133 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         }
                         Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
+                    "UNWIND-PROTECT" => {
+                        // (unwind-protect body cleanup...) — evaluate BODY, then
+                        // always evaluate the CLEANUP forms (even if BODY errors
+                        // or performs a non-local exit), then propagate BODY's
+                        // result or error.
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "unwind-protect requires a body form".to_string(),
+                            ))));
+                        }
+                        let result = eval(&forms[0], env);
+                        for cleanup in &forms[1..] {
+                            // Cleanup errors shadow nothing: run them for effect.
+                            let _ = eval(cleanup, env);
+                        }
+                        Ok(TcoStep::Done(result))
+                    }
+                    "CATCH" => {
+                        // (catch tag body...) — establish a catch point for TAG
+                        // (evaluated). A (throw TAG value) with an EQUAL tag
+                        // unwinds to here and yields VALUE.
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "catch requires a tag".to_string(),
+                            ))));
+                        }
+                        let tag = eval(&forms[0], env)?;
+                        let mut last = LispVal::Nil;
+                        for form in &forms[1..] {
+                            match eval(form, env) {
+                                Ok(v) => last = v,
+                                Err(LispError::Throw {
+                                    tag: thrown_tag,
+                                    value,
+                                }) => {
+                                    if *thrown_tag == tag {
+                                        return Ok(TcoStep::Done(Ok(*value)));
+                                    }
+                                    return Ok(TcoStep::Done(Err(LispError::Throw {
+                                        tag: thrown_tag,
+                                        value,
+                                    })));
+                                }
+                                Err(other) => return Ok(TcoStep::Done(Err(other))),
+                            }
+                        }
+                        Ok(TcoStep::Done(Ok(last)))
+                    }
+                    "THROW" => {
+                        // (throw tag value) — non-local exit to the matching CATCH.
+                        let forms = list_to_vec(rest)?;
+                        if forms.len() != 2 {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "throw requires exactly two arguments: (throw tag value)"
+                                    .to_string(),
+                            ))));
+                        }
+                        let tag = eval(&forms[0], env)?;
+                        let value = eval(&forms[1], env)?;
+                        Ok(TcoStep::Done(Err(LispError::Throw {
+                            tag: Box::new(tag),
+                            value: Box::new(value),
+                        })))
+                    }
+                    "BLOCK" => {
+                        // (block name body...) — NAME is an unevaluated symbol.
+                        // A (return-from name value) inside BODY unwinds here.
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "block requires a name".to_string(),
+                            ))));
+                        }
+                        let name = match &forms[0] {
+                            LispVal::Symbol(s) => s.borrow().name.clone(),
+                            _ => {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "block name must be a symbol".to_string(),
+                                ))));
+                            }
+                        };
+                        let mut last = LispVal::Nil;
+                        for form in &forms[1..] {
+                            match eval(form, env) {
+                                Ok(v) => last = v,
+                                Err(LispError::ReturnFrom { name: rname, value }) => {
+                                    if rname == name {
+                                        return Ok(TcoStep::Done(Ok(*value)));
+                                    }
+                                    return Ok(TcoStep::Done(Err(LispError::ReturnFrom {
+                                        name: rname,
+                                        value,
+                                    })));
+                                }
+                                Err(other) => return Ok(TcoStep::Done(Err(other))),
+                            }
+                        }
+                        Ok(TcoStep::Done(Ok(last)))
+                    }
+                    "RETURN-FROM" => {
+                        // (return-from name [value]) — NAME unevaluated.
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "return-from requires a block name".to_string(),
+                            ))));
+                        }
+                        let name = match &forms[0] {
+                            LispVal::Symbol(s) => s.borrow().name.clone(),
+                            _ => {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "return-from name must be a symbol".to_string(),
+                                ))));
+                            }
+                        };
+                        let value = if forms.len() >= 2 {
+                            eval(&forms[1], env)?
+                        } else {
+                            LispVal::Nil
+                        };
+                        Ok(TcoStep::Done(Err(LispError::ReturnFrom {
+                            name,
+                            value: Box::new(value),
+                        })))
+                    }
                     "DEF" => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 && args.len() != 3 {
@@ -3677,7 +4142,10 @@ fn apply_error_op(
             let form = &args[0];
             match eval(form, env) {
                 Ok(result) => Ok(vec_to_list(vec![result])),
-                Err(_) => Ok(LispVal::Nil),
+                // Trap ordinary errors only; let non-local control flow
+                // (RETURN/GO/THROW/RETURN-FROM) pass through unchanged.
+                Err(LispError::Generic(_)) => Ok(LispVal::Nil),
+                Err(other) => Err(other),
             }
         }
         _ => Err(LispError::Generic(

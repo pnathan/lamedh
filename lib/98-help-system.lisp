@@ -308,10 +308,11 @@
           (terpri)
           nil))))
 
-;; Simple substring helper (since we don't have real substring)
+;; SUBSTRING is now a real kernel primitive (issue #147); this remains as a
+;; thin alias for the existing call sites.
 (defun substring-proxy (s start end)
-  "Crude substring - just returns s for now."
-  s)
+  "Deprecated alias for SUBSTRING; kept for existing call sites."
+  (substring s start end))
 
 (defun help-search (text)
   "Search documentation for text."

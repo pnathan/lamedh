@@ -121,12 +121,8 @@
       (terpri)
       (terpri))))
 
-(defun princ-to-string (x)
-  "Convert x to string representation (crude)."
-  ;; This is a hack since we don't have proper string conversion
-  (cond ((stringp x) x)
-        ((symbolp x) (implode (explode x)))
-        (t "?")))
+;; PRINC-TO-STRING is now a kernel builtin (issue #150), backed by the printer;
+;; the crude Lisp shim that used to live here has been removed.
 
 (defun render-category-md (cat-name)
   "Render all docs in a category as markdown."

@@ -1,3 +1,15 @@
+(defun <= (a b)
+  "True if a is less than or equal to b."
+  (not (> a b)))
+
+(defun >= (a b)
+  "True if a is greater than or equal to b."
+  (not (< a b)))
+
+(defun /= (a b)
+  "True if a and b are numerically unequal."
+  (not (= a b)))
+
 (defun onep (x)
   "Test if x equals 1"
   (= x 1))

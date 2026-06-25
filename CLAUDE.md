@@ -42,7 +42,8 @@ The codebase follows a classic interpreter architecture with four main modules:
    - All symbols are interned and case-normalized to uppercase
 
 2. **evaluator.rs**: Evaluation engine
-   - Special forms: QUOTE, QUASIQUOTE, IF, COND, AND, OR, DEF, LAMBDA, FUNCTION, LABEL, DEFINE, DEFEXPR, DEFMACRO, PROGN, SETQ, PROG, RETURN, GO, FOR, WHILE, LET
+   - Special forms: QUOTE, QUASIQUOTE, IF, COND, AND, OR, DEF, LAMBDA, FUNCTION, LABEL, DEFINE, DEFEXPR, DEFMACRO, PROGN, SETQ, PROG, RETURN, GO, FOR, WHILE, LET, UNWIND-PROTECT, CATCH, THROW, BLOCK, RETURN-FROM
+   - Non-local exit: `CATCH`/`THROW` (tag-based) and `BLOCK`/`RETURN-FROM` (name-based) use `LispError::Throw`/`LispError::ReturnFrom`; `UNWIND-PROTECT` runs cleanup forms regardless of how the body exits. `ERRORSET` (a function taking a quoted form) traps ordinary errors only and lets control-flow signals pass through.
    - `FOR`/`WHILE` are fast iterative loops: `(for (var start end [step]) body...)` (inclusive integer range, one reused frame, in-place counter mutation) and `(while cond body...)`
    - Applies built-in functions and user-defined lambdas/fexprs/macros
    - Supports fexprs (unevaluated argument functions) and macros with &REST
@@ -88,7 +89,17 @@ The codebase follows a classic interpreter architecture with four main modules:
 - **02-cxr.lisp**: CXR functions (caar, cadr, caddr, etc.) generated via `defcxr` macro
 - **03-meta.lisp**: Metaprogramming (`documentation`)
 - **04-predicates.lisp**: Type predicates (`equal`, `consp`, `listp`)
-- **05-math.lisp**: Math utilities (`onep`, `minusp`, `add1`, `sub1`, `max`, `min`, `abs`)
+- **05-math.lisp**: Math utilities (`<=`, `>=`, `/=`, `onep`, `minusp`, `add1`, `sub1`, `max`, `min`, `abs`)
+- **12-control.lisp**: Control-flow macros (`when`, `unless`, `prog1`, `case`, `dolist`, `dotimes`) — non-mutating (epic #141)
+- **13-functional.lisp**: Functional list toolkit (`reduce`, `filter`, `find`, `position`, `every`/`some`, `take`/`drop`, `iota`/`range`, `zip`, `flatten`, `group-by`, combinators) — collection-first arg order, matching `mapcar`
+- **14-strings.lisp**: String layer over the Rust primitives (`string-upcase`, `string-split`/`-join`, `string-trim`, `starts-with-p`, char predicates) — `foo-p` predicate naming
+- **15-sets-hash.lisp**: Set/alist/hash helpers (`union`, `intersection`, `adjoin`, `alist-get`/`-put`, `maphash`, `hash->alist`)
+- **16-conditions.lisp**: Condition macros over `errorset` (`ignore-errors`, `handler-case`); `catch`/`throw`, `block`/`return-from`, `unwind-protect` are kernel special forms
+- **17-arrays.lisp**: Array helpers over the array primitives (`array->list`, `list->array`, `array-map`, `array-fill`, `array-copy`, `subarray`)
+- **18-format.lisp**: `format` (CL-style subset: `~a ~s ~d ~% ~~`)
+
+Files 06–11 and 97–99 cover builtin docs, shell helpers, vau forms, Lisp 1.5
+appendix, the testing framework, the optimizer, and the help system.
 
 **prologue.lisp**: Legacy prologue file (minimal, just sets `lisp` to `'lamedh`)
 
