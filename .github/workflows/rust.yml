@@ -21,3 +21,17 @@ jobs:
 
     - name: Test
       run: cargo test --verbose
+
+  jit:
+    # Exercises the optional native (Cranelift) backend for the typed JIT.
+    # Kept separate so the default `build` job stays fast and dependency-free.
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Build (jit)
+      run: cargo build --verbose --features jit
+
+    - name: Test (jit)
+      run: cargo test --verbose --features jit
