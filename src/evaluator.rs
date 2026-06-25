@@ -1467,12 +1467,12 @@ fn make_lambda(
         }
     }
 
-    Ok(LispVal::Lambda(crate::Lambda {
+    Ok(LispVal::Lambda(Box::new(crate::Lambda {
         params: params_vec,
         rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
-    }))
+    })))
 }
 
 #[inline(never)]
@@ -1495,11 +1495,11 @@ fn make_fexpr(
         })
         .collect();
 
-    Ok(LispVal::Fexpr(crate::Fexpr {
+    Ok(LispVal::Fexpr(Box::new(crate::Fexpr {
         params: params_vec?,
         body: Box::new(body.clone()),
         env: env.clone(),
-    }))
+    })))
 }
 
 #[inline(never)]
@@ -1539,12 +1539,12 @@ fn make_macro(
         }
     }
 
-    Ok(LispVal::Macro(crate::Macro {
+    Ok(LispVal::Macro(Box::new(crate::Macro {
         params: params_vec,
         rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
-    }))
+    })))
 }
 
 #[inline(never)]
@@ -2630,12 +2630,12 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 cdr: Rc::new(progn),
                             }
                         };
-                        Ok(TcoStep::Done(Ok(LispVal::Vau(crate::Vau {
+                        Ok(TcoStep::Done(Ok(LispVal::Vau(Box::new(crate::Vau {
                             operands_param: op_param,
                             env_param,
                             body: Box::new(body),
                             env: env.clone(),
-                        }))))
+                        })))))
                     }
                     _ => {
                         // Function call: evaluate the function head
