@@ -1331,6 +1331,276 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
 
+            // ── File metadata predicates ────────────────────────────────────
+            BuiltinFunc::FileExistsP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-exists-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-exists-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                if std::path::Path::new(&path).exists() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::DirectoryP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "directory-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "directory-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                if std::path::Path::new(&path).is_dir() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                if std::path::Path::new(&path).is_file() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileReadableP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-readable-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-readable-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                // Opening for read is the most reliable check with std-only.
+                if std::fs::File::open(&path).is_ok() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileWritableP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-writable-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-writable-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let writable = std::fs::metadata(&path)
+                    .map(|m| !m.permissions().readonly())
+                    .unwrap_or(false);
+                if writable {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileExecutableP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-executable-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-executable-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let executable = std::fs::metadata(&path)
+                        .map(|m| m.permissions().mode() & 0o111 != 0)
+                        .unwrap_or(false);
+                    if executable {
+                        return Ok(LispVal::Symbol(env.intern_symbol("T")));
+                    } else {
+                        return Ok(LispVal::Nil);
+                    }
+                }
+                #[cfg(not(unix))]
+                Ok(LispVal::Nil)
+            }
+
+            BuiltinFunc::FileSize => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-size requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-size: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let size = std::fs::metadata(&path)
+                    .map_err(|e| LispError::Generic(format!("file-size: {e}")))?
+                    .len();
+                Ok(LispVal::Number(size as i64))
+            }
+
+            BuiltinFunc::DirectoryFiles => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "directory-files requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "directory-files: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let mut names: Vec<String> = std::fs::read_dir(&path)
+                    .map_err(|e| LispError::Generic(format!("directory-files: {e}")))?
+                    .filter_map(|entry| entry.ok().and_then(|e| e.file_name().into_string().ok()))
+                    .collect();
+                names.sort();
+                let list = names
+                    .into_iter()
+                    .rev()
+                    .fold(LispVal::Nil, |cdr, name| LispVal::Cons {
+                        car: Rc::new(LispVal::String(name)),
+                        cdr: Rc::new(cdr),
+                    });
+                Ok(list)
+            }
+
+            BuiltinFunc::FileNewerP => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "file-newer-p requires exactly two arguments: path1 path2".to_string(),
+                    ));
+                }
+                let (p1, p2) = match (&args[0], &args[1]) {
+                    (LispVal::String(a), LispVal::String(b)) => (a.clone(), b.clone()),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-newer-p: both arguments must be strings".to_string(),
+                        ));
+                    }
+                };
+                let mtime1 = std::fs::metadata(&p1)
+                    .and_then(|m| m.modified())
+                    .map_err(|e| LispError::Generic(format!("file-newer-p: {p1}: {e}")))?;
+                let mtime2 = std::fs::metadata(&p2)
+                    .and_then(|m| m.modified())
+                    .map_err(|e| LispError::Generic(format!("file-newer-p: {p2}: {e}")))?;
+                if mtime1 > mtime2 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
             // Condition flags
             BuiltinFunc::SetFlag => {
                 if args.len() != 1 {

@@ -436,6 +436,16 @@ pub enum BuiltinFunc {
     ReadFileByte,
     ReadFileSection,
     WriteFile,
+    // File metadata predicates (gated behind FILE-IO capability)
+    FileExistsP,
+    DirectoryP,
+    FileP,
+    FileReadableP,
+    FileWritableP,
+    FileExecutableP,
+    FileSize,
+    DirectoryFiles,
+    FileNewerP,
 }
 
 /// An interned Lisp symbol.

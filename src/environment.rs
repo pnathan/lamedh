@@ -596,6 +596,42 @@ impl Environment {
             "WRITE-FILE".to_string(),
             LispVal::Builtin(BuiltinFunc::WriteFile),
         );
+
+        // File metadata predicates (gated behind FILE-IO capability)
+        env.set(
+            "FILE-EXISTS-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileExistsP),
+        );
+        env.set(
+            "DIRECTORY-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::DirectoryP),
+        );
+        env.set("FILE-P".to_string(), LispVal::Builtin(BuiltinFunc::FileP));
+        env.set(
+            "FILE-READABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileReadableP),
+        );
+        env.set(
+            "FILE-WRITABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileWritableP),
+        );
+        env.set(
+            "FILE-EXECUTABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileExecutableP),
+        );
+        env.set(
+            "FILE-SIZE".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileSize),
+        );
+        env.set(
+            "DIRECTORY-FILES".to_string(),
+            LispVal::Builtin(BuiltinFunc::DirectoryFiles),
+        );
+        env.set(
+            "FILE-NEWER-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileNewerP),
+        );
+
         // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER
         // are registered above with the other Lisp 1.5 spec functions.
 
