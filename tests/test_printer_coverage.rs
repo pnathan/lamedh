@@ -71,11 +71,11 @@ fn test_print_string_no_escapes_needed() {
 #[test]
 fn test_print_fexpr() {
     let env = Environment::new_with_builtins();
-    let fexpr = LispVal::Fexpr(Fexpr {
+    let fexpr = LispVal::Fexpr(Box::new(Fexpr {
         params: vec!["X".to_string()],
         body: Box::new(LispVal::Nil),
         env: env.clone(),
-    });
+    }));
     assert_eq!(print(&fexpr), "<fexpr>");
 }
 
@@ -84,24 +84,24 @@ fn test_print_fexpr() {
 #[test]
 fn test_print_macro() {
     let env = Environment::new_with_builtins();
-    let mac = LispVal::Macro(Macro {
+    let mac = LispVal::Macro(Box::new(Macro {
         params: vec!["X".to_string()],
         rest_param: None,
         body: Box::new(LispVal::Nil),
         env: env.clone(),
-    });
+    }));
     assert_eq!(print(&mac), "<macro>");
 }
 
 #[test]
 fn test_print_macro_with_rest_param() {
     let env = Environment::new_with_builtins();
-    let mac = LispVal::Macro(Macro {
+    let mac = LispVal::Macro(Box::new(Macro {
         params: vec![],
         rest_param: Some("ARGS".to_string()),
         body: Box::new(LispVal::Number(0)),
         env: env.clone(),
-    });
+    }));
     assert_eq!(print(&mac), "<macro>");
 }
 
@@ -126,12 +126,12 @@ fn test_print_nonempty_hash_table() {
 #[test]
 fn test_print_lambda() {
     let env = Environment::new_with_builtins();
-    let lam = LispVal::Lambda(Lambda {
+    let lam = LispVal::Lambda(Box::new(Lambda {
         params: vec!["X".to_string()],
         rest_param: None,
         body: Box::new(LispVal::Number(1)),
         env: env.clone(),
-    });
+    }));
     assert_eq!(print(&lam), "<lambda>");
 }
 

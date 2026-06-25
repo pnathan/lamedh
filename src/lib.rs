@@ -584,13 +584,19 @@ pub enum LispVal {
     /// A built-in primitive function.  See [`BuiltinFunc`].
     Builtin(BuiltinFunc),
     /// A lexical closure.  See [`Lambda`].
-    Lambda(Lambda),
+    ///
+    /// Boxed: closures are far larger than the other variants, so storing them
+    /// inline would make every `LispVal` (even a `Number`) as wide as a
+    /// `Lambda`. Boxing keeps `LispVal` small, which is a large win because the
+    /// evaluator clones and moves `LispVal`s constantly (see the perf work in
+    /// the boxing pass). The same reasoning applies to `Fexpr`/`Macro`/`Vau`.
+    Lambda(Box<Lambda>),
     /// A fexpr (unevaluated-argument function).  See [`Fexpr`].
-    Fexpr(Fexpr),
+    Fexpr(Box<Fexpr>),
     /// A macro (code-returning function).  See [`Macro`].
-    Macro(Macro),
+    Macro(Box<Macro>),
     /// A Kernel-style vau operative.  See [`Vau`].
-    Vau(Vau),
+    Vau(Box<Vau>),
     /// A cons cell.  Children are `Rc` (not `Box`) so cloning a list is an
     /// O(1) refcount bump instead of a deep copy — cons cells are immutable in
     /// this implementation (`rplaca`/`rplacd` return new cells), so structural

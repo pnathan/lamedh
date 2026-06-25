@@ -248,7 +248,10 @@ fn test_lambda_partialeq_same_env() {
         body: Box::new(LispVal::Number(1)),
         env: Rc::clone(&env),
     };
-    assert_eq!(LispVal::Lambda(lam1), LispVal::Lambda(lam2));
+    assert_eq!(
+        LispVal::Lambda(Box::new(lam1)),
+        LispVal::Lambda(Box::new(lam2))
+    );
 }
 
 #[test]
@@ -270,7 +273,10 @@ fn test_lambda_partialeq_different_env() {
         body: Box::new(LispVal::Nil),
         env: Rc::clone(&env2),
     };
-    assert_ne!(LispVal::Lambda(lam1), LispVal::Lambda(lam2));
+    assert_ne!(
+        LispVal::Lambda(Box::new(lam1)),
+        LispVal::Lambda(Box::new(lam2))
+    );
 }
 
 #[test]
@@ -286,7 +292,7 @@ fn test_fexpr_partialeq_same_env() {
         body: Box::new(LispVal::Nil),
         env: Rc::clone(&env),
     };
-    assert_eq!(LispVal::Fexpr(f1), LispVal::Fexpr(f2));
+    assert_eq!(LispVal::Fexpr(Box::new(f1)), LispVal::Fexpr(Box::new(f2)));
 }
 
 #[test]
@@ -304,7 +310,7 @@ fn test_macro_partialeq_same_env() {
         body: Box::new(LispVal::Number(99)),
         env: Rc::clone(&env),
     };
-    assert_eq!(LispVal::Macro(m1), LispVal::Macro(m2));
+    assert_eq!(LispVal::Macro(Box::new(m1)), LispVal::Macro(Box::new(m2)));
 }
 
 // ---------------------------------------------------------------------------
@@ -392,12 +398,12 @@ fn test_lispval_hash_builtin_no_panic() {
 #[test]
 fn test_lispval_hash_lambda_no_panic() {
     let env = Environment::new_with_builtins();
-    let lam = LispVal::Lambda(lamedh::Lambda {
+    let lam = LispVal::Lambda(Box::new(lamedh::Lambda {
         params: vec![],
         rest_param: None,
         body: Box::new(LispVal::Nil),
         env: Rc::clone(&env),
-    });
+    }));
     let mut set: HashSet<LispVal> = HashSet::new();
     set.insert(lam);
     // No panic is the goal.
