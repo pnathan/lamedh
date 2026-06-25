@@ -218,18 +218,33 @@ Two backends share the `TypedFn` cell:
   on `fib(28)`.
 - **Native Cranelift** (`--features jit`): `src/jit/native.rs` lowers the typed
   core to a native function (`int64` in registers, `float64` via bitcast, `bool`
-  as `0/1`), and **all Lisp-level calls route through one host trampoline** —
-  literally §2's `universal_call` — so recursion and redefinition need no
-  Cranelift relocation/hot-patching (a redefined callee is just a new edition the
-  trampoline picks up via the cell). ~**105×** the boxed evaluator on `fib(28)`.
-  `if`/`and`/`or` lower via a per-node result stack slot to avoid the
-  block-argument API churn across Cranelift releases.
+  as `0/1`). **Typed→typed calls are direct**: each function has a heap-stable
+  *entry cell* holding its current native entry; a call loads that cell and
+  `call_indirect`s the callee's native code, falling back to the §2 host
+  trampoline only when the callee has no native edition. Because the call goes
+  through the cell (not a baked address), recursion and redefinition need no
+  relocation/hot-patching, and the cell address survives registry `Vec` growth.
+  ~**270×** the boxed evaluator on `fib(28)`. `if`/`and`/`or` lower via a per-node
+  result stack slot to avoid block-argument API churn across Cranelift releases.
 
 Dispatch prefers the native edition, then the closure edition, then the
 interpreter; each is pinned (`Rc`-cloned) for the call, and a `NativeEdition` owns
 its `JITModule` so its code is freed only when the last in-flight caller drops it.
-The remaining win is to replace the per-call trampoline hop with direct
-typed→typed native calls (design policy (b)) for call-heavy code.
+
+### Landed surface area
+- **`DECLARE-TYPED`** `(declare-typed (name ret) ((arg ty)...))` forward-declares a
+  signature, so mutually-recursive typed functions can be written at the REPL.
+- **Membrane interop**: typed functions installed as `LispVal::Native` convert
+  arguments type-directed (`nil`/non-`nil` → `bool`, `Number` widens to
+  `float64`) and re-box results (`bool` → `T`/`NIL`), so a typed predicate is
+  usable as an ordinary `if` condition and `(+ (fib 15) 1)` just works.
+- **Compilable types**: `int64` (`Number`), `float64` (`Float`), `bool` (`T`/`NIL`)
+  — the unboxable scalars. Non-scalar `LispVal`s (cons, string, symbol, …) are
+  intentionally outside the typed core and rejected at the membrane.
+- **Storage stability**: the registry is a `Vec<Rc<TypedFn>>` + name→id `HashMap`;
+  function identity is the stable id, per-function state (cells, editions) lives
+  behind the `Rc` (heap-stable across `Vec` growth), and locals are fixed slot
+  indices. Stress-tested with a 200-function chain that forces reallocation.
 
 **It lands in the language.** `DEFFUN-TYPED` is a real special form: the registry
 lives in `SharedState` (shared across the whole environment chain), and a

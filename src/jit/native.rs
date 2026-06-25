@@ -8,11 +8,14 @@
 //! is fully native on unboxed machine words (`int64` in registers, `float64` via
 //! bitcast, `bool` as `0`/`1`).
 //!
-//! **Calls** (self, cross-function, mutual) are *not* lowered to native calls.
-//! They go through a single host trampoline [`jit_trampoline`] that re-enters
-//! `Ctx::call` — the design doc's `universal_call`. This means recursion and
-//! redefinition need no Cranelift relocation or hot-patching: a redefined callee
-//! is just a new edition the trampoline picks up via the registry cell.
+//! **Calls** load the callee's current native entry from its heap-stable *entry
+//! cell* and, if present, call it directly (`call_indirect`); otherwise they fall
+//! back to a host trampoline [`jit_trampoline`] that re-enters `Ctx::call` (the
+//! design doc's `universal_call`) to reach the callee's closure/interpreter
+//! edition. Because the call goes through the cell — not a baked code address —
+//! recursion and redefinition need no Cranelift relocation or hot-patching: a
+//! redefined callee just updates its cell, and the cell address survives registry
+//! `Vec` growth (it is a heap `Box`).
 //!
 //! `if`/`and`/`or` use a per-node result stack slot (rather than block
 //! parameters) so the lowering does not depend on the block-argument API, which
@@ -22,7 +25,8 @@ use super::{BinOp, CmpOp, Core, Ctx, NumKind};
 use core::ffi::c_void;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    AbiParam, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value, types,
+    AbiParam, InstBuilder, MemFlagsData, SigRef, Signature, StackSlotData, StackSlotKind, Value,
+    types,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -56,6 +60,12 @@ impl NativeEdition {
     pub unsafe fn call(&self, args: &[u64], ctx: *const c_void) -> u64 {
         unsafe { (self.entry)(args.as_ptr(), ctx) }
     }
+
+    /// The native entry pointer as an integer, to publish into the function's
+    /// entry cell for direct calls from other compiled functions.
+    pub fn entry_addr(&self) -> usize {
+        self.entry as *const () as usize
+    }
 }
 
 /// The host trampoline every native call routes through. Re-enters the registry
@@ -79,15 +89,29 @@ unsafe extern "C" fn jit_trampoline(
 
 /// Compile `core` (a function body with `n_params` parameters and `n_slots`
 /// total local slots) to a native edition.
+///
+/// `cell_addrs[id]` is the address of function `id`'s entry cell — a stable
+/// heap word holding that function's current native entry pointer (or 0). A
+/// `Call(id, ..)` loads that word and, if non-zero, calls the callee's native
+/// code **directly**; otherwise it falls back to the host trampoline. The cell
+/// is a heap `Box`, so its address is stable across registry growth (Vec
+/// reallocation) and across redefinition (the word is updated in place).
 pub fn compile_native(
     core: &Core,
     n_params: usize,
     n_slots: usize,
+    cell_addrs: &[usize],
 ) -> Result<NativeEdition, String> {
     let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
+
+    // Signature of a compiled typed function, for direct `call_indirect`.
+    let mut callee_sig = Signature::new(module.target_config().default_call_conv);
+    callee_sig.params.push(AbiParam::new(ptr));
+    callee_sig.params.push(AbiParam::new(ptr));
+    callee_sig.returns.push(AbiParam::new(types::I64));
 
     // Imported trampoline signature: (ctx, id, args*, argc) -> u64.
     let mut tsig = module.make_signature();
@@ -114,6 +138,7 @@ pub fn compile_native(
     {
         let mut b = FunctionBuilder::new(&mut ctx_codegen.func, &mut fbctx);
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
+        let callee_sig = b.import_signature(callee_sig);
 
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
@@ -144,6 +169,8 @@ pub fn compile_native(
             env_slot,
             ctx_ptr,
             tramp_ref,
+            callee_sig,
+            cell_addrs,
         };
         let result = e.emit(core);
         b.ins().return_(&[result]);
@@ -167,15 +194,17 @@ pub fn compile_native(
     })
 }
 
-struct Emitter<'a, 'b> {
+struct Emitter<'a, 'b, 'c> {
     b: &'a mut FunctionBuilder<'b>,
     ptr: types::Type,
     env_slot: cranelift_codegen::ir::StackSlot,
     ctx_ptr: Value,
     tramp_ref: cranelift_codegen::ir::FuncRef,
+    callee_sig: SigRef,
+    cell_addrs: &'c [usize],
 }
 
-impl Emitter<'_, '_> {
+impl Emitter<'_, '_, '_> {
     fn iconst(&mut self, n: i64) -> Value {
         self.b.ins().iconst(types::I64, n)
     }
@@ -340,13 +369,54 @@ impl Emitter<'_, '_> {
             self.b.ins().stack_store(*v, buf, (i * 8) as i32);
         }
         let buf_addr = self.b.ins().stack_addr(self.ptr, buf, 0);
+
+        // Load the callee's current native entry from its (heap-stable) cell.
+        // Non-zero -> call it directly (no host round-trip); zero -> the callee
+        // has no native edition right now, so route through the trampoline,
+        // which dispatches to its closure/interpreter edition.
+        let cell_v = self.b.ins().iconst(self.ptr, self.cell_addrs[id] as i64);
+        let entry = self
+            .b
+            .ins()
+            .load(self.ptr, MemFlagsData::trusted(), cell_v, 0);
+        let zero = self.b.ins().iconst(self.ptr, 0);
+        let is_native = self.b.ins().icmp(IntCC::NotEqual, entry, zero);
+
+        let res =
+            self.b
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let direct_b = self.b.create_block();
+        let slow_b = self.b.create_block();
+        let merge_b = self.b.create_block();
+        self.b.ins().brif(is_native, direct_b, &[], slow_b, &[]);
+
+        // Fast path: direct native call_indirect.
+        self.b.switch_to_block(direct_b);
+        self.b.seal_block(direct_b);
+        let dc = self
+            .b
+            .ins()
+            .call_indirect(self.callee_sig, entry, &[buf_addr, self.ctx_ptr]);
+        let dr = self.b.inst_results(dc)[0];
+        self.b.ins().stack_store(dr, res, 0);
+        self.b.ins().jump(merge_b, &[]);
+
+        // Slow path: host trampoline -> registry dispatch.
+        self.b.switch_to_block(slow_b);
+        self.b.seal_block(slow_b);
         let id_v = self.iconst(id as i64);
         let argc_v = self.iconst(argc as i64);
-        let call = self
+        let sc = self
             .b
             .ins()
             .call(self.tramp_ref, &[self.ctx_ptr, id_v, buf_addr, argc_v]);
-        self.b.inst_results(call)[0]
+        let sr = self.b.inst_results(sc)[0];
+        self.b.ins().stack_store(sr, res, 0);
+        self.b.ins().jump(merge_b, &[]);
+
+        self.b.switch_to_block(merge_b);
+        self.b.seal_block(merge_b);
+        self.b.ins().stack_load(types::I64, res, 0)
     }
 }
 

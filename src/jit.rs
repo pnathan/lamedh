@@ -677,6 +677,12 @@ pub struct TypedFn {
     /// in-flight callers return (the `NativeEdition` owns its `JITModule`).
     #[cfg(feature = "jit")]
     native: RefCell<Option<Rc<native::NativeEdition>>>,
+    /// Stable heap word holding this function's current native entry pointer (or
+    /// `0`). Other compiled functions bake this cell's *address* and load it to
+    /// make direct calls; it is updated on (re)compile and cleared on deopt. A
+    /// heap `Box` so the address is stable across registry `Vec` growth.
+    #[cfg(feature = "jit")]
+    entry: Box<Cell<usize>>,
     generation: Cell<u64>,
 }
 
@@ -705,8 +711,17 @@ impl TypedFn {
             compiled: RefCell::new(None),
             #[cfg(feature = "jit")]
             native: RefCell::new(None),
+            #[cfg(feature = "jit")]
+            entry: Box::new(Cell::new(0)),
             generation: Cell::new(0),
         }
+    }
+
+    /// Address of this function's native-entry cell (stable; baked into other
+    /// functions' compiled code for direct calls).
+    #[cfg(feature = "jit")]
+    fn entry_cell_addr(&self) -> usize {
+        &*self.entry as *const Cell<usize> as usize
     }
 
     pub fn ret(&self) -> Ty {
@@ -725,19 +740,28 @@ impl TypedFn {
         self.generation.get()
     }
 
-    fn compile_now(&self) {
+    #[cfg_attr(not(feature = "jit"), allow(unused_variables))]
+    fn compile_now(&self, funcs: &[Rc<TypedFn>]) {
         let c = self.core.borrow();
         if let Some(core) = c.as_ref() {
             *self.compiled.borrow_mut() = Some(compile(core));
             // With the `jit` feature, also build a native edition. If Cranelift
             // codegen fails for any reason, fall back to the closure edition
-            // rather than failing the definition.
+            // rather than failing the definition. The entry cell is updated so
+            // other compiled functions call this one's native code directly.
             #[cfg(feature = "jit")]
             {
                 let n_params = self.params.borrow().len();
-                match native::compile_native(core, n_params, self.slots.get()) {
-                    Ok(ed) => *self.native.borrow_mut() = Some(Rc::new(ed)),
-                    Err(_) => *self.native.borrow_mut() = None,
+                let cell_addrs: Vec<usize> = funcs.iter().map(|f| f.entry_cell_addr()).collect();
+                match native::compile_native(core, n_params, self.slots.get(), &cell_addrs) {
+                    Ok(ed) => {
+                        self.entry.set(ed.entry_addr());
+                        *self.native.borrow_mut() = Some(Rc::new(ed));
+                    }
+                    Err(_) => {
+                        self.entry.set(0);
+                        *self.native.borrow_mut() = None;
+                    }
                 }
             }
             self.generation.set(self.generation.get() + 1);
@@ -749,6 +773,7 @@ impl TypedFn {
         #[cfg(feature = "jit")]
         {
             *self.native.borrow_mut() = None;
+            self.entry.set(0);
         }
     }
 
@@ -824,6 +849,30 @@ impl Jit {
         self.intern(name, params, ret)
     }
 
+    /// Forward-declare from a `(declare-typed (name ret) ((arg ty)...))` form.
+    /// Returns the (uppercased) name.
+    pub fn declare_form(&mut self, form: &LispVal) -> Result<String, String> {
+        let items = list_to_vec(form);
+        match items.first() {
+            Some(LispVal::Symbol(s)) if s.borrow().name == "DECLARE-TYPED" => {}
+            _ => return Err("expected a (declare-typed ...) form".to_string()),
+        }
+        if items.len() != 3 {
+            return Err("declare-typed: (declare-typed (name ret) ((arg ty)...))".to_string());
+        }
+        let (name, ret, params) = parse_signature(&items)?;
+        self.intern(&name, params, ret);
+        Ok(name)
+    }
+
+    /// The (parameter types, return type) of a registered function.
+    pub fn signature(&self, name: &str) -> Option<(Vec<Ty>, Ty)> {
+        let id = self.id(name)?;
+        let f = &self.funcs[id];
+        let ptys = f.params.borrow().iter().map(|(_, t)| *t).collect();
+        Some((ptys, f.ret.get()))
+    }
+
     /// Type-check and (eagerly) compile a `(deffun-typed ...)` form. Returns the
     /// stable function id.
     pub fn define(&mut self, form: &LispVal) -> Result<usize, String> {
@@ -838,31 +887,8 @@ impl Jit {
             );
         }
 
-        let sig = list_to_vec(&items[1]);
-        let (name, ret) = match sig.as_slice() {
-            [LispVal::Symbol(n), LispVal::Symbol(r)] => {
-                let ret = Ty::parse(&r.borrow().name)
-                    .ok_or_else(|| format!("unknown return type `{}`", r.borrow().name))?;
-                (n.borrow().name.clone(), ret)
-            }
-            _ => return Err("deffun-typed: signature must be (name return-type)".to_string()),
-        };
-
-        let mut params = Vec::new();
-        let mut scope: Scope = Vec::new();
-        for p in list_to_vec(&items[2]) {
-            let parts = list_to_vec(&p);
-            match parts.as_slice() {
-                [LispVal::Symbol(a), LispVal::Symbol(t)] => {
-                    let ty = Ty::parse(&t.borrow().name)
-                        .ok_or_else(|| format!("unknown param type `{}`", t.borrow().name))?;
-                    let aname = a.borrow().name.clone();
-                    params.push((aname.clone(), ty));
-                    scope.push((aname, ty));
-                }
-                _ => return Err("deffun-typed: each parameter must be (name type)".to_string()),
-            }
-        }
+        let (name, ret, params) = parse_signature(&items)?;
+        let mut scope: Scope = params.clone();
 
         // Register the signature *before* elaborating the body so a function can
         // call itself (and any already-declared peer).
@@ -882,10 +908,10 @@ impl Jit {
             ));
         }
 
-        let f = &self.funcs[id];
+        let f = self.funcs[id].clone();
         f.slots.set(max_slots);
         *f.core.borrow_mut() = Some(core);
-        f.compile_now();
+        f.compile_now(&self.funcs);
         Ok(id)
     }
 
@@ -914,6 +940,9 @@ impl Jit {
             .id(name)
             .ok_or_else(|| format!("unknown function `{name}`"))?;
         let f = &self.funcs[id];
+        if !f.is_defined() {
+            return Err(format!("{name}: declared but not defined"));
+        }
         let params = f.params.borrow();
         if args.len() != params.len() {
             return Err(format!(
@@ -958,9 +987,39 @@ impl Jit {
     /// (Re)compile every defined function.
     pub fn compile_all(&self) {
         for f in &self.funcs {
-            f.compile_now();
+            f.compile_now(&self.funcs);
         }
     }
+}
+
+/// A parsed typed signature: function name, return type, parameter `(name, type)`s.
+type ParsedSig = (String, Ty, Vec<(String, Ty)>);
+
+/// Parse `items[1]` = `(name ret)` and `items[2]` = `((arg ty)...)` shared by
+/// `deffun-typed` and `declare-typed`.
+fn parse_signature(items: &[LispVal]) -> Result<ParsedSig, String> {
+    let sig = list_to_vec(&items[1]);
+    let (name, ret) = match sig.as_slice() {
+        [LispVal::Symbol(n), LispVal::Symbol(r)] => {
+            let ret = Ty::parse(&r.borrow().name)
+                .ok_or_else(|| format!("unknown return type `{}`", r.borrow().name))?;
+            (n.borrow().name.clone(), ret)
+        }
+        _ => return Err("typed signature must be (name return-type)".to_string()),
+    };
+    let mut params = Vec::new();
+    for p in list_to_vec(&items[2]) {
+        let parts = list_to_vec(&p);
+        match parts.as_slice() {
+            [LispVal::Symbol(a), LispVal::Symbol(t)] => {
+                let ty = Ty::parse(&t.borrow().name)
+                    .ok_or_else(|| format!("unknown param type `{}`", t.borrow().name))?;
+                params.push((a.borrow().name.clone(), ty));
+            }
+            _ => return Err("each parameter must be (name type)".to_string()),
+        }
+    }
+    Ok((name, ret, params))
 }
 
 /// Collect a proper list into a vector (improper tails are ignored).

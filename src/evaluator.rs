@@ -1650,6 +1650,70 @@ fn eval_impl(initial_val: LispVal, initial_env: Rc<Environment>) -> Result<LispV
     }
 }
 
+/// Build the `Native` membrane entry for a typed function `name`.
+fn make_typed_native(name: String) -> LispVal {
+    LispVal::Native(Rc::new(
+        move |args: &[LispVal], env: &Rc<Environment>| -> Result<LispVal, LispError> {
+            let (ptys, _ret) = env.jit_signature(&name).ok_or_else(|| {
+                LispError::Generic(format!("typed function {name} is not defined"))
+            })?;
+            if args.len() != ptys.len() {
+                return Err(LispError::Generic(format!(
+                    "{name}: expected {} args, got {}",
+                    ptys.len(),
+                    args.len()
+                )));
+            }
+            let mut vals = Vec::with_capacity(args.len());
+            for (a, ty) in args.iter().zip(ptys.iter()) {
+                vals.push(lispval_to_typed(a, *ty).map_err(LispError::Generic)?);
+            }
+            match env.jit_call(&name, &vals) {
+                Some(Ok(v)) => Ok(typed_to_lispval(v, env)),
+                Some(Err(e)) => Err(LispError::Generic(e)),
+                None => Err(LispError::Generic(format!(
+                    "typed function {name} is not defined"
+                ))),
+            }
+        },
+    ))
+}
+
+/// Coerce a `LispVal` to a typed [`crate::jit::Value`] for a parameter of type
+/// `ty`. `int64` accepts `Number`; `float64` accepts `Float` or widens `Number`;
+/// `bool` follows Lisp truthiness (`nil` is false, everything else true).
+fn lispval_to_typed(lv: &LispVal, ty: crate::jit::Ty) -> Result<crate::jit::Value, String> {
+    use crate::jit::{Ty, Value};
+    match ty {
+        Ty::Int64 => match lv {
+            LispVal::Number(n) => Ok(Value::Int(*n)),
+            other => Err(format!("expected int64 argument, got {other:?}")),
+        },
+        Ty::Float64 => match lv {
+            LispVal::Float(f) => Ok(Value::Float(*f)),
+            LispVal::Number(n) => Ok(Value::Float(*n as f64)),
+            other => Err(format!("expected float64 argument, got {other:?}")),
+        },
+        Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
+    }
+}
+
+/// Re-box a typed [`crate::jit::Value`] result as a `LispVal` (`bool` → `T`/`NIL`).
+fn typed_to_lispval(v: crate::jit::Value, env: &Rc<Environment>) -> LispVal {
+    use crate::jit::Value;
+    match v {
+        Value::Int(n) => LispVal::Number(n),
+        Value::Float(f) => LispVal::Float(f),
+        Value::Bool(b) => {
+            if b {
+                LispVal::Symbol(env.intern_symbol("T"))
+            } else {
+                LispVal::Nil
+            }
+        }
+    }
+}
+
 /// Handle the `DEFSTRUCT` special form. Kept out-of-line (`#[inline(never)]`)
 /// so its large stack frame does not bloat the recursive `eval_step` hot path
 /// (see issue #76 — a fat `eval_step` frame exhausts the native stack before
@@ -2368,18 +2432,23 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         };
                         match env.jit_define(&form) {
                             Ok(name) => {
-                                let fname = name.clone();
-                                let native = LispVal::Native(Rc::new(
-                                    move |args: &[LispVal], call_env: &Rc<Environment>| {
-                                        match call_env.jit_call(&fname, args) {
-                                            Some(r) => r.map_err(LispError::Generic),
-                                            None => Err(LispError::Generic(format!(
-                                                "typed function {fname} is not defined"
-                                            ))),
-                                        }
-                                    },
-                                ));
-                                env.set(name.clone(), native);
+                                env.set(name.clone(), make_typed_native(name.clone()));
+                                Ok(TcoStep::Done(Ok(LispVal::Symbol(env.intern_symbol(&name)))))
+                            }
+                            Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
+                        }
+                    }
+                    "DECLARE-TYPED" => {
+                        // Forward-declare a typed signature (for REPL-level mutual
+                        // recursion). Installs the same membrane entry; calling it
+                        // before the body is defined returns a clean error.
+                        let form = LispVal::Cons {
+                            car: first.clone(),
+                            cdr: rest.clone(),
+                        };
+                        match env.jit_declare(&form) {
+                            Ok(name) => {
+                                env.set(name.clone(), make_typed_native(name.clone()));
                                 Ok(TcoStep::Done(Ok(LispVal::Symbol(env.intern_symbol(&name)))))
                             }
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),

@@ -679,12 +679,27 @@ impl Environment {
             .ok_or_else(|| "jit: defined function has no name".to_string())
     }
 
-    /// Call a typed function by name with `LispVal` arguments, crossing the
-    /// membrane (unbox in, re-box out). `None` if no such typed function exists.
-    pub fn jit_call(&self, name: &str, args: &[LispVal]) -> Option<Result<LispVal, String>> {
+    /// Forward-declare a typed signature from a `(declare-typed ...)` form so
+    /// mutually-recursive functions can reference each other. Returns the name.
+    pub fn jit_declare(&self, form: &LispVal) -> Result<String, String> {
+        self.shared.jit.borrow_mut().declare_form(form)
+    }
+
+    /// `(param types, return type)` of a registered typed function, if any.
+    pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
+        self.shared.jit.borrow().signature(name)
+    }
+
+    /// Call a typed function with already-converted [`crate::jit::Value`]s,
+    /// crossing the membrane. `None` if no such typed function exists.
+    pub fn jit_call(
+        &self,
+        name: &str,
+        args: &[crate::jit::Value],
+    ) -> Option<Result<crate::jit::Value, String>> {
         let jit = self.shared.jit.borrow();
         jit.id(name)?;
-        Some(jit.call_lisp(name, args))
+        Some(jit.call(name, args))
     }
 
     /// Update a variable's value, searching up the environment chain.

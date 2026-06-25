@@ -603,3 +603,100 @@ fn differential_sweep_over_many_inputs() {
         }
     }
 }
+
+// --- stability of the underlying Vec / HashMap / slot storage --------------
+
+#[test]
+fn registry_growth_keeps_earlier_functions_callable() {
+    // Build a long chain f0..f199 (f_i = f_{i-1}(x) + 1), forcing the registry
+    // Vec and by-name HashMap to grow/reallocate many times. Earlier functions
+    // must stay callable, and (under --features jit) the direct-call cell
+    // addresses baked into callers must remain valid -- they point at heap-stable
+    // entry cells, not Vec-slot addresses.
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.define(&read("(deffun-typed (f0 int64) ((x int64)) x)", &env).unwrap())
+        .unwrap();
+    for k in 1..200 {
+        let src = format!(
+            "(deffun-typed (f{k} int64) ((x int64)) (+ (f{} x) 1))",
+            k - 1
+        );
+        j.define(&read(&src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(j.call("F199", &[i(0)]).unwrap(), i(199));
+    assert_eq!(j.call("F199", &[i(1000)]).unwrap(), i(1199));
+    // Earliest function still works after all that growth.
+    assert_eq!(j.call("F0", &[i(7)]).unwrap(), i(7));
+    // A middle one, too.
+    assert_eq!(j.call("F100", &[i(0)]).unwrap(), i(100));
+}
+
+#[test]
+fn redefine_in_grown_registry_propagates_through_cells() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.define(&read("(deffun-typed (g0 int64) ((x int64)) x)", &env).unwrap())
+        .unwrap();
+    for k in 1..60 {
+        let src = format!(
+            "(deffun-typed (g{k} int64) ((x int64)) (+ (g{} x) 1))",
+            k - 1
+        );
+        j.define(&read(&src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(j.call("G50", &[i(0)]).unwrap(), i(50));
+    // Redefine the base of the chain; callers must see it through the cell
+    // without being recompiled themselves.
+    j.define(&read("(deffun-typed (g0 int64) ((x int64)) (+ x 100))", &env).unwrap())
+        .unwrap();
+    assert_eq!(j.call("G50", &[i(0)]).unwrap(), i(150));
+}
+
+#[test]
+fn many_let_slots_indexed_stably() {
+    // 40 sequential let bindings exercise high-index slot reads/writes.
+    let mut s = String::from("(deffun-typed (chainlet int64) ((x int64)) (let-typed (");
+    s.push_str("(v0 int64 x) ");
+    for k in 1..40 {
+        s.push_str(&format!("(v{k} int64 (+ v{} 1)) ", k - 1));
+    }
+    s.push_str(") v39))");
+    let j = build(&[&s]);
+    assert_eq!(agree(&j, "chainlet", &[i(10)]), i(49)); // x + 39
+    assert_eq!(agree(&j, "chainlet", &[i(-39)]), i(0));
+}
+
+#[test]
+fn declared_but_undefined_call_errors_not_panics() {
+    let mut j = Jit::new();
+    j.declare("GHOST", &[("N", Ty::Int64)], Ty::Int64);
+    let err = j.call("GHOST", &[i(1)]).unwrap_err();
+    assert!(err.contains("not defined"), "got: {err}");
+}
+
+#[test]
+fn forward_declared_mutual_recursion_rust_api() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("EVENP", &[("N", Ty::Int64)], Ty::Bool);
+    j.declare("ODDP", &[("N", Ty::Int64)], Ty::Bool);
+    j.define(
+        &read(
+            "(deffun-typed (evenp bool) ((n int64)) (if (= n 0) true (oddp (- n 1))))",
+            &env,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    j.define(
+        &read(
+            "(deffun-typed (oddp bool) ((n int64)) (if (= n 0) false (evenp (- n 1))))",
+            &env,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(agree(&j, "evenp", &[i(64)]), bo(true));
+    assert_eq!(agree(&j, "oddp", &[i(64)]), bo(false));
+}
