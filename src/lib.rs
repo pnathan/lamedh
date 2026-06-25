@@ -176,6 +176,7 @@
 
 pub mod environment;
 pub mod evaluator;
+pub mod jit;
 pub mod optimizer;
 pub mod printer;
 pub mod reader;

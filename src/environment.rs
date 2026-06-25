@@ -182,6 +182,10 @@ struct SharedState {
     /// host or a Lisp program must opt in. This is the foundation for
     /// sandboxing (see issue #64).
     features: RefCell<HashSet<String>>,
+    /// Registry of typed (`deffun-typed`) functions. Shared across the whole
+    /// environment chain so a typed definition made at the REPL is visible
+    /// everywhere and its compiled edition persists across calls.
+    jit: RefCell<crate::jit::Jit>,
 }
 
 impl SharedState {
@@ -192,6 +196,7 @@ impl SharedState {
             dynamic_vars: RefCell::new(HashSet::new()),
             has_dynamic: Cell::new(false),
             features: RefCell::new(HashSet::new()),
+            jit: RefCell::new(crate::jit::Jit::new()),
         }
     }
 }
@@ -732,6 +737,40 @@ impl Environment {
         F: Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError> + 'static,
     {
         self.set(name.to_uppercase(), LispVal::Native(Rc::new(f)));
+    }
+
+    /// Type-check and compile a `(deffun-typed ...)` form into the shared typed
+    /// registry. Returns the function's (uppercased) name on success.
+    pub fn jit_define(&self, form: &LispVal) -> Result<String, String> {
+        let id = self.shared.jit.borrow_mut().define(form)?;
+        self.shared
+            .jit
+            .borrow()
+            .name_of(id)
+            .ok_or_else(|| "jit: defined function has no name".to_string())
+    }
+
+    /// Forward-declare a typed signature from a `(declare-typed ...)` form so
+    /// mutually-recursive functions can reference each other. Returns the name.
+    pub fn jit_declare(&self, form: &LispVal) -> Result<String, String> {
+        self.shared.jit.borrow_mut().declare_form(form)
+    }
+
+    /// `(param types, return type)` of a registered typed function, if any.
+    pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
+        self.shared.jit.borrow().signature(name)
+    }
+
+    /// Call a typed function with already-converted [`crate::jit::Value`]s,
+    /// crossing the membrane. `None` if no such typed function exists.
+    pub fn jit_call(
+        &self,
+        name: &str,
+        args: &[crate::jit::Value],
+    ) -> Option<Result<crate::jit::Value, String>> {
+        let jit = self.shared.jit.borrow();
+        jit.id(name)?;
+        Some(jit.call(name, args))
     }
 
     /// Update a variable's value, searching up the environment chain.
