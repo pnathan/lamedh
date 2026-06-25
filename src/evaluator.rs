@@ -2643,6 +2643,11 @@ fn lispval_to_typed(lv: &LispVal, ty: crate::jit::Ty) -> Result<crate::jit::Valu
             other => Err(format!("expected float64 argument, got {other:?}")),
         },
         Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
+        // No LispVal::Char: a byte is carried as a Number (0..=255), masked.
+        Ty::Char => match lv {
+            LispVal::Number(n) => Ok(Value::Char(*n as u8)),
+            other => Err(format!("expected char (byte) argument, got {other:?}")),
+        },
     }
 }
 
@@ -2659,6 +2664,8 @@ fn typed_to_lispval(v: crate::jit::Value, env: &Rc<Environment>) -> LispVal {
                 LispVal::Nil
             }
         }
+        // A char result re-boxes to its byte value as a Number (issue #136).
+        Value::Char(b) => LispVal::Number(b as i64),
     }
 }
 

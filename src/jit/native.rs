@@ -272,6 +272,11 @@ impl Emitter<'_, '_, '_> {
                 self.emit(body)
             }
             Core::Call(id, args) => self.emit_call(*id, args),
+            Core::ToChar(a) => {
+                // Narrow int64 -> char by masking to a byte (issue #136).
+                let v = self.emit(a);
+                self.b.ins().band_imm(v, 0xff)
+            }
         }
     }
 
