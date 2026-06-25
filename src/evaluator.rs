@@ -1903,14 +1903,12 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
     match val {
         LispVal::Nil => Ok(TcoStep::Done(Ok(LispVal::Nil))),
         LispVal::Symbol(s) => {
-            // Resolve without cloning the interned name on the hot path: borrow it
-            // just long enough to look up. Only the cold unbound-variable path
-            // formats the name into a String.
-            let value = {
-                let sym = s.borrow();
-                env.get_var(&sym.name)
-                    .ok_or_else(|| LispError::Generic(format!("Unbound variable: {}", sym.name)))?
-            };
+            // Resolve straight from the interned symbol: global/function refs read
+            // the symbol's value cell directly (no hash, no chain walk), locals
+            // walk their frames. Only the cold unbound path formats the name.
+            let value = env.resolve(s).ok_or_else(|| {
+                LispError::Generic(format!("Unbound variable: {}", s.borrow().name))
+            })?;
 
             // If the value is a LABEL expression, tail-call evaluate it
             // This handles recursive LABEL definitions (TCO: TailCall instead of recurse)
@@ -2343,7 +2341,12 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             } else {
                                 make_macro(params, body, env)?
                             };
-                            env.set(name_sym.borrow().name.clone(), func);
+                            // Bind the name into a local first: env.set may write
+                            // the symbol's global value cell, which needs a mutable
+                            // borrow of this very symbol — so the read borrow must
+                            // be released before the call.
+                            let def_name = name_sym.borrow().name.clone();
+                            env.set(def_name, func);
                             Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym.clone()))))
                         } else {
                             Ok(TcoStep::Done(Err(LispError::Generic(
@@ -2397,7 +2400,10 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             let val_expr = &chunk[1];
                             if let LispVal::Symbol(s) = var {
                                 let v = eval(val_expr, env)?;
-                                Environment::update(env, &s.borrow().name, v.clone());
+                                // Release the read borrow before update: a global
+                                // SETQ writes the symbol's value cell (borrow_mut).
+                                let var_name = s.borrow().name.clone();
+                                Environment::update(env, &var_name, v.clone());
                                 last_val = v;
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(

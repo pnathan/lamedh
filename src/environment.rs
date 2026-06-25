@@ -123,11 +123,19 @@ impl SymbolTable {
         Rc::new(RefCell::new(Symbol {
             name,
             plist: HashMap::new(),
+            value: None,
         }))
     }
 
     pub fn all_symbols(&self) -> Vec<Rc<RefCell<Symbol>>> {
         self.symbols.values().cloned().collect()
+    }
+
+    /// Return the interned symbol for `name` if it already exists, without
+    /// creating one. Used to read a symbol's global value cell by name on the
+    /// (cold) name-based lookup paths.
+    pub fn get_symbol(&self, name: &str) -> Option<Rc<RefCell<Symbol>>> {
+        self.symbols.get(name).cloned()
     }
 
     /// Return the interned `Rc` for `name`, creating a new `Symbol` if needed.
@@ -142,6 +150,7 @@ impl SymbolTable {
         let symbol = Rc::new(RefCell::new(Symbol {
             name: name.to_string(),
             plist: HashMap::new(),
+            value: None,
         }));
         self.symbols.insert(name.to_string(), symbol.clone());
         symbol
@@ -631,25 +640,87 @@ impl Environment {
         self.get(name).is_some()
     }
 
+    /// `true` if this is the root (global) frame, whose variable storage is the
+    /// per-symbol value cells rather than a `HashMap`.
+    #[inline]
+    fn is_root(&self) -> bool {
+        self.parent.is_none()
+    }
+
+    /// Read a global binding from the symbol value cell, by name (cold path:
+    /// interns a read-only lookup into the symbol table).
+    fn global_get(&self, name: &str) -> Option<LispVal> {
+        self.shared
+            .symbols
+            .borrow()
+            .get_symbol(name)
+            .and_then(|s| s.borrow().value.clone())
+    }
+
+    /// Write a global binding into the symbol value cell, by name.
+    fn global_set(&self, name: &str, val: LispVal) {
+        let sym = self.shared.symbols.borrow_mut().intern(name);
+        sym.borrow_mut().value = Some(val);
+    }
+
+    /// `true` if a global binding exists for `name`.
+    fn global_contains(&self, name: &str) -> bool {
+        self.shared
+            .symbols
+            .borrow()
+            .get_symbol(name)
+            .is_some_and(|s| s.borrow().value.is_some())
+    }
+
+    /// Hot-path variable resolution from the interned symbol the AST holds.
+    ///
+    /// Avoids re-interning: local frames are probed by name, but the global
+    /// (root) binding is read straight from the symbol's value cell — no symbol
+    /// table lookup, no hash. Respects dynamic scoping when any dynamic variable
+    /// exists.
+    pub fn resolve(&self, sym: &Rc<RefCell<Symbol>>) -> Option<LispVal> {
+        let s = sym.borrow();
+        if self.shared.has_dynamic.get() && self.shared.dynamic_vars.borrow().contains(&s.name) {
+            // Dynamic variables are rare; the name-based path is fine.
+            return self.get_dynamic(&s.name);
+        }
+        // Lexical: walk local frames by name; read the cell at the root.
+        let mut frame = self;
+        loop {
+            if frame.is_root() {
+                return s.value.clone();
+            }
+            if let Some(val) = frame.bindings.borrow().get(&s.name) {
+                return Some(val.clone());
+            }
+            frame = frame.parent.as_deref().unwrap();
+        }
+    }
+
     /// Lexical variable lookup.  Walks the `parent` chain; does **not** check
     /// the dynamic-parent chain.  Use [`Environment::get_var`] for the
     /// scoping-aware lookup that respects dynamic variables.
     pub fn get(&self, name: &str) -> Option<LispVal> {
+        if self.is_root() {
+            return self.global_get(name);
+        }
         if let Some(val) = self.bindings.borrow().get(name) {
             return Some(val.clone());
         }
-        if let Some(parent) = &self.parent {
-            return parent.get(name);
-        }
-        None
+        self.parent.as_ref().unwrap().get(name)
     }
 
     /// Bind `name` to `val` in this environment frame (not in any parent).
     ///
-    /// Use [`Environment::update`] to modify an existing binding that may live
-    /// in a parent frame.
+    /// At the root frame this writes the symbol's global value cell; in a child
+    /// frame it writes the frame's local map. Use [`Environment::update`] to
+    /// modify an existing binding that may live in a parent frame.
     pub fn set(&self, name: String, val: LispVal) {
-        self.bindings.borrow_mut().insert(name, val);
+        if self.is_root() {
+            self.global_set(&name, val);
+        } else {
+            self.bindings.borrow_mut().insert(name, val);
+        }
     }
 
     /// Register a host Rust closure as a callable Lisp function named `name`.
@@ -683,6 +754,14 @@ impl Environment {
     fn update_lexical(env: &Rc<Environment>, name: &str, val: LispVal) {
         let mut maybe_env = Some(env.clone());
         while let Some(current_env) = maybe_env {
+            if current_env.is_root() {
+                // Root storage is the symbol cell.
+                if current_env.global_contains(name) {
+                    current_env.global_set(name, val);
+                    return;
+                }
+                break;
+            }
             if current_env.bindings.borrow().contains_key(name) {
                 current_env
                     .bindings
@@ -698,6 +777,12 @@ impl Environment {
 
     /// Update a dynamic variable by walking the dynamic parent chain.
     fn update_dynamic(env: &Rc<Environment>, name: &str, val: LispVal) {
+        // Root storage is the symbol cell; create-or-update it there.
+        if env.is_root() {
+            env.global_set(name, val);
+            return;
+        }
+
         // First check current bindings
         if env.bindings.borrow().contains_key(name) {
             env.bindings.borrow_mut().insert(name.to_string(), val);
@@ -724,6 +809,16 @@ impl Environment {
     /// Parent bindings are shadowed by child bindings.
     pub fn all_bindings(&self) -> HashMap<String, LispVal> {
         let mut all = HashMap::new();
+        if self.is_root() {
+            // Root bindings live in the per-symbol value cells.
+            for sym in self.shared.symbols.borrow().all_symbols() {
+                let s = sym.borrow();
+                if let Some(v) = &s.value {
+                    all.insert(s.name.clone(), v.clone());
+                }
+            }
+            return all;
+        }
         if let Some(parent) = &self.parent {
             all.extend(parent.all_bindings());
         }
@@ -805,6 +900,11 @@ impl Environment {
     /// This implements dynamic scoping where variables are resolved based on
     /// the call stack rather than the lexical definition site.
     fn get_dynamic(&self, name: &str) -> Option<LispVal> {
+        // Root storage is the symbol cell (the global value of the special).
+        if self.is_root() {
+            return self.global_get(name);
+        }
+
         // First check current bindings
         if let Some(val) = self.bindings.borrow().get(name) {
             return Some(val.clone());
