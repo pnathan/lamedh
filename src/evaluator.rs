@@ -729,6 +729,60 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
     }
 }
 
+/// Capability guards for the three filesystem feature tiers.
+///
+/// Each returns `Ok(())` if the feature is enabled, or a descriptive error otherwise.
+/// `FILE-IO` is accepted as a legacy alias for both `READ-FS` and `CREATE-FS`.
+fn require_read_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("READ-FS") || env.feature_enabled("FILE-IO") {
+        Ok(())
+    } else {
+        Err(LispError::Generic(
+            "READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+fn require_create_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("CREATE-FS") || env.feature_enabled("FILE-IO") {
+        Ok(())
+    } else {
+        Err(LispError::Generic(
+            "CREATE-FS capability is not enabled (grant it via --capability CREATE-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+fn require_temp_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("TEMP-FS") {
+        Ok(())
+    } else {
+        Err(LispError::Generic(
+            "TEMP-FS capability is not enabled (grant it via --capability TEMP-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+/// Build a unique path inside the system temp directory.
+///
+/// Uses the process ID and a per-process monotone counter so that concurrent
+/// calls within the same process produce distinct names without any locking.
+fn make_temp_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let name = if prefix.is_empty() {
+        format!("lamedh-{pid}-{n}{suffix}")
+    } else {
+        format!("{prefix}-{pid}-{n}{suffix}")
+    };
+    std::env::temp_dir().join(name)
+}
+
 /// Run an external program. Gated behind the SHELL capability (off by default).
 ///
 /// - `(SHELL "cmd ...")`  -> run the single string via `sh -c`
@@ -739,7 +793,8 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
 fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if !env.feature_enabled("SHELL") {
         return Err(LispError::Generic(
-            "SHELL capability is not enabled; call (enable-feature \"SHELL\") first".to_string(),
+            "SHELL capability is not enabled (grant it via --capability SHELL or the host API)"
+                .to_string(),
         ));
     }
     if args.is_empty() {
@@ -1155,12 +1210,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::LoadFile => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "load-file requires exactly one argument".to_string(),
@@ -1180,12 +1230,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::ReadFile => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "read-file requires exactly one argument".to_string(),
@@ -1205,12 +1250,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::ReadFileByte => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 2 {
                     return Err(LispError::Generic(
                         "read-file-byte requires exactly two arguments: path offset".to_string(),
@@ -1249,12 +1289,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::ReadFileSection => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 3 {
                     return Err(LispError::Generic(
                         "read-file-section requires exactly three arguments: path offset len"
@@ -1299,12 +1334,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::WriteFile => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_create_fs(env)?;
                 if args.len() != 2 {
                     return Err(LispError::Generic(
                         "write-file requires exactly two arguments: path content".to_string(),
@@ -1333,12 +1363,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 
             // ── File metadata predicates ────────────────────────────────────
             BuiltinFunc::FileExistsP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "file-exists-p requires exactly one argument".to_string(),
@@ -1360,12 +1385,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::DirectoryP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "directory-p requires exactly one argument".to_string(),
@@ -1387,12 +1407,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::FileP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "file-p requires exactly one argument".to_string(),
@@ -1414,12 +1429,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::FileReadableP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "file-readable-p requires exactly one argument".to_string(),
@@ -1442,12 +1452,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::FileWritableP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "file-writable-p requires exactly one argument".to_string(),
@@ -1472,12 +1477,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::FileExecutableP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "file-executable-p requires exactly one argument".to_string(),
@@ -1508,12 +1508,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::FileSize => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "file-size requires exactly one argument".to_string(),
@@ -1534,12 +1529,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::DirectoryFiles => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "directory-files requires exactly one argument".to_string(),
@@ -1569,12 +1559,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::FileNewerP => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 2 {
                     return Err(LispError::Generic(
                         "file-newer-p requires exactly two arguments: path1 path2".to_string(),
@@ -1603,12 +1588,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 
             // ── File mutation ───────────────────────────────────────────────
             BuiltinFunc::Chmod => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_create_fs(env)?;
                 if args.len() != 2 {
                     return Err(LispError::Generic(
                         "chmod requires exactly two arguments: path mode".to_string(),
@@ -1649,12 +1629,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::CreateDirectory => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_create_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "create-directory requires exactly one argument".to_string(),
@@ -1674,12 +1649,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::DeleteFile => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_create_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "delete-file requires exactly one argument".to_string(),
@@ -1699,12 +1669,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::RenameFile => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_create_fs(env)?;
                 if args.len() != 2 {
                     return Err(LispError::Generic(
                         "rename-file requires exactly two arguments: from to".to_string(),
@@ -1721,6 +1686,45 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 std::fs::rename(&from, &to)
                     .map_err(|e| LispError::Generic(format!("rename-file: {e}")))?;
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            // ── Temp filesystem ─────────────────────────────────────────────
+            BuiltinFunc::MakeTempFile => {
+                require_temp_fs(env)?;
+                let prefix = match args.first() {
+                    Some(LispVal::String(s)) => s.clone(),
+                    None => String::new(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "make-temp-file: optional prefix must be a string".to_string(),
+                        ));
+                    }
+                };
+                let path = make_temp_path(&prefix, "");
+                // Create the file atomically; fail if it somehow already exists.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(|e| LispError::Generic(format!("make-temp-file: {e}")))?;
+                Ok(LispVal::String(path.to_string_lossy().into_owned()))
+            }
+
+            BuiltinFunc::MakeTempDirectory => {
+                require_temp_fs(env)?;
+                let prefix = match args.first() {
+                    Some(LispVal::String(s)) => s.clone(),
+                    None => String::new(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "make-temp-directory: optional prefix must be a string".to_string(),
+                        ));
+                    }
+                };
+                let path = make_temp_path(&prefix, "");
+                std::fs::create_dir(&path)
+                    .map_err(|e| LispError::Generic(format!("make-temp-directory: {e}")))?;
+                Ok(LispVal::String(path.to_string_lossy().into_owned()))
             }
 
             // Condition flags
@@ -1794,17 +1798,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
 
-            // Capabilities / features
-            BuiltinFunc::EnableFeature => {
-                let name = feature_name_arg(args, "enable-feature")?;
-                env.enable_feature(&name);
-                Ok(LispVal::Symbol(env.intern_symbol("T")))
-            }
-            BuiltinFunc::DisableFeature => {
-                let name = feature_name_arg(args, "disable-feature")?;
-                env.disable_feature(&name);
-                Ok(LispVal::Symbol(env.intern_symbol("T")))
-            }
+            // Capabilities / features (read-only from Lisp)
             BuiltinFunc::FeatureEnabledP => {
                 let name = feature_name_arg(args, "feature-enabled-p")?;
                 if env.feature_enabled(&name) {
@@ -3482,7 +3476,8 @@ fn apply_io_op(
         BuiltinFunc::Read => {
             if !env.feature_enabled("IO") {
                 return Err(LispError::Generic(
-                    "IO capability is not enabled; call (enable-feature \"IO\") first".to_string(),
+                    "IO capability is not enabled (grant it via --capability IO or the host API)"
+                        .to_string(),
                 ));
             }
             if !args.is_empty() {

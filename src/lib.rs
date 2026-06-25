@@ -77,8 +77,14 @@
 //! // Allow scripts to call (shell "ls")
 //! env.enable_feature("SHELL");
 //!
-//! // Allow (load-file "path.lisp")
-//! env.enable_feature("FILE-IO");
+//! // Allow read-only filesystem access: read-file, file-exists-p, directory-files, …
+//! env.enable_feature("READ-FS");
+//!
+//! // Allow filesystem mutations: write-file, chmod, create-directory, delete-file, rename-file
+//! env.enable_feature("CREATE-FS");
+//!
+//! // Allow temp-file creation: make-temp-file, make-temp-directory
+//! env.enable_feature("TEMP-FS");
 //!
 //! // Allow (read) to consume stdin
 //! env.enable_feature("IO");
@@ -170,7 +176,8 @@
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
 //!
-//! Shell helpers (`07-shell.lisp`) require `(enable-feature "SHELL")` before use.
+//! Shell helpers (`07-shell.lisp`) require the `SHELL` capability to be granted
+//! by the host (`env.enable_feature("SHELL")`) or CLI (`--capability SHELL`).
 //! The testing framework (`10-testing.lisp`) is automatically available when
 //! you call [`environment::Environment::with_stdlib`].
 
@@ -405,9 +412,7 @@ pub enum BuiltinFunc {
     ClearFlag,
     FlagSetP,
     ClearAllFlags,
-    // Capabilities / features
-    EnableFeature,
-    DisableFeature,
+    // Capabilities / features (read-only from Lisp; grant/revoke only from the host)
     FeatureEnabledP,
     Features,
     // Shell (gated behind the SHELL feature)
@@ -431,12 +436,12 @@ pub enum BuiltinFunc {
     Evcon,
     // I/O
     Spaces,
-    // File I/O (gated behind FILE-IO capability)
+    // File I/O (gated behind READ-FS / CREATE-FS capability)
     ReadFile,
     ReadFileByte,
     ReadFileSection,
     WriteFile,
-    // File metadata predicates (gated behind FILE-IO capability)
+    // File metadata predicates (gated behind READ-FS capability)
     FileExistsP,
     DirectoryP,
     FileP,
@@ -446,11 +451,14 @@ pub enum BuiltinFunc {
     FileSize,
     DirectoryFiles,
     FileNewerP,
-    // File mutation (gated behind FILE-IO capability)
+    // File mutation (gated behind CREATE-FS capability)
     Chmod,
     CreateDirectory,
     DeleteFile,
     RenameFile,
+    // Temp filesystem (gated behind TEMP-FS capability)
+    MakeTempFile,
+    MakeTempDirectory,
 }
 
 /// An interned Lisp symbol.
@@ -1093,8 +1101,8 @@ pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
 /// Load and evaluate a single Lisp source file.
 ///
 /// Reads the file at `path`, parses all top-level expressions, and evaluates
-/// them in `env` in order.  The `FILE-IO` capability must be enabled in `env`
-/// for the Lisp builtin `(LOAD-FILE path)` to call this; Rust host code can
+/// them in `env` in order.  The `READ-FS` capability (or legacy `FILE-IO`) must
+/// be enabled in `env` for the Lisp builtin `(LOAD-FILE path)` to call this; Rust host code can
 /// call it directly regardless of feature flags.
 ///
 /// # Errors

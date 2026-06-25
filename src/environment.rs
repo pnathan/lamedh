@@ -511,15 +511,9 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ClearAllFlags),
         );
 
-        // Capabilities / features
-        env.set(
-            "ENABLE-FEATURE".to_string(),
-            LispVal::Builtin(BuiltinFunc::EnableFeature),
-        );
-        env.set(
-            "DISABLE-FEATURE".to_string(),
-            LispVal::Builtin(BuiltinFunc::DisableFeature),
-        );
+        // Capabilities / features — read-only from Lisp.
+        // Grant/revoke capabilities only from the host API (env.enable_feature)
+        // or the CLI (--capability).  Lisp code may introspect but not self-escalate.
         env.set(
             "FEATURE-ENABLED-P".to_string(),
             LispVal::Builtin(BuiltinFunc::FeatureEnabledP),
@@ -632,7 +626,7 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::FileNewerP),
         );
 
-        // File mutation (gated behind FILE-IO capability)
+        // File mutation (gated behind CREATE-FS capability)
         env.set("CHMOD".to_string(), LispVal::Builtin(BuiltinFunc::Chmod));
         env.set(
             "CREATE-DIRECTORY".to_string(),
@@ -645,6 +639,16 @@ impl Environment {
         env.set(
             "RENAME-FILE".to_string(),
             LispVal::Builtin(BuiltinFunc::RenameFile),
+        );
+
+        // Temp filesystem (gated behind TEMP-FS capability)
+        env.set(
+            "MAKE-TEMP-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeTempFile),
+        );
+        env.set(
+            "MAKE-TEMP-DIRECTORY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeTempDirectory),
         );
 
         // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER

@@ -73,6 +73,14 @@ struct Args {
     /// REPL is not started.
     #[arg(short, long)]
     s: Option<String>,
+
+    /// Grant a sandbox capability to the interpreter.  May be specified
+    /// multiple times.  Known capabilities: READ-FS, CREATE-FS, TEMP-FS,
+    /// SHELL, IO.  Capability names are case-insensitive.
+    ///
+    /// Example: `lamedh --capability READ-FS --capability SHELL`
+    #[arg(long = "capability", short = 'c', action = clap::ArgAction::Append)]
+    capabilities: Vec<String>,
 }
 
 fn main() {
@@ -87,6 +95,11 @@ fn run(args: Args) {
     // Use the embedded stdlib so the interpreter is self-contained. A lib/
     // directory on disk can still override or extend it via -i.
     let env = Environment::with_stdlib();
+
+    // Grant capabilities requested on the command line.
+    for cap in &args.capabilities {
+        env.enable_feature(&cap.to_uppercase());
+    }
 
     // Load files from -i flag
     for path in args.i {
