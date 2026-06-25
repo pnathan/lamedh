@@ -66,16 +66,16 @@ fn main() {
     }
     let jit_compiled = start.elapsed();
 
+    let backend = if cfg!(feature = "jit") {
+        "native Cranelift"
+    } else {
+        "unboxed closures; build --features jit for native"
+    };
     println!("fib(28) x{iters}:");
     println!("  boxed LispVal evaluator: {boxed:?}");
-    println!("  typed JIT (unboxed):     {jit_compiled:?}");
+    println!("  typed JIT [{backend}]: {jit_compiled:?}");
     println!(
         "  speedup: {:.1}x",
         boxed.as_secs_f64() / jit_compiled.as_secs_f64()
-    );
-    println!(
-        "\n(The JIT's own interpreter is already unboxed, so the closure backend ~ties it;\n \
-         the decisive win over an unboxed tree-walk is what native Cranelift codegen buys —\n \
-         the next stage behind the `jit` feature.)"
     );
 }

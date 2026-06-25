@@ -212,10 +212,24 @@ Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_j
 - 49 tests; the `agree` helper runs every example through both editions as a
   differential check.
 
-The backend is closures, not native code yet, so it ties the JIT's *own* unboxed
-interpreter. The measured win is against lamedh's **boxed** evaluator: the example
-shows ~16× on `fib(28)`. The decisive win over an unboxed tree-walk is what native
-codegen (§4) buys next.
+Two backends share the `TypedFn` cell:
+- **Closures** (default build): lowers the typed core to a tree of unboxed-`u64`
+  closures. Ties the JIT's *own* unboxed interpreter; ~16× the **boxed** evaluator
+  on `fib(28)`.
+- **Native Cranelift** (`--features jit`): `src/jit/native.rs` lowers the typed
+  core to a native function (`int64` in registers, `float64` via bitcast, `bool`
+  as `0/1`), and **all Lisp-level calls route through one host trampoline** —
+  literally §2's `universal_call` — so recursion and redefinition need no
+  Cranelift relocation/hot-patching (a redefined callee is just a new edition the
+  trampoline picks up via the cell). ~**105×** the boxed evaluator on `fib(28)`.
+  `if`/`and`/`or` lower via a per-node result stack slot to avoid the
+  block-argument API churn across Cranelift releases.
+
+Dispatch prefers the native edition, then the closure edition, then the
+interpreter; each is pinned (`Rc`-cloned) for the call, and a `NativeEdition` owns
+its `JITModule` so its code is freed only when the last in-flight caller drops it.
+The remaining win is to replace the per-call trampoline hop with direct
+typed→typed native calls (design policy (b)) for call-heavy code.
 
 **It lands in the language.** `DEFFUN-TYPED` is a real special form: the registry
 lives in `SharedState` (shared across the whole environment chain), and a

@@ -12,6 +12,23 @@ path = "src/lib.rs"
 [dependencies]
 nom = "=7.1.3"
 
+# Optional native-code backend for the typed JIT (`deffun-typed`). Off by
+# default so the standard build stays dependency-light; enable with
+# `--features jit`.
+cranelift-jit = { version = "0.133", optional = true }
+cranelift-module = { version = "0.133", optional = true }
+cranelift-codegen = { version = "0.133", optional = true }
+cranelift-frontend = { version = "0.133", optional = true }
+
+[features]
+default = []
+jit = [
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+]
+
 [workspace]
 members = ["cli"]
 default-members = [".", "cli"]

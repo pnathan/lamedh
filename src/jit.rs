@@ -33,6 +33,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[cfg(feature = "jit")]
+mod native;
+
 // ---------------------------------------------------------------------------
 // Types and runtime values.
 // ---------------------------------------------------------------------------
@@ -669,6 +672,11 @@ pub struct TypedFn {
     core: RefCell<Option<Core>>,
     slots: Cell<usize>,
     compiled: RefCell<Option<Compiled>>,
+    /// Native (Cranelift) edition. Like `compiled`, a call pins (`Rc`-clones) it,
+    /// so a redefinition that swaps it out keeps the old code mapped until
+    /// in-flight callers return (the `NativeEdition` owns its `JITModule`).
+    #[cfg(feature = "jit")]
+    native: RefCell<Option<Rc<native::NativeEdition>>>,
     generation: Cell<u64>,
 }
 
@@ -695,6 +703,8 @@ impl TypedFn {
             core: RefCell::new(None),
             slots: Cell::new(slots),
             compiled: RefCell::new(None),
+            #[cfg(feature = "jit")]
+            native: RefCell::new(None),
             generation: Cell::new(0),
         }
     }
@@ -719,17 +729,43 @@ impl TypedFn {
         let c = self.core.borrow();
         if let Some(core) = c.as_ref() {
             *self.compiled.borrow_mut() = Some(compile(core));
+            // With the `jit` feature, also build a native edition. If Cranelift
+            // codegen fails for any reason, fall back to the closure edition
+            // rather than failing the definition.
+            #[cfg(feature = "jit")]
+            {
+                let n_params = self.params.borrow().len();
+                match native::compile_native(core, n_params, self.slots.get()) {
+                    Ok(ed) => *self.native.borrow_mut() = Some(Rc::new(ed)),
+                    Err(_) => *self.native.borrow_mut() = None,
+                }
+            }
             self.generation.set(self.generation.get() + 1);
         }
     }
 
     fn deoptimize(&self) {
         *self.compiled.borrow_mut() = None;
+        #[cfg(feature = "jit")]
+        {
+            *self.native.borrow_mut() = None;
+        }
     }
 
     /// Invoke with already-unboxed words. Builds the callee frame, dispatches to
     /// the compiled edition if present (pinning it for the call), else interprets.
     fn invoke(&self, args: &[u64], ctx: &Ctx) -> u64 {
+        // Native edition first (pinned for the call so a redefinition can't free
+        // the code out from under us). `args` are the parameter words directly;
+        // the native function builds its own local frame.
+        #[cfg(feature = "jit")]
+        {
+            let native = self.native.borrow().clone();
+            if let Some(ed) = native {
+                let ctx_ptr = ctx as *const Ctx as *const core::ffi::c_void;
+                return unsafe { ed.call(args, ctx_ptr) };
+            }
+        }
         let mut env = vec![0u64; self.slots.get()];
         env[..args.len()].copy_from_slice(args);
         let edition = self.compiled.borrow().clone();
