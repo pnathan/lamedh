@@ -114,6 +114,38 @@
 //! | Property lists | `(putp 'foo "doc" "A foo.") (getp 'foo "doc")` |
 //! | Structs | `(defstruct point x y) (make-point :x 1 :y 2)` |
 //!
+//! ## Cargo manifest
+//!
+//! ```toml
+//! [package]
+//! name        = "lamedh"
+//! version     = "0.1.2"
+//! edition     = "2024"
+//! description = "An embeddable Lisp 1.5 interpreter written in Rust"
+//! license     = "AGPL-3.0"
+//!
+//! [lib]
+//! name = "lamedh"
+//! path = "src/lib.rs"
+//!
+//! [dependencies]
+//! nom = "=7.1.3"   # pinned; the only runtime dependency
+//!
+//! [workspace]
+//! members         = ["cli"]
+//! default-members = [".", "cli"]
+//! # Benchmark comparison crates (benchmarks/*/rust) are excluded from the
+//! # workspace and built directly by benchmarks/run_benchmarks.sh.
+//! ```
+//!
+//! The library crate has **one** runtime dependency: `nom` (parser combinators
+//! for the reader).  It has no CLI, terminal, or filesystem dependencies.  All
+//! I/O is gated behind capability flags so embedders get a sandboxed interpreter
+//! by default.
+//!
+//! The companion binary crate `lamedh-cli` (in `cli/`) adds `rustyline` (REPL
+//! line-editing) and `clap` (argument parsing) but does not affect the library.
+//!
 //! ## Standard library
 //!
 //! [`environment::Environment::with_stdlib`] loads the following modules in order,

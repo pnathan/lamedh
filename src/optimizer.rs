@@ -1,21 +1,29 @@
+//! Lisp-to-Lisp source optimizer.
+//!
+//! The two public entry points are:
+//!
+//! - [`optimize`] — rewrite a [`crate::LispVal`] expression into a semantically
+//!   equivalent but cheaper form (pure, no side effects).
+//! - [`optimize_eval`] — optimize then evaluate; called by the `OPTIMIZE` builtin.
+//!
+//! The Lisp-level optimizer passes (dead-binding removal, constant inlining,
+//! PROGN flattening) live in `lib/11-optimizer-vau.lisp` and invoke `(OPTIMIZE
+//! expr)` as the constant-folding back-end.
+//!
+//! ## Safe transforms implemented
+//!
+//! - **Constant folding**: `(+ 1 2)` → `3`, `(* 3 4)` → `12`
+//! - **Algebraic identities**: `(+ x 0)` → `x`, `(* x 1)` → `x`, `(* x 0)` → `0`
+//! - **Branch elimination**: `(if t a b)` → `a`, `(if nil a b)` → `b`
+//! - **Dead code in PROGN**: pure non-final forms are dropped; `(progn x)` → `x`
+//!
+//! ## Intentionally not applied
+//!
+//! - Folding inside fexpr/vau operands (they see unevaluated forms)
+//! - Any transform requiring side-effect evaluation
+//! - Macro expansion (done lazily at eval time so redefinition works)
+
 use crate::environment::Environment;
-/// Lisp-to-Lisp source optimizer (issue #72).
-///
-/// `optimize(expr)` rewrites s-expressions into semantically equivalent but
-/// more efficient forms. It is a pure function — it never evaluates side
-/// effects and does not mutate the environment.
-///
-/// **Safe transforms implemented:**
-/// - Constant folding: `(+ 1 2)` → `3`, `(* 3 4)` → `12`
-/// - Algebraic identities: `(+ x 0)` → `x`, `(* x 1)` → `x`
-/// - Branch elimination: `(if t a b)` → `a`, `(if nil a b)` → `b`
-/// - Dead code in PROGN: `(progn pure1 pure2 x)` → `(progn x)`, `(progn x)` → `x`
-/// - Nested quote simplification: `(quote (quote x))` left as-is (correct)
-///
-/// **Intentionally NOT applied:**
-/// - Folding inside fexpr/vau operands (they see unevaluated forms)
-/// - Any transform that requires evaluating side effects
-/// - Macro expansion (done lazily at eval time so redefinition works)
 use crate::{LispError, LispVal};
 use std::rc::Rc;
 
@@ -181,7 +189,18 @@ fn list_to_vec(v: &LispVal) -> Option<Vec<LispVal>> {
     }
 }
 
-/// Recursively optimize a Lisp expression.
+/// Recursively rewrite `expr` into a semantically equivalent, cheaper form.
+///
+/// This is a **pure** function: it does not call `eval`, does not inspect the
+/// runtime environment, and has no observable side effects.  It is safe to call
+/// on any expression before or instead of evaluating it.
+///
+/// Atoms and quoted forms are returned unchanged.  Compound forms are walked
+/// recursively; each sub-expression is optimized before the parent form applies
+/// its own reduction rule (e.g. constant folding requires that arguments have
+/// already been reduced to literals).
+///
+/// Returns the original value cloned if no rewrite applies.
 pub fn optimize(expr: &LispVal) -> LispVal {
     match expr {
         // Atoms and literals are already optimal
@@ -344,8 +363,15 @@ pub fn optimize(expr: &LispVal) -> LispVal {
     }
 }
 
-/// Evaluate-with-optimization: optimize the expression, then eval it.
-/// This is the entry point from the OPTIMIZE builtin.
+/// Optimize `expr` and then evaluate the result in `env`.
+///
+/// This is the implementation of the `(OPTIMIZE expr)` builtin.  Callers that
+/// only want constant folding without evaluation should use [`optimize`]
+/// directly.
+///
+/// # Errors
+///
+/// Propagates any [`crate::LispError`] returned by the evaluator.
 pub fn optimize_eval(expr: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
     let optimized = optimize(expr);
     crate::evaluator::eval(&optimized, env)
