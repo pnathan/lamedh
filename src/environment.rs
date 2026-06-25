@@ -24,7 +24,7 @@
 //!
 //! ## Capabilities
 //!
-//! Dangerous operations (`SHELL`, `FILE-IO`, `IO`) are gated behind feature
+//! Dangerous operations (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are gated behind feature
 //! flags that are all **off by default**.  Call [`Environment::enable_feature`]
 //! to opt in.  Because `SharedState` is shared across the whole chain, a
 //! feature enabled anywhere is visible everywhere.
@@ -278,7 +278,7 @@ impl Environment {
     /// This does **not** load the Lisp standard library (`defun`, `append`,
     /// etc.).  Use [`Environment::with_stdlib`] for a fully-featured environment.
     ///
-    /// All capability flags (`SHELL`, `FILE-IO`, `IO`) are disabled by default.
+    /// All capability flags (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are disabled by default.
     pub fn new_with_builtins() -> Rc<Environment> {
         let env = Rc::new(Environment::new());
         let t_symbol = env.intern_symbol("T");
@@ -573,7 +573,7 @@ impl Environment {
         // SPACES: print N spaces (Lisp 1.5 I/O)
         env.set("SPACES".to_string(), LispVal::Builtin(BuiltinFunc::Spaces));
 
-        // File I/O (gated behind FILE-IO capability)
+        // File I/O (gated behind READ-FS capability)
         env.set(
             "READ-FILE".to_string(),
             LispVal::Builtin(BuiltinFunc::ReadFile),
@@ -591,7 +591,7 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::WriteFile),
         );
 
-        // File metadata predicates (gated behind FILE-IO capability)
+        // File metadata predicates (gated behind READ-FS capability)
         env.set(
             "FILE-EXISTS-P".to_string(),
             LispVal::Builtin(BuiltinFunc::FileExistsP),
@@ -672,19 +672,18 @@ impl Environment {
     /// Create a sandboxed environment with all builtins registered but all
     /// dangerous capabilities disabled.
     ///
-    /// All potentially dangerous feature flags (`SHELL`, `FILE-IO`, `IO`) are
-    /// off by default in every environment, so this is semantically equivalent
-    /// to `new_with_builtins()`.  The explicit name communicates intent clearly
-    /// to embedders: scripts loaded into this environment cannot access the
-    /// filesystem, spawn subprocesses, or read from stdin unless the host
-    /// explicitly calls `enable_feature`.
+    /// All potentially dangerous feature flags (`SHELL`, `READ-FS`, `CREATE-FS`,
+    /// `TEMP-FS`, `IO`) are off by default in every environment, so this is
+    /// semantically equivalent to `new_with_builtins()`.  The explicit name
+    /// communicates intent clearly to embedders: scripts loaded into this
+    /// environment cannot access the filesystem, spawn subprocesses, or read
+    /// from stdin unless the host explicitly calls `enable_feature`.
     ///
     /// # Example
     /// ```rust,ignore
     /// let env = Environment::new_sandboxed();
-    /// // All of SHELL, FILE-IO, IO are disabled.
     /// assert!(!env.feature_enabled("SHELL"));
-    /// assert!(!env.feature_enabled("FILE-IO"));
+    /// assert!(!env.feature_enabled("READ-FS"));
     /// assert!(!env.feature_enabled("IO"));
     /// ```
     pub fn new_sandboxed() -> Rc<Environment> {

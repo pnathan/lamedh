@@ -41,22 +41,6 @@ fn test_load_file_passes_feature_check_when_enabled() {
 }
 
 #[test]
-fn test_file_io_legacy_alias_still_works() {
-    // FILE-IO is accepted as a legacy alias for READ-FS + CREATE-FS from
-    // host code; Lisp code cannot set it since enable-feature is gone.
-    let env = env_with_stdlib();
-    env.enable_feature("FILE-IO");
-    let out = eval_line(
-        "(load-file \"/nonexistent/path/that/does/not/exist.lisp\")",
-        &env,
-    );
-    assert!(
-        !out.contains("READ-FS capability"),
-        "FILE-IO alias should satisfy READ-FS check, got: {out}"
-    );
-}
-
-#[test]
 fn test_lisp_cannot_self_escalate_file_io() {
     let env = env_with_stdlib();
     let out = eval_line("(enable-feature \"READ-FS\")", &env);
@@ -103,10 +87,9 @@ fn test_new_sandboxed_has_shell_disabled() {
 #[test]
 fn test_new_sandboxed_has_read_fs_disabled() {
     let env = Environment::new_sandboxed();
-    assert!(
-        !env.feature_enabled("READ-FS"),
-        "READ-FS should be disabled in sandboxed env"
-    );
+    assert!(!env.feature_enabled("READ-FS"));
+    assert!(!env.feature_enabled("CREATE-FS"));
+    assert!(!env.feature_enabled("TEMP-FS"));
 }
 
 #[test]

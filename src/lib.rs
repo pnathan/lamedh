@@ -1101,8 +1101,8 @@ pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
 /// Load and evaluate a single Lisp source file.
 ///
 /// Reads the file at `path`, parses all top-level expressions, and evaluates
-/// them in `env` in order.  The `READ-FS` capability (or legacy `FILE-IO`) must
-/// be enabled in `env` for the Lisp builtin `(LOAD-FILE path)` to call this; Rust host code can
+/// them in `env` in order.  The `READ-FS` capability must be enabled in `env`
+/// for the Lisp builtin `(LOAD-FILE path)` to call this; Rust host code can
 /// call it directly regardless of feature flags.
 ///
 /// # Errors

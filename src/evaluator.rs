@@ -732,9 +732,8 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
 /// Capability guards for the three filesystem feature tiers.
 ///
 /// Each returns `Ok(())` if the feature is enabled, or a descriptive error otherwise.
-/// `FILE-IO` is accepted as a legacy alias for both `READ-FS` and `CREATE-FS`.
 fn require_read_fs(env: &Rc<Environment>) -> Result<(), LispError> {
-    if env.feature_enabled("READ-FS") || env.feature_enabled("FILE-IO") {
+    if env.feature_enabled("READ-FS") {
         Ok(())
     } else {
         Err(LispError::Generic(
@@ -745,7 +744,7 @@ fn require_read_fs(env: &Rc<Environment>) -> Result<(), LispError> {
 }
 
 fn require_create_fs(env: &Rc<Environment>) -> Result<(), LispError> {
-    if env.feature_enabled("CREATE-FS") || env.feature_enabled("FILE-IO") {
+    if env.feature_enabled("CREATE-FS") {
         Ok(())
     } else {
         Err(LispError::Generic(
