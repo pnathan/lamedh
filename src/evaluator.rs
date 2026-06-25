@@ -1601,6 +1601,128 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
             }
 
+            // ── File mutation ───────────────────────────────────────────────
+            BuiltinFunc::Chmod => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "chmod requires exactly two arguments: path mode".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "chmod: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                // Mode: integer (use directly) or octal string like "755".
+                let mode: u32 = match &args[1] {
+                    LispVal::Number(n) if *n >= 0 => *n as u32,
+                    LispVal::String(s) => u32::from_str_radix(s, 8).map_err(|_| {
+                        LispError::Generic(format!("chmod: cannot parse \"{s}\" as an octal mode"))
+                    })?,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "chmod: mode must be an integer or octal string".to_string(),
+                        ));
+                    }
+                };
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(mode);
+                    std::fs::set_permissions(&path, perms)
+                        .map_err(|e| LispError::Generic(format!("chmod: {e}")))?;
+                    return Ok(LispVal::Symbol(env.intern_symbol("T")));
+                }
+                #[cfg(not(unix))]
+                Err(LispError::Generic(
+                    "chmod is only supported on Unix platforms".to_string(),
+                ))
+            }
+
+            BuiltinFunc::CreateDirectory => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "create-directory requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "create-directory: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                std::fs::create_dir_all(&path)
+                    .map_err(|e| LispError::Generic(format!("create-directory: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::DeleteFile => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "delete-file requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "delete-file: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                std::fs::remove_file(&path)
+                    .map_err(|e| LispError::Generic(format!("delete-file: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::RenameFile => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "rename-file requires exactly two arguments: from to".to_string(),
+                    ));
+                }
+                let (from, to) = match (&args[0], &args[1]) {
+                    (LispVal::String(a), LispVal::String(b)) => (a.clone(), b.clone()),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "rename-file: both arguments must be strings".to_string(),
+                        ));
+                    }
+                };
+                std::fs::rename(&from, &to)
+                    .map_err(|e| LispError::Generic(format!("rename-file: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
             // Condition flags
             BuiltinFunc::SetFlag => {
                 if args.len() != 1 {

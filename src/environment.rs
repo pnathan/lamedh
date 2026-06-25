@@ -632,6 +632,21 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::FileNewerP),
         );
 
+        // File mutation (gated behind FILE-IO capability)
+        env.set("CHMOD".to_string(), LispVal::Builtin(BuiltinFunc::Chmod));
+        env.set(
+            "CREATE-DIRECTORY".to_string(),
+            LispVal::Builtin(BuiltinFunc::CreateDirectory),
+        );
+        env.set(
+            "DELETE-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeleteFile),
+        );
+        env.set(
+            "RENAME-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::RenameFile),
+        );
+
         // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER
         // are registered above with the other Lisp 1.5 spec functions.
 

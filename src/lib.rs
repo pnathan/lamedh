@@ -446,6 +446,11 @@ pub enum BuiltinFunc {
     FileSize,
     DirectoryFiles,
     FileNewerP,
+    // File mutation (gated behind FILE-IO capability)
+    Chmod,
+    CreateDirectory,
+    DeleteFile,
+    RenameFile,
 }
 
 /// An interned Lisp symbol.
