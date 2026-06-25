@@ -15,20 +15,26 @@
 //! ```text
 //! BRUTAL_PROGRAMS=20000 BRUTAL_INPUTS=64 cargo test --test brutal_correctness -- --nocapture
 //! BRUTAL=1 cargo test --release --test brutal_correctness          # ~millions of cases
+//! BRUTAL=1 cargo test --release --features jit --test brutal_correctness   # + native tier
 //! ```
 //!
 //! ## What is checked
 //!
 //! For every randomly generated *well-typed* program (a DAG of `deffun-typed`
-//! functions over `int64`/`bool`) and every random input vector we run, and
-//! force into agreement, **four independent evaluators**:
+//! functions over `int64`/`float64`/`bool`) and every random input vector we
+//! run, and force into agreement, **four independent evaluators**:
 //!
-//! 1. the **compiled closure edition** (`Jit::compile_all` + `call`),
+//! 1. the **compiled edition** (`Jit::compile_all` + `call`) — the closure tree
+//!    by default, or, under `--features jit`, the **native Cranelift** code;
 //! 2. the **typed-core reference interpreter** (`Jit::deoptimize_all` + `call`),
 //! 3. the **tracing interpreter** (`Jit::trace_call`, a third code path), and
 //! 4. an **independent Rust oracle** that interprets the generator's own AST
 //!    with the exact documented semantics (wrapping integer arithmetic,
-//!    `/`/`mod`-by-zero ⇒ 0).
+//!    `/`/`mod`-by-zero ⇒ 0, IEEE-754 `float64`).
+//!
+//! Float results are compared **bit-for-bit** (catching `-0.0`/rounding bugs),
+//! except that any NaN equals any NaN (payload bits are not language semantics
+//! and the native backend may canonicalise them differently).
 //!
 //! On top of N-way agreement we assert:
 //! - **structural soundness** of every lowered typed-core tree (`verify_core`):
@@ -40,7 +46,11 @@
 //! - **abstract-interpretation soundness**: an interval domain over-approximates
 //!   the concrete result whenever the analysis proves no overflow occurs;
 //! - **untyped/typed cross-tier agreement** on the pure-arithmetic overlap, where
-//!   the tree-walking interpreter and the JIT must compute the same word.
+//!   the tree-walking interpreter and the JIT must compute the same word;
+//! - **string correctness** for the untyped tree-walker: random `concat`/`index`
+//!   expressions vs an independent string oracle, plus the algebraic laws those
+//!   ops obey (associativity via the oracle, empty-string identity, char
+//!   indexing, out-of-bounds erroring, and reflexive structural `equal`).
 
 use lamedh::environment::Environment;
 use lamedh::eval_str;
@@ -88,6 +98,28 @@ impl Rng {
             _ => self.next_u64() as i64,
         }
     }
+    /// A "nasty" f64: boundary values that break naive float code, plus a few
+    /// finite ones. Includes NaN, ±∞, ±0, subnormals, and the f64 extremes.
+    fn nasty_f64(&mut self) -> f64 {
+        match self.below(16) {
+            0 => 0.0,
+            1 => -0.0,
+            2 => 1.0,
+            3 => -1.0,
+            4 => 0.5,
+            5 => f64::INFINITY,
+            6 => f64::NEG_INFINITY,
+            7 => f64::NAN,
+            8 => f64::MIN_POSITIVE,
+            9 => f64::MAX,
+            10 => f64::MIN,
+            11 => 1e300,
+            12 => -1e-300,
+            13 => 4.9e-324, // smallest subnormal
+            14 => (self.next_u64() % 2_000) as f64 / 8.0 - 125.0,
+            _ => f64::from_bits(self.next_u64()),
+        }
+    }
 }
 
 // ===========================================================================
@@ -102,6 +134,7 @@ impl Rng {
 enum GTy {
     Int,
     Bool,
+    Float,
 }
 
 impl GTy {
@@ -109,9 +142,29 @@ impl GTy {
         match self {
             GTy::Int => "int64",
             GTy::Bool => "bool",
+            GTy::Float => "float64",
         }
     }
 }
+
+/// A reader-and-oracle-safe float literal: `(value, source-text)` pairs chosen so
+/// the rendered text parses back to *exactly* `value` (no round-trip drift).
+/// Non-finite and signed-zero values enter only through call arguments, never as
+/// literals (the reader has no `inf`/`NaN` syntax).
+const FLOAT_LITS: &[(f64, &str)] = &[
+    (0.0, "0.0"),
+    (1.0, "1.0"),
+    (2.0, "2.0"),
+    (-1.0, "-1.0"),
+    (0.5, "0.5"),
+    (-0.5, "-0.5"),
+    (0.25, "0.25"),
+    (3.0, "3.0"),
+    (-4.0, "-4.0"),
+    (10.0, "10.0"),
+    (100.0, "100.0"),
+    (-2.5, "-2.5"),
+];
 
 #[derive(Clone, Copy, Debug)]
 enum IBin {
@@ -135,6 +188,7 @@ enum ICmp {
 enum E {
     LitI(i64),
     LitB(bool),
+    LitF(f64, &'static str), // (value, reader-safe source text)
     Var(String),
     Bin(IBin, Box<E>, Box<E>),
     Cmp(ICmp, Box<E>, Box<E>),
@@ -155,10 +209,11 @@ struct FnDef {
 }
 
 /// A boxed reference value the oracle computes in.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum OVal {
     I(i64),
     B(bool),
+    F(f64),
 }
 
 impl OVal {
@@ -166,6 +221,7 @@ impl OVal {
         match self {
             OVal::I(n) => Value::Int(n),
             OVal::B(b) => Value::Bool(b),
+            OVal::F(f) => Value::Float(f),
         }
     }
 }
@@ -178,32 +234,37 @@ fn oracle(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> OVal {
     match e {
         E::LitI(n) => OVal::I(*n),
         E::LitB(b) => OVal::B(*b),
+        E::LitF(f, _) => OVal::F(*f),
         E::Var(name) => scope
             .iter()
             .rev()
             .find(|(n, _)| n == name)
             .map(|(_, v)| *v)
             .unwrap_or_else(|| panic!("oracle: unbound var {name}")),
-        E::Bin(op, a, b) => {
-            let (x, y) = (oracle_i(a, scope, prog), oracle_i(b, scope, prog));
-            let r = match op {
+        // Arithmetic is operand-type directed (exactly like the JIT elaborator):
+        // both operands int ⇒ wrapping int op; both float ⇒ IEEE f64 op.
+        E::Bin(op, a, b) => match (oracle(a, scope, prog), oracle(b, scope, prog)) {
+            (OVal::I(x), OVal::I(y)) => OVal::I(match op {
                 IBin::Add => x.wrapping_add(y),
                 IBin::Sub => x.wrapping_sub(y),
                 IBin::Mul => x.wrapping_mul(y),
                 IBin::Div => x.checked_div(y).unwrap_or(0),
                 IBin::Mod => x.checked_rem(y).unwrap_or(0),
-            };
-            OVal::I(r)
-        }
+            }),
+            (OVal::F(x), OVal::F(y)) => OVal::F(match op {
+                IBin::Add => x + y,
+                IBin::Sub => x - y,
+                IBin::Mul => x * y,
+                IBin::Div => x / y,
+                IBin::Mod => x % y, // unreachable: float mod is type-rejected
+            }),
+            (a, b) => panic!("oracle: ill-typed Bin operands {a:?} {b:?}"),
+        },
         E::Cmp(op, a, b) => {
-            let (x, y) = (oracle_i(a, scope, prog), oracle_i(b, scope, prog));
-            let r = match op {
-                ICmp::Lt => x < y,
-                ICmp::Gt => x > y,
-                ICmp::Le => x <= y,
-                ICmp::Ge => x >= y,
-                ICmp::Eq => x == y,
-                ICmp::Ne => x != y,
+            let r = match (oracle(a, scope, prog), oracle(b, scope, prog)) {
+                (OVal::I(x), OVal::I(y)) => cmp(*op, x, y),
+                (OVal::F(x), OVal::F(y)) => cmp(*op, x, y),
+                (a, b) => panic!("oracle: ill-typed Cmp operands {a:?} {b:?}"),
             };
             OVal::B(r)
         }
@@ -235,16 +296,26 @@ fn oracle(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> OVal {
         }
     }
 }
+fn cmp<T: PartialOrd>(op: ICmp, x: T, y: T) -> bool {
+    match op {
+        ICmp::Lt => x < y,
+        ICmp::Gt => x > y,
+        ICmp::Le => x <= y,
+        ICmp::Ge => x >= y,
+        ICmp::Eq => x == y,
+        ICmp::Ne => x != y,
+    }
+}
 fn oracle_i(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> i64 {
     match oracle(e, scope, prog) {
         OVal::I(n) => n,
-        OVal::B(_) => panic!("oracle: expected int"),
+        other => panic!("oracle: expected int, got {other:?}"),
     }
 }
 fn oracle_b(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> bool {
     match oracle(e, scope, prog) {
         OVal::B(b) => b,
-        OVal::I(_) => panic!("oracle: expected bool"),
+        other => panic!("oracle: expected bool, got {other:?}"),
     }
 }
 
@@ -256,6 +327,7 @@ fn render(e: &E, prog: &[FnDef], out: &mut String) {
     match e {
         E::LitI(n) => out.push_str(&n.to_string()),
         E::LitB(b) => out.push_str(if *b { "true" } else { "false" }),
+        E::LitF(_, text) => out.push_str(text),
         E::Var(name) => out.push_str(name),
         E::Bin(op, a, b) => {
             let s = match op {
@@ -369,11 +441,14 @@ impl Gen<'_> {
             .collect();
 
         match want {
-            GTy::Int => {
+            GTy::Int | GTy::Float => {
+                let nty = want; // int or float; arithmetic stays within the type
                 let choice = self.rng.below(7);
                 match choice {
                     0 | 1 => {
-                        let op = match self.rng.below(5) {
+                        // `mod` is int64-only in the type system; never emit it for float.
+                        let n = if nty == GTy::Int { 5 } else { 4 };
+                        let op = match self.rng.below(n) {
                             0 => IBin::Add,
                             1 => IBin::Sub,
                             2 => IBin::Mul,
@@ -382,20 +457,20 @@ impl Gen<'_> {
                         };
                         E::Bin(
                             op,
-                            Box::new(self.expr(GTy::Int, scope, prog, fuel - 1, let_ctr)),
-                            Box::new(self.expr(GTy::Int, scope, prog, fuel - 1, let_ctr)),
+                            Box::new(self.expr(nty, scope, prog, fuel - 1, let_ctr)),
+                            Box::new(self.expr(nty, scope, prog, fuel - 1, let_ctr)),
                         )
                     }
                     2 => E::If(
                         Box::new(self.expr(GTy::Bool, scope, prog, fuel - 1, let_ctr)),
-                        Box::new(self.expr(GTy::Int, scope, prog, fuel - 1, let_ctr)),
-                        Box::new(self.expr(GTy::Int, scope, prog, fuel - 1, let_ctr)),
+                        Box::new(self.expr(nty, scope, prog, fuel - 1, let_ctr)),
+                        Box::new(self.expr(nty, scope, prog, fuel - 1, let_ctr)),
                     ),
-                    3 => self.gen_let(GTy::Int, scope, prog, fuel, let_ctr),
+                    3 => self.gen_let(nty, scope, prog, fuel, let_ctr),
                     4 if !callable.is_empty() => {
                         self.gen_call(callable, scope, prog, fuel, let_ctr)
                     }
-                    _ => self.leaf(GTy::Int, scope),
+                    _ => self.leaf(nty, scope),
                 }
             }
             GTy::Bool => {
@@ -410,10 +485,13 @@ impl Gen<'_> {
                             4 => ICmp::Eq,
                             _ => ICmp::Ne,
                         };
+                        // Comparisons are operand-type directed: pick int OR float
+                        // operands (both the same type), mirroring the elaborator.
+                        let oty = self.num_ty();
                         E::Cmp(
                             op,
-                            Box::new(self.expr(GTy::Int, scope, prog, fuel - 1, let_ctr)),
-                            Box::new(self.expr(GTy::Int, scope, prog, fuel - 1, let_ctr)),
+                            Box::new(self.expr(oty, scope, prog, fuel - 1, let_ctr)),
+                            Box::new(self.expr(oty, scope, prog, fuel - 1, let_ctr)),
                         )
                     }
                     2 => E::And(
@@ -444,6 +522,23 @@ impl Gen<'_> {
         }
     }
 
+    /// A random type for a parameter, return value, or `let` binding.
+    fn rand_ty(&mut self) -> GTy {
+        match self.rng.below(3) {
+            0 => GTy::Int,
+            1 => GTy::Bool,
+            _ => GTy::Float,
+        }
+    }
+    /// A random *numeric* type (the only ones arithmetic/comparison operands take).
+    fn num_ty(&mut self) -> GTy {
+        if self.rng.bool() {
+            GTy::Int
+        } else {
+            GTy::Float
+        }
+    }
+
     fn gen_let(
         &mut self,
         want: GTy,
@@ -452,7 +547,7 @@ impl Gen<'_> {
         fuel: u32,
         let_ctr: &mut usize,
     ) -> E {
-        let bty = if self.rng.bool() { GTy::Int } else { GTy::Bool };
+        let bty = self.rand_ty();
         let init = self.expr(bty, scope, prog, fuel - 1, let_ctr);
         let name = format!("l{}", *let_ctr);
         *let_ctr += 1;
@@ -503,6 +598,14 @@ impl Gen<'_> {
                     E::LitB(self.rng.bool())
                 }
             }
+            GTy::Float => {
+                if !vars.is_empty() && self.rng.bool() {
+                    E::Var(vars[self.rng.below(vars.len())].clone())
+                } else {
+                    let (v, t) = FLOAT_LITS[self.rng.below(FLOAT_LITS.len())];
+                    E::LitF(v, t)
+                }
+            }
         }
     }
 
@@ -512,12 +615,9 @@ impl Gen<'_> {
         for i in 0..n_funcs {
             let arity = 1 + self.rng.below(3); // 1..=3
             let params: Vec<(String, GTy)> = (0..arity)
-                .map(|p| {
-                    let t = if self.rng.bool() { GTy::Int } else { GTy::Bool };
-                    (format!("p{p}"), t)
-                })
+                .map(|p| (format!("p{p}"), self.rand_ty()))
                 .collect();
-            let ret = if self.rng.bool() { GTy::Int } else { GTy::Bool };
+            let ret = self.rand_ty();
             let mut let_ctr = 0usize;
             let body = self.expr(ret, &params, &prog, fuel, &mut let_ctr);
             prog.push(FnDef {
@@ -554,6 +654,7 @@ fn random_args(rng: &mut Rng, f: &FnDef) -> Vec<Value> {
         .map(|(_, t)| match t {
             GTy::Int => Value::Int(rng.nasty_i64()),
             GTy::Bool => Value::Bool(rng.bool()),
+            GTy::Float => Value::Float(rng.nasty_f64()),
         })
         .collect()
 }
@@ -563,16 +664,22 @@ fn args_to_ovals(args: &[Value]) -> Vec<OVal> {
         .map(|v| match v {
             Value::Int(n) => OVal::I(*n),
             Value::Bool(b) => OVal::B(*b),
-            Value::Float(_) => unreachable!("the fuzzer is int/bool only"),
+            Value::Float(f) => OVal::F(*f),
         })
         .collect()
 }
 
+/// Tier-agreement equality. Floats compare **bit-for-bit** (so a `-0.0` vs `0.0`
+/// or a wrong rounding is caught) — except that *any* NaN equals *any* NaN, since
+/// NaN payload bits are not part of the language semantics and the native
+/// (Cranelift) backend may canonicalise them differently from Rust's `f64`.
 fn val_eq(a: Value, b: Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
+        (Value::Float(x), Value::Float(y)) => {
+            (x.is_nan() && y.is_nan()) || x.to_bits() == y.to_bits()
+        }
         _ => false,
     }
 }
@@ -1197,5 +1304,166 @@ fn recursive_kernels_match_rust_references() {
                 check(&j, "ACK", &[m, n], rack(m, n));
             }
         }
+    });
+}
+
+// ===========================================================================
+// STRINGS: differential + metamorphic correctness for the untyped tree-walker.
+//
+// Strings are not part of the typed JIT (its types are int64/float64/bool), so
+// the correctness oracle here targets the production tree-walking interpreter
+// directly: random `concat`/`index` expressions over random strings are checked
+// against an independent Rust string oracle, plus the algebraic laws those ops
+// must obey (associativity, identity, char-indexing, reflexive `equal`).
+// ===========================================================================
+
+/// A string-valued expression in the string mini-language.
+#[derive(Clone, Debug)]
+enum SE {
+    Lit(String),
+    Var(String),
+    Concat(Vec<SE>),
+}
+
+/// Independent oracle: the exact string this expression denotes.
+fn oracle_s(e: &SE, scope: &[(String, String)]) -> String {
+    match e {
+        SE::Lit(s) => s.clone(),
+        SE::Var(name) => scope
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("string oracle: unbound {name}")),
+        SE::Concat(parts) => parts.iter().map(|p| oracle_s(p, scope)).collect(),
+    }
+}
+
+/// Render a string expression to untyped Lisp.
+fn render_s(e: &SE, out: &mut String) {
+    match e {
+        SE::Lit(s) => {
+            out.push('"');
+            out.push_str(s);
+            out.push('"');
+        }
+        SE::Var(name) => out.push_str(name),
+        SE::Concat(parts) => {
+            out.push_str("(concat");
+            for p in parts {
+                out.push(' ');
+                render_s(p, out);
+            }
+            out.push(')');
+        }
+    }
+}
+
+/// A reader-safe random string: ASCII letters/digits/space only (no `"` or `\`,
+/// which would need escaping), length 0..=5.
+fn rand_string(rng: &mut Rng) -> String {
+    const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
+    let len = rng.below(6);
+    (0..len)
+        .map(|_| ALPHA[rng.below(ALPHA.len())] as char)
+        .collect()
+}
+
+fn gen_se(rng: &mut Rng, vars: &[String], fuel: u32) -> SE {
+    if fuel == 0 || rng.below(3) == 0 {
+        if !vars.is_empty() && rng.bool() {
+            return SE::Var(vars[rng.below(vars.len())].clone());
+        }
+        return SE::Lit(rand_string(rng));
+    }
+    let n = 2 + rng.below(2); // 2..=3 children
+    let parts = (0..n).map(|_| gen_se(rng, vars, fuel - 1)).collect();
+    SE::Concat(parts)
+}
+
+#[test]
+fn strings_differential_and_metamorphic() {
+    lamedh::with_large_stack(|| {
+        let brutal = std::env::var("BRUTAL").is_ok();
+        let n = env_usize("BRUTAL_STRINGS", if brutal { 200_000 } else { 20_000 });
+        // `with_stdlib` so the Lisp-level `equal` (structural equality) is present
+        // alongside the `concat`/`index` builtins.
+        let env = Environment::with_stdlib();
+        let mut checked = 0u64;
+
+        for s in 0..n {
+            let mut rng = Rng::new(0x57A1_4E65u64.wrapping_add(s as u64));
+            // 1..=3 string variables with random bindings.
+            let nvars = 1 + rng.below(3);
+            let scope: Vec<(String, String)> = (0..nvars)
+                .map(|k| (format!("s{k}"), rand_string(&mut rng)))
+                .collect();
+            let var_names: Vec<String> = scope.iter().map(|(n, _)| n.clone()).collect();
+
+            let fuel = 1 + rng.below(3) as u32;
+            let expr = gen_se(&mut rng, &var_names, fuel);
+            let want = oracle_s(&expr, &scope);
+
+            // Build the `let` prelude binding the variables.
+            let mut bindings = String::new();
+            for (name, val) in &scope {
+                bindings.push_str(&format!("({name} \"{val}\") "));
+            }
+            let mut body = String::new();
+            render_s(&expr, &mut body);
+            let prog = format!("(let ({bindings}) {body})");
+
+            // Differential: interpreter result == oracle string.
+            match eval_str(&prog, &env).unwrap() {
+                lamedh::LispVal::String(got) => assert_eq!(
+                    got, want,
+                    "STRING DIFFERENTIAL mismatch for `{prog}`: got {got:?} want {want:?}"
+                ),
+                other => panic!("expected a string from `{prog}`, got {other:?}"),
+            }
+
+            // Metamorphic 1: right/left identity with the empty string.
+            let id_r = format!("(let ({bindings}) (concat {body} \"\"))");
+            let id_l = format!("(let ({bindings}) (concat \"\" {body}))");
+            for p in [&id_r, &id_l] {
+                match eval_str(p, &env).unwrap() {
+                    lamedh::LispVal::String(got) => {
+                        assert_eq!(got, want, "STRING IDENTITY law broke for `{p}`")
+                    }
+                    other => panic!("expected string, got {other:?}"),
+                }
+            }
+
+            // Metamorphic 2: `(equal X X)` is true (reflexivity through the reader).
+            let refl = format!("(let ({bindings}) (equal {body} {body}))");
+            assert!(
+                eval_str(&refl, &env).unwrap().is_truthy(),
+                "STRING `equal` not reflexive for `{refl}`"
+            );
+
+            // Metamorphic 3: char-indexing agrees with the oracle, and reading one
+            // past the end is an out-of-bounds error (not a wrong char / panic).
+            let chars: Vec<char> = want.chars().collect();
+            // Probe a couple of in-bounds positions and the first OOB position.
+            if !chars.is_empty() {
+                let i = rng.below(chars.len());
+                let q = format!("(let ({bindings}) (index {body} {i}))");
+                match eval_str(&q, &env).unwrap() {
+                    lamedh::LispVal::String(got) => assert_eq!(
+                        got,
+                        chars[i].to_string(),
+                        "STRING INDEX mismatch at {i} for `{q}`"
+                    ),
+                    other => panic!("expected single-char string, got {other:?}"),
+                }
+            }
+            let oob = format!("(let ({bindings}) (index {body} {}))", chars.len());
+            assert!(
+                eval_str(&oob, &env).is_err(),
+                "STRING INDEX out-of-bounds should error for `{oob}`"
+            );
+
+            checked += 1;
+        }
+        eprintln!("strings: {checked} concat/index expressions agreed with the oracle + laws");
     });
 }

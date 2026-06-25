@@ -281,18 +281,29 @@ impl Emitter<'_, '_, '_> {
             BinOp::Sub => self.b.ins().isub(x, y),
             BinOp::Mul => self.b.ins().imul(x, y),
             BinOp::Div | BinOp::Mod => {
-                // Guard divide-by-zero to yield 0 (matching the interpreter),
-                // without a trap: divide by a safe non-zero, then select.
+                // `sdiv`/`srem` trap (SIGFPE) on *two* inputs: divide-by-zero
+                // and the signed-overflow case `i64::MIN / -1`. The reference
+                // editions use `checked_div(y).unwrap_or(0)` /
+                // `checked_rem(y).unwrap_or(0)`, which yield `0` for both. Guard
+                // both here (divide by a safe non-zero, then select 0) so the
+                // native edition matches and never faults.
                 let zero = self.iconst(0);
                 let one = self.iconst(1);
+                let neg_one = self.iconst(-1);
+                let i64_min = self.iconst(i64::MIN);
                 let is_zero = self.b.ins().icmp(IntCC::Equal, y, zero);
-                let safe_y = self.b.ins().select(is_zero, one, y);
+                // overflow == (x == i64::MIN) && (y == -1)
+                let x_is_min = self.b.ins().icmp(IntCC::Equal, x, i64_min);
+                let y_is_neg1 = self.b.ins().icmp(IntCC::Equal, y, neg_one);
+                let is_overflow = self.b.ins().band(x_is_min, y_is_neg1);
+                let is_unsafe = self.b.ins().bor(is_zero, is_overflow);
+                let safe_y = self.b.ins().select(is_unsafe, one, y);
                 let q = if matches!(op, BinOp::Div) {
                     self.b.ins().sdiv(x, safe_y)
                 } else {
                     self.b.ins().srem(x, safe_y)
                 };
-                self.b.ins().select(is_zero, zero, q)
+                self.b.ins().select(is_unsafe, zero, q)
             }
         }
     }

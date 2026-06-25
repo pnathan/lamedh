@@ -79,6 +79,24 @@ fn int_div_by_zero_is_zero_not_panic() {
 }
 
 #[test]
+fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
+    // `i64::MIN / -1` and `i64::MIN % -1` overflow signed division and trap
+    // (SIGFPE) on hardware `sdiv`/`srem`. The reference editions use
+    // `checked_div`/`checked_rem(...).unwrap_or(0)` ⇒ `0`; every edition
+    // (interpreter, closure, and the native Cranelift backend under
+    // `--features jit`) must match without faulting.
+    let j = build(&[
+        "(deffun-typed (d int64) ((a int64) (b int64)) (/ a b))",
+        "(deffun-typed (m int64) ((a int64) (b int64)) (mod a b))",
+    ]);
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(-1)]), i(0));
+    assert_eq!(agree(&j, "m", &[i(i64::MIN), i(-1)]), i(0));
+    // Sanity: ordinary division around the boundary still works.
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(1)]), i(i64::MIN));
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(2)]), i(i64::MIN / 2));
+}
+
+#[test]
 fn int_overflow_wraps() {
     let j = build(&["(deffun-typed (g int64) ((x int64)) (* x x))"]);
     let big = 5_000_000_000i64;
