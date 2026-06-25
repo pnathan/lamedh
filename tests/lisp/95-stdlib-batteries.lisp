@@ -183,6 +183,20 @@
   (assert-equal (block done (return-from done 5) 99) 5)
   (assert-equal (block done 11) 11))
 
+(deftest cond-error-values
+  (assert-true  (error-p (make-error "boom")))
+  (assert-false (error-p 42))
+  (assert-equal (error-message (make-error "boom")) "boom")
+  (assert-equal (error-data (make-error "boom" '(1 2))) '(1 2))
+  (assert-nil   (error-data (make-error "boom")))
+  ;; handler-case binds the real condition object
+  (assert-equal (handler-case (error "kaboom") (error (e) (error-message e))) "kaboom")
+  (assert-equal (handler-case (error "k" '(42)) (error (e) (error-data e))) '(42))
+  ;; kernel errors are surfaced as error values too
+  (assert-true  (error-p (handler-case (car 5) (error (e) e))))
+  ;; success path returns the expression value, ignoring the handler
+  (assert-equal (handler-case (+ 1 2) (error (e) 99)) 3))
+
 (deftest cond-unwind-protect
   (let ((cleaned nil))
     (assert-equal (unwind-protect 1 (setq cleaned t)) 1)

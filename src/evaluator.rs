@@ -771,6 +771,56 @@ fn apply_sort(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispEr
     Ok(vec_to_list(items))
 }
 
+/// First-class error/condition value operations (LispVal::Error).
+#[inline(never)]
+fn apply_error_value_op(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match op {
+        BuiltinFunc::MakeError => {
+            // (make-error message [data]) — message is a string (any other value
+            // is rendered); data defaults to NIL.
+            if args.is_empty() {
+                return Err(LispError::Generic(
+                    "make-error requires a message".to_string(),
+                ));
+            }
+            let message = match &args[0] {
+                LispVal::String(s) => s.clone(),
+                other => crate::printer::print(other),
+            };
+            let data = args.get(1).cloned().unwrap_or(LispVal::Nil);
+            Ok(LispVal::Error(Rc::new(crate::ErrorObj { message, data })))
+        }
+        BuiltinFunc::ErrorP => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "error-p requires exactly one argument".to_string(),
+                ));
+            }
+            Ok(match &args[0] {
+                LispVal::Error(_) => LispVal::Symbol(env.intern_symbol("T")),
+                _ => LispVal::Nil,
+            })
+        }
+        BuiltinFunc::ErrorMessage => match args.first() {
+            Some(LispVal::Error(e)) => Ok(LispVal::String(e.message.clone())),
+            _ => Err(LispError::Generic(
+                "error-message requires an error value".to_string(),
+            )),
+        },
+        BuiltinFunc::ErrorData => match args.first() {
+            Some(LispVal::Error(e)) => Ok(e.data.clone()),
+            _ => Err(LispError::Generic(
+                "error-data requires an error value".to_string(),
+            )),
+        },
+        _ => Err(LispError::Generic("Not an error operation".to_string())),
+    }
+}
+
 #[inline(never)]
 fn apply_numeric_primitives(
     op: &BuiltinFunc,
@@ -1195,6 +1245,10 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::NumberToString
             | BuiltinFunc::Prin1ToString
             | BuiltinFunc::PrincToString => apply_string_lib(builtin, args),
+            BuiltinFunc::MakeError
+            | BuiltinFunc::ErrorP
+            | BuiltinFunc::ErrorMessage
+            | BuiltinFunc::ErrorData => apply_error_value_op(builtin, args, env),
             BuiltinFunc::Evlis => {
                 // evlis[m;a] — evaluate each element of m in environment a
                 let (list, eval_env) = match args.len() {
@@ -2891,7 +2945,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
         | LispVal::Native(_)
         | LispVal::Environment(_)
         | LispVal::Array(_)
-        | LispVal::Extension(_) => Ok(TcoStep::Done(Ok(val.clone()))),
+        | LispVal::Extension(_)
+        | LispVal::Error(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
         LispVal::Cons {
             car: first,
@@ -3157,6 +3212,48 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             name,
                             value: Box::new(value),
                         })))
+                    }
+                    "HANDLER-CASE" => {
+                        // (handler-case expr (error (var) handler-body...))
+                        // Evaluate EXPR; on a trapped error bind VAR to the
+                        // condition value (a LispVal::Error) and run the handler.
+                        // Control-flow signals propagate untrapped.
+                        let forms = list_to_vec(rest)?;
+                        if forms.len() != 2 {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "handler-case takes an expression and one (error (var) ...) clause"
+                                    .to_string(),
+                            ))));
+                        }
+                        let condition = match eval(&forms[0], env) {
+                            Ok(v) => return Ok(TcoStep::Done(Ok(v))),
+                            Err(LispError::Signaled(c)) => *c,
+                            Err(LispError::Generic(msg)) => {
+                                LispVal::Error(Rc::new(crate::ErrorObj {
+                                    message: msg,
+                                    data: LispVal::Nil,
+                                }))
+                            }
+                            Err(other) => return Ok(TcoStep::Done(Err(other))),
+                        };
+                        {
+                            let clause = list_to_vec(&forms[1])?;
+                            if clause.len() < 2 {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "handler-case clause must be (error (var) body...)".to_string(),
+                                ))));
+                            }
+                            let var_list = list_to_vec(&clause[1])?;
+                            let handler_env = Environment::new_child(env);
+                            if let Some(LispVal::Symbol(s)) = var_list.first() {
+                                handler_env.set(s.borrow().name.clone(), condition);
+                            }
+                            let mut last = LispVal::Nil;
+                            for form in &clause[2..] {
+                                last = eval(form, &handler_env)?;
+                            }
+                            Ok(TcoStep::Done(Ok(last)))
+                        }
                     }
                     "DEF" => {
                         let args = list_to_vec(rest)?;
@@ -4123,15 +4220,30 @@ fn apply_error_op(
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Error => {
+            // (error)                       -> signal a generic error
+            // (error existing-error-value)  -> re-signal it unchanged
+            // (error message irritants...)  -> signal (make-error message irritants)
             if args.is_empty() {
-                return Err(LispError::Generic("Error".to_string()));
+                return Err(LispError::Signaled(Box::new(LispVal::Error(Rc::new(
+                    crate::ErrorObj {
+                        message: "Error".to_string(),
+                        data: LispVal::Nil,
+                    },
+                )))));
             }
-            let msg = if let LispVal::String(s) = &args[0] {
-                s.clone()
-            } else {
-                crate::printer::print(&args[0])
+            if let LispVal::Error(_) = &args[0] {
+                return Err(LispError::Signaled(Box::new(args[0].clone())));
+            }
+            let message = match &args[0] {
+                LispVal::String(s) => s.clone(),
+                other => crate::printer::print(other),
             };
-            Err(LispError::Generic(msg))
+            // (error message [data]) — mirrors make-error: an optional single
+            // data payload (a cons or any value), defaulting to NIL.
+            let data = args.get(1).cloned().unwrap_or(LispVal::Nil);
+            Err(LispError::Signaled(Box::new(LispVal::Error(Rc::new(
+                crate::ErrorObj { message, data },
+            )))))
         }
         BuiltinFunc::Errorset => {
             if args.len() != 1 && args.len() != 2 {
@@ -4142,9 +4254,10 @@ fn apply_error_op(
             let form = &args[0];
             match eval(form, env) {
                 Ok(result) => Ok(vec_to_list(vec![result])),
-                // Trap ordinary errors only; let non-local control flow
-                // (RETURN/GO/THROW/RETURN-FROM) pass through unchanged.
-                Err(LispError::Generic(_)) => Ok(LispVal::Nil),
+                // Trap ordinary errors and signalled conditions only; let
+                // non-local control flow (RETURN/GO/THROW/RETURN-FROM) pass
+                // through unchanged.
+                Err(LispError::Generic(_)) | Err(LispError::Signaled(_)) => Ok(LispVal::Nil),
                 Err(other) => Err(other),
             }
         }

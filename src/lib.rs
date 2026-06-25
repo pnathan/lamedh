@@ -288,6 +288,10 @@ pub enum LispError {
     /// Carries a value out of a `BLOCK` via `(RETURN-FROM name value)`.
     /// Not a true error; caught by the matching named `BLOCK`.
     ReturnFrom { name: String, value: Box<LispVal> },
+    /// A signalled first-class condition value (typically a [`LispVal::Error`]).
+    /// Raised by `(error ...)`; trapped by `ERRORSET` (→ NIL) and bound by the
+    /// handler variable in `HANDLER-CASE`.
+    Signaled(Box<LispVal>),
 }
 
 impl PartialEq for LispError {
@@ -296,6 +300,7 @@ impl PartialEq for LispError {
             (LispError::Generic(a), LispError::Generic(b)) => a == b,
             (LispError::Go(a), LispError::Go(b)) => a == b,
             (LispError::Return(v1), LispError::Return(v2)) => v1 == v2,
+            (LispError::Signaled(a), LispError::Signaled(b)) => a == b,
             _ => false,
         }
     }
@@ -313,6 +318,10 @@ impl fmt::Display for LispError {
             LispError::ReturnFrom { .. } => {
                 write!(f, "Internal LispError: RETURN-FROM with no matching BLOCK.")
             }
+            LispError::Signaled(v) => match v.as_ref() {
+                LispVal::Error(e) => write!(f, "Error: {}", e.message),
+                other => write!(f, "Error: {}", crate::printer::print(other)),
+            },
         }
     }
 }
@@ -502,6 +511,11 @@ pub enum BuiltinFunc {
     // Value -> string rendering (backs FORMAT and friends)
     Prin1ToString,
     PrincToString,
+    // First-class error/condition values
+    MakeError,
+    ErrorP,
+    ErrorMessage,
+    ErrorData,
 }
 
 /// An interned Lisp symbol.
@@ -732,6 +746,25 @@ pub enum LispVal {
     /// A host-defined extension value.  Use [`LispVal::ext`] to construct.
     /// See [`LispValExtension`].
     Extension(Rc<dyn LispValExtension>),
+    /// A first-class error/condition value: a message plus an optional data
+    /// payload (a cons list of "irritants", or `Nil`).  Constructed with
+    /// `(make-error msg data)`, signalled by `(error ...)`, and bound by the
+    /// handler variable in `(handler-case ...)`.  Boxed behind an `Rc` so the
+    /// `LispVal` stays small.
+    Error(Rc<ErrorObj>),
+}
+
+/// The payload of a [`LispVal::Error`].
+///
+/// Conceptually a small map of `message` (a `String`) and `data` (a cons cell
+/// or `Nil`).  Modelled as a struct with those two fields rather than a literal
+/// `HashMap` so the common accessors are direct field reads.
+#[derive(Debug, Clone)]
+pub struct ErrorObj {
+    /// Human-readable error message.
+    pub message: String,
+    /// Structured payload: a cons list of irritants, or `Nil`.
+    pub data: LispVal,
 }
 
 impl LispVal {
@@ -760,6 +793,7 @@ impl fmt::Debug for LispVal {
             LispVal::Environment(_) => write!(f, "Environment(...)"),
             LispVal::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
             LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
+            LispVal::Error(e) => write!(f, "Error({:?}, {:?})", e.message, e.data),
         }
     }
 }
@@ -786,6 +820,7 @@ impl Clone for LispVal {
             LispVal::Environment(e) => LispVal::Environment(Rc::clone(e)),
             LispVal::Array(a) => LispVal::Array(Rc::clone(a)),
             LispVal::Extension(e) => LispVal::Extension(Rc::clone(e)),
+            LispVal::Error(e) => LispVal::Error(Rc::clone(e)),
         }
     }
 }
@@ -818,6 +853,7 @@ impl PartialEq for LispVal {
             (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
             (LispVal::Array(a), LispVal::Array(b)) => Rc::ptr_eq(a, b),
             (LispVal::Extension(a), LispVal::Extension(b)) => a.eq_ext(b.as_ref()),
+            (LispVal::Error(a), LispVal::Error(b)) => a.message == b.message && a.data == b.data,
             _ => false,
         }
     }
@@ -851,6 +887,10 @@ impl Hash for LispVal {
             }
             LispVal::Extension(e) => {
                 e.hash_ext(state);
+            }
+            LispVal::Error(e) => {
+                e.message.hash(state);
+                e.data.hash(state);
             }
             LispVal::Builtin(_)
             | LispVal::Lambda(_)

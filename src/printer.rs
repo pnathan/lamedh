@@ -84,6 +84,13 @@ pub fn print(val: &LispVal) -> String {
         LispVal::HashTable(_) => "<hash-table>".to_string(),
         LispVal::Array(a) => format!("<array:{}>", a.borrow().len()),
         LispVal::Extension(e) => e.display(),
+        LispVal::Error(e) => {
+            if e.data == LispVal::Nil {
+                format!("#<error {:?}>", e.message)
+            } else {
+                format!("#<error {:?} {}>", e.message, print(&e.data))
+            }
+        }
         LispVal::Native(_) => "<native>".to_string(),
         LispVal::Environment(_) => "<environment>".to_string(),
         LispVal::Nil => "()".to_string(),

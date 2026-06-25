@@ -69,6 +69,7 @@ The codebase follows a classic interpreter architecture with four main modules:
 - Builtin functions
 - Lambda, Fexpr, Macro (closures with captured environments)
 - HashTable (Rc<RefCell<HashMap>>)
+- Error (first-class condition: a message `String` + a `data` cons/Nil) — built with `make-error`, signalled by `error`, bound by `handler-case`
 
 **Environment**: Lexically scoped with parent chain. Symbols are globally interned via SymbolTable.
 

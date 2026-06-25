@@ -14,18 +14,7 @@
   "Evaluate BODY; return its value, or NIL if it signals an error."
   (list 'car (list 'errorset (list 'quote (cons 'progn body)))))
 
-;; HANDLER-CASE: (handler-case expr (error (var) handler-body...))
-;;
-;; Evaluates EXPR. On success returns its value. On error, binds VAR to NIL
-;; (the condition object is not yet surfaced by ERRORSET — see #149 follow-up)
-;; and evaluates HANDLER-BODY.
-(defmacro handler-case (expr clause)
-  "Evaluate EXPR; on error run the (error (var) ...) CLAUSE's handler body."
-  (let ((var (car (car (cdr clause))))
-        (handler-body (cdr (cdr clause)))
-        (r (gensym)))
-    (list 'let (list (list r (list 'errorset (list 'quote expr))))
-          (list 'if r
-                (list 'car r)
-                (list 'let (list (list var nil))
-                      (cons 'progn handler-body))))))
+;; HANDLER-CASE is a kernel special form (it binds the handler variable to the
+;; first-class condition value — a LispVal::Error — which a Lisp macro over
+;; ERRORSET cannot recover). See evaluator.rs and lib/16 docs. Signature:
+;;   (handler-case expr (error (var) handler-body...))

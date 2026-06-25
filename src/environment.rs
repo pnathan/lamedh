@@ -752,6 +752,21 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::PrincToString),
         );
 
+        // First-class error/condition values
+        env.set(
+            "MAKE-ERROR".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeError),
+        );
+        env.set("ERROR-P".to_string(), LispVal::Builtin(BuiltinFunc::ErrorP));
+        env.set(
+            "ERROR-MESSAGE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ErrorMessage),
+        );
+        env.set(
+            "ERROR-DATA".to_string(),
+            LispVal::Builtin(BuiltinFunc::ErrorData),
+        );
+
         env
     }
 
