@@ -329,10 +329,10 @@ fn test_mapcar_with_dynamic() {
     eval_line("(defdynamic *factor* 1)", &env);
     eval_line("(defun mul-factor (x) (* x *factor*))", &env);
 
-    // Note: lamedh mapcar is (mapcar list function), not (mapcar function list)
-    assert_eq!(eval_line("(mapcar '(1 2 3) #'mul-factor)", &env), "(1 2 3)");
+    // Note: lamedh mapcar is (mapcar function list), not (mapcar list function)
+    assert_eq!(eval_line("(mapcar #'mul-factor '(1 2 3))", &env), "(1 2 3)");
     assert_eq!(
-        eval_line("(let ((*factor* 10)) (mapcar '(1 2 3) #'mul-factor))", &env),
+        eval_line("(let ((*factor* 10)) (mapcar #'mul-factor '(1 2 3)))", &env),
         "(10 20 30)"
     );
 }

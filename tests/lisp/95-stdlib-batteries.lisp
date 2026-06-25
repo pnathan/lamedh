@@ -30,31 +30,31 @@
 ;;; ---- #143 functional toolkit ---------------------------------------------
 
 (deftest fn-reduce-fold
-  (assert-equal (reduce '(1 2 3 4) #'+) 10)
-  (assert-equal (reduce '(1 2 3 4) #'+ 100) 110)
-  (assert-equal (reduce '() #'+ 0) 0)
-  (assert-equal (foldr '(1 2 3) #'cons nil) '(1 2 3)))
+  (assert-equal (reduce #'+ '(1 2 3 4)) 10)
+  (assert-equal (reduce #'+ '(1 2 3 4) 100) 110)
+  (assert-equal (reduce #'+ '() 0) 0)
+  (assert-equal (foldr #'cons '(1 2 3) nil) '(1 2 3)))
 
 (deftest fn-filter-find-position
-  (assert-equal (filter '(1 2 3 4 5) #'evenp) '(2 4))
-  (assert-equal (remove-if '(1 2 3 4 5) #'evenp) '(1 3 5))
-  (assert-equal (find-if '(1 3 4 5) #'evenp) 4)
-  (assert-equal (find '(a b c) 'b) 'b)
-  (assert-equal (position '(a b c) 'c) 2)
-  (assert-nil   (position '(a b c) 'z)))
+  (assert-equal (filter #'evenp '(1 2 3 4 5)) '(2 4))
+  (assert-equal (remove-if #'evenp '(1 2 3 4 5)) '(1 3 5))
+  (assert-equal (find-if #'evenp '(1 3 4 5)) 4)
+  (assert-equal (find 'b '(a b c)) 'b)
+  (assert-equal (position 'c '(a b c)) 2)
+  (assert-nil   (position 'z '(a b c))))
 
 (deftest fn-quantifiers-count
-  (assert-true  (every '(2 4 6) #'evenp))
-  (assert-false (every '(2 3 6) #'evenp))
-  (assert-true  (some '(1 3 4) #'evenp))
-  (assert-false (some '(1 3 5) #'evenp))
-  (assert-equal (count-if '(1 2 3 4 5 6) #'evenp) 3))
+  (assert-true  (every #'evenp '(2 4 6)))
+  (assert-false (every #'evenp '(2 3 6)))
+  (assert-true  (some #'evenp '(1 3 4)))
+  (assert-false (some #'evenp '(1 3 5)))
+  (assert-equal (count-if #'evenp '(1 2 3 4 5 6)) 3))
 
 (deftest fn-slicing
   (assert-equal (take '(1 2 3 4 5) 2) '(1 2))
   (assert-equal (drop '(1 2 3 4 5) 2) '(3 4 5))
-  (assert-equal (take-while '(2 4 5 6) #'evenp) '(2 4))
-  (assert-equal (drop-while '(2 4 5 6) #'evenp) '(5 6))
+  (assert-equal (take-while #'evenp '(2 4 5 6)) '(2 4))
+  (assert-equal (drop-while #'evenp '(2 4 5 6)) '(5 6))
   (assert-equal (butlast '(1 2 3)) '(1 2)))
 
 (deftest fn-generate-combine
@@ -62,13 +62,13 @@
   (assert-equal (iota 3 10) '(10 11 12))
   (assert-equal (range 2 8 2) '(2 4 6))
   (assert-equal (zip '(1 2 3) '(a b c)) '((1 a) (2 b) (3 c)))
-  (assert-equal (mapcan '((1) (2 3) (4)) #'identity) '(1 2 3 4))
+  (assert-equal (mapcan #'identity '((1) (2 3) (4))) '(1 2 3 4))
   (assert-equal (flatten '(1 (2 (3 4)) 5)) '(1 2 3 4 5))
   (assert-equal (remove-duplicates '(1 2 1 3 2)) '(1 2 3)))
 
 (deftest fn-partition-group
-  (assert-equal (partition '(1 2 3 4) #'evenp) '((2 4) (1 3)))
-  (assert-equal (group-by '(1 2 3 4) #'evenp)
+  (assert-equal (partition #'evenp '(1 2 3 4)) '((2 4) (1 3)))
+  (assert-equal (group-by #'evenp '(1 2 3 4))
                 '((nil 1 3) (t 2 4))))
 
 (deftest fn-combinators

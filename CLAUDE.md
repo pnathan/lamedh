@@ -92,7 +92,7 @@ The codebase follows a classic interpreter architecture with four main modules:
 - **04-predicates.lisp**: Type predicates (`equal`, `consp`, `listp`)
 - **05-math.lisp**: Math utilities (`<=`, `>=`, `/=`, `onep`, `minusp`, `add1`, `sub1`, `max`, `min`, `abs`)
 - **12-control.lisp**: Control-flow macros (`when`, `unless`, `prog1`, `case`, `dolist`, `dotimes`) — non-mutating (epic #141)
-- **13-functional.lisp**: Functional list toolkit (`reduce`, `filter`, `find`, `position`, `every`/`some`, `take`/`drop`, `iota`/`range`, `zip`, `flatten`, `group-by`, combinators) — collection-first arg order, matching `mapcar`
+- **13-functional.lisp**: Functional list toolkit (`reduce`, `filter`, `find`, `position`, `every`/`some`, `take`/`drop`, `iota`/`range`, `zip`, `flatten`, `group-by`, combinators) — function-first arg order (Common Lisp style), matching the `map*` family
 - **14-strings.lisp**: String layer over the Rust primitives (`string-upcase`, `string-split`/`-join`, `string-trim`, `starts-with-p`, char predicates) — `foo-p` predicate naming
 - **15-sets-hash.lisp**: Set/alist/hash helpers (`union`, `intersection`, `adjoin`, `alist-get`/`-put`, `maphash`, `hash->alist`)
 - **16-conditions.lisp**: Condition macros over `errorset` (`ignore-errors`, `handler-case`); `catch`/`throw`, `block`/`return-from`, `unwind-protect` are kernel special forms

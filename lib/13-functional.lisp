@@ -1,9 +1,11 @@
 ;;; Functional list toolkit (issue #143, epic #141).
 ;;;
-;;; CONVENTION: like the existing MAPCAR/MAPC/MAPCON in this codebase, every
-;;; higher-order function here takes the COLLECTION FIRST and the function or
-;;; predicate LAST. This is the documented lamedh deviation from Common Lisp
-;;; argument order; we keep it consistent across the whole toolkit.
+;;; CONVENTION: function-first argument order, matching Common Lisp and the
+;;; map* family (mapcar/maplist/mapc/mapcon) — the function or predicate comes
+;;; first, the collection last. This nests cleanly: (filter #'evenp (mapcar ...)).
+;;; The item-search helpers FIND and POSITION take (item list), like MEMBER.
+;;; Functions that take only a count/index (take, drop, iota, ...) keep their
+;;; collection/natural order.
 ;;;
 ;;; All functions are non-mutating.
 
@@ -14,7 +16,7 @@
       acc
       (foldl-aux fn (funcall fn acc (car lst)) (cdr lst))))
 
-(defun reduce (lst fn &rest init)
+(defun reduce (fn lst &rest init)
   "Reduce LST left-to-right with binary FN.
 With no INIT: seeds from the first element; an empty LST calls (FN) with no args.
 With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
@@ -24,89 +26,89 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
             ((null (cdr lst)) (car lst))
             (t (foldl-aux fn (car lst) (cdr lst))))))
 
-(defun foldr (lst fn init)
+(defun foldr (fn lst init)
   "Right fold: (FN e0 (FN e1 (... (FN eN INIT))))."
   (if (null lst)
       init
-      (funcall fn (car lst) (foldr (cdr lst) fn init))))
+      (funcall fn (car lst) (foldr fn (cdr lst) init))))
 
 ;;; ---- filtering -----------------------------------------------------------
 
-(defun filter (lst pred)
+(defun filter (pred lst)
   "Return the elements of LST for which PRED is non-NIL."
   (cond ((null lst) nil)
-        ((funcall pred (car lst)) (cons (car lst) (filter (cdr lst) pred)))
-        (t (filter (cdr lst) pred))))
+        ((funcall pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
+        (t (filter pred (cdr lst)))))
 
-(defun remove-if-not (lst pred)
+(defun remove-if-not (pred lst)
   "Alias for FILTER: keep elements satisfying PRED."
-  (filter lst pred))
+  (filter pred lst))
 
-(defun remove-if (lst pred)
+(defun remove-if (pred lst)
   "Return the elements of LST for which PRED is NIL."
-  (filter lst (lambda (x) (not (funcall pred x)))))
+  (filter (lambda (x) (not (funcall pred x))) lst))
 
 ;;; ---- searching -----------------------------------------------------------
 
-(defun find-if (lst pred)
+(defun find-if (pred lst)
   "Return the first element of LST satisfying PRED, or NIL."
   (cond ((null lst) nil)
         ((funcall pred (car lst)) (car lst))
-        (t (find-if (cdr lst) pred))))
+        (t (find-if pred (cdr lst)))))
 
-(defun find (lst item)
+(defun find (item lst)
   "Return ITEM if it is EQUAL to some element of LST, else NIL."
-  (find-if lst (lambda (x) (equal x item))))
+  (find-if (lambda (x) (equal x item)) lst))
 
-(defun position-if-aux (lst pred i)
+(defun position-if-aux (pred lst i)
   (cond ((null lst) nil)
         ((funcall pred (car lst)) i)
-        (t (position-if-aux (cdr lst) pred (+ i 1)))))
+        (t (position-if-aux pred (cdr lst) (+ i 1)))))
 
-(defun position-if (lst pred)
+(defun position-if (pred lst)
   "Return the 0-based index of the first element satisfying PRED, or NIL."
-  (position-if-aux lst pred 0))
+  (position-if-aux pred lst 0))
 
-(defun position (lst item)
+(defun position (item lst)
   "Return the 0-based index of the first element EQUAL to ITEM, or NIL."
-  (position-if lst (lambda (x) (equal x item))))
+  (position-if (lambda (x) (equal x item)) lst))
 
-(defun count-if (lst pred)
+(defun count-if (pred lst)
   "Count the elements of LST satisfying PRED."
   (cond ((null lst) 0)
-        ((funcall pred (car lst)) (+ 1 (count-if (cdr lst) pred)))
-        (t (count-if (cdr lst) pred))))
+        ((funcall pred (car lst)) (+ 1 (count-if pred (cdr lst))))
+        (t (count-if pred (cdr lst)))))
 
 ;;; ---- quantifiers ---------------------------------------------------------
 
-(defun every (lst pred)
+(defun every (pred lst)
   "Non-NIL iff PRED holds for every element of LST."
   (cond ((null lst) t)
-        ((funcall pred (car lst)) (every (cdr lst) pred))
+        ((funcall pred (car lst)) (every pred (cdr lst)))
         (t nil)))
 
-(defun some (lst pred)
+(defun some (pred lst)
   "Return the first non-NIL (PRED element), or NIL."
   (if (null lst)
       nil
       (let ((r (funcall pred (car lst))))
-        (if r r (some (cdr lst) pred)))))
+        (if r r (some pred (cdr lst))))))
 
-(defun notany (lst pred)
+(defun notany (pred lst)
   "Non-NIL iff PRED holds for no element of LST."
-  (not (some lst pred)))
+  (not (some pred lst)))
 
-(defun notevery (lst pred)
+(defun notevery (pred lst)
   "Non-NIL iff PRED fails for at least one element of LST."
-  (not (every lst pred)))
+  (not (every pred lst)))
 
 ;;; ---- mapping that concatenates -------------------------------------------
 
-(defun mapcan (lst fn)
+(defun mapcan (fn lst)
   "Map FN over LST and APPEND the resulting lists."
   (if (null lst)
       nil
-      (append (funcall fn (car lst)) (mapcan (cdr lst) fn))))
+      (append (funcall fn (car lst)) (mapcan fn (cdr lst)))))
 
 ;;; ---- slicing -------------------------------------------------------------
 
@@ -122,16 +124,16 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
       lst
       (drop (cdr lst) (- n 1))))
 
-(defun take-while (lst pred)
+(defun take-while (pred lst)
   "Return the leading elements of LST that satisfy PRED."
   (cond ((null lst) nil)
-        ((funcall pred (car lst)) (cons (car lst) (take-while (cdr lst) pred)))
+        ((funcall pred (car lst)) (cons (car lst) (take-while pred (cdr lst))))
         (t nil)))
 
-(defun drop-while (lst pred)
+(defun drop-while (pred lst)
   "Return LST after dropping its leading elements that satisfy PRED."
   (cond ((null lst) nil)
-        ((funcall pred (car lst)) (drop-while (cdr lst) pred))
+        ((funcall pred (car lst)) (drop-while pred (cdr lst)))
         (t lst)))
 
 (defun butlast (lst)
@@ -171,39 +173,40 @@ shorter input."
       (range-aux (+ cur step) end step (cons cur acc))
       (reverse acc)))
 
-(defun list-tabulate (n fn)
+(defun list-tabulate (fn n)
   "Return the list ((fn 0) (fn 1) ... (fn N-1))."
-  (mapcar (iota n) fn))
+  (mapcar fn (iota n)))
 
 ;;; ---- partitioning / grouping ---------------------------------------------
 
-(defun partition (lst pred)
+(defun partition (pred lst)
   "Return (MATCHES NON-MATCHES) splitting LST by PRED, order preserved."
-  (list (filter lst pred)
-        (remove-if lst pred)))
+  (list (filter pred lst)
+        (remove-if pred lst)))
 
-(defun group-by-aux (lst fn acc)
+(defun group-by-aux (fn lst acc)
   (if (null lst)
       acc
       (let* ((x (car lst))
              (k (funcall fn x))
              (cell (assoc k acc)))
         (group-by-aux
-         (cdr lst) fn
+         fn (cdr lst)
          (if cell
              (group-by-update acc k (append (cdr cell) (list x)))
              (append acc (list (cons k (list x)))))))))
 
 (defun group-by-update (alist key newval)
-  (mapcar alist (lambda (cell)
-                  (if (equal (car cell) key)
-                      (cons key newval)
-                      cell))))
+  (mapcar (lambda (cell)
+            (if (equal (car cell) key)
+                (cons key newval)
+                cell))
+          alist))
 
-(defun group-by (lst fn)
+(defun group-by (fn lst)
   "Group elements of LST by (FN element); return an alist of (key . elements)
 with keys in first-seen order."
-  (group-by-aux lst fn nil))
+  (group-by-aux fn lst nil))
 
 ;;; ---- de-duplication / flattening -----------------------------------------
 
@@ -216,7 +219,7 @@ with keys in first-seen order."
 
 (defun remove-all (lst item)
   "Return LST with every element EQUAL to ITEM removed."
-  (filter lst (lambda (x) (not (equal x item)))))
+  (filter (lambda (x) (not (equal x item))) lst))
 
 (defun flatten (tree)
   "Flatten a nested list structure into a single flat list of leaves."

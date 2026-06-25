@@ -138,7 +138,7 @@ The prompt is `(ל)> ` (the Hebrew letter Lamed). Exit with Ctrl-D or Ctrl-C.
 SQUARE
 (ל)> (square 7)
 49
-(ל)> (mapcar '(1 2 3 4 5) (lambda (x) (* x x)))
+(ל)> (mapcar (lambda (x) (* x x)) '(1 2 3 4 5))
 (1 4 9 16 25)
 ```
 
@@ -862,8 +862,8 @@ set and wrapping semantics apply.
 | `ASSOC` | `(assoc key alist)` | Search association list by EQUAL |
 | `SUBST` | `(subst new old tree)` | Substitute in tree |
 | `SUBLIS` | `(sublis alist tree)` | Batch substitute |
-| `MAPCAR` | `(mapcar lst fn)` | Map function over list |
-| `MAPLIST` | `(maplist lst fn)` | Map over tails |
+| `MAPCAR` | `(mapcar fn lst)` | Map function over list |
+| `MAPLIST` | `(maplist fn lst)` | Map over tails |
 | `RPLACA` | `(rplaca cons val)` | Return new cons with new car |
 | `RPLACD` | `(rplacd cons val)` | Return new cons with new cdr |
 
@@ -873,7 +873,7 @@ set and wrapping semantics apply.
 (cons 1 '(2 3))            ; => (1 2 3)
 (list 1 2 3)               ; => (1 2 3)
 (nth 2 '(a b c d))         ; => C
-(mapcar '(1 2 3) #'add1)   ; => (2 3 4)
+(mapcar #'add1 '(1 2 3))   ; => (2 3 4)
 (assoc 'b '((a 1) (b 2)))  ; => (B 2)
 ```
 
@@ -2171,7 +2171,7 @@ clone — creating a child frame is one refcount bump, not four.
 (length '(a b c))     ; 3
 (reverse '(1 2 3))    ; (3 2 1)
 (append '(a) '(b))    ; (A B)
-(mapcar '(1 2 3) #'add1) ; (2 3 4)
+(mapcar #'add1 '(1 2 3)) ; (2 3 4)
 (assoc 'b '((a 1)(b 2))) ; (B 2)
 ```
 

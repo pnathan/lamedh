@@ -105,7 +105,7 @@ fn test_mapc_returns_list() {
     let e = env();
     eval_str("(def result '())", &e).unwrap();
     let v = eval_str(
-        "(mapc '(1 2 3) (lambda (x) (setq result (cons x result))))",
+        "(mapc (lambda (x) (setq result (cons x result))) '(1 2 3))",
         &e,
     )
     .unwrap();
@@ -117,7 +117,7 @@ fn test_mapc_returns_list() {
 fn test_mapc_side_effects() {
     let e = env();
     eval_str("(def acc 0)", &e).unwrap();
-    eval_str("(mapc '(1 2 3) (lambda (x) (setq acc (+ acc x))))", &e).unwrap();
+    eval_str("(mapc (lambda (x) (setq acc (+ acc x))) '(1 2 3))", &e).unwrap();
     let v = eval_str("acc", &e).unwrap();
     assert_eq!(v, lamedh::LispVal::Number(6));
 }
@@ -125,7 +125,7 @@ fn test_mapc_side_effects() {
 #[test]
 fn test_mapc_empty_list() {
     let e = env();
-    let v = eval_str("(mapc '() (lambda (x) x))", &e).unwrap();
+    let v = eval_str("(mapc (lambda (x) x) '())", &e).unwrap();
     assert_eq!(v, lamedh::LispVal::Nil);
 }
 
@@ -134,7 +134,7 @@ fn test_mapc_empty_list() {
 #[test]
 fn test_mapcon_collects_tails() {
     let e = env();
-    let v = eval_str("(mapcon '(1 2 3) (lambda (x) (list (car x))))", &e).unwrap();
+    let v = eval_str("(mapcon (lambda (x) (list (car x))) '(1 2 3))", &e).unwrap();
     let expected = eval_str("'(1 2 3)", &e).unwrap();
     assert_eq!(v, expected);
 }
@@ -142,7 +142,7 @@ fn test_mapcon_collects_tails() {
 #[test]
 fn test_mapcon_empty() {
     let e = env();
-    let v = eval_str("(mapcon '() (lambda (x) x))", &e).unwrap();
+    let v = eval_str("(mapcon (lambda (x) x) '())", &e).unwrap();
     assert_eq!(v, lamedh::LispVal::Nil);
 }
 

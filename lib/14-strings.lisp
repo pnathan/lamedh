@@ -52,11 +52,11 @@
 
 (defun string-upcase (s)
   "Return S with ASCII letters uppercased."
-  (list->string (mapcar (string->list s) #'char-upcase)))
+  (list->string (mapcar #'char-upcase (string->list s))))
 
 (defun string-downcase (s)
   "Return S with ASCII letters lowercased."
-  (list->string (mapcar (string->list s) #'char-downcase)))
+  (list->string (mapcar #'char-downcase (string->list s))))
 
 ;;; ---- comparison ----------------------------------------------------------
 

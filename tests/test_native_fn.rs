@@ -163,7 +163,7 @@ fn test_native_in_mapcar() {
             }
         });
         // inc (unquoted) evaluates to the native fn value
-        let result = eval_line("(mapcar '(1 2 3) inc)", &env);
+        let result = eval_line("(mapcar inc '(1 2 3))", &env);
         assert_eq!(result, "(2 3 4)", "mapcar with native fn; got: {result}");
     });
 }

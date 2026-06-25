@@ -4377,17 +4377,16 @@ fn apply_list_processing(
             Ok(LispVal::Nil)
         }
         BuiltinFunc::Maplist => {
-            // Arg order: (maplist list fn) — list first.
-            // Lisp 1.5 manual has maplist[fn;x] (fn first), but our arg order
-            // matches Common Lisp convention and is used consistently throughout
-            // the stdlib. Intentional deviation from the 1.5 manual (issue #66).
+            // Arg order: (maplist fn list) — function first, matching Common Lisp
+            // and the rest of the functional toolkit (differs from the Lisp 1.5
+            // manual's maplist[x;fn]; alignment is intentional).
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "maplist requires exactly two arguments".to_string(),
                 ));
             }
-            let list = &args[0];
-            let func = &args[1];
+            let func = &args[0];
+            let list = &args[1];
             let mut result = Vec::new();
             let mut current = list.clone();
             while let LispVal::Cons { car: _, cdr } = &current {
@@ -4398,17 +4397,16 @@ fn apply_list_processing(
             Ok(vec_to_list(result))
         }
         BuiltinFunc::Mapcar => {
-            // Arg order: (mapcar list fn) — list first.
-            // Lisp 1.5 manual has mapcar[fn;x] (fn first), but our arg order
-            // matches Common Lisp convention and is used consistently throughout
-            // the stdlib. Intentional deviation from the 1.5 manual (issue #66).
+            // Arg order: (mapcar fn list) — function first, matching Common Lisp
+            // (and the rest of the functional toolkit). Note this differs from
+            // the Lisp 1.5 manual's mapcar[x;fn]; the alignment is intentional.
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "mapcar requires exactly two arguments".to_string(),
                 ));
             }
-            let list = &args[0];
-            let func = &args[1];
+            let func = &args[0];
+            let list = &args[1];
             let mut result = Vec::new();
             let mut current = list;
             while let LispVal::Cons { car, cdr } = current {

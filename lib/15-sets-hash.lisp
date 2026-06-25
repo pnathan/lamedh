@@ -65,20 +65,20 @@
 
 (defun maphash (table fn)
   "Call (FN key value) for each entry of TABLE; return NIL."
-  (mapc (keys table) (lambda (k) (funcall fn k (gethash table k))))
+  (mapc (lambda (k) (funcall fn k (gethash table k))) (keys table))
   nil)
 
 (defun hash->alist (table)
   "Return TABLE's entries as an alist of (key . value)."
-  (mapcar (keys table) (lambda (k) (cons k (gethash table k)))))
+  (mapcar (lambda (k) (cons k (gethash table k))) (keys table)))
 
 (defun alist->hash (alist)
   "Build a fresh hash table from an alist of (key . value)."
   (let ((table (make-hash-table)))
-    (mapc alist (lambda (cell) (set-bang table (car cell) (cdr cell))))
+    (mapc (lambda (cell) (set-bang table (car cell) (cdr cell))) alist)
     table))
 
 (defun clrhash (table)
   "Remove every entry from TABLE; return TABLE."
-  (mapc (keys table) (lambda (k) (delete-key-bang table k)))
+  (mapc (lambda (k) (delete-key-bang table k)) (keys table))
   table)

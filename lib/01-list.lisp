@@ -55,14 +55,14 @@
         ((equal x (caar y)) (car y))
         (t (sassoc x (cdr y) fn))))
 
-(defun mapc (list fn)
+(defun mapc (fn list)
   "Apply FN to each element of LIST for side effects; return LIST."
   (cond ((null list) list)
         (t (funcall fn (car list))
-           (mapc (cdr list) fn)
+           (mapc fn (cdr list))
            list)))
 
-(defun mapcon (list fn)
+(defun mapcon (fn list)
   "Apply FN to successive tails of LIST and NCONC the results."
   (cond ((null list) nil)
-        (t (nconc (funcall fn list) (mapcon (cdr list) fn)))))
+        (t (nconc (funcall fn list) (mapcon fn (cdr list))))))

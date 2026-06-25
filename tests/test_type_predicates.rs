@@ -195,10 +195,10 @@ fn test_type_predicate_in_conditional() {
 #[test]
 fn test_type_predicate_with_mapcar() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '(1 2.5 3 4.0) fixp)", &env);
+    let output = eval_line("(mapcar fixp '(1 2.5 3 4.0))", &env);
     assert_eq!(output, "(T () T ())");
 
-    let output = eval_line("(mapcar '(1 2.5 3 4.0) floatp)", &env);
+    let output = eval_line("(mapcar floatp '(1 2.5 3 4.0))", &env);
     assert_eq!(output, "(() T () T)");
 }
 

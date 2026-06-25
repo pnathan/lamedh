@@ -19,14 +19,14 @@
   "Build a fresh array holding the elements of LST."
   (let ((arr (array (length lst)))
         (i 0))
-    (mapc lst (lambda (x)
+    (mapc (lambda (x)
                 (store arr i x)
-                (setq i (+ i 1))))
+                (setq i (+ i 1))) lst)
     arr))
 
 (defun array-map (arr fn)
   "Return a new array with FN applied to each element of ARR."
-  (list->array (mapcar (array->list arr) fn)))
+  (list->array (mapcar fn (array->list arr))))
 
 (defun array-fill (arr val)
   "Set every element of ARR to VAL; return ARR."

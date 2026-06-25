@@ -38,8 +38,8 @@ A clause is (DATUM body...) or (LIST-OF-DATA body...); T or OTHERWISE is the def
   (let ((k (gensym)))
     (list 'let (list (list k key))
           (cons 'cond
-                (mapcar clauses (lambda (clause)
-                                  (case-clause->cond-clause k clause)))))))
+                (mapcar (lambda (clause)
+                                  (case-clause->cond-clause k clause)) clauses)))))
 
 ;; DOLIST: (dolist (var list [result]) body...)
 (defmacro dolist (spec &rest body)
@@ -49,7 +49,7 @@ Returns RESULT (evaluated with VAR bound to NIL) or NIL."
         (lst (car (cdr spec)))
         (result (cdr (cdr spec))))
     (list 'progn
-          (list 'mapc lst (cons 'lambda (cons (list var) body)))
+          (list 'mapc (cons 'lambda (cons (list var) body)) lst)
           (if result
               (list 'let (list (list var nil)) (car result))
               nil))))
