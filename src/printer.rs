@@ -1,6 +1,6 @@
 //! Format [`LispVal`] values as readable Lisp text.
 //!
-//! The single public function [`print`] converts any [`LispVal`] to a `String`
+//! The single public function [`print()`] converts any [`LispVal`] to a `String`
 //! suitable for display in a REPL or written to a file.  The output is valid
 //! input for the [`crate::reader`] for all self-representing types (numbers,
 //! strings, symbols, lists) — with the exception of opaque types like
