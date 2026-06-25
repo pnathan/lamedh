@@ -120,6 +120,25 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
         })
 }
 
+/// Evaluate a call's operands directly off the cons chain into a single `Vec`.
+///
+/// This is the hot path for ordinary function/lambda/builtin application. It
+/// replaces the older `list_to_vec(rest)` + `.iter().map(eval).collect()` pair,
+/// which allocated **two** vectors per call (one of cloned argument *expressions*,
+/// one of evaluated results) and cloned every argument expression. Walking the
+/// cons cells and evaluating each `car` in place does the same work with a
+/// single allocation and no expression clones. (Like the other cons-walking
+/// special forms here — `AND`/`OR`/`PROGN` — an improper tail is simply ignored.)
+fn eval_operands(rest: &LispVal, env: &Rc<Environment>) -> Result<Vec<LispVal>, LispError> {
+    let mut out = Vec::new();
+    let mut cur = rest;
+    while let LispVal::Cons { car, cdr } = cur {
+        out.push(eval(car, env)?);
+        cur = cdr;
+    }
+    Ok(out)
+}
+
 /// Wrap a body of one or more forms into a single evaluable expression.
 ///
 /// A lone form is returned as-is; several forms are wrapped in `(PROGN ...)`
@@ -2388,17 +2407,29 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         // "undefined" - it takes on the value provided to SETQ.
                         // This behavior differs from some Lisp dialects that require
                         // variables to be declared before assignment.
-                        let args_vec = list_to_vec(rest)?;
-                        if args_vec.len() % 2 != 0 {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(
-                                "SETQ requires an even number of arguments".to_string(),
-                            ))));
-                        }
+                        // Walk the (var val var val ...) chain in place — no
+                        // intermediate Vec — since SETQ runs in every loop body.
                         let mut last_val = LispVal::Nil;
-                        for chunk in args_vec.chunks(2) {
-                            let var = &chunk[0];
-                            let val_expr = &chunk[1];
-                            if let LispVal::Symbol(s) = var {
+                        let mut cur = &**rest;
+                        loop {
+                            let LispVal::Cons { car: var, cdr } = cur else {
+                                if *cur == LispVal::Nil {
+                                    break;
+                                }
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "SETQ requires an even number of arguments".to_string(),
+                                ))));
+                            };
+                            let LispVal::Cons {
+                                car: val_expr,
+                                cdr: tail,
+                            } = &**cdr
+                            else {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "SETQ requires an even number of arguments".to_string(),
+                                ))));
+                            };
+                            if let LispVal::Symbol(s) = &**var {
                                 let v = eval(val_expr, env)?;
                                 // Release the read borrow before update: a global
                                 // SETQ writes the symbol's value cell (borrow_mut).
@@ -2410,6 +2441,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                     "SETQ variable name must be a symbol".to_string(),
                                 ))));
                             }
+                            cur = &**tail;
                         }
                         Ok(TcoStep::Done(Ok(last_val)))
                     }
@@ -2646,10 +2678,12 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                     _ => {
                         // Function call: evaluate the function head
                         let func = eval(first, env)?;
-                        let args_list = list_to_vec(rest)?;
 
-                        // Macro expansion: TCO — continue with the expanded form
+                        // Macro expansion: TCO — continue with the expanded form.
+                        // Macros receive UNEVALUATED operands, so build that list
+                        // only on this (comparatively cold) path.
                         if let LispVal::Macro(m) = &func {
+                            let args_list = list_to_vec(rest)?;
                             let expanded = expand_macro(m, &args_list, env)?;
                             return Ok(TcoStep::TailCall(expanded, env.clone()));
                         }
@@ -2687,10 +2721,10 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
                         }
 
-                        // Evaluate arguments (non-tail)
-                        let eval_args: Result<Vec<LispVal>, LispError> =
-                            args_list.iter().map(|arg| eval(arg, env)).collect();
-                        let eval_args = eval_args?;
+                        // Evaluated-argument callables (lambda/builtin/native): evaluate
+                        // operands straight off the cons chain — one allocation, no
+                        // intermediate list of cloned argument expressions.
+                        let eval_args = eval_operands(rest, env)?;
 
                         // Lambda application: TCO — set up new env and continue with body
                         if let LispVal::Lambda(lambda) = &func {
@@ -2761,10 +2795,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                     return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
                 }
 
-                let args_list = list_to_vec(rest)?;
-                let eval_args: Result<Vec<LispVal>, LispError> =
-                    args_list.iter().map(|arg| eval(arg, env)).collect();
-                let eval_args = eval_args?;
+                // Evaluate operands straight off the cons chain (single allocation).
+                let eval_args = eval_operands(rest, env)?;
 
                 // Lambda application: TCO
                 if let LispVal::Lambda(lambda) = &func {

@@ -101,6 +101,21 @@ The codebase follows a classic interpreter architecture with four main modules:
 - **PROG control flow**: PROG creates labels and uses LispError::Return/LispError::Go for non-local exits
 - **Quasiquotation**: Implemented recursively in evaluator, unquote evaluates nested expressions
 
+## Optimization Philosophy
+
+**Prefer the Lisp layer; keep the Rust kernel small.** When an optimization can be
+expressed as a Lisp-to-Lisp transform, implement it as an optimizer pass in
+`lib/11-optimizer-vau.lisp` (e.g. constant folding, dead-binding removal, the
+planned frame-collapse pass) rather than growing the Rust evaluator. The kernel
+should stay a minimal set of primitives.
+
+The exception is **hot-path evaluation mechanics that have no Lisp-layer
+expression** — e.g. how arguments are collected, how environment frames are
+allocated, or the in-memory size of `LispVal`. Those are intrinsically kernel
+concerns and are optimized in Rust (see the boxing of large `LispVal` variants
+and the single-allocation operand evaluation). When in doubt, ask whether the
+change could be a Lisp pass; if yes, it belongs there.
+
 ## Testing
 
 Tests are organized in `tests/` directory:
