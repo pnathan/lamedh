@@ -365,7 +365,8 @@ fn test_shell_disabled_by_default_error() {
 fn test_shell_with_no_args_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line(r#"(progn (enable-feature "SHELL") (shell))"#, &env);
+        env.enable_feature("SHELL");
+        let result = eval_line("(shell)", &env);
         assert!(
             result.contains("Error"),
             "shell with no args should error; got: {result}"
@@ -381,11 +382,9 @@ fn test_shell_with_no_args_error() {
 fn test_shell_with_string_and_number_args() {
     with_large_stack(|| {
         let env = env_with_stdlib();
+        env.enable_feature("SHELL");
         // Number coercion path — shell "echo" 42 should run and return 0 exit code
-        let result = eval_line(
-            r#"(progn (enable-feature "SHELL") (shell "echo" 42))"#,
-            &env,
-        );
+        let result = eval_line(r#"(shell "echo" 42)"#, &env);
         assert!(
             !result.contains("Error"),
             "shell with string and number args should succeed; got: {result}"
@@ -401,8 +400,9 @@ fn test_shell_with_string_and_number_args() {
 fn test_shell_with_cons_arg_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
+        env.enable_feature("SHELL");
         // Passing a cons/list as a shell arg should error
-        let result = eval_line(r#"(progn (enable-feature "SHELL") (shell '(1 2)))"#, &env);
+        let result = eval_line("(shell '(1 2))", &env);
         assert!(
             result.contains("Error"),
             "shell with cons arg should error; got: {result}"
@@ -415,37 +415,37 @@ fn test_shell_with_cons_arg_error() {
 }
 
 // ============================================================================
-// Group 11: feature_name_arg with wrong arg count (lines 558-560)
+// Group 11: enable-feature/disable-feature are not exposed to Lisp
 // ============================================================================
 
 #[test]
-fn test_enable_feature_no_args_error() {
+fn test_enable_feature_not_callable_from_lisp() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(enable-feature)", &env);
+        // enable-feature must be unbound; calling it should be an error, not T
+        let result = eval_line("(enable-feature \"SHELL\")", &env);
+        assert_ne!(result, "T", "enable-feature must not be callable from Lisp");
         assert!(
-            result.contains("Error"),
-            "enable-feature with no args should error; got: {result}"
-        );
-        assert!(
-            result.contains("enable-feature requires exactly one argument"),
-            "expected 'enable-feature requires exactly one argument'; got: {result}"
+            !env.feature_enabled("SHELL"),
+            "SHELL must remain disabled after Lisp call attempt"
         );
     });
 }
 
 #[test]
-fn test_disable_feature_no_args_error() {
+fn test_disable_feature_not_callable_from_lisp() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(disable-feature)", &env);
-        assert!(
-            result.contains("Error"),
-            "disable-feature with no args should error; got: {result}"
+        env.enable_feature("SHELL");
+        // disable-feature must be unbound; calling it should not revoke the capability
+        let result = eval_line("(disable-feature \"SHELL\")", &env);
+        assert_ne!(
+            result, "T",
+            "disable-feature must not be callable from Lisp"
         );
         assert!(
-            result.contains("disable-feature requires exactly one argument"),
-            "expected 'disable-feature requires exactly one argument'; got: {result}"
+            env.feature_enabled("SHELL"),
+            "SHELL must remain enabled despite Lisp call attempt"
         );
     });
 }

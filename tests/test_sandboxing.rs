@@ -2,12 +2,12 @@ mod test_helpers;
 use lamedh::{environment::Environment, eval_line};
 use test_helpers::env_with_stdlib;
 
-// ---- FILE-IO (load-file) capability tests ----
+// ---- READ-FS (load-file) capability tests ----
 
 #[test]
 fn test_load_file_feature_off_by_default() {
     let env = env_with_stdlib();
-    assert_eq!(eval_line("(feature-enabled-p \"FILE-IO\")", &env), "()");
+    assert_eq!(eval_line("(feature-enabled-p \"READ-FS\")", &env), "()");
 }
 
 #[test]
@@ -15,8 +15,8 @@ fn test_load_file_gated_off_errors_cleanly() {
     let env = env_with_stdlib();
     let out = eval_line("(load-file \"no-such-file.lisp\")", &env);
     assert!(
-        out.contains("FILE-IO capability"),
-        "expected FILE-IO capability error, got: {out}"
+        out.contains("READ-FS capability"),
+        "expected READ-FS capability error, got: {out}"
     );
     assert!(
         out.contains("not enabled"),
@@ -25,40 +25,29 @@ fn test_load_file_gated_off_errors_cleanly() {
 }
 
 #[test]
-fn test_load_file_error_mentions_enable_feature() {
-    let env = env_with_stdlib();
-    let out = eval_line("(load-file \"no-such-file.lisp\")", &env);
-    assert!(
-        out.contains("enable-feature"),
-        "error should mention enable-feature, got: {out}"
-    );
-}
-
-#[test]
 fn test_load_file_passes_feature_check_when_enabled() {
-    // After enabling FILE-IO the feature check passes; we get a file-not-found
+    // After enabling READ-FS the capability check passes; we get a file-not-found
     // error rather than a capability error.
     let env = env_with_stdlib();
-    eval_line("(enable-feature \"FILE-IO\")", &env);
+    env.enable_feature("READ-FS");
     let out = eval_line(
         "(load-file \"/nonexistent/path/that/does/not/exist.lisp\")",
         &env,
     );
     assert!(
-        !out.contains("FILE-IO capability"),
+        !out.contains("READ-FS capability"),
         "should not get capability error after enabling, got: {out}"
     );
 }
 
 #[test]
-fn test_disable_file_io_re_gates() {
+fn test_lisp_cannot_self_escalate_file_io() {
     let env = env_with_stdlib();
-    eval_line("(enable-feature \"FILE-IO\")", &env);
-    eval_line("(disable-feature \"FILE-IO\")", &env);
-    let out = eval_line("(load-file \"no-such-file.lisp\")", &env);
+    let out = eval_line("(enable-feature \"READ-FS\")", &env);
+    assert_ne!(out, "T", "Lisp must not be able to grant READ-FS");
     assert!(
-        out.contains("FILE-IO capability"),
-        "expected capability error after re-gating, got: {out}"
+        !env.feature_enabled("READ-FS"),
+        "READ-FS should remain disabled"
     );
 }
 
@@ -84,16 +73,6 @@ fn test_read_gated_off_errors_cleanly() {
     );
 }
 
-#[test]
-fn test_read_error_mentions_enable_feature() {
-    let env = env_with_stdlib();
-    let out = eval_line("(read)", &env);
-    assert!(
-        out.contains("enable-feature"),
-        "error should mention enable-feature, got: {out}"
-    );
-}
-
 // ---- new_sandboxed() constructor tests ----
 
 #[test]
@@ -106,12 +85,11 @@ fn test_new_sandboxed_has_shell_disabled() {
 }
 
 #[test]
-fn test_new_sandboxed_has_file_io_disabled() {
+fn test_new_sandboxed_has_read_fs_disabled() {
     let env = Environment::new_sandboxed();
-    assert!(
-        !env.feature_enabled("FILE-IO"),
-        "FILE-IO should be disabled in sandboxed env"
-    );
+    assert!(!env.feature_enabled("READ-FS"));
+    assert!(!env.feature_enabled("CREATE-FS"));
+    assert!(!env.feature_enabled("TEMP-FS"));
 }
 
 #[test]
@@ -139,7 +117,7 @@ fn test_new_sandboxed_load_file_blocked() {
     let env = Environment::new_sandboxed();
     let out = eval_line("(load-file \"anything.lisp\")", &env);
     assert!(
-        out.contains("FILE-IO capability"),
+        out.contains("READ-FS capability"),
         "load-file should be blocked in sandboxed env, got: {out}"
     );
 }

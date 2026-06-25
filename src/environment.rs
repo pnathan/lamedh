@@ -24,7 +24,7 @@
 //!
 //! ## Capabilities
 //!
-//! Dangerous operations (`SHELL`, `FILE-IO`, `IO`) are gated behind feature
+//! Dangerous operations (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are gated behind feature
 //! flags that are all **off by default**.  Call [`Environment::enable_feature`]
 //! to opt in.  Because `SharedState` is shared across the whole chain, a
 //! feature enabled anywhere is visible everywhere.
@@ -283,7 +283,7 @@ impl Environment {
     /// This does **not** load the Lisp standard library (`defun`, `append`,
     /// etc.).  Use [`Environment::with_stdlib`] for a fully-featured environment.
     ///
-    /// All capability flags (`SHELL`, `FILE-IO`, `IO`) are disabled by default.
+    /// All capability flags (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are disabled by default.
     pub fn new_with_builtins() -> Rc<Environment> {
         let env = Rc::new(Environment::new());
         let t_symbol = env.intern_symbol("T");
@@ -516,15 +516,9 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ClearAllFlags),
         );
 
-        // Capabilities / features
-        env.set(
-            "ENABLE-FEATURE".to_string(),
-            LispVal::Builtin(BuiltinFunc::EnableFeature),
-        );
-        env.set(
-            "DISABLE-FEATURE".to_string(),
-            LispVal::Builtin(BuiltinFunc::DisableFeature),
-        );
+        // Capabilities / features — read-only from Lisp.
+        // Grant/revoke capabilities only from the host API (env.enable_feature)
+        // or the CLI (--capability).  Lisp code may introspect but not self-escalate.
         env.set(
             "FEATURE-ENABLED-P".to_string(),
             LispVal::Builtin(BuiltinFunc::FeatureEnabledP),
@@ -583,6 +577,85 @@ impl Environment {
         env.set("EVCON".to_string(), LispVal::Builtin(BuiltinFunc::Evcon));
         // SPACES: print N spaces (Lisp 1.5 I/O)
         env.set("SPACES".to_string(), LispVal::Builtin(BuiltinFunc::Spaces));
+
+        // File I/O (gated behind READ-FS capability)
+        env.set(
+            "READ-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFile),
+        );
+        env.set(
+            "READ-FILE-BYTE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFileByte),
+        );
+        env.set(
+            "READ-FILE-SECTION".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFileSection),
+        );
+        env.set(
+            "WRITE-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::WriteFile),
+        );
+
+        // File metadata predicates (gated behind READ-FS capability)
+        env.set(
+            "FILE-EXISTS-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileExistsP),
+        );
+        env.set(
+            "DIRECTORY-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::DirectoryP),
+        );
+        env.set("FILE-P".to_string(), LispVal::Builtin(BuiltinFunc::FileP));
+        env.set(
+            "FILE-READABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileReadableP),
+        );
+        env.set(
+            "FILE-WRITABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileWritableP),
+        );
+        env.set(
+            "FILE-EXECUTABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileExecutableP),
+        );
+        env.set(
+            "FILE-SIZE".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileSize),
+        );
+        env.set(
+            "DIRECTORY-FILES".to_string(),
+            LispVal::Builtin(BuiltinFunc::DirectoryFiles),
+        );
+        env.set(
+            "FILE-NEWER-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::FileNewerP),
+        );
+
+        // File mutation (gated behind CREATE-FS capability)
+        env.set("CHMOD".to_string(), LispVal::Builtin(BuiltinFunc::Chmod));
+        env.set(
+            "CREATE-DIRECTORY".to_string(),
+            LispVal::Builtin(BuiltinFunc::CreateDirectory),
+        );
+        env.set(
+            "DELETE-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeleteFile),
+        );
+        env.set(
+            "RENAME-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::RenameFile),
+        );
+
+        // Temp filesystem (gated behind TEMP-FS capability)
+        env.set(
+            "MAKE-TEMP-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeTempFile),
+        );
+        env.set(
+            "MAKE-TEMP-DIRECTORY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeTempDirectory),
+        );
+
         // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER
         // are registered above with the other Lisp 1.5 spec functions.
 
@@ -604,19 +677,18 @@ impl Environment {
     /// Create a sandboxed environment with all builtins registered but all
     /// dangerous capabilities disabled.
     ///
-    /// All potentially dangerous feature flags (`SHELL`, `FILE-IO`, `IO`) are
-    /// off by default in every environment, so this is semantically equivalent
-    /// to `new_with_builtins()`.  The explicit name communicates intent clearly
-    /// to embedders: scripts loaded into this environment cannot access the
-    /// filesystem, spawn subprocesses, or read from stdin unless the host
-    /// explicitly calls `enable_feature`.
+    /// All potentially dangerous feature flags (`SHELL`, `READ-FS`, `CREATE-FS`,
+    /// `TEMP-FS`, `IO`) are off by default in every environment, so this is
+    /// semantically equivalent to `new_with_builtins()`.  The explicit name
+    /// communicates intent clearly to embedders: scripts loaded into this
+    /// environment cannot access the filesystem, spawn subprocesses, or read
+    /// from stdin unless the host explicitly calls `enable_feature`.
     ///
     /// # Example
     /// ```rust,ignore
     /// let env = Environment::new_sandboxed();
-    /// // All of SHELL, FILE-IO, IO are disabled.
     /// assert!(!env.feature_enabled("SHELL"));
-    /// assert!(!env.feature_enabled("FILE-IO"));
+    /// assert!(!env.feature_enabled("READ-FS"));
     /// assert!(!env.feature_enabled("IO"));
     /// ```
     pub fn new_sandboxed() -> Rc<Environment> {

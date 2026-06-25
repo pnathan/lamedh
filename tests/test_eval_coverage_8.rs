@@ -307,7 +307,7 @@ fn test_read_with_arg_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         // Enable IO so the feature gate passes and we reach the arity check.
-        eval_line("(enable-feature \"IO\")", &env);
+        env.enable_feature("IO");
         let result = eval_line("(read 1)", &env);
         assert!(
             result.contains("Error"),
@@ -499,10 +499,8 @@ fn test_shell_symbol_arg_coercion() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         // Symbol arg → coerced to string via symbol name
-        let result = eval_line(
-            r#"(progn (enable-feature "SHELL") (shell "echo" 'hello))"#,
-            &env,
-        );
+        env.enable_feature("SHELL");
+        let result = eval_line(r#"(shell "echo" 'hello)"#, &env);
         assert!(
             !result.contains("Error"),
             "shell with symbol arg should succeed; got: {result}"
@@ -520,10 +518,8 @@ fn test_shell_float_arg_coercion() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         // Float arg → coerced to string via to_string()
-        let result = eval_line(
-            r#"(progn (enable-feature "SHELL") (shell "echo" 1.5))"#,
-            &env,
-        );
+        env.enable_feature("SHELL");
+        let result = eval_line(r#"(shell "echo" 1.5)"#, &env);
         assert!(
             !result.contains("Error"),
             "shell with float arg should succeed; got: {result}"

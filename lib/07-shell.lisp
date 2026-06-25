@@ -1,7 +1,8 @@
 ;; Shell helpers built on the SHELL capability primitive.
 ;;
-;; The SHELL feature is OFF by default. Turn it on with:
-;;   (enable-feature "SHELL")
+;; The SHELL capability is OFF by default.  Grant it from the host:
+;;   env.enable_feature("SHELL")   ; Rust host code
+;;   lamedh --capability SHELL     ; CLI
 ;;
 ;; The primitive (shell cmd) returns a list: (exit-code stdout stderr).
 ;; These helpers compose on that raw data -- code is data is code.

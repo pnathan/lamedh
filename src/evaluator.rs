@@ -729,6 +729,59 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
     }
 }
 
+/// Capability guards for the three filesystem feature tiers.
+///
+/// Each returns `Ok(())` if the feature is enabled, or a descriptive error otherwise.
+fn require_read_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("READ-FS") {
+        Ok(())
+    } else {
+        Err(LispError::Generic(
+            "READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+fn require_create_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("CREATE-FS") {
+        Ok(())
+    } else {
+        Err(LispError::Generic(
+            "CREATE-FS capability is not enabled (grant it via --capability CREATE-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+fn require_temp_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("TEMP-FS") {
+        Ok(())
+    } else {
+        Err(LispError::Generic(
+            "TEMP-FS capability is not enabled (grant it via --capability TEMP-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+/// Build a unique path inside the system temp directory.
+///
+/// Uses the process ID and a per-process monotone counter so that concurrent
+/// calls within the same process produce distinct names without any locking.
+fn make_temp_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let name = if prefix.is_empty() {
+        format!("lamedh-{pid}-{n}{suffix}")
+    } else {
+        format!("{prefix}-{pid}-{n}{suffix}")
+    };
+    std::env::temp_dir().join(name)
+}
+
 /// Run an external program. Gated behind the SHELL capability (off by default).
 ///
 /// - `(SHELL "cmd ...")`  -> run the single string via `sh -c`
@@ -739,7 +792,8 @@ fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, LispError> {
 fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
     if !env.feature_enabled("SHELL") {
         return Err(LispError::Generic(
-            "SHELL capability is not enabled; call (enable-feature \"SHELL\") first".to_string(),
+            "SHELL capability is not enabled (grant it via --capability SHELL or the host API)"
+                .to_string(),
         ));
     }
     if args.is_empty() {
@@ -1155,12 +1209,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             }
 
             BuiltinFunc::LoadFile => {
-                if !env.feature_enabled("FILE-IO") {
-                    return Err(LispError::Generic(
-                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
-                            .to_string(),
-                    ));
-                }
+                require_read_fs(env)?;
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "load-file requires exactly one argument".to_string(),
@@ -1177,6 +1226,504 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 
                 crate::load_file(&filename, env)?;
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::ReadFile => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "read-file requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let contents = std::fs::read_to_string(&path)
+                    .map_err(|e| LispError::Generic(format!("read-file: {e}")))?;
+                Ok(LispVal::String(contents))
+            }
+
+            BuiltinFunc::ReadFileByte => {
+                require_read_fs(env)?;
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "read-file-byte requires exactly two arguments: path offset".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-byte: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let offset = match &args[1] {
+                    LispVal::Number(n) if *n >= 0 => *n as u64,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-byte: offset must be a non-negative integer".to_string(),
+                        ));
+                    }
+                };
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = std::fs::File::open(&path)
+                    .map_err(|e| LispError::Generic(format!("read-file-byte: {e}")))?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|e| LispError::Generic(format!("read-file-byte: seek: {e}")))?;
+                let mut buf = [0u8; 1];
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| LispError::Generic(format!("read-file-byte: {e}")))?;
+                if n == 0 {
+                    Ok(LispVal::Nil)
+                } else {
+                    Ok(LispVal::Number(buf[0] as i64))
+                }
+            }
+
+            BuiltinFunc::ReadFileSection => {
+                require_read_fs(env)?;
+                if args.len() != 3 {
+                    return Err(LispError::Generic(
+                        "read-file-section requires exactly three arguments: path offset len"
+                            .to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-section: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let offset = match &args[1] {
+                    LispVal::Number(n) if *n >= 0 => *n as u64,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-section: offset must be a non-negative integer".to_string(),
+                        ));
+                    }
+                };
+                let len = match &args[2] {
+                    LispVal::Number(n) if *n >= 0 => *n as usize,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-section: len must be a non-negative integer".to_string(),
+                        ));
+                    }
+                };
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = std::fs::File::open(&path)
+                    .map_err(|e| LispError::Generic(format!("read-file-section: {e}")))?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|e| LispError::Generic(format!("read-file-section: seek: {e}")))?;
+                let mut buf = vec![0u8; len];
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| LispError::Generic(format!("read-file-section: {e}")))?;
+                buf.truncate(n);
+                Ok(LispVal::String(String::from_utf8_lossy(&buf).into_owned()))
+            }
+
+            BuiltinFunc::WriteFile => {
+                require_create_fs(env)?;
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "write-file requires exactly two arguments: path content".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "write-file: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let content = match &args[1] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "write-file: content must be a string".to_string(),
+                        ));
+                    }
+                };
+                std::fs::write(&path, content.as_bytes())
+                    .map_err(|e| LispError::Generic(format!("write-file: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            // ── File metadata predicates ────────────────────────────────────
+            BuiltinFunc::FileExistsP => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-exists-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-exists-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                if std::path::Path::new(&path).exists() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::DirectoryP => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "directory-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "directory-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                if std::path::Path::new(&path).is_dir() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileP => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                if std::path::Path::new(&path).is_file() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileReadableP => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-readable-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-readable-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                // Opening for read is the most reliable check with std-only.
+                if std::fs::File::open(&path).is_ok() {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileWritableP => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-writable-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-writable-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let writable = std::fs::metadata(&path)
+                    .map(|m| !m.permissions().readonly())
+                    .unwrap_or(false);
+                if writable {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            BuiltinFunc::FileExecutableP => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-executable-p requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-executable-p: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let executable = std::fs::metadata(&path)
+                        .map(|m| m.permissions().mode() & 0o111 != 0)
+                        .unwrap_or(false);
+                    if executable {
+                        return Ok(LispVal::Symbol(env.intern_symbol("T")));
+                    } else {
+                        return Ok(LispVal::Nil);
+                    }
+                }
+                #[cfg(not(unix))]
+                Ok(LispVal::Nil)
+            }
+
+            BuiltinFunc::FileSize => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "file-size requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-size: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let size = std::fs::metadata(&path)
+                    .map_err(|e| LispError::Generic(format!("file-size: {e}")))?
+                    .len();
+                Ok(LispVal::Number(size as i64))
+            }
+
+            BuiltinFunc::DirectoryFiles => {
+                require_read_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "directory-files requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "directory-files: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let mut names: Vec<String> = std::fs::read_dir(&path)
+                    .map_err(|e| LispError::Generic(format!("directory-files: {e}")))?
+                    .filter_map(|entry| entry.ok().and_then(|e| e.file_name().into_string().ok()))
+                    .collect();
+                names.sort();
+                let list = names
+                    .into_iter()
+                    .rev()
+                    .fold(LispVal::Nil, |cdr, name| LispVal::Cons {
+                        car: Rc::new(LispVal::String(name)),
+                        cdr: Rc::new(cdr),
+                    });
+                Ok(list)
+            }
+
+            BuiltinFunc::FileNewerP => {
+                require_read_fs(env)?;
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "file-newer-p requires exactly two arguments: path1 path2".to_string(),
+                    ));
+                }
+                let (p1, p2) = match (&args[0], &args[1]) {
+                    (LispVal::String(a), LispVal::String(b)) => (a.clone(), b.clone()),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "file-newer-p: both arguments must be strings".to_string(),
+                        ));
+                    }
+                };
+                let mtime1 = std::fs::metadata(&p1)
+                    .and_then(|m| m.modified())
+                    .map_err(|e| LispError::Generic(format!("file-newer-p: {p1}: {e}")))?;
+                let mtime2 = std::fs::metadata(&p2)
+                    .and_then(|m| m.modified())
+                    .map_err(|e| LispError::Generic(format!("file-newer-p: {p2}: {e}")))?;
+                if mtime1 > mtime2 {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
+
+            // ── File mutation ───────────────────────────────────────────────
+            BuiltinFunc::Chmod => {
+                require_create_fs(env)?;
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "chmod requires exactly two arguments: path mode".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "chmod: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                // Mode: integer (use directly) or octal string like "755".
+                let mode: u32 = match &args[1] {
+                    LispVal::Number(n) if *n >= 0 => *n as u32,
+                    LispVal::String(s) => u32::from_str_radix(s, 8).map_err(|_| {
+                        LispError::Generic(format!("chmod: cannot parse \"{s}\" as an octal mode"))
+                    })?,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "chmod: mode must be an integer or octal string".to_string(),
+                        ));
+                    }
+                };
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(mode);
+                    std::fs::set_permissions(&path, perms)
+                        .map_err(|e| LispError::Generic(format!("chmod: {e}")))?;
+                    return Ok(LispVal::Symbol(env.intern_symbol("T")));
+                }
+                #[cfg(not(unix))]
+                Err(LispError::Generic(
+                    "chmod is only supported on Unix platforms".to_string(),
+                ))
+            }
+
+            BuiltinFunc::CreateDirectory => {
+                require_create_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "create-directory requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "create-directory: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                std::fs::create_dir_all(&path)
+                    .map_err(|e| LispError::Generic(format!("create-directory: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::DeleteFile => {
+                require_create_fs(env)?;
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "delete-file requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "delete-file: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                std::fs::remove_file(&path)
+                    .map_err(|e| LispError::Generic(format!("delete-file: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            BuiltinFunc::RenameFile => {
+                require_create_fs(env)?;
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "rename-file requires exactly two arguments: from to".to_string(),
+                    ));
+                }
+                let (from, to) = match (&args[0], &args[1]) {
+                    (LispVal::String(a), LispVal::String(b)) => (a.clone(), b.clone()),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "rename-file: both arguments must be strings".to_string(),
+                        ));
+                    }
+                };
+                std::fs::rename(&from, &to)
+                    .map_err(|e| LispError::Generic(format!("rename-file: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
+            // ── Temp filesystem ─────────────────────────────────────────────
+            BuiltinFunc::MakeTempFile => {
+                require_temp_fs(env)?;
+                let prefix = match args.first() {
+                    Some(LispVal::String(s)) => s.clone(),
+                    None => String::new(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "make-temp-file: optional prefix must be a string".to_string(),
+                        ));
+                    }
+                };
+                let path = make_temp_path(&prefix, "");
+                // Create the file atomically; fail if it somehow already exists.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(|e| LispError::Generic(format!("make-temp-file: {e}")))?;
+                Ok(LispVal::String(path.to_string_lossy().into_owned()))
+            }
+
+            BuiltinFunc::MakeTempDirectory => {
+                require_temp_fs(env)?;
+                let prefix = match args.first() {
+                    Some(LispVal::String(s)) => s.clone(),
+                    None => String::new(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "make-temp-directory: optional prefix must be a string".to_string(),
+                        ));
+                    }
+                };
+                let path = make_temp_path(&prefix, "");
+                std::fs::create_dir(&path)
+                    .map_err(|e| LispError::Generic(format!("make-temp-directory: {e}")))?;
+                Ok(LispVal::String(path.to_string_lossy().into_owned()))
             }
 
             // Condition flags
@@ -1250,17 +1797,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
 
-            // Capabilities / features
-            BuiltinFunc::EnableFeature => {
-                let name = feature_name_arg(args, "enable-feature")?;
-                env.enable_feature(&name);
-                Ok(LispVal::Symbol(env.intern_symbol("T")))
-            }
-            BuiltinFunc::DisableFeature => {
-                let name = feature_name_arg(args, "disable-feature")?;
-                env.disable_feature(&name);
-                Ok(LispVal::Symbol(env.intern_symbol("T")))
-            }
+            // Capabilities / features (read-only from Lisp)
             BuiltinFunc::FeatureEnabledP => {
                 let name = feature_name_arg(args, "feature-enabled-p")?;
                 if env.feature_enabled(&name) {
@@ -3036,7 +3573,8 @@ fn apply_io_op(
         BuiltinFunc::Read => {
             if !env.feature_enabled("IO") {
                 return Err(LispError::Generic(
-                    "IO capability is not enabled; call (enable-feature \"IO\") first".to_string(),
+                    "IO capability is not enabled (grant it via --capability IO or the host API)"
+                        .to_string(),
                 ));
             }
             if !args.is_empty() {
