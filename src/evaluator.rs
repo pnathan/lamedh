@@ -1179,6 +1179,158 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
 
+            BuiltinFunc::ReadFile => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "read-file requires exactly one argument".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let contents = std::fs::read_to_string(&path)
+                    .map_err(|e| LispError::Generic(format!("read-file: {e}")))?;
+                Ok(LispVal::String(contents))
+            }
+
+            BuiltinFunc::ReadFileByte => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "read-file-byte requires exactly two arguments: path offset".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-byte: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let offset = match &args[1] {
+                    LispVal::Number(n) if *n >= 0 => *n as u64,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-byte: offset must be a non-negative integer".to_string(),
+                        ));
+                    }
+                };
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = std::fs::File::open(&path)
+                    .map_err(|e| LispError::Generic(format!("read-file-byte: {e}")))?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|e| LispError::Generic(format!("read-file-byte: seek: {e}")))?;
+                let mut buf = [0u8; 1];
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| LispError::Generic(format!("read-file-byte: {e}")))?;
+                if n == 0 {
+                    Ok(LispVal::Nil)
+                } else {
+                    Ok(LispVal::Number(buf[0] as i64))
+                }
+            }
+
+            BuiltinFunc::ReadFileSection => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 3 {
+                    return Err(LispError::Generic(
+                        "read-file-section requires exactly three arguments: path offset len"
+                            .to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-section: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let offset = match &args[1] {
+                    LispVal::Number(n) if *n >= 0 => *n as u64,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-section: offset must be a non-negative integer".to_string(),
+                        ));
+                    }
+                };
+                let len = match &args[2] {
+                    LispVal::Number(n) if *n >= 0 => *n as usize,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "read-file-section: len must be a non-negative integer".to_string(),
+                        ));
+                    }
+                };
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = std::fs::File::open(&path)
+                    .map_err(|e| LispError::Generic(format!("read-file-section: {e}")))?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|e| LispError::Generic(format!("read-file-section: seek: {e}")))?;
+                let mut buf = vec![0u8; len];
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| LispError::Generic(format!("read-file-section: {e}")))?;
+                buf.truncate(n);
+                Ok(LispVal::String(String::from_utf8_lossy(&buf).into_owned()))
+            }
+
+            BuiltinFunc::WriteFile => {
+                if !env.feature_enabled("FILE-IO") {
+                    return Err(LispError::Generic(
+                        "FILE-IO capability is not enabled; call (enable-feature \"FILE-IO\") first"
+                            .to_string(),
+                    ));
+                }
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "write-file requires exactly two arguments: path content".to_string(),
+                    ));
+                }
+                let path = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "write-file: path must be a string".to_string(),
+                        ));
+                    }
+                };
+                let content = match &args[1] {
+                    LispVal::String(s) => s.clone(),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "write-file: content must be a string".to_string(),
+                        ));
+                    }
+                };
+                std::fs::write(&path, content.as_bytes())
+                    .map_err(|e| LispError::Generic(format!("write-file: {e}")))?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
             // Condition flags
             BuiltinFunc::SetFlag => {
                 if args.len() != 1 {

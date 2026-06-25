@@ -578,6 +578,24 @@ impl Environment {
         env.set("EVCON".to_string(), LispVal::Builtin(BuiltinFunc::Evcon));
         // SPACES: print N spaces (Lisp 1.5 I/O)
         env.set("SPACES".to_string(), LispVal::Builtin(BuiltinFunc::Spaces));
+
+        // File I/O (gated behind FILE-IO capability)
+        env.set(
+            "READ-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFile),
+        );
+        env.set(
+            "READ-FILE-BYTE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFileByte),
+        );
+        env.set(
+            "READ-FILE-SECTION".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFileSection),
+        );
+        env.set(
+            "WRITE-FILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::WriteFile),
+        );
         // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER
         // are registered above with the other Lisp 1.5 spec functions.
 

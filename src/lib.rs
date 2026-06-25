@@ -431,6 +431,11 @@ pub enum BuiltinFunc {
     Evcon,
     // I/O
     Spaces,
+    // File I/O (gated behind FILE-IO capability)
+    ReadFile,
+    ReadFileByte,
+    ReadFileSection,
+    WriteFile,
 }
 
 /// An interned Lisp symbol.
