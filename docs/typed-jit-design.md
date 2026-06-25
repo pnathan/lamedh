@@ -217,6 +217,16 @@ interpreter. The measured win is against lamedh's **boxed** evaluator: the examp
 shows ~16× on `fib(28)`. The decisive win over an unboxed tree-walk is what native
 codegen (§4) buys next.
 
+**It lands in the language.** `DEFFUN-TYPED` is a real special form: the registry
+lives in `SharedState` (shared across the whole environment chain), and a
+successful definition installs a `LispVal::Native` entry under the function name.
+So a typed function is callable from ordinary untyped Lisp through the membrane —
+`(+ (fib 15) 1)` works at the REPL, an ill-typed definition is rejected before it
+binds anything, and redefinition updates behavior live. Typed→typed calls (self,
+cross-function) route through the registry by id, not back through the evaluator.
+The one boundary not yet exposed in surface syntax is a *forward declaration* (for
+REPL-level mutual recursion); it exists in the Rust API as `Jit::declare`.
+
 ## 5. The spike
 
 Smallest thing that proves the whole thesis end to end. See

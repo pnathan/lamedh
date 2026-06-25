@@ -755,7 +755,7 @@ impl TypedFn {
 
 /// A registry of typed functions, with the define/declare front end. Functions
 /// are addressed by a stable id so calls survive redefinition.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Jit {
     funcs: Vec<Rc<TypedFn>>,
     by_name: HashMap<String, usize>,
@@ -857,6 +857,11 @@ impl Jit {
         // Names are case-normalized to uppercase (matching the reader), so
         // callers may use either case.
         self.by_name.get(&name.to_uppercase()).copied()
+    }
+
+    /// The (uppercased) name of the function with the given id.
+    pub fn name_of(&self, id: usize) -> Option<String> {
+        self.funcs.get(id).map(|f| f.name.clone())
     }
     pub fn get(&self, name: &str) -> Option<&Rc<TypedFn>> {
         self.id(name).map(|i| &self.funcs[i])

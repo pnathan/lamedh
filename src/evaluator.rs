@@ -2356,6 +2356,35 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         }
                     }
                     "DEFSTRUCT" => eval_defstruct(rest, env),
+                    "DEFFUN-TYPED" => {
+                        // Type-check + compile into the shared typed registry,
+                        // then install a Native entry so the typed function is
+                        // callable from ordinary (untyped) Lisp code through the
+                        // membrane. This is how the typed subset "lands" in the
+                        // running language.
+                        let form = LispVal::Cons {
+                            car: first.clone(),
+                            cdr: rest.clone(),
+                        };
+                        match env.jit_define(&form) {
+                            Ok(name) => {
+                                let fname = name.clone();
+                                let native = LispVal::Native(Rc::new(
+                                    move |args: &[LispVal], call_env: &Rc<Environment>| {
+                                        match call_env.jit_call(&fname, args) {
+                                            Some(r) => r.map_err(LispError::Generic),
+                                            None => Err(LispError::Generic(format!(
+                                                "typed function {fname} is not defined"
+                                            ))),
+                                        }
+                                    },
+                                ));
+                                env.set(name.clone(), native);
+                                Ok(TcoStep::Done(Ok(LispVal::Symbol(env.intern_symbol(&name)))))
+                            }
+                            Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
+                        }
+                    }
                     "PROGN" => {
                         let mut current = &**rest;
                         loop {

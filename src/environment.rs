@@ -173,6 +173,10 @@ struct SharedState {
     /// host or a Lisp program must opt in. This is the foundation for
     /// sandboxing (see issue #64).
     features: RefCell<HashSet<String>>,
+    /// Registry of typed (`deffun-typed`) functions. Shared across the whole
+    /// environment chain so a typed definition made at the REPL is visible
+    /// everywhere and its compiled edition persists across calls.
+    jit: RefCell<crate::jit::Jit>,
 }
 
 impl SharedState {
@@ -183,6 +187,7 @@ impl SharedState {
             dynamic_vars: RefCell::new(HashSet::new()),
             has_dynamic: Cell::new(false),
             features: RefCell::new(HashSet::new()),
+            jit: RefCell::new(crate::jit::Jit::new()),
         }
     }
 }
@@ -661,6 +666,25 @@ impl Environment {
         F: Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError> + 'static,
     {
         self.set(name.to_uppercase(), LispVal::Native(Rc::new(f)));
+    }
+
+    /// Type-check and compile a `(deffun-typed ...)` form into the shared typed
+    /// registry. Returns the function's (uppercased) name on success.
+    pub fn jit_define(&self, form: &LispVal) -> Result<String, String> {
+        let id = self.shared.jit.borrow_mut().define(form)?;
+        self.shared
+            .jit
+            .borrow()
+            .name_of(id)
+            .ok_or_else(|| "jit: defined function has no name".to_string())
+    }
+
+    /// Call a typed function by name with `LispVal` arguments, crossing the
+    /// membrane (unbox in, re-box out). `None` if no such typed function exists.
+    pub fn jit_call(&self, name: &str, args: &[LispVal]) -> Option<Result<LispVal, String>> {
+        let jit = self.shared.jit.borrow();
+        jit.id(name)?;
+        Some(jit.call_lisp(name, args))
     }
 
     /// Update a variable's value, searching up the environment chain.
