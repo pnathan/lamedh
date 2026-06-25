@@ -420,6 +420,16 @@ pub struct Symbol {
     pub name: String,
     /// Arbitrary key/value metadata attached to this symbol.
     pub plist: HashMap<String, LispVal>,
+    /// Global value cell (the canonical-namespace binding for this symbol).
+    ///
+    /// Root-level (global) bindings live here rather than in a `HashMap` on the
+    /// root environment frame, so a global/function reference resolves by reading
+    /// the cell on the symbol the AST already holds — O(1), no hash, no chain
+    /// walk. Local bindings (params, `let`, `prog`, loop vars) still live in
+    /// their frame's map. Because each interpreter chain has its own
+    /// `SymbolTable`, these cells are naturally scoped per global namespace, so
+    /// independent `make-environment` namespaces stay isolated.
+    pub value: Option<LispVal>,
 }
 
 /// A lexical closure created by `(lambda (params…) body…)` or `defun`.
@@ -772,6 +782,7 @@ impl From<bool> for LispVal {
             LispVal::Symbol(Rc::new(RefCell::new(Symbol {
                 name: "T".to_string(),
                 plist: HashMap::new(),
+                value: None,
             })))
         } else {
             LispVal::Nil
