@@ -196,6 +196,27 @@ is typed, so we translate `int64 → i64`, never inventing types at the metal. L
 is the heavier alternative if we later want max throughput; Cranelift is the right
 first backend (fast compiles suit a REPL).
 
+## 4a. Prototype status (implemented in `src/jit.rs`)
+
+Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_jit.rs`):
+
+- The membrane (`Jit::define`) elaborates `deffun-typed` with a monomorphic
+  bidirectional checker and rejects ill-typed defs *before runtime*.
+- `int64`/`float64`/`bool`; `+ - * / mod`, `< > <= >= = /=`, `and`/`or`/`not`,
+  `if`, `let-typed`, and **calls** — self-recursion, cross-function, and (via
+  `Jit::declare`) mutual recursion. Runtime values are unboxed `u64` words; the
+  static type says how each op reads its word, so there is no tag in the hot path.
+- The cell dispatch and redefinition model from §3 are real: calls route through
+  the registry by id, redefining a callee is an edition swap, and a call pins
+  (`Rc`-clones) the edition it runs.
+- 49 tests; the `agree` helper runs every example through both editions as a
+  differential check.
+
+The backend is closures, not native code yet, so it ties the JIT's *own* unboxed
+interpreter. The measured win is against lamedh's **boxed** evaluator: the example
+shows ~16× on `fib(28)`. The decisive win over an unboxed tree-walk is what native
+codegen (§4) buys next.
+
 ## 5. The spike
 
 Smallest thing that proves the whole thesis end to end. See
