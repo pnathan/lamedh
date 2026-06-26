@@ -4,7 +4,9 @@
 ;;; CODE-CHAR, STRING->NUMBER, NUMBER->STRING, plus CONCAT/INDEX.
 ;;;
 ;;; NAMING: predicates use the `-p` suffix (STARTS-WITH-P, WHITESPACE-P, ...).
-;;; A "char" here is a one-character string, since lamedh has no char type.
+;;; A "char" in this layer is a one-character string. Note the reader's `'c'`
+;;; literal is a different thing: it reads as the integer code point of c (see
+;;; the reader / #136), i.e. (char-code "c") — convert with code-char/char-code.
 
 ;;; ---- string <-> list of chars --------------------------------------------
 

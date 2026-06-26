@@ -78,6 +78,20 @@
   (assert-equal (funcall (compose #'add1 #'add1) 5) 7)
   (assert-equal (funcall (curry #'+ 10) 5) 15))
 
+;;; ---- char literals -------------------------------------------------------
+
+(deftest char-literals
+  (assert-equal 'A' 65)
+  (assert-equal '0' 48)
+  (assert-equal ' ' 32)
+  (assert-equal '\n' 10)
+  (assert-equal '\'' 39)
+  (assert-equal (code-char 'a') "a")
+  (assert-equal (char-code "a") 'a')
+  ;; 'a (no closing quote) is still (quote a), distinct from the char 'a'
+  (assert-equal 'a 'a)
+  (assert-true (consp '(1 2 3))))
+
 ;;; ---- #144 sort -----------------------------------------------------------
 
 (deftest sort-basic

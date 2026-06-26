@@ -38,6 +38,7 @@ The codebase follows a classic interpreter architecture with four main modules:
 1. **reader.rs**: Parser using nom combinators
    - Parses s-expressions, atoms, strings, numbers, floats
    - Handles reader macros: quote ('), quasiquote (`), unquote (,)
+   - Character literals: `'c'` reads as the integer code point of `c` (lamedh has no char value type; a character is its code point — see #136). Escapes `\n \t \r \\ \' \0`. Tried before the quote macro: `'a'` is a char, `'a` stays `(quote a)`. Numbers are decimal or Lisp 1.5 octal (`177Q`); there is no hex literal.
    - Supports dotted pairs and comments
    - All symbols are interned and case-normalized to uppercase
 
