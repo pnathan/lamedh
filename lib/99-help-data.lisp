@@ -1033,6 +1033,89 @@
     (cons 'SEE-ALSO '(ash logor logand))))
 
 ;;; ============================================================
+;;; BITWISE (CONTINUED) — orphan entries
+;;; ============================================================
+
+(register-doc 'ash
+  (list
+    (cons 'NAME 'ash)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ash n count)")
+    (cons 'CATEGORY 'bitwise)
+    (cons 'DESCRIPTION "Arithmetic shift. Shifts n left by count bits (right when count is negative).
+Left shifts of 64 or more bits return 0 and set the OVERFLOW flag.
+Right shifts of 64 or more bits return 0 or -1 (sign extension).
+Both n and count must be integers.")
+    (cons 'EXAMPLES '(((ash 1 4) 16)
+                       ((ash 16 -2) 4)
+                       ((ash -1 -1) -1)))
+    (cons 'SEE-ALSO '(leftshift rot logor logand lognot logxor))))
+
+(register-doc 'rot
+  (list
+    (cons 'NAME 'rot)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(rot n count)")
+    (cons 'CATEGORY 'bitwise)
+    (cons 'DESCRIPTION "Rotate bits of n left by count positions (64-bit rotation).
+count is reduced modulo 64, so (rot n 64) equals (rot n 0).
+Both n and count must be integers.")
+    (cons 'EXAMPLES '(((rot 1 1) 2)
+                       ((rot 1 63) "most-significant bit set")))
+    (cons 'SEE-ALSO '(ash logor logand lognot))))
+
+;;; ============================================================
+;;; SYMBOL / STRING (CONTINUED) — orphan entries
+;;; ============================================================
+
+(register-doc 'maknam
+  (list
+    (cons 'NAME 'maknam)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(maknam char-list)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Converts a list of character symbols or strings to an interned symbol.
+Identical to IMPLODE. Lisp 1.5 name for the same operation.")
+    (cons 'EXAMPLES '(((maknam '(f o o)) foo)))
+    (cons 'SEE-ALSO '(implode explode intern gensym))))
+
+(register-doc 'macrop
+  (list
+    (cons 'NAME 'macrop)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(macrop x)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns T if x is a macro object, NIL otherwise.")
+    (cons 'EXAMPLES '(((defmacro m (x) x) m)
+                       ((macrop (macro-function 'm)) t)))
+    (cons 'SEE-ALSO '(functionp symbolp defmacro))))
+
+(register-doc 'macroexpand
+  (list
+    (cons 'NAME 'macroexpand)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(macroexpand form)")
+    (cons 'CATEGORY 'meta)
+    (cons 'DESCRIPTION "Expands a macro call one level. If form is a list whose car names a macro,
+returns the fully expanded form. If form is not a macro call, returns it unchanged.
+Useful for debugging macro definitions.")
+    (cons 'EXAMPLES '(((defmacro inc (x) `(+ ,x 1)) inc)
+                       ((macroexpand '(inc 5)) (+ 5 1))))
+    (cons 'SEE-ALSO '(defmacro macrop evlis))))
+
+(register-doc 'put
+  (list
+    (cons 'NAME 'put)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(put symbol indicator value)")
+    (cons 'CATEGORY 'plists)
+    (cons 'DESCRIPTION "Alias for PUTP. Stores value under indicator on symbol's property list.
+The classic Lisp 1.5 spelling.")
+    (cons 'EXAMPLES '(((put 'foo 'color 'red) red)
+                       ((getp 'foo 'color) red)))
+    (cons 'SEE-ALSO '(putp getp plist remprop))))
+
+;;; ============================================================
 ;;; HELP SYSTEM SELF-DOCUMENTATION
 ;;; ============================================================
 
