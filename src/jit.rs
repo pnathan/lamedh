@@ -1234,6 +1234,7 @@ impl Jit {
             vals.push(match a {
                 LispVal::Number(n) => Value::Int(*n),
                 LispVal::Float(f) => Value::Float(*f),
+                LispVal::Char(b) => Value::Char(*b),
                 other => return Err(format!("call_lisp: unsupported argument {other:?}")),
             });
         }
@@ -1241,7 +1242,7 @@ impl Jit {
             Value::Int(n) => LispVal::Number(n),
             Value::Float(f) => LispVal::Float(f),
             Value::Bool(b) => LispVal::Number(b as i64),
-            Value::Char(b) => LispVal::Number(b as i64),
+            Value::Char(b) => LispVal::Char(b),
         })
     }
 

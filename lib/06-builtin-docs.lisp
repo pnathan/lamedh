@@ -40,5 +40,11 @@
 (putp 'lognot "docstring" "Bitwise complement.")
 (putp 'rot "docstring" "Rotate bits.")
 
+;; Char predicates / conversions
+(putp 'charp "docstring" "True if its argument is a Char value; NIL otherwise.")
+(putp 'char-code "docstring" "Return the integer code point of a Char or one-character string.")
+(putp 'code-char "docstring" "Convert integer code point (0-255) to a one-character string.")
+(putp 'make-char "docstring" "Convert an integer 0-255 to a Char value.")
+
 ;; PUT alias
 (putp 'put "docstring" "Alias for PUTP.")

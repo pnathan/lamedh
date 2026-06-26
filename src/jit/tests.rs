@@ -782,15 +782,21 @@ fn char_rejects_arithmetic() {
 }
 
 #[test]
-fn char_membrane_boxes_to_number() {
-    // From untyped Lisp: a Number flows into a char param and the char result
-    // comes back as a Number (the byte value).
+fn char_membrane_boxes_to_char() {
+    // From untyped Lisp: a Number flows into a char param (backward compat);
+    // a Char also works natively. The char result comes back as LispVal::Char.
     let j = build(&["(deffun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
     j.compile_all();
+    // LispVal::Number still coerces into char params for backward compat.
     let out = j
         .call_lisp("up", &[crate::LispVal::Number(97)])
         .expect("call_lisp");
-    assert_eq!(out, crate::LispVal::Number(65));
+    assert_eq!(out, crate::LispVal::Char(65));
+    // LispVal::Char is the native input form.
+    let out2 = j
+        .call_lisp("up", &[crate::LispVal::Char(97)])
+        .expect("call_lisp char");
+    assert_eq!(out2, crate::LispVal::Char(65));
 }
 
 // --- debug trace + structural introspection --------------------------------

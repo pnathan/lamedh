@@ -29,9 +29,8 @@
 ;;; ---- char coercion -------------------------------------------------------
 
 (defun char->code (c)
-  "Return the integer code point of C, which may be a one-character string or
-an integer code point (e.g. from a reader char literal like 'a')."
-  (if (stringp c) (char-code c) c))
+  "Return the integer code point of C: accepts a char, a one-character string, or an integer."
+  (if (fixp c) c (char-code c)))
 
 ;;; ---- char classification (accept string or code-point integer) -----------
 

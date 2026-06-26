@@ -205,6 +205,7 @@ pub fn optimize(expr: &LispVal) -> LispVal {
     match expr {
         // Atoms and literals are already optimal
         LispVal::Number(_)
+        | LispVal::Char(_)
         | LispVal::Float(_)
         | LispVal::String(_)
         | LispVal::Nil
