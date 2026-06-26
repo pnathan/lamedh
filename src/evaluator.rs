@@ -203,7 +203,7 @@ fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispE
                         unpacked_args.len()
                     )));
                 }
-                for (param, arg) in f.params.iter().zip(unpacked_args.into_iter()) {
+                for (param, arg) in f.params.iter().zip(unpacked_args) {
                     new_env.set(param.clone(), arg);
                 }
             }
@@ -3916,9 +3916,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                         unevaluated_args.len()
                                     )))));
                                 }
-                                for (param, arg) in
-                                    fexpr.params.iter().zip(unevaluated_args.into_iter())
-                                {
+                                for (param, arg) in fexpr.params.iter().zip(unevaluated_args) {
                                     new_env.set(param.clone(), arg);
                                 }
                             }
@@ -3992,7 +3990,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 unevaluated_args.len()
                             )))));
                         }
-                        for (param, arg) in fexpr.params.iter().zip(unevaluated_args.into_iter()) {
+                        for (param, arg) in fexpr.params.iter().zip(unevaluated_args) {
                             new_env.set(param.clone(), arg);
                         }
                     }
