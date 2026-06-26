@@ -146,6 +146,17 @@
   (assert-true (< (abs (- (sqrt 4.0) 2.0)) 0.0001))
   (assert-true (< (abs (- (exp 0.0) 1.0)) 0.0001)))
 
+(deftest numeric-equals
+  ;; Cross-type integer/char/float equality.
+  (assert-true  (= 1 1))
+  (assert-true  (= 1 1.0))
+  (assert-true  (= 'A' 65))
+  ;; Float `=` is EXACT (like Common Lisp), not epsilon-fuzzy: two distinct
+  ;; floats must never compare equal, even when within f64::EPSILON.
+  (assert-true  (= 1.0 1.0))
+  (assert-false (= 0.5 0.5000000000000001))
+  (assert-false (= 1.0 1.0000000000000002)))
+
 ;;; ---- #147 strings --------------------------------------------------------
 
 (deftest string-kernel

@@ -565,11 +565,8 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
         env.set("ARRAYP".to_string(), LispVal::Builtin(BuiltinFunc::Arrayp));
-        env.set("CHARP".to_string(), LispVal::Builtin(BuiltinFunc::Charp));
-        env.set(
-            "MAKE-CHAR".to_string(),
-            LispVal::Builtin(BuiltinFunc::MakeChar),
-        );
+        // CHARP is registered with the type predicates; MAKE-CHAR with the
+        // char/string ops (near CODE-CHAR).
         env.set(
             "EXTENSION-P".to_string(),
             LispVal::Builtin(BuiltinFunc::Extensionp),

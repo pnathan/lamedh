@@ -949,13 +949,13 @@
     (cons 'DESCRIPTION "Creates and returns a new empty hash table.")
     (cons 'SEE-ALSO '(get set-bang keys))))
 
-(register-doc 'get
+(register-doc 'gethash
   (list
-    (cons 'NAME 'get)
+    (cons 'NAME 'gethash)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(get hash-table key)")
+    (cons 'SYNTAX "(gethash hash-table key)")
     (cons 'CATEGORY 'hash-tables)
-    (cons 'DESCRIPTION "Retrieves the value for key in hash-table.")
+    (cons 'DESCRIPTION "Retrieves the value for key in hash-table. Returns NIL if absent. (Note: GET is the property-list accessor, not the hash accessor.)")
     (cons 'SEE-ALSO '(set-bang keys make-hash-table))))
 
 (register-doc 'set-bang
@@ -965,7 +965,7 @@
     (cons 'SYNTAX "(set-bang hash-table key value)")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Sets the value for key in hash-table.")
-    (cons 'SEE-ALSO '(get delete-key make-hash-table))))
+    (cons 'SEE-ALSO '(gethash delete-key make-hash-table))))
 
 (register-doc 'keys
   (list
@@ -974,7 +974,7 @@
     (cons 'SYNTAX "(keys hash-table)")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Returns a list of all keys in hash-table.")
-    (cons 'SEE-ALSO '(get set-bang make-hash-table))))
+    (cons 'SEE-ALSO '(gethash set-bang make-hash-table))))
 
 ;;; ============================================================
 ;;; BITWISE FUNCTIONS

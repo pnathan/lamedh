@@ -1001,12 +1001,14 @@ fn apply_logical_op(
                     }
                 }
                 _ => {
-                    // Fall back to float for mixed int/float
+                    // Fall back to float for mixed int/float. Exact equality
+                    // (like Common Lisp `=`): no epsilon fuzz, so distinct
+                    // floats never compare equal.
                     match (&args[0], &args[1]) {
                         (LispVal::Float(_), _) | (_, LispVal::Float(_)) => {
                             let a = as_f64(&args[0], "=")?;
                             let b = as_f64(&args[1], "=")?;
-                            Ok(if (a - b).abs() < f64::EPSILON {
+                            Ok(if a == b {
                                 LispVal::Symbol(env.intern_symbol("T"))
                             } else {
                                 LispVal::Nil
