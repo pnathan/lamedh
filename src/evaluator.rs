@@ -3000,13 +3000,21 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                 LispError::Generic(format!("Unbound variable: {}", s.borrow().name))
             })?;
 
-            // If the value is a LABEL expression, tail-call evaluate it
-            // This handles recursive LABEL definitions (TCO: TailCall instead of recurse)
+            // If the value is a LABEL expression, evaluate it so recursive LABEL
+            // definitions resolve. This goes through the depth-counted `eval`
+            // rather than an uncounted `TcoStep::TailCall`: an indirect circular
+            // LABEL such as `(LABEL a (LABEL b a))` rewrites endlessly between
+            // LABEL forms (a → (LABEL a …) → (LABEL b a) → a → …) and, as a bare
+            // tail call, would spin in the trampoline forever without ever
+            // hitting the eval-depth guard. Routing through `eval` bounds the
+            // cycle and surfaces it as a `LispError` (issue #153). Legitimate
+            // LABEL recursion carries its loop via lambda application, not this
+            // head-resolution step, so its tail-call behavior is unaffected.
             if let LispVal::Cons { car, cdr: _ } = &value
                 && let LispVal::Symbol(sym) = &**car
                 && sym.borrow().name == "LABEL"
             {
-                return Ok(TcoStep::TailCall(value, env.clone()));
+                return Ok(TcoStep::Done(eval(&value, env)));
             }
 
             Ok(TcoStep::Done(Ok(value)))
