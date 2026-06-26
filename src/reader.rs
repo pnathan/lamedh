@@ -22,6 +22,7 @@
 //! | `'e` | `(QUOTE e)` |
 //! | `` `e `` | `(QUASIQUOTE e)` |
 //! | `,e` | `(UNQUOTE e)` |
+//! | `,@e` | `(UNQUOTE-SPLICING e)` |
 //! | `#'f` | `(FUNCTION f)` |
 //! | `; comment` | Ignored to end of line |
 //!
@@ -56,6 +57,8 @@ fn parse_expr(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                 parse_char_literal,
                 parse_quoted(env.clone()),
                 parse_quasiquoted(env.clone()),
+                // ,@ before , : `,@e` is splicing, `,e` is plain unquote.
+                parse_unquote_spliced(env.clone()),
                 parse_unquoted(env.clone()),
                 parse_function_shorthand(env.clone()),
             )),
@@ -181,7 +184,10 @@ fn parse_char_literal(input: &str) -> ParseResult<'_> {
         (c0 as i64, c0.len_utf8())
     };
     let (rest2, _) = tag("'")(&rest[consumed..])?;
-    Ok((rest2, LispVal::Number(code)))
+    if code > 255 {
+        return Err(err());
+    }
+    Ok((rest2, LispVal::Char(code as u8)))
 }
 
 fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
@@ -384,6 +390,21 @@ fn parse_unquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
+fn parse_unquote_spliced(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    let splice_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE-SPLICING"));
+    move |input: &str| {
+        map(preceded(tag(",@"), parse_expr(env.clone())), |expr| {
+            LispVal::Cons {
+                car: Rc::new(splice_symbol.clone()),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(expr),
+                    cdr: Rc::new(LispVal::Nil),
+                }),
+            }
+        })(input)
+    }
+}
+
 /// Parse a single s-expression from `input`.
 ///
 /// Symbols are interned into `env`'s symbol table and uppercased.
@@ -485,16 +506,16 @@ mod tests {
 
     #[test]
     fn test_parse_char_literal() {
-        // 'c' is the code point of c (a Number).
-        assert_eq!(parse_char_literal("'A'"), Ok(("", number(65))));
-        assert_eq!(parse_char_literal("'0'"), Ok(("", number(48))));
-        assert_eq!(parse_char_literal("' '"), Ok(("", number(32))));
+        // 'c' is a Char value carrying the byte code point.
+        assert_eq!(parse_char_literal("'A'"), Ok(("", LispVal::Char(65))));
+        assert_eq!(parse_char_literal("'0'"), Ok(("", LispVal::Char(48))));
+        assert_eq!(parse_char_literal("' '"), Ok(("", LispVal::Char(32))));
         // escapes
-        assert_eq!(parse_char_literal("'\\n'"), Ok(("", number(10))));
-        assert_eq!(parse_char_literal("'\\''"), Ok(("", number(39))));
-        assert_eq!(parse_char_literal("'\\\\'"), Ok(("", number(92))));
+        assert_eq!(parse_char_literal("'\\n'"), Ok(("", LispVal::Char(10))));
+        assert_eq!(parse_char_literal("'\\''"), Ok(("", LispVal::Char(39))));
+        assert_eq!(parse_char_literal("'\\\\'"), Ok(("", LispVal::Char(92))));
         // trailing input is left for the next parser
-        assert_eq!(parse_char_literal("'a'b"), Ok(("b", number(97))));
+        assert_eq!(parse_char_literal("'a'b"), Ok(("b", LispVal::Char(97))));
     }
 
     #[test]
@@ -504,9 +525,9 @@ mod tests {
         assert!(parse_char_literal("'(1 2)").is_err());
         // The empty '' is not a char literal.
         assert!(parse_char_literal("''").is_err());
-        // Full reader: 'a' is a char, 'a is (quote a).
+        // Full reader: 'a' is a Char, 'a is (quote a).
         let env = Rc::new(Environment::new());
-        assert_eq!(read("'A'", &env), Ok(number(65)));
+        assert_eq!(read("'A'", &env), Ok(LispVal::Char(65)));
         assert_eq!(
             read("'a", &env),
             Ok(cons(
@@ -676,6 +697,34 @@ mod tests {
                     ),
                     LispVal::Nil
                 )
+            ))
+        );
+    }
+
+    #[test]
+    fn test_read_unquote_splicing() {
+        let env = Rc::new(Environment::new());
+        // ,@xs reads as (UNQUOTE-SPLICING xs)
+        let result = read(",@xs", &env);
+        assert_eq!(
+            result,
+            Ok(cons(
+                symbol("UNQUOTE-SPLICING", &env),
+                cons(symbol("XS", &env), LispVal::Nil)
+            ))
+        );
+    }
+
+    #[test]
+    fn test_read_unquote_vs_splicing() {
+        let env = Rc::new(Environment::new());
+        // ,x (no @) stays plain UNQUOTE, not splicing
+        let result = read(",x", &env);
+        assert_eq!(
+            result,
+            Ok(cons(
+                symbol("UNQUOTE", &env),
+                cons(symbol("X", &env), LispVal::Nil)
             ))
         );
     }

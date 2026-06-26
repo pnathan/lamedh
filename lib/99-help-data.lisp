@@ -1457,13 +1457,13 @@ The classic Lisp 1.5 spelling.")
   (list
     (cons 'NAME 'char-code)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(char-code s)")
+    (cons 'SYNTAX "(char-code c)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Returns the Unicode code point (an integer) of the first character of string s. Signals an error if s is empty. Note: Lamedh has no character type; character literals like 'a' read as integers via this same mapping.")
+    (cons 'DESCRIPTION "Returns the integer code point of c, where c is a Char value (from a literal like 'a') or a one-character string. Signals an error on an empty string.")
     (cons 'EXAMPLES '(((char-code "A") 65)
-                       ((char-code "a") 97)
+                       ((char-code 'a') 97)
                        ((char-code " ") 32)))
-    (cons 'SEE-ALSO '(code-char string-length))))
+    (cons 'SEE-ALSO '(code-char make-char charp string-length))))
 
 (register-doc 'code-char
   (list
@@ -1471,10 +1471,33 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(code-char n)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Returns a one-character string containing the character at Unicode code point n. The inverse of CHAR-CODE. Signals an error if n is not a valid code point.")
+    (cons 'DESCRIPTION "Returns a one-character string containing the character at code point n. The inverse of CHAR-CODE. Signals an error if n is not a valid code point. (Use MAKE-CHAR to build a Char value instead of a string.)")
     (cons 'EXAMPLES '(((code-char 65) "A")
                        ((code-char 97) "a")))
-    (cons 'SEE-ALSO '(char-code string-length))))
+    (cons 'SEE-ALSO '(char-code make-char string-length))))
+
+(register-doc 'charp
+  (list
+    (cons 'NAME 'charp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(charp x)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns T if x is a Char value (produced by a char literal like 'a'). NIL for integers, strings, and all other types. Distinct from FIXP, which is NIL for chars.")
+    (cons 'EXAMPLES '(((charp 'a') t)
+                       ((charp 97) nil)
+                       ((charp "a") nil)))
+    (cons 'SEE-ALSO '(make-char char-code code-char fixp))))
+
+(register-doc 'make-char
+  (list
+    (cons 'NAME 'make-char)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-char n)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns a Char value for integer code point n (0-255). The Char-producing complement of CODE-CHAR, which returns a one-character string. Inverse of CHAR-CODE on Char inputs.")
+    (cons 'EXAMPLES '(((make-char 65) 'A')
+                       ((charp (make-char 65)) t)))
+    (cons 'SEE-ALSO '(charp char-code code-char))))
 
 (register-doc 'string->number
   (list
@@ -2250,7 +2273,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 (register-category 'predicates
   "Type and value predicates"
   '(zerop plusp minusp evenp oddp < > = atom symbolp numberp fixp floatp
-    stringp consp listp null not eq equal functionp boundp macrop
+    charp stringp consp listp null not eq equal functionp boundp macrop
     arrayp extension-p error-p))
 
 (register-category 'lists
@@ -2262,7 +2285,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 (register-category 'strings
   "String operations"
   '(concat index explode implode gensym intern maknam
-    string-length substring char-code code-char
+    string-length substring char-code code-char make-char
     string->number number->string prin1-to-string princ-to-string))
 
 (register-category 'special-forms

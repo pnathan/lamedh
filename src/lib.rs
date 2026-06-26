@@ -395,6 +395,7 @@ pub enum BuiltinFunc {
     // Type predicates
     Fixp,
     Floatp,
+    Charp,
     Symbolp,
     Boundp,
     Functionp,
@@ -505,6 +506,7 @@ pub enum BuiltinFunc {
     Substring,
     CharCode,
     CodeChar,
+    MakeChar,
     StringToNumber,
     NumberToString,
     // Value -> string rendering (backs FORMAT and friends)
@@ -703,6 +705,11 @@ pub enum LispVal {
     Symbol(Rc<RefCell<Symbol>>),
     /// A 64-bit signed integer.
     Number(i64),
+    /// A single byte (character, 0–255). Produced by char literals (`'a'` →
+    /// `Char(97)`). Coerces to `Number` in arithmetic, like C integer
+    /// promotion. Distinct from `Number`: `charp` tests for this type;
+    /// `fixp` does not match it.
+    Char(u8),
     /// A 64-bit IEEE 754 floating-point number.
     Float(f64),
     /// A UTF-8 string literal.
@@ -778,6 +785,7 @@ impl fmt::Debug for LispVal {
         match self {
             LispVal::Symbol(s) => write!(f, "Symbol({:?})", s.borrow().name),
             LispVal::Number(n) => write!(f, "Number({n})"),
+            LispVal::Char(b) => write!(f, "Char({b})"),
             LispVal::Float(v) => write!(f, "Float({v})"),
             LispVal::String(s) => write!(f, "String({s:?})"),
             LispVal::Builtin(b) => write!(f, "Builtin({b:?})"),
@@ -802,6 +810,7 @@ impl Clone for LispVal {
         match self {
             LispVal::Symbol(s) => LispVal::Symbol(Rc::clone(s)),
             LispVal::Number(n) => LispVal::Number(*n),
+            LispVal::Char(b) => LispVal::Char(*b),
             LispVal::Float(f) => LispVal::Float(*f),
             LispVal::String(s) => LispVal::String(s.clone()),
             LispVal::Builtin(b) => LispVal::Builtin(b.clone()),
@@ -829,6 +838,7 @@ impl PartialEq for LispVal {
         match (self, other) {
             (LispVal::Symbol(a), LispVal::Symbol(b)) => Rc::ptr_eq(a, b),
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
+            (LispVal::Char(a), LispVal::Char(b)) => a == b,
             (LispVal::Float(a), LispVal::Float(b)) => a == b,
             (LispVal::String(a), LispVal::String(b)) => a == b,
             (
@@ -865,6 +875,7 @@ impl Hash for LispVal {
         match self {
             LispVal::Symbol(s) => Rc::as_ptr(s).hash(state),
             LispVal::Number(n) => n.hash(state),
+            LispVal::Char(b) => b.hash(state),
             LispVal::Float(f) => f.to_bits().hash(state),
             LispVal::String(s) => s.hash(state),
             LispVal::Cons { car, cdr } => {

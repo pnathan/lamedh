@@ -81,14 +81,29 @@
 ;;; ---- char literals -------------------------------------------------------
 
 (deftest char-literals
-  (assert-equal 'A' 65)
-  (assert-equal '0' 48)
-  (assert-equal ' ' 32)
-  (assert-equal '\n' 10)
-  (assert-equal '\'' 39)
-  (assert-equal (code-char 'a') "a")
-  (assert-equal (char-code "a") 'a')
-  ;; 'a (no closing quote) is still (quote a), distinct from the char 'a'
+  ;; Char is a distinct type — not a fixnum.
+  (assert-true  (charp 'a'))
+  (assert-false (charp 97))
+  (assert-false (fixp  'a'))
+  ;; Code-point values agree with the corresponding integers.
+  (assert-equal (char-code 'A') 65)
+  (assert-equal (char-code '0') 48)
+  (assert-equal (char-code ' ') 32)
+  (assert-equal (char-code '\n') 10)
+  (assert-equal (char-code '\'') 39)
+  ;; make-char round-trips with char literals.
+  (assert-equal (make-char 65) 'A')
+  (assert-true  (charp (make-char 65)))
+  ;; code-char still returns a one-character string.
+  (assert-equal (code-char (char-code 'a')) "a")
+  (assert-equal (char-code "a") (char-code 'a'))
+  ;; Arithmetic coercion (char promotes to integer like C).
+  (assert-equal (+ 'a' 1) 98)
+  (assert-equal (- 'z' 'a') 25)
+  ;; Numeric comparison works.
+  (assert-true  (= 'A' 65))
+  (assert-true  (< 'a' 'z'))
+  ;; 'a (no closing quote) is still (quote a), not a char.
   (assert-equal 'a 'a)
   (assert-true (consp '(1 2 3))))
 
@@ -99,7 +114,8 @@
   (assert-equal 1ah 26)
   (assert-equal 10h 16)
   (assert-equal (+ ffh 1) 256)
-  (assert-equal 'A' 65)        ; char literal still distinct from hex
+  (assert-true (charp 'A'))    ; 'A' is now a Char value, distinct from Number
+  (assert-equal (char-code 'A') 65)  ; char-code extracts the integer
   (assert-equal 0ah 10))
 
 ;;; ---- #144 sort -----------------------------------------------------------
@@ -130,6 +146,17 @@
   (assert-true (< (abs (- (sqrt 4.0) 2.0)) 0.0001))
   (assert-true (< (abs (- (exp 0.0) 1.0)) 0.0001)))
 
+(deftest numeric-equals
+  ;; Cross-type integer/char/float equality.
+  (assert-true  (= 1 1))
+  (assert-true  (= 1 1.0))
+  (assert-true  (= 'A' 65))
+  ;; Float `=` is EXACT (like Common Lisp), not epsilon-fuzzy: two distinct
+  ;; floats must never compare equal, even when within f64::EPSILON.
+  (assert-true  (= 1.0 1.0))
+  (assert-false (= 0.5 0.5000000000000001))
+  (assert-false (= 1.0 1.0000000000000002)))
+
 ;;; ---- #147 strings --------------------------------------------------------
 
 (deftest string-kernel
@@ -157,10 +184,28 @@
   (assert-equal (string-index-of "hello" "l") 2))
 
 (deftest string-char-predicates
+  ;; one-character strings
   (assert-true  (digit-p "7"))
   (assert-false (digit-p "a"))
   (assert-true  (alpha-p "z"))
-  (assert-true  (whitespace-p " ")))
+  (assert-true  (whitespace-p " "))
+  ;; char literals work equally well (polymorphic via char->code)
+  (assert-true  (digit-p '0'))
+  (assert-true  (alpha-p 'a'))
+  (assert-true  (alpha-p 'A'))
+  (assert-false (alpha-p '0'))
+  (assert-true  (whitespace-p ' '))
+  ;; new predicates
+  (assert-true  (alphanumeric-p "9"))
+  (assert-true  (alphanumeric-p "x"))
+  (assert-false (alphanumeric-p " "))
+  (assert-true  (char-upper-p "A"))
+  (assert-false (char-upper-p "a"))
+  (assert-true  (char-lower-p "z"))
+  (assert-false (char-lower-p "Z"))
+  ;; char-upcase/downcase accept char literals too
+  (assert-equal (char-upcase 'a') "A")
+  (assert-equal (char-downcase 'A') "a"))
 
 ;;; ---- #145 sets / alist / hash --------------------------------------------
 
