@@ -166,7 +166,6 @@
 //! | `03-meta.lisp` | `DOCUMENTATION` |
 //! | `04-predicates.lisp` | `EQUAL` (structural equality) |
 //! | `05-math.lisp` | `ONEP`, `MINUSP`, `ADD1`, `SUB1`, `MAX`, `MIN`, `ABS` |
-//! | `06-builtin-docs.lisp` | Docstrings for all built-in functions (via `(documentation 'fn)`) |
 //! | `07-shell.lisp` | `SH`, `SHELL-STDOUT`, `SHELL-STDERR`, `SHELL-EXIT-CODE`, `SHELL-OK-P` |
 //! | `08-vau.lisp` | Kernel-style derived forms: `$IF`, `$AND`, `$OR`, `$SEQUENCE` |
 //! | `09-lisp15.lisp` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
@@ -1116,10 +1115,6 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/04-predicates.lisp"),
     ),
     ("05-math.lisp", include_str!("../lib/05-math.lisp")),
-    (
-        "06-builtin-docs.lisp",
-        include_str!("../lib/06-builtin-docs.lisp"),
-    ),
     ("07-shell.lisp", include_str!("../lib/07-shell.lisp")),
     ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
     ("09-lisp15.lisp", include_str!("../lib/09-lisp15.lisp")),
