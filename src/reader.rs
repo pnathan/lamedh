@@ -13,6 +13,8 @@
 //! | `123`, `-456` | `LispVal::Number(i64)` |
 //! | `3.14`, `-1e5` | `LispVal::Float(f64)` |
 //! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
+//! | `FFh` | Hex literal (`FF₁₆ = 255₁₀`) — assembly-style `H` suffix |
+//! | `'c'` | Character literal → code point as `Number` (`\n \t \r \\ \' \0`) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*` | `LispVal::Symbol` (uppercased, interned) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
@@ -32,7 +34,7 @@ use nom::{
     IResult,
     branch::alt,
     bytes::complete::{is_not, tag, take_while, take_while1},
-    character::complete::{alpha1, alphanumeric1, char, digit1, multispace1, one_of},
+    character::complete::{alpha1, alphanumeric1, char, digit1, hex_digit1, multispace1, one_of},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
     sequence::{delimited, pair, preceded, terminated, tuple},
@@ -49,6 +51,9 @@ fn parse_expr(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                 parse_atom(env.clone()),
                 parse_string,
                 parse_list(env.clone()),
+                // Char literal 'c' before the quote reader macro: 'a' is a char,
+                // 'a (no closing quote) stays (quote a).
+                parse_char_literal,
                 parse_quoted(env.clone()),
                 parse_quasiquoted(env.clone()),
                 parse_unquoted(env.clone()),
@@ -99,6 +104,28 @@ fn parse_octal_integer(input: &str) -> ParseResult<'_> {
     }
 }
 
+fn parse_hex_integer(input: &str) -> ParseResult<'_> {
+    // Assembly-style hex: hex digits followed by H, e.g. FFh = 255, 0Ah = 10,
+    // 1Ah = 26. Mirrors the Lisp 1.5 octal `Q` suffix. Case-insensitive in both
+    // the digits and the marker (`ffh` and `FFH` both work).
+    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
+    let (rest, s) = recognize(pair(opt(tag("-")), hex_digit1))(input)?;
+    let (rest, _) = one_of("hH")(rest)?;
+    // Boundary guard: a following identifier char means this was a symbol, not a
+    // hex literal (so `ffhello` stays a symbol rather than 255 + "ello").
+    if let Some(c) = rest.chars().next()
+        && (c.is_alphanumeric() || c == '-')
+    {
+        return Err(err());
+    }
+    let negative = s.starts_with('-');
+    let digits = if negative { &s[1..] } else { s };
+    match i64::from_str_radix(digits, 16) {
+        Ok(n) => Ok((rest, LispVal::Number(if negative { -n } else { n }))),
+        Err(_) => Err(err()),
+    }
+}
+
 fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
     let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
     if let Ok(n) = s.parse::<i64>() {
@@ -116,9 +143,45 @@ fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
 fn parse_number(input: &str) -> ParseResult<'_> {
     alt((
         parse_float,
+        parse_hex_integer,
         parse_octal_integer,
         parse_integer_or_overflow_float,
     ))(input)
+}
+
+/// Character literal: `'c'` denotes the character `c`, read as its integer code
+/// point (a `LispVal::Number`). lamedh has no char value type, so a character is
+/// its code point — the same number `char-code` yields and `code-char` consumes,
+/// and the byte the typed-JIT `char` carries (issue #136).
+///
+/// One character between single quotes, with C-style escapes `\n \t \r \\ \' \0`.
+/// This is tried before the quote reader macro: `'a'` is the char a, while `'a`
+/// (no closing quote) remains `(quote a)`. Use `'\''` for the quote character.
+fn parse_char_literal(input: &str) -> ParseResult<'_> {
+    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
+    let (rest, _) = tag("'")(input)?;
+    let mut it = rest.char_indices();
+    let (_, c0) = it.next().ok_or_else(err)?;
+    let (code, consumed) = if c0 == '\\' {
+        let (_, c1) = it.next().ok_or_else(err)?;
+        let decoded = match c1 {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '\\' => '\\',
+            '\'' => '\'',
+            '0' => '\0',
+            other => other,
+        };
+        (decoded as i64, 1 + c1.len_utf8())
+    } else if c0 == '\'' {
+        // An empty '' is not a character literal; let other parsers try.
+        return Err(err());
+    } else {
+        (c0 as i64, c0.len_utf8())
+    };
+    let (rest2, _) = tag("'")(&rest[consumed..])?;
+    Ok((rest2, LispVal::Number(code)))
 }
 
 fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
@@ -400,6 +463,57 @@ mod tests {
     fn test_parse_float() {
         assert_eq!(parse_float("3.25"), Ok(("", float(3.25))));
         assert_eq!(parse_float("-0.5"), Ok(("", float(-0.5))));
+    }
+
+    #[test]
+    fn test_parse_hex() {
+        // Assembly-style H suffix; case-insensitive digits and marker.
+        assert_eq!(parse_number("ffh"), Ok(("", number(255))));
+        assert_eq!(parse_number("FFH"), Ok(("", number(255))));
+        assert_eq!(parse_number("0ffh"), Ok(("", number(255))));
+        assert_eq!(parse_number("1Ah"), Ok(("", number(26))));
+        assert_eq!(parse_number("10h"), Ok(("", number(16))));
+        assert_eq!(parse_number("0ah"), Ok(("", number(10))));
+        assert_eq!(parse_number("-ffh"), Ok(("", number(-255))));
+        assert_eq!(parse_number("deadh"), Ok(("", number(0xDEAD))));
+        // Boundary: a following identifier char means it was a symbol, so the
+        // hex parser must reject and leave the input for the symbol parser.
+        assert!(parse_hex_integer("ffhello").is_err());
+        // No H suffix: not hex (handled by the symbol parser, not parse_number).
+        assert!(parse_hex_integer("ff").is_err());
+    }
+
+    #[test]
+    fn test_parse_char_literal() {
+        // 'c' is the code point of c (a Number).
+        assert_eq!(parse_char_literal("'A'"), Ok(("", number(65))));
+        assert_eq!(parse_char_literal("'0'"), Ok(("", number(48))));
+        assert_eq!(parse_char_literal("' '"), Ok(("", number(32))));
+        // escapes
+        assert_eq!(parse_char_literal("'\\n'"), Ok(("", number(10))));
+        assert_eq!(parse_char_literal("'\\''"), Ok(("", number(39))));
+        assert_eq!(parse_char_literal("'\\\\'"), Ok(("", number(92))));
+        // trailing input is left for the next parser
+        assert_eq!(parse_char_literal("'a'b"), Ok(("b", number(97))));
+    }
+
+    #[test]
+    fn test_char_literal_vs_quote() {
+        // 'a (no closing quote) is NOT a char literal; the quote macro handles it.
+        assert!(parse_char_literal("'a").is_err());
+        assert!(parse_char_literal("'(1 2)").is_err());
+        // The empty '' is not a char literal.
+        assert!(parse_char_literal("''").is_err());
+        // Full reader: 'a' is a char, 'a is (quote a).
+        let env = Rc::new(Environment::new());
+        assert_eq!(read("'A'", &env), Ok(number(65)));
+        assert_eq!(
+            read("'a", &env),
+            Ok(cons(
+                symbol("QUOTE", &env),
+                cons(symbol("A", &env), LispVal::Nil)
+            ))
+        );
     }
 
     #[test]

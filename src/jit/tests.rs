@@ -719,6 +719,80 @@ fn forward_declared_mutual_recursion_rust_api() {
     assert_eq!(agree(&j, "oddp", &[i(64)]), bo(false));
 }
 
+// --- char / u8 scalar (issue #136) -----------------------------------------
+
+fn ch(b: u8) -> Value {
+    Value::Char(b)
+}
+
+#[test]
+fn char_code_roundtrip() {
+    // code-char(char-code(c)) == c for any byte.
+    let j = build(&["(deffun-typed (idc char) ((c char)) (code-char (char-code c)))"]);
+    assert_eq!(agree(&j, "idc", &[ch(65)]), ch(65));
+    assert_eq!(agree(&j, "idc", &[ch(200)]), ch(200));
+}
+
+#[test]
+fn char_code_widens_to_int() {
+    let j = build(&["(deffun-typed (code int64) ((c char)) (char-code c))"]);
+    assert_eq!(agree(&j, "code", &[ch(65)]), i(65));
+}
+
+#[test]
+fn code_char_narrows_and_masks() {
+    let j = build(&["(deffun-typed (mk char) ((n int64)) (code-char n))"]);
+    assert_eq!(agree(&j, "mk", &[i(66)]), ch(66));
+    // narrowing masks to a byte: 321 & 0xff == 65
+    assert_eq!(agree(&j, "mk", &[i(321)]), ch(65));
+}
+
+#[test]
+fn char_comparison() {
+    let j = build(&["(deffun-typed (eqa bool) ((c char)) (= c (code-char 65)))"]);
+    assert_eq!(agree(&j, "eqa", &[ch(65)]), bo(true));
+    assert_eq!(agree(&j, "eqa", &[ch(66)]), bo(false));
+    let j2 = build(&["(deffun-typed (lt bool) ((a char) (b char)) (< a b))"]);
+    assert_eq!(agree(&j2, "lt", &[ch(1), ch(2)]), bo(true));
+    assert_eq!(agree(&j2, "lt", &[ch(9), ch(2)]), bo(false));
+}
+
+#[test]
+fn byte_arith_via_widening() {
+    // Uppercase an ASCII lowercase byte by widening, subtracting 32, narrowing.
+    let j = build(&["(deffun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
+    assert_eq!(agree(&j, "up", &[ch(97)]), ch(65)); // 'a' -> 'A'
+}
+
+#[test]
+fn char_type_aliases_parse() {
+    // u8 and byte are accepted spellings of char.
+    let j = build(&["(deffun-typed (f u8) ((c byte)) c)"]);
+    assert_eq!(agree(&j, "f", &[ch(7)]), ch(7));
+}
+
+#[test]
+fn char_rejects_arithmetic() {
+    // Bare +/- is not defined on char: you must widen via char-code first.
+    let e = def_err("(deffun-typed (f char) ((a char) (b char)) (+ a b))");
+    assert!(
+        e.to_lowercase().contains("char") || e.contains("numeric"),
+        "got: {e}"
+    );
+}
+
+#[test]
+fn char_membrane_boxes_to_number() {
+    // From untyped Lisp: a Number flows into a char param and the char result
+    // comes back as a Number (the byte value).
+    let j = build(&["(deffun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
+    j.compile_all();
+    let out = j
+        .call_lisp("up", &[crate::LispVal::Number(97)])
+        .expect("call_lisp");
+    assert_eq!(out, crate::LispVal::Number(65));
+}
+
 // --- debug trace + structural introspection --------------------------------
 
 #[test]

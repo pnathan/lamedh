@@ -90,14 +90,14 @@
         (terpri)
         (princ "Examples:")
         (terpri)
-        (mapcar examples
-                (lambda (ex)
+        (mapcar (lambda (ex)
                   (princ "  ")
                   (prin1 (car ex))
                   (terpri)
                   (princ "  => ")
                   (prin1 (cadr ex))
-                  (terpri))))
+                  (terpri))
+                examples))
       nil))
 
 (defun help-print-see-also (syms)
@@ -107,10 +107,10 @@
         (terpri)
         (princ "See also: ")
         (princ (car syms))
-        (mapcar (cdr syms)
-                (lambda (s)
+        (mapcar (lambda (s)
                   (princ ", ")
-                  (princ s)))
+                  (princ s))
+                (cdr syms))
         (terpri))
       nil))
 
@@ -146,13 +146,13 @@
                 (terpri)
                 (princ "Arguments:")
                 (terpri)
-                (mapcar args
-                        (lambda (arg)
+                (mapcar (lambda (arg)
                           (princ "  ")
                           (princ (car arg))
                           (princ " - ")
                           (princ (cadr arg))
-                          (terpri))))
+                          (terpri))
+                        args))
               nil))
         ;; Returns
         (help-print-section "Returns" (doc-get entry 'RETURNS))
@@ -221,10 +221,10 @@
     (if cats
         (progn
           (princ (caar cats))
-          (mapcar (cdr cats)
-                  (lambda (c)
+          (mapcar (lambda (c)
                     (princ ", ")
-                    (princ (car c)))))
+                    (princ (car c)))
+                  (cdr cats)))
         (princ "(none loaded)")))
   (terpri)
   (terpri)
@@ -259,8 +259,7 @@
   (terpri)
   (princ "─────────────────────────")
   (terpri)
-  (mapcar (list-categories)
-          (lambda (cat)
+  (mapcar (lambda (cat)
             (terpri)
             (princ (car cat))
             (princ " - ")
@@ -268,7 +267,8 @@
             (terpri)
             (princ "  Symbols: ")
             (princ (length (caddr cat)))
-            (terpri)))
+            (terpri))
+          (list-categories))
   (terpri)
   t)
 
@@ -283,8 +283,7 @@
           (terpri)
           (princ "─────────────────────────")
           (terpri)
-          (mapcar syms
-                  (lambda (s)
+          (mapcar (lambda (s)
                     (princ "  ")
                     (princ s)
                     (let ((entry (get-doc s)))
@@ -299,7 +298,8 @@
                                              desc)))
                                 nil))
                           nil))
-                    (terpri)))
+                    (terpri))
+                  syms)
           (terpri)
           t)
         (progn
@@ -308,10 +308,11 @@
           (terpri)
           nil))))
 
-;; Simple substring helper (since we don't have real substring)
+;; SUBSTRING is now a real kernel primitive (issue #147); this remains as a
+;; thin alias for the existing call sites.
 (defun substring-proxy (s start end)
-  "Crude substring - just returns s for now."
-  s)
+  "Deprecated alias for SUBSTRING; kept for existing call sites."
+  (substring s start end))
 
 (defun help-search (text)
   "Search documentation for text."
@@ -328,9 +329,9 @@
   (princ "':")
   (terpri)
   ;; For now just iterate through what we have
-  (mapcar (keys HELP-DB)
-          (lambda (name)
+  (mapcar (lambda (name)
             (princ "  ")
             (princ name)
-            (terpri)))
+            (terpri))
+          (keys HELP-DB))
   (terpri))

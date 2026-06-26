@@ -665,6 +665,9 @@ fn args_to_ovals(args: &[Value]) -> Vec<OVal> {
             Value::Int(n) => OVal::I(*n),
             Value::Bool(b) => OVal::B(*b),
             Value::Float(f) => OVal::F(*f),
+            // The generator never emits char args; carry the byte value if it
+            // ever does, keeping this mapping total.
+            Value::Char(b) => OVal::I(*b as i64),
         })
         .collect()
 }

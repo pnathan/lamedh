@@ -92,42 +92,42 @@ fn test_assoc_complex_values() {
 #[test]
 fn test_mapcar_simple() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '(1 2 3) (lambda (x) (* x 2)))", &env);
+    let output = eval_line("(mapcar (lambda (x) (* x 2)) '(1 2 3))", &env);
     assert_eq!(output, "(2 4 6)");
 }
 
 #[test]
 fn test_mapcar_with_car() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '((a 1) (b 2) (c 3)) car)", &env);
+    let output = eval_line("(mapcar car '((a 1) (b 2) (c 3)))", &env);
     assert_eq!(output, "(A B C)");
 }
 
 #[test]
 fn test_mapcar_empty_list() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '() (lambda (x) x))", &env);
+    let output = eval_line("(mapcar (lambda (x) x) '())", &env);
     assert_eq!(output, "()");
 }
 
 #[test]
 fn test_mapcar_identity() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '(1 2 3) (lambda (x) x))", &env);
+    let output = eval_line("(mapcar (lambda (x) x) '(1 2 3))", &env);
     assert_eq!(output, "(1 2 3)");
 }
 
 #[test]
 fn test_mapcar_add_one() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '(5 10 15) (lambda (n) (+ n 1)))", &env);
+    let output = eval_line("(mapcar (lambda (n) (+ n 1)) '(5 10 15))", &env);
     assert_eq!(output, "(6 11 16)");
 }
 
 #[test]
 fn test_mapcar_with_atom_check() {
     let env = env_with_stdlib();
-    let output = eval_line("(mapcar '(1 (2) 3 (4)) atom)", &env);
+    let output = eval_line("(mapcar atom '(1 (2) 3 (4)))", &env);
     assert_eq!(output, "(T () T ())");
 }
 
@@ -135,28 +135,28 @@ fn test_mapcar_with_atom_check() {
 #[test]
 fn test_maplist_simple() {
     let env = env_with_stdlib();
-    let output = eval_line("(maplist '(1 2 3) (lambda (x) (car x)))", &env);
+    let output = eval_line("(maplist (lambda (x) (car x)) '(1 2 3))", &env);
     assert_eq!(output, "(1 2 3)");
 }
 
 #[test]
 fn test_maplist_count_elements() {
     let env = env_with_stdlib();
-    let output = eval_line("(maplist '(a b c d) length)", &env);
+    let output = eval_line("(maplist length '(a b c d))", &env);
     assert_eq!(output, "(4 3 2 1)");
 }
 
 #[test]
 fn test_maplist_empty() {
     let env = env_with_stdlib();
-    let output = eval_line("(maplist '() car)", &env);
+    let output = eval_line("(maplist car '())", &env);
     assert_eq!(output, "()");
 }
 
 #[test]
 fn test_maplist_identity() {
     let env = env_with_stdlib();
-    let output = eval_line("(maplist '(a b) (lambda (x) x))", &env);
+    let output = eval_line("(maplist (lambda (x) x) '(a b))", &env);
     assert_eq!(output, "((A B) (B))");
 }
 
@@ -230,7 +230,7 @@ fn test_rplacd_create_dotted_pair() {
 fn test_mapcar_with_subst() {
     let env = env_with_stdlib();
     let output = eval_line(
-        "(mapcar '((a b) (c a) (a a)) (lambda (lst) (subst 'x 'a lst)))",
+        "(mapcar (lambda (lst) (subst 'x 'a lst)) '((a b) (c a) (a a)))",
         &env,
     );
     assert_eq!(output, "((X B) (C X) (X X))");
@@ -240,6 +240,6 @@ fn test_mapcar_with_subst() {
 fn test_assoc_with_mapcar() {
     let env = env_with_stdlib();
     eval_line("(def alist '((a 1) (b 2) (c 3)))", &env);
-    let output = eval_line("(mapcar '(a c b) (lambda (key) (assoc key alist)))", &env);
+    let output = eval_line("(mapcar (lambda (key) (assoc key alist)) '(a c b))", &env);
     assert_eq!(output, "((A 1) (C 3) (B 2))");
 }

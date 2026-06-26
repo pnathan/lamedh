@@ -546,20 +546,20 @@
   (list
     (cons 'NAME 'mapcar)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(mapcar list function)")
+    (cons 'SYNTAX "(mapcar function list)")
     (cons 'CATEGORY 'lists)
     (cons 'DESCRIPTION "Applies function to each element of list, returns list of results.")
-    (cons 'EXAMPLES '(((mapcar '(1 2 3) (lambda (x) (* x 2))) (2 4 6))))
+    (cons 'EXAMPLES '(((mapcar (lambda (x) (* x 2)) '(1 2 3)) (2 4 6))))
     (cons 'SEE-ALSO '(maplist apply))))
 
 (register-doc 'maplist
   (list
     (cons 'NAME 'maplist)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(maplist list function)")
+    (cons 'SYNTAX "(maplist function list)")
     (cons 'CATEGORY 'lists)
     (cons 'DESCRIPTION "Applies function to successive tails of list.")
-    (cons 'EXAMPLES '(((maplist '(a b c) (lambda (x) (length x))) (3 2 1))))
+    (cons 'EXAMPLES '(((maplist (lambda (x) (length x)) '(a b c)) (3 2 1))))
     (cons 'SEE-ALSO '(mapcar))))
 
 (register-doc 'subst

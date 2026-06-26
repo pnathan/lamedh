@@ -659,6 +659,114 @@ impl Environment {
         // Note: PLUS/DIFFERENCE/TIMES/QUOTIENT/LESSP/GREATERP/REMAINDER
         // are registered above with the other Lisp 1.5 spec functions.
 
+        // Arrays (Lisp 1.5 Appendix A). The primitives existed and were
+        // dispatched but were never bound to names; the manual documents
+        // ARRAY/FETCH/STORE/ARRAY-LENGTH, with MAKE-ARRAY/ARRAY-FETCH/ARRAY-STORE
+        // as longer aliases.
+        env.set(
+            "ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeArray),
+        );
+        env.set(
+            "MAKE-ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeArray),
+        );
+        env.set(
+            "FETCH".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayFetch),
+        );
+        env.set(
+            "ARRAY-FETCH".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayFetch),
+        );
+        env.set(
+            "STORE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayStore),
+        );
+        env.set(
+            "ARRAY-STORE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayStore),
+        );
+        env.set(
+            "ARRAY-LENGTH".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayLength),
+        );
+
+        // Sorting (stable, non-destructive; takes a comparator predicate)
+        env.set("SORT".to_string(), LispVal::Builtin(BuiltinFunc::Sort));
+
+        // Math library (implemented in Rust: f64 transcendentals, float->int
+        // rounding, i64 integer math)
+        env.set("SQRT".to_string(), LispVal::Builtin(BuiltinFunc::Sqrt));
+        env.set("SIN".to_string(), LispVal::Builtin(BuiltinFunc::Sin));
+        env.set("COS".to_string(), LispVal::Builtin(BuiltinFunc::Cos));
+        env.set("TAN".to_string(), LispVal::Builtin(BuiltinFunc::Tan));
+        env.set("LOG".to_string(), LispVal::Builtin(BuiltinFunc::Log));
+        env.set("EXP".to_string(), LispVal::Builtin(BuiltinFunc::Exp));
+        env.set("FLOOR".to_string(), LispVal::Builtin(BuiltinFunc::Floor));
+        env.set(
+            "CEILING".to_string(),
+            LispVal::Builtin(BuiltinFunc::Ceiling),
+        );
+        env.set("ROUND".to_string(), LispVal::Builtin(BuiltinFunc::Round));
+        env.set(
+            "TRUNCATE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Truncate),
+        );
+        env.set("GCD".to_string(), LispVal::Builtin(BuiltinFunc::Gcd));
+        env.set("LCM".to_string(), LispVal::Builtin(BuiltinFunc::Lcm));
+        env.set("ISQRT".to_string(), LispVal::Builtin(BuiltinFunc::Isqrt));
+        env.set("SIGNUM".to_string(), LispVal::Builtin(BuiltinFunc::Signum));
+
+        // String operations (kernel primitives; the convenience layer is in Lisp)
+        env.set(
+            "STRING-LENGTH".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringLength),
+        );
+        env.set(
+            "SUBSTRING".to_string(),
+            LispVal::Builtin(BuiltinFunc::Substring),
+        );
+        env.set(
+            "CHAR-CODE".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharCode),
+        );
+        env.set(
+            "CODE-CHAR".to_string(),
+            LispVal::Builtin(BuiltinFunc::CodeChar),
+        );
+        env.set(
+            "STRING->NUMBER".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringToNumber),
+        );
+        env.set(
+            "NUMBER->STRING".to_string(),
+            LispVal::Builtin(BuiltinFunc::NumberToString),
+        );
+        env.set(
+            "PRIN1-TO-STRING".to_string(),
+            LispVal::Builtin(BuiltinFunc::Prin1ToString),
+        );
+        env.set(
+            "PRINC-TO-STRING".to_string(),
+            LispVal::Builtin(BuiltinFunc::PrincToString),
+        );
+
+        // First-class error/condition values
+        env.set(
+            "MAKE-ERROR".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeError),
+        );
+        env.set("ERROR-P".to_string(), LispVal::Builtin(BuiltinFunc::ErrorP));
+        env.set(
+            "ERROR-MESSAGE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ErrorMessage),
+        );
+        env.set(
+            "ERROR-DATA".to_string(),
+            LispVal::Builtin(BuiltinFunc::ErrorData),
+        );
+
         env
     }
 

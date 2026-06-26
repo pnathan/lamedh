@@ -1,13 +1,13 @@
 ;; Higher-order and substitution/association list processing.
 
 (deftest proc-mapcar
-  ;; argument order is (mapcar list fn)
-  (assert-equal (mapcar '(1 2 3) (lambda (x) (* x x))) '(1 4 9))
-  (assert-equal (mapcar '(1 2 3) (lambda (x) (+ x 1))) '(2 3 4)))
+  ;; argument order is (mapcar fn list) — function first, like Common Lisp
+  (assert-equal (mapcar (lambda (x) (* x x)) '(1 2 3)) '(1 4 9))
+  (assert-equal (mapcar (lambda (x) (+ x 1)) '(1 2 3)) '(2 3 4)))
 
 (deftest proc-maplist
   ;; maplist applies fn to successive cdrs
-  (assert-equal (maplist '(1 2 3) (lambda (l) l)) '((1 2 3) (2 3) (3))))
+  (assert-equal (maplist (lambda (l) l) '(1 2 3)) '((1 2 3) (2 3) (3))))
 
 (deftest proc-assoc
   (assert-equal (assoc 'b '((a . 1) (b . 2))) '(b . 2))

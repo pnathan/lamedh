@@ -49,13 +49,13 @@
     ((eq (car form) 'lambda)
      (if (member sym (cadr form))
          0
-         (opt-sum-list (mapcar (cddr form) (lambda (b) (count-refs sym b))))))
+         (opt-sum-list (mapcar (lambda (b) (count-refs sym b)) (cddr form)))))
     ;; (let ((v e) ...) body) - count inits freely, body only if sym not bound
     ((eq (car form) 'let)
      (let* ((bindings (cadr form))
-            (vars     (mapcar bindings (lambda (b) (car b))))
-            (inits    (mapcar bindings (lambda (b) (cadr b))))
-            (init-refs (opt-sum-list (mapcar inits (lambda (e) (count-refs sym e)))))
+            (vars     (mapcar (lambda (b) (car b)) bindings))
+            (inits    (mapcar (lambda (b) (cadr b)) bindings))
+            (init-refs (opt-sum-list (mapcar (lambda (e) (count-refs sym e)) inits)))
             (body-refs (if (member sym vars)
                            0
                            (count-refs sym (caddr form)))))
@@ -64,7 +64,7 @@
     ((eq (car form) 'prog)
      (if (member sym (cadr form))
          0
-         (opt-sum-list (mapcar (cddr form) (lambda (s) (count-refs sym s))))))
+         (opt-sum-list (mapcar (lambda (s) (count-refs sym s)) (cddr form)))))
     ;; General: walk car and cdr
     (t (+ (count-refs sym (car form))
           (count-refs sym (cdr form))))))
@@ -91,7 +91,7 @@
      ;; Optimize lambda body
      (cons 'lambda
            (cons (cadr form)
-                 (mapcar (cddr form) #'opt-pass))))
+                 (mapcar #'opt-pass (cddr form)))))
     ((eq (car form) 'let)
      (opt-pass-let form))
     ((eq (car form) 'progn)
@@ -99,7 +99,7 @@
     ((eq (car form) 'if)
      (opt-pass-if form))
     ;; General: optimize all sub-expressions
-    (t (mapcar form #'opt-pass))))
+    (t (mapcar #'opt-pass form))))
 
 ;;; ── LET pass ──────────────────────────────────────────────────────────────
 
@@ -108,8 +108,8 @@
   (let* ((bindings (cadr form))
          (body     (caddr form))
          ;; First, optimize all init expressions
-         (opt-bindings (mapcar bindings
-                               (lambda (b) (list (car b) (opt-pass (cadr b))))))
+         (opt-bindings (mapcar (lambda (b) (list (car b) (opt-pass (cadr b))))
+                               bindings))
          ;; Filter: remove dead pure bindings, inline atom-constant bindings
          (reduced  (opt-reduce-bindings opt-bindings body)))
     ;; reduced = (new-bindings . new-body)
@@ -142,9 +142,9 @@
                (not (null init)))
           ;; Substitute init for var in remaining bindings and body
           (let* ((new-body  (subst init var body))
-                 (new-rest  (mapcar rest
-                                    (lambda (rb)
-                                      (list (car rb) (subst init var (cadr rb)))))))
+                 (new-rest  (mapcar (lambda (rb)
+                                      (list (car rb) (subst init var (cadr rb))))
+                                    rest)))
             (opt-reduce-bindings new-rest new-body)))
          ;; Keep binding, recurse on rest
          (t

@@ -53,7 +53,7 @@ fn test_apply_unbound_function() {
 fn test_maplist_three_args() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(maplist '(1 2) 'car 'extra)", &env);
+        let result = eval_line("(maplist 'car '(1 2) 'extra)", &env);
         assert!(
             result.contains("Error"),
             "maplist with 3 args should error; got: {result}"
@@ -73,7 +73,7 @@ fn test_maplist_three_args() {
 fn test_mapcar_three_args() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(mapcar '(1 2) 'car 'extra)", &env);
+        let result = eval_line("(mapcar 'car '(1 2) 'extra)", &env);
         assert!(
             result.contains("Error"),
             "mapcar with 3 args should error; got: {result}"

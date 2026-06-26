@@ -23,8 +23,12 @@
 //!   runs, so a swapped-out edition survives until in-flight callers return (the
 //!   `Arc`/`ArcSwap` upgrade is #108).
 //!
-//! Core: `int64`/`float64`/`bool`; `+ - * / mod` and comparisons `< > <= >= = /=`
-//! (operand-type directed), `and`/`or`/`not`, `if`, `let-typed`, and calls.
+//! Core: `int64`/`float64`/`bool`/`char` (= `u8`/`byte`); `+ - * / mod` and
+//! comparisons `< > <= >= = /=` (operand-type directed), `and`/`or`/`not`, `if`,
+//! `let-typed`, and calls. `char` is an unboxed byte (`0..=255` in a `u64`):
+//! it compares as an integer, converts to/from `int64` via `char-code` /
+//! `code-char` (narrowing masks to a byte), and crosses the membrane as a
+//! `LispVal::Number` (issue #136).
 //! Integer arithmetic wraps and integer `/`,`mod` by zero yield `0` (no panics);
 //! this diverges from the checked tree-walker and is revisited with #67.
 
@@ -46,6 +50,10 @@ pub enum Ty {
     Int64,
     Float64,
     Bool,
+    /// A byte / `u8` scalar (issue #136). Runtime representation is the byte
+    /// value (`0..=255`) held in the low bits of the `u64` word; it slots into
+    /// the unboxed scalar tier alongside `int64`/`float64`/`bool`.
+    Char,
 }
 
 impl Ty {
@@ -54,13 +62,27 @@ impl Ty {
             "INT64" => Some(Ty::Int64),
             "FLOAT64" => Some(Ty::Float64),
             "BOOL" => Some(Ty::Bool),
+            "CHAR" | "U8" | "BYTE" => Some(Ty::Char),
             _ => None,
         }
     }
 
+    /// Arithmetic interpretation (`+ - * /`). `char` is intentionally excluded:
+    /// byte math is done by widening to `int64` (`char-code`) and narrowing back
+    /// (`code-char`).
     fn as_num(self) -> Option<NumTy> {
         match self {
             Ty::Int64 => Some(NumTy::I),
+            Ty::Float64 => Some(NumTy::F),
+            Ty::Bool | Ty::Char => None,
+        }
+    }
+
+    /// Comparison interpretation. `char` compares as an unsigned-small integer
+    /// (its word holds a `0..=255` byte value), so it reuses the integer path.
+    fn cmp_num(self) -> Option<NumTy> {
+        match self {
+            Ty::Int64 | Ty::Char => Some(NumTy::I),
             Ty::Float64 => Some(NumTy::F),
             Ty::Bool => None,
         }
@@ -80,6 +102,9 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// A byte value (`0..=255`) at the boundary. Boxes to/from `LispVal::Number`
+    /// since there is no `LispVal::Char` (issue #136 membrane decision).
+    Char(u8),
 }
 
 impl Value {
@@ -88,6 +113,10 @@ impl Value {
             (Value::Int(n), Ty::Int64) => Ok(n as u64),
             (Value::Float(f), Ty::Float64) => Ok(f.to_bits()),
             (Value::Bool(b), Ty::Bool) => Ok(b as u64),
+            (Value::Char(b), Ty::Char) => Ok(b as u64),
+            // Membrane coercion: an untyped Number flowing into a `char`
+            // parameter is masked to a byte (the byte value).
+            (Value::Int(n), Ty::Char) => Ok((n as u8) as u64),
             _ => Err(format!("value {self:?} does not match type {ty:?}")),
         }
     }
@@ -97,6 +126,7 @@ impl Value {
             Ty::Int64 => Value::Int(w as i64),
             Ty::Float64 => Value::Float(f64::from_bits(w)),
             Ty::Bool => Value::Bool(w != 0),
+            Ty::Char => Value::Char(w as u8),
         }
     }
 }
@@ -151,6 +181,10 @@ pub enum Core {
     If(Box<Core>, Box<Core>, Box<Core>),
     Let(usize, Box<Core>, Box<Core>),
     Call(usize, Vec<Core>),
+    /// Narrow an `int64` word to a `char` by masking to a byte (`code-char`).
+    /// The widening direction (`char-code`) needs no node: a `char` word already
+    /// holds the byte value, so it is reused unchanged at type `int64`.
+    ToChar(Box<Core>),
 }
 
 /// Public mirror of [`NumTy`] so [`Core`] can derive `Debug`/`Clone` cleanly.
@@ -219,6 +253,8 @@ impl Cx<'_> {
                     "AND" | "OR" => self.elab_logic(&head, args, scope, max),
                     "IF" => self.elab_if(args, scope, max),
                     "LET-TYPED" => self.elab_let(args, scope, max),
+                    "CHAR-CODE" => self.elab_char_code(args, scope, max),
+                    "CODE-CHAR" => self.elab_code_char(args, scope, max),
                     _ => self.elab_call(&head, args, scope, max),
                 }
             }
@@ -273,8 +309,8 @@ impl Cx<'_> {
             return Err(format!("`{op}` operands disagree: {ta:?} vs {tb:?}"));
         }
         let num = ta
-            .as_num()
-            .ok_or_else(|| format!("`{op}` expects numeric operands, got {ta:?}"))?;
+            .cmp_num()
+            .ok_or_else(|| format!("`{op}` expects comparable operands, got {ta:?}"))?;
         let cop = match op {
             "<" => CmpOp::Lt,
             ">" => CmpOp::Gt,
@@ -437,6 +473,41 @@ impl Cx<'_> {
         Ok((Core::Call(id, arg_cores), ret))
     }
 
+    /// `(char-code c)` : char -> int64. Widening: the char word already holds
+    /// the byte value, so the core is reused unchanged, only its type changes.
+    fn elab_char_code(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`char-code` expects 1 arg, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        if ta != Ty::Char {
+            return Err(format!("`char-code` expects char, got {ta:?}"));
+        }
+        Ok((a, Ty::Int64))
+    }
+
+    /// `(code-char n)` : int64 -> char. Narrowing: mask the word to a byte.
+    fn elab_code_char(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`code-char` expects 1 arg, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        if ta != Ty::Int64 {
+            return Err(format!("`code-char` expects int64, got {ta:?}"));
+        }
+        Ok((Core::ToChar(Box::new(a)), Ty::Char))
+    }
+
     fn elab_body(
         &self,
         forms: &[LispVal],
@@ -560,6 +631,7 @@ fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             let vals: Vec<u64> = args.iter().map(|a| eval_core(a, env, ctx)).collect();
             ctx.call(*id, &vals)
         }
+        Core::ToChar(a) => eval_core(a, env, ctx) & 0xff,
     }
 }
 
@@ -679,6 +751,10 @@ fn eval_core_traced(
                 .collect();
             step!("call", ctx.call(*id, &vals), NO_SLOT, *id)
         }
+        Core::ToChar(a) => {
+            let v = eval_core_traced(a, env, ctx, depth + 1, log);
+            step!("tochar", v & 0xff, NO_SLOT, NO_CALLEE)
+        }
     }
 }
 
@@ -686,7 +762,7 @@ fn eval_core_traced(
 pub fn core_node_count(core: &Core) -> usize {
     1 + match core {
         Core::LitI(_) | Core::LitF(_) | Core::Var(_) => 0,
-        Core::Not(a) => core_node_count(a),
+        Core::Not(a) | Core::ToChar(a) => core_node_count(a),
         Core::Bin(_, _, a, b)
         | Core::Cmp(_, _, a, b)
         | Core::And(a, b)
@@ -712,7 +788,7 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
                 Err(format!("Var slot {i} out of bounds (n_slots={n_slots})"))
             }
         }
-        Core::Not(a) => verify_core(a, n_slots, n_funcs),
+        Core::Not(a) | Core::ToChar(a) => verify_core(a, n_slots, n_funcs),
         Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) | Core::And(a, b) | Core::Or(a, b) => {
             verify_core(a, n_slots, n_funcs)?;
             verify_core(b, n_slots, n_funcs)
@@ -833,6 +909,10 @@ pub fn compile(core: &Core) -> Compiled {
                 }
                 c.call(id, &vals)
             })
+        }
+        Core::ToChar(a) => {
+            let ca = compile(a);
+            Rc::new(move |e, c| ca(e, c) & 0xff)
         }
     }
 }
@@ -1161,6 +1241,7 @@ impl Jit {
             Value::Int(n) => LispVal::Number(n),
             Value::Float(f) => LispVal::Float(f),
             Value::Bool(b) => LispVal::Number(b as i64),
+            Value::Char(b) => LispVal::Number(b as i64),
         })
     }
 
