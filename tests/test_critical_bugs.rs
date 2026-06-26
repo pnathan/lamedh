@@ -348,13 +348,16 @@ fn test_label_self_reference_is_caught() {
 }
 
 #[test]
-#[ignore = "indirect circular LABEL (LABEL a (LABEL b a)) is non-terminating and \
-            is not caught by the eval-depth guard; running it hangs CI. Tracked \
-            as a latent interpreter bug — un-ignore once cycle detection lands."]
 fn test_label_circular_reference() {
-    // KNOWN HANG: kept ignored on purpose; see the attribute above.
+    // FIXED (#153): an indirect circular LABEL no longer hangs. The symbol→LABEL
+    // re-evaluation now goes through the depth-counted `eval`, so the cycle is
+    // bounded by the eval-depth guard and surfaces as an error instead of
+    // spinning forever in the trampoline.
     let result = eval_str_big("(LABEL a (LABEL b a))");
-    println!("Circular LABEL: {result:?}");
+    assert!(
+        result.is_err(),
+        "indirect circular LABEL should error gracefully, got {result:?}"
+    );
 }
 
 // ============================================================================
