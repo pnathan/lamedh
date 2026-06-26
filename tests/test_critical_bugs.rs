@@ -685,3 +685,33 @@ fn test_apply_with_improper_list() {
     let result = eval_str("(APPLY + '(1 2 . 3))");
     assert!(result.is_err(), "APPLY with improper list should error");
 }
+
+// ============================================================================
+// BUG #156: RefCell double-borrow panic when a symbol-mutating builtin is
+// called with its own name as the call head AND as the target symbol.
+// Previously `(putp 'putp ...)` panicked with "RefCell already borrowed"
+// because the special-form dispatch held an immutable borrow on the head
+// symbol while `apply` tried to borrow_mut the same interned symbol.
+// ============================================================================
+
+#[test]
+fn test_putp_on_own_symbol_does_not_panic() {
+    // The canonical repro from the issue: must return T, not panic.
+    let result = eval_str("(PUTP 'PUTP \"docstring\" \"some text\")");
+    assert!(
+        result.is_ok(),
+        "(putp 'putp ...) should not panic: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_putp_getp_roundtrip_on_own_symbol() {
+    // Setting then reading a property on the builtin's own symbol must work.
+    let result = eval_str("(PROGN (PUTP 'PUTP \"k\" \"v\") (GETP 'PUTP \"k\"))");
+    assert_eq!(
+        result,
+        Ok(LispVal::String("v".to_string())),
+        "putp/getp on the head symbol should round-trip"
+    );
+}
