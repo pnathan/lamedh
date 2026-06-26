@@ -92,6 +92,16 @@
   (assert-equal 'a 'a)
   (assert-true (consp '(1 2 3))))
 
+(deftest hex-literals
+  (assert-equal ffh 255)
+  (assert-equal 0ffh 255)
+  (assert-equal FFH 255)
+  (assert-equal 1ah 26)
+  (assert-equal 10h 16)
+  (assert-equal (+ ffh 1) 256)
+  (assert-equal 'A' 65)        ; char literal still distinct from hex
+  (assert-equal 0ah 10))
+
 ;;; ---- #144 sort -----------------------------------------------------------
 
 (deftest sort-basic
