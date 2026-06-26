@@ -11,6 +11,15 @@ fn eval_str(input: &str) -> Result<LispVal, String> {
     eval(&expr, &env).map_err(|e| format!("Eval error: {:?}", e))
 }
 
+/// Like [`eval_str`], but on the large interpreter stack so deep (but finite)
+/// recursion reaches the depth guard / completes instead of overflowing the
+/// small default test-thread stack. Returns the printed value (a `Send` type;
+/// `LispVal` itself is `!Send` and cannot cross the stack-thread boundary).
+fn eval_str_big(input: &str) -> Result<String, String> {
+    let input = input.to_string();
+    lamedh::with_large_stack(move || eval_str(&input).map(|v| lamedh::printer::print(&v)))
+}
+
 // ============================================================================
 // CRITICAL SEVERITY - BUG #1: Negative Index Wraparound
 // ============================================================================
@@ -73,18 +82,17 @@ fn test_index_boundary_cases() {
 // ============================================================================
 
 #[test]
-#[ignore] // Ignored because it would hang the test suite
-fn test_deeply_nested_list_hangs() {
-    // This test documents that deeply nested lists could cause issues
-    // In a real circular list, this would hang forever
+fn test_deeply_wide_call_sums() {
+    // A very wide (but shallow) call: (+ 1 1 ... 1) with 100_000 operands.
+    // This is finite work — it must compute, not hang.
     let mut deep = "(+ ".to_string();
     for _ in 0..100000 {
         deep.push_str("1 ");
     }
     deep.push(')');
 
-    let result = eval_str(&deep);
-    println!("Deep nesting result: {:?}", result);
+    let result = eval_str_big(&deep);
+    assert_eq!(result, Ok("100000".to_string()));
 }
 
 // ============================================================================
@@ -329,19 +337,24 @@ fn test_leftshift_63_boundary() {
 // ============================================================================
 
 #[test]
-#[ignore] // Ignored because it causes stack overflow
-fn test_label_self_reference_stack_overflow() {
-    let result = eval_str("(LABEL x x)");
-    println!("LABEL x x: {:?}", result);
-    // This will cause stack overflow
+fn test_label_self_reference_is_caught() {
+    // (LABEL x x) is a direct self-reference; the evaluator must reject it
+    // gracefully rather than overflowing the stack.
+    let result = eval_str_big("(LABEL x x)");
+    assert!(
+        result.is_err(),
+        "pathological (LABEL x x) should error, got {result:?}"
+    );
 }
 
 #[test]
-#[ignore] // Ignored because it causes stack overflow
+#[ignore = "indirect circular LABEL (LABEL a (LABEL b a)) is non-terminating and \
+            is not caught by the eval-depth guard; running it hangs CI. Tracked \
+            as a latent interpreter bug — un-ignore once cycle detection lands."]
 fn test_label_circular_reference() {
-    let input = "(LABEL a (LABEL b a))";
-    let result = eval_str(input);
-    println!("Circular LABEL: {:?}", result);
+    // KNOWN HANG: kept ignored on purpose; see the attribute above.
+    let result = eval_str_big("(LABEL a (LABEL b a))");
+    println!("Circular LABEL: {result:?}");
 }
 
 // ============================================================================
@@ -508,8 +521,8 @@ fn test_prog_go_to_duplicate_label() {
 // ============================================================================
 
 #[test]
-#[ignore] // Might stack overflow
 fn test_deeply_nested_quasiquote() {
+    // Deep but finite quasiquote nesting must evaluate on the large stack.
     let mut s = "`".to_string();
     for _ in 0..1000 {
         s.push_str("(a ");
@@ -518,8 +531,11 @@ fn test_deeply_nested_quasiquote() {
         s.push(')');
     }
 
-    let result = eval_str(&s);
-    println!("Deep quasiquote result (len): {:?}", result);
+    let result = eval_str_big(&s);
+    assert!(
+        result.is_ok(),
+        "deep quasiquote should evaluate, got {result:?}"
+    );
 }
 
 #[test]
