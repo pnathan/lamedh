@@ -5,10 +5,15 @@
 //! later, as a `jit` cargo feature).
 //!
 //! ## What works
-//! - **Type membrane.** `(deffun-typed (name ret) ((arg ty)...) body...)` is
-//!   elaborated by a monomorphic bidirectional checker that runs *before* runtime
-//!   and rejects ill-typed definitions. Elaboration *is* type checking
+//! - **Type membrane + inference.** `(deffun-typed (name ret) ((arg ty)...)
+//!   body...)` is elaborated by a bidirectional checker that runs *before*
+//!   runtime and rejects ill-typed definitions. Elaboration *is* type checking
 //!   (Turnstile-style): [`Cx::elab`] returns the typed [`Core`] and its [`Ty`].
+//!   Type agreement is decided by HM-lite **unification** ([`infer`]): explicit
+//!   annotations are principal-type pins, and a `let-typed` binding may omit its
+//!   type to have it **inferred** from the initializer. Every type is `resolve`d
+//!   to a concrete scalar before a definition is accepted (issue #135), the
+//!   substrate the array/string element types (#137/#138) monomorphize on.
 //! - **Basic compile.** [`compile`] lowers the typed core to a tree of closures
 //!   over *unboxed* machine words. Runtime values are raw `u64`s: `int64` is the
 //!   word, `float64` is `f64::to_bits`, `bool` is `0`/`1`. The static type tells
@@ -40,6 +45,9 @@ use std::rc::Rc;
 #[cfg(feature = "jit")]
 mod native;
 
+mod infer;
+use infer::Infer;
+
 // ---------------------------------------------------------------------------
 // Types and runtime values.
 // ---------------------------------------------------------------------------
@@ -54,6 +62,12 @@ pub enum Ty {
     /// value (`0..=255`) held in the low bits of the `u64` word; it slots into
     /// the unboxed scalar tier alongside `int64`/`float64`/`bool`.
     Char,
+    /// A type variable (issue #135): an as-yet-undetermined type, identified by
+    /// a fresh id. Variables exist only *during* elaboration; [`Infer::resolve`]
+    /// must drive every one to a concrete scalar before a definition is
+    /// accepted, so no `Var` is ever stored in a function signature or reaches
+    /// the runtime membrane.
+    Var(u32),
 }
 
 impl Ty {
@@ -74,7 +88,7 @@ impl Ty {
         match self {
             Ty::Int64 => Some(NumTy::I),
             Ty::Float64 => Some(NumTy::F),
-            Ty::Bool | Ty::Char => None,
+            Ty::Bool | Ty::Char | Ty::Var(_) => None,
         }
     }
 
@@ -84,7 +98,7 @@ impl Ty {
         match self {
             Ty::Int64 | Ty::Char => Some(NumTy::I),
             Ty::Float64 => Some(NumTy::F),
-            Ty::Bool => None,
+            Ty::Bool | Ty::Var(_) => None,
         }
     }
 }
@@ -98,6 +112,9 @@ pub fn ty_name(t: Ty) -> &'static str {
         Ty::Float64 => "float64",
         Ty::Bool => "bool",
         Ty::Char => "char",
+        // A variable should never survive to a signature/introspection site; "?"
+        // is a defensive placeholder (the id is omitted to keep this `&'static`).
+        Ty::Var(_) => "?",
     }
 }
 
@@ -139,6 +156,9 @@ impl Value {
             Ty::Float64 => Value::Float(f64::from_bits(w)),
             Ty::Bool => Value::Bool(w != 0),
             Ty::Char => Value::Char(w as u8),
+            // Signatures are fully resolved before storage (see [`Ty::Var`]), so
+            // a variable never crosses the membrane.
+            Ty::Var(_) => unreachable!("from_word on an unresolved type variable"),
         }
     }
 }
@@ -226,9 +246,31 @@ type Scope = Vec<(String, Ty)>;
 struct Cx<'a> {
     funcs: &'a [Rc<TypedFn>],
     by_name: &'a HashMap<String, usize>,
+    /// The inference state for this definition: fresh variables + substitution
+    /// (issue #135). Held behind a `RefCell` so the elaboration methods keep
+    /// their `&self` signatures while still threading one shared substitution.
+    infer: RefCell<Infer>,
 }
 
 impl Cx<'_> {
+    /// A fresh type variable from this definition's inference state.
+    fn fresh(&self) -> Ty {
+        self.infer.borrow_mut().fresh()
+    }
+    /// Unify two types, extending the substitution (or report the clash).
+    fn unify(&self, a: Ty, b: Ty) -> Result<(), String> {
+        self.infer.borrow_mut().unify(a, b)
+    }
+    /// Read a type's current representative under the substitution (for
+    /// diagnostics; may still be a variable).
+    fn walk(&self, t: Ty) -> Ty {
+        self.infer.borrow().walk(t)
+    }
+    /// Resolve a type to a concrete scalar, erroring if it is still ambiguous.
+    fn resolve(&self, t: Ty) -> Result<Ty, String> {
+        self.infer.borrow().resolve(t)
+    }
+
     fn elab(
         &self,
         form: &LispVal,
@@ -286,12 +328,19 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if ta != tb {
-            return Err(format!("`{op}` operands disagree: {ta:?} vs {tb:?}"));
+        if self.unify(ta, tb).is_err() {
+            return Err(format!(
+                "`{op}` operands disagree: {:?} vs {:?}",
+                self.walk(ta),
+                self.walk(tb)
+            ));
         }
-        let num = ta
+        let rt = self
+            .resolve(ta)
+            .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
+        let num = rt
             .as_num()
-            .ok_or_else(|| format!("`{op}` expects numeric operands, got {ta:?}"))?;
+            .ok_or_else(|| format!("`{op}` expects numeric operands, got {rt:?}"))?;
         let bop = match op {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
@@ -302,7 +351,7 @@ impl Cx<'_> {
         if matches!(bop, BinOp::Mod) && !matches!(num, NumTy::I) {
             return Err("`mod` is int64-only".to_string());
         }
-        Ok((Core::Bin(num.into(), bop, Box::new(a), Box::new(b)), ta))
+        Ok((Core::Bin(num.into(), bop, Box::new(a), Box::new(b)), rt))
     }
 
     fn elab_cmp(
@@ -317,12 +366,19 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if ta != tb {
-            return Err(format!("`{op}` operands disagree: {ta:?} vs {tb:?}"));
+        if self.unify(ta, tb).is_err() {
+            return Err(format!(
+                "`{op}` operands disagree: {:?} vs {:?}",
+                self.walk(ta),
+                self.walk(tb)
+            ));
         }
-        let num = ta
+        let rt = self
+            .resolve(ta)
+            .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
+        let num = rt
             .cmp_num()
-            .ok_or_else(|| format!("`{op}` expects comparable operands, got {ta:?}"))?;
+            .ok_or_else(|| format!("`{op}` expects comparable operands, got {rt:?}"))?;
         let cop = match op {
             "<" => CmpOp::Lt,
             ">" => CmpOp::Gt,
@@ -347,8 +403,8 @@ impl Cx<'_> {
             return Err(format!("`not` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if ta != Ty::Bool {
-            return Err(format!("`not` expects bool, got {ta:?}"));
+        if self.unify(ta, Ty::Bool).is_err() {
+            return Err(format!("`not` expects bool, got {:?}", self.walk(ta)));
         }
         Ok((Core::Not(Box::new(a)), Ty::Bool))
     }
@@ -365,9 +421,11 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if ta != Ty::Bool || tb != Ty::Bool {
+        if self.unify(ta, Ty::Bool).is_err() || self.unify(tb, Ty::Bool).is_err() {
             return Err(format!(
-                "`{op}` expects bool operands, got {ta:?} and {tb:?}"
+                "`{op}` expects bool operands, got {:?} and {:?}",
+                self.walk(ta),
+                self.walk(tb)
             ));
         }
         let node = if op == "AND" {
@@ -391,18 +449,28 @@ impl Cx<'_> {
             ));
         }
         let (c, tc) = self.elab(&args[0], scope, max)?;
-        if tc != Ty::Bool {
-            return Err(format!("`if` condition must be bool, got {tc:?}"));
+        if self.unify(tc, Ty::Bool).is_err() {
+            return Err(format!(
+                "`if` condition must be bool, got {:?}",
+                self.walk(tc)
+            ));
         }
         let saved = scope.len();
         let (t, tt) = self.elab(&args[1], scope, max)?;
         scope.truncate(saved);
         let (e, te) = self.elab(&args[2], scope, max)?;
         scope.truncate(saved);
-        if tt != te {
-            return Err(format!("`if` branches disagree: {tt:?} vs {te:?}"));
+        if self.unify(tt, te).is_err() {
+            return Err(format!(
+                "`if` branches disagree: {:?} vs {:?}",
+                self.walk(tt),
+                self.walk(te)
+            ));
         }
-        Ok((Core::If(Box::new(c), Box::new(t), Box::new(e)), tt))
+        Ok((
+            Core::If(Box::new(c), Box::new(t), Box::new(e)),
+            self.walk(tt),
+        ))
     }
 
     fn elab_let(
@@ -423,19 +491,47 @@ impl Cx<'_> {
         let mut writes: Vec<(usize, Core)> = Vec::with_capacity(bindings.len());
         for b in &bindings {
             let parts = list_to_vec(b);
-            let (name, ty_sym, init) = match parts.as_slice() {
+            // Two binding shapes: `(name type init)` pins the type explicitly,
+            // `(name init)` leaves it to be inferred from the initializer
+            // (issue #135 — the one surface-compatible inferable position).
+            let (name, declared, init) = match parts.as_slice() {
                 [LispVal::Symbol(n), LispVal::Symbol(t), init] => {
-                    (n.borrow().name.clone(), t.borrow().name.clone(), init)
+                    let ty = Ty::parse(&t.borrow().name)
+                        .ok_or_else(|| format!("unknown type `{}`", t.borrow().name))?;
+                    (n.borrow().name.clone(), Some(ty), init)
                 }
-                _ => return Err("`let-typed` binding must be (name type init)".to_string()),
+                [LispVal::Symbol(n), init] => (n.borrow().name.clone(), None, init),
+                _ => {
+                    return Err(
+                        "`let-typed` binding must be (name type init) or (name init)".to_string(),
+                    );
+                }
             };
-            let ty = Ty::parse(&ty_sym).ok_or_else(|| format!("unknown type `{ty_sym}`"))?;
             let (init_core, init_ty) = self.elab(init, scope, max)?;
-            if init_ty != ty {
-                return Err(format!(
-                    "binding `{name}` declared {ty:?} but init is {init_ty:?}"
-                ));
-            }
+            // An explicit annotation is a principal-type pin: unify it with the
+            // inferred initializer type (must agree). Omitting it makes a fresh
+            // variable that the initializer constrains — the inference path.
+            let ty = match declared {
+                Some(d) => {
+                    if self.unify(d, init_ty).is_err() {
+                        return Err(format!(
+                            "binding `{name}` declared {d:?} but init is {:?}",
+                            self.walk(init_ty)
+                        ));
+                    }
+                    d
+                }
+                None => {
+                    let v = self.fresh();
+                    self.unify(v, init_ty)
+                        .expect("fresh variable always unifies");
+                    // Resolve eagerly so the binding carries a concrete type for
+                    // any references in the body; an initializer whose type stays
+                    // ambiguous is rejected here rather than deferred.
+                    self.resolve(v)
+                        .map_err(|_| format!("cannot infer type for binding `{name}`"))?
+                }
+            };
             let slot = scope.len();
             scope.push((name, ty));
             *max = (*max).max(scope.len());
@@ -474,10 +570,11 @@ impl Cx<'_> {
         let mut arg_cores = Vec::with_capacity(args.len());
         for (i, a) in args.iter().enumerate() {
             let (ac, at) = self.elab(a, scope, max)?;
-            if at != params[i].1 {
+            if self.unify(at, params[i].1).is_err() {
                 return Err(format!(
-                    "`{name}` arg {i} expects {:?}, got {at:?}",
-                    params[i].1
+                    "`{name}` arg {i} expects {:?}, got {:?}",
+                    params[i].1,
+                    self.walk(at)
                 ));
             }
             arg_cores.push(ac);
@@ -497,8 +594,8 @@ impl Cx<'_> {
             return Err(format!("`char-code` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if ta != Ty::Char {
-            return Err(format!("`char-code` expects char, got {ta:?}"));
+        if self.unify(ta, Ty::Char).is_err() {
+            return Err(format!("`char-code` expects char, got {:?}", self.walk(ta)));
         }
         Ok((a, Ty::Int64))
     }
@@ -514,8 +611,11 @@ impl Cx<'_> {
             return Err(format!("`code-char` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if ta != Ty::Int64 {
-            return Err(format!("`code-char` expects int64, got {ta:?}"));
+        if self.unify(ta, Ty::Int64).is_err() {
+            return Err(format!(
+                "`code-char` expects int64, got {:?}",
+                self.walk(ta)
+            ));
         }
         Ok((Core::ToChar(Box::new(a)), Ty::Char))
     }
@@ -1173,18 +1273,26 @@ impl Jit {
         let id = self.intern(&name, params, ret);
 
         let mut max_slots = scope.len();
-        let (core, body_ty) = {
+        let core = {
             let cx = Cx {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
+                infer: RefCell::new(Infer::new()),
             };
-            cx.elab_body(&items[3..], &mut scope, &mut max_slots)?
+            let (core, body_ty) = cx.elab_body(&items[3..], &mut scope, &mut max_slots)?;
+            // The declared return type is a principal-type pin: the body's
+            // inferred type must unify with it.
+            if cx.unify(body_ty, ret).is_err() {
+                return Err(format!(
+                    "{name}: declared return {ret:?} but body has type {:?}",
+                    cx.walk(body_ty)
+                ));
+            }
+            // Final resolve: with `ret` concrete the body type is pinned, but
+            // reject any definition whose body type is left ambiguous.
+            cx.resolve(body_ty).map_err(|e| format!("{name}: {e}"))?;
+            core
         };
-        if body_ty != ret {
-            return Err(format!(
-                "{name}: declared return {ret:?} but body has type {body_ty:?}"
-            ));
-        }
 
         let f = self.funcs[id].clone();
         f.slots.set(max_slots);

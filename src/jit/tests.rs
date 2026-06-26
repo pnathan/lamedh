@@ -252,6 +252,74 @@ fn let_with_float() {
     assert_eq!(agree(&j, "hyp", &[fl(3.0), fl(4.0)]), fl(25.0));
 }
 
+// --- inference: optional-annotation let-typed (#135) -----------------------
+
+#[test]
+fn let_infers_type_from_initializer() {
+    // `(name init)` omits the type — it is inferred from the initializer. The
+    // int and float versions are the *same surface form*, monomorphized by
+    // inference to different representations.
+    let j = build(&[
+        "(deffun-typed (poly int64) ((x int64)) (let-typed ((y (* x x))) (+ y x)))",
+        "(deffun-typed (hyp float64) ((a float64) (b float64)) \
+           (let-typed ((s (+ (* a a) (* b b)))) s))",
+    ]);
+    assert_eq!(agree(&j, "poly", &[i(3)]), i(12));
+    assert_eq!(agree(&j, "hyp", &[fl(3.0), fl(4.0)]), fl(25.0));
+}
+
+#[test]
+fn let_inferred_binding_flows_into_typed_context() {
+    // An inferred `char` binding must still type-check as a `char` downstream
+    // (here, fed back through `char-code`), proving the inferred type — not a
+    // default — is what propagates.
+    let j = build(&["(deffun-typed (f int64) ((n int64)) \
+           (let-typed ((c (code-char n))) (char-code c)))"]);
+    assert_eq!(agree(&j, "f", &[i(65)]), i(65));
+    assert_eq!(agree(&j, "f", &[i(321)]), i(65)); // 321 & 0xff = 65
+}
+
+#[test]
+fn let_inferred_and_explicit_mix() {
+    let j = build(&["(deffun-typed (g int64) ((x int64)) \
+           (let-typed ((y (+ x 1)) (z int64 (* y 2))) (+ y z)))"]);
+    // x=4 -> y=5 -> z=10 -> 15
+    assert_eq!(agree(&j, "g", &[i(4)]), i(15));
+}
+
+#[test]
+fn explicit_annotation_agreeing_with_inference_is_accepted() {
+    // The pin matches what inference would derive — accepted.
+    let j = build(&["(deffun-typed (h float64) ((x float64)) \
+           (let-typed ((y float64 (* x x))) y))"]);
+    assert_eq!(agree(&j, "h", &[fl(2.5)]), fl(6.25));
+}
+
+#[test]
+fn explicit_annotation_conflicting_with_inference_is_rejected() {
+    // The initializer is `int64` but the binding is pinned `float64`: the pin
+    // and the inferred type fail to unify.
+    let err = def_err(
+        "(deffun-typed (f int64) ((x int64)) \
+           (let-typed ((y float64 (* x x))) x))",
+    );
+    assert!(
+        err.contains("declared") && err.contains("init"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn inferred_binding_used_at_two_types_is_rejected() {
+    // `y` is inferred from an int initializer, then used where a float is
+    // required — a conflict surfaced through the binding's resolved type.
+    let err = def_err(
+        "(deffun-typed (f float64) ((a float64)) \
+           (let-typed ((y (+ 1 2))) (+ y a)))",
+    );
+    assert!(err.contains("operands disagree"), "got: {err}");
+}
+
 // --- self-recursion --------------------------------------------------------
 
 #[test]

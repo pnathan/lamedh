@@ -2720,6 +2720,9 @@ fn lispval_to_typed(lv: &LispVal, ty: crate::jit::Ty) -> Result<crate::jit::Valu
             LispVal::Number(n) => Ok(Value::Char(*n as u8)),
             other => Err(format!("expected char argument, got {other:?}")),
         },
+        // Signatures are fully resolved before a function is installed, so a
+        // type variable never reaches the membrane (issue #135).
+        Ty::Var(_) => Err("unresolved type variable at the typed membrane".to_string()),
     }
 }
 

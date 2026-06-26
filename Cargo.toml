@@ -1,6 +1,6 @@
 [package]
 name = "lamedh"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 description = "An embeddable Lisp 1.5 interpreter written in Rust"
 license = "AGPL-3.0"
@@ -12,16 +12,17 @@ path = "src/lib.rs"
 [dependencies]
 nom = "=7.1.3"
 
-# Optional native-code backend for the typed JIT (`deffun-typed`). Off by
-# default so the standard build stays dependency-light; enable with
-# `--features jit`.
+# Native-code (Cranelift) backend for the typed JIT (`deffun-typed`). On by
+# default as of 0.2.0; build with `--no-default-features` for the dependency-light
+# closure-only backend (the typed core still type-checks and runs, just without
+# native codegen).
 cranelift-jit = { version = "0.133", optional = true }
 cranelift-module = { version = "0.133", optional = true }
 cranelift-codegen = { version = "0.133", optional = true }
 cranelift-frontend = { version = "0.133", optional = true }
 
 [features]
-default = []
+default = ["jit"]
 jit = [
     "dep:cranelift-jit",
     "dep:cranelift-module",

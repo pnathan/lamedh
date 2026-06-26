@@ -200,8 +200,18 @@ first backend (fast compiles suit a REPL).
 
 Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_jit.rs`):
 
-- The membrane (`Jit::define`) elaborates `deffun-typed` with a monomorphic
-  bidirectional checker and rejects ill-typed defs *before runtime*.
+- The membrane (`Jit::define`) elaborates `deffun-typed` with a bidirectional
+  checker and rejects ill-typed defs *before runtime*.
+- **HM-lite inference (#135, `src/jit/infer.rs`).** Type agreement is decided by
+  unification over `Ty::Var` with an occurs-check, threaded through elaboration as
+  a substitution; a `resolve` pass drives every node's type to a concrete scalar
+  before a definition is accepted (rejecting both *conflict* — variable forced to
+  two types — and *unresolved/ambiguous* — variable still free). Explicit
+  annotations are principal-type pins; a `let-typed` binding may **omit** its type
+  (`(name init)`) to have it inferred from the initializer, the one
+  surface-compatible inferable position today. This is the foundation the
+  array/string element types (#137/#138) — which *cannot* be annotated in surface
+  syntax — will monomorphize on.
 - `int64`/`float64`/`bool`; `+ - * / mod`, `< > <= >= = /=`, `and`/`or`/`not`,
   `if`, `let-typed`, and **calls** — self-recursion, cross-function, and (via
   `Jit::declare`) mutual recursion. Runtime values are unboxed `u64` words; the
