@@ -964,6 +964,16 @@ impl Environment {
         self.shared.jit.borrow_mut().define_struct(form)
     }
 
+    /// Best-effort: attempt to type and natively compile an un-annotated function
+    /// (HM firing under `defun`). Returns `true` if it became a typed edition.
+    pub fn jit_infer_untyped(&self, name: &str, params: &[String], body: &[LispVal]) -> bool {
+        self.shared
+            .jit
+            .borrow_mut()
+            .infer_untyped(name, params, body)
+            .is_ok()
+    }
+
     /// `(param types, return type)` of a registered typed function, if any.
     pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
         self.shared.jit.borrow().signature(name)

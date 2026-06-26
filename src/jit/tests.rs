@@ -570,6 +570,46 @@ fn struct_field_type_is_checked() {
     assert!(err.contains("declared return"), "got: {err}");
 }
 
+// --- HM inference of un-annotated functions (jit-optimize / #134) -----------
+
+#[test]
+fn infer_untyped_types_a_concrete_numeric_function() {
+    use crate::reader::read;
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    // `(defun inc (n) (+ n 1))` — `1` pins `n` to int64, so it fully infers.
+    let body = [read("(+ n 1)", &env).unwrap()];
+    let id = j
+        .infer_untyped("INC", &["N".to_string()], &body)
+        .expect("should infer int64 -> int64");
+    assert_eq!(j.name_of(id).as_deref(), Some("INC"));
+    assert_eq!(j.signature("INC").unwrap(), (vec![Ty::Int64], Ty::Int64));
+    assert_eq!(j.call("INC", &[i(41)]).unwrap(), i(42));
+}
+
+#[test]
+fn infer_untyped_rejects_and_rolls_back_polymorphic() {
+    use crate::reader::read;
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    // `(* x x)` is ambiguous (int or float): not monomorphic ⇒ rejected, and the
+    // registry is left clean (no `SQ` registered).
+    let body = [read("(* x x)", &env).unwrap()];
+    assert!(j.infer_untyped("SQ", &["X".to_string()], &body).is_err());
+    assert!(j.id("SQ").is_none(), "failed inference must not register");
+}
+
+#[test]
+fn infer_untyped_rejects_untyped_call_island_escape() {
+    use crate::reader::read;
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    // `cons` is not a typed function: the body escapes the typed island.
+    let body = [read("(cons n n)", &env).unwrap()];
+    assert!(j.infer_untyped("F", &["N".to_string()], &body).is_err());
+    assert!(j.id("F").is_none());
+}
+
 // --- self-recursion --------------------------------------------------------
 
 #[test]

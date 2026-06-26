@@ -187,3 +187,46 @@ fn typed_struct_lands_at_repl() {
     );
     assert_eq!(eval_line("(manhattan (make-point 3 4))", &env), "7");
 }
+
+#[test]
+fn jit_optimize_makes_untyped_defun_run_typed_with_fallback() {
+    // A plain `defun` (no annotations); `(jit-optimize ...)` infers int64->int64
+    // and installs the native fast path transparently. HM fired under the hood.
+    let env = Environment::with_stdlib();
+    eval_line("(defun inc (n) (+ n 1))", &env);
+    assert_eq!(eval_line("(inc 41)", &env), "42");
+    eval_line("(jit-optimize inc)", &env);
+    // Same answer, now via the native typed edition.
+    assert_eq!(eval_line("(inc 41)", &env), "42");
+
+    // Ergonomic wrap form: optimize at definition time.
+    eval_line(
+        "(jit-optimize (defun fib (n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))",
+        &env,
+    );
+    assert_eq!(eval_line("(fib 20)", &env), "6765");
+}
+
+#[test]
+fn jit_optimize_is_noop_for_untypeable_functions() {
+    // A list-processing function cannot be typed; `(jit-optimize ...)` leaves it
+    // working exactly as before (silent fallback, no error).
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun mylen (xs) (if (null xs) 0 (+ 1 (mylen (cdr xs)))))",
+        &env,
+    );
+    assert_eq!(eval_line("(mylen (list 1 2 3))", &env), "3");
+    eval_line("(jit-optimize mylen)", &env); // no-op: cons/null are untyped
+    assert_eq!(eval_line("(mylen (list 1 2 3))", &env), "3");
+}
+
+#[test]
+fn jit_optimized_function_falls_back_on_non_matching_args() {
+    // After optimizing for int64, a float argument doesn't fit the inferred type
+    // and transparently uses the dynamic definition instead of erroring.
+    let env = Environment::with_stdlib();
+    eval_line("(jit-optimize (defun dbl (n) (+ n n)))", &env);
+    assert_eq!(eval_line("(dbl 21)", &env), "42"); // typed fast path
+    assert_eq!(eval_line("(dbl 2.5)", &env), "5.0"); // dynamic fallback
+}

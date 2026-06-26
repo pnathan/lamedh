@@ -2699,6 +2699,70 @@ fn make_typed_native(name: String) -> LispVal {
     ))
 }
 
+/// Build an **auto-typed** membrane entry: a function that tries the typed
+/// (native) fast path and silently falls back to the original dynamic closure
+/// when the arguments do not fit the inferred signature. This is what makes HM
+/// firing under `defun` *transparent* — calls that match the inferred types run
+/// compiled; everything else (wrong arity/shape, untyped values) behaves exactly
+/// as the un-optimized function did.
+fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal {
+    LispVal::Native(Rc::new(
+        move |args: &[LispVal], env: &Rc<Environment>| -> Result<LispVal, LispError> {
+            if let Some((ptys, ret)) = env.jit_signature(&name)
+                && args.len() == ptys.len()
+            {
+                let mut vals = Vec::with_capacity(args.len());
+                let mut fits = true;
+                for (a, ty) in args.iter().zip(ptys.iter()) {
+                    match lispval_to_typed(a, ty) {
+                        Ok(v) => vals.push(v),
+                        Err(_) => {
+                            fits = false;
+                            break;
+                        }
+                    }
+                }
+                if fits && let Some(Ok(v)) = env.jit_call(&name, &vals) {
+                    return Ok(typed_to_lispval(v, &ret, env));
+                }
+            }
+            // Fall back to the original dynamic definition.
+            apply(&fallback, args, env)
+        },
+    ))
+}
+
+/// Try to type-compile the function bound to `name` (a plain lambda) and, on
+/// success, swap its binding for an auto-typed membrane. Best-effort and silent:
+/// any reason it cannot be typed (variadic, untyped body, ambiguous types) just
+/// leaves the dynamic definition in place.
+fn optimize_function(name: &str, env: &Rc<Environment>) {
+    let Some(LispVal::Lambda(lam)) = env.get(name) else {
+        return;
+    };
+    // `&REST` functions are outside the monomorphic typed core.
+    if lam.rest_param.is_some() {
+        return;
+    }
+    // A multi-form body is a `(PROGN f1 f2 ...)`; unwrap it to the form list.
+    let body_forms: Vec<LispVal> = match lam.body.as_ref() {
+        LispVal::Cons { car, cdr } if matches!(car.as_ref(), LispVal::Symbol(s) if s.borrow().name == "PROGN") => {
+            list_to_vec(cdr).unwrap_or_default()
+        }
+        other => vec![other.clone()],
+    };
+    if body_forms.is_empty() {
+        return;
+    }
+    if env.jit_infer_untyped(name, &lam.params, &body_forms) {
+        // Keep the original closure as the fallback for non-matching calls.
+        env.set(
+            name.to_string(),
+            make_auto_typed_native(name.to_string(), LispVal::Lambda(lam)),
+        );
+    }
+}
+
 /// Coerce a `LispVal` to a typed [`crate::jit::Value`] for a parameter of type
 /// `ty`. `int64` accepts `Number`; `float64` accepts `Float` or widens `Number`;
 /// `bool` follows Lisp truthiness (`nil` is false, everything else true).
@@ -3707,6 +3771,36 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 Ok(TcoStep::Done(Ok(LispVal::Symbol(env.intern_symbol(&name)))))
                             }
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
+                        }
+                    }
+                    "JIT-OPTIMIZE" => {
+                        // Best-effort, transparent typed compilation of an
+                        // already-defined (un-annotated) function: try HM
+                        // inference over its lambda body; on success, rebind the
+                        // name to an auto-typed membrane that fast-paths typed
+                        // calls and falls back to the original closure. Never
+                        // errors — a function that cannot be typed is left as is.
+                        // Usable two ways: `(jit-optimize name)` on an already
+                        // defined function, or `(jit-optimize (defun f ...))`
+                        // (the inner form is evaluated and its result symbol is
+                        // optimized). Distinct from the Lisp-layer `optimize`,
+                        // which rewrites a quoted *form*.
+                        let args = list_to_vec(rest)?;
+                        let sym = match args.first() {
+                            Some(LispVal::Symbol(s)) => Some(s.clone()),
+                            Some(form) => match eval(form, env)? {
+                                LispVal::Symbol(s) => Some(s),
+                                _ => None,
+                            },
+                            None => None,
+                        };
+                        match sym {
+                            Some(s) => {
+                                let name = s.borrow().name.clone();
+                                optimize_function(&name, env);
+                                Ok(TcoStep::Done(Ok(LispVal::Symbol(s))))
+                            }
+                            None => Ok(TcoStep::Done(Ok(LispVal::Nil))),
                         }
                     }
                     "DEFSTRUCT-TYPED" => {

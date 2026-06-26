@@ -1,3 +1,13 @@
+;; `defun` defines an ordinary dynamic function. To additionally have the typed
+;; JIT infer and natively compile it — HM firing under the hood, with a silent
+;; fallback to the dynamic definition for calls whose arguments do not fit the
+;; inferred type — wrap it with `jit-optimize`:
+;;     (jit-optimize (defun inc (n) (+ n 1)))
+;; or call `(jit-optimize name)` after defining. "Play like a Lisp, optimize
+;; like Fortran." Functions that are not a fully-inferable typed island are left
+;; exactly as-is. (Auto-optimizing *every* defun is deliberately not the default:
+;; it would rebind the name to a native membrane, which changes introspection
+;; (`see-source`) and the numeric edge semantics (overflow / div-by-zero, #67).)
 (defmacro defun (name params &rest body)
   (if (stringp (car body))
     (let ((lambda-expr (cons 'lambda (cons params (cdr body)))))
