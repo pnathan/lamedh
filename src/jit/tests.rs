@@ -79,6 +79,24 @@ fn int_div_by_zero_is_zero_not_panic() {
 }
 
 #[test]
+fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
+    // `i64::MIN / -1` and `i64::MIN % -1` overflow signed division and trap
+    // (SIGFPE) on hardware `sdiv`/`srem`. The reference editions use
+    // `checked_div`/`checked_rem(...).unwrap_or(0)` ⇒ `0`; every edition
+    // (interpreter, closure, and the native Cranelift backend under
+    // `--features jit`) must match without faulting.
+    let j = build(&[
+        "(deffun-typed (d int64) ((a int64) (b int64)) (/ a b))",
+        "(deffun-typed (m int64) ((a int64) (b int64)) (mod a b))",
+    ]);
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(-1)]), i(0));
+    assert_eq!(agree(&j, "m", &[i(i64::MIN), i(-1)]), i(0));
+    // Sanity: ordinary division around the boundary still works.
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(1)]), i(i64::MIN));
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(2)]), i(i64::MIN / 2));
+}
+
+#[test]
 fn int_overflow_wraps() {
     let j = build(&["(deffun-typed (g int64) ((x int64)) (* x x))"]);
     let big = 5_000_000_000i64;
@@ -773,4 +791,75 @@ fn char_membrane_boxes_to_number() {
         .call_lisp("up", &[crate::LispVal::Number(97)])
         .expect("call_lisp");
     assert_eq!(out, crate::LispVal::Number(65));
+}
+
+// --- debug trace + structural introspection --------------------------------
+
+#[test]
+fn trace_records_result_and_is_deterministic() {
+    let j =
+        build(&["(deffun-typed (poly int64) ((x int64)) (let-typed ((y int64 (* x x))) (+ y x)))"]);
+    let (val, log) = j.trace_call("POLY", &[i(4)]).unwrap();
+    assert_eq!(val, i(20)); // 16 + 4
+    assert!(!log.is_empty());
+    // The final recorded step is the function body's result word.
+    assert_eq!(log.last().unwrap().result, from_i(20));
+    // Tracing again is byte-identical.
+    let (val2, log2) = j.trace_call("POLY", &[i(4)]).unwrap();
+    assert_eq!(val2, i(20));
+    assert_eq!(log, log2);
+}
+
+#[test]
+fn trace_agrees_with_interpreter_and_compiled() {
+    let j = build(&["(deffun-typed (f int64) ((a int64) (b int64)) (if (> a b) (- a b) (* a b)))"]);
+    for (a, b) in [(7, 3), (2, 9), (5, 5)] {
+        let compiled = {
+            j.compile_all();
+            j.call("F", &[i(a), i(b)]).unwrap()
+        };
+        let interpreted = {
+            j.deoptimize_all();
+            j.call("F", &[i(a), i(b)]).unwrap()
+        };
+        let (traced, _) = j.trace_call("F", &[i(a), i(b)]).unwrap();
+        assert_eq!(compiled, interpreted);
+        assert_eq!(interpreted, traced);
+    }
+}
+
+#[test]
+fn trace_short_circuits_leave_no_step() {
+    // `(or true <rhs>)` must not evaluate <rhs>: no step is recorded for it.
+    let j = build(&["(deffun-typed (sc bool) ((p bool) (q bool)) (or p q))"]);
+    let (val, log) = j.trace_call("SC", &[bo(true), bo(false)]).unwrap();
+    assert_eq!(val, bo(true));
+    // Steps: var(p) [short-circuits], or. The rhs var(q) is NOT evaluated.
+    let var_steps = log.iter().filter(|s| s.op == "var").count();
+    assert_eq!(
+        var_steps, 1,
+        "short-circuited rhs should not be traced: {log:?}"
+    );
+}
+
+#[test]
+fn verify_core_and_node_count_on_lowered_body() {
+    let j =
+        build(&["(deffun-typed (g int64) ((x int64)) (let-typed ((y int64 (+ x 1))) (* y y)))"]);
+    let tf = j.get("G").unwrap();
+    let core = tf.core_clone().expect("defined");
+    // Well-formed against its own frame and the (single-function) registry.
+    verify_core(&core, tf.n_slots(), 1).unwrap();
+    assert!(core_node_count(&core) >= 5); // let, +, x, 1, *, y, y ...
+}
+
+#[test]
+fn verify_core_rejects_out_of_bounds_slot() {
+    // A hand-built malformed core (slot index past the frame) must be caught.
+    let bad = Core::Var(99);
+    let err = verify_core(&bad, 1, 1).unwrap_err();
+    assert!(err.contains("out of bounds"), "got: {err}");
+    let bad_call = Core::Call(7, vec![]);
+    let err2 = verify_core(&bad_call, 1, 1).unwrap_err();
+    assert!(err2.contains("Call id"), "got: {err2}");
 }

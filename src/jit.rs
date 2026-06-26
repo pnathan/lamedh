@@ -635,6 +635,188 @@ fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Debug trace: a stepping interpreter over the typed core.
+// ---------------------------------------------------------------------------
+
+/// One recorded step of the tracing interpreter ([`Jit::trace_call`]).
+///
+/// The trace is a pre-order-ish log of node *completions*: a node's step is
+/// pushed once its sub-evaluations are done and its result word is known. This
+/// is enough to drive a stepper/examiner and to assert structural correctness
+/// properties (determinism, result-word agreement, slot-bound safety) over the
+/// reference interpreter without touching the hot path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceStep {
+    /// Nesting depth of this node in the body's syntax tree (root = 0).
+    pub depth: usize,
+    /// A stable tag for the node kind (`"litI"`, `"bin"`, `"if"`, `"call"`, …).
+    pub op: &'static str,
+    /// The raw machine word this node evaluated to (interpret via the static type).
+    pub result: u64,
+    /// For `Var`/`Let` nodes, the slot index touched; `usize::MAX` otherwise.
+    pub slot: usize,
+    /// For `Call` nodes, the callee function id; `usize::MAX` otherwise.
+    pub callee: usize,
+}
+
+const NO_SLOT: usize = usize::MAX;
+const NO_CALLEE: usize = usize::MAX;
+
+/// Tracing twin of [`eval_core`]. Pushes a [`TraceStep`] for every node it
+/// actually evaluates (so short-circuited `and`/`or`/`if` branches leave no
+/// step, exactly mirroring the evaluation the interpreter performs). It must
+/// stay byte-for-byte semantically identical to [`eval_core`]; the two are
+/// differential-tested against each other in the suite.
+fn eval_core_traced(
+    core: &Core,
+    env: &mut [u64],
+    ctx: &Ctx,
+    depth: usize,
+    log: &mut Vec<TraceStep>,
+) -> u64 {
+    macro_rules! step {
+        ($op:expr, $result:expr, $slot:expr, $callee:expr) => {{
+            let r = $result;
+            log.push(TraceStep {
+                depth,
+                op: $op,
+                result: r,
+                slot: $slot,
+                callee: $callee,
+            });
+            r
+        }};
+    }
+    match core {
+        Core::LitI(n) => step!("litI", from_i(*n), NO_SLOT, NO_CALLEE),
+        Core::LitF(f) => step!("litF", from_f(*f), NO_SLOT, NO_CALLEE),
+        Core::Var(i) => step!("var", env[*i], *i, NO_CALLEE),
+        Core::Bin(k, op, a, b) => {
+            let x = eval_core_traced(a, env, ctx, depth + 1, log);
+            let y = eval_core_traced(b, env, ctx, depth + 1, log);
+            let r = match k {
+                NumKind::I => from_i(int_bin(*op, as_i(x), as_i(y))),
+                NumKind::F => from_f(float_bin(*op, as_f(x), as_f(y))),
+            };
+            step!("bin", r, NO_SLOT, NO_CALLEE)
+        }
+        Core::Cmp(k, op, a, b) => {
+            let x = eval_core_traced(a, env, ctx, depth + 1, log);
+            let y = eval_core_traced(b, env, ctx, depth + 1, log);
+            let r = match k {
+                NumKind::I => int_cmp(*op, as_i(x), as_i(y)),
+                NumKind::F => float_cmp(*op, as_f(x), as_f(y)),
+            } as u64;
+            step!("cmp", r, NO_SLOT, NO_CALLEE)
+        }
+        Core::Not(a) => {
+            let v = eval_core_traced(a, env, ctx, depth + 1, log);
+            step!("not", (v == 0) as u64, NO_SLOT, NO_CALLEE)
+        }
+        Core::And(a, b) => {
+            let r = if eval_core_traced(a, env, ctx, depth + 1, log) != 0 {
+                (eval_core_traced(b, env, ctx, depth + 1, log) != 0) as u64
+            } else {
+                0
+            };
+            step!("and", r, NO_SLOT, NO_CALLEE)
+        }
+        Core::Or(a, b) => {
+            let r = if eval_core_traced(a, env, ctx, depth + 1, log) != 0 {
+                1
+            } else {
+                (eval_core_traced(b, env, ctx, depth + 1, log) != 0) as u64
+            };
+            step!("or", r, NO_SLOT, NO_CALLEE)
+        }
+        Core::If(c, t, e) => {
+            let r = if eval_core_traced(c, env, ctx, depth + 1, log) != 0 {
+                eval_core_traced(t, env, ctx, depth + 1, log)
+            } else {
+                eval_core_traced(e, env, ctx, depth + 1, log)
+            };
+            step!("if", r, NO_SLOT, NO_CALLEE)
+        }
+        Core::Let(slot, init, body) => {
+            let v = eval_core_traced(init, env, ctx, depth + 1, log);
+            env[*slot] = v;
+            let r = eval_core_traced(body, env, ctx, depth + 1, log);
+            step!("let", r, *slot, NO_CALLEE)
+        }
+        Core::Call(id, args) => {
+            let vals: Vec<u64> = args
+                .iter()
+                .map(|a| eval_core_traced(a, env, ctx, depth + 1, log))
+                .collect();
+            step!("call", ctx.call(*id, &vals), NO_SLOT, *id)
+        }
+        Core::ToChar(a) => {
+            let v = eval_core_traced(a, env, ctx, depth + 1, log);
+            step!("tochar", v & 0xff, NO_SLOT, NO_CALLEE)
+        }
+    }
+}
+
+/// Number of nodes in a typed-core tree (structural size, for invariants).
+pub fn core_node_count(core: &Core) -> usize {
+    1 + match core {
+        Core::LitI(_) | Core::LitF(_) | Core::Var(_) => 0,
+        Core::Not(a) | Core::ToChar(a) => core_node_count(a),
+        Core::Bin(_, _, a, b)
+        | Core::Cmp(_, _, a, b)
+        | Core::And(a, b)
+        | Core::Or(a, b)
+        | Core::Let(_, a, b) => core_node_count(a) + core_node_count(b),
+        Core::If(c, t, e) => core_node_count(c) + core_node_count(t) + core_node_count(e),
+        Core::Call(_, args) => args.iter().map(core_node_count).sum(),
+    }
+}
+
+/// Verify a typed-core tree is *well-formed* against a frame of `n_slots`:
+/// every `Var`/`Let` slot index is in bounds, and every `Call` id is in
+/// `0..n_funcs`. This is a cheap subject-reduction-style structural check the
+/// suite runs on every defined function to catch lowering bugs that would
+/// otherwise corrupt memory or panic only on a lucky input.
+pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), String> {
+    match core {
+        Core::LitI(_) | Core::LitF(_) => Ok(()),
+        Core::Var(i) => {
+            if *i < n_slots {
+                Ok(())
+            } else {
+                Err(format!("Var slot {i} out of bounds (n_slots={n_slots})"))
+            }
+        }
+        Core::Not(a) | Core::ToChar(a) => verify_core(a, n_slots, n_funcs),
+        Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) | Core::And(a, b) | Core::Or(a, b) => {
+            verify_core(a, n_slots, n_funcs)?;
+            verify_core(b, n_slots, n_funcs)
+        }
+        Core::Let(slot, init, body) => {
+            if *slot >= n_slots {
+                return Err(format!("Let slot {slot} out of bounds (n_slots={n_slots})"));
+            }
+            verify_core(init, n_slots, n_funcs)?;
+            verify_core(body, n_slots, n_funcs)
+        }
+        Core::If(c, t, e) => {
+            verify_core(c, n_slots, n_funcs)?;
+            verify_core(t, n_slots, n_funcs)?;
+            verify_core(e, n_slots, n_funcs)
+        }
+        Core::Call(id, args) => {
+            if *id >= n_funcs {
+                return Err(format!("Call id {id} out of bounds (n_funcs={n_funcs})"));
+            }
+            for a in args {
+                verify_core(a, n_slots, n_funcs)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// A compiled edition: a closure over an unboxed slot vector and a call context.
 pub type Compiled = Rc<dyn Fn(&mut [u64], &Ctx) -> u64>;
 
@@ -814,6 +996,14 @@ impl TypedFn {
     }
     pub fn generation(&self) -> u64 {
         self.generation.get()
+    }
+    /// The number of slots in this function's activation frame (params + lets).
+    pub fn n_slots(&self) -> usize {
+        self.slots.get()
+    }
+    /// A clone of this function's typed-core IR, for structural inspection/verification.
+    pub fn core_clone(&self) -> Option<Core> {
+        self.core.borrow().clone()
     }
 
     #[cfg_attr(not(feature = "jit"), allow(unused_variables))]
@@ -1053,6 +1243,45 @@ impl Jit {
             Value::Bool(b) => LispVal::Number(b as i64),
             Value::Char(b) => LispVal::Number(b as i64),
         })
+    }
+
+    /// Trace a call through the **reference (typed-core) interpreter**, returning
+    /// the boxed result alongside a step-by-step [`TraceStep`] log of the callee's
+    /// own body (nested calls run normally and are summarised by a single `call`
+    /// step). This is the debug stepper/examiner: it lets a correctness suite
+    /// inspect *how* a typed function computed its result, and assert invariants
+    /// (determinism, result agreement, slot-bound safety) over the trace.
+    ///
+    /// Independent of whether a compiled edition exists — it always interprets so
+    /// the trace reflects the reference semantics that compiled editions must match.
+    pub fn trace_call(
+        &self,
+        name: &str,
+        args: &[Value],
+    ) -> Result<(Value, Vec<TraceStep>), String> {
+        let id = self
+            .id(name)
+            .ok_or_else(|| format!("unknown function `{name}`"))?;
+        let f = &self.funcs[id];
+        let core = f
+            .core_clone()
+            .ok_or_else(|| format!("{name}: declared but not defined"))?;
+        let params = f.params.borrow().clone();
+        if args.len() != params.len() {
+            return Err(format!(
+                "{name}: expected {} args, got {}",
+                params.len(),
+                args.len()
+            ));
+        }
+        let mut frame = vec![0u64; f.slots.get()];
+        for (i, (a, (_, ty))) in args.iter().zip(params.iter()).enumerate() {
+            frame[i] = a.to_word(*ty)?;
+        }
+        let ctx = self.ctx();
+        let mut log = Vec::new();
+        let w = eval_core_traced(&core, &mut frame, &ctx, 0, &mut log);
+        Ok((Value::from_word(w, f.ret.get()), log))
     }
 
     /// Drop every compiled edition (force the interpreter path). Test/diagnostic.
