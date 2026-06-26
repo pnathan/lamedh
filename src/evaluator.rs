@@ -1556,6 +1556,11 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 apply_function_ops(builtin, args, env)
             }
 
+            // Introspection
+            BuiltinFunc::Describe | BuiltinFunc::SeeSource | BuiltinFunc::Disassemble => {
+                apply_introspection(builtin, args, env)
+            }
+
             // String/Symbol operations
             BuiltinFunc::Explode
             | BuiltinFunc::Implode
@@ -4991,6 +4996,301 @@ fn apply_function_ops(
     }
 }
 
+// Introspection operations: describe, see-source, disassemble.
+#[inline(never)]
+fn apply_introspection(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    use std::io::{self, Write};
+    match op {
+        BuiltinFunc::Describe => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "describe requires exactly one argument".to_string(),
+                ));
+            }
+            print!("{}", describe_text(&args[0], env));
+            let _ = io::stdout().flush();
+            Ok(LispVal::Symbol(env.intern_symbol("T")))
+        }
+        BuiltinFunc::SeeSource => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::Generic(
+                    "see-source takes one or two arguments".to_string(),
+                ));
+            }
+            let form = see_source_form(&args[0], env)?;
+            let as_tree = args.len() == 2 && args[1] != LispVal::Nil;
+            if as_tree {
+                let mut s = String::new();
+                render_form_tree(&form, 0, &mut s);
+                print!("{s}");
+                let _ = io::stdout().flush();
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            } else {
+                Ok(form)
+            }
+        }
+        BuiltinFunc::Disassemble => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "disassemble requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "disassemble requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            match env.jit_disassemble(&name) {
+                Some(text) => print!("{text}"),
+                None => {
+                    println!("{name} has no typed (JIT) edition — nothing to disassemble.");
+                    println!(
+                        "  (define one with (deffun-typed (name ret) ((arg ty)...) body...) to jot it.)"
+                    );
+                }
+            }
+            let _ = io::stdout().flush();
+            Ok(LispVal::Symbol(env.intern_symbol("T")))
+        }
+        _ => Err(LispError::Generic(
+            "Not an introspection operation".to_string(),
+        )),
+    }
+}
+
+/// Format a `&REST`-aware parameter list as `(p1 p2 &REST r)`.
+fn arity_string(params: &[String], rest: Option<&String>) -> String {
+    let mut parts: Vec<String> = params.to_vec();
+    if let Some(r) = rest {
+        parts.push("&REST".to_string());
+        parts.push(r.clone());
+    }
+    format!("({})", parts.join(" "))
+}
+
+/// Build the human-readable summary printed by `describe`.
+///
+/// A symbol is described by its current binding; a typed (jotted) function
+/// takes precedence over its membrane `Native` binding as the more informative
+/// view. Any other value is described directly.
+fn describe_text(arg: &LispVal, env: &Rc<Environment>) -> String {
+    let mut out = String::new();
+    if let LispVal::Symbol(s) = arg {
+        let name = s.borrow().name.clone();
+        // A typed function shadows the membrane Native binding as the richer view.
+        if let Some((ptys, ret)) = env.jit_signature(&name) {
+            let sig = ptys
+                .iter()
+                .map(|t| crate::jit::ty_name(*t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str(&format!("{name} is a typed (JIT) function.\n"));
+            out.push_str(&format!(
+                "  Signature: ({sig}) -> {}\n",
+                crate::jit::ty_name(ret)
+            ));
+            let compiled = matches!(env.jit_is_compiled(&name), Some(true));
+            out.push_str(&format!(
+                "  Compiled:  {}\n",
+                if compiled { "yes" } else { "no (interpreted)" }
+            ));
+            push_docstring(&mut out, s);
+            return out;
+        }
+        match env.get(&name) {
+            None => out.push_str(&format!("{name} is unbound.\n")),
+            Some(val) => {
+                out.push_str(&format!("{name} is {}.\n", describe_kind(&val)));
+                push_value_detail(&mut out, &val);
+                push_docstring(&mut out, s);
+            }
+        }
+    } else {
+        out.push_str(&format!("This is {}.\n", describe_kind(arg)));
+        push_value_detail(&mut out, arg);
+    }
+    out
+}
+
+/// A short noun phrase naming what kind of thing `val` is.
+fn describe_kind(val: &LispVal) -> &'static str {
+    match val {
+        LispVal::Builtin(_) => "a built-in function",
+        LispVal::Lambda(_) => "a lambda (function)",
+        LispVal::Fexpr(_) => "a fexpr (unevaluated-argument operative)",
+        LispVal::Macro(_) => "a macro",
+        LispVal::Vau(_) => "a vau operative",
+        LispVal::Native(_) => "a host-native function",
+        LispVal::Number(_) => "bound to an integer",
+        LispVal::Float(_) => "bound to a float",
+        LispVal::Char(_) => "bound to a character",
+        LispVal::String(_) => "bound to a string",
+        LispVal::Symbol(_) => "bound to a symbol",
+        LispVal::Cons { .. } => "bound to a list",
+        LispVal::Nil => "bound to NIL (the empty list / false)",
+        LispVal::HashTable(_) => "bound to a hash table",
+        LispVal::Array(_) => "bound to an array",
+        LispVal::Environment(_) => "bound to an environment",
+        LispVal::Error(_) => "bound to an error/condition object",
+        LispVal::Extension(_) => "bound to a host extension value",
+    }
+}
+
+/// Append type-specific detail lines (parameters, value, etc.) for `describe`.
+fn push_value_detail(out: &mut String, val: &LispVal) {
+    match val {
+        LispVal::Lambda(l) => out.push_str(&format!(
+            "  Parameters: {}\n",
+            arity_string(&l.params, l.rest_param.as_ref())
+        )),
+        LispVal::Fexpr(f) => {
+            let argname = f.params.first().map(String::as_str).unwrap_or("?");
+            out.push_str(&format!("  Unevaluated arg list bound to: {argname}\n"));
+        }
+        LispVal::Macro(m) => out.push_str(&format!(
+            "  Parameters: {}\n",
+            arity_string(&m.params, m.rest_param.as_ref())
+        )),
+        LispVal::Vau(v) => out.push_str(&format!(
+            "  Operands: {}, Environment: {}\n",
+            v.operands_param, v.env_param
+        )),
+        LispVal::Error(e) => out.push_str(&format!("  Message: {}\n", e.message)),
+        LispVal::Array(a) => out.push_str(&format!("  Length: {}\n", a.borrow().len())),
+        // Self-representing scalars/aggregates: show the value itself.
+        LispVal::Number(_)
+        | LispVal::Float(_)
+        | LispVal::Char(_)
+        | LispVal::String(_)
+        | LispVal::Symbol(_)
+        | LispVal::Cons { .. } => {
+            out.push_str(&format!("  Value: {}\n", crate::printer::print(val)));
+        }
+        _ => {}
+    }
+}
+
+/// Append a `Doc:` line if the symbol carries a `"docstring"` plist entry.
+fn push_docstring(out: &mut String, s: &Rc<RefCell<crate::Symbol>>) {
+    if let Some(LispVal::String(doc)) = s.borrow().plist.get("docstring") {
+        out.push_str(&format!("  Doc: {doc}\n"));
+    }
+}
+
+/// Reconstruct the source form for `see-source`. A symbol is resolved to its
+/// binding first; the binding (or a directly-passed value) must be a
+/// user-defined operative (lambda/fexpr/macro/vau).
+fn see_source_form(arg: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+    let val = match arg {
+        LispVal::Symbol(s) => {
+            let name = s.borrow().name.clone();
+            env.get(&name)
+                .ok_or_else(|| LispError::Generic(format!("see-source: {name} is unbound")))?
+        }
+        other => other.clone(),
+    };
+    reconstruct_source(&val, env).ok_or_else(|| {
+        LispError::Generic(
+            "see-source: value has no inspectable source (built-in, host-native, typed, \
+             or not a function)"
+                .to_string(),
+        )
+    })
+}
+
+/// Build a `(p1 p2 &REST r)` parameter list as a `LispVal` of interned symbols.
+fn param_list_form(params: &[String], rest: Option<&String>, env: &Rc<Environment>) -> LispVal {
+    let mut syms: Vec<LispVal> = params
+        .iter()
+        .map(|p| LispVal::Symbol(env.intern_symbol(p)))
+        .collect();
+    if let Some(r) = rest {
+        syms.push(LispVal::Symbol(env.intern_symbol("&REST")));
+        syms.push(LispVal::Symbol(env.intern_symbol(r)));
+    }
+    vec_to_list(syms)
+}
+
+/// Splice a closure body into its top-level forms. Multi-form bodies are stored
+/// wrapped in `(PROGN ...)`; a single-form body is returned as one element.
+fn body_forms(body: &LispVal) -> Vec<LispVal> {
+    if let LispVal::Cons { car, cdr } = body
+        && let LispVal::Symbol(s) = &**car
+        && s.borrow().name == "PROGN"
+        && let Ok(forms) = list_to_vec(cdr)
+    {
+        return forms;
+    }
+    vec![body.clone()]
+}
+
+/// Reconstruct an approximate defining form for an operative value. Returns
+/// `None` for values with no Lisp-level source (builtins, natives, scalars).
+fn reconstruct_source(val: &LispVal, env: &Rc<Environment>) -> Option<LispVal> {
+    let head = |tag: &str| LispVal::Symbol(env.intern_symbol(tag));
+    match val {
+        LispVal::Lambda(l) => {
+            let mut items = vec![
+                head("LAMBDA"),
+                param_list_form(&l.params, l.rest_param.as_ref(), env),
+            ];
+            items.extend(body_forms(&l.body));
+            Some(vec_to_list(items))
+        }
+        LispVal::Fexpr(f) => {
+            let mut items = vec![head("FEXPR"), param_list_form(&f.params, None, env)];
+            items.extend(body_forms(&f.body));
+            Some(vec_to_list(items))
+        }
+        LispVal::Macro(m) => {
+            let mut items = vec![
+                head("MACRO"),
+                param_list_form(&m.params, m.rest_param.as_ref(), env),
+            ];
+            items.extend(body_forms(&m.body));
+            Some(vec_to_list(items))
+        }
+        LispVal::Vau(v) => {
+            let mut items = vec![
+                head("VAU"),
+                LispVal::Symbol(env.intern_symbol(&v.operands_param)),
+                LispVal::Symbol(env.intern_symbol(&v.env_param)),
+            ];
+            items.extend(body_forms(&v.body));
+            Some(vec_to_list(items))
+        }
+        _ => None,
+    }
+}
+
+/// Render `form` as an indented tree of forms. Lists whose elements are all
+/// atoms are kept on one line; lists containing sub-lists are expanded.
+fn render_form_tree(form: &LispVal, depth: usize, out: &mut String) {
+    let pad = "  ".repeat(depth);
+    if let LispVal::Cons { .. } = form {
+        match list_to_vec(form) {
+            Ok(items) if items.iter().any(|i| matches!(i, LispVal::Cons { .. })) => {
+                out.push_str(&format!("{pad}(\n"));
+                for it in &items {
+                    render_form_tree(it, depth + 1, out);
+                }
+                out.push_str(&format!("{pad})\n"));
+            }
+            // Flat list (all atoms) or improper list: print on one line.
+            _ => out.push_str(&format!("{pad}{}\n", crate::printer::print(form))),
+        }
+    } else {
+        out.push_str(&format!("{pad}{}\n", crate::printer::print(form)));
+    }
+}
+
 // String/Symbol operations
 #[inline(never)]
 fn apply_string_symbol_ops(
@@ -5277,6 +5577,78 @@ mod evaluator_internal_tests {
 
     fn dummy_env() -> Rc<Environment> {
         Environment::new_with_builtins()
+    }
+
+    // ---- introspection: describe ----
+    #[test]
+    fn test_describe_lambda_reports_params_and_doc() {
+        let env = Environment::with_stdlib();
+        eval_line_internal(&env, "(defun sq (x) \"square\" (* x x))");
+        let sym = LispVal::Symbol(env.intern_symbol("SQ"));
+        let text = describe_text(&sym, &env);
+        assert!(text.contains("SQ is a lambda"), "got: {text}");
+        assert!(text.contains("Parameters: (X)"), "got: {text}");
+        assert!(text.contains("Doc: square"), "got: {text}");
+    }
+
+    #[test]
+    fn test_describe_unbound_and_value() {
+        let env = dummy_env();
+        let sym = LispVal::Symbol(env.intern_symbol("NOPE"));
+        assert!(describe_text(&sym, &env).contains("is unbound"));
+        let n = describe_text(&LispVal::Number(7), &env);
+        assert!(n.contains("integer") && n.contains("Value: 7"), "got: {n}");
+    }
+
+    // ---- introspection: see-source ----
+    #[test]
+    fn test_see_source_reconstructs_lambda() {
+        let env = dummy_env();
+        eval_line_internal(&env, "(def inc (lambda (n) (+ n 1)))");
+        let sym = LispVal::Symbol(env.intern_symbol("INC"));
+        let form = see_source_form(&sym, &env).unwrap();
+        assert_eq!(crate::printer::print(&form), "(LAMBDA (N) (+ N 1))");
+    }
+
+    #[test]
+    fn test_see_source_rejects_builtin() {
+        let env = dummy_env();
+        let sym = LispVal::Symbol(env.intern_symbol("CAR"));
+        assert!(see_source_form(&sym, &env).is_err());
+    }
+
+    #[test]
+    fn test_render_form_tree_expands_nested_lists() {
+        let env = dummy_env();
+        let form = crate::reader::read("(if (< n 2) n (g n))", &env).unwrap();
+        let mut s = String::new();
+        render_form_tree(&form, 0, &mut s);
+        // Nested lists expand across lines; flat atom-lists stay inline.
+        assert!(s.contains("(\n"), "tree should expand: {s}");
+        assert!(s.contains("(< N 2)"), "flat sublist should be inline: {s}");
+    }
+
+    // ---- introspection: disassemble (typed/jotted function) ----
+    #[test]
+    fn test_disassemble_typed_function() {
+        let env = dummy_env();
+        eval_line_internal(&env, "(deffun-typed (twice int64) ((n int64)) (* n 2))");
+        let text = env
+            .jit_disassemble("TWICE")
+            .expect("typed fn should disassemble");
+        assert!(
+            text.contains("typed function TWICE (int64) -> int64"),
+            "got: {text}"
+        );
+        assert!(text.contains("imul"), "expected multiply mnemonic: {text}");
+        assert!(text.contains("ret rv"), "expected return: {text}");
+        // Non-typed symbols have no edition.
+        assert!(env.jit_disassemble("CAR").is_none());
+    }
+
+    fn eval_line_internal(env: &Rc<Environment>, src: &str) {
+        let expr = crate::reader::read(src, env).unwrap();
+        eval(&expr, env).unwrap();
     }
 
     // ---- apply_math_op fallthrough ----

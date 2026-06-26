@@ -774,6 +774,20 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ErrorData),
         );
 
+        // Introspection
+        env.set(
+            "DESCRIBE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Describe),
+        );
+        env.set(
+            "SEE-SOURCE".to_string(),
+            LispVal::Builtin(BuiltinFunc::SeeSource),
+        );
+        env.set(
+            "DISASSEMBLE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Disassemble),
+        );
+
         env
     }
 
@@ -946,6 +960,20 @@ impl Environment {
     /// `(param types, return type)` of a registered typed function, if any.
     pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
         self.shared.jit.borrow().signature(name)
+    }
+
+    /// Whether a registered typed function currently has a compiled edition.
+    /// `None` if no typed function by that name exists.
+    pub fn jit_is_compiled(&self, name: &str) -> Option<bool> {
+        let jit = self.shared.jit.borrow();
+        jit.get(name).map(|f| f.is_compiled())
+    }
+
+    /// Render the typed-core IR of a registered ("jotted") function as a
+    /// human-readable pseudo-assembly listing. `None` if no such typed function
+    /// exists.
+    pub fn jit_disassemble(&self, name: &str) -> Option<String> {
+        self.shared.jit.borrow().disassemble(name)
     }
 
     /// Call a typed function with already-converted [`crate::jit::Value`]s,

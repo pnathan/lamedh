@@ -517,6 +517,10 @@ pub enum BuiltinFunc {
     ErrorP,
     ErrorMessage,
     ErrorData,
+    // Introspection
+    Describe,
+    SeeSource,
+    Disassemble,
 }
 
 /// An interned Lisp symbol.
