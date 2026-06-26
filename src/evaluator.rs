@@ -2674,7 +2674,7 @@ fn eval_impl(initial_val: LispVal, initial_env: Rc<Environment>) -> Result<LispV
 fn make_typed_native(name: String) -> LispVal {
     LispVal::Native(Rc::new(
         move |args: &[LispVal], env: &Rc<Environment>| -> Result<LispVal, LispError> {
-            let (ptys, _ret) = env.jit_signature(&name).ok_or_else(|| {
+            let (ptys, ret) = env.jit_signature(&name).ok_or_else(|| {
                 LispError::Generic(format!("typed function {name} is not defined"))
             })?;
             if args.len() != ptys.len() {
@@ -2686,10 +2686,10 @@ fn make_typed_native(name: String) -> LispVal {
             }
             let mut vals = Vec::with_capacity(args.len());
             for (a, ty) in args.iter().zip(ptys.iter()) {
-                vals.push(lispval_to_typed(a, *ty).map_err(LispError::Generic)?);
+                vals.push(lispval_to_typed(a, ty).map_err(LispError::Generic)?);
             }
             match env.jit_call(&name, &vals) {
-                Some(Ok(v)) => Ok(typed_to_lispval(v, env)),
+                Some(Ok(v)) => Ok(typed_to_lispval(v, &ret, env)),
                 Some(Err(e)) => Err(LispError::Generic(e)),
                 None => Err(LispError::Generic(format!(
                     "typed function {name} is not defined"
@@ -2702,7 +2702,7 @@ fn make_typed_native(name: String) -> LispVal {
 /// Coerce a `LispVal` to a typed [`crate::jit::Value`] for a parameter of type
 /// `ty`. `int64` accepts `Number`; `float64` accepts `Float` or widens `Number`;
 /// `bool` follows Lisp truthiness (`nil` is false, everything else true).
-fn lispval_to_typed(lv: &LispVal, ty: crate::jit::Ty) -> Result<crate::jit::Value, String> {
+fn lispval_to_typed(lv: &LispVal, ty: &crate::jit::Ty) -> Result<crate::jit::Value, String> {
     use crate::jit::{Ty, Value};
     match ty {
         Ty::Int64 => match lv {
@@ -2720,15 +2720,51 @@ fn lispval_to_typed(lv: &LispVal, ty: crate::jit::Ty) -> Result<crate::jit::Valu
             LispVal::Number(n) => Ok(Value::Char(*n as u8)),
             other => Err(format!("expected char argument, got {other:?}")),
         },
+        // A `(array char)` parameter accepts a string as its UTF-8 bytes (the
+        // #137 membrane); any array accepts a Lisp array, converted element-wise.
+        Ty::Array(elem) => match lv {
+            LispVal::String(s) if matches!(**elem, Ty::Char) => {
+                Ok(Value::Array(s.bytes().map(Value::Char).collect()))
+            }
+            LispVal::Array(a) => {
+                let items = a.borrow();
+                let mut out = Vec::with_capacity(items.len());
+                for it in items.iter() {
+                    out.push(lispval_to_typed(it, elem)?);
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(format!("expected array argument, got {other:?}")),
+        },
+        Ty::Struct(def) => match lv {
+            LispVal::Array(a) => {
+                let items = a.borrow();
+                if items.len() != def.fields.len() {
+                    return Err(format!(
+                        "expected {} fields for struct, got {}",
+                        def.fields.len(),
+                        items.len()
+                    ));
+                }
+                let mut out = Vec::with_capacity(items.len());
+                for (it, (_, ft)) in items.iter().zip(def.fields.iter()) {
+                    out.push(lispval_to_typed(it, ft)?);
+                }
+                Ok(Value::Struct(out))
+            }
+            other => Err(format!("expected struct (array of fields), got {other:?}")),
+        },
         // Signatures are fully resolved before a function is installed, so a
         // type variable never reaches the membrane (issue #135).
         Ty::Var(_) => Err("unresolved type variable at the typed membrane".to_string()),
     }
 }
 
-/// Re-box a typed [`crate::jit::Value`] result as a `LispVal` (`bool` → `T`/`NIL`).
-fn typed_to_lispval(v: crate::jit::Value, env: &Rc<Environment>) -> LispVal {
-    use crate::jit::Value;
+/// Re-box a typed [`crate::jit::Value`] result as a `LispVal`, type-directed:
+/// `bool` → `T`/`NIL`, `(array char)` → a string, other arrays → a Lisp array,
+/// structs → a Lisp array of their fields.
+fn typed_to_lispval(v: crate::jit::Value, ty: &crate::jit::Ty, env: &Rc<Environment>) -> LispVal {
+    use crate::jit::{Ty, Value};
     match v {
         Value::Int(n) => LispVal::Number(n),
         Value::Float(f) => LispVal::Float(f),
@@ -2740,6 +2776,38 @@ fn typed_to_lispval(v: crate::jit::Value, env: &Rc<Environment>) -> LispVal {
             }
         }
         Value::Char(b) => LispVal::Char(b),
+        Value::Array(items) => match ty {
+            Ty::Array(elem) if matches!(**elem, Ty::Char) => {
+                let bytes: Vec<u8> = items
+                    .iter()
+                    .map(|x| match x {
+                        Value::Char(b) => *b,
+                        Value::Int(n) => *n as u8,
+                        _ => 0,
+                    })
+                    .collect();
+                LispVal::String(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Ty::Array(elem) => {
+                let lst: Vec<LispVal> = items
+                    .into_iter()
+                    .map(|x| typed_to_lispval(x, elem, env))
+                    .collect();
+                LispVal::Array(Rc::new(std::cell::RefCell::new(lst)))
+            }
+            _ => LispVal::Nil,
+        },
+        Value::Struct(fields) => match ty {
+            Ty::Struct(def) => {
+                let lst: Vec<LispVal> = fields
+                    .into_iter()
+                    .zip(def.fields.iter())
+                    .map(|(fv, (_, ft))| typed_to_lispval(fv, ft, env))
+                    .collect();
+                LispVal::Array(Rc::new(std::cell::RefCell::new(lst)))
+            }
+            _ => LispVal::Nil,
+        },
     }
 }
 
@@ -5103,13 +5171,13 @@ fn describe_text(arg: &LispVal, env: &Rc<Environment>) -> String {
         if let Some((ptys, ret)) = env.jit_signature(&name) {
             let sig = ptys
                 .iter()
-                .map(|t| crate::jit::ty_name(*t))
+                .map(crate::jit::ty_name)
                 .collect::<Vec<_>>()
                 .join(" ");
             out.push_str(&format!("{name} is a typed (JIT) function.\n"));
             out.push_str(&format!(
                 "  Signature: ({sig}) -> {}\n",
-                crate::jit::ty_name(ret)
+                crate::jit::ty_name(&ret)
             ));
             let compiled = matches!(env.jit_is_compiled(&name), Some(true));
             out.push_str(&format!(

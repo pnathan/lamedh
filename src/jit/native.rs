@@ -104,6 +104,7 @@ pub fn compile_native(
 ) -> Result<NativeEdition, String> {
     let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
+    jb.symbol("jit_alloc", super::jit_alloc as *const u8);
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
 
@@ -124,6 +125,15 @@ pub fn compile_native(
         .declare_function("jit_trampoline", Linkage::Import, &tsig)
         .map_err(|e| e.to_string())?;
 
+    // Imported allocator: (ctx, n) -> *mut u64, for array/struct allocation.
+    let mut asig = module.make_signature();
+    asig.params.push(AbiParam::new(ptr));
+    asig.params.push(AbiParam::new(types::I64));
+    asig.returns.push(AbiParam::new(ptr));
+    let alloc_id = module
+        .declare_function("jit_alloc", Linkage::Import, &asig)
+        .map_err(|e| e.to_string())?;
+
     // The function we are building: (args*, ctx*) -> u64.
     let mut ctx_codegen = module.make_context();
     ctx_codegen.func.signature.params.push(AbiParam::new(ptr));
@@ -138,6 +148,7 @@ pub fn compile_native(
     {
         let mut b = FunctionBuilder::new(&mut ctx_codegen.func, &mut fbctx);
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
+        let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
 
         let entry = b.create_block();
@@ -169,6 +180,7 @@ pub fn compile_native(
             env_slot,
             ctx_ptr,
             tramp_ref,
+            alloc_ref,
             callee_sig,
             cell_addrs,
         };
@@ -200,6 +212,7 @@ struct Emitter<'a, 'b, 'c> {
     env_slot: cranelift_codegen::ir::StackSlot,
     ctx_ptr: Value,
     tramp_ref: cranelift_codegen::ir::FuncRef,
+    alloc_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
 }
@@ -277,7 +290,113 @@ impl Emitter<'_, '_, '_> {
                 let v = self.emit(a);
                 self.b.ins().band_imm(v, 0xff)
             }
+            Core::ArrayNew(n) => {
+                let n = self.emit(n);
+                // Clamp negative lengths to 0 (matches the interpreter).
+                let zero = self.iconst(0);
+                let neg = self.b.ins().icmp(IntCC::SignedLessThan, n, zero);
+                let len = self.b.ins().select(neg, zero, n);
+                self.alloc(len)
+            }
+            Core::ArrayGet(a, i) => {
+                let base = self.emit(a);
+                let idx = self.emit(i);
+                let in_range = self.in_bounds(base, idx);
+                self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        let addr = s.elem_addr(base, idx);
+                        s.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0)
+                    },
+                    |s| s.iconst(0),
+                )
+            }
+            Core::ArraySet(a, i, v) => {
+                let base = self.emit(a);
+                let idx = self.emit(i);
+                let val = self.emit(v);
+                let in_range = self.in_bounds(base, idx);
+                self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        let addr = s.elem_addr(base, idx);
+                        s.b.ins().store(MemFlagsData::trusted(), val, addr, 0);
+                        val
+                    },
+                    |_s| val,
+                )
+            }
+            Core::ArrayLen(a) => {
+                let base = self.emit(a);
+                self.b
+                    .ins()
+                    .load(types::I64, MemFlagsData::trusted(), base, 0)
+            }
+            Core::StructNew(inits) => {
+                let vals: Vec<Value> = inits.iter().map(|c| self.emit(c)).collect();
+                let n = self.iconst(vals.len() as i64);
+                let base = self.alloc(n);
+                for (i, v) in vals.iter().enumerate() {
+                    self.b
+                        .ins()
+                        .store(MemFlagsData::trusted(), *v, base, ((i + 1) * 8) as i32);
+                }
+                base
+            }
+            Core::FieldGet(s, idx) => {
+                let base = self.emit(s);
+                self.b.ins().load(
+                    types::I64,
+                    MemFlagsData::trusted(),
+                    base,
+                    ((*idx + 1) * 8) as i32,
+                )
+            }
+            Core::FieldSet(s, idx, v) => {
+                let base = self.emit(s);
+                let val = self.emit(v);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), val, base, ((*idx + 1) * 8) as i32);
+                val
+            }
+            Core::Seq(forms) => {
+                let mut r = self.iconst(0);
+                for f in forms {
+                    r = self.emit(f);
+                }
+                r
+            }
         }
+    }
+
+    /// Call the host allocator for an `len`-element buffer; returns the header
+    /// pointer as an `I64` word.
+    fn alloc(&mut self, len: Value) -> Value {
+        let call = self.b.ins().call(self.alloc_ref, &[self.ctx_ptr, len]);
+        self.b.inst_results(call)[0]
+    }
+
+    /// Address of element `idx` in buffer `base`: `base + 8*(idx+1)`.
+    fn elem_addr(&mut self, base: Value, idx: Value) -> Value {
+        let off = self.b.ins().iadd_imm(idx, 1);
+        let byte_off = self.b.ins().imul_imm(off, 8);
+        self.b.ins().iadd(base, byte_off)
+    }
+
+    /// Predicate `0 <= idx < len(base)` for bounds-checked access.
+    fn in_bounds(&mut self, base: Value, idx: Value) -> Value {
+        let len = self
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), base, 0);
+        let zero = self.iconst(0);
+        let ge0 = self
+            .b
+            .ins()
+            .icmp(IntCC::SignedGreaterThanOrEqual, idx, zero);
+        let lt = self.b.ins().icmp(IntCC::SignedLessThan, idx, len);
+        self.b.ins().band(ge0, lt)
     }
 
     fn int_bin(&mut self, op: BinOp, x: Value, y: Value) -> Value {

@@ -53,7 +53,11 @@ use infer::Infer;
 // ---------------------------------------------------------------------------
 
 /// A monomorphic type in the typed core.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// No longer `Copy`: arrays (#137/#138) and structs carry owned component types,
+/// so the type is a small recursive tree. It is cheap to `clone` (scalars are
+/// nullary; only compounds allocate).
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Ty {
     Int64,
     Float64,
@@ -62,12 +66,33 @@ pub enum Ty {
     /// value (`0..=255`) held in the low bits of the `u64` word; it slots into
     /// the unboxed scalar tier alongside `int64`/`float64`/`bool`.
     Char,
+    /// A flat array of a scalar element type (#137/#138). The runtime value is a
+    /// pointer to a header-prefixed `u64` buffer `[len, e0, e1, …]` rooted in the
+    /// call arena ([`Ctx`]); every element is one `u64` word read per the element
+    /// type. `(array char)` *is* a string (native byte processing, #137).
+    /// The element type cannot be written in surface syntax — it is **inferred**
+    /// (the reason #135 came first) — though a param/return may pin it
+    /// (`(array int64)`), or leave it open with the bare `array` keyword.
+    Array(Box<Ty>),
+    /// A struct: a fixed record of named scalar fields, laid out as a flat
+    /// `u64` buffer (one word per field) rooted in the call arena, like a
+    /// fixed-shape array with named offsets.
+    Struct(Rc<StructDef>),
     /// A type variable (issue #135): an as-yet-undetermined type, identified by
     /// a fresh id. Variables exist only *during* elaboration; [`Infer::resolve`]
-    /// must drive every one to a concrete scalar before a definition is
-    /// accepted, so no `Var` is ever stored in a function signature or reaches
-    /// the runtime membrane.
+    /// must drive every one to a concrete type before a definition is accepted,
+    /// so no `Var` is ever stored in a function signature or reaches the runtime
+    /// membrane.
     Var(u32),
+}
+
+/// A struct type definition: an ordered list of `(field-name, field-type)`. Two
+/// struct types are equal iff they have the same name and field layout; the
+/// `Rc` keeps clones cheap and identity stable.
+#[derive(PartialEq, Eq, Debug)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, Ty)>,
 }
 
 impl Ty {
@@ -84,37 +109,38 @@ impl Ty {
     /// Arithmetic interpretation (`+ - * /`). `char` is intentionally excluded:
     /// byte math is done by widening to `int64` (`char-code`) and narrowing back
     /// (`code-char`).
-    fn as_num(self) -> Option<NumTy> {
+    fn as_num(&self) -> Option<NumTy> {
         match self {
             Ty::Int64 => Some(NumTy::I),
             Ty::Float64 => Some(NumTy::F),
-            Ty::Bool | Ty::Char | Ty::Var(_) => None,
+            _ => None,
         }
     }
 
     /// Comparison interpretation. `char` compares as an unsigned-small integer
     /// (its word holds a `0..=255` byte value), so it reuses the integer path.
-    fn cmp_num(self) -> Option<NumTy> {
+    fn cmp_num(&self) -> Option<NumTy> {
         match self {
             Ty::Int64 | Ty::Char => Some(NumTy::I),
             Ty::Float64 => Some(NumTy::F),
-            Ty::Bool | Ty::Var(_) => None,
+            _ => None,
         }
     }
 }
 
-/// Lower-case surface name of a [`Ty`], matching the `deffun-typed` syntax
-/// (`int64`, `float64`, `bool`, `char`). Used by introspection (`describe`,
-/// `disassemble`).
-pub fn ty_name(t: Ty) -> &'static str {
+/// Surface-style name of a [`Ty`], matching the `deffun-typed` syntax
+/// (`int64`, `float64`, `bool`, `char`, `(array T)`, struct name). Used by
+/// introspection (`describe`, `disassemble`) and diagnostics.
+pub fn ty_name(t: &Ty) -> String {
     match t {
-        Ty::Int64 => "int64",
-        Ty::Float64 => "float64",
-        Ty::Bool => "bool",
-        Ty::Char => "char",
-        // A variable should never survive to a signature/introspection site; "?"
-        // is a defensive placeholder (the id is omitted to keep this `&'static`).
-        Ty::Var(_) => "?",
+        Ty::Int64 => "int64".to_string(),
+        Ty::Float64 => "float64".to_string(),
+        Ty::Bool => "bool".to_string(),
+        Ty::Char => "char".to_string(),
+        Ty::Array(e) => format!("(array {})", ty_name(e)),
+        Ty::Struct(s) => s.name.clone(),
+        // A variable should never survive to a signature/introspection site.
+        Ty::Var(v) => format!("?{v}"),
     }
 }
 
@@ -126,7 +152,7 @@ enum NumTy {
 }
 
 /// A boxed value at the public boundary (the unboxed runtime uses raw `u64`).
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -134,28 +160,85 @@ pub enum Value {
     /// A byte value (`0..=255`) at the boundary. Boxes to/from `LispVal::Number`
     /// since there is no `LispVal::Char` (issue #136 membrane decision).
     Char(u8),
+    /// A flat array, materialized at the boundary as its element [`Value`]s. The
+    /// runtime word is a pointer into the call arena; this is the copied-out view
+    /// the membrane hands back (or takes in).
+    Array(Vec<Value>),
+    /// A struct, materialized as its field [`Value`]s in declaration order.
+    Struct(Vec<Value>),
 }
 
 impl Value {
-    fn to_word(self, ty: Ty) -> Result<u64, String> {
+    /// Lower a boundary value to its runtime `u64` word for a parameter of type
+    /// `ty`, allocating compound values (arrays/structs) into the call arena so
+    /// the resulting pointer word is rooted for the duration of the call.
+    fn to_word(&self, ty: &Ty, ctx: &Ctx) -> Result<u64, String> {
         match (self, ty) {
-            (Value::Int(n), Ty::Int64) => Ok(n as u64),
+            (Value::Int(n), Ty::Int64) => Ok(*n as u64),
             (Value::Float(f), Ty::Float64) => Ok(f.to_bits()),
-            (Value::Bool(b), Ty::Bool) => Ok(b as u64),
-            (Value::Char(b), Ty::Char) => Ok(b as u64),
+            (Value::Bool(b), Ty::Bool) => Ok(*b as u64),
+            (Value::Char(b), Ty::Char) => Ok(*b as u64),
             // Membrane coercion: an untyped Number flowing into a `char`
             // parameter is masked to a byte (the byte value).
-            (Value::Int(n), Ty::Char) => Ok((n as u8) as u64),
-            _ => Err(format!("value {self:?} does not match type {ty:?}")),
+            (Value::Int(n), Ty::Char) => Ok((*n as u8) as u64),
+            (Value::Array(items), Ty::Array(elem)) => {
+                let buf = ctx.alloc_buffer(items.len());
+                for (i, it) in items.iter().enumerate() {
+                    let w = it.to_word(elem, ctx)?;
+                    unsafe { *buf.add(i + 1) = w };
+                }
+                Ok(buf as u64)
+            }
+            (Value::Struct(fields), Ty::Struct(def)) => {
+                if fields.len() != def.fields.len() {
+                    return Err(format!(
+                        "struct `{}` expects {} fields, got {}",
+                        def.name,
+                        def.fields.len(),
+                        fields.len()
+                    ));
+                }
+                let buf = ctx.alloc_buffer(fields.len());
+                for (i, (fv, (_, ft))) in fields.iter().zip(def.fields.iter()).enumerate() {
+                    let w = fv.to_word(ft, ctx)?;
+                    unsafe { *buf.add(i + 1) = w };
+                }
+                Ok(buf as u64)
+            }
+            _ => Err(format!(
+                "value {self:?} does not match type {}",
+                ty_name(ty)
+            )),
         }
     }
 
-    fn from_word(w: u64, ty: Ty) -> Value {
+    /// Read a runtime word back into a boundary value of type `ty`, copying
+    /// compound buffers out of the arena (so the result outlives the call).
+    fn from_word(w: u64, ty: &Ty) -> Value {
         match ty {
             Ty::Int64 => Value::Int(w as i64),
             Ty::Float64 => Value::Float(f64::from_bits(w)),
             Ty::Bool => Value::Bool(w != 0),
             Ty::Char => Value::Char(w as u8),
+            Ty::Array(elem) => {
+                let base = w as *const u64;
+                let len = unsafe { *base } as usize;
+                let mut items = Vec::with_capacity(len);
+                for i in 0..len {
+                    let ew = unsafe { *base.add(i + 1) };
+                    items.push(Value::from_word(ew, elem));
+                }
+                Value::Array(items)
+            }
+            Ty::Struct(def) => {
+                let base = w as *const u64;
+                let mut fields = Vec::with_capacity(def.fields.len());
+                for (i, (_, ft)) in def.fields.iter().enumerate() {
+                    let fw = unsafe { *base.add(i + 1) };
+                    fields.push(Value::from_word(fw, ft));
+                }
+                Value::Struct(fields)
+            }
             // Signatures are fully resolved before storage (see [`Ty::Var`]), so
             // a variable never crosses the membrane.
             Ty::Var(_) => unreachable!("from_word on an unresolved type variable"),
@@ -217,6 +300,30 @@ pub enum Core {
     /// The widening direction (`char-code`) needs no node: a `char` word already
     /// holds the byte value, so it is reused unchanged at type `int64`.
     ToChar(Box<Core>),
+    /// `(array n)`: allocate a flat `n`-element buffer in the call arena,
+    /// zero-initialized; evaluates to the buffer pointer word (#137/#138).
+    ArrayNew(Box<Core>),
+    /// `(fetch a i)`: bounds-checked element load (out-of-range yields `0`,
+    /// matching the panic-free div-by-zero policy). The word is read per the
+    /// statically-known element type by the surrounding nodes.
+    ArrayGet(Box<Core>, Box<Core>),
+    /// `(store a i v)`: bounds-checked element store (out-of-range is a no-op);
+    /// evaluates to the stored value word.
+    ArraySet(Box<Core>, Box<Core>, Box<Core>),
+    /// `(array-length a)`: the element count (the buffer header), as `int64`.
+    ArrayLen(Box<Core>),
+    /// `(make-NAME f0 f1 …)`: allocate a struct buffer (one word per field) in
+    /// the call arena and initialize each field in declaration order; evaluates
+    /// to the buffer pointer word.
+    StructNew(Vec<Core>),
+    /// `(NAME-FIELD s)`: load field at the given fixed word offset.
+    FieldGet(Box<Core>, usize),
+    /// `(set-NAME-FIELD s v)`: store field at the given offset; evaluates to the
+    /// stored value word.
+    FieldSet(Box<Core>, usize, Box<Core>),
+    /// A statement sequence: evaluate each in order (for side effects such as
+    /// `store`), yielding the last. Non-empty by construction.
+    Seq(Vec<Core>),
 }
 
 /// Public mirror of [`NumTy`] so [`Core`] can derive `Debug`/`Clone` cleanly.
@@ -258,16 +365,16 @@ impl Cx<'_> {
         self.infer.borrow_mut().fresh()
     }
     /// Unify two types, extending the substitution (or report the clash).
-    fn unify(&self, a: Ty, b: Ty) -> Result<(), String> {
+    fn unify(&self, a: &Ty, b: &Ty) -> Result<(), String> {
         self.infer.borrow_mut().unify(a, b)
     }
     /// Read a type's current representative under the substitution (for
     /// diagnostics; may still be a variable).
-    fn walk(&self, t: Ty) -> Ty {
+    fn walk(&self, t: &Ty) -> Ty {
         self.infer.borrow().walk(t)
     }
-    /// Resolve a type to a concrete scalar, erroring if it is still ambiguous.
-    fn resolve(&self, t: Ty) -> Result<Ty, String> {
+    /// Resolve a type to a concrete type, erroring if it is still ambiguous.
+    fn resolve(&self, t: &Ty) -> Result<Ty, String> {
         self.infer.borrow().resolve(t)
     }
 
@@ -289,7 +396,7 @@ impl Cx<'_> {
                     return Ok((Core::LitI(0), Ty::Bool));
                 }
                 match scope.iter().rposition(|(n, _)| n == name) {
-                    Some(slot) => Ok((Core::Var(slot), scope[slot].1)),
+                    Some(slot) => Ok((Core::Var(slot), scope[slot].1.clone())),
                     None => Err(format!("unbound variable: {name}")),
                 }
             }
@@ -309,6 +416,10 @@ impl Cx<'_> {
                     "LET-TYPED" => self.elab_let(args, scope, max),
                     "CHAR-CODE" => self.elab_char_code(args, scope, max),
                     "CODE-CHAR" => self.elab_code_char(args, scope, max),
+                    "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
+                    "FETCH" | "AREF" => self.elab_fetch(args, scope, max),
+                    "STORE" | "ASET" => self.elab_store(args, scope, max),
+                    "ARRAY-LENGTH" => self.elab_array_len(args, scope, max),
                     _ => self.elab_call(&head, args, scope, max),
                 }
             }
@@ -328,15 +439,15 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if self.unify(ta, tb).is_err() {
+        if self.unify(&ta, &tb).is_err() {
             return Err(format!(
                 "`{op}` operands disagree: {:?} vs {:?}",
-                self.walk(ta),
-                self.walk(tb)
+                self.walk(&ta),
+                self.walk(&tb)
             ));
         }
         let rt = self
-            .resolve(ta)
+            .resolve(&ta)
             .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
         let num = rt
             .as_num()
@@ -366,15 +477,15 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if self.unify(ta, tb).is_err() {
+        if self.unify(&ta, &tb).is_err() {
             return Err(format!(
                 "`{op}` operands disagree: {:?} vs {:?}",
-                self.walk(ta),
-                self.walk(tb)
+                self.walk(&ta),
+                self.walk(&tb)
             ));
         }
         let rt = self
-            .resolve(ta)
+            .resolve(&ta)
             .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
         let num = rt
             .cmp_num()
@@ -403,8 +514,8 @@ impl Cx<'_> {
             return Err(format!("`not` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if self.unify(ta, Ty::Bool).is_err() {
-            return Err(format!("`not` expects bool, got {:?}", self.walk(ta)));
+        if self.unify(&ta, &Ty::Bool).is_err() {
+            return Err(format!("`not` expects bool, got {:?}", self.walk(&ta)));
         }
         Ok((Core::Not(Box::new(a)), Ty::Bool))
     }
@@ -421,11 +532,11 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if self.unify(ta, Ty::Bool).is_err() || self.unify(tb, Ty::Bool).is_err() {
+        if self.unify(&ta, &Ty::Bool).is_err() || self.unify(&tb, &Ty::Bool).is_err() {
             return Err(format!(
                 "`{op}` expects bool operands, got {:?} and {:?}",
-                self.walk(ta),
-                self.walk(tb)
+                self.walk(&ta),
+                self.walk(&tb)
             ));
         }
         let node = if op == "AND" {
@@ -449,10 +560,10 @@ impl Cx<'_> {
             ));
         }
         let (c, tc) = self.elab(&args[0], scope, max)?;
-        if self.unify(tc, Ty::Bool).is_err() {
+        if self.unify(&tc, &Ty::Bool).is_err() {
             return Err(format!(
                 "`if` condition must be bool, got {:?}",
-                self.walk(tc)
+                self.walk(&tc)
             ));
         }
         let saved = scope.len();
@@ -460,16 +571,16 @@ impl Cx<'_> {
         scope.truncate(saved);
         let (e, te) = self.elab(&args[2], scope, max)?;
         scope.truncate(saved);
-        if self.unify(tt, te).is_err() {
+        if self.unify(&tt, &te).is_err() {
             return Err(format!(
                 "`if` branches disagree: {:?} vs {:?}",
-                self.walk(tt),
-                self.walk(te)
+                self.walk(&tt),
+                self.walk(&te)
             ));
         }
         Ok((
             Core::If(Box::new(c), Box::new(t), Box::new(e)),
-            self.walk(tt),
+            self.walk(&tt),
         ))
     }
 
@@ -513,23 +624,23 @@ impl Cx<'_> {
             // variable that the initializer constrains — the inference path.
             let ty = match declared {
                 Some(d) => {
-                    if self.unify(d, init_ty).is_err() {
+                    if self.unify(&d, &init_ty).is_err() {
                         return Err(format!(
                             "binding `{name}` declared {d:?} but init is {:?}",
-                            self.walk(init_ty)
+                            self.walk(&init_ty)
                         ));
                     }
                     d
                 }
                 None => {
+                    // A fresh variable constrained by the initializer. It is NOT
+                    // resolved here: an array binding's element type is only fixed
+                    // by later `store`/`fetch` in the body, so resolution is
+                    // deferred (the var flows via `walk` to every reference).
                     let v = self.fresh();
-                    self.unify(v, init_ty)
+                    self.unify(&v, &init_ty)
                         .expect("fresh variable always unifies");
-                    // Resolve eagerly so the binding carries a concrete type for
-                    // any references in the body; an initializer whose type stays
-                    // ambiguous is rejected here rather than deferred.
-                    self.resolve(v)
-                        .map_err(|_| format!("cannot infer type for binding `{name}`"))?
+                    v
                 }
             };
             let slot = scope.len();
@@ -559,7 +670,7 @@ impl Cx<'_> {
             .ok_or_else(|| format!("call to unknown function `{name}`"))?;
         let callee = &self.funcs[id];
         let params = callee.params.borrow().clone();
-        let ret = callee.ret.get();
+        let ret = callee.ret.borrow().clone();
         if args.len() != params.len() {
             return Err(format!(
                 "`{name}` expects {} args, got {}",
@@ -570,11 +681,11 @@ impl Cx<'_> {
         let mut arg_cores = Vec::with_capacity(args.len());
         for (i, a) in args.iter().enumerate() {
             let (ac, at) = self.elab(a, scope, max)?;
-            if self.unify(at, params[i].1).is_err() {
+            if self.unify(&at, &params[i].1).is_err() {
                 return Err(format!(
                     "`{name}` arg {i} expects {:?}, got {:?}",
                     params[i].1,
-                    self.walk(at)
+                    self.walk(&at)
                 ));
             }
             arg_cores.push(ac);
@@ -594,8 +705,11 @@ impl Cx<'_> {
             return Err(format!("`char-code` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if self.unify(ta, Ty::Char).is_err() {
-            return Err(format!("`char-code` expects char, got {:?}", self.walk(ta)));
+        if self.unify(&ta, &Ty::Char).is_err() {
+            return Err(format!(
+                "`char-code` expects char, got {:?}",
+                self.walk(&ta)
+            ));
         }
         Ok((a, Ty::Int64))
     }
@@ -611,13 +725,123 @@ impl Cx<'_> {
             return Err(format!("`code-char` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if self.unify(ta, Ty::Int64).is_err() {
+        if self.unify(&ta, &Ty::Int64).is_err() {
             return Err(format!(
                 "`code-char` expects int64, got {:?}",
-                self.walk(ta)
+                self.walk(&ta)
             ));
         }
         Ok((Core::ToChar(Box::new(a)), Ty::Char))
+    }
+
+    /// `(array n)` / `(make-array n)` : int64 -> (array α). The element type is a
+    /// fresh variable, unified at each `fetch`/`store` site and resolved before
+    /// codegen (#137/#138 — element types are inferred, never annotated here).
+    fn elab_array_new(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`array` expects 1 arg (size), got {}", args.len()));
+        }
+        let (n, tn) = self.elab(&args[0], scope, max)?;
+        if self.unify(&tn, &Ty::Int64).is_err() {
+            return Err(format!(
+                "`array` size must be int64, got {:?}",
+                self.walk(&tn)
+            ));
+        }
+        let elem = self.fresh();
+        Ok((Core::ArrayNew(Box::new(n)), Ty::Array(Box::new(elem))))
+    }
+
+    /// `(fetch a i)` : (array α) int64 -> α. Bounds-checked at runtime.
+    fn elab_fetch(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!("`fetch` expects 2 args, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        let (i, ti) = self.elab(&args[1], scope, max)?;
+        let elem = self.fresh();
+        if self.unify(&ta, &Ty::Array(Box::new(elem.clone()))).is_err() {
+            return Err(format!(
+                "`fetch` expects an array, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        if self.unify(&ti, &Ty::Int64).is_err() {
+            return Err(format!(
+                "`fetch` index must be int64, got {:?}",
+                self.walk(&ti)
+            ));
+        }
+        let rt = self.walk(&elem);
+        Ok((Core::ArrayGet(Box::new(a), Box::new(i)), rt))
+    }
+
+    /// `(store a i v)` : (array α) int64 α -> α. Evaluates to the stored value.
+    fn elab_store(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 3 {
+            return Err(format!("`store` expects 3 args, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        let (i, ti) = self.elab(&args[1], scope, max)?;
+        let (v, tv) = self.elab(&args[2], scope, max)?;
+        let elem = self.fresh();
+        if self.unify(&ta, &Ty::Array(Box::new(elem.clone()))).is_err() {
+            return Err(format!(
+                "`store` expects an array, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        if self.unify(&ti, &Ty::Int64).is_err() {
+            return Err(format!(
+                "`store` index must be int64, got {:?}",
+                self.walk(&ti)
+            ));
+        }
+        if self.unify(&tv, &elem).is_err() {
+            return Err(format!(
+                "`store` value type {:?} does not match element type {:?}",
+                self.walk(&tv),
+                self.walk(&elem)
+            ));
+        }
+        let rt = self.walk(&elem);
+        Ok((Core::ArraySet(Box::new(a), Box::new(i), Box::new(v)), rt))
+    }
+
+    /// `(array-length a)` : (array α) -> int64.
+    fn elab_array_len(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`array-length` expects 1 arg, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        let elem = self.fresh();
+        if self.unify(&ta, &Ty::Array(Box::new(elem))).is_err() {
+            return Err(format!(
+                "`array-length` expects an array, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        Ok((Core::ArrayLen(Box::new(a)), Ty::Int64))
     }
 
     fn elab_body(
@@ -626,11 +850,24 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
-        let mut last = None;
-        for f in forms {
-            last = Some(self.elab(f, scope, max)?);
+        if forms.is_empty() {
+            return Err("empty body".to_string());
         }
-        last.ok_or_else(|| "empty body".to_string())
+        let mut cores = Vec::with_capacity(forms.len());
+        let mut last_ty = Ty::Int64;
+        for f in forms {
+            let (c, t) = self.elab(f, scope, max)?;
+            cores.push(c);
+            last_ty = t;
+        }
+        // A single form needs no wrapper; multiple forms sequence (earlier ones
+        // run for their side effects, e.g. `store`), yielding the last's type.
+        let core = if cores.len() == 1 {
+            cores.pop().unwrap()
+        } else {
+            Core::Seq(cores)
+        };
+        Ok((core, last_ty))
     }
 }
 
@@ -638,9 +875,16 @@ impl Cx<'_> {
 // Runtime: interpreter and compiler over unboxed u64 words.
 // ---------------------------------------------------------------------------
 
-/// Call context: the function table, so calls dispatch through the registry cell.
+/// Call context: the function table (so calls dispatch through the registry
+/// cell) plus the **call arena** that roots every array/struct buffer allocated
+/// during the call. Compound values live as pointers into these `Box<[u64]>`
+/// buffers; the arena (and therefore the buffers) is dropped when the top-level
+/// membrane call returns — after any compound result has been copied out. A
+/// `Box<[u64]>`'s heap data pointer is stable across arena `Vec` growth, so
+/// native code may hold a raw `base` for the duration of a call.
 pub struct Ctx<'a> {
     funcs: &'a [Rc<TypedFn>],
+    arena: RefCell<Vec<Box<[u64]>>>,
 }
 
 impl Ctx<'_> {
@@ -648,6 +892,29 @@ impl Ctx<'_> {
     fn call(&self, id: usize, args: &[u64]) -> u64 {
         self.funcs[id].invoke(args, self)
     }
+
+    /// Allocate an `n`-element buffer `[n, 0, 0, …]` in the arena and return a
+    /// raw pointer to its header word. The arena owns the `Box`, keeping the
+    /// data pointer valid (and stable) until the call returns.
+    fn alloc_buffer(&self, n: usize) -> *mut u64 {
+        let mut buf = vec![0u64; n + 1].into_boxed_slice();
+        buf[0] = n as u64;
+        let ptr = buf.as_mut_ptr();
+        self.arena.borrow_mut().push(buf);
+        ptr
+    }
+}
+
+/// Host trampoline for in-native array/struct allocation: allocate an
+/// `n`-element buffer in the call arena and return its header pointer.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry; `ctx` must point to the live [`Ctx`] for the call.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_alloc(ctx: *const core::ffi::c_void, n: u64) -> *mut u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.alloc_buffer(n as usize)
 }
 
 fn int_bin(op: BinOp, x: i64, y: i64) -> i64 {
@@ -690,6 +957,42 @@ fn float_cmp(op: CmpOp, x: f64, y: f64) -> bool {
         CmpOp::Eq => x == y,
         CmpOp::Ne => x != y,
     }
+}
+
+// --- flat-buffer access shared by the interpreter and closure backends ------
+// All compound values are a pointer to a `[len, e0, e1, …]` buffer. Access is
+// bounds-checked (out-of-range load → 0, store → no-op) to stay panic-free and
+// to agree with the native edition's guarded loads/stores.
+
+/// # Safety: `base` must be a live buffer pointer from [`Ctx::alloc_buffer`].
+#[inline]
+unsafe fn buf_get(base: u64, idx: i64) -> u64 {
+    let p = base as *const u64;
+    let len = unsafe { *p } as i64;
+    if idx < 0 || idx >= len {
+        0
+    } else {
+        unsafe { *p.add(idx as usize + 1) }
+    }
+}
+/// # Safety: as [`buf_get`].
+#[inline]
+unsafe fn buf_set(base: u64, idx: i64, val: u64) {
+    let p = base as *mut u64;
+    let len = unsafe { *p } as i64;
+    if idx >= 0 && idx < len {
+        unsafe { *p.add(idx as usize + 1) = val }
+    }
+}
+/// # Safety: as [`buf_get`].
+#[inline]
+unsafe fn field_get(base: u64, idx: usize) -> u64 {
+    unsafe { *(base as *const u64).add(idx + 1) }
+}
+/// # Safety: as [`buf_get`].
+#[inline]
+unsafe fn field_set(base: u64, idx: usize, val: u64) {
+    unsafe { *(base as *mut u64).add(idx + 1) = val }
 }
 
 fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
@@ -744,6 +1047,51 @@ fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             ctx.call(*id, &vals)
         }
         Core::ToChar(a) => eval_core(a, env, ctx) & 0xff,
+        Core::ArrayNew(n) => {
+            let len = as_i(eval_core(n, env, ctx)).max(0) as usize;
+            ctx.alloc_buffer(len) as u64
+        }
+        Core::ArrayGet(a, i) => {
+            let base = eval_core(a, env, ctx);
+            let idx = as_i(eval_core(i, env, ctx));
+            unsafe { buf_get(base, idx) }
+        }
+        Core::ArraySet(a, i, v) => {
+            let base = eval_core(a, env, ctx);
+            let idx = as_i(eval_core(i, env, ctx));
+            let val = eval_core(v, env, ctx);
+            unsafe { buf_set(base, idx, val) };
+            val
+        }
+        Core::ArrayLen(a) => {
+            let base = eval_core(a, env, ctx);
+            unsafe { *(base as *const u64) }
+        }
+        Core::StructNew(inits) => {
+            let vals: Vec<u64> = inits.iter().map(|c| eval_core(c, env, ctx)).collect();
+            let base = ctx.alloc_buffer(vals.len());
+            for (i, v) in vals.iter().enumerate() {
+                unsafe { *base.add(i + 1) = *v };
+            }
+            base as u64
+        }
+        Core::FieldGet(s, idx) => {
+            let base = eval_core(s, env, ctx);
+            unsafe { field_get(base, *idx) }
+        }
+        Core::FieldSet(s, idx, v) => {
+            let base = eval_core(s, env, ctx);
+            let val = eval_core(v, env, ctx);
+            unsafe { field_set(base, *idx, val) };
+            val
+        }
+        Core::Seq(forms) => {
+            let mut r = 0;
+            for f in forms {
+                r = eval_core(f, env, ctx);
+            }
+            r
+        }
     }
 }
 
@@ -867,6 +1215,69 @@ fn eval_core_traced(
             let v = eval_core_traced(a, env, ctx, depth + 1, log);
             step!("tochar", v & 0xff, NO_SLOT, NO_CALLEE)
         }
+        Core::ArrayNew(n) => {
+            let len = as_i(eval_core_traced(n, env, ctx, depth + 1, log)).max(0) as usize;
+            step!("arraynew", ctx.alloc_buffer(len) as u64, NO_SLOT, NO_CALLEE)
+        }
+        Core::ArrayGet(a, i) => {
+            let base = eval_core_traced(a, env, ctx, depth + 1, log);
+            let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
+            step!(
+                "arrayget",
+                unsafe { buf_get(base, idx) },
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
+        Core::ArraySet(a, i, v) => {
+            let base = eval_core_traced(a, env, ctx, depth + 1, log);
+            let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
+            let val = eval_core_traced(v, env, ctx, depth + 1, log);
+            unsafe { buf_set(base, idx, val) };
+            step!("arrayset", val, NO_SLOT, NO_CALLEE)
+        }
+        Core::ArrayLen(a) => {
+            let base = eval_core_traced(a, env, ctx, depth + 1, log);
+            step!(
+                "arraylen",
+                unsafe { *(base as *const u64) },
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
+        Core::StructNew(inits) => {
+            let vals: Vec<u64> = inits
+                .iter()
+                .map(|c| eval_core_traced(c, env, ctx, depth + 1, log))
+                .collect();
+            let base = ctx.alloc_buffer(vals.len());
+            for (i, v) in vals.iter().enumerate() {
+                unsafe { *base.add(i + 1) = *v };
+            }
+            step!("structnew", base as u64, NO_SLOT, NO_CALLEE)
+        }
+        Core::FieldGet(s, idx) => {
+            let base = eval_core_traced(s, env, ctx, depth + 1, log);
+            step!(
+                "fieldget",
+                unsafe { field_get(base, *idx) },
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
+        Core::FieldSet(s, idx, v) => {
+            let base = eval_core_traced(s, env, ctx, depth + 1, log);
+            let val = eval_core_traced(v, env, ctx, depth + 1, log);
+            unsafe { field_set(base, *idx, val) };
+            step!("fieldset", val, NO_SLOT, NO_CALLEE)
+        }
+        Core::Seq(forms) => {
+            let mut r = 0;
+            for f in forms {
+                r = eval_core_traced(f, env, ctx, depth + 1, log);
+            }
+            step!("seq", r, NO_SLOT, NO_CALLEE)
+        }
     }
 }
 
@@ -881,7 +1292,12 @@ pub fn core_node_count(core: &Core) -> usize {
         | Core::Or(a, b)
         | Core::Let(_, a, b) => core_node_count(a) + core_node_count(b),
         Core::If(c, t, e) => core_node_count(c) + core_node_count(t) + core_node_count(e),
-        Core::Call(_, args) => args.iter().map(core_node_count).sum(),
+        Core::Call(_, args) | Core::StructNew(args) | Core::Seq(args) => {
+            args.iter().map(core_node_count).sum()
+        }
+        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) => core_node_count(a),
+        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) => core_node_count(a) + core_node_count(b),
+        Core::ArraySet(a, b, c) => core_node_count(a) + core_node_count(b) + core_node_count(c),
     }
 }
 
@@ -923,6 +1339,30 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
             }
             for a in args {
                 verify_core(a, n_slots, n_funcs)?;
+            }
+            Ok(())
+        }
+        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) => {
+            verify_core(a, n_slots, n_funcs)
+        }
+        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) => {
+            verify_core(a, n_slots, n_funcs)?;
+            verify_core(b, n_slots, n_funcs)
+        }
+        Core::ArraySet(a, b, c) => {
+            verify_core(a, n_slots, n_funcs)?;
+            verify_core(b, n_slots, n_funcs)?;
+            verify_core(c, n_slots, n_funcs)
+        }
+        Core::StructNew(inits) => {
+            for c in inits {
+                verify_core(c, n_slots, n_funcs)?;
+            }
+            Ok(())
+        }
+        Core::Seq(forms) => {
+            for c in forms {
+                verify_core(c, n_slots, n_funcs)?;
             }
             Ok(())
         }
@@ -1026,6 +1466,75 @@ pub fn compile(core: &Core) -> Compiled {
             let ca = compile(a);
             Rc::new(move |e, c| ca(e, c) & 0xff)
         }
+        Core::ArrayNew(n) => {
+            let cn = compile(n);
+            Rc::new(move |e, c| {
+                let len = as_i(cn(e, c)).max(0) as usize;
+                c.alloc_buffer(len) as u64
+            })
+        }
+        Core::ArrayGet(a, i) => {
+            let (ca, ci) = (compile(a), compile(i));
+            Rc::new(move |e, c| {
+                let base = ca(e, c);
+                let idx = as_i(ci(e, c));
+                unsafe { buf_get(base, idx) }
+            })
+        }
+        Core::ArraySet(a, i, v) => {
+            let (ca, ci, cv) = (compile(a), compile(i), compile(v));
+            Rc::new(move |e, c| {
+                let base = ca(e, c);
+                let idx = as_i(ci(e, c));
+                let val = cv(e, c);
+                unsafe { buf_set(base, idx, val) };
+                val
+            })
+        }
+        Core::ArrayLen(a) => {
+            let ca = compile(a);
+            Rc::new(move |e, c| {
+                let base = ca(e, c);
+                unsafe { *(base as *const u64) }
+            })
+        }
+        Core::StructNew(inits) => {
+            let cinits: Vec<Compiled> = inits.iter().map(compile).collect();
+            Rc::new(move |e, c| {
+                let base = c.alloc_buffer(cinits.len());
+                for (i, ci) in cinits.iter().enumerate() {
+                    let v = ci(e, c);
+                    unsafe { *base.add(i + 1) = v };
+                }
+                base as u64
+            })
+        }
+        Core::FieldGet(s, idx) => {
+            let (cs, idx) = (compile(s), *idx);
+            Rc::new(move |e, c| {
+                let base = cs(e, c);
+                unsafe { field_get(base, idx) }
+            })
+        }
+        Core::FieldSet(s, idx, v) => {
+            let (cs, idx, cv) = (compile(s), *idx, compile(v));
+            Rc::new(move |e, c| {
+                let base = cs(e, c);
+                let val = cv(e, c);
+                unsafe { field_set(base, idx, val) };
+                val
+            })
+        }
+        Core::Seq(forms) => {
+            let cforms: Vec<Compiled> = forms.iter().map(compile).collect();
+            Rc::new(move |e, c| {
+                let mut r = 0;
+                for cf in &cforms {
+                    r = cf(e, c);
+                }
+                r
+            })
+        }
     }
 }
 
@@ -1038,7 +1547,7 @@ pub fn compile(core: &Core) -> Compiled {
 pub struct TypedFn {
     pub name: String,
     params: RefCell<Vec<(String, Ty)>>,
-    ret: Cell<Ty>,
+    ret: RefCell<Ty>,
     core: RefCell<Option<Core>>,
     slots: Cell<usize>,
     compiled: RefCell<Option<Compiled>>,
@@ -1061,7 +1570,7 @@ impl std::fmt::Debug for TypedFn {
         f.debug_struct("TypedFn")
             .field("name", &self.name)
             .field("params", &self.params.borrow())
-            .field("ret", &self.ret.get())
+            .field("ret", &self.ret.borrow())
             .field("defined", &self.core.borrow().is_some())
             .field("compiled", &self.compiled.borrow().is_some())
             .field("generation", &self.generation.get())
@@ -1075,7 +1584,7 @@ impl TypedFn {
         TypedFn {
             name,
             params: RefCell::new(params),
-            ret: Cell::new(ret),
+            ret: RefCell::new(ret),
             core: RefCell::new(None),
             slots: Cell::new(slots),
             compiled: RefCell::new(None),
@@ -1095,7 +1604,7 @@ impl TypedFn {
     }
 
     pub fn ret(&self) -> Ty {
-        self.ret.get()
+        self.ret.borrow().clone()
     }
     pub fn params(&self) -> Vec<(String, Ty)> {
         self.params.borrow().clone()
@@ -1209,7 +1718,7 @@ impl Jit {
         if let Some(&id) = self.by_name.get(name) {
             let f = &self.funcs[id];
             *f.params.borrow_mut() = params;
-            f.ret.set(ret);
+            *f.ret.borrow_mut() = ret;
             id
         } else {
             let id = self.funcs.len();
@@ -1223,7 +1732,10 @@ impl Jit {
     /// Forward-declare a signature so mutually-recursive functions can reference
     /// each other before their bodies exist.
     pub fn declare(&mut self, name: &str, params: &[(&str, Ty)], ret: Ty) -> usize {
-        let params = params.iter().map(|(n, t)| ((*n).to_string(), *t)).collect();
+        let params = params
+            .iter()
+            .map(|(n, t)| ((*n).to_string(), t.clone()))
+            .collect();
         self.intern(name, params, ret)
     }
 
@@ -1238,7 +1750,15 @@ impl Jit {
         if items.len() != 3 {
             return Err("declare-typed: (declare-typed (name ret) ((arg ty)...))".to_string());
         }
-        let (name, ret, params) = parse_signature(&items)?;
+        // A forward declaration has no body to infer from, so its types must be
+        // concrete — reject a bare `array` (unpinned element) here.
+        let mut infer = Infer::new();
+        let (name, ret, params) = parse_signature(&items, &mut infer)?;
+        if infer.resolve(&ret).is_err() || params.iter().any(|(_, t)| infer.resolve(t).is_err()) {
+            return Err(format!(
+                "{name}: a declaration needs concrete types; pin array elements as `(array T)`"
+            ));
+        }
         self.intern(&name, params, ret);
         Ok(name)
     }
@@ -1247,8 +1767,8 @@ impl Jit {
     pub fn signature(&self, name: &str) -> Option<(Vec<Ty>, Ty)> {
         let id = self.id(name)?;
         let f = &self.funcs[id];
-        let ptys = f.params.borrow().iter().map(|(_, t)| *t).collect();
-        Some((ptys, f.ret.get()))
+        let ptys = f.params.borrow().iter().map(|(_, t)| t.clone()).collect();
+        Some((ptys, f.ret.borrow().clone()))
     }
 
     /// Type-check and (eagerly) compile a `(deffun-typed ...)` form. Returns the
@@ -1265,36 +1785,54 @@ impl Jit {
             );
         }
 
-        let (name, ret, params) = parse_signature(&items)?;
+        // One inference state spans signature parsing and the body, so an array
+        // parameter's element type (a fresh variable from `parse_ty`) is unified
+        // by `fetch`/`store` in the body and resolved into the stored signature.
+        let mut infer = Infer::new();
+        let (name, ret, params) = parse_signature(&items, &mut infer)?;
         let mut scope: Scope = params.clone();
 
         // Register the signature *before* elaborating the body so a function can
         // call itself (and any already-declared peer).
-        let id = self.intern(&name, params, ret);
+        let id = self.intern(&name, params.clone(), ret.clone());
 
         let mut max_slots = scope.len();
-        let core = {
+        let (core, resolved_params, resolved_ret) = {
             let cx = Cx {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
-                infer: RefCell::new(Infer::new()),
+                infer: RefCell::new(infer),
             };
             let (core, body_ty) = cx.elab_body(&items[3..], &mut scope, &mut max_slots)?;
             // The declared return type is a principal-type pin: the body's
             // inferred type must unify with it.
-            if cx.unify(body_ty, ret).is_err() {
+            if cx.unify(&body_ty, &ret).is_err() {
                 return Err(format!(
                     "{name}: declared return {ret:?} but body has type {:?}",
-                    cx.walk(body_ty)
+                    cx.walk(&body_ty)
                 ));
             }
-            // Final resolve: with `ret` concrete the body type is pinned, but
-            // reject any definition whose body type is left ambiguous.
-            cx.resolve(body_ty).map_err(|e| format!("{name}: {e}"))?;
-            core
+            // Final resolve: drive the signature (params + return) to concrete
+            // types, baking any inferred array element types. A still-ambiguous
+            // type (e.g. an array param the body never indexes) is rejected here.
+            let resolved_ret = cx
+                .resolve(&ret)
+                .map_err(|e| format!("{name} return type: {e}"))?;
+            let mut resolved_params = Vec::with_capacity(params.len());
+            for (pn, pt) in &params {
+                let rt = cx
+                    .resolve(pt)
+                    .map_err(|e| format!("{name} parameter `{pn}`: {e}"))?;
+                resolved_params.push((pn.clone(), rt));
+            }
+            (core, resolved_params, resolved_ret)
         };
 
+        // Bake the resolved (concrete) signature so the membrane and callers see
+        // monomorphic types, never variables.
         let f = self.funcs[id].clone();
+        *f.params.borrow_mut() = resolved_params;
+        *f.ret.borrow_mut() = resolved_ret;
         f.slots.set(max_slots);
         *f.core.borrow_mut() = Some(core);
         f.compile_now(&self.funcs);
@@ -1316,7 +1854,10 @@ impl Jit {
     }
 
     fn ctx(&self) -> Ctx<'_> {
-        Ctx { funcs: &self.funcs }
+        Ctx {
+            funcs: &self.funcs,
+            arena: RefCell::new(Vec::new()),
+        }
     }
 
     /// Call a function by name with boxed [`Value`]s; type-checks the arguments
@@ -1337,33 +1878,38 @@ impl Jit {
                 args.len()
             ));
         }
+        // The arena (in `ctx`) must outlive both arg lowering (which allocates
+        // compound buffers into it) and result reading (which copies them out),
+        // so it is created up front and dropped only at return.
+        let ctx = self.ctx();
         let mut words = Vec::with_capacity(args.len());
         for (a, (_, ty)) in args.iter().zip(params.iter()) {
-            words.push(a.to_word(*ty)?);
+            words.push(a.to_word(ty, &ctx)?);
         }
+        let ret = f.ret.borrow().clone();
         drop(params);
-        let w = f.invoke(&words, &self.ctx());
-        Ok(Value::from_word(w, f.ret.get()))
+        let w = f.invoke(&words, &ctx);
+        Ok(Value::from_word(w, &ret))
     }
 
     /// Convenience for callers holding `LispVal`s: maps `Number`/`Float` to
     /// [`Value`], calls, and re-boxes to `Number`/`Float`/(`Number 0/1` for bool).
     pub fn call_lisp(&self, name: &str, args: &[LispVal]) -> Result<LispVal, String> {
-        let mut vals = Vec::with_capacity(args.len());
-        for a in args {
-            vals.push(match a {
-                LispVal::Number(n) => Value::Int(*n),
-                LispVal::Float(f) => Value::Float(*f),
-                LispVal::Char(b) => Value::Char(*b),
-                other => return Err(format!("call_lisp: unsupported argument {other:?}")),
-            });
+        let (ptys, ret) = self
+            .signature(name)
+            .ok_or_else(|| format!("unknown function `{name}`"))?;
+        if args.len() != ptys.len() {
+            return Err(format!(
+                "{name}: expected {} args, got {}",
+                ptys.len(),
+                args.len()
+            ));
         }
-        Ok(match self.call(name, &vals)? {
-            Value::Int(n) => LispVal::Number(n),
-            Value::Float(f) => LispVal::Float(f),
-            Value::Bool(b) => LispVal::Number(b as i64),
-            Value::Char(b) => LispVal::Char(b),
-        })
+        let mut vals = Vec::with_capacity(args.len());
+        for (a, ty) in args.iter().zip(ptys.iter()) {
+            vals.push(lispval_to_value(a, ty)?);
+        }
+        Ok(value_to_lispval(&self.call(name, &vals)?, &ret))
     }
 
     /// Trace a call through the **reference (typed-core) interpreter**, returning
@@ -1395,14 +1941,15 @@ impl Jit {
                 args.len()
             ));
         }
+        let ctx = self.ctx();
         let mut frame = vec![0u64; f.slots.get()];
         for (i, (a, (_, ty))) in args.iter().zip(params.iter()).enumerate() {
-            frame[i] = a.to_word(*ty)?;
+            frame[i] = a.to_word(ty, &ctx)?;
         }
-        let ctx = self.ctx();
         let mut log = Vec::new();
         let w = eval_core_traced(&core, &mut frame, &ctx, 0, &mut log);
-        Ok((Value::from_word(w, f.ret.get()), log))
+        let ret = f.ret.borrow().clone();
+        Ok((Value::from_word(w, &ret), log))
     }
 
     /// Drop every compiled edition (force the interpreter path). Test/diagnostic.
@@ -1431,20 +1978,20 @@ impl Jit {
         let mut s = String::new();
         let sig = params
             .iter()
-            .map(|(_, t)| ty_name(*t))
+            .map(|(_, t)| ty_name(t))
             .collect::<Vec<_>>()
             .join(" ");
         s.push_str(&format!(
             "; typed function {} ({sig}) -> {}\n",
             f.name,
-            ty_name(ret)
+            ty_name(&ret)
         ));
         if params.is_empty() {
             s.push_str("; slots: (none)\n");
         } else {
             s.push_str("; slots:\n");
             for (i, (pname, ty)) in params.iter().enumerate() {
-                s.push_str(&format!(";   slot{i} = {pname} : {}\n", ty_name(*ty)));
+                s.push_str(&format!(";   slot{i} = {pname} : {}\n", ty_name(ty)));
             }
         }
         s.push_str(&format!(
@@ -1561,6 +2108,63 @@ impl Jit {
                 let callee = self.name_of(*id).unwrap_or_else(|| format!("fn#{id}"));
                 out.push(format!("    {dst} = call {callee}({})", argregs.join(", ")));
             }
+            Core::ArrayNew(n) => {
+                let t = fresh(reg);
+                self.dis_emit(n, &t, out, reg, lab);
+                out.push(format!("    {dst} = alloc {t}        ; array"));
+            }
+            Core::ArrayGet(a, i) => {
+                let (ta, ti) = (fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = ldelem {ta}[{ti}]   ; fetch (bounds-checked)"
+                ));
+            }
+            Core::ArraySet(a, i, v) => {
+                let (ta, ti, tv) = (fresh(reg), fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                self.dis_emit(v, &tv, out, reg, lab);
+                out.push(format!(
+                    "    stelem {ta}[{ti}], {tv}   ; store (bounds-checked)"
+                ));
+                out.push(format!("    {dst} = mov {tv}"));
+            }
+            Core::ArrayLen(a) => {
+                let t = fresh(reg);
+                self.dis_emit(a, &t, out, reg, lab);
+                out.push(format!("    {dst} = ldlen {t}"));
+            }
+            Core::StructNew(inits) => {
+                let mut regs = Vec::with_capacity(inits.len());
+                for c in inits {
+                    let t = fresh(reg);
+                    self.dis_emit(c, &t, out, reg, lab);
+                    regs.push(t);
+                }
+                out.push(format!(
+                    "    {dst} = struct {{{}}}      ; make struct",
+                    regs.join(", ")
+                ));
+            }
+            Core::FieldGet(s, idx) => {
+                let t = fresh(reg);
+                self.dis_emit(s, &t, out, reg, lab);
+                out.push(format!("    {dst} = ldfld {t}.{idx}"));
+            }
+            Core::FieldSet(s, idx, v) => {
+                let (ts, tv) = (fresh(reg), fresh(reg));
+                self.dis_emit(s, &ts, out, reg, lab);
+                self.dis_emit(v, &tv, out, reg, lab);
+                out.push(format!("    stfld {ts}.{idx}, {tv}"));
+                out.push(format!("    {dst} = mov {tv}"));
+            }
+            Core::Seq(forms) => {
+                for f in forms {
+                    self.dis_emit(f, dst, out, reg, lab);
+                }
+            }
         }
     }
 }
@@ -1604,14 +2208,42 @@ fn cmp_mnemonic(k: NumKind, op: CmpOp) -> &'static str {
 /// A parsed typed signature: function name, return type, parameter `(name, type)`s.
 type ParsedSig = (String, Ty, Vec<(String, Ty)>);
 
+/// Parse a type annotation: a scalar keyword, the bare `array` keyword (element
+/// type left as a fresh inference variable), or `(array T)` with the element
+/// pinned. The `infer` supplies fresh variables for unpinned array elements.
+fn parse_ty(form: &LispVal, infer: &mut Infer) -> Result<Ty, String> {
+    match form {
+        LispVal::Symbol(s) => {
+            let name = s.borrow().name.clone();
+            if name == "ARRAY" {
+                return Ok(Ty::Array(Box::new(infer.fresh())));
+            }
+            Ty::parse(&name).ok_or_else(|| format!("unknown type `{name}`"))
+        }
+        LispVal::Cons { .. } => {
+            let items = list_to_vec(form);
+            match items.as_slice() {
+                [LispVal::Symbol(h), elem] if h.borrow().name == "ARRAY" => {
+                    Ok(Ty::Array(Box::new(parse_ty(elem, infer)?)))
+                }
+                _ => Err("type must be a scalar, `array`, or `(array T)`".to_string()),
+            }
+        }
+        other => Err(format!("bad type annotation: {other:?}")),
+    }
+}
+
 /// Parse `items[1]` = `(name ret)` and `items[2]` = `((arg ty)...)` shared by
-/// `deffun-typed` and `declare-typed`.
-fn parse_signature(items: &[LispVal]) -> Result<ParsedSig, String> {
+/// `deffun-typed` and `declare-typed`. Array element types may be inferred, so
+/// the `infer` provides fresh variables; `define` resolves them after the body.
+fn parse_signature(items: &[LispVal], infer: &mut Infer) -> Result<ParsedSig, String> {
     let sig = list_to_vec(&items[1]);
     let (name, ret) = match sig.as_slice() {
-        [LispVal::Symbol(n), LispVal::Symbol(r)] => {
-            let ret = Ty::parse(&r.borrow().name)
-                .ok_or_else(|| format!("unknown return type `{}`", r.borrow().name))?;
+        [LispVal::Symbol(n), rty] => {
+            let ret = parse_ty(rty, infer).map_err(|e| match rty {
+                LispVal::Symbol(r) => format!("unknown return type `{}`", r.borrow().name),
+                _ => e,
+            })?;
             (n.borrow().name.clone(), ret)
         }
         _ => return Err("typed signature must be (name return-type)".to_string()),
@@ -1620,15 +2252,103 @@ fn parse_signature(items: &[LispVal]) -> Result<ParsedSig, String> {
     for p in list_to_vec(&items[2]) {
         let parts = list_to_vec(&p);
         match parts.as_slice() {
-            [LispVal::Symbol(a), LispVal::Symbol(t)] => {
-                let ty = Ty::parse(&t.borrow().name)
-                    .ok_or_else(|| format!("unknown param type `{}`", t.borrow().name))?;
-                params.push((a.borrow().name.clone(), ty));
+            [LispVal::Symbol(a), t] => {
+                let pt = parse_ty(t, infer).map_err(|e| match t {
+                    LispVal::Symbol(s) => format!("unknown param type `{}`", s.borrow().name),
+                    _ => e,
+                })?;
+                params.push((a.borrow().name.clone(), pt));
             }
             _ => return Err("each parameter must be (name type)".to_string()),
         }
     }
     Ok((name, ret, params))
+}
+
+/// Type-directed `LispVal` → [`Value`] at the convenience membrane
+/// ([`Jit::call_lisp`]). A `(array char)` accepts a string; arrays/structs
+/// convert element/field-wise. `bool` follows Lisp truthiness.
+fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
+    match ty {
+        Ty::Int64 => match lv {
+            LispVal::Number(n) => Ok(Value::Int(*n)),
+            other => Err(format!("expected int64, got {other:?}")),
+        },
+        Ty::Float64 => match lv {
+            LispVal::Float(f) => Ok(Value::Float(*f)),
+            LispVal::Number(n) => Ok(Value::Float(*n as f64)),
+            other => Err(format!("expected float64, got {other:?}")),
+        },
+        Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
+        Ty::Char => match lv {
+            LispVal::Char(b) => Ok(Value::Char(*b)),
+            LispVal::Number(n) => Ok(Value::Char(*n as u8)),
+            other => Err(format!("expected char, got {other:?}")),
+        },
+        Ty::Array(elem) => match lv {
+            LispVal::String(s) if matches!(**elem, Ty::Char) => {
+                Ok(Value::Array(s.bytes().map(Value::Char).collect()))
+            }
+            LispVal::Array(a) => {
+                let mut out = Vec::new();
+                for it in a.borrow().iter() {
+                    out.push(lispval_to_value(it, elem)?);
+                }
+                Ok(Value::Array(out))
+            }
+            other => Err(format!("expected array, got {other:?}")),
+        },
+        Ty::Struct(def) => match lv {
+            LispVal::Array(a) => {
+                let items = a.borrow();
+                let mut out = Vec::new();
+                for (it, (_, ft)) in items.iter().zip(def.fields.iter()) {
+                    out.push(lispval_to_value(it, ft)?);
+                }
+                Ok(Value::Struct(out))
+            }
+            other => Err(format!("expected struct, got {other:?}")),
+        },
+        Ty::Var(_) => Err("unresolved type variable at the membrane".to_string()),
+    }
+}
+
+/// Type-directed [`Value`] → `LispVal` ([`Jit::call_lisp`]). `bool` maps to
+/// `0`/`1` (no environment here for `T`); `(array char)` becomes a string.
+fn value_to_lispval(v: &Value, ty: &Ty) -> LispVal {
+    match v {
+        Value::Int(n) => LispVal::Number(*n),
+        Value::Float(f) => LispVal::Float(*f),
+        Value::Bool(b) => LispVal::Number(*b as i64),
+        Value::Char(b) => LispVal::Char(*b),
+        Value::Array(items) => match ty {
+            Ty::Array(elem) if matches!(**elem, Ty::Char) => {
+                let bytes: Vec<u8> = items
+                    .iter()
+                    .map(|x| match x {
+                        Value::Char(b) => *b,
+                        Value::Int(n) => *n as u8,
+                        _ => 0,
+                    })
+                    .collect();
+                LispVal::String(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Ty::Array(elem) => LispVal::Array(Rc::new(RefCell::new(
+                items.iter().map(|x| value_to_lispval(x, elem)).collect(),
+            ))),
+            _ => LispVal::Nil,
+        },
+        Value::Struct(fields) => match ty {
+            Ty::Struct(def) => LispVal::Array(Rc::new(RefCell::new(
+                fields
+                    .iter()
+                    .zip(def.fields.iter())
+                    .map(|(fv, (_, ft))| value_to_lispval(fv, ft))
+                    .collect(),
+            ))),
+            _ => LispVal::Nil,
+        },
+    }
 }
 
 /// Collect a proper list into a vector (improper tails are ignored).

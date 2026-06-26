@@ -668,6 +668,10 @@ fn args_to_ovals(args: &[Value]) -> Vec<OVal> {
             // The generator never emits char args; carry the byte value if it
             // ever does, keeping this mapping total.
             Value::Char(b) => OVal::I(*b as i64),
+            // The generator emits only scalar argument types.
+            Value::Array(_) | Value::Struct(_) => {
+                unreachable!("generator emits only scalar arguments")
+            }
         })
         .collect()
 }
@@ -676,7 +680,7 @@ fn args_to_ovals(args: &[Value]) -> Vec<OVal> {
 /// or a wrong rounding is caught) — except that *any* NaN equals *any* NaN, since
 /// NaN payload bits are not part of the language semantics and the native
 /// (Cranelift) backend may canonicalise them differently from Rust's `f64`.
-fn val_eq(a: Value, b: Value) -> bool {
+fn val_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
@@ -775,7 +779,7 @@ fn brutal_differential_random_programs() {
                 assert!(!log.is_empty(), "empty trace for {entry_name}");
                 // Determinism: a second trace is byte-identical.
                 let (traced2, log2) = j.trace_call(entry_name, args).unwrap();
-                assert!(val_eq(traced, traced2), "trace non-determinism (value)");
+                assert!(val_eq(&traced, &traced2), "trace non-determinism (value)");
                 assert_eq!(log, log2, "trace non-determinism (log)");
 
                 // Oracle: independent Rust interpretation of the same AST.
@@ -788,9 +792,10 @@ fn brutal_differential_random_programs() {
                 let oracle_val = oracle(&prog[entry].body, &mut scope, &prog).to_value();
 
                 // FOUR-WAY AGREEMENT.
-                let c = compiled[k];
-                let it = interpreted[k];
-                let mismatch = !(val_eq(c, it) && val_eq(it, traced) && val_eq(traced, oracle_val));
+                let c = &compiled[k];
+                let it = &interpreted[k];
+                let mismatch =
+                    !(val_eq(c, it) && val_eq(it, &traced) && val_eq(&traced, &oracle_val));
                 if mismatch {
                     panic!(
                         "TIER DISAGREEMENT (program seed {}, input #{k} = {args:?})\n  \
@@ -1064,20 +1069,20 @@ fn metamorphic_deopt_recompile_idempotence() {
             j.deoptimize_all();
             assert!(!j.get(entry).unwrap().is_compiled());
             let r1 = j.call(entry, &args).unwrap();
-            assert!(val_eq(r0, r1), "deopt changed the result for {entry}");
+            assert!(val_eq(&r0, &r1), "deopt changed the result for {entry}");
 
             // Recompile: result stable, generation strictly advances (idempotent
             // semantics, fresh edition).
             j.compile_all();
             let gen1 = j.get(entry).unwrap().generation();
             let r2 = j.call(entry, &args).unwrap();
-            assert!(val_eq(r0, r2), "recompile changed the result for {entry}");
+            assert!(val_eq(&r0, &r2), "recompile changed the result for {entry}");
             assert!(gen1 > gen0, "recompile did not advance generation");
 
             // Recompiling again keeps the answer.
             j.compile_all();
             let r3 = j.call(entry, &args).unwrap();
-            assert!(val_eq(r0, r3), "second recompile changed the result");
+            assert!(val_eq(&r0, &r3), "second recompile changed the result");
         }
     });
 }
@@ -1200,7 +1205,7 @@ fn float_tiers_agree_bit_for_bit() {
                 let it = j.call(fname, &a).unwrap();
                 let (tr, _) = j.trace_call(fname, &a).unwrap();
                 assert!(
-                    val_eq(c, it) && val_eq(it, tr),
+                    val_eq(&c, &it) && val_eq(&it, &tr),
                     "float tier disagreement on {fname}({x}, {y}): {c:?} / {it:?} / {tr:?}"
                 );
             }

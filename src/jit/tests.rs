@@ -51,6 +51,15 @@ fn fl(x: f64) -> Value {
 fn bo(x: bool) -> Value {
     Value::Bool(x)
 }
+fn ints(xs: &[i64]) -> Value {
+    Value::Array(xs.iter().map(|n| Value::Int(*n)).collect())
+}
+fn floats(xs: &[f64]) -> Value {
+    Value::Array(xs.iter().map(|x| Value::Float(*x)).collect())
+}
+fn chars(s: &str) -> Value {
+    Value::Array(s.bytes().map(Value::Char).collect())
+}
 
 // --- arithmetic: int -------------------------------------------------------
 
@@ -318,6 +327,164 @@ fn inferred_binding_used_at_two_types_is_rejected() {
            (let-typed ((y (+ 1 2))) (+ y a)))",
     );
     assert!(err.contains("operands disagree"), "got: {err}");
+}
+
+// --- arrays: inference + flat representation (#137/#138) --------------------
+
+#[test]
+fn array_new_store_fetch_length_roundtrip() {
+    // Build a 3-int array, fill it, read it back, and report its length. The
+    // element type is inferred (int64) from the `store` of an int.
+    let j = build(&[
+        "(deffun-typed (build int64) ((x int64)) \
+           (let-typed ((a (array 3))) \
+             (store a 0 x) (store a 1 (* x 2)) (store a 2 (* x 3)) \
+             (+ (fetch a 0) (+ (fetch a 1) (fetch a 2)))))",
+        "(deffun-typed (len3 int64) () (let-typed ((a (array 3))) (array-length a)))",
+    ]);
+    assert_eq!(agree(&j, "build", &[i(5)]), i(5 + 10 + 15));
+    assert_eq!(agree(&j, "len3", &[]), i(3));
+}
+
+#[test]
+fn array_out_of_bounds_is_panic_free() {
+    // OOB fetch yields 0, OOB store is a no-op — agreeing across all editions.
+    let j = build(&[
+        "(deffun-typed (oobget int64) ((idx int64)) \
+           (let-typed ((a (array 2))) (store a 0 7) (store a 1 9) (fetch a idx)))",
+        "(deffun-typed (oobset int64) ((idx int64)) \
+           (let-typed ((a (array 2))) (store a idx 42) (+ (fetch a 0) (fetch a 1))))",
+    ]);
+    assert_eq!(agree(&j, "oobget", &[i(0)]), i(7));
+    assert_eq!(agree(&j, "oobget", &[i(5)]), i(0)); // OOB -> 0
+    assert_eq!(agree(&j, "oobget", &[i(-1)]), i(0)); // OOB -> 0
+    assert_eq!(agree(&j, "oobset", &[i(9)]), i(0)); // no-op store, both 0
+}
+
+#[test]
+fn array_param_element_inferred_from_body() {
+    // `a` is declared with the bare `array` keyword; its element type is
+    // inferred to int64 from the `fetch`+arithmetic in the body.
+    let j = build(&["(deffun-typed (first-plus int64) ((a array) (k int64)) (+ (fetch a 0) k))"]);
+    assert_eq!(agree(&j, "first-plus", &[ints(&[10, 20, 30]), i(5)]), i(15));
+}
+
+#[test]
+fn array_int_sum_recursive_kernel() {
+    // sum-array via recursion over a pinned (array int64).
+    let j = build(&[
+        "(deffun-typed (suml int64) ((a (array int64)) (i int64)) \
+           (if (= i (array-length a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
+        "(deffun-typed (sum int64) ((a (array int64))) (suml a 0))",
+    ]);
+    assert_eq!(agree(&j, "sum", &[ints(&[1, 2, 3, 4, 5])]), i(15));
+    assert_eq!(agree(&j, "sum", &[ints(&[])]), i(0));
+}
+
+#[test]
+fn array_float_dot_product_kernel() {
+    let j = build(&[
+        "(deffun-typed (dotl float64) ((a (array float64)) (b (array float64)) (i int64)) \
+           (if (= i (array-length a)) 0.0 \
+             (+ (* (fetch a i) (fetch b i)) (dotl a b (+ i 1)))))",
+        "(deffun-typed (dot float64) ((a (array float64)) (b (array float64))) (dotl a b 0))",
+    ]);
+    assert_eq!(
+        agree(
+            &j,
+            "dot",
+            &[floats(&[1.0, 2.0, 3.0]), floats(&[4.0, 5.0, 6.0])]
+        ),
+        fl(32.0)
+    );
+}
+
+#[test]
+fn same_source_monomorphizes_to_int_and_float_arrays() {
+    // Identical `(array 1)`/`store`/`fetch` source, but inference picks int64 in
+    // one function and float64 in the other from the value stored.
+    let j = build(&[
+        "(deffun-typed (boxi int64) ((x int64)) (let-typed ((a (array 1))) (store a 0 x) (fetch a 0)))",
+        "(deffun-typed (boxf float64) ((x float64)) (let-typed ((a (array 1))) (store a 0 x) (fetch a 0)))",
+    ]);
+    assert_eq!(agree(&j, "boxi", &[i(7)]), i(7));
+    assert_eq!(agree(&j, "boxf", &[fl(2.5)]), fl(2.5));
+}
+
+#[test]
+fn string_is_array_of_char_levenshtein() {
+    // A string is `(array char)`: native byte indexing + comparison + recursion.
+    let j = build(&[
+        "(deffun-typed (min3 int64) ((a int64) (b int64) (c int64)) \
+           (if (<= a b) (if (<= a c) a c) (if (<= b c) b c)))",
+        "(deffun-typed (lev int64) ((a (array char)) (b (array char)) (i int64) (j int64)) \
+           (if (= i (array-length a)) (- (array-length b) j) \
+             (if (= j (array-length b)) (- (array-length a) i) \
+               (if (= (fetch a i) (fetch b j)) \
+                   (lev a b (+ i 1) (+ j 1)) \
+                   (+ 1 (min3 (lev a b (+ i 1) j) \
+                              (lev a b i (+ j 1)) \
+                              (lev a b (+ i 1) (+ j 1))))))))",
+        "(deffun-typed (edit int64) ((a (array char)) (b (array char))) (lev a b 0 0))",
+    ]);
+    assert_eq!(
+        agree(&j, "edit", &[chars("kitten"), chars("sitting")]),
+        i(3)
+    );
+    assert_eq!(agree(&j, "edit", &[chars("abc"), chars("abc")]), i(0));
+    assert_eq!(agree(&j, "edit", &[chars(""), chars("xyz")]), i(3));
+}
+
+#[test]
+fn char_array_fetch_resolves_element_to_char() {
+    // `(fetch s i)` on a char array is a char: feeding it to `char-code`
+    // type-checks only because the element resolved to `char`.
+    let j = build(&[
+        "(deffun-typed (code-at int64) ((s (array char)) (i int64)) \
+           (char-code (fetch s i)))",
+    ]);
+    assert_eq!(agree(&j, "code-at", &[chars("ABC"), i(0)]), i(65));
+    assert_eq!(agree(&j, "code-at", &[chars("ABC"), i(2)]), i(67));
+}
+
+#[test]
+fn array_returned_across_membrane() {
+    // A typed function may build and return an array; the membrane copies it out.
+    let j = build(&["(deffun-typed (iota (array int64)) ((n int64)) \
+           (let-typed ((a (array n))) (store a 0 0) a))"]);
+    // (only element 0 written; rest zero-initialized)
+    assert_eq!(j.call("iota", &[i(3)]).unwrap(), ints(&[0, 0, 0]));
+}
+
+#[test]
+fn array_element_type_conflict_rejected() {
+    // Storing an int then a float into the same array is a def-time element clash.
+    let err = def_err(
+        "(deffun-typed (bad int64) () \
+           (let-typed ((a (array 2))) (store a 0 1) (store a 1 2.0) 0))",
+    );
+    assert!(
+        err.contains("operands disagree")
+            || err.contains("cannot unify")
+            || err.contains("does not match"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn string_membrane_roundtrip_via_call_lisp() {
+    use crate::reader::read;
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    // length of a string (array char) through the LispVal membrane.
+    let f = read(
+        "(deffun-typed (slen int64) ((s (array char))) (array-length s))",
+        &env,
+    )
+    .unwrap();
+    j.define(&f).unwrap();
+    let arg = LispVal::String("hello".to_string());
+    assert_eq!(j.call_lisp("slen", &[arg]).unwrap(), LispVal::Number(5));
 }
 
 // --- self-recursion --------------------------------------------------------

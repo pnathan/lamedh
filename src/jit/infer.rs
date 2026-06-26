@@ -47,34 +47,37 @@ impl Infer {
     }
 
     /// Follow the substitution to `t`'s representative: chase a bound variable's
-    /// chain until reaching a non-variable or an unbound variable. Shallow — it
-    /// does not descend into compound types (their *components* are walked by
-    /// `unify`/`occurs`/`resolve` as needed).
-    pub(crate) fn walk(&self, mut t: Ty) -> Ty {
-        while let Ty::Var(v) = t {
+    /// chain until reaching a non-variable or an unbound variable. Shallow at the
+    /// top level — it does not descend into a compound type's *components* (those
+    /// are walked by `unify`/`resolve` as needed).
+    pub(crate) fn walk(&self, t: &Ty) -> Ty {
+        let mut cur = t.clone();
+        while let Ty::Var(v) = cur {
             match self.subst.get(&v) {
-                Some(&next) => t = next,
+                Some(next) => cur = next.clone(),
                 None => break,
             }
         }
-        t
+        cur
     }
 
     /// Does variable `v` occur anywhere in `t` (under the current
     /// substitution)? The occurs-check that keeps [`bind`](Infer::bind) from
-    /// constructing a cyclic (infinite) type such as `α = α → α`.
-    pub(crate) fn occurs(&self, v: u32, t: Ty) -> bool {
+    /// constructing a cyclic (infinite) type such as `α = (array α)`.
+    pub(crate) fn occurs(&self, v: u32, t: &Ty) -> bool {
         match self.walk(t) {
             Ty::Var(w) => v == w,
-            // Scalars contain no variables. Compound types (e.g. a future
-            // `Ty::Array(elem)`) recurse into their components here.
+            // Compound types recurse into their components.
+            Ty::Array(elem) => self.occurs(v, &elem),
+            Ty::Struct(def) => def.fields.iter().any(|(_, ft)| self.occurs(v, ft)),
+            // Scalars contain no variables.
             Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char => false,
         }
     }
 
     /// Bind variable `v` to `t`, rejecting a cyclic binding via the occurs-check.
     fn bind(&mut self, v: u32, t: Ty) -> Result<(), String> {
-        if self.occurs(v, t) {
+        if self.occurs(v, &t) {
             return Err(format!("occurs-check: type variable ?{v} occurs in itself"));
         }
         self.subst.insert(v, t);
@@ -83,8 +86,9 @@ impl Infer {
 
     /// Unify two types, extending the substitution so that they become equal,
     /// or returning an error describing the clash. Variables bind (with an
-    /// occurs-check); equal scalars succeed; everything else is a mismatch.
-    pub(crate) fn unify(&mut self, a: Ty, b: Ty) -> Result<(), String> {
+    /// occurs-check); equal scalars succeed; arrays unify element-wise; structs
+    /// unify by identity; everything else is a mismatch.
+    pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), String> {
         let a = self.walk(a);
         let b = self.walk(b);
         match (a, b) {
@@ -94,23 +98,26 @@ impl Infer {
             | (Ty::Float64, Ty::Float64)
             | (Ty::Bool, Ty::Bool)
             | (Ty::Char, Ty::Char) => Ok(()),
+            (Ty::Array(ea), Ty::Array(eb)) => self.unify(&ea, &eb),
+            (Ty::Struct(sa), Ty::Struct(sb)) if sa == sb => Ok(()),
             (x, y) => Err(format!(
                 "cannot unify {} with {}",
-                super::ty_name(x),
-                super::ty_name(y)
+                super::ty_name(&x),
+                super::ty_name(&y)
             )),
         }
     }
 
-    /// Resolve `t` to a concrete monomorphic type under the final substitution.
-    /// A type variable that is still unbound is an error: codegen needs a
-    /// concrete representation, so an un-pinned type is ambiguous and rejected
-    /// at definition time.
-    pub(crate) fn resolve(&self, t: Ty) -> Result<Ty, String> {
+    /// Resolve `t` to a concrete monomorphic type under the final substitution,
+    /// descending into compound types. A type variable that is still unbound is
+    /// an error: codegen needs a concrete representation, so an un-pinned type is
+    /// ambiguous and rejected at definition time.
+    pub(crate) fn resolve(&self, t: &Ty) -> Result<Ty, String> {
         match self.walk(t) {
             Ty::Var(v) => Err(format!(
                 "cannot infer type (ambiguous: type variable ?{v} is unconstrained)"
             )),
+            Ty::Array(elem) => Ok(Ty::Array(Box::new(self.resolve(&elem)?))),
             concrete => Ok(concrete),
         }
     }
@@ -134,8 +141,8 @@ mod tests {
     fn unify_binds_variable_to_scalar() {
         let mut inf = Infer::new();
         let a = inf.fresh();
-        inf.unify(a, Ty::Int64).unwrap();
-        assert_eq!(inf.resolve(a).unwrap(), Ty::Int64);
+        inf.unify(&a, &Ty::Int64).unwrap();
+        assert_eq!(inf.resolve(&a).unwrap(), Ty::Int64);
     }
 
     #[test]
@@ -143,36 +150,69 @@ mod tests {
         // a = b, b = c, c = float64  ⇒  all three resolve to float64.
         let mut inf = Infer::new();
         let (a, b, c) = (inf.fresh(), inf.fresh(), inf.fresh());
-        inf.unify(a, b).unwrap();
-        inf.unify(b, c).unwrap();
-        inf.unify(c, Ty::Float64).unwrap();
-        assert_eq!(inf.resolve(a).unwrap(), Ty::Float64);
-        assert_eq!(inf.resolve(b).unwrap(), Ty::Float64);
-        assert_eq!(inf.resolve(c).unwrap(), Ty::Float64);
+        inf.unify(&a, &b).unwrap();
+        inf.unify(&b, &c).unwrap();
+        inf.unify(&c, &Ty::Float64).unwrap();
+        assert_eq!(inf.resolve(&a).unwrap(), Ty::Float64);
+        assert_eq!(inf.resolve(&b).unwrap(), Ty::Float64);
+        assert_eq!(inf.resolve(&c).unwrap(), Ty::Float64);
     }
 
     #[test]
     fn unify_same_variable_is_noop() {
         let mut inf = Infer::new();
         let a = inf.fresh();
-        inf.unify(a, a).unwrap();
-        assert!(inf.resolve(a).is_err(), "still unconstrained");
+        inf.unify(&a, &a).unwrap();
+        assert!(inf.resolve(&a).is_err(), "still unconstrained");
     }
 
     #[test]
     fn conflicting_unification_is_rejected() {
         let mut inf = Infer::new();
         let a = inf.fresh();
-        inf.unify(a, Ty::Int64).unwrap();
-        let err = inf.unify(a, Ty::Float64).unwrap_err();
+        inf.unify(&a, &Ty::Int64).unwrap();
+        let err = inf.unify(&a, &Ty::Float64).unwrap_err();
         assert!(err.contains("cannot unify"), "got: {err}");
     }
 
     #[test]
     fn scalar_mismatch_is_rejected() {
         let mut inf = Infer::new();
-        let err = inf.unify(Ty::Bool, Ty::Char).unwrap_err();
+        let err = inf.unify(&Ty::Bool, &Ty::Char).unwrap_err();
         assert!(err.contains("cannot unify"), "got: {err}");
+    }
+
+    #[test]
+    fn arrays_unify_element_wise() {
+        // (array α) ~ (array int64)  ⇒  α = int64.
+        let mut inf = Infer::new();
+        let a = inf.fresh();
+        let arr_a = Ty::Array(Box::new(a.clone()));
+        inf.unify(&arr_a, &Ty::Array(Box::new(Ty::Int64))).unwrap();
+        assert_eq!(inf.resolve(&a).unwrap(), Ty::Int64);
+        assert_eq!(inf.resolve(&arr_a).unwrap(), Ty::Array(Box::new(Ty::Int64)));
+    }
+
+    #[test]
+    fn array_element_conflict_is_rejected() {
+        let mut inf = Infer::new();
+        let err = inf
+            .unify(
+                &Ty::Array(Box::new(Ty::Int64)),
+                &Ty::Array(Box::new(Ty::Float64)),
+            )
+            .unwrap_err();
+        assert!(err.contains("cannot unify"), "got: {err}");
+    }
+
+    #[test]
+    fn occurs_check_rejects_cyclic_array_type() {
+        // α ~ (array α) must be rejected (infinite type).
+        let mut inf = Infer::new();
+        let a = inf.fresh();
+        let arr_a = Ty::Array(Box::new(a.clone()));
+        let err = inf.unify(&a, &arr_a).unwrap_err();
+        assert!(err.contains("occurs-check"), "got: {err}");
     }
 
     #[test]
@@ -180,16 +220,10 @@ mod tests {
         // A scalar never contains a variable.
         let mut inf = Infer::new();
         let a = inf.fresh();
-        assert!(!inf.occurs(
-            match a {
-                Ty::Var(v) => v,
-                _ => unreachable!(),
-            },
-            Ty::Int64
-        ));
+        assert!(!inf.occurs(0, &Ty::Int64));
         // A variable occurs in itself.
-        inf.unify(a, a).unwrap();
-        assert!(inf.occurs(0, a));
+        assert!(matches!(a, Ty::Var(0)));
+        assert!(inf.occurs(0, &a));
     }
 
     #[test]
@@ -199,14 +233,14 @@ mod tests {
             let _ = inf.fresh();
             inf
         };
-        assert!(inf.resolve(Ty::Var(0)).is_err());
+        assert!(inf.resolve(&Ty::Var(0)).is_err());
     }
 
     #[test]
     fn resolve_passes_concrete_through() {
         let inf = Infer::new();
         for t in [Ty::Int64, Ty::Float64, Ty::Bool, Ty::Char] {
-            assert_eq!(inf.resolve(t).unwrap(), t);
+            assert_eq!(inf.resolve(&t).unwrap(), t);
         }
     }
 }
