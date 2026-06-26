@@ -1045,6 +1045,314 @@
     (cons 'SEE-ALSO '(documentation apropos))))
 
 ;;; ============================================================
+;;; CHAR OPERATIONS
+;;; ============================================================
+
+(register-doc 'charp
+  (list
+    (cons 'NAME 'charp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(charp x)")
+    (cons 'CATEGORY 'chars)
+    (cons 'DESCRIPTION "Returns T if x is a Char value (produced by a char literal like 'a'). NIL for integers, strings, and all other types.")
+    (cons 'EXAMPLES '(((charp 'a') t)
+                       ((charp 97) nil)
+                       ((charp "a") nil)))
+    (cons 'SEE-ALSO '(make-char char-code code-char fixp))))
+
+(register-doc 'make-char
+  (list
+    (cons 'NAME 'make-char)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-char n)")
+    (cons 'CATEGORY 'chars)
+    (cons 'DESCRIPTION "Convert integer n (0-255) to a Char value. Inverse of char-code for Char inputs.")
+    (cons 'EXAMPLES '(((make-char 65) 'A')
+                       ((charp (make-char 65)) t)))
+    (cons 'SEE-ALSO '(charp char-code code-char))))
+
+(register-doc 'char-code
+  (list
+    (cons 'NAME 'char-code)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(char-code c)")
+    (cons 'CATEGORY 'chars)
+    (cons 'DESCRIPTION "Return the integer code point of a Char literal or one-character string. Accepts 'a', \"a\", or an integer (pass-through).")
+    (cons 'EXAMPLES '(((char-code 'A') 65)
+                       ((char-code "A") 65)))
+    (cons 'SEE-ALSO '(code-char make-char charp))))
+
+(register-doc 'code-char
+  (list
+    (cons 'NAME 'code-char)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(code-char n)")
+    (cons 'CATEGORY 'chars)
+    (cons 'DESCRIPTION "Convert integer code point n (0-255) to a one-character string.")
+    (cons 'EXAMPLES '(((code-char 65) "A")
+                       ((code-char 10) "\n")))
+    (cons 'SEE-ALSO '(char-code make-char))))
+
+;;; ============================================================
+;;; MATH LIBRARY
+;;; ============================================================
+
+(register-doc 'sqrt
+  (list
+    (cons 'NAME 'sqrt)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sqrt x)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Square root of x as a float.")
+    (cons 'EXAMPLES '(((sqrt 4.0) 2.0)))
+    (cons 'SEE-ALSO '(expt isqrt))))
+
+(register-doc 'floor
+  (list
+    (cons 'NAME 'floor)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(floor x)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Return largest integer <= x.")
+    (cons 'EXAMPLES '(((floor 3.7) 3)
+                       ((floor -3.2) -4)))
+    (cons 'SEE-ALSO '(ceiling round truncate))))
+
+(register-doc 'ceiling
+  (list
+    (cons 'NAME 'ceiling)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ceiling x)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Return smallest integer >= x.")
+    (cons 'EXAMPLES '(((ceiling 3.2) 4)
+                       ((ceiling -3.7) -3)))
+    (cons 'SEE-ALSO '(floor round truncate))))
+
+(register-doc 'round
+  (list
+    (cons 'NAME 'round)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(round x)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Return x rounded to nearest integer (half rounds up).")
+    (cons 'EXAMPLES '(((round 3.5) 4)
+                       ((round 3.4) 3)))
+    (cons 'SEE-ALSO '(floor ceiling truncate))))
+
+(register-doc 'truncate
+  (list
+    (cons 'NAME 'truncate)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(truncate x)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Return x truncated toward zero.")
+    (cons 'EXAMPLES '(((truncate 3.7) 3)
+                       ((truncate -3.7) -3)))
+    (cons 'SEE-ALSO '(floor ceiling round))))
+
+(register-doc 'gcd
+  (list
+    (cons 'NAME 'gcd)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(gcd a b)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Greatest common divisor of two non-negative integers.")
+    (cons 'EXAMPLES '(((gcd 12 18) 6)))
+    (cons 'SEE-ALSO '(lcm))))
+
+(register-doc 'lcm
+  (list
+    (cons 'NAME 'lcm)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(lcm a b)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Least common multiple of two non-negative integers.")
+    (cons 'EXAMPLES '(((lcm 4 6) 12)))
+    (cons 'SEE-ALSO '(gcd))))
+
+(register-doc 'isqrt
+  (list
+    (cons 'NAME 'isqrt)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(isqrt n)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Integer square root (floor of sqrt) of non-negative integer n.")
+    (cons 'EXAMPLES '(((isqrt 17) 4)))
+    (cons 'SEE-ALSO '(sqrt))))
+
+(register-doc 'signum
+  (list
+    (cons 'NAME 'signum)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(signum n)")
+    (cons 'CATEGORY 'math)
+    (cons 'DESCRIPTION "Return -1, 0, or 1 depending on the sign of n.")
+    (cons 'EXAMPLES '(((signum -8) -1)
+                       ((signum 0) 0)
+                       ((signum 8) 1)))
+    (cons 'SEE-ALSO '(minusp plusp zerop abs))))
+
+;;; ============================================================
+;;; STRING KERNEL
+;;; ============================================================
+
+(register-doc 'string-length
+  (list
+    (cons 'NAME 'string-length)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-length s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Return the number of characters in string s.")
+    (cons 'EXAMPLES '(((string-length "hello") 5)
+                       ((string-length "") 0)))
+    (cons 'SEE-ALSO '(substring concat))))
+
+(register-doc 'substring
+  (list
+    (cons 'NAME 'substring)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(substring s start &optional end)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Return the substring of s from index start (inclusive) to end (exclusive). If end is omitted, goes to the end of the string.")
+    (cons 'EXAMPLES '(((substring "hello world" 0 5) "hello")
+                       ((substring "hello" 2) "llo")))
+    (cons 'SEE-ALSO '(string-length index string-split))))
+
+(register-doc 'string->number
+  (list
+    (cons 'NAME 'string->number)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string->number s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Parse a decimal numeric string and return a Number or Float. Returns NIL if s is not a valid number.")
+    (cons 'EXAMPLES '(((string->number "42") 42)
+                       ((string->number "3.14") 3.14)
+                       ((string->number "abc") nil)))
+    (cons 'SEE-ALSO '(number->string))))
+
+(register-doc 'number->string
+  (list
+    (cons 'NAME 'number->string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(number->string n)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Convert a Number or Float to its decimal string representation.")
+    (cons 'EXAMPLES '(((number->string 42) "42")
+                       ((number->string 3.14) "3.14")))
+    (cons 'SEE-ALSO '(string->number concat))))
+
+;;; ============================================================
+;;; SORT
+;;; ============================================================
+
+(register-doc 'sort
+  (list
+    (cons 'NAME 'sort)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sort list comparator)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Return a new list with elements sorted by comparator (a two-argument predicate). Non-destructive (original list unchanged). Stable.")
+    (cons 'EXAMPLES '(((sort '(3 1 4 1 5) #'lessp) (1 1 3 4 5))
+                       ((sort '(5 4 3) #'greaterp) (5 4 3))))
+    (cons 'SEE-ALSO '(lessp greaterp))))
+
+;;; ============================================================
+;;; ARRAYS
+;;; ============================================================
+
+(register-doc 'array
+  (list
+    (cons 'NAME 'array)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(array n)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Create an uninitialized array of n elements.")
+    (cons 'SEE-ALSO '(fetch store array-length list->array))))
+
+(register-doc 'fetch
+  (list
+    (cons 'NAME 'fetch)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(fetch array i)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Return element at 0-based index i of array.")
+    (cons 'EXAMPLES '(((fetch (list->array '(10 20 30)) 1) 20)))
+    (cons 'SEE-ALSO '(store array-length))))
+
+(register-doc 'store
+  (list
+    (cons 'NAME 'store)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(store array i value)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Set element at index i of array to value. Returns value.")
+    (cons 'SEE-ALSO '(fetch array))))
+
+(register-doc 'array-length
+  (list
+    (cons 'NAME 'array-length)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(array-length array)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Return the number of elements in array.")
+    (cons 'SEE-ALSO '(array fetch store))))
+
+(register-doc 'arrayp
+  (list
+    (cons 'NAME 'arrayp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(arrayp x)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Returns T if x is an Array.")
+    (cons 'SEE-ALSO '(array))))
+
+;;; ============================================================
+;;; FIRST-CLASS ERRORS
+;;; ============================================================
+
+(register-doc 'make-error
+  (list
+    (cons 'NAME 'make-error)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-error message &optional data)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Create an Error value without signalling it. Use ERROR to signal.")
+    (cons 'EXAMPLES '(((error-p (make-error "oops")) t)
+                       ((error-message (make-error "oops")) "oops")))
+    (cons 'SEE-ALSO '(error error-p error-message error-data))))
+
+(register-doc 'error-p
+  (list
+    (cons 'NAME 'error-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(error-p x)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Returns T if x is a first-class Error value.")
+    (cons 'SEE-ALSO '(make-error error-message error-data))))
+
+(register-doc 'error-message
+  (list
+    (cons 'NAME 'error-message)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(error-message err)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Return the message string of an Error value.")
+    (cons 'EXAMPLES '(((error-message (make-error "boom")) "boom")))
+    (cons 'SEE-ALSO '(make-error error-p error-data))))
+
+(register-doc 'error-data
+  (list
+    (cons 'NAME 'error-data)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(error-data err)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Return the optional data attached to an Error value, or NIL if none.")
+    (cons 'EXAMPLES '(((error-data (make-error "k" '(42))) (42))
+                       ((error-data (make-error "k")) nil)))
+    (cons 'SEE-ALSO '(make-error error-p error-message))))
+
+;;; ============================================================
 ;;; REGISTER CATEGORIES
 ;;; ============================================================
 
@@ -1052,19 +1360,32 @@
   "Numeric operations"
   '(+ - * / remainder mod expt add1 sub1 abs max min random))
 
+(register-category 'math
+  "Math library (transcendentals, rounding, integer math)"
+  '(sqrt sin cos tan log exp floor ceiling round truncate gcd lcm isqrt signum))
+
 (register-category 'predicates
   "Type and value predicates"
   '(zerop plusp minusp evenp oddp < > = atom symbolp numberp fixp floatp
-    stringp consp listp null not eq equal functionp boundp))
+    charp stringp arrayp consp listp null not eq equal functionp boundp error-p))
+
+(register-category 'chars
+  "Char type and conversions"
+  '(charp make-char char-code code-char))
 
 (register-category 'lists
   "List manipulation"
   '(car cdr cons list append reverse length nth last member assoc
-    mapcar maplist subst pairlis))
+    mapcar maplist subst pairlis sort))
 
 (register-category 'strings
   "String operations"
-  '(concat index explode implode gensym intern))
+  '(concat index string-length substring string->number number->string
+    explode implode gensym intern))
+
+(register-category 'arrays
+  "Array operations"
+  '(array fetch store array-length arrayp))
 
 (register-category 'special-forms
   "Special forms and macros"
@@ -1072,15 +1393,15 @@
 
 (register-category 'io
   "Input/Output"
-  '(print prin1 princ terpri read load-file))
+  '(print prin1 princ terpri read load-file spaces))
 
 (register-category 'errors
   "Error handling"
-  '(error errorset))
+  '(error errorset make-error error-p error-message error-data))
 
 (register-category 'meta
   "Metaprogramming"
-  '(eval apply funcall help documentation))
+  '(eval apply funcall help documentation macroexpand optimize))
 
 (register-category 'plists
   "Property lists"
@@ -1088,7 +1409,7 @@
 
 (register-category 'hash-tables
   "Hash tables"
-  '(make-hash-table get set-bang keys delete-key))
+  '(make-hash-table gethash set-bang keys delete-key))
 
 (register-category 'bitwise
   "Bitwise operations"
