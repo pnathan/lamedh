@@ -487,6 +487,89 @@ fn string_membrane_roundtrip_via_call_lisp() {
     assert_eq!(j.call_lisp("slen", &[arg]).unwrap(), LispVal::Number(5));
 }
 
+// --- typed structs ---------------------------------------------------------
+
+/// Build a Jit with struct definitions then function definitions.
+fn build_with(structs: &[&str], funcs: &[&str]) -> Jit {
+    use crate::reader::read;
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    for s in structs {
+        let form = read(s, &env).expect("read failed");
+        j.define_struct(&form)
+            .unwrap_or_else(|e| panic!("defstruct `{s}` failed: {e}"));
+    }
+    for s in funcs {
+        let form = read(s, &env).expect("read failed");
+        j.define(&form)
+            .unwrap_or_else(|e| panic!("define `{s}` failed: {e}"));
+    }
+    j
+}
+
+#[test]
+fn struct_constructor_and_accessors() {
+    let j = build_with(&["(defstruct-typed Point (x int64) (y int64))"], &[]);
+    let p = j.call("make-point", &[i(3), i(4)]).unwrap();
+    assert_eq!(p, Value::Struct(vec![i(3), i(4)]));
+    assert_eq!(j.call("point-x", std::slice::from_ref(&p)).unwrap(), i(3));
+    assert_eq!(j.call("point-y", std::slice::from_ref(&p)).unwrap(), i(4));
+}
+
+#[test]
+fn struct_setter_returns_value() {
+    let j = build_with(&["(defstruct-typed Cell (v int64))"], &[]);
+    let c = j.call("make-cell", &[i(7)]).unwrap();
+    // The setter returns the stored value; the materialized struct copy at the
+    // membrane is independent, so re-read through the same buffer is in-call only.
+    assert_eq!(j.call("set-cell-v", &[c, i(9)]).unwrap(), i(9));
+}
+
+#[test]
+fn struct_used_as_typed_parameter() {
+    // A struct name is a usable parameter type; the body calls generated
+    // accessors. Mixed field types (int64 + float64) exercise per-field reads.
+    let j = build_with(
+        &["(defstruct-typed Vec2 (x float64) (y float64))"],
+        &["(deffun-typed (norm2 float64) ((v Vec2)) \
+               (+ (* (vec2-x v) (vec2-x v)) (* (vec2-y v) (vec2-y v))))"],
+    );
+    j.compile_all();
+    let v = j.call("make-vec2", &[fl(3.0), fl(4.0)]).unwrap();
+    assert_eq!(j.call("norm2", std::slice::from_ref(&v)).unwrap(), fl(25.0));
+    // Differential: interpreter agrees with the compiled edition.
+    j.deoptimize_all();
+    assert_eq!(j.call("norm2", &[v]).unwrap(), fl(25.0));
+}
+
+#[test]
+fn struct_constructed_and_consumed_in_one_typed_function() {
+    // make + accessors all inside one typed body (no membrane round-trip): the
+    // struct pointer stays in the call arena the whole time.
+    let j = build_with(
+        &["(defstruct-typed Pair (a int64) (b int64))"],
+        &["(deffun-typed (sum-pair int64) ((a int64) (b int64)) \
+             (let-typed ((p (make-pair a b))) (+ (pair-a p) (pair-b p))))"],
+    );
+    assert_eq!(agree(&j, "sum-pair", &[i(10), i(32)]), i(42));
+}
+
+#[test]
+fn struct_field_type_is_checked() {
+    // Passing a float where the field/accessor expects int64 is rejected.
+    let mut j = build_with(&["(defstruct-typed Box (n int64))"], &[]);
+    let err = j
+        .define(
+            &crate::reader::read(
+                "(deffun-typed (bad float64) ((b Box)) (box-n b))",
+                &Environment::new_with_builtins(),
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert!(err.contains("declared return"), "got: {err}");
+}
+
 // --- self-recursion --------------------------------------------------------
 
 #[test]

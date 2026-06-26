@@ -1707,6 +1707,11 @@ impl TypedFn {
 pub struct Jit {
     funcs: Vec<Rc<TypedFn>>,
     by_name: HashMap<String, usize>,
+    /// Registered typed struct definitions, by (uppercased) name. A struct name
+    /// is usable as a type in `deffun-typed` signatures, and its accessor
+    /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
+    /// ordinary typed functions over the [`Core`] struct ops.
+    structs: HashMap<String, Rc<StructDef>>,
 }
 
 impl Jit {
@@ -1753,7 +1758,7 @@ impl Jit {
         // A forward declaration has no body to infer from, so its types must be
         // concrete — reject a bare `array` (unpinned element) here.
         let mut infer = Infer::new();
-        let (name, ret, params) = parse_signature(&items, &mut infer)?;
+        let (name, ret, params) = parse_signature(&items, &mut infer, &self.structs)?;
         if infer.resolve(&ret).is_err() || params.iter().any(|(_, t)| infer.resolve(t).is_err()) {
             return Err(format!(
                 "{name}: a declaration needs concrete types; pin array elements as `(array T)`"
@@ -1789,7 +1794,7 @@ impl Jit {
         // parameter's element type (a fresh variable from `parse_ty`) is unified
         // by `fetch`/`store` in the body and resolved into the stored signature.
         let mut infer = Infer::new();
-        let (name, ret, params) = parse_signature(&items, &mut infer)?;
+        let (name, ret, params) = parse_signature(&items, &mut infer, &self.structs)?;
         let mut scope: Scope = params.clone();
 
         // Register the signature *before* elaborating the body so a function can
@@ -1837,6 +1842,116 @@ impl Jit {
         *f.core.borrow_mut() = Some(core);
         f.compile_now(&self.funcs);
         Ok(id)
+    }
+
+    /// Install a typed function from a *prebuilt* core (no surface elaboration),
+    /// used for generated struct accessors. Eagerly compiles like `define`.
+    fn install(
+        &mut self,
+        name: &str,
+        params: Vec<(String, Ty)>,
+        ret: Ty,
+        core: Core,
+        slots: usize,
+    ) -> usize {
+        let id = self.intern(name, params, ret);
+        let f = self.funcs[id].clone();
+        f.slots.set(slots);
+        *f.core.borrow_mut() = Some(core);
+        f.compile_now(&self.funcs);
+        id
+    }
+
+    /// Define a typed struct from `(defstruct-typed Name (field type)...)`.
+    /// Registers the struct type (usable in `deffun-typed` signatures) and
+    /// generates its accessor functions over the [`Core`] struct ops:
+    /// `make-NAME`, `NAME-FIELD` (getter), `set-NAME-FIELD` (setter). Returns the
+    /// generated (uppercased) function names so the caller can install membrane
+    /// entries. Fields are laid out as a flat one-word-per-field buffer.
+    pub fn define_struct(&mut self, form: &LispVal) -> Result<Vec<String>, String> {
+        let items = list_to_vec(form);
+        match items.first() {
+            Some(LispVal::Symbol(s)) if s.borrow().name == "DEFSTRUCT-TYPED" => {}
+            _ => return Err("expected a (defstruct-typed ...) form".to_string()),
+        }
+        if items.len() < 2 {
+            return Err("defstruct-typed: (defstruct-typed Name (field type)...)".to_string());
+        }
+        let name = match &items[1] {
+            LispVal::Symbol(s) => s.borrow().name.clone(),
+            _ => return Err("defstruct-typed: struct name must be a symbol".to_string()),
+        };
+        // Field types must be concrete (a struct's layout is fixed); arrays may
+        // pin or be elided, but an elided element here has nothing to infer it.
+        let mut infer = Infer::new();
+        let mut fields: Vec<(String, Ty)> = Vec::new();
+        for f in &items[2..] {
+            let parts = list_to_vec(f);
+            match parts.as_slice() {
+                [LispVal::Symbol(fname), fty] => {
+                    let ty = parse_ty(fty, &mut infer, &self.structs)?;
+                    let ty = infer.resolve(&ty).map_err(|_| {
+                        format!(
+                            "struct `{name}` field `{}` needs a concrete type",
+                            fname.borrow().name
+                        )
+                    })?;
+                    fields.push((fname.borrow().name.clone(), ty));
+                }
+                _ => return Err("each field must be (field-name type)".to_string()),
+            }
+        }
+        if fields.is_empty() {
+            return Err(format!("struct `{name}` must have at least one field"));
+        }
+
+        let def = Rc::new(StructDef {
+            name: name.clone(),
+            fields: fields.clone(),
+        });
+        self.structs.insert(name.clone(), def.clone());
+        let struct_ty = Ty::Struct(def);
+
+        let mut generated = Vec::new();
+
+        // Constructor: make-NAME : (f0 .. fn) -> NAME.
+        let ctor = format!("MAKE-{name}");
+        let ctor_core = Core::StructNew((0..fields.len()).map(Core::Var).collect());
+        self.install(
+            &ctor,
+            fields.clone(),
+            struct_ty.clone(),
+            ctor_core,
+            fields.len(),
+        );
+        generated.push(ctor);
+
+        // Per-field getter NAME-FIELD and setter set-NAME-FIELD.
+        for (i, (fname, fty)) in fields.iter().enumerate() {
+            let getter = format!("{name}-{fname}");
+            self.install(
+                &getter,
+                vec![("SELF".to_string(), struct_ty.clone())],
+                fty.clone(),
+                Core::FieldGet(Box::new(Core::Var(0)), i),
+                1,
+            );
+            generated.push(getter);
+
+            let setter = format!("SET-{name}-{fname}");
+            self.install(
+                &setter,
+                vec![
+                    ("SELF".to_string(), struct_ty.clone()),
+                    ("V".to_string(), fty.clone()),
+                ],
+                fty.clone(),
+                Core::FieldSet(Box::new(Core::Var(0)), i, Box::new(Core::Var(1))),
+                2,
+            );
+            generated.push(setter);
+        }
+        Ok(generated)
     }
 
     pub fn id(&self, name: &str) -> Option<usize> {
@@ -2211,12 +2326,19 @@ type ParsedSig = (String, Ty, Vec<(String, Ty)>);
 /// Parse a type annotation: a scalar keyword, the bare `array` keyword (element
 /// type left as a fresh inference variable), or `(array T)` with the element
 /// pinned. The `infer` supplies fresh variables for unpinned array elements.
-fn parse_ty(form: &LispVal, infer: &mut Infer) -> Result<Ty, String> {
+fn parse_ty(
+    form: &LispVal,
+    infer: &mut Infer,
+    structs: &HashMap<String, Rc<StructDef>>,
+) -> Result<Ty, String> {
     match form {
         LispVal::Symbol(s) => {
             let name = s.borrow().name.clone();
             if name == "ARRAY" {
                 return Ok(Ty::Array(Box::new(infer.fresh())));
+            }
+            if let Some(def) = structs.get(&name) {
+                return Ok(Ty::Struct(def.clone()));
             }
             Ty::parse(&name).ok_or_else(|| format!("unknown type `{name}`"))
         }
@@ -2224,9 +2346,9 @@ fn parse_ty(form: &LispVal, infer: &mut Infer) -> Result<Ty, String> {
             let items = list_to_vec(form);
             match items.as_slice() {
                 [LispVal::Symbol(h), elem] if h.borrow().name == "ARRAY" => {
-                    Ok(Ty::Array(Box::new(parse_ty(elem, infer)?)))
+                    Ok(Ty::Array(Box::new(parse_ty(elem, infer, structs)?)))
                 }
-                _ => Err("type must be a scalar, `array`, or `(array T)`".to_string()),
+                _ => Err("type must be a scalar, struct, `array`, or `(array T)`".to_string()),
             }
         }
         other => Err(format!("bad type annotation: {other:?}")),
@@ -2236,11 +2358,15 @@ fn parse_ty(form: &LispVal, infer: &mut Infer) -> Result<Ty, String> {
 /// Parse `items[1]` = `(name ret)` and `items[2]` = `((arg ty)...)` shared by
 /// `deffun-typed` and `declare-typed`. Array element types may be inferred, so
 /// the `infer` provides fresh variables; `define` resolves them after the body.
-fn parse_signature(items: &[LispVal], infer: &mut Infer) -> Result<ParsedSig, String> {
+fn parse_signature(
+    items: &[LispVal],
+    infer: &mut Infer,
+    structs: &HashMap<String, Rc<StructDef>>,
+) -> Result<ParsedSig, String> {
     let sig = list_to_vec(&items[1]);
     let (name, ret) = match sig.as_slice() {
         [LispVal::Symbol(n), rty] => {
-            let ret = parse_ty(rty, infer).map_err(|e| match rty {
+            let ret = parse_ty(rty, infer, structs).map_err(|e| match rty {
                 LispVal::Symbol(r) => format!("unknown return type `{}`", r.borrow().name),
                 _ => e,
             })?;
@@ -2253,7 +2379,7 @@ fn parse_signature(items: &[LispVal], infer: &mut Infer) -> Result<ParsedSig, St
         let parts = list_to_vec(&p);
         match parts.as_slice() {
             [LispVal::Symbol(a), t] => {
-                let pt = parse_ty(t, infer).map_err(|e| match t {
+                let pt = parse_ty(t, infer, structs).map_err(|e| match t {
                     LispVal::Symbol(s) => format!("unknown param type `{}`", s.borrow().name),
                     _ => e,
                 })?;

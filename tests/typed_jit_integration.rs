@@ -136,3 +136,54 @@ fn typed_bool_returns_t_and_nil_usable_untyped() {
     assert_eq!(eval_line("(negate t)", &env), "()");
     assert_eq!(eval_line("(negate nil)", &env), "T");
 }
+
+#[test]
+fn typed_string_processing_lands_at_repl() {
+    // A string is (array char): the typed function indexes it natively and the
+    // membrane passes a Lisp string straight in.
+    let env = Environment::new_with_builtins();
+    eval_line(
+        "(deffun-typed (first-code int64) ((s (array char))) (char-code (fetch s 0)))",
+        &env,
+    );
+    assert_eq!(eval_line("(first-code \"ABC\")", &env), "65");
+    eval_line(
+        "(deffun-typed (slen int64) ((s (array char))) (array-length s))",
+        &env,
+    );
+    assert_eq!(eval_line("(slen \"hello\")", &env), "5");
+}
+
+#[test]
+fn typed_int_array_kernel_lands_at_repl() {
+    // `with_stdlib` for `list->array`; the kernel itself is typed/native.
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(deffun-typed (suml int64) ((a (array int64)) (i int64)) \
+           (if (= i (array-length a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
+        &env,
+    );
+    eval_line(
+        "(deffun-typed (sum int64) ((a (array int64))) (suml a 0))",
+        &env,
+    );
+    // Pass an untyped Lisp array through the membrane.
+    assert_eq!(
+        eval_line("(sum (list->array (list 1 2 3 4 5)))", &env),
+        "15"
+    );
+}
+
+#[test]
+fn typed_struct_lands_at_repl() {
+    let env = Environment::new_with_builtins();
+    eval_line("(defstruct-typed Point (x int64) (y int64))", &env);
+    assert_eq!(eval_line("(point-x (make-point 3 4))", &env), "3");
+    assert_eq!(eval_line("(point-y (make-point 3 4))", &env), "4");
+    // A struct flows through the membrane as an array of its fields.
+    eval_line(
+        "(deffun-typed (manhattan int64) ((p Point)) (+ (point-x p) (point-y p)))",
+        &env,
+    );
+    assert_eq!(eval_line("(manhattan (make-point 3 4))", &env), "7");
+}

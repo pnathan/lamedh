@@ -957,6 +957,13 @@ impl Environment {
         self.shared.jit.borrow_mut().declare_form(form)
     }
 
+    /// Define a typed struct from a `(defstruct-typed ...)` form. Returns the
+    /// generated accessor function names (`make-NAME`, `NAME-FIELD`, …) so the
+    /// caller can install their membrane entries.
+    pub fn jit_define_struct(&self, form: &LispVal) -> Result<Vec<String>, String> {
+        self.shared.jit.borrow_mut().define_struct(form)
+    }
+
     /// `(param types, return type)` of a registered typed function, if any.
     pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
         self.shared.jit.borrow().signature(name)

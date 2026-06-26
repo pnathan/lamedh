@@ -3709,6 +3709,26 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
                         }
                     }
+                    "DEFSTRUCT-TYPED" => {
+                        // Register a typed struct and install membrane entries for
+                        // its generated accessors (make-NAME / NAME-FIELD /
+                        // set-NAME-FIELD), so structs are usable from untyped Lisp.
+                        let form = LispVal::Cons {
+                            car: first.clone(),
+                            cdr: rest.clone(),
+                        };
+                        match env.jit_define_struct(&form) {
+                            Ok(names) => {
+                                let mut installed = Vec::with_capacity(names.len());
+                                for n in names {
+                                    env.set(n.clone(), make_typed_native(n.clone()));
+                                    installed.push(LispVal::Symbol(env.intern_symbol(&n)));
+                                }
+                                Ok(TcoStep::Done(Ok(vec_to_list(installed))))
+                            }
+                            Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
+                        }
+                    }
                     "DECLARE-TYPED" => {
                         // Forward-declare a typed signature (for REPL-level mutual
                         // recursion). Installs the same membrane entry; calling it
