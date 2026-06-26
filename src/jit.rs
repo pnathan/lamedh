@@ -28,12 +28,24 @@
 //!   runs, so a swapped-out edition survives until in-flight callers return (the
 //!   `Arc`/`ArcSwap` upgrade is #108).
 //!
-//! Core: `int64`/`float64`/`bool`/`char` (= `u8`/`byte`); `+ - * / mod` and
-//! comparisons `< > <= >= = /=` (operand-type directed), `and`/`or`/`not`, `if`,
-//! `let-typed`, and calls. `char` is an unboxed byte (`0..=255` in a `u64`):
-//! it compares as an integer, converts to/from `int64` via `char-code` /
-//! `code-char` (narrowing masks to a byte), and crosses the membrane as a
-//! `LispVal::Number` (issue #136).
+//! Scalar core: `int64`/`float64`/`bool`/`char` (= `u8`/`byte`); `+ - * / mod`
+//! and comparisons `< > <= >= = /=` (operand-type directed), `and`/`or`/`not`,
+//! `if`, `let-typed`, sequencing, and calls. `char` is an unboxed byte
+//! (`0..=255` in a `u64`): it compares as an integer, converts to/from `int64`
+//! via `char-code` / `code-char`, and crosses the membrane as a `LispVal::Number`
+//! (issue #136).
+//!
+//! Compound types (#137/#138): `(array T)` (element `T` **inferred**, never
+//! annotated) and typed `struct`s. Both are a pointer to a flat `[len, e0, …]`
+//! `u64` buffer rooted in the per-call arena ([`Ctx`]); access is bounds-checked
+//! and panic-free. A `(array char)` is a string. `(array T)` ↔ `LispVal::Array`
+//! / `LispVal::String`, `struct` ↔ array-of-fields, at the membrane.
+//!
+//! Inference (#135): HM-lite unification + occurs-check + resolve ([`infer`])
+//! drives every type to a concrete monomorphic representation before codegen.
+//! [`Jit::infer_untyped`] types a *fully un-annotated* function when its body is
+//! an inferable typed island — HM firing under `defun` (via `jit-optimize`).
+//!
 //! Integer arithmetic wraps and integer `/`,`mod` by zero yield `0` (no panics);
 //! this diverges from the checked tree-walker and is revisited with #67.
 

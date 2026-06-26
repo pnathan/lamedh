@@ -210,17 +210,38 @@ Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_j
   annotations are principal-type pins; a `let-typed` binding may **omit** its type
   (`(name init)`) to have it inferred from the initializer, the one
   surface-compatible inferable position today. This is the foundation the
-  array/string element types (#137/#138) — which *cannot* be annotated in surface
-  syntax — will monomorphize on.
-- `int64`/`float64`/`bool`; `+ - * / mod`, `< > <= >= = /=`, `and`/`or`/`not`,
-  `if`, `let-typed`, and **calls** — self-recursion, cross-function, and (via
-  `Jit::declare`) mutual recursion. Runtime values are unboxed `u64` words; the
-  static type says how each op reads its word, so there is no tag in the hot path.
+  array/string element types (#137/#138) monomorphize on.
+- **Arrays & strings (#137/#138).** `(array T)` with the element type *inferred*
+  (`(array n)`/`(fetch a i)`/`(store a i v)`/`(array-length a)`); a string is
+  `(array char)`, so native byte indexing/scanning/compare (Levenshtein) emerges
+  for free. The flat representation is a pointer to a `[len, e0, e1, …]` `u64`
+  buffer rooted in the per-call **arena** on `Ctx` (one uniform buffer for every
+  element type). Access is bounds-checked and panic-free (OOB load → 0, store →
+  no-op) across all editions; native `fetch`/`store`/`length` plus a `jit_alloc`
+  trampoline. Membrane: `(array char)` ↔ `LispVal::String`, other arrays ↔
+  `LispVal::Array`.
+- **Typed structs.** `(defstruct-typed Name (field type)…)` registers a struct
+  type (usable in signatures) and generates `make-NAME`/`NAME-FIELD`/
+  `set-NAME-FIELD` as ordinary typed functions over flat one-word-per-field
+  buffers; a struct crosses the membrane as an array of its fields.
+- **HM under the hood.** `Jit::infer_untyped` types a *fully un-annotated*
+  function (every parameter a fresh variable) when its body is an inferable typed
+  island, with clean rollback otherwise. Exposed as the `jit-optimize` special
+  form: `(jit-optimize (defun f …))` natively compiles `f` and installs an
+  auto-typed membrane that fast-paths typed calls and silently falls back to the
+  dynamic closure for non-matching arguments — transparent "play like a Lisp,
+  optimize like Fortran." Not auto-applied to every `defun` (it would change
+  introspection and the numeric edge semantics, #67).
+- `int64`/`float64`/`bool`/`char`; `+ - * / mod`, `< > <= >= = /=`,
+  `and`/`or`/`not`, `if`, `let-typed`, arrays, structs, sequencing, and **calls**
+  — self-recursion, cross-function, and (via `Jit::declare`) mutual recursion.
+  Runtime values are unboxed `u64` words; the static type says how each op reads
+  its word, so there is no tag in the hot path.
 - The cell dispatch and redefinition model from §3 are real: calls route through
   the registry by id, redefining a callee is an edition swap, and a call pins
   (`Rc`-clones) the edition it runs.
-- 49 tests; the `agree` helper runs every example through both editions as a
-  differential check.
+- The `agree` helper runs every example through both editions as a differential
+  check; arrays, strings, structs, and inferred functions are all covered.
 
 Two backends share the `TypedFn` cell:
 - **Closures** (default build): lowers the typed core to a tree of unboxed-`u64`
