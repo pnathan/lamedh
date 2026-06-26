@@ -953,10 +953,11 @@
   (list
     (cons 'NAME 'get)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(get hash-table key)")
-    (cons 'CATEGORY 'hash-tables)
-    (cons 'DESCRIPTION "Retrieves the value for key in hash-table.")
-    (cons 'SEE-ALSO '(set-bang keys make-hash-table))))
+    (cons 'SYNTAX "(get symbol indicator)")
+    (cons 'CATEGORY 'plists)
+    (cons 'DESCRIPTION "Retrieves a property from symbol's property list. Classic Lisp 1.5 name for GETP. Returns NIL if the indicator is not found.")
+    (cons 'EXAMPLES '(((get 'foo 'docstring) nil)))
+    (cons 'SEE-ALSO '(getp putp plist remprop))))
 
 (register-doc 'set-bang
   (list
@@ -1045,54 +1046,1195 @@
     (cons 'SEE-ALSO '(documentation apropos))))
 
 ;;; ============================================================
+;;; LISP 1.5 ARITHMETIC ALIASES
+;;; ============================================================
+
+(register-doc 'plus
+  (list
+    (cons 'NAME 'plus)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(plus number...)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 name for +. Returns the sum of all arguments.")
+    (cons 'EXAMPLES '(((plus 1 2 3) 6)))
+    (cons 'SEE-ALSO '(+ - times difference quotient))))
+
+(register-doc 'difference
+  (list
+    (cons 'NAME 'difference)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(difference number number...)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 name for -. With one argument returns negation; with more, subtracts rest from first.")
+    (cons 'EXAMPLES '(((difference 10 3) 7)))
+    (cons 'SEE-ALSO '(- plus times quotient))))
+
+(register-doc 'times
+  (list
+    (cons 'NAME 'times)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(times number...)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 name for *. Returns the product of all arguments.")
+    (cons 'EXAMPLES '(((times 2 3 4) 24)))
+    (cons 'SEE-ALSO '(* plus difference quotient))))
+
+(register-doc 'quotient
+  (list
+    (cons 'NAME 'quotient)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(quotient dividend divisor)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 name for /. Returns the quotient; integer division truncates toward zero.")
+    (cons 'EXAMPLES '(((quotient 10 3) 3)))
+    (cons 'SEE-ALSO '(/ plus difference times remainder))))
+
+(register-doc 'lessp
+  (list
+    (cons 'NAME 'lessp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(lessp a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 name for <. Returns T if a is strictly less than b.")
+    (cons 'EXAMPLES '(((lessp 1 2) t)
+                       ((lessp 2 1) nil)))
+    (cons 'SEE-ALSO '(< greaterp = float-lessp))))
+
+(register-doc 'greaterp
+  (list
+    (cons 'NAME 'greaterp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(greaterp a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 name for >. Returns T if a is strictly greater than b.")
+    (cons 'EXAMPLES '(((greaterp 2 1) t)
+                       ((greaterp 1 2) nil)))
+    (cons 'SEE-ALSO '(> lessp = float-greaterp))))
+
+(register-doc 'equal-number
+  (list
+    (cons 'NAME 'equal-number)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(equal-number a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Alias for =. Returns T if a and b are numerically equal. Accepts both integers and floats.")
+    (cons 'EXAMPLES '(((equal-number 1 1) t)
+                       ((equal-number 1 1.0) t)))
+    (cons 'SEE-ALSO '(= lessp greaterp))))
+
+;;; ============================================================
+;;; NUMERIC INCREMENT/DECREMENT ALIASES
+;;; ============================================================
+
+(register-doc '1+
+  (list
+    (cons 'NAME '1+)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(1+ n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns n + 1. Common Lisp-style alias for ADD1.")
+    (cons 'EXAMPLES '(((1+ 5) 6)
+                       ((1+ -1) 0)))
+    (cons 'SEE-ALSO '(1- add1 sub1))))
+
+(register-doc '1-
+  (list
+    (cons 'NAME '1-)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(1- n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns n - 1. Common Lisp-style alias for SUB1.")
+    (cons 'EXAMPLES '(((1- 5) 4)
+                       ((1- 1) 0)))
+    (cons 'SEE-ALSO '(1+ sub1 add1))))
+
+;;; ============================================================
+;;; MATH LIBRARY (TRANSCENDENTALS AND ROUNDING)
+;;; ============================================================
+
+(register-doc 'sqrt
+  (list
+    (cons 'NAME 'sqrt)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sqrt n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the square root of n as a float. For integer square roots use ISQRT.")
+    (cons 'EXAMPLES '(((sqrt 4) 2.0)
+                       ((sqrt 2) 1.4142135)))
+    (cons 'SEE-ALSO '(isqrt expt sin cos))))
+
+(register-doc 'sin
+  (list
+    (cons 'NAME 'sin)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sin radians)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the sine of an angle given in radians, as a float.")
+    (cons 'EXAMPLES '(((sin 0) 0.0)
+                       ((sin 3.14159) 0.0)))
+    (cons 'SEE-ALSO '(cos tan sqrt))))
+
+(register-doc 'cos
+  (list
+    (cons 'NAME 'cos)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(cos radians)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the cosine of an angle given in radians, as a float.")
+    (cons 'EXAMPLES '(((cos 0) 1.0)))
+    (cons 'SEE-ALSO '(sin tan sqrt))))
+
+(register-doc 'tan
+  (list
+    (cons 'NAME 'tan)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tan radians)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the tangent of an angle given in radians, as a float.")
+    (cons 'EXAMPLES '(((tan 0) 0.0)))
+    (cons 'SEE-ALSO '(sin cos))))
+
+(register-doc 'log
+  (list
+    (cons 'NAME 'log)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(log x) or (log x base)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "With one argument returns the natural logarithm (ln) of x. With two arguments returns the logarithm of x in the given base.")
+    (cons 'EXAMPLES '(((log 1) 0.0)
+                       ((log 8 2) 3.0)))
+    (cons 'SEE-ALSO '(exp sqrt expt))))
+
+(register-doc 'exp
+  (list
+    (cons 'NAME 'exp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(exp n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns e (Euler's number) raised to the power n, as a float.")
+    (cons 'EXAMPLES '(((exp 1) 2.71828)
+                       ((exp 0) 1.0)))
+    (cons 'SEE-ALSO '(log expt))))
+
+(register-doc 'floor
+  (list
+    (cons 'NAME 'floor)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(floor n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the largest integer not greater than n (rounds toward negative infinity). Returns an integer even when given a float.")
+    (cons 'EXAMPLES '(((floor 3.7) 3)
+                       ((floor -3.7) -4)))
+    (cons 'SEE-ALSO '(ceiling round truncate))))
+
+(register-doc 'ceiling
+  (list
+    (cons 'NAME 'ceiling)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ceiling n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the smallest integer not less than n (rounds toward positive infinity). Returns an integer even when given a float.")
+    (cons 'EXAMPLES '(((ceiling 3.2) 4)
+                       ((ceiling -3.7) -3)))
+    (cons 'SEE-ALSO '(floor round truncate))))
+
+(register-doc 'round
+  (list
+    (cons 'NAME 'round)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(round n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns n rounded to the nearest integer. Ties round half away from zero (e.g. 0.5 rounds to 1, -0.5 rounds to -1). Returns an integer.")
+    (cons 'EXAMPLES '(((round 3.5) 4)
+                       ((round 3.4) 3)
+                       ((round -3.5) -4)))
+    (cons 'SEE-ALSO '(floor ceiling truncate))))
+
+(register-doc 'truncate
+  (list
+    (cons 'NAME 'truncate)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(truncate n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns n truncated toward zero (drops the fractional part). Returns an integer. Equivalent to (floor n) for positive n and (ceiling n) for negative n.")
+    (cons 'EXAMPLES '(((truncate 3.7) 3)
+                       ((truncate -3.7) -3)))
+    (cons 'SEE-ALSO '(floor ceiling round))))
+
+(register-doc 'gcd
+  (list
+    (cons 'NAME 'gcd)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(gcd a b)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the greatest common divisor of integers a and b. Both arguments must be integers; sign is ignored.")
+    (cons 'EXAMPLES '(((gcd 12 8) 4)
+                       ((gcd 7 5) 1)))
+    (cons 'SEE-ALSO '(lcm mod remainder))))
+
+(register-doc 'lcm
+  (list
+    (cons 'NAME 'lcm)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(lcm a b)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the least common multiple of integers a and b. Returns 0 if either argument is 0. Both arguments must be integers.")
+    (cons 'EXAMPLES '(((lcm 4 6) 12)
+                       ((lcm 7 3) 21)))
+    (cons 'SEE-ALSO '(gcd mod))))
+
+(register-doc 'isqrt
+  (list
+    (cons 'NAME 'isqrt)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(isqrt n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the integer square root of n (the largest integer k such that k*k <= n). Requires a non-negative integer argument. Use SQRT for floating-point results.")
+    (cons 'EXAMPLES '(((isqrt 16) 4)
+                       ((isqrt 17) 4)
+                       ((isqrt 9) 3)))
+    (cons 'SEE-ALSO '(sqrt gcd))))
+
+(register-doc 'signum
+  (list
+    (cons 'NAME 'signum)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(signum n)")
+    (cons 'CATEGORY 'arithmetic)
+    (cons 'DESCRIPTION "Returns the sign of n: -1 for negative, 0 for zero, 1 for positive. Works on both integers (returns an integer) and floats (returns a float).")
+    (cons 'EXAMPLES '(((signum 42) 1)
+                       ((signum -7) -1)
+                       ((signum 0) 0)))
+    (cons 'SEE-ALSO '(abs plusp minusp zerop))))
+
+;;; ============================================================
+;;; FLOAT COMPARISON FUNCTIONS
+;;; ============================================================
+
+(register-doc 'float-equal
+  (list
+    (cons 'NAME 'float-equal)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(float-equal a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns T if a and b are exactly bit-equal as floating-point values. Unlike =, this correctly distinguishes -0.0 from 0.0. Accepts both floats and integers (integers are widened to float before comparison).")
+    (cons 'EXAMPLES '(((float-equal 1.0 1.0) t)
+                       ((float-equal 0.0 -0.0) nil)))
+    (cons 'SEE-ALSO '(= float-lessp float-greaterp))))
+
+(register-doc 'float-lessp
+  (list
+    (cons 'NAME 'float-lessp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(float-lessp a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns T if a is strictly less than b in floating-point comparison. Accepts floats and integers. Use < for general numeric comparison.")
+    (cons 'EXAMPLES '(((float-lessp 1.0 2.0) t)
+                       ((float-lessp 2.0 1.0) nil)))
+    (cons 'SEE-ALSO '(< float-greaterp float-equal))))
+
+(register-doc 'float-greaterp
+  (list
+    (cons 'NAME 'float-greaterp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(float-greaterp a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns T if a is strictly greater than b in floating-point comparison. Accepts floats and integers. Use > for general numeric comparison.")
+    (cons 'EXAMPLES '(((float-greaterp 2.0 1.0) t)
+                       ((float-greaterp 1.0 2.0) nil)))
+    (cons 'SEE-ALSO '(> float-lessp float-equal))))
+
+;;; ============================================================
+;;; STRING PRIMITIVES
+;;; ============================================================
+
+(register-doc 'string-length
+  (list
+    (cons 'NAME 'string-length)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-length s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns the number of Unicode characters in string s (not bytes). This is the kernel primitive; the Lisp layer builds higher-level string operations on top of it.")
+    (cons 'EXAMPLES '(((string-length "hello") 5)
+                       ((string-length "") 0)))
+    (cons 'SEE-ALSO '(substring index concat))))
+
+(register-doc 'substring
+  (list
+    (cons 'NAME 'substring)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(substring s start) or (substring s start end)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns a substring of s from character index start (inclusive, 0-based) to end (exclusive). End defaults to the length of s. Indices are clamped to valid bounds. Characters are counted by Unicode code point, not bytes.")
+    (cons 'EXAMPLES '(((substring "hello" 1 3) "el")
+                       ((substring "hello" 2) "llo")))
+    (cons 'SEE-ALSO '(string-length index concat))))
+
+(register-doc 'char-code
+  (list
+    (cons 'NAME 'char-code)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(char-code s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns the Unicode code point (an integer) of the first character of string s. Signals an error if s is empty. Note: Lamedh has no character type; character literals like 'a' read as integers via this same mapping.")
+    (cons 'EXAMPLES '(((char-code "A") 65)
+                       ((char-code "a") 97)
+                       ((char-code " ") 32)))
+    (cons 'SEE-ALSO '(code-char string-length))))
+
+(register-doc 'code-char
+  (list
+    (cons 'NAME 'code-char)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(code-char n)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns a one-character string containing the character at Unicode code point n. The inverse of CHAR-CODE. Signals an error if n is not a valid code point.")
+    (cons 'EXAMPLES '(((code-char 65) "A")
+                       ((code-char 97) "a")))
+    (cons 'SEE-ALSO '(char-code string-length))))
+
+(register-doc 'string->number
+  (list
+    (cons 'NAME 'string->number)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string->number s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Parses string s as a number. Tries integer first, then float. Returns the parsed number on success, or NIL if the string cannot be parsed as a number. Leading and trailing whitespace is ignored.")
+    (cons 'EXAMPLES '(((string->number "42") 42)
+                       ((string->number "3.14") 3.14)
+                       ((string->number "abc") nil)))
+    (cons 'SEE-ALSO '(number->string read))))
+
+(register-doc 'number->string
+  (list
+    (cons 'NAME 'number->string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(number->string n)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Converts number n to its decimal string representation. Integers produce digit strings; floats produce Rust's default float formatting.")
+    (cons 'EXAMPLES '(((number->string 42) "42")
+                       ((number->string 3.14) "3.14")))
+    (cons 'SEE-ALSO '(string->number prin1-to-string concat))))
+
+(register-doc 'prin1-to-string
+  (list
+    (cons 'NAME 'prin1-to-string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(prin1-to-string object)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns the readable printed representation of object as a string, exactly as PRIN1 would print it to stdout. Strings are wrapped in double quotes; symbols print uppercased; cons cells print as S-expressions.")
+    (cons 'EXAMPLES '(((prin1-to-string "hello") "\"hello\"")
+                       ((prin1-to-string '(1 2)) "(1 2)")))
+    (cons 'SEE-ALSO '(princ-to-string prin1 number->string))))
+
+(register-doc 'princ-to-string
+  (list
+    (cons 'NAME 'princ-to-string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(princ-to-string object)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns the human-readable printed representation of object as a string, exactly as PRINC would print it to stdout. Top-level strings are returned without surrounding quotes; everything else uses the same format as PRIN1-TO-STRING.")
+    (cons 'EXAMPLES '(((princ-to-string "hello") "hello")
+                       ((princ-to-string 42) "42")))
+    (cons 'SEE-ALSO '(prin1-to-string princ number->string))))
+
+;;; ============================================================
+;;; ADDITIONAL LIST OPERATIONS
+;;; ============================================================
+
+(register-doc 'rplaca
+  (list
+    (cons 'NAME 'rplaca)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(rplaca cons new-car)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Destructively replaces the CAR of a cons cell with new-car. Returns the modified cons cell. This is a mutating operation — use with care as it modifies shared structure. Classic Lisp 1.5 primitive.")
+    (cons 'EXAMPLES '(((let ((x (cons 1 2))) (rplaca x 99) x) (99 . 2))))
+    (cons 'SEE-ALSO '(rplacd car cons))))
+
+(register-doc 'rplacd
+  (list
+    (cons 'NAME 'rplacd)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(rplacd cons new-cdr)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Destructively replaces the CDR of a cons cell with new-cdr. Returns the modified cons cell. This is a mutating operation — use with care as it can create circular structure. Classic Lisp 1.5 primitive.")
+    (cons 'EXAMPLES '(((let ((x (cons 1 2))) (rplacd x 99) x) (1 . 99))))
+    (cons 'SEE-ALSO '(rplaca cdr cons))))
+
+(register-doc 'sublis
+  (list
+    (cons 'NAME 'sublis)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sublis alist tree)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Substitutes values from an association list into a tree. For each leaf in tree that matches a key in alist (by EQUAL), replaces it with the corresponding value. Returns a new tree; does not modify the original. Classic Lisp 1.5 primitive.")
+    (cons 'EXAMPLES '(((sublis '((a . 1) (b . 2)) '(a b c)) (1 2 c))))
+    (cons 'SEE-ALSO '(subst assoc))))
+
+(register-doc 'nthcdr
+  (list
+    (cons 'NAME 'nthcdr)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(nthcdr n list)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Returns the list after n applications of CDR. (nthcdr 0 list) returns list unchanged; (nthcdr 1 list) is CDR. Returns NIL if n exceeds the list length.")
+    (cons 'EXAMPLES '(((nthcdr 2 '(a b c d)) (c d))
+                       ((nthcdr 0 '(a b)) (a b))))
+    (cons 'SEE-ALSO '(nth cdr))))
+
+(register-doc 'efface
+  (list
+    (cons 'NAME 'efface)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(efface item list)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Returns a new list with the first occurrence of item (tested by EQUAL) removed. If item does not appear, returns the list unchanged. DELETE is an alias.")
+    (cons 'EXAMPLES '(((efface 'b '(a b c b)) (a c b))
+                       ((efface 'x '(a b c)) (a b c))))
+    (cons 'SEE-ALSO '(delete member subst))))
+
+;;; ============================================================
+;;; ADDITIONAL I/O
+;;; ============================================================
+
+(register-doc 'spaces
+  (list
+    (cons 'NAME 'spaces)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(spaces n)")
+    (cons 'CATEGORY 'io)
+    (cons 'DESCRIPTION "Prints n space characters to standard output without a trailing newline. Lisp 1.5 I/O primitive for column-aligned output.")
+    (cons 'EXAMPLES '(((spaces 3) "   ")))
+    (cons 'SEE-ALSO '(terpri print princ))))
+
+;;; ============================================================
+;;; PROPERTY LIST OPERATIONS
+;;; ============================================================
+
+(register-doc 'remprop
+  (list
+    (cons 'NAME 'remprop)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(remprop symbol indicator)")
+    (cons 'CATEGORY 'plists)
+    (cons 'DESCRIPTION "Removes the property named indicator from symbol's property list. Returns T if the property was present and removed; returns NIL if it was not found. The indicator may be a symbol or string.")
+    (cons 'EXAMPLES '(((putp 'x 'color 'red) red)
+                       ((remprop 'x 'color) t)))
+    (cons 'SEE-ALSO '(putp getp plist deflist))))
+
+(register-doc 'deflist
+  (list
+    (cons 'NAME 'deflist)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(deflist pairs indicator)")
+    (cons 'CATEGORY 'plists)
+    (cons 'DESCRIPTION "Bulk property setter: for each pair (symbol value) in pairs, sets the property named indicator on symbol to value. A compact Lisp 1.5 idiom for initializing a property across many symbols at once.")
+    (cons 'EXAMPLES '(((deflist '((x 1) (y 2) (z 3)) 'index) t)))
+    (cons 'SEE-ALSO '(putp getp plist remprop))))
+
+;;; ============================================================
+;;; HASH TABLE OPERATIONS (EXTENDED)
+;;; ============================================================
+
+(register-doc 'gethash
+  (list
+    (cons 'NAME 'gethash)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(gethash hash-table key)")
+    (cons 'CATEGORY 'hash-tables)
+    (cons 'DESCRIPTION "Retrieves the value associated with key in hash-table. Returns NIL if the key is not present. Keys are compared by structural equality (like EQUAL). Use GET for property list lookup.")
+    (cons 'EXAMPLES '(((let ((h (make-hash-table))) (set-bang h 'x 42) (gethash h 'x)) 42)))
+    (cons 'SEE-ALSO '(set-bang keys delete-key-bang make-hash-table get))))
+
+(register-doc 'delete-key-bang
+  (list
+    (cons 'NAME 'delete-key-bang)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(delete-key-bang hash-table key)")
+    (cons 'CATEGORY 'hash-tables)
+    (cons 'DESCRIPTION "Destructively removes key and its associated value from hash-table. Returns T regardless of whether the key was present. The bang suffix signals mutation in place.")
+    (cons 'EXAMPLES '(((let ((h (make-hash-table))) (set-bang h 'x 1) (delete-key-bang h 'x) (gethash h 'x)) nil)))
+    (cons 'SEE-ALSO '(set-bang gethash keys make-hash-table))))
+
+;;; ============================================================
+;;; ARRAYS (LISP 1.5 APPENDIX A)
+;;; ============================================================
+
+(register-doc 'array
+  (list
+    (cons 'NAME 'array)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(array n)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Creates and returns a new mutable array of n elements, all initialised to NIL. Lisp 1.5 Appendix A name; MAKE-ARRAY is the longer alias. Arrays are random-access containers with O(1) indexed get/set. Use FETCH/STORE to access elements, ARRAY-LENGTH to query the size.")
+    (cons 'EXAMPLES '(((let ((a (array 3))) (store a 0 'x) (fetch a 0)) x)))
+    (cons 'SEE-ALSO '(make-array fetch store array-length arrayp))))
+
+(register-doc 'make-array
+  (list
+    (cons 'NAME 'make-array)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-array n)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Alias for ARRAY. Creates a mutable array of n NIL-initialised elements. See ARRAY for full documentation.")
+    (cons 'EXAMPLES '(((make-array 5) "an array of 5 NILs")))
+    (cons 'SEE-ALSO '(array fetch store array-length arrayp))))
+
+(register-doc 'fetch
+  (list
+    (cons 'NAME 'fetch)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(fetch array index)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias.")
+    (cons 'EXAMPLES '(((let ((a (array 3))) (store a 1 'hello) (fetch a 1)) hello)))
+    (cons 'SEE-ALSO '(array-fetch store array array-length))))
+
+(register-doc 'array-fetch
+  (list
+    (cons 'NAME 'array-fetch)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(array-fetch array index)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.")
+    (cons 'SEE-ALSO '(fetch store array-store array-length))))
+
+(register-doc 'store
+  (list
+    (cons 'NAME 'store)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(store array index value)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias. Mutation is in-place: all references to the same array see the change.")
+    (cons 'EXAMPLES '(((let ((a (array 3))) (store a 0 99) (fetch a 0)) 99)))
+    (cons 'SEE-ALSO '(array-store fetch array array-length))))
+
+(register-doc 'array-store
+  (list
+    (cons 'NAME 'array-store)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(array-store array index value)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Alias for STORE. Destructively sets the element at index. See STORE for full documentation.")
+    (cons 'SEE-ALSO '(store fetch array-fetch array-length))))
+
+(register-doc 'array-length
+  (list
+    (cons 'NAME 'array-length)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(array-length array)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Returns the number of elements in array as an integer. The valid index range is 0 to (array-length array) - 1.")
+    (cons 'EXAMPLES '(((array-length (array 5)) 5)
+                       ((array-length (array 0)) 0)))
+    (cons 'SEE-ALSO '(array fetch store arrayp))))
+
+(register-doc 'arrayp
+  (list
+    (cons 'NAME 'arrayp)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(arrayp x)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL otherwise. DEFSTRUCT instances are also arrays internally.")
+    (cons 'EXAMPLES '(((arrayp (array 3)) t)
+                       ((arrayp '(1 2 3)) nil)))
+    (cons 'SEE-ALSO '(array array-length extension-p))))
+
+;;; ============================================================
+;;; TYPE PREDICATES (EXTENDED)
+;;; ============================================================
+
+(register-doc 'extension-p
+  (list
+    (cons 'NAME 'extension-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(extension-p x)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns T if x is an opaque extension value — a host-language object that was injected into the Lisp environment from Rust via the embedder API. Extension values have no direct Lisp representation but carry a type name accessible via EXTENSION-TYPE.")
+    (cons 'SEE-ALSO '(extension-type arrayp functionp))))
+
+(register-doc 'extension-type
+  (list
+    (cons 'NAME 'extension-type)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(extension-type x)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Returns the type name string of extension value x (e.g. \"MyRustType\"). Signals an error if x is not an extension value. Use EXTENSION-P first to check. Useful for dispatching on host-provided objects.")
+    (cons 'SEE-ALSO '(extension-p))))
+
+;;; ============================================================
+;;; SORTING
+;;; ============================================================
+
+(register-doc 'sort
+  (list
+    (cons 'NAME 'sort)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sort list comparator)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "Returns a new list with the same elements as list, sorted according to comparator. The comparator must be a two-argument predicate that returns T (or non-NIL) when its first argument should come before its second — i.e. a strict less-than. The sort is stable. Does not modify the original list.")
+    (cons 'EXAMPLES '(((sort '(3 1 4 1 5 9 2 6) '<) (1 1 2 3 4 5 6 9))
+                       ((sort '("banana" "apple" "cherry") 'string<) ("apple" "banana" "cherry"))))
+    (cons 'SEE-ALSO '(mapcar filter reverse))))
+
+;;; ============================================================
+;;; FIRST-CLASS ERROR/CONDITION VALUES
+;;; ============================================================
+
+(register-doc 'make-error
+  (list
+    (cons 'NAME 'make-error)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-error message) or (make-error message data)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Creates an error condition value with the given message string and optional data (any Lisp value). Error values are first-class: they can be stored, passed around, and inspected without being signalled. Use ERROR to signal an error that terminates the current computation. Use HANDLER-CASE or ERRORSET to catch signalled errors.")
+    (cons 'EXAMPLES '(((let ((e (make-error "oops"))) (error-message e)) "oops")
+                       ((let ((e (make-error "oops" '(1 2)))) (error-data e)) (1 2))))
+    (cons 'SEE-ALSO '(error error-p error-message error-data errorset))))
+
+(register-doc 'error-p
+  (list
+    (cons 'NAME 'error-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(error-p x)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Returns T if x is an error condition value (created with MAKE-ERROR or captured by ERRORSET). Returns NIL for any other value including ordinary NIL. Useful for dispatching on values that might be errors.")
+    (cons 'EXAMPLES '(((error-p (make-error "oops")) t)
+                       ((error-p 42) nil)))
+    (cons 'SEE-ALSO '(make-error error-message error-data errorset))))
+
+(register-doc 'error-message
+  (list
+    (cons 'NAME 'error-message)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(error-message error-val)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Extracts the message string from an error condition value. Signals an error if the argument is not an error value. Use ERROR-P to test first.")
+    (cons 'EXAMPLES '(((error-message (make-error "bad thing")) "bad thing")))
+    (cons 'SEE-ALSO '(error-p error-data make-error))))
+
+(register-doc 'error-data
+  (list
+    (cons 'NAME 'error-data)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(error-data error-val)")
+    (cons 'CATEGORY 'errors)
+    (cons 'DESCRIPTION "Extracts the associated data from an error condition value. Returns NIL if no data was attached (i.e. MAKE-ERROR was called with only a message). Signals an error if the argument is not an error value.")
+    (cons 'EXAMPLES '(((error-data (make-error "x" '(a b c))) (a b c))
+                       ((error-data (make-error "x")) nil)))
+    (cons 'SEE-ALSO '(error-p error-message make-error))))
+
+;;; ============================================================
+;;; METAPROGRAMMING (EXTENDED)
+;;; ============================================================
+
+(register-doc 'evlis
+  (list
+    (cons 'NAME 'evlis)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(evlis list) or (evlis list environment)")
+    (cons 'CATEGORY 'meta)
+    (cons 'DESCRIPTION "Evaluates each element of list in order and returns a new list of results. With one argument, uses the current environment. With two arguments, evaluates in the given environment object. This is the classic Lisp 1.5 primitive for evaluating argument lists; it is exposed for metaprogramming — most code uses MAPCAR or ordinary function calls instead.")
+    (cons 'EXAMPLES '(((evlis '((+ 1 2) (* 3 4))) (3 12))))
+    (cons 'SEE-ALSO '(eval evcon apply mapcar the-environment))))
+
+(register-doc 'evcon
+  (list
+    (cons 'NAME 'evcon)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(evcon clauses) or (evcon clauses environment)")
+    (cons 'CATEGORY 'meta)
+    (cons 'DESCRIPTION "Classic Lisp 1.5 evaluator for COND-style clauses. Walks the list of (test value) pairs, evaluates each test in turn, and returns the evaluated value of the first clause whose test is non-NIL. Returns NIL if no test passes. With two arguments, evaluates in the given environment object. Exposed for metaprogramming; prefer COND in ordinary code.")
+    (cons 'EXAMPLES '(((evcon '(((= 1 2) "no") ((= 1 1) "yes"))) "yes")))
+    (cons 'SEE-ALSO '(cond eval evlis the-environment))))
+
+(register-doc 'optimize
+  (list
+    (cons 'NAME 'optimize)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(optimize form)")
+    (cons 'CATEGORY 'meta)
+    (cons 'DESCRIPTION "Runs the source-level optimizer on form and returns the optimized Lisp expression without evaluating it. The optimizer performs constant folding, dead binding elimination, and other algebraic simplifications. The result is a structurally equivalent but potentially faster form. Used by the REPL and compiler pipeline; also useful for inspecting optimizer output during development.")
+    (cons 'EXAMPLES '(((optimize '(+ 1 2)) 3)
+                       ((optimize '(let ((x 1)) x)) 1)))
+    (cons 'SEE-ALSO '(eval macroexpand))))
+
+;;; ============================================================
+;;; SPECIAL FORMS: FEXPR AND VAU OPERATIVES
+;;; ============================================================
+;;;
+;;; Background: In most modern Lisps a function's arguments are evaluated
+;;; before being passed to it (applicative order).  Two mechanisms let you
+;;; receive *unevaluated* arguments instead:
+;;;
+;;;   DEFEXPR / anonymous FUNCTION (fexpr) — classical Lisp 1.5 style.
+;;;   VAU / $VAU (operative) — John Shutt's Kernel-language style.
+;;;
+;;; Both are unusual in contemporary practice but were central to early
+;;; Lisp design and remain powerful tools for building new control structures
+;;; without macros.
+
+(register-doc 'defexpr
+  (list
+    (cons 'NAME 'defexpr)
+    (cons 'TYPE 'special-form)
+    (cons 'SYNTAX "(defexpr name (param...) [docstring] body)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION
+      "Defines a named FEXPR (\"functional expression\") — a function-like object that receives its arguments UNEVALUATED as raw list structure instead of as computed values.
+
+A fexpr is the classic Lisp 1.5 mechanism for user-defined special forms. When a fexpr is called the evaluator does NOT evaluate the operands before passing them in; the body of the fexpr receives the literal source forms and may choose to evaluate them (with EVAL), ignore them, or inspect/transform them.
+
+With a single parameter the entire unevaluated operand list is bound to that parameter as a Lisp list:
+  (defexpr my-and (args) (cond ((null args) t) ((null (cdr args)) (eval (car args))) ...))
+  (my-and (< x 5) (> x 0))  ; args = ((< x 5) (> x 0)) -- not evaluated yet
+
+With multiple parameters each unevaluated operand is bound to the corresponding parameter individually.
+
+Fexprs are powerful but compose poorly: because the evaluator cannot see past a fexpr call, optimisations and macro-expanders that need to walk the code tree are blocked.  Modern usage (post-1970s) generally prefers DEFMACRO for compile-time code transformation and LAMBDA for runtime abstraction.  Use fexprs when you genuinely need access to both the unevaluated source and the current environment at call time — for example, to implement a custom binding form or a quoting operator.
+
+See also VAU/$VAU for the Kernel-language operative, which makes the caller's environment explicit.")
+    (cons 'EXAMPLES
+      '(((defexpr my-quote (x) (car x))
+         (my-quote foo))
+        ((defexpr verbose-if (test then else)
+           (if (eval test) (eval then) (eval else)))
+         (verbose-if (> 3 2) (print "yes") (print "no")))))
+    (cons 'SEE-ALSO '(vau defmacro lambda funcall eval))))
+
+(register-doc 'vau
+  (list
+    (cons 'NAME 'vau)
+    (cons 'TYPE 'special-form)
+    (cons 'SYNTAX "(vau (operands-param env-param) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION
+      "Creates an anonymous VAU operative (also written $VAU following Kernel convention).  A vau operative is similar to a fexpr — it receives arguments UNEVALUATED — but it also receives the CALLER'S ENVIRONMENT as an explicit first-class value, giving the operative complete reflective access.
+
+The parameter list must contain exactly two symbols:
+  operands-param — bound to the unevaluated operand list (a Lisp list of the literal source forms)
+  env-param      — bound to the caller's environment as a first-class Environment object
+
+Inside the body you can call (eval form env-param) to evaluate any form in the caller's scope, inspect bindings via environment operations, or build derived control structures.
+
+VAU operatives originate in John Shutt's Kernel language (dissertation, 2010).  The key insight is that the combination of (1) receiving operands unevaluated and (2) having the caller's environment as an explicit object is strictly more general than either macros or fexprs alone.  From VAU you can *derive* both LAMBDA (wrap in an evaluating shell) and DEFMACRO (evaluate operands, produce code, evaluate result in caller's env).  This makes VAU the minimal kernel for a reflective Lisp.
+
+Unlike DEFEXPR fexprs, vau operatives do not capture a dynamic parent environment for argument evaluation — the caller's environment is passed explicitly, making the data flow transparent to analysis tools.
+
+In Lamedh the $VAU alias is also recognised (the dollar sign is idiomatic Kernel notation for operatives that receive unevaluated operands).")
+    (cons 'EXAMPLES
+      '(((def $my-if
+            ($vau (test then else) e
+              (if (eval test e) (eval then e) (eval else e))))
+         ($my-if (> 3 2) 'yes 'no))
+        ((def $seq
+            ($vau (forms) e
+              (if (null forms) nil
+                  (if (null (cdr forms)) (eval (car forms) e)
+                      (progn (eval (car forms) e)
+                             (eval (cons '$seq (cdr forms)) e))))))
+         ($seq (print "a") (print "b")))))
+    (cons 'SEE-ALSO '(defexpr defmacro lambda eval the-environment make-environment))))
+
+;;; ============================================================
+;;; CONDITION FLAGS
+;;; ============================================================
+
+(register-doc 'set-flag
+  (list
+    (cons 'NAME 'set-flag)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(set-flag name)")
+    (cons 'CATEGORY 'flags)
+    (cons 'DESCRIPTION "Sets the global condition flag named name (a symbol or string) to true. Condition flags are global boolean signals used to communicate exceptional conditions such as arithmetic overflow. The built-in flag \"OVERFLOW\" is set by some arithmetic operations when overflow is detected. Custom flags can be set and tested by application code.")
+    (cons 'EXAMPLES '(((set-flag 'done) t)
+                       ((flag-set-p 'done) t)))
+    (cons 'SEE-ALSO '(clear-flag flag-set-p clear-all-flags))))
+
+(register-doc 'clear-flag
+  (list
+    (cons 'NAME 'clear-flag)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(clear-flag name)")
+    (cons 'CATEGORY 'flags)
+    (cons 'DESCRIPTION "Clears the global condition flag named name (a symbol or string), setting it to false. Has no effect if the flag was not set. See SET-FLAG for an overview of condition flags.")
+    (cons 'EXAMPLES '(((set-flag 'x) t)
+                       ((clear-flag 'x) t)
+                       ((flag-set-p 'x) nil)))
+    (cons 'SEE-ALSO '(set-flag flag-set-p clear-all-flags))))
+
+(register-doc 'flag-set-p
+  (list
+    (cons 'NAME 'flag-set-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(flag-set-p name)")
+    (cons 'CATEGORY 'flags)
+    (cons 'DESCRIPTION "Returns T if the global condition flag named name is currently set; returns NIL otherwise. The name may be a symbol or a string. Flags default to unset (false) until explicitly set with SET-FLAG.")
+    (cons 'EXAMPLES '(((flag-set-p 'overflow) nil)
+                       ((set-flag 'overflow) t)
+                       ((flag-set-p 'overflow) t)))
+    (cons 'SEE-ALSO '(set-flag clear-flag clear-all-flags))))
+
+(register-doc 'clear-all-flags
+  (list
+    (cons 'NAME 'clear-all-flags)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(clear-all-flags)")
+    (cons 'CATEGORY 'flags)
+    (cons 'DESCRIPTION "Clears all global condition flags at once. Takes no arguments. Useful at the start of a test suite or computation to ensure a clean flag state.")
+    (cons 'SEE-ALSO '(clear-flag set-flag flag-set-p))))
+
+;;; ============================================================
+;;; CAPABILITIES AND SHELL
+;;; ============================================================
+
+(register-doc 'feature-enabled-p
+  (list
+    (cons 'NAME 'feature-enabled-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(feature-enabled-p name)")
+    (cons 'CATEGORY 'capabilities)
+    (cons 'DESCRIPTION "Returns T if the capability (feature) named name is currently enabled; returns NIL otherwise. Capability names are case-insensitive. Available capabilities: SHELL (subprocess execution), READ-FS (filesystem reads), CREATE-FS (filesystem mutation), TEMP-FS (temp file creation), IO (stdin reads). All capabilities are OFF by default in every environment; they must be granted by the host via Rust API or the --capability CLI flag.")
+    (cons 'EXAMPLES '(((feature-enabled-p 'shell) nil)
+                       ((feature-enabled-p "READ-FS") nil)))
+    (cons 'SEE-ALSO '(features shell read-file write-file))))
+
+(register-doc 'features
+  (list
+    (cons 'NAME 'features)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(features)")
+    (cons 'CATEGORY 'capabilities)
+    (cons 'DESCRIPTION "Returns a sorted list of strings naming all currently-enabled capabilities. An empty list means no capabilities have been granted. Lisp code cannot grant capabilities to itself; this function is read-only introspection.")
+    (cons 'EXAMPLES '(((features) nil)))
+    (cons 'SEE-ALSO '(feature-enabled-p shell read-file))))
+
+(register-doc 'shell
+  (list
+    (cons 'NAME 'shell)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(shell command) or (shell program arg...)")
+    (cons 'CATEGORY 'capabilities)
+    (cons 'DESCRIPTION "Runs a shell command and returns a list (exit-code stdout stderr) as three values. With a single string argument the command is passed to \"sh -c\"; with multiple arguments the first is the program and the rest are arguments passed directly (no shell expansion). Requires the SHELL capability to be enabled.
+
+The return value is always a proper three-element list:
+  (0)   exit code as an integer (-1 if the process exited without a code)
+  (1)   stdout as a string
+  (2)   stderr as a string
+
+Use the helpers in lib/07-shell.lisp (SHELL-EXIT-CODE, SHELL-STDOUT, SHELL-STDERR, SHELL-OK-P, SH) for more ergonomic access to these values.
+
+Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SHELL\") from Rust host code.")
+    (cons 'EXAMPLES '(((shell "echo hello") (0 "hello\n" ""))
+                       ((shell "ls" "/tmp") (0 "..." ""))))
+    (cons 'SEE-ALSO '(feature-enabled-p features))))
+
+;;; ============================================================
+;;; FIRST-CLASS ENVIRONMENTS
+;;; ============================================================
+
+(register-doc 'the-environment
+  (list
+    (cons 'NAME 'the-environment)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(the-environment)")
+    (cons 'CATEGORY 'environments)
+    (cons 'DESCRIPTION "Returns the current lexical environment as a first-class Environment object. This is a live reference — any bindings established after the call are visible through the returned object. The environment can be passed to EVAL, EVLIS, EVCON, or MAKE-ENVIRONMENT as a parent to evaluate code in a specific scope. Primarily used by VAU operatives (via their env-param) and by metaprogramming utilities.")
+    (cons 'SEE-ALSO '(make-environment current-environment eval evlis vau))))
+
+(register-doc 'make-environment
+  (list
+    (cons 'NAME 'make-environment)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-environment) or (make-environment parent-env)")
+    (cons 'CATEGORY 'environments)
+    (cons 'DESCRIPTION "Creates a new first-class environment. With no arguments creates a fresh root environment pre-populated with all builtins (equivalent to a clean Lamedh session before loading the standard library). With one argument — an Environment object — creates a child environment that inherits all bindings from parent-env while new definitions are isolated to the child. Useful for sandboxing, module systems, and eval-in-context patterns.")
+    (cons 'EXAMPLES '(((let ((e (make-environment (the-environment))))
+                          (eval '(def x 42) e)
+                          (eval 'x e))
+                       42)))
+    (cons 'SEE-ALSO '(the-environment current-environment eval))))
+
+(register-doc 'current-environment
+  (list
+    (cons 'NAME 'current-environment)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(current-environment)")
+    (cons 'CATEGORY 'environments)
+    (cons 'DESCRIPTION "Returns a snapshot of all currently visible bindings as a hash table (symbol → value). Unlike THE-ENVIRONMENT, this returns a new, frozen hash table rather than a live environment object. Useful for inspection, debugging, and serialisation. The keys are symbols; the values are the current binding values at call time.")
+    (cons 'SEE-ALSO '(the-environment make-environment keys))))
+
+;;; ============================================================
+;;; FILE SYSTEM I/O
+;;; ============================================================
+
+(register-doc 'read-file
+  (list
+    (cons 'NAME 'read-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-file path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Reads the entire contents of the file at path as a UTF-8 string. Signals an error if the file does not exist, cannot be read, or is not valid UTF-8. Requires the READ-FS capability.")
+    (cons 'EXAMPLES '(((read-file "/etc/hostname") "myhost\n")))
+    (cons 'SEE-ALSO '(write-file read-file-byte read-file-section file-exists-p feature-enabled-p))))
+
+(register-doc 'read-file-byte
+  (list
+    (cons 'NAME 'read-file-byte)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-file-byte path offset)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Reads a single byte at byte offset from the file at path. Returns the byte value as an integer (0–255), or NIL if offset is at or past the end of the file. Requires the READ-FS capability. Useful for binary file inspection; for text use READ-FILE or READ-FILE-SECTION.")
+    (cons 'EXAMPLES '(((read-file-byte "/bin/true" 0) 127)))
+    (cons 'SEE-ALSO '(read-file read-file-section feature-enabled-p))))
+
+(register-doc 'read-file-section
+  (list
+    (cons 'NAME 'read-file-section)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-file-section path offset len)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Reads up to len bytes starting at byte offset from the file at path. Returns the bytes as a string (lossily decoded from UTF-8; non-UTF-8 bytes become replacement characters). Returns a shorter string if fewer than len bytes are available. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(read-file read-file-byte write-file feature-enabled-p))))
+
+(register-doc 'write-file
+  (list
+    (cons 'NAME 'write-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(write-file path content)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Writes the string content to the file at path, replacing any existing content. Creates the file if it does not exist. Returns T on success; signals an error on failure. Requires the CREATE-FS capability. For appending or streaming writes, use the SHELL capability with shell tools.")
+    (cons 'EXAMPLES '(((write-file "/tmp/hello.txt" "hello world\n") t)))
+    (cons 'SEE-ALSO '(read-file make-temp-file feature-enabled-p))))
+
+(register-doc 'file-exists-p
+  (list
+    (cons 'NAME 'file-exists-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-exists-p path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if something (file, directory, symlink, etc.) exists at path; returns NIL otherwise. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(file-p directory-p file-readable-p feature-enabled-p))))
+
+(register-doc 'directory-p
+  (list
+    (cons 'NAME 'directory-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(directory-p path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if path names an existing directory; returns NIL otherwise. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(file-p file-exists-p directory-files feature-enabled-p))))
+
+(register-doc 'file-p
+  (list
+    (cons 'NAME 'file-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-p path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if path names an existing regular file (not a directory or special file); returns NIL otherwise. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(directory-p file-exists-p file-readable-p feature-enabled-p))))
+
+(register-doc 'file-readable-p
+  (list
+    (cons 'NAME 'file-readable-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-readable-p path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if the file at path can be opened for reading by the current process; returns NIL otherwise. Requires the READ-FS capability. Implemented by attempting to open the file.")
+    (cons 'SEE-ALSO '(file-writable-p file-executable-p file-exists-p feature-enabled-p))))
+
+(register-doc 'file-writable-p
+  (list
+    (cons 'NAME 'file-writable-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-writable-p path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if the file at path exists and is not marked read-only; returns NIL otherwise. Requires the READ-FS capability. Checks the filesystem metadata permissions; does not attempt to open the file.")
+    (cons 'SEE-ALSO '(file-readable-p file-executable-p feature-enabled-p))))
+
+(register-doc 'file-executable-p
+  (list
+    (cons 'NAME 'file-executable-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-executable-p path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if the file at path has at least one executable permission bit set (Unix execute bit); returns NIL otherwise or on non-Unix platforms. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(file-readable-p file-writable-p feature-enabled-p))))
+
+(register-doc 'file-size
+  (list
+    (cons 'NAME 'file-size)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-size path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns the size of the file at path in bytes as an integer. Signals an error if the file does not exist or cannot be accessed. Requires the READ-FS capability.")
+    (cons 'EXAMPLES '(((file-size "/etc/hostname") 8)))
+    (cons 'SEE-ALSO '(file-exists-p read-file feature-enabled-p))))
+
+(register-doc 'directory-files
+  (list
+    (cons 'NAME 'directory-files)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(directory-files path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns a sorted list of filename strings (not full paths) for all entries in the directory at path. Includes both files and subdirectories; does not recurse. Signals an error if path is not a readable directory. Requires the READ-FS capability.")
+    (cons 'EXAMPLES '(((directory-files "/tmp") ("file1.txt" "subdir"))))
+    (cons 'SEE-ALSO '(directory-p file-exists-p feature-enabled-p))))
+
+(register-doc 'file-newer-p
+  (list
+    (cons 'NAME 'file-newer-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(file-newer-p path1 path2)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Returns T if path1's modification time is strictly later than path2's modification time; returns NIL otherwise. Both files must exist. Requires the READ-FS capability. Useful for incremental build-like logic.")
+    (cons 'SEE-ALSO '(file-exists-p file-size feature-enabled-p))))
+
+(register-doc 'chmod
+  (list
+    (cons 'NAME 'chmod)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(chmod path mode)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Changes the permissions of the file at path to mode. Mode may be an integer (the raw Unix mode value) or an octal string like \"755\". Returns T on success; signals an error on failure. Only supported on Unix; signals an error on Windows. Requires the CREATE-FS capability.")
+    (cons 'EXAMPLES '(((chmod "/tmp/myscript.sh" "755") t)))
+    (cons 'SEE-ALSO '(file-executable-p write-file feature-enabled-p))))
+
+(register-doc 'create-directory
+  (list
+    (cons 'NAME 'create-directory)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(create-directory path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Creates the directory at path and all intermediate directories as needed (like mkdir -p). Returns T on success; signals an error on failure. Requires the CREATE-FS capability.")
+    (cons 'EXAMPLES '(((create-directory "/tmp/new/subdir") t)))
+    (cons 'SEE-ALSO '(directory-p delete-file feature-enabled-p))))
+
+(register-doc 'delete-file
+  (list
+    (cons 'NAME 'delete-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(delete-file path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Deletes the regular file at path. Signals an error if the file does not exist or is a directory. Returns T on success. Requires the CREATE-FS capability. To remove directories, use shell tools via SHELL.")
+    (cons 'EXAMPLES '(((delete-file "/tmp/old.txt") t)))
+    (cons 'SEE-ALSO '(rename-file write-file file-exists-p feature-enabled-p))))
+
+(register-doc 'rename-file
+  (list
+    (cons 'NAME 'rename-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(rename-file from to)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Renames (or moves) the file or directory at from to to. On the same filesystem this is atomic; across filesystems it may copy-then-delete. Returns T on success; signals an error on failure. Requires the CREATE-FS capability.")
+    (cons 'EXAMPLES '(((rename-file "/tmp/old.txt" "/tmp/new.txt") t)))
+    (cons 'SEE-ALSO '(delete-file write-file feature-enabled-p))))
+
+(register-doc 'make-temp-file
+  (list
+    (cons 'NAME 'make-temp-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-temp-file) or (make-temp-file prefix)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Creates a new empty temporary file and returns its path as a string. The optional prefix string is prepended to the filename. The file is created atomically in the system temp directory. The caller is responsible for deleting the file when done. Requires the TEMP-FS capability.")
+    (cons 'EXAMPLES '(((make-temp-file "myapp-") "/tmp/myapp-abc123")))
+    (cons 'SEE-ALSO '(make-temp-directory write-file delete-file feature-enabled-p))))
+
+(register-doc 'make-temp-directory
+  (list
+    (cons 'NAME 'make-temp-directory)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-temp-directory) or (make-temp-directory prefix)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Creates a new empty temporary directory and returns its path as a string. The optional prefix string is prepended to the directory name. The directory is created in the system temp directory. The caller is responsible for deleting the directory and its contents when done. Requires the TEMP-FS capability.")
+    (cons 'EXAMPLES '(((make-temp-directory "work-") "/tmp/work-abc123")))
+    (cons 'SEE-ALSO '(make-temp-file create-directory delete-file feature-enabled-p))))
+
+;;; ============================================================
 ;;; REGISTER CATEGORIES
 ;;; ============================================================
 
 (register-category 'arithmetic
   "Numeric operations"
-  '(+ - * / remainder mod expt add1 sub1 abs max min random))
+  '(+ - * / remainder mod expt add1 sub1 abs max min random
+    plus difference times quotient lessp greaterp equal-number
+    1+ 1-
+    sqrt sin cos tan log exp floor ceiling round truncate
+    gcd lcm isqrt signum
+    float-equal float-lessp float-greaterp))
 
 (register-category 'predicates
   "Type and value predicates"
   '(zerop plusp minusp evenp oddp < > = atom symbolp numberp fixp floatp
-    stringp consp listp null not eq equal functionp boundp))
+    stringp consp listp null not eq equal functionp boundp macrop
+    arrayp extension-p error-p))
 
 (register-category 'lists
   "List manipulation"
   '(car cdr cons list append reverse length nth last member assoc
-    mapcar maplist subst pairlis))
+    mapcar maplist subst pairlis nthcdr efface delete
+    rplaca rplacd sublis sort))
 
 (register-category 'strings
   "String operations"
-  '(concat index explode implode gensym intern))
+  '(concat index explode implode gensym intern maknam
+    string-length substring char-code code-char
+    string->number number->string prin1-to-string princ-to-string))
 
 (register-category 'special-forms
   "Special forms and macros"
-  '(quote if cond and or def setq let lambda defun defmacro progn prog))
+  '(quote if cond and or def setq let lambda defun defmacro progn prog
+    block return-from catch throw unwind-protect while for
+    label define defexpr vau $vau))
 
 (register-category 'io
   "Input/Output"
-  '(print prin1 princ terpri read load-file))
+  '(print prin1 princ terpri read load-file spaces))
 
 (register-category 'errors
   "Error handling"
-  '(error errorset))
+  '(error errorset make-error error-p error-message error-data handler-case))
 
 (register-category 'meta
   "Metaprogramming"
-  '(eval apply funcall help documentation))
+  '(eval apply funcall help documentation evlis evcon optimize macroexpand))
 
 (register-category 'plists
   "Property lists"
-  '(getp putp plist remprop documentation))
+  '(getp putp plist remprop documentation get deflist))
 
 (register-category 'hash-tables
   "Hash tables"
-  '(make-hash-table get set-bang keys delete-key))
+  '(make-hash-table gethash set-bang sethash keys delete-key delete-key-bang))
 
 (register-category 'bitwise
   "Bitwise operations"
-  '(logor logand logxor lognot leftshift ash))
+  '(logor logand logxor lognot leftshift ash rot))
+
+(register-category 'arrays
+  "Mutable random-access arrays (Lisp 1.5 Appendix A)"
+  '(array make-array fetch array-fetch store array-store array-length arrayp))
+
+(register-category 'filesystem
+  "File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)"
+  '(read-file read-file-byte read-file-section write-file
+    file-exists-p directory-p file-p file-readable-p file-writable-p
+    file-executable-p file-size directory-files file-newer-p
+    chmod create-directory delete-file rename-file
+    make-temp-file make-temp-directory))
+
+(register-category 'capabilities
+  "Capability feature flags and shell access"
+  '(feature-enabled-p features shell))
+
+(register-category 'environments
+  "First-class environment objects"
+  '(the-environment make-environment current-environment))
+
+(register-category 'flags
+  "Global condition/signal flags"
+  '(set-flag clear-flag flag-set-p clear-all-flags))
 
 ;;; Done loading help data
 (princ "Help system loaded. Type (help) for documentation.")
