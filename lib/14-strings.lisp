@@ -4,9 +4,12 @@
 ;;; CODE-CHAR, STRING->NUMBER, NUMBER->STRING, plus CONCAT/INDEX.
 ;;;
 ;;; NAMING: predicates use the `-p` suffix (STARTS-WITH-P, WHITESPACE-P, ...).
-;;; A "char" in this layer is a one-character string. Note the reader's `'c'`
-;;; literal is a different thing: it reads as the integer code point of c (see
-;;; the reader / #136), i.e. (char-code "c") — convert with code-char/char-code.
+;;;
+;;; CHARACTERS: the reader's `'c'` literal is an integer code point (see #136).
+;;; Functions in this layer accept EITHER a one-character string OR an integer
+;;; code point — use CHAR->CODE to coerce. So (alpha-p 'a') and (alpha-p "a")
+;;; both work. Case operations (CHAR-UPCASE, CHAR-DOWNCASE) always return a
+;;; one-character string regardless of which form was given.
 
 ;;; ---- string <-> list of chars --------------------------------------------
 
@@ -23,32 +26,53 @@
   "Concatenate a list of strings into one string."
   (apply #'concat chars))
 
-;;; ---- char operations (on one-character strings) --------------------------
+;;; ---- char coercion -------------------------------------------------------
 
-(defun char-upcase (c)
-  "Uppercase a one-character string (ASCII)."
-  (let ((code (char-code c)))
-    (if (and (>= code 97) (<= code 122)) (code-char (- code 32)) c)))
+(defun char->code (c)
+  "Return the integer code point of C, which may be a one-character string or
+an integer code point (e.g. from a reader char literal like 'a')."
+  (if (stringp c) (char-code c) c))
 
-(defun char-downcase (c)
-  "Lowercase a one-character string (ASCII)."
-  (let ((code (char-code c)))
-    (if (and (>= code 65) (<= code 90)) (code-char (+ code 32)) c)))
+;;; ---- char classification (accept string or code-point integer) -----------
 
 (defun digit-p (c)
-  "True if one-character string C is an ASCII digit."
-  (let ((code (char-code c))) (and (>= code 48) (<= code 57))))
+  "True if C (one-character string or code point) is an ASCII digit 0-9."
+  (let ((code (char->code c))) (and (>= code 48) (<= code 57))))
 
 (defun alpha-p (c)
-  "True if one-character string C is an ASCII letter."
-  (let ((code (char-code c)))
+  "True if C (one-character string or code point) is an ASCII letter A-Z or a-z."
+  (let ((code (char->code c)))
     (or (and (>= code 65) (<= code 90))
         (and (>= code 97) (<= code 122)))))
 
+(defun alphanumeric-p (c)
+  "True if C (one-character string or code point) is an ASCII letter or digit."
+  (or (alpha-p c) (digit-p c)))
+
+(defun char-upper-p (c)
+  "True if C (one-character string or code point) is an ASCII uppercase letter A-Z."
+  (let ((code (char->code c))) (and (>= code 65) (<= code 90))))
+
+(defun char-lower-p (c)
+  "True if C (one-character string or code point) is an ASCII lowercase letter a-z."
+  (let ((code (char->code c))) (and (>= code 97) (<= code 122))))
+
 (defun whitespace-p (c)
-  "True if one-character string C is space, tab, newline, or carriage return."
-  (let ((code (char-code c)))
+  "True if C (one-character string or code point) is space, tab, newline, or carriage return."
+  (let ((code (char->code c)))
     (or (= code 32) (= code 9) (= code 10) (= code 13))))
+
+;;; ---- char case mapping ---------------------------------------------------
+
+(defun char-upcase (c)
+  "Uppercase C (one-character string or code point). Returns a one-character string."
+  (let ((code (char->code c)))
+    (if (and (>= code 97) (<= code 122)) (code-char (- code 32)) (code-char code))))
+
+(defun char-downcase (c)
+  "Lowercase C (one-character string or code point). Returns a one-character string."
+  (let ((code (char->code c)))
+    (if (and (>= code 65) (<= code 90)) (code-char (+ code 32)) (code-char code))))
 
 ;;; ---- case mapping --------------------------------------------------------
 
