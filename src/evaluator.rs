@@ -2622,6 +2622,14 @@ enum TcoStep {
     Done(Result<LispVal, LispError>),
     /// Tail call: evaluate `val` in `env` next, reusing this stack frame.
     TailCall(LispVal, Rc<Environment>),
+    /// Apply a non-tail callable (builtin/native) to already-evaluated args.
+    /// Deferred to the driver loop so the `apply` runs *after* `eval_step`
+    /// returns — releasing any borrow `eval_step` holds on the head symbol
+    /// (e.g. the special-form dispatch `s.borrow()`). Without this, calling
+    /// `apply` inline panics when a symbol-mutating builtin re-borrows the
+    /// same interned symbol used as the call head, e.g. `(putp 'putp ...)`
+    /// (issue #156).
+    Apply(LispVal, Vec<LispVal>),
 }
 
 /// Internal trampoline evaluator. Runs a loop that reuses the current Rust
@@ -2647,6 +2655,7 @@ fn eval_impl(initial_val: LispVal, initial_env: Rc<Environment>) -> Result<LispV
 
         match step {
             TcoStep::Done(result) => return result,
+            TcoStep::Apply(func, args) => return apply(&func, &args, &current_env),
             TcoStep::TailCall(new_val, new_env) => {
                 current_val = new_val;
                 current_env = new_env;
@@ -4018,8 +4027,11 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
                         }
 
-                        // All other callables (builtins, natives): no TCO needed
-                        Ok(TcoStep::Done(apply(&func, &eval_args, env)))
+                        // All other callables (builtins, natives): no TCO needed.
+                        // Defer the apply to the driver loop so the head-symbol
+                        // borrow held by the dispatch match above is released
+                        // first (issue #156).
+                        Ok(TcoStep::Apply(func, eval_args))
                     }
                 }
             } else {

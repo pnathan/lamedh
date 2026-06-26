@@ -16,6 +16,16 @@
   (assert-equal (case 3 (1 'one) ((2 3) 'two-three) (t 'other)) 'two-three)
   (assert-equal (case 9 (1 'one) (t 'other)) 'other))
 
+(deftest control-typecase
+  (assert-equal (typecase 5 (string 's) (number 'n) (t 'other)) 'n)
+  (assert-equal (typecase "hi" (string 's) (number 'n) (t 'other)) 's)
+  (assert-equal (typecase 'foo (string 's) (number 'n) (t 'other)) 'other)
+  (assert-equal (typecase 5 (integer 'int) (float 'flt)) 'int)
+  (assert-equal (typecase 5.0 (integer 'int) (float 'flt)) 'flt)
+  (assert-equal (typecase '(1 2) (cons 'c) (null 'nil-type) (t 'other)) 'c)
+  (assert-equal (typecase nil (cons 'c) (null 'nil-type) (t 'other)) 'nil-type)
+  (assert-nil   (typecase 5 (string 's))))
+
 (deftest control-dotimes-dolist
   (let ((acc nil))
     (dotimes (i 3) (setq acc (cons i acc)))
@@ -62,6 +72,9 @@
   (assert-equal (iota 3 10) '(10 11 12))
   (assert-equal (range 2 8 2) '(2 4 6))
   (assert-equal (zip '(1 2 3) '(a b c)) '((1 a) (2 b) (3 c)))
+  (assert-equal (unzip '((1 a) (2 b) (3 c))) '((1 2 3) (a b c)))
+  (assert-equal (unzip (zip '(1 2 3) '(a b c))) '((1 2 3) (a b c)))
+  (assert-equal (unzip nil) '(() ()))
   (assert-equal (mapcan #'identity '((1) (2 3) (4))) '(1 2 3 4))
   (assert-equal (flatten '(1 (2 (3 4)) 5)) '(1 2 3 4 5))
   (assert-equal (remove-duplicates '(1 2 1 3 2)) '(1 2 3)))
@@ -167,6 +180,10 @@
   (assert-equal (code-char 66) "B")
   (assert-equal (string->number "42") 42)
   (assert-nil   (string->number "abc"))
+  (assert-equal (parse-integer "42") 42)
+  (assert-equal (parse-integer "  17  ") 17)
+  (assert-nil   (parse-integer "3.14"))
+  (assert-nil   (parse-integer "abc"))
   (assert-equal (number->string 99) "99"))
 
 (deftest string-layer

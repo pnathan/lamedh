@@ -83,6 +83,17 @@
   "Return S with ASCII letters lowercased."
   (list->string (mapcar #'char-downcase (string->list s))))
 
+;;; ---- number parsing ------------------------------------------------------
+
+(defun parse-integer (s)
+  "Parse string S as an integer, returning the integer, or NIL if S does not
+denote an integer. Surrounding whitespace is ignored (via STRING->NUMBER); a
+value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
+  (let ((n (string->number s)))
+    (if (and (numberp n) (not (floatp n)))
+        n
+        nil)))
+
 ;;; ---- comparison ----------------------------------------------------------
 
 (defun string= (a b)

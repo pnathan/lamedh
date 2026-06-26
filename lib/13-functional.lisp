@@ -151,6 +151,13 @@ shorter input."
       nil
       (cons (list (car a) (car b)) (zip (cdr a) (cdr b)))))
 
+(defun unzip (pairs)
+  "Inverse of ZIP: given a list of two-element lists, return a two-element list
+holding the list of firsts and the list of seconds. (unzip (zip a b)) recovers
+(list a b) up to the shorter length."
+  (list (mapcar (lambda (p) (car p)) pairs)
+        (mapcar (lambda (p) (car (cdr p))) pairs)))
+
 (defun iota-aux (n start step acc)
   (if (< n 1)
       (reverse acc)
