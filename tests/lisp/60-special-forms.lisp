@@ -46,3 +46,18 @@
 (deftest sf-quasiquote-unquote
   ;; Unquote evaluates a sub-expression inside a quasiquote
   (assert-equal (quasiquote (a (unquote (+ 1 2)) c)) '(A 3 C)))
+
+(deftest sf-quasiquote-splice
+  ;; ,@ splices a list's elements into the surrounding list
+  (let ((xs '(2 3 4)))
+    (assert-equal `(1 ,@xs 5) '(1 2 3 4 5))))
+
+(deftest sf-quasiquote-splice-empty
+  ;; Splicing an empty list contributes nothing
+  (let ((xs '()))
+    (assert-equal `(start ,@xs end) '(START END))))
+
+(deftest sf-quasiquote-splice-and-unquote
+  ;; Unquote and unquote-splicing compose within one quasiquote
+  (let ((a 1) (xs '(2 3)))
+    (assert-equal `(,a ,@xs done) '(1 2 3 DONE))))
