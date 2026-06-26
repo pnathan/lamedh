@@ -22,6 +22,7 @@
 //! | `'e` | `(QUOTE e)` |
 //! | `` `e `` | `(QUASIQUOTE e)` |
 //! | `,e` | `(UNQUOTE e)` |
+//! | `,@e` | `(UNQUOTE-SPLICING e)` |
 //! | `#'f` | `(FUNCTION f)` |
 //! | `; comment` | Ignored to end of line |
 //!
@@ -56,6 +57,8 @@ fn parse_expr(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
                 parse_char_literal,
                 parse_quoted(env.clone()),
                 parse_quasiquoted(env.clone()),
+                // ,@ before , : `,@e` is splicing, `,e` is plain unquote.
+                parse_unquote_spliced(env.clone()),
                 parse_unquoted(env.clone()),
                 parse_function_shorthand(env.clone()),
             )),
@@ -384,6 +387,21 @@ fn parse_unquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
+fn parse_unquote_spliced(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    let splice_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE-SPLICING"));
+    move |input: &str| {
+        map(preceded(tag(",@"), parse_expr(env.clone())), |expr| {
+            LispVal::Cons {
+                car: Rc::new(splice_symbol.clone()),
+                cdr: Rc::new(LispVal::Cons {
+                    car: Rc::new(expr),
+                    cdr: Rc::new(LispVal::Nil),
+                }),
+            }
+        })(input)
+    }
+}
+
 /// Parse a single s-expression from `input`.
 ///
 /// Symbols are interned into `env`'s symbol table and uppercased.
@@ -676,6 +694,34 @@ mod tests {
                     ),
                     LispVal::Nil
                 )
+            ))
+        );
+    }
+
+    #[test]
+    fn test_read_unquote_splicing() {
+        let env = Rc::new(Environment::new());
+        // ,@xs reads as (UNQUOTE-SPLICING xs)
+        let result = read(",@xs", &env);
+        assert_eq!(
+            result,
+            Ok(cons(
+                symbol("UNQUOTE-SPLICING", &env),
+                cons(symbol("XS", &env), LispVal::Nil)
+            ))
+        );
+    }
+
+    #[test]
+    fn test_read_unquote_vs_splicing() {
+        let env = Rc::new(Environment::new());
+        // ,x (no @) stays plain UNQUOTE, not splicing
+        let result = read(",x", &env);
+        assert_eq!(
+            result,
+            Ok(cons(
+                symbol("UNQUOTE", &env),
+                cons(symbol("X", &env), LispVal::Nil)
             ))
         );
     }

@@ -70,17 +70,23 @@ Backquote enables template expressions with selective evaluation:
 
 ```lisp
 `(a b c)           ; Same as (QUASIQUOTE (A B C))
-`(a ,x c)          ; Evaluate X, splice result
-`(a ,@lst c)       ; (Not implemented: splice list)
+`(a ,x c)          ; Evaluate X, insert result
+`(a ,@lst c)       ; Evaluate LST, splice its elements in place
 ```
 
-### 4.2.4 Unquote
+### 4.2.4 Unquote and unquote-splicing
 
-Comma inside a quasiquote evaluates its argument:
+Comma inside a quasiquote evaluates its argument and inserts the single result.
+Comma-at (`,@`) evaluates its argument — which must yield a list — and splices
+that list's elements into the surrounding list:
 
 ```lisp
 (def x 42)
-`(the answer is ,x)  ; => (THE ANSWER IS 42)
+`(the answer is ,x)    ; => (THE ANSWER IS 42)
+
+(def xs '(2 3 4))
+`(1 ,@xs 5)            ; => (1 2 3 4 5)
+`(start ,@'() end)     ; => (START END)
 ```
 
 ---
