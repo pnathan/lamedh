@@ -89,6 +89,18 @@ impl Ty {
     }
 }
 
+/// Lower-case surface name of a [`Ty`], matching the `deffun-typed` syntax
+/// (`int64`, `float64`, `bool`, `char`). Used by introspection (`describe`,
+/// `disassemble`).
+pub fn ty_name(t: Ty) -> &'static str {
+    match t {
+        Ty::Int64 => "int64",
+        Ty::Float64 => "float64",
+        Ty::Bool => "bool",
+        Ty::Char => "char",
+    }
+}
+
 /// Which machine interpretation a numeric op uses on its `u64` words.
 #[derive(Clone, Copy, Debug)]
 enum NumTy {
@@ -1296,6 +1308,188 @@ impl Jit {
         for f in &self.funcs {
             f.compile_now(&self.funcs);
         }
+    }
+
+    /// Render the typed-core IR of `name` as a flat pseudo-assembly listing.
+    ///
+    /// This is the "what is actually being run" view for a jotted (typed)
+    /// function: the typed core is the reference program every compiled edition
+    /// must match, lowered here to a linear, register-and-label instruction
+    /// stream. Returns `None` if no typed function by that name is registered.
+    pub fn disassemble(&self, name: &str) -> Option<String> {
+        let f = self.get(name)?;
+        let params = f.params();
+        let ret = f.ret();
+        let mut s = String::new();
+        let sig = params
+            .iter()
+            .map(|(_, t)| ty_name(*t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        s.push_str(&format!(
+            "; typed function {} ({sig}) -> {}\n",
+            f.name,
+            ty_name(ret)
+        ));
+        if params.is_empty() {
+            s.push_str("; slots: (none)\n");
+        } else {
+            s.push_str("; slots:\n");
+            for (i, (pname, ty)) in params.iter().enumerate() {
+                s.push_str(&format!(";   slot{i} = {pname} : {}\n", ty_name(*ty)));
+            }
+        }
+        s.push_str(&format!(
+            "; compiled edition: {}\n",
+            if f.is_compiled() {
+                "yes"
+            } else {
+                "no (interpreted)"
+            }
+        ));
+        match f.core_clone() {
+            None => s.push_str("    ; declared but not yet defined\n"),
+            Some(core) => {
+                let mut out = Vec::new();
+                let mut reg = 0usize;
+                let mut lab = 0usize;
+                self.dis_emit(&core, "rv", &mut out, &mut reg, &mut lab);
+                for line in out {
+                    s.push_str(&line);
+                    s.push('\n');
+                }
+                s.push_str("    ret rv\n");
+            }
+        }
+        Some(s)
+    }
+
+    /// Linearize `core` into instructions writing their result into register
+    /// `dst`, appending textual lines to `out`. `reg`/`lab` are monotonic
+    /// counters for fresh temporaries and branch labels.
+    fn dis_emit(
+        &self,
+        core: &Core,
+        dst: &str,
+        out: &mut Vec<String>,
+        reg: &mut usize,
+        lab: &mut usize,
+    ) {
+        let fresh = |reg: &mut usize| {
+            let r = format!("r{}", *reg);
+            *reg += 1;
+            r
+        };
+        let fresh_lab = |lab: &mut usize, base: &str| {
+            let l = format!(".{base}{}", *lab);
+            *lab += 1;
+            l
+        };
+        match core {
+            Core::LitI(n) => out.push(format!("    {dst} = li   {n}")),
+            Core::LitF(x) => out.push(format!("    {dst} = lf   {x}")),
+            Core::Var(i) => out.push(format!("    {dst} = ld   slot{i}")),
+            Core::ToChar(a) => {
+                self.dis_emit(a, dst, out, reg, lab);
+                out.push(format!("    {dst} = and  {dst}, 0xff        ; code-char"));
+            }
+            Core::Not(a) => {
+                self.dis_emit(a, dst, out, reg, lab);
+                out.push(format!("    {dst} = not  {dst}"));
+            }
+            Core::Bin(k, op, a, b) => {
+                let t1 = fresh(reg);
+                let t2 = fresh(reg);
+                self.dis_emit(a, &t1, out, reg, lab);
+                self.dis_emit(b, &t2, out, reg, lab);
+                out.push(format!("    {dst} = {} {t1}, {t2}", bin_mnemonic(*k, *op)));
+            }
+            Core::Cmp(k, op, a, b) => {
+                let t1 = fresh(reg);
+                let t2 = fresh(reg);
+                self.dis_emit(a, &t1, out, reg, lab);
+                self.dis_emit(b, &t2, out, reg, lab);
+                out.push(format!("    {dst} = {} {t1}, {t2}", cmp_mnemonic(*k, *op)));
+            }
+            Core::And(a, b) => {
+                self.dis_emit(a, dst, out, reg, lab);
+                let end = fresh_lab(lab, "and_end");
+                out.push(format!("    brz  {dst}, {end}          ; short-circuit"));
+                self.dis_emit(b, dst, out, reg, lab);
+                out.push(format!("{end}:"));
+            }
+            Core::Or(a, b) => {
+                self.dis_emit(a, dst, out, reg, lab);
+                let end = fresh_lab(lab, "or_end");
+                out.push(format!("    brnz {dst}, {end}          ; short-circuit"));
+                self.dis_emit(b, dst, out, reg, lab);
+                out.push(format!("{end}:"));
+            }
+            Core::If(c, t, e) => {
+                let tc = fresh(reg);
+                self.dis_emit(c, &tc, out, reg, lab);
+                let l_else = fresh_lab(lab, "else");
+                let l_end = fresh_lab(lab, "endif");
+                out.push(format!("    brz  {tc}, {l_else}"));
+                self.dis_emit(t, dst, out, reg, lab);
+                out.push(format!("    br   {l_end}"));
+                out.push(format!("{l_else}:"));
+                self.dis_emit(e, dst, out, reg, lab);
+                out.push(format!("{l_end}:"));
+            }
+            Core::Let(slot, val, body) => {
+                let tv = fresh(reg);
+                self.dis_emit(val, &tv, out, reg, lab);
+                out.push(format!("    st   slot{slot}, {tv}"));
+                self.dis_emit(body, dst, out, reg, lab);
+            }
+            Core::Call(id, args) => {
+                let mut argregs = Vec::with_capacity(args.len());
+                for a in args {
+                    let t = fresh(reg);
+                    self.dis_emit(a, &t, out, reg, lab);
+                    argregs.push(t);
+                }
+                let callee = self.name_of(*id).unwrap_or_else(|| format!("fn#{id}"));
+                out.push(format!("    {dst} = call {callee}({})", argregs.join(", ")));
+            }
+        }
+    }
+}
+
+/// Mnemonic for an arithmetic [`BinOp`] at numeric kind `k` (`i*` vs `f*`).
+fn bin_mnemonic(k: NumKind, op: BinOp) -> &'static str {
+    let p = matches!(k, NumKind::I);
+    match (op, p) {
+        (BinOp::Add, true) => "iadd",
+        (BinOp::Add, false) => "fadd",
+        (BinOp::Sub, true) => "isub",
+        (BinOp::Sub, false) => "fsub",
+        (BinOp::Mul, true) => "imul",
+        (BinOp::Mul, false) => "fmul",
+        (BinOp::Div, true) => "idiv",
+        (BinOp::Div, false) => "fdiv",
+        (BinOp::Mod, true) => "imod",
+        (BinOp::Mod, false) => "fmod",
+    }
+}
+
+/// Mnemonic for a comparison [`CmpOp`] at numeric kind `k` (`icmp.*`/`fcmp.*`).
+fn cmp_mnemonic(k: NumKind, op: CmpOp) -> &'static str {
+    let p = matches!(k, NumKind::I);
+    match (op, p) {
+        (CmpOp::Lt, true) => "icmp.lt",
+        (CmpOp::Lt, false) => "fcmp.lt",
+        (CmpOp::Gt, true) => "icmp.gt",
+        (CmpOp::Gt, false) => "fcmp.gt",
+        (CmpOp::Le, true) => "icmp.le",
+        (CmpOp::Le, false) => "fcmp.le",
+        (CmpOp::Ge, true) => "icmp.ge",
+        (CmpOp::Ge, false) => "fcmp.ge",
+        (CmpOp::Eq, true) => "icmp.eq",
+        (CmpOp::Eq, false) => "fcmp.eq",
+        (CmpOp::Ne, true) => "icmp.ne",
+        (CmpOp::Ne, false) => "fcmp.ne",
     }
 }
 

@@ -2342,6 +2342,52 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   "Global condition/signal flags"
   '(set-flag clear-flag flag-set-p clear-all-flags))
 
+;;; ============================================================
+;;; INTROSPECTION
+;;; ============================================================
+
+(register-doc 'describe
+  (list
+    (cons 'NAME 'describe)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(describe 'sym)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Print a brief summary of what a symbol (or value) is: its kind, parameters/arity, value, any typed (JIT) signature and compiled status, and its docstring.")
+    (cons 'ARGS '((sym "A (usually quoted) symbol, or any value")))
+    (cons 'RETURNS "T (the summary is printed to stdout)")
+    (cons 'EXAMPLES '(((describe '+) T)
+                       ((describe 'car) T)))
+    (cons 'SEE-ALSO '(see-source disassemble documentation help))))
+
+(register-doc 'see-source
+  (list
+    (cons 'NAME 'see-source)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(see-source 'sym) or (see-source 'sym t)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Reconstruct the source form the evaluator registered for an operative (lambda, fexpr, macro, vau). With no second argument it returns the form; with a non-NIL second argument it prints the form as an indented tree and returns T.")
+    (cons 'ARGS '((sym "A (usually quoted) symbol bound to an operative, or the operative value itself")
+                   (tree "Optional: when non-NIL, render an indented tree to stdout")))
+    (cons 'RETURNS "The reconstructed source form, or T in tree mode")
+    (cons 'EXAMPLES '(((see-source 'cube) (LAMBDA (X) (* X (* X X))))))
+    (cons 'SEE-ALSO '(describe disassemble macroexpand))))
+
+(register-doc 'disassemble
+  (list
+    (cons 'NAME 'disassemble)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(disassemble 'sym)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Print the typed-core pseudo-assembly of a jotted (deffun-typed) function: the typed IR lowered to a flat register/label instruction listing. Reports clearly when the symbol has no typed edition.")
+    (cons 'ARGS '((sym "A quoted symbol naming a typed (deffun-typed) function")))
+    (cons 'RETURNS "T (the listing is printed to stdout)")
+    (cons 'EXAMPLES '(((disassemble 'fact) T)))
+    (cons 'SEE-ALSO '(describe see-source deffun-typed))))
+
+(register-category 'introspection
+  "Inspecting registered definitions and compiled code"
+  '(describe see-source disassemble documentation))
+
 ;;; Done loading help data
 (princ "Help system loaded. Type (help) for documentation.")
 (terpri)
