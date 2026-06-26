@@ -422,6 +422,7 @@ impl Environment {
         // Type predicates
         env.set("FIXP".to_string(), LispVal::Builtin(BuiltinFunc::Fixp));
         env.set("FLOATP".to_string(), LispVal::Builtin(BuiltinFunc::Floatp));
+        env.set("CHARP".to_string(), LispVal::Builtin(BuiltinFunc::Charp));
         env.set(
             "SYMBOLP".to_string(),
             LispVal::Builtin(BuiltinFunc::Symbolp),
@@ -564,6 +565,8 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
         env.set("ARRAYP".to_string(), LispVal::Builtin(BuiltinFunc::Arrayp));
+        // CHARP is registered with the type predicates; MAKE-CHAR with the
+        // char/string ops (near CODE-CHAR).
         env.set(
             "EXTENSION-P".to_string(),
             LispVal::Builtin(BuiltinFunc::Extensionp),
@@ -734,6 +737,10 @@ impl Environment {
         env.set(
             "CODE-CHAR".to_string(),
             LispVal::Builtin(BuiltinFunc::CodeChar),
+        );
+        env.set(
+            "MAKE-CHAR".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeChar),
         );
         env.set(
             "STRING->NUMBER".to_string(),

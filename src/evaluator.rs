@@ -238,6 +238,7 @@ fn apply_math_op(
             .iter()
             .map(|arg| match arg {
                 LispVal::Number(n) => Ok(*n as f64),
+                LispVal::Char(b) => Ok(*b as f64),
                 LispVal::Float(f) => Ok(*f),
                 _ => Err(LispError::Generic(
                     "Math functions only accept numbers".to_string(),
@@ -282,6 +283,7 @@ fn apply_math_op(
     fn as_int(arg: &LispVal) -> Result<i64, LispError> {
         match arg {
             LispVal::Number(n) => Ok(*n),
+            LispVal::Char(b) => Ok(*b as i64),
             _ => Err(LispError::Generic(
                 "Math functions only accept numbers".to_string(),
             )),
@@ -461,6 +463,7 @@ fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispEr
 fn as_f64(v: &LispVal, ctx: &str) -> Result<f64, LispError> {
     match v {
         LispVal::Number(n) => Ok(*n as f64),
+        LispVal::Char(b) => Ok(*b as f64),
         LispVal::Float(f) => Ok(*f),
         _ => Err(LispError::Generic(format!("{ctx} requires a number"))),
     }
@@ -651,13 +654,18 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
             Ok(LispVal::String(chars[start..end].iter().collect()))
         }
         BuiltinFunc::CharCode => {
-            // (char-code s) — code point of the first character of s.
-            let s = get_str(0, "char-code")?;
-            match s.chars().next() {
-                Some(c) => Ok(LispVal::Number(c as i64)),
-                None => Err(LispError::Generic(
-                    "char-code requires a non-empty string".to_string(),
-                )),
+            // (char-code x) — code point of x, where x is a Char or a one-char string.
+            match args.first() {
+                Some(LispVal::Char(b)) => Ok(LispVal::Number(*b as i64)),
+                _ => {
+                    let s = get_str(0, "char-code")?;
+                    match s.chars().next() {
+                        Some(c) => Ok(LispVal::Number(c as i64)),
+                        None => Err(LispError::Generic(
+                            "char-code requires a non-empty string".to_string(),
+                        )),
+                    }
+                }
             }
         }
         BuiltinFunc::CodeChar => {
@@ -670,6 +678,18 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
                     }),
                 _ => Err(LispError::Generic(
                     "code-char requires a non-negative integer".to_string(),
+                )),
+            }
+        }
+        BuiltinFunc::MakeChar => {
+            // (make-char n) — create a Char value from integer code point 0–255.
+            match args.first() {
+                Some(LispVal::Number(n)) if *n >= 0 && *n <= 255 => Ok(LispVal::Char(*n as u8)),
+                Some(LispVal::Number(n)) => Err(LispError::Generic(format!(
+                    "make-char: {n} out of range 0–255"
+                ))),
+                _ => Err(LispError::Generic(
+                    "make-char requires a non-negative integer".to_string(),
                 )),
             }
         }
@@ -835,6 +855,7 @@ fn apply_numeric_primitives(
             // Integer fast path; fall back to f64 for any int/float mix.
             let less = match (&args[0], &args[1]) {
                 (LispVal::Number(x), LispVal::Number(y)) => x < y,
+                (LispVal::Char(x), LispVal::Char(y)) => x < y,
                 _ => as_f64(&args[0], "lessp")? < as_f64(&args[1], "lessp")?,
             };
             Ok(if less {
@@ -849,6 +870,7 @@ fn apply_numeric_primitives(
             }
             let greater = match (&args[0], &args[1]) {
                 (LispVal::Number(x), LispVal::Number(y)) => x > y,
+                (LispVal::Char(x), LispVal::Char(y)) => x > y,
                 _ => as_f64(&args[0], "greaterp")? > as_f64(&args[1], "greaterp")?,
             };
             Ok(if greater {
@@ -963,16 +985,40 @@ fn apply_logical_op(
                     "= requires exactly two arguments".to_string(),
                 ));
             }
-            if let (LispVal::Number(a), LispVal::Number(b)) = (&args[0], &args[1]) {
-                if a == b {
-                    Ok(LispVal::Symbol(env.intern_symbol("T")))
-                } else {
-                    Ok(LispVal::Nil)
+            let coerce = |v: &LispVal| -> Option<i64> {
+                match v {
+                    LispVal::Number(n) => Some(*n),
+                    LispVal::Char(b) => Some(*b as i64),
+                    _ => None,
                 }
-            } else {
-                Err(LispError::Generic(
-                    "= requires numeric arguments".to_string(),
-                ))
+            };
+            match (coerce(&args[0]), coerce(&args[1])) {
+                (Some(a), Some(b)) => {
+                    if a == b {
+                        Ok(LispVal::Symbol(env.intern_symbol("T")))
+                    } else {
+                        Ok(LispVal::Nil)
+                    }
+                }
+                _ => {
+                    // Fall back to float for mixed int/float. Exact equality
+                    // (like Common Lisp `=`): no epsilon fuzz, so distinct
+                    // floats never compare equal.
+                    match (&args[0], &args[1]) {
+                        (LispVal::Float(_), _) | (_, LispVal::Float(_)) => {
+                            let a = as_f64(&args[0], "=")?;
+                            let b = as_f64(&args[1], "=")?;
+                            Ok(if a == b {
+                                LispVal::Symbol(env.intern_symbol("T"))
+                            } else {
+                                LispVal::Nil
+                            })
+                        }
+                        _ => Err(LispError::Generic(
+                            "= requires numeric arguments".to_string(),
+                        )),
+                    }
+                }
             }
         }
         _ => Err(LispError::Generic("Not a logical operation".to_string())),
@@ -1241,6 +1287,7 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
             | BuiltinFunc::Substring
             | BuiltinFunc::CharCode
             | BuiltinFunc::CodeChar
+            | BuiltinFunc::MakeChar
             | BuiltinFunc::StringToNumber
             | BuiltinFunc::NumberToString
             | BuiltinFunc::Prin1ToString
@@ -1435,6 +1482,17 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                 }
                 match &args[0] {
                     LispVal::Number(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
+                    _ => Ok(LispVal::Nil),
+                }
+            }
+            BuiltinFunc::Charp => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "charp requires exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::Char(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
                     _ => Ok(LispVal::Nil),
                 }
             }
@@ -2643,10 +2701,10 @@ fn lispval_to_typed(lv: &LispVal, ty: crate::jit::Ty) -> Result<crate::jit::Valu
             other => Err(format!("expected float64 argument, got {other:?}")),
         },
         Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
-        // No LispVal::Char: a byte is carried as a Number (0..=255), masked.
         Ty::Char => match lv {
+            LispVal::Char(b) => Ok(Value::Char(*b)),
             LispVal::Number(n) => Ok(Value::Char(*n as u8)),
-            other => Err(format!("expected char (byte) argument, got {other:?}")),
+            other => Err(format!("expected char argument, got {other:?}")),
         },
     }
 }
@@ -2664,8 +2722,7 @@ fn typed_to_lispval(v: crate::jit::Value, env: &Rc<Environment>) -> LispVal {
                 LispVal::Nil
             }
         }
-        // A char result re-boxes to its byte value as a Number (issue #136).
-        Value::Char(b) => LispVal::Number(b as i64),
+        Value::Char(b) => LispVal::Char(b),
     }
 }
 
@@ -2941,6 +2998,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
             Ok(TcoStep::Done(Ok(value)))
         }
         LispVal::Number(_)
+        | LispVal::Char(_)
         | LispVal::Float(_)
         | LispVal::String(_)
         | LispVal::Builtin(_)

@@ -38,7 +38,7 @@ The codebase follows a classic interpreter architecture with four main modules:
 1. **reader.rs**: Parser using nom combinators
    - Parses s-expressions, atoms, strings, numbers, floats
    - Handles reader macros: quote ('), quasiquote (`), unquote (,)
-   - Character literals: `'c'` reads as the integer code point of `c` (lamedh has no char value type; a character is its code point — see #136). Escapes `\n \t \r \\ \' \0`. Tried before the quote macro: `'a'` is a char, `'a` stays `(quote a)`. Numbers are decimal, Lisp 1.5 octal (`177Q`), or assembly-style hex with an `H` suffix (`FFh` = 255, case-insensitive; a trailing identifier char disqualifies it so `ffhello` stays a symbol).
+   - Character literals: `'c'` reads as `LispVal::Char(b)` where `b` is the byte (0–255). `Char` is a distinct type: `charp` is its predicate, `make-char` converts integer to Char, `char-code` accepts both Char and one-character string and returns the integer code point, `code-char` takes an integer and returns a one-character string. In arithmetic and numeric comparison, Char promotes to i64 (like C integer promotion). The printer round-trips chars as `'c'`. Escapes `\n \t \r \\ \' \0`. Tried before the quote macro: `'a'` is a char, `'a` stays `(quote a)`. Numbers are decimal, Lisp 1.5 octal (`177Q`), or assembly-style hex with an `H` suffix (`FFh` = 255, case-insensitive; a trailing identifier char disqualifies it so `ffhello` stays a symbol).
    - Supports dotted pairs and comments
    - All symbols are interned and case-normalized to uppercase
 

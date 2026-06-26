@@ -184,7 +184,10 @@ fn parse_char_literal(input: &str) -> ParseResult<'_> {
         (c0 as i64, c0.len_utf8())
     };
     let (rest2, _) = tag("'")(&rest[consumed..])?;
-    Ok((rest2, LispVal::Number(code)))
+    if code > 255 {
+        return Err(err());
+    }
+    Ok((rest2, LispVal::Char(code as u8)))
 }
 
 fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
@@ -503,16 +506,16 @@ mod tests {
 
     #[test]
     fn test_parse_char_literal() {
-        // 'c' is the code point of c (a Number).
-        assert_eq!(parse_char_literal("'A'"), Ok(("", number(65))));
-        assert_eq!(parse_char_literal("'0'"), Ok(("", number(48))));
-        assert_eq!(parse_char_literal("' '"), Ok(("", number(32))));
+        // 'c' is a Char value carrying the byte code point.
+        assert_eq!(parse_char_literal("'A'"), Ok(("", LispVal::Char(65))));
+        assert_eq!(parse_char_literal("'0'"), Ok(("", LispVal::Char(48))));
+        assert_eq!(parse_char_literal("' '"), Ok(("", LispVal::Char(32))));
         // escapes
-        assert_eq!(parse_char_literal("'\\n'"), Ok(("", number(10))));
-        assert_eq!(parse_char_literal("'\\''"), Ok(("", number(39))));
-        assert_eq!(parse_char_literal("'\\\\'"), Ok(("", number(92))));
+        assert_eq!(parse_char_literal("'\\n'"), Ok(("", LispVal::Char(10))));
+        assert_eq!(parse_char_literal("'\\''"), Ok(("", LispVal::Char(39))));
+        assert_eq!(parse_char_literal("'\\\\'"), Ok(("", LispVal::Char(92))));
         // trailing input is left for the next parser
-        assert_eq!(parse_char_literal("'a'b"), Ok(("b", number(97))));
+        assert_eq!(parse_char_literal("'a'b"), Ok(("b", LispVal::Char(97))));
     }
 
     #[test]
@@ -522,9 +525,9 @@ mod tests {
         assert!(parse_char_literal("'(1 2)").is_err());
         // The empty '' is not a char literal.
         assert!(parse_char_literal("''").is_err());
-        // Full reader: 'a' is a char, 'a is (quote a).
+        // Full reader: 'a' is a Char, 'a is (quote a).
         let env = Rc::new(Environment::new());
-        assert_eq!(read("'A'", &env), Ok(number(65)));
+        assert_eq!(read("'A'", &env), Ok(LispVal::Char(65)));
         assert_eq!(
             read("'a", &env),
             Ok(cons(

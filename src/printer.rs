@@ -12,6 +12,7 @@
 //! |-------|--------|
 //! | `Symbol("FOO")` | `FOO` |
 //! | `Number(42)` | `42` |
+//! | `Char(97)` | `'a'` (same escapes as the reader: `\n \t \r \\ \' \0`) |
 //! | `Float(3.0)` | `3.0` (always includes `.`) |
 //! | `String("hi\n")` | `"hi\n"` (escaped) |
 //! | `Nil` | `()` |
@@ -46,6 +47,15 @@ pub fn print(val: &LispVal) -> String {
             s.borrow().name.clone()
         }
         LispVal::Number(n) => n.to_string(),
+        LispVal::Char(b) => match b {
+            b'\n' => "'\\n'".to_string(),
+            b'\t' => "'\\t'".to_string(),
+            b'\r' => "'\\r'".to_string(),
+            b'\\' => "'\\\\'".to_string(),
+            b'\'' => "'\\''".to_string(),
+            b'\0' => "'\\0'".to_string(),
+            _ => format!("'{}'", *b as char),
+        },
         LispVal::Float(f) => {
             let s = f.to_string();
             if s.contains('.')
