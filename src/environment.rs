@@ -974,6 +974,21 @@ impl Environment {
             .is_ok()
     }
 
+    /// Type-check an un-annotated function without compiling it (the non-compiled
+    /// checker, #162). Returns its generalized type as a printable scheme, or a
+    /// type error.
+    pub fn jit_check_untyped(
+        &self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+    ) -> Result<String, String> {
+        self.shared
+            .jit
+            .borrow_mut()
+            .check_untyped(name, params, body)
+    }
+
     /// `(param types, return type)` of a registered typed function, if any.
     pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
         self.shared.jit.borrow().signature(name)

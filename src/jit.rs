@@ -429,6 +429,13 @@ struct Cx<'a> {
     /// (issue #135). Held behind a `RefCell` so the elaboration methods keep
     /// their `&self` signatures while still threading one shared substitution.
     infer: RefCell<Infer>,
+    /// Checker mode (#162): when set, elaboration types the *full* checkable
+    /// lattice (lists, pairs, symbols, strings) and degrades an unknown/untyped
+    /// call to `Any` (the gradual frontier) instead of rejecting it. The produced
+    /// [`Core`] is *not* used (the checker never compiles), only the types are.
+    /// When unset (the codegen path), behavior is unchanged: every type must be
+    /// compileable and unknown calls are errors.
+    checking: bool,
 }
 
 impl Cx<'_> {
@@ -469,9 +476,16 @@ impl Cx<'_> {
                 }
                 match scope.iter().rposition(|(n, _)| n == name) {
                     Some(slot) => Ok((Core::Var(slot), scope[slot].1.clone())),
+                    // A free symbol in checker mode is some global we don't track
+                    // — the gradual frontier (`Any`). The codegen path rejects it.
+                    None if self.checking => Ok((Core::LitI(0), Ty::Any)),
                     None => Err(format!("unbound variable: {name}")),
                 }
             }
+            // Checker-only literals (#162): a boxed string is `string`, `nil`/`()`
+            // is an empty list of some element type. The codegen path rejects them.
+            LispVal::String(_) if self.checking => Ok((Core::LitI(0), Ty::Str)),
+            LispVal::Nil if self.checking => Ok((Core::LitI(0), Ty::List(Box::new(self.fresh())))),
             LispVal::Cons { .. } => {
                 let items = list_to_vec(form);
                 let head = match items.first() {
@@ -492,8 +506,23 @@ impl Cx<'_> {
                     "FETCH" | "AREF" => self.elab_fetch(args, scope, max),
                     "STORE" | "ASET" => self.elab_store(args, scope, max),
                     "ARRAY-LENGTH" => self.elab_array_len(args, scope, max),
+                    // Checker-only forms (#162): list/pair processing + the
+                    // untyped `let`/`progn`/`quote` that real `defun` bodies use.
+                    "CONS" if self.checking => self.elab_cons(args, scope, max),
+                    "CAR" | "FIRST" if self.checking => self.elab_car(args, scope, max),
+                    "CDR" | "REST" if self.checking => self.elab_cdr(args, scope, max),
+                    "LIST" if self.checking => self.elab_list(args, scope, max),
+                    "NULL" | "NULL?" | "ENDP" if self.checking => self.elab_null(args, scope, max),
+                    "LET" if self.checking => self.elab_let(args, scope, max),
+                    "PROGN" if self.checking => self.elab_body(args, scope, max),
+                    "QUOTE" if self.checking => self.elab_quote(args),
                     _ => self.elab_call(&head, args, scope, max),
                 }
+            }
+            other if self.checking => {
+                // Any other literal the checker doesn't model is gradually `Any`.
+                let _ = other;
+                Ok((Core::LitI(0), Ty::Any))
             }
             other => Err(format!("typed core: unsupported literal {other:?}")),
         }
@@ -517,6 +546,12 @@ impl Cx<'_> {
                 self.walk(&ta),
                 self.walk(&tb)
             ));
+        }
+        // In checker mode the numeric *kind* is irrelevant (no codegen) and the
+        // operand type may not be pinned yet (e.g. across `if` branches), so we
+        // defer resolution and just propagate the operand type.
+        if self.checking {
+            return Ok((Core::LitI(0), self.walk(&ta)));
         }
         let rt = self
             .resolve(&ta)
@@ -555,6 +590,10 @@ impl Cx<'_> {
                 self.walk(&ta),
                 self.walk(&tb)
             ));
+        }
+        // Checker mode: comparison is `bool` regardless of the operand kind.
+        if self.checking {
+            return Ok((Core::LitI(0), Ty::Bool));
         }
         let rt = self
             .resolve(&ta)
@@ -736,10 +775,20 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
-        let id = *self
-            .by_name
-            .get(name)
-            .ok_or_else(|| format!("call to unknown function `{name}`"))?;
+        let id = match self.by_name.get(name) {
+            Some(id) => *id,
+            // Gradual frontier (#162): an unknown/untyped callee yields `Any`. We
+            // still elaborate the arguments so type errors *inside* them surface,
+            // but leave them unconstrained (the callee makes no demand). The
+            // codegen path keeps rejecting unknown calls.
+            None if self.checking => {
+                for a in args {
+                    self.elab(a, scope, max)?;
+                }
+                return Ok((Core::LitI(0), Ty::Any));
+            }
+            None => return Err(format!("call to unknown function `{name}`")),
+        };
         let callee = &self.funcs[id];
         let params = callee.params.borrow().clone();
         let ret = callee.ret.borrow().clone();
@@ -914,6 +963,118 @@ impl Cx<'_> {
             ));
         }
         Ok((Core::ArrayLen(Box::new(a)), Ty::Int64))
+    }
+
+    // --- checker-only list/pair forms (#162) -------------------------------
+    // These run only in `checking` mode; the produced `Core` is a placeholder
+    // (`LitI(0)`) since the checker never compiles — only the *types* matter.
+
+    /// `(cons x xs)` : α (list α) -> (list α). The list-cons view (lamedh lists
+    /// are nested conses); proper homogeneous lists are the useful case to check.
+    fn elab_cons(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!("`cons` expects 2 args, got {}", args.len()));
+        }
+        let (_, tx) = self.elab(&args[0], scope, max)?;
+        let (_, txs) = self.elab(&args[1], scope, max)?;
+        let lst = Ty::List(Box::new(tx));
+        if self.unify(&txs, &lst).is_err() {
+            return Err(format!(
+                "`cons`: tail {:?} is not a list of the head's type",
+                self.walk(&txs)
+            ));
+        }
+        Ok((Core::LitI(0), self.walk(&lst)))
+    }
+
+    /// `(car xs)` : (list α) -> α.
+    fn elab_car(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`car` expects 1 arg, got {}", args.len()));
+        }
+        let (_, txs) = self.elab(&args[0], scope, max)?;
+        let elem = self.fresh();
+        if self.unify(&txs, &Ty::List(Box::new(elem.clone()))).is_err() {
+            return Err(format!("`car` expects a list, got {:?}", self.walk(&txs)));
+        }
+        Ok((Core::LitI(0), self.walk(&elem)))
+    }
+
+    /// `(cdr xs)` : (list α) -> (list α).
+    fn elab_cdr(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`cdr` expects 1 arg, got {}", args.len()));
+        }
+        let (_, txs) = self.elab(&args[0], scope, max)?;
+        let lst = Ty::List(Box::new(self.fresh()));
+        if self.unify(&txs, &lst).is_err() {
+            return Err(format!("`cdr` expects a list, got {:?}", self.walk(&txs)));
+        }
+        Ok((Core::LitI(0), self.walk(&lst)))
+    }
+
+    /// `(list e0 e1 …)` : all elements unified to α -> (list α). Empty → (list α).
+    fn elab_list(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let elem = self.fresh();
+        for (i, a) in args.iter().enumerate() {
+            let (_, ta) = self.elab(a, scope, max)?;
+            if self.unify(&ta, &elem).is_err() {
+                return Err(format!(
+                    "`list` element {i} has type {:?}, expected {:?}",
+                    self.walk(&ta),
+                    self.walk(&elem)
+                ));
+            }
+        }
+        Ok((Core::LitI(0), Ty::List(Box::new(self.walk(&elem)))))
+    }
+
+    /// `(null xs)` : (list α) -> bool.
+    fn elab_null(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`null` expects 1 arg, got {}", args.len()));
+        }
+        let (_, txs) = self.elab(&args[0], scope, max)?;
+        if self.unify(&txs, &Ty::List(Box::new(self.fresh()))).is_err() {
+            return Err(format!("`null` expects a list, got {:?}", self.walk(&txs)));
+        }
+        Ok((Core::LitI(0), Ty::Bool))
+    }
+
+    /// `(quote x)`: a quoted symbol is `symbol`, quoted `()` is a list, any other
+    /// quoted datum is `any` (the checker does not model quoted structure).
+    fn elab_quote(&self, args: &[LispVal]) -> Result<(Core, Ty), String> {
+        let ty = match args.first() {
+            Some(LispVal::Symbol(_)) => Ty::Symbol,
+            Some(LispVal::Nil) => Ty::List(Box::new(self.fresh())),
+            _ => Ty::Any,
+        };
+        Ok((Core::LitI(0), ty))
     }
 
     fn elab_body(
@@ -1879,6 +2040,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 infer: RefCell::new(infer),
+                checking: false,
             };
             let (core, body_ty) = cx.elab_body(&items[3..], &mut scope, &mut max_slots)?;
             // The declared return type is a principal-type pin: the body's
@@ -1981,6 +2143,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 infer: RefCell::new(infer),
+                checking: false,
             };
             let (core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
             cx.unify(&body_ty, &ret_var)
@@ -2016,6 +2179,69 @@ impl Jit {
                 Err(e)
             }
         }
+    }
+
+    /// **Type-check** an un-annotated function without compiling it (#162) — the
+    /// non-compiled checker. Runs full HM inference (checker mode: lists, pairs,
+    /// symbols, strings, and a gradual `Any` at the operative/untyped frontier)
+    /// and returns the function's generalized type as a printable scheme, or a
+    /// type error. Catches software type errors even when the type is *not*
+    /// compileable. Installs nothing and leaves the registry untouched (the
+    /// provisional self-reference is rolled back).
+    pub fn check_untyped(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+    ) -> Result<String, String> {
+        if body.is_empty() {
+            return Err("empty body".to_string());
+        }
+        let mut infer = Infer::new();
+        let param_tys: Vec<(String, Ty)> =
+            params.iter().map(|p| (p.clone(), infer.fresh())).collect();
+        let ret_var = infer.fresh();
+
+        // Provisional self-reference so recursive calls type against this function
+        // (rolled back unconditionally — the checker never installs anything).
+        let new_id = self.funcs.len();
+        self.funcs.push(Rc::new(TypedFn::placeholder(
+            name.to_string(),
+            param_tys.clone(),
+            ret_var.clone(),
+        )));
+        let prev = self.by_name.insert(name.to_string(), new_id);
+
+        let mut scope: Scope = param_tys.clone();
+        let mut max_slots = scope.len();
+        let outcome: Result<String, String> = (|| {
+            let cx = Cx {
+                funcs: &self.funcs,
+                by_name: &self.by_name,
+                infer: RefCell::new(infer),
+                checking: true,
+            };
+            let (_core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
+            cx.unify(&body_ty, &ret_var)
+                .map_err(|_| "return type mismatch across branches".to_string())?;
+            let inf = cx.infer.borrow();
+            let arrow = Ty::Fn(
+                param_tys.iter().map(|(_, t)| inf.zonk(t)).collect(),
+                Box::new(inf.zonk(&ret_var)),
+            );
+            Ok(infer::scheme_name(&inf.generalize(&arrow)))
+        })();
+
+        // Always roll back — checking is side-effect-free.
+        match prev {
+            Some(p) => {
+                self.by_name.insert(name.to_string(), p);
+            }
+            None => {
+                self.by_name.remove(name);
+            }
+        }
+        outcome
     }
 
     /// Define a typed struct from `(defstruct-typed Name (field type)...)`.

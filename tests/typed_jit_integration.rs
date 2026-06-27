@@ -230,3 +230,57 @@ fn jit_optimized_function_falls_back_on_non_matching_args() {
     assert_eq!(eval_line("(dbl 21)", &env), "42"); // typed fast path
     assert_eq!(eval_line("(dbl 2.5)", &env), "5.0"); // dynamic fallback
 }
+
+// --- non-compiled type checker (#162) --------------------------------------
+
+#[test]
+fn check_type_reports_polymorphic_identity() {
+    let env = Environment::with_stdlib();
+    let out = eval_line("(check-type (defun id (x) x))", &env);
+    // ∀a. a -> a
+    assert!(
+        out.contains("forall") && out.contains("(-> (a) a)"),
+        "got: {out}"
+    );
+}
+
+#[test]
+fn check_type_reports_concrete_numeric() {
+    let env = Environment::with_stdlib();
+    eval_line("(defun inc (n) (+ n 1))", &env);
+    let out = eval_line("(check-type inc)", &env);
+    assert!(out.contains("(-> (int64) int64)"), "got: {out}");
+}
+
+#[test]
+fn check_type_infers_list_function() {
+    // A recursive list sum: xs is inferred to be a (list int64) and returns int64
+    // — a *checkable* type that is not compileable, caught for free.
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun lsum (xs) (if (null xs) 0 (+ (car xs) (lsum (cdr xs)))))",
+        &env,
+    );
+    let out = eval_line("(check-type lsum)", &env);
+    assert!(out.contains("(-> ((list int64)) int64)"), "got: {out}");
+}
+
+#[test]
+fn check_type_catches_a_type_error() {
+    // Mixing element types in a list is a genuine type clash.
+    let env = Environment::with_stdlib();
+    eval_line("(defun bad (x) (list 1 x (+ x x) nil))", &env);
+    let out = eval_line("(check-type bad)", &env);
+    assert!(out.to_lowercase().contains("type error"), "got: {out}");
+}
+
+#[test]
+fn check_type_is_gradual_at_the_untyped_frontier() {
+    // `print` is an unknown/untyped callee: it degrades to `any` rather than
+    // failing the check, so the function still type-checks.
+    let env = Environment::with_stdlib();
+    eval_line("(defun greet (n) (cons n (cons n nil)))", &env);
+    let out = eval_line("(check-type greet)", &env);
+    // n is unconstrained → polymorphic list builder.
+    assert!(out.contains("forall") && out.contains("list"), "got: {out}");
+}

@@ -25,6 +25,16 @@
 use super::Ty;
 use std::collections::HashMap;
 
+/// A type **scheme** `∀ vars. ty` — a generalized (polymorphic) type produced by
+/// the checker (#162). `(defun id (x) x)` checks as `∀α. α → α`; the compiler
+/// path never generalizes (it monomorphizes), so schemes live only on the
+/// checking side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Scheme {
+    pub vars: Vec<u32>,
+    pub ty: Ty,
+}
+
 /// The inference state threaded through one elaboration: a fresh-variable
 /// counter (deterministic — no `gensym` randomness) and the substitution built
 /// up by [`unify`](Infer::unify).
@@ -167,6 +177,136 @@ impl Infer {
             }
             concrete => Ok(concrete),
         }
+    }
+
+    /// Deeply apply the substitution, **keeping free variables in place** (no
+    /// error). Unlike [`resolve`]/[`resolve_checked`], `zonk` is total — it is
+    /// the read-back the checker uses before generalizing a still-polymorphic
+    /// type.
+    pub(crate) fn zonk(&self, t: &Ty) -> Ty {
+        match self.walk(t) {
+            Ty::Array(e) => Ty::Array(Box::new(self.zonk(&e))),
+            Ty::List(e) => Ty::List(Box::new(self.zonk(&e))),
+            Ty::Pair(a, b) => Ty::Pair(Box::new(self.zonk(&a)), Box::new(self.zonk(&b))),
+            Ty::Fn(ps, r) => Ty::Fn(
+                ps.iter().map(|p| self.zonk(p)).collect(),
+                Box::new(self.zonk(&r)),
+            ),
+            other => other, // scalars, Struct, Symbol, Str, Any, free Var
+        }
+    }
+
+    /// Collect the free type variables of a (zonked) type, in first-seen order.
+    fn free_vars(t: &Ty, out: &mut Vec<u32>) {
+        match t {
+            Ty::Var(v) => {
+                if !out.contains(v) {
+                    out.push(*v);
+                }
+            }
+            Ty::Array(e) | Ty::List(e) => Self::free_vars(e, out),
+            Ty::Pair(a, b) => {
+                Self::free_vars(a, out);
+                Self::free_vars(b, out);
+            }
+            Ty::Fn(ps, r) => {
+                for p in ps {
+                    Self::free_vars(p, out);
+                }
+                Self::free_vars(r, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Generalize a type into a [`Scheme`], closing over its free variables. The
+    /// checker generalizes a function's whole principal type, so there is no
+    /// outer environment to subtract.
+    pub(crate) fn generalize(&self, t: &Ty) -> Scheme {
+        let z = self.zonk(t);
+        let mut vars = Vec::new();
+        Self::free_vars(&z, &mut vars);
+        Scheme { vars, ty: z }
+    }
+
+    /// Instantiate a scheme with fresh variables for each bound variable.
+    #[allow(dead_code)] // used once call sites instantiate generalized callees (#162)
+    pub(crate) fn instantiate(&mut self, s: &Scheme) -> Ty {
+        let mapping: HashMap<u32, Ty> = s.vars.iter().map(|v| (*v, self.fresh())).collect();
+        Self::subst_vars(&s.ty, &mapping)
+    }
+
+    fn subst_vars(t: &Ty, m: &HashMap<u32, Ty>) -> Ty {
+        match t {
+            Ty::Var(v) => m.get(v).cloned().unwrap_or(Ty::Var(*v)),
+            Ty::Array(e) => Ty::Array(Box::new(Self::subst_vars(e, m))),
+            Ty::List(e) => Ty::List(Box::new(Self::subst_vars(e, m))),
+            Ty::Pair(a, b) => Ty::Pair(
+                Box::new(Self::subst_vars(a, m)),
+                Box::new(Self::subst_vars(b, m)),
+            ),
+            Ty::Fn(ps, r) => Ty::Fn(
+                ps.iter().map(|p| Self::subst_vars(p, m)).collect(),
+                Box::new(Self::subst_vars(r, m)),
+            ),
+            other => other.clone(),
+        }
+    }
+}
+
+/// Render a [`Scheme`] for display, renaming its bound variables to `a, b, c…`
+/// so the printed type is stable and readable (`∀a. (-> (a) a)`).
+pub(crate) fn scheme_name(s: &Scheme) -> String {
+    let names: HashMap<u32, String> = s
+        .vars
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (*v, var_letter(i)))
+        .collect();
+    let body = ty_name_vars(&s.ty, &names);
+    if s.vars.is_empty() {
+        body
+    } else {
+        let bound = s
+            .vars
+            .iter()
+            .map(|v| names[v].clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("(forall ({bound}) {body})")
+    }
+}
+
+fn var_letter(i: usize) -> String {
+    let c = (b'a' + (i % 26) as u8) as char;
+    if i < 26 {
+        c.to_string()
+    } else {
+        format!("{c}{}", i / 26)
+    }
+}
+
+/// Like [`super::ty_name`] but renders variables via the `names` map (for scheme
+/// display), falling back to `?v` for any free variable not in the map.
+fn ty_name_vars(t: &Ty, names: &HashMap<u32, String>) -> String {
+    match t {
+        Ty::Var(v) => names.get(v).cloned().unwrap_or_else(|| format!("?{v}")),
+        Ty::Array(e) => format!("(array {})", ty_name_vars(e, names)),
+        Ty::List(e) => format!("(list {})", ty_name_vars(e, names)),
+        Ty::Pair(a, b) => format!(
+            "(pair {} {})",
+            ty_name_vars(a, names),
+            ty_name_vars(b, names)
+        ),
+        Ty::Fn(ps, r) => {
+            let args = ps
+                .iter()
+                .map(|p| ty_name_vars(p, names))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(-> ({args}) {})", ty_name_vars(r, names))
+        }
+        other => super::ty_name(other),
     }
 }
 
@@ -383,6 +523,53 @@ mod tests {
                 "resolve_checked should accept {t:?}"
             );
         }
+    }
+
+    #[test]
+    fn generalize_closes_over_free_variables() {
+        // `id : α -> α` generalizes to `∀α. α -> α` (one bound var).
+        let mut inf = Infer::new();
+        let a = inf.fresh();
+        let id_ty = Ty::Fn(vec![a.clone()], Box::new(a.clone()));
+        let sch = inf.generalize(&id_ty);
+        assert_eq!(sch.vars.len(), 1);
+        assert_eq!(scheme_name(&sch), "(forall (a) (-> (a) a))");
+    }
+
+    #[test]
+    fn instantiate_gives_fresh_independent_copies() {
+        let mut inf = Infer::new();
+        let a = inf.fresh();
+        let sch = inf.generalize(&Ty::Fn(vec![a.clone()], Box::new(a)));
+        let i1 = inf.instantiate(&sch);
+        let i2 = inf.instantiate(&sch);
+        // Two instantiations use distinct variables: constraining one does not
+        // constrain the other (let-polymorphism).
+        if let (Ty::Fn(p1, _), Ty::Fn(p2, _)) = (&i1, &i2) {
+            inf.unify(&p1[0], &Ty::Int64).unwrap();
+            inf.unify(&p2[0], &Ty::Bool).unwrap();
+            assert_eq!(inf.resolve(&p1[0]).unwrap(), Ty::Int64);
+            assert_eq!(inf.resolve(&p2[0]).unwrap(), Ty::Bool);
+        } else {
+            panic!("expected arrow types");
+        }
+    }
+
+    #[test]
+    fn monomorphic_type_generalizes_to_itself() {
+        let inf = Infer::new();
+        let sch = inf.generalize(&Ty::Fn(vec![Ty::Int64], Box::new(Ty::Int64)));
+        assert!(sch.vars.is_empty());
+        assert_eq!(scheme_name(&sch), "(-> (int64) int64)");
+    }
+
+    #[test]
+    fn zonk_keeps_free_vars_but_resolves_bound() {
+        let mut inf = Infer::new();
+        let (a, b) = (inf.fresh(), inf.fresh());
+        inf.unify(&a, &Ty::Int64).unwrap(); // a := int64, b free
+        let z = inf.zonk(&Ty::Pair(Box::new(a), Box::new(b.clone())));
+        assert_eq!(z, Ty::Pair(Box::new(Ty::Int64), Box::new(b)));
     }
 
     #[test]

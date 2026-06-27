@@ -2763,6 +2763,39 @@ fn optimize_function(name: &str, env: &Rc<Environment>) {
     }
 }
 
+/// Extract a plain function's parameter names and body forms (a `PROGN` is
+/// unwrapped). `None` for anything that isn't a non-variadic lambda.
+fn lambda_params_body(name: &str, env: &Rc<Environment>) -> Option<(Vec<String>, Vec<LispVal>)> {
+    let LispVal::Lambda(lam) = env.get(name)? else {
+        return None;
+    };
+    if lam.rest_param.is_some() {
+        return None;
+    }
+    let body_forms: Vec<LispVal> = match lam.body.as_ref() {
+        LispVal::Cons { car, cdr } if matches!(car.as_ref(), LispVal::Symbol(s) if s.borrow().name == "PROGN") => {
+            list_to_vec(cdr).unwrap_or_default()
+        }
+        other => vec![other.clone()],
+    };
+    if body_forms.is_empty() {
+        return None;
+    }
+    Some((lam.params.clone(), body_forms))
+}
+
+/// Type-check the function bound to `name` (the non-compiled checker, #162) and
+/// return a human-readable result: its inferred type scheme, or a type error.
+fn check_function(name: &str, env: &Rc<Environment>) -> String {
+    match lambda_params_body(name, env) {
+        Some((params, body)) => match env.jit_check_untyped(name, &params, &body) {
+            Ok(scheme) => format!("{name} : {scheme}"),
+            Err(e) => format!("type error in {name}: {e}"),
+        },
+        None => format!("{name} is not a checkable function (variadic or not a lambda)"),
+    }
+}
+
 /// Coerce a `LispVal` to a typed [`crate::jit::Value`] for a parameter of type
 /// `ty`. `int64` accepts `Number`; `float64` accepts `Float` or widens `Number`;
 /// `bool` follows Lisp truthiness (`nil` is false, everything else true).
@@ -3805,6 +3838,26 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                             }
                             None => Ok(TcoStep::Done(Ok(LispVal::Nil))),
                         }
+                    }
+                    "CHECK-TYPE" => {
+                        // Non-compiled type checker (#162): report the inferred
+                        // type scheme of a function (or a type error) without
+                        // compiling. `(check-type name)` or
+                        // `(check-type (defun f ...))`. Returns a string.
+                        let cargs = list_to_vec(rest)?;
+                        let name = match cargs.first() {
+                            Some(LispVal::Symbol(s)) => Some(s.borrow().name.clone()),
+                            Some(form) => match eval(form, env)? {
+                                LispVal::Symbol(s) => Some(s.borrow().name.clone()),
+                                _ => None,
+                            },
+                            None => None,
+                        };
+                        let msg = match name {
+                            Some(n) => check_function(&n, env),
+                            None => "check-type: expected a function name".to_string(),
+                        };
+                        Ok(TcoStep::Done(Ok(LispVal::String(msg))))
                     }
                     "DEFSTRUCT-TYPED" => {
                         // Register a typed struct and install membrane entries for
