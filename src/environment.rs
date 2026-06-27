@@ -989,6 +989,19 @@ impl Environment {
             .check_untyped(name, params, body)
     }
 
+    /// One-pass analyze: check, then compile if compileable (#162 stage 4).
+    pub fn jit_analyze_untyped(
+        &self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+    ) -> crate::jit::Analysis {
+        self.shared
+            .jit
+            .borrow_mut()
+            .analyze_untyped(name, params, body)
+    }
+
     /// `(param types, return type)` of a registered typed function, if any.
     pub fn jit_signature(&self, name: &str) -> Option<(Vec<crate::jit::Ty>, crate::jit::Ty)> {
         self.shared.jit.borrow().signature(name)

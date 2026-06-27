@@ -284,3 +284,48 @@ fn check_type_is_gradual_at_the_untyped_frontier() {
     // n is unconstrained → polymorphic list builder.
     assert!(out.contains("forall") && out.contains("list"), "got: {out}");
 }
+
+// --- stage 4: unified check+compile reporting; stage 5: control-flow ---------
+
+#[test]
+fn jit_optimize_reports_native_checked_and_type_error() {
+    let env = Environment::with_stdlib();
+    // Compileable -> native.
+    let n = eval_line("(jit-optimize (defun inc (n) (+ n 1)))", &env);
+    assert!(n.contains("int64") && n.contains("native"), "got: {n}");
+    // Well-typed but not compileable (list) -> checked, dynamic.
+    let c = eval_line(
+        "(jit-optimize (defun lsum (xs) (if (null xs) 0 (+ (car xs) (lsum (cdr xs))))))",
+        &env,
+    );
+    assert!(
+        c.contains("list int64") && c.contains("checked"),
+        "got: {c}"
+    );
+    assert_eq!(eval_line("(lsum (list 1 2 3))", &env), "6"); // still runs dynamically
+    // Genuine type error -> reported, function still defined dynamically.
+    let e = eval_line(
+        "(jit-optimize (defun clash (x) (+ (car x) (array-length x))))",
+        &env,
+    );
+    assert!(e.to_lowercase().contains("type error"), "got: {e}");
+}
+
+#[test]
+fn check_type_handles_cond_and_truthiness() {
+    let env = Environment::with_stdlib();
+    // `cond` clauses unify; `if`/list truthiness allowed; classic recursive list len.
+    eval_line(
+        "(defun llen (xs) (cond ((null xs) 0) (t (+ 1 (llen (cdr xs))))))",
+        &env,
+    );
+    let out = eval_line("(check-type llen)", &env);
+    assert!(
+        out.contains("(-> ((list a)) int64)") || out.contains("(list"),
+        "got: {out}"
+    );
+    // truthiness: (if xs (car xs) 0) — xs used as a condition directly.
+    eval_line("(defun head0 (xs) (if xs (car xs) 0))", &env);
+    let h = eval_line("(check-type head0)", &env);
+    assert!(h.contains("(-> ((list int64)) int64)"), "got: {h}");
+}

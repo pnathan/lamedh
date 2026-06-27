@@ -120,6 +120,19 @@ pub enum Ty {
     Any,
 }
 
+/// Outcome of [`Jit::analyze_untyped`] (#162 stage 4): the checker's verdict for
+/// an un-annotated function, and whether a native edition was installed.
+pub enum Analysis {
+    /// Well-typed *and* compileable — a native edition was installed. Carries the
+    /// inferred (compileable) type, rendered.
+    Native(String),
+    /// Well-typed but **not** compileable — it type-checks and stays dynamic
+    /// (interpreted). Carries the inferred type scheme, rendered.
+    Checked(String),
+    /// A genuine type error: a clash on the typed island.
+    TypeError(String),
+}
+
 /// Whether `t` lies in the **compileable** sub-lattice — the types codegen can
 /// lower to unboxed machine words/buffers. Checkable-but-not-compileable types
 /// (issue #162) are well-typed but stay interpreted/boxed.
@@ -516,6 +529,8 @@ impl Cx<'_> {
                     "LET" if self.checking => self.elab_let(args, scope, max),
                     "PROGN" if self.checking => self.elab_body(args, scope, max),
                     "QUOTE" if self.checking => self.elab_quote(args),
+                    "COND" if self.checking => self.elab_cond(args, scope, max),
+                    "WHEN" | "UNLESS" if self.checking => self.elab_when(args, scope, max),
                     _ => self.elab_call(&head, args, scope, max),
                 }
             }
@@ -625,7 +640,9 @@ impl Cx<'_> {
             return Err(format!("`not` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if self.unify(&ta, &Ty::Bool).is_err() {
+        // In checker mode `not` follows Lisp truthiness (any operand → bool); the
+        // codegen path requires a real `bool`.
+        if !self.checking && self.unify(&ta, &Ty::Bool).is_err() {
             return Err(format!("`not` expects bool, got {:?}", self.walk(&ta)));
         }
         Ok((Core::Not(Box::new(a)), Ty::Bool))
@@ -643,6 +660,12 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
+        // Checker mode follows Lisp truthiness: `and`/`or` take any operands and
+        // their value is one of the operands (heterogeneous) → `any`. The codegen
+        // path requires real `bool` operands and yields `bool`.
+        if self.checking {
+            return Ok((Core::LitI(0), Ty::Any));
+        }
         if self.unify(&ta, &Ty::Bool).is_err() || self.unify(&tb, &Ty::Bool).is_err() {
             return Err(format!(
                 "`{op}` expects bool operands, got {:?} and {:?}",
@@ -671,7 +694,9 @@ impl Cx<'_> {
             ));
         }
         let (c, tc) = self.elab(&args[0], scope, max)?;
-        if self.unify(&tc, &Ty::Bool).is_err() {
+        // Checker mode follows Lisp truthiness: any condition is allowed. The
+        // codegen path requires a real `bool`.
+        if !self.checking && self.unify(&tc, &Ty::Bool).is_err() {
             return Err(format!(
                 "`if` condition must be bool, got {:?}",
                 self.walk(&tc)
@@ -1064,6 +1089,65 @@ impl Cx<'_> {
             return Err(format!("`null` expects a list, got {:?}", self.walk(&txs)));
         }
         Ok((Core::LitI(0), Ty::Bool))
+    }
+
+    /// `(cond (test body…) …)` : every clause body unifies to one result type;
+    /// tests follow Lisp truthiness (any type). With no clause, `any`.
+    fn elab_cond(
+        &self,
+        clauses: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let result = self.fresh();
+        let mut had_clause = false;
+        for clause in clauses {
+            let parts = list_to_vec(clause);
+            if parts.is_empty() {
+                continue;
+            }
+            let saved = scope.len();
+            let (_, test_ty) = self.elab(&parts[0], scope, max)?;
+            // A clause with no body yields the test value; otherwise the body.
+            let bt = if parts.len() == 1 {
+                test_ty
+            } else {
+                self.elab_body(&parts[1..], scope, max)?.1
+            };
+            scope.truncate(saved);
+            if self.unify(&bt, &result).is_err() {
+                return Err(format!(
+                    "`cond` clauses disagree: {:?} vs {:?}",
+                    self.walk(&bt),
+                    self.walk(&result)
+                ));
+            }
+            had_clause = true;
+        }
+        if had_clause {
+            Ok((Core::LitI(0), self.walk(&result)))
+        } else {
+            Ok((Core::LitI(0), Ty::Any))
+        }
+    }
+
+    /// `(when test body…)` / `(unless test body…)`: the test follows truthiness
+    /// and the body is checked, but the value is the body *or* `nil`
+    /// (heterogeneous), so the result is `any`.
+    fn elab_when(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.is_empty() {
+            return Err("`when`/`unless` need a condition".to_string());
+        }
+        self.elab(&args[0], scope, max)?;
+        if args.len() > 1 {
+            self.elab_body(&args[1..], scope, max)?;
+        }
+        Ok((Core::LitI(0), Ty::Any))
     }
 
     /// `(quote x)`: a quoted symbol is `symbol`, quoted `()` is a list, any other
@@ -2242,6 +2326,25 @@ impl Jit {
             }
         }
         outcome
+    }
+
+    /// One-pass analysis of an un-annotated function (#162 stage 4): run the
+    /// **checker** first (so a genuine type error is reported even when nothing
+    /// compiles), then gate native codegen on compileability. The two pipelines
+    /// are intentionally separate — the checker is permissive (gradual `Any`,
+    /// lists), the compiler is strict (compileable monomorphic types only) — so a
+    /// function can be *checked* without being *compiled*.
+    pub fn analyze_untyped(&mut self, name: &str, params: &[String], body: &[LispVal]) -> Analysis {
+        match self.check_untyped(name, params, body) {
+            Err(e) => Analysis::TypeError(e),
+            Ok(scheme) => {
+                if self.infer_untyped(name, params, body).is_ok() {
+                    Analysis::Native(scheme)
+                } else {
+                    Analysis::Checked(scheme)
+                }
+            }
+        }
     }
 
     /// Define a typed struct from `(defstruct-typed Name (field type)...)`.

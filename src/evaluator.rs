@@ -2736,13 +2736,13 @@ fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal {
 /// success, swap its binding for an auto-typed membrane. Best-effort and silent:
 /// any reason it cannot be typed (variadic, untyped body, ambiguous types) just
 /// leaves the dynamic definition in place.
-fn optimize_function(name: &str, env: &Rc<Environment>) {
+fn optimize_function(name: &str, env: &Rc<Environment>) -> String {
     let Some(LispVal::Lambda(lam)) = env.get(name) else {
-        return;
+        return format!("{name} is not optimizable (not a lambda)");
     };
     // `&REST` functions are outside the monomorphic typed core.
     if lam.rest_param.is_some() {
-        return;
+        return format!("{name} is not optimizable (variadic &rest)");
     }
     // A multi-form body is a `(PROGN f1 f2 ...)`; unwrap it to the form list.
     let body_forms: Vec<LispVal> = match lam.body.as_ref() {
@@ -2752,14 +2752,23 @@ fn optimize_function(name: &str, env: &Rc<Environment>) {
         other => vec![other.clone()],
     };
     if body_forms.is_empty() {
-        return;
+        return format!("{name} has an empty body");
     }
-    if env.jit_infer_untyped(name, &lam.params, &body_forms) {
-        // Keep the original closure as the fallback for non-matching calls.
-        env.set(
-            name.to_string(),
-            make_auto_typed_native(name.to_string(), LispVal::Lambda(lam)),
-        );
+    // One pass: check (reports type errors even when nothing compiles), then
+    // compile if compileable.
+    match env.jit_analyze_untyped(name, &lam.params, &body_forms) {
+        crate::jit::Analysis::Native(scheme) => {
+            // Keep the original closure as the fallback for non-matching calls.
+            env.set(
+                name.to_string(),
+                make_auto_typed_native(name.to_string(), LispVal::Lambda(lam)),
+            );
+            format!("{name} : {scheme}  [native]")
+        }
+        crate::jit::Analysis::Checked(scheme) => {
+            format!("{name} : {scheme}  [checked, dynamic]")
+        }
+        crate::jit::Analysis::TypeError(e) => format!("type error in {name}: {e}"),
     }
 }
 
@@ -3833,8 +3842,8 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         match sym {
                             Some(s) => {
                                 let name = s.borrow().name.clone();
-                                optimize_function(&name, env);
-                                Ok(TcoStep::Done(Ok(LispVal::Symbol(s))))
+                                let status = optimize_function(&name, env);
+                                Ok(TcoStep::Done(Ok(LispVal::String(status))))
                             }
                             None => Ok(TcoStep::Done(Ok(LispVal::Nil))),
                         }

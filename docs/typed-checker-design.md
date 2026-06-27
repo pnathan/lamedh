@@ -1,7 +1,6 @@
 # Type-checked Lisp: a non-compiled checker on the HM engine
 
-Status: stages 1–3 landed (type language + engine, generalization, checking
-surface); stages 4–5 remain. Issue #162, part of the typed-JIT epic (#134).
+Status: implemented (stages 1–5). Issue #162, part of the typed-JIT epic (#134).
 Builds on the inference engine (#135) and the compileable type lattice
 (#136/#137/#138).
 
@@ -123,14 +122,25 @@ definitions.
    errors without compiling; `Jit::check_untyped`; gradual `Any` at the
    fexpr/vau/`eval`/free-symbol frontier; checker-mode list/pair/symbol/string
    forms.
-4. **[todo] Wire to the codegen gate** — have `infer_untyped`/`defun` report
-   *checked-typed vs native-compiled* in one pass (run the checker, then gate
-   native codegen on `is_compileable`), so a definition surfaces type errors at
-   def time even when it gets no native edition. Today the checker
-   (`check-type`) and the optimizer (`jit-optimize`) are separate entry points.
-5. **[todo] Polish** — `cond`/`when`/`case` branch typing, more list/string
-   builtin signatures, optional blame on `Any` coercions, surface annotations for
-   the checkable types.
+4. **[done] Wire to the codegen gate** — `Jit::analyze_untyped` runs the checker
+   then gates native codegen on compileability in one pass, returning
+   `Native` / `Checked` / `TypeError`. `jit-optimize` now reports this verdict
+   (e.g. `f : (-> (int64) int64)  [native]`, `… [checked, dynamic]`, or
+   `type error in f: …`), so a definition surfaces a type error even when it gets
+   no native edition.
+5. **[done] Branch/control-flow typing** — `cond`/`when`/`unless`; `if`, `and`,
+   `or`, `not` follow Lisp **truthiness** in checker mode (any condition/operand),
+   so ordinary recursive list code checks. (Still todo: `case`, more list/string
+   builtin signatures, `Any`-coercion blame, surface annotations for the
+   checkable types — tracked as follow-ups.)
+
+## Known limitation
+
+Lists are typed **homogeneous** (`(list α)`), like most typed languages.
+Genuinely heterogeneous list/quote data (e.g. `(list 1 "two")`) is reported as a
+type clash rather than accepted — the gradual `Any` escape is for the *operative*
+frontier (fexpr/vau/`eval`), not for heterogeneous data. This is why the checker
+is opt-in (`check-type` / `jit-optimize`) and not auto-run on every `defun`.
 
 Throughout: the checker is *additive* and *sound-on-the-island*; it never rejects
 a program the dynamic interpreter would have run (a checker error is a genuine
