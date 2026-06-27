@@ -1,7 +1,30 @@
-use lamedh::{environment::Environment, eval_str};
+use lamedh::{
+    environment::Environment, eval_depth_limit, eval_str, set_eval_depth_limit, with_large_stack,
+};
 
 fn env() -> std::rc::Rc<Environment> {
     Environment::with_stdlib()
+}
+
+struct EvalDepthLimitGuard(usize);
+
+impl EvalDepthLimitGuard {
+    fn set(limit: usize) -> Self {
+        let previous = eval_depth_limit();
+        set_eval_depth_limit(limit);
+        Self(previous)
+    }
+}
+
+impl Drop for EvalDepthLimitGuard {
+    fn drop(&mut self) {
+        set_eval_depth_limit(self.0);
+    }
+}
+
+fn quoted_number_list(len: usize) -> String {
+    let values = (0..len).map(|_| "1").collect::<Vec<_>>().join(" ");
+    format!("'({values})")
 }
 
 // PROG2
@@ -71,6 +94,28 @@ fn test_copy_atom() {
     let v = eval_str("(copy 'x)", &e).unwrap();
     let expected = eval_str("'x", &e).unwrap();
     assert_eq!(v, expected);
+}
+
+#[test]
+fn test_length_large_list_under_low_eval_depth() {
+    with_large_stack(|| {
+        let e = env();
+        let _guard = EvalDepthLimitGuard::set(64);
+        let expr = format!("(length {})", quoted_number_list(128));
+        let v = eval_str(&expr, &e).unwrap();
+        assert_eq!(v, lamedh::LispVal::Number(128));
+    });
+}
+
+#[test]
+fn test_list_to_array_large_list_under_low_eval_depth() {
+    with_large_stack(|| {
+        let e = env();
+        let _guard = EvalDepthLimitGuard::set(64);
+        let expr = format!("(array-length (list->array {}))", quoted_number_list(128));
+        let v = eval_str(&expr, &e).unwrap();
+        assert_eq!(v, lamedh::LispVal::Number(128));
+    });
 }
 
 // SASSOC

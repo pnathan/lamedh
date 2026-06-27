@@ -169,9 +169,9 @@ Two-way conditional.
 
 ### LABEL
 
-**Syntax:** `(label name function)`
+**Syntax:** `(label name (lambda ...))`
 
-Create named recursive function.
+Create a named recursive function. The payload must be a literal lambda.
 
 ```lisp
 ((label fac (lambda (n)

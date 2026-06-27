@@ -223,7 +223,8 @@ Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_j
 - **Typed structs.** `(defstruct-typed Name (field type)…)` registers a struct
   type (usable in signatures) and generates `make-NAME`/`NAME-FIELD`/
   `set-NAME-FIELD` as ordinary typed functions over flat one-word-per-field
-  buffers; a struct crosses the membrane as an array of its fields.
+  buffers; a struct crosses the membrane as a nominal `LispVal::Struct`, so a
+  plain array with the same shape is not accepted as that struct type.
 - **HM under the hood.** `Jit::infer_untyped` types a *fully un-annotated*
   function (every parameter a fresh variable) when its body is an inferable typed
   island, with clean rollback otherwise. Exposed as the `jit-optimize` special

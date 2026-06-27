@@ -175,21 +175,59 @@ Returns T if x is a string.
 
 ---
 
-## Limitations
+## Additional String Primitives
 
-Lamedh's string support is basic compared to modern Lisps:
+### STRING-LENGTH
 
-- **No escape sequences** - Cannot include quotes or special characters
-- **No string comparison** - Use symbols for comparison
-- **No substring extraction** - Only single character access
-- **No string search** - No FIND, POSITION, etc.
-- **No case conversion** - No UPCASE, DOWNCASE
-- **No string formatting** - No FORMAT function
+**Syntax:** `(string-length string)`
 
-For text processing, consider:
-- Converting to symbols with INTERN
-- Using EXPLODE for character-level work
-- Building strings with CONCAT
+Returns the number of Unicode scalar values in `string`.
+
+```lisp
+(string-length "hello")  ; => 5
+(string-length "")       ; => 0
+```
+
+### SUBSTRING
+
+**Syntax:** `(substring string start)` or `(substring string start end)`
+
+Returns characters from `start` inclusive to `end` exclusive. If `end` is
+omitted, it defaults to the string length.
+
+```lisp
+(substring "hello" 1 3)  ; => "el"
+(substring "hello" 2)    ; => "llo"
+```
+
+### CHAR-CODE, CODE-CHAR, MAKE-CHAR
+
+`CHAR-CODE` converts a character value or one-character string to an integer.
+`CODE-CHAR` converts an integer code point to a one-character string.
+`MAKE-CHAR` converts an integer in `0..255` to Lamedh's byte-sized `Char` type.
+
+### STRING->NUMBER and NUMBER->STRING
+
+`STRING->NUMBER` parses integers and floats, returning `NIL` on failure.
+`NUMBER->STRING` renders a number in decimal form.
+
+### PRIN1-TO-STRING and PRINC-TO-STRING
+
+These return the same text that `PRIN1` or `PRINC` would print. The stdlib
+`FORMAT` builds on these rendering primitives.
+
+---
+
+## Current Limitations
+
+Lamedh supports string escapes such as `\n`, `\t`, `\r`, `\\`, `\"`, and `\0`,
+plus substring and value-to-string rendering. Remaining gaps compared with
+Common Lisp include:
+
+- No string search primitives such as `FIND` or `POSITION`
+- No case conversion such as `STRING-UPCASE`
+- No locale-aware collation or Unicode normalization
+- No mutable strings
 
 ---
 
@@ -204,14 +242,10 @@ For text processing, consider:
 (greet "World")   ; => "Hello, World!"
 ```
 
-### String Length via EXPLODE
+### String Length
 
 ```lisp
-(defun string-length (s)
-  "Get length of string S."
-  (length (explode (intern s))))
-
-; Note: This only works for strings that are valid symbol names
+(string-length "Lamedh")  ; => 6
 ```
 
 ### Reversing a Symbol
@@ -242,10 +276,10 @@ For text processing, consider:
 |-----------|-------------|--------|
 | Concatenate | `(concatenate 'string ...)` | `(concat ...)` |
 | Char access | `(char s n)` | `(index s n)` |
-| Substring | `(subseq s start end)` | Not available |
+| Substring | `(subseq s start end)` | `(substring s start end)` |
 | String= | `(string= a b)` | Use `(eq (intern a) (intern b))` |
-| Length | `(length s)` | `(length (explode (intern s)))` |
-| Format | `(format nil "~A" x)` | Not available |
+| Length | `(length s)` | `(string-length s)` |
+| Format | `(format nil "~A" x)` | `(format nil "~A" x)` |
 
 ---
 

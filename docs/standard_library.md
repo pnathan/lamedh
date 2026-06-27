@@ -16,7 +16,21 @@ The standard library provides essential functions and macros that extend the bui
 | `03-meta.lisp` | `DOCUMENTATION` |
 | `04-predicates.lisp` | `EQUAL` |
 | `05-math.lisp` | Math utilities |
-| `06-builtin-docs.lisp` | Docstrings for builtins |
+| `07-shell.lisp` | Shell result helpers |
+| `08-vau.lisp` | Kernel-style vau derived forms |
+| `09-lisp15.lisp` | Lisp 1.5 appendix functions |
+| `10-testing.lisp` | xUnit-style testing helpers |
+| `11-optimizer-vau.lisp` | Lisp-level optimizer wrappers |
+| `12-control.lisp` | Control-flow helpers |
+| `13-functional.lisp` | Functional utilities |
+| `14-strings.lisp` | String utilities |
+| `15-sets-hash.lisp` | Set/hash helpers |
+| `16-conditions.lisp` | Condition helpers |
+| `17-arrays.lisp` | Array utilities |
+| `18-format.lisp` | `FORMAT` subset |
+| `97-doc-renderer.lisp` | Help renderer |
+| `98-help-system.lisp` | `(HELP ...)` interface |
+| `99-help-data.lisp` | Structured help database |
 
 ---
 
@@ -337,13 +351,15 @@ Returns the absolute value of x.
 
 ---
 
-## 06-builtin-docs.lisp: Builtin Documentation
+## 99-help-data.lisp: Builtin Documentation
 
-This file adds docstrings to built-in functions:
+This file registers structured help records for built-in functions:
 
 ```lisp
-(putp 'list "docstring" "Constructs a list from its arguments.")
-(putp 'last "docstring" "Returns the last cons cell of a list.")
+(register-doc 'list
+  (list
+    (cons 'NAME 'list)
+    (cons 'DESCRIPTION "Constructs a list from its arguments.")))
 ;; etc.
 ```
 

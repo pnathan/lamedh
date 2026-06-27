@@ -33,7 +33,7 @@ echo ""
 
 # Build lamedh (if not already built)
 echo -e "${BLUE}Building lamedh...${NC}"
-(cd ../.. && cargo build --release) > /dev/null 2>&1
+(cd .. && cargo build --release) > /dev/null 2>&1
 echo -e "${GREEN}✓ Lamedh built${NC}"
 echo ""
 
@@ -50,8 +50,7 @@ echo -e "${YELLOW}Python:${NC}"
 python3 ./fibonacci/python/fibonacci.py $RUN_MS $WARMUP_MS $FIB_N
 
 echo -e "${YELLOW}Lamedh (Lisp):${NC}"
-echo "(Note: Lamedh benchmarking requires manual integration)"
-echo "Run: cargo run -- -i benchmarks/fibonacci/lisp/fibonacci.lisp"
+python3 ./fibonacci/lisp/benchmark.py $RUN_MS $WARMUP_MS $FIB_N
 echo ""
 
 # Loops Benchmark
@@ -67,8 +66,8 @@ echo -e "${YELLOW}Python:${NC}"
 python3 ./loops/python/loops.py $RUN_MS $WARMUP_MS $LOOPS_DIVISOR
 
 echo -e "${YELLOW}Lamedh (Lisp):${NC}"
-echo "(Note: Lamedh benchmarking requires manual integration)"
-echo "Run: cargo run -- -i benchmarks/loops/lisp/loops.lisp"
+echo "(Standalone workload; no CSV timing harness yet)"
+echo "Run: ../target/release/lamedh -i loops/lisp/loops.lisp -s '(loops-benchmark ${LOOPS_DIVISOR})'"
 echo ""
 
 # Levenshtein Benchmark
@@ -84,8 +83,8 @@ echo -e "${YELLOW}Python:${NC}"
 python3 ./levenshtein/python/levenshtein.py $RUN_MS $WARMUP_MS $WORDS_FILE
 
 echo -e "${YELLOW}Lamedh (Lisp):${NC}"
-echo "(Note: Lamedh doesn't have full string support yet)"
-echo "Levenshtein benchmark is aspirational for future string capabilities"
+echo "(Standalone workload; not directly comparable to Rust/Python string implementations yet)"
+echo "Run: ../target/release/lamedh -i levenshtein/lisp/levenshtein.lisp -s \"(levenshtein-distance '(k i t t e n) '(s i t t i n g))\""
 echo ""
 
 echo "======================================"

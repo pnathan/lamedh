@@ -12,11 +12,13 @@ Integers are 64-bit signed:
 - Minimum: -9,223,372,036,854,775,808
 - Maximum: 9,223,372,036,854,775,807
 
-Overflow produces errors (or wraps in release builds):
+Arithmetic is bounded. Some integer operations wrap and set the `OVERFLOW`
+condition flag; others signal an overflow error. Do not treat Lamedh integers as
+arbitrary precision bignums.
 
 ```lisp
 (+ 9223372036854775807 1)
-;; Error or unexpected result
+(flag-set-p 'overflow)  ; Check after arithmetic that may overflow
 ```
 
 ### Float Precision
@@ -31,57 +33,53 @@ Floats are 64-bit IEEE 754:
 
 ### Special Float Values
 
-- NaN (Not a Number) comparisons behave unexpectedly
-- `-0.0` and `0.0` compare equal but may hash differently
-- Avoid floats as hash table keys
+- NaN (Not a Number) is canonicalized for hash keys, but numeric comparisons
+  still follow IEEE 754 behavior
+- `-0.0` and `0.0` compare equal and hash together as `LispVal` values
+- Floating-point rounding still makes floats a poor choice for semantic keys
 
 ---
 
 ## String Limitations
 
-### No Escape Sequences
-
-Strings cannot contain:
-- Embedded quotes (`"`)
-- Newlines
-- Tab characters
-- Other escape sequences
-
-```lisp
-"hello \"world\""   ; Does not work
-```
-
 ### Limited Operations
 
-Missing string operations:
-- Substring extraction
+Strings support escapes (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`), substring,
+length, character-code conversion, and value-to-string rendering. Missing
+string operations include:
+
 - String search
 - Case conversion
 - Regular expressions
-- String comparison (use `EQ` on interned symbols)
+- Locale-aware collation and Unicode normalization
+- A full Common Lisp string comparison family
 
 ---
 
 ## Control Flow Limitations
 
-### No Tail Call Optimization
+### Tail Calls Are Recognized, Not Universal
 
-Deep recursion will cause stack overflow:
+The evaluator trampolines known tail positions (`IF`, `COND`, `PROGN`, `LET`,
+`LET*`, function bodies, and related paths). Non-tail recursion still consumes
+Rust stack frames and is protected by a recursion-depth guard.
 
 ```lisp
-(defun count-down (n)
+(defun count-down-tail (n)
   (if (zerop n)
       0
-      (count-down (- n 1))))
+      (count-down-tail (- n 1))))  ; Tail-recursive
 
-(count-down 100000)  ; Stack overflow
+(defun count-down-nontail (n)
+  (if (zerop n)
+      0
+      (+ 1 (count-down-nontail (- n 1)))))  ; Not tail-recursive
 ```
 
 ### PROG is Limited
 
 PROG provides basic imperative control, but:
 - No nested RETURN to outer PROG
-- No CATCH/THROW
 - No exception handling within GO
 - Labels must be unique
 
@@ -89,25 +87,12 @@ PROG provides basic imperative control, but:
 
 ## File I/O Limitations
 
-### Read-Only
+### Capability-Gated, Not Stream-Based
 
-No file writing capabilities:
-- No WRITE-FILE
-- No WITH-OPEN-FILE
-- No stream manipulation
-
-### No File Queries
-
-Cannot check:
-- File existence
-- File size
-- File permissions
-- Directory contents
-
-### Text Only
-
-- No binary file support
-- Assumes UTF-8 encoding
+Lamedh has capability-gated file reading, writing, metadata queries, directory
+listing, file mutation, and temporary-file helpers. It does not yet provide a
+Common Lisp-style stream system, `WITH-OPEN-FILE`, append/update modes, or true
+binary byte-vector I/O. Text APIs assume UTF-8 or lossy UTF-8 conversion.
 
 ---
 
@@ -129,8 +114,8 @@ Currently RPLACA/RPLACD create new cells, avoiding this.
 ### Hash Table Keys
 
 Problematic key types:
-- Floats (equality/hashing issues)
-- Lists (compared by identity, not value)
+- Floats (rounding and NaN semantics can surprise, even though `Eq`/`Hash` are
+  internally consistent)
 - Complex structures
 
 Recommended keys:
@@ -176,10 +161,9 @@ Use GENSYM to avoid:
 
 ### Basic Mechanism
 
-- No exception types
 - No stack traces
 - No restarts
-- No condition system
+- No full Common Lisp condition system
 
 ### ERRORSET is Binary
 
@@ -213,12 +197,18 @@ Unlike some Lisps, SETQ creates variables if undefined:
 
 ## Performance Considerations
 
-### No Optimization
+### Optimization Is Partial
 
-- No compiler
-- No inline expansion
-- No constant folding
-- No tail call elimination
+Lamedh has a source optimizer, tail-call trampolining, and an experimental typed
+JIT/type-checking path for monomorphic typed islands. The ordinary dynamic
+language remains a boxed tree-walking interpreter.
+
+Missing or incomplete performance work includes:
+
+- No whole-program compiler
+- No inline cache for ordinary dynamic calls
+- No generational garbage collector
+- Limited optimizer coverage outside simple source-level rewrites
 
 ### Interpretation Overhead
 
@@ -227,7 +217,7 @@ Each evaluation involves:
 - Function dispatch
 - Value boxing
 
-Expect 100-1000x slower than compiled code.
+Expect ordinary dynamic code to be much slower than compiled native code.
 
 ### Memory
 
@@ -248,7 +238,7 @@ Expect 100-1000x slower than compiled code.
 | Rationals | Yes | No |
 | Packages | Yes | No |
 | CLOS | Yes | No |
-| FORMAT | Yes | No |
+| FORMAT | Yes | Partial subset |
 | Conditions/Restarts | Yes | No |
 
 ### Differences from Lisp 1.5
@@ -302,12 +292,13 @@ Wrap in ERRORSET:
 ## Future Improvements
 
 Potential additions:
-- [ ] Tail call optimization
-- [ ] String escape sequences
-- [ ] File writing
 - [ ] Stack traces
-- [ ] Exception types
 - [ ] Circular structure detection
+- [ ] Packages/namespaces
+- [ ] Stream I/O
+- [ ] Full condition/restart system
+- [ ] Broader string search/case operations
+- [ ] Hardened native-code/JIT release path
 
 ---
 

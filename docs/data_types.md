@@ -354,7 +354,10 @@ Mutable key-value stores.
 
 ### 3.8.3 Key Types
 
-Any value can be used as a key, but symbols and strings are recommended. Using floats as keys may produce unexpected results due to floating-point equality semantics.
+Any value can be used as a key, but symbols and strings are recommended for
+stable semantic keys. Float keys have a lawful `Eq`/`Hash` implementation
+(`0.0` and `-0.0` hash together; NaNs are canonicalized), but ordinary
+floating-point rounding can still make them surprising.
 
 ---
 

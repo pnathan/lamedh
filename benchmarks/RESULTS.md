@@ -2,10 +2,16 @@
 
 Benchmark results comparing lamedh (Lisp 1.5 interpreter) against Rust (compiled) and Python 3.11 (interpreted).
 
+These numbers are a historical snapshot. Re-run `benchmarks/run_benchmarks.sh`
+on the target machine before using them for current performance claims.
+
 **Test Environment:**
 - Python: 3.11.14
 - Rust: 1.x (release mode with optimizations)
-- Lamedh: 0.1.0 (release mode, no JIT/optimizations)
+- Lamedh: 0.1.0 historical release-mode snapshot. Current Lamedh is 0.2.x;
+  release builds include the current evaluator optimizations and the default
+  typed-JIT feature, although these untyped benchmark workloads generally do not
+  opt into typed native kernels.
 
 **Benchmark Parameters:**
 - Runtime: 1000ms (1 second)
@@ -34,7 +40,7 @@ Naive recursive Fibonacci calculation, summing fibonacci(1) through fibonacci(19
   - Interpreted evaluation without JIT compilation
   - Heavy use of recursive function calls
   - Symbol table lookups on every function call
-  - No tail call optimization
+  - Non-tail recursive calls in this workload
   - Environment chain traversal for variable lookup
 
 ---
@@ -67,14 +73,13 @@ This benchmark heavily exercises PROG-based loops which have significant overhea
 | **Rust** | 0.006 | 156,067 | 351 |
 | **Python** | 0.585 | 1,710 | 351 |
 
-**Lamedh: Not implemented**
+**Lamedh: standalone workload, not in CSV runner**
 
-While Lamedh has basic string primitives (`concat`, `index`, `stringp`), the Levenshtein benchmark has not been adapted to use Lamedh's string API. This benchmark requires:
-- String length calculation
-- Character-by-character comparison
-- Multi-dimensional array operations
-
-The Lisp implementation in this repository is aspirational and demonstrates what would be needed for full string operation support.
+A Lisp implementation exists at `benchmarks/levenshtein/lisp/levenshtein.lisp`,
+but it is not wired into the CSV runner and does not use the same string/array
+representation as the Rust and Python implementations. Treat it as a standalone
+workload until it is ported to the current string/array APIs and timed through a
+comparable harness.
 
 ---
 
@@ -87,7 +92,6 @@ The Lisp implementation in this repository is aspirational and demonstrates what
 2. **Recursive overhead is significant**: The Fibonacci benchmark heavily exercises function call overhead, which is substantial in an interpreter.
 
 3. **Room for optimization**: Potential improvements include:
-   - Tail call optimization for PROG-based loops
    - Function inlining for small functions
    - Bytecode compilation instead of AST walking
    - JIT compilation for hot paths
@@ -132,13 +136,13 @@ python3 ./fibonacci/lisp/benchmark.py 1000 100 20
 
 - ✅ **Fibonacci**: Complete for all 3 languages
 - ⚠️ **Loops**: Complete for Rust/Python, impractical for Lamedh at full scale
-- ❌ **Levenshtein**: Complete for Rust/Python, not implemented for Lamedh
+- ⚠️ **Levenshtein**: Complete for Rust/Python; standalone Lisp workload exists,
+  but is not directly comparable yet
 
 ## Future Work
 
 - [ ] Optimize PROG loops to make full loops benchmark feasible
-- [ ] Implement Levenshtein for Lamedh's string API
+- [ ] Port Levenshtein to Lamedh's current string/array APIs and CSV harness
 - [ ] Implement bytecode compiler for performance improvement
-- [ ] Add tail call optimization
 - [ ] Create performance regression tracking
 - [ ] Compare against other Lisp implementations (SBCL, Racket, Clojure)

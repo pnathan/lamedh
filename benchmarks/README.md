@@ -22,7 +22,8 @@ These benchmarks are based on the [languages benchmark suite](https://github.com
 - **Description**: Calculates edit distance between strings
 - **Test**: Pairwise comparison of words from input file
 - **Purpose**: Tests dynamic programming and string operations
-- **Note**: Lamedh currently has limited string support, so this benchmark is aspirational
+- **Note**: A Lisp implementation exists, but it is a standalone workload and
+  is not yet wired into the CSV benchmark runner.
 
 ## Structure
 
@@ -77,7 +78,7 @@ cargo build --release
 python3 fibonacci/python/fibonacci.py 5000 1000 30
 
 # Lamedh
-cargo run --release -- -i benchmarks/fibonacci/lisp/fibonacci.lisp
+python3 fibonacci/lisp/benchmark.py 5000 1000 30
 ```
 
 #### Loops
@@ -92,7 +93,7 @@ cargo build --release
 python3 loops/python/loops.py 5000 1000 10000
 
 # Lamedh
-cargo run --release -- -i benchmarks/loops/lisp/loops.lisp
+../target/release/lamedh -i loops/lisp/loops.lisp -s "(loops-benchmark 10000)"
 ```
 
 #### Levenshtein
@@ -105,6 +106,9 @@ cargo build --release
 
 # Python
 python3 levenshtein/python/levenshtein.py 5000 1000 levenshtein/words.txt
+
+# Lamedh standalone workload
+../target/release/lamedh -i levenshtein/lisp/levenshtein.lisp -s "(levenshtein-distance '(k i t t e n) '(s i t t i n g))"
 ```
 
 ## Output Format
@@ -131,23 +135,24 @@ Where:
 
 ## Current Limitations
 
-1. **Lamedh Integration**: The Lisp benchmarks are currently standalone files. Full integration with the benchmark harness requires:
-   - Adding benchmarking library support to Lamedh
-   - Implementing timing functions in Lisp
-   - Adding command-line argument parsing
+1. **Lamedh Integration**: Fibonacci has a Python harness that emits CSV for
+   the Lisp implementation. Loops and Levenshtein are still standalone Lisp
+   workloads rather than timed CSV harnesses.
 
-2. **String Support**: Lamedh has limited string handling capabilities, so the Levenshtein benchmark is aspirational and demonstrates what would be needed for full string support.
+2. **Levenshtein Representation**: The Lisp Levenshtein workload operates on
+   list-shaped character data rather than the same string/array representation
+   as the Rust and Python versions, so it is useful as a workload but not yet a
+   strict apples-to-apples benchmark.
 
-3. **Optimization Level**: These benchmarks test the evaluator without any optimizations like:
-   - Tail call optimization
-   - Constant folding
-   - Inline caching
-   - JIT compilation
+3. **Optimization Level**: Release builds include the current interpreter
+   optimizations, TCO where implemented, and the default typed-JIT feature. Most
+   benchmark files are still ordinary untyped Lisp and do not automatically use
+   native typed kernels unless the workload explicitly opts into them.
 
 ## Future Improvements
 
-- [ ] Add benchmark harness to Lamedh for proper timing integration
-- [ ] Implement string primitives for Levenshtein benchmark
+- [ ] Add CSV harnesses for the remaining Lamedh workloads
+- [ ] Port the Levenshtein workload to the current string/array APIs
 - [ ] Add more benchmarks (hash tables, tree operations, etc.)
 - [ ] Create performance regression tracking
 - [ ] Add optimization levels comparison

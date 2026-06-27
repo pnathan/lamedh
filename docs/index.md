@@ -58,6 +58,7 @@ Individual category pages (hand-written with additional context):
 - [Appendix B: Complete Special Form Index](appendix_special_forms_index.md)
 - [Appendix C: Known Limitations](appendix_limitations.md)
 - [Appendix D: Differences from Lisp 1.5](appendix_differences.md)
+- [Roadmap To 1.0](roadmap_1_0.md) - Release gates while the version remains on `0.2.x`
 
 ---
 
@@ -98,7 +99,7 @@ The manual is organized in the style of the [Common Lisp HyperSpec](http://www.l
 
 ### Version
 
-This documentation covers Lamedh as of January 2026.
+This documentation covers Lamedh 0.2.x as of June 2026.
 
 ---
 

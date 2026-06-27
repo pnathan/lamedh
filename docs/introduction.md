@@ -9,6 +9,7 @@ Lamedh (Hebrew: ל, pronounced "LAH-med") is an implementation of Lisp 1.5 writt
 - A standard library of common functions
 - Macro and fexpr support
 - Hash tables and property lists
+- A typed checker/JIT path for monomorphic typed code islands
 
 ## 1.2 History and Goals
 
@@ -23,13 +24,12 @@ Lamedh aims to:
 
 ## 1.3 What Lamedh Is Not
 
-Lamedh is not a production-grade Lisp system. It does not provide:
+Lamedh is not yet a 1.0 production Lisp system. It does not provide:
 
-- Performance optimizations (JIT compilation, inline caching)
 - Full Common Lisp or Scheme compatibility
-- Comprehensive error recovery
-- Debugging facilities (trace, step)
-- File I/O beyond loading source files
+- A mature debugger with step/trace integration
+- Packages, streams, or a full condition/restart system
+- Broad compiler optimization for ordinary dynamic code
 
 ## 1.4 Language Family
 

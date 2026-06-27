@@ -109,9 +109,7 @@ fn test_float_negative_zero_hash_key() {
     "#;
     let result = eval_str(input);
     println!("Get -0.0 after setting 0.0: {:?}", result);
-
-    // BUG: -0.0 and 0.0 have different hashes but compare equal
-    // This violates HashMap invariants
+    assert_eq!(result, Ok(LispVal::String("positive zero".to_string())));
 }
 
 #[test]
@@ -121,13 +119,25 @@ fn test_float_zero_overwrite() {
             (DEF h (MAKE-HASH-TABLE))
             (SET-BANG h 0.0 "first")
             (SET-BANG h -0.0 "second")
-            (KEYS h))
+            (GETHASH h 0.0))
     "#;
     let result = eval_str(input);
-    println!("Keys after setting both zeros: {:?}", result);
+    println!("Value after setting both zeros: {:?}", result);
+    assert_eq!(result, Ok(LispVal::String("second".to_string())));
+}
 
-    // Expected: Only one key (they should be treated as same)
-    // Actual: Might have two keys with different hashes
+#[test]
+fn test_float_nan_hash_key_is_reflexive() {
+    use std::hash::{Hash, Hasher};
+
+    let nan = LispVal::Float(f64::NAN);
+    assert_eq!(nan, nan);
+
+    let mut hash_a = std::collections::hash_map::DefaultHasher::new();
+    let mut hash_b = std::collections::hash_map::DefaultHasher::new();
+    LispVal::Float(f64::NAN).hash(&mut hash_a);
+    LispVal::Float(f64::from_bits(f64::NAN.to_bits() | 1)).hash(&mut hash_b);
+    assert_eq!(hash_a.finish(), hash_b.finish());
 }
 
 // ============================================================================
@@ -348,13 +358,21 @@ fn test_label_self_reference_is_caught() {
 }
 
 #[test]
-#[ignore = "indirect circular LABEL (LABEL a (LABEL b a)) is non-terminating and \
-            is not caught by the eval-depth guard; running it hangs CI. Tracked \
-            as a latent interpreter bug — un-ignore once cycle detection lands."]
 fn test_label_circular_reference() {
-    // KNOWN HANG: kept ignored on purpose; see the attribute above.
     let result = eval_str_big("(LABEL a (LABEL b a))");
-    println!("Circular LABEL: {result:?}");
+    assert!(
+        result.is_err(),
+        "indirect circular LABEL should error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_label_rejects_non_function_payload() {
+    let result = eval_str_big("(LABEL a 42)");
+    assert!(
+        result.is_err(),
+        "LABEL over a non-function expression should error, got {result:?}"
+    );
 }
 
 // ============================================================================

@@ -22,6 +22,7 @@
 //! | `Builtin` | `<builtin>` |
 //! | `HashTable` | `<hash-table>` |
 //! | `Array(n)` | `<array:n>` |
+//! | `Struct` | `#<struct TYPE>` |
 //! | `Extension` | via [`crate::LispValExtension::display`] |
 
 use crate::LispVal;
@@ -93,6 +94,7 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Vau(_) => "<vau>".to_string(),
         LispVal::HashTable(_) => "<hash-table>".to_string(),
         LispVal::Array(a) => format!("<array:{}>", a.borrow().len()),
+        LispVal::Struct(s) => format!("#<struct {}>", s.type_name),
         LispVal::Extension(e) => e.display(),
         LispVal::Error(e) => {
             if e.data == LispVal::Nil {

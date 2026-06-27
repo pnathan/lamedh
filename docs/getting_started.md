@@ -247,7 +247,8 @@ Lamedh automatically loads files from `lib/` at startup:
 | `03-meta.lisp` | `DOCUMENTATION` |
 | `04-predicates.lisp` | `EQUAL` |
 | `05-math.lisp` | `ABS`, `MAX`, `MIN`, `ONEP`, `MINUSP` |
-| `06-builtin-docs.lisp` | Documentation for builtins |
+| `07-shell.lisp` ... `18-format.lisp` | Shell, vau, Lisp 1.5, testing, optimizer, control, functional, string, set/hash, condition, array, and format helpers |
+| `97-doc-renderer.lisp` ... `99-help-data.lisp` | REPL help system and structured documentation database |
 
 ## 2.11 Example: Fibonacci
 

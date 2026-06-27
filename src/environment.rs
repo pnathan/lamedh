@@ -564,6 +564,15 @@ impl Environment {
             "ARRAY-LENGTH".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
+        env.set("$LENGTH".to_string(), LispVal::Builtin(BuiltinFunc::Length));
+        env.set(
+            "$LIST->ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::ListToArray),
+        );
+        env.set(
+            "$ARRAY->LIST".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayToList),
+        );
         env.set("ARRAYP".to_string(), LispVal::Builtin(BuiltinFunc::Arrayp));
         // CHARP is registered with the type predicates; MAKE-CHAR with the
         // char/string ops (near CODE-CHAR).
@@ -693,6 +702,15 @@ impl Environment {
         env.set(
             "ARRAY-LENGTH".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayLength),
+        );
+        env.set("$LENGTH".to_string(), LispVal::Builtin(BuiltinFunc::Length));
+        env.set(
+            "$LIST->ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::ListToArray),
+        );
+        env.set(
+            "$ARRAY->LIST".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayToList),
         );
 
         // Sorting (stable, non-destructive; takes a comparator predicate)
@@ -880,21 +898,20 @@ impl Environment {
 
     /// Hot-path variable resolution from the interned symbol the AST holds.
     ///
-    /// Avoids re-interning: local frames are probed by name, but the global
-    /// (root) binding is read straight from the symbol's value cell — no symbol
-    /// table lookup, no hash. Respects dynamic scoping when any dynamic variable
-    /// exists.
+    /// Local frames are probed by name; the root binding is read from this
+    /// environment's symbol table. Respects dynamic scoping when any dynamic
+    /// variable exists.
     pub fn resolve(&self, sym: &Rc<RefCell<Symbol>>) -> Option<LispVal> {
         let s = sym.borrow();
         if self.shared.has_dynamic.get() && self.shared.dynamic_vars.borrow().contains(&s.name) {
             // Dynamic variables are rare; the name-based path is fine.
             return self.get_dynamic(&s.name);
         }
-        // Lexical: walk local frames by name; read the cell at the root.
+        // Lexical: walk local frames by name; read the root environment's cell.
         let mut frame = self;
         loop {
             if frame.is_root() {
-                return s.value.clone();
+                return frame.global_get(&s.name);
             }
             if let Some(val) = frame.bindings.borrow().get(&s.name) {
                 return Some(val.clone());

@@ -360,9 +360,11 @@ Defines a function that receives its arguments unevaluated.
 
 ## 6.15 LABEL
 
-**Syntax:** `(label name function-expr)`
+**Syntax:** `(label name (lambda ...))`
 
-Creates a recursive function binding. Useful for anonymous recursion.
+Creates a recursive function binding. Useful for anonymous recursion. The
+payload must be a literal `LAMBDA` expression; malformed nested `LABEL` graphs
+are rejected rather than re-evaluated as delayed expressions.
 
 ```lisp
 ((label fac (lambda (n)
@@ -374,9 +376,10 @@ Creates a recursive function binding. Useful for anonymous recursion.
 ```
 
 **Evaluation Rule:**
-1. Create an environment where `name` is bound
-2. Evaluate `function-expr` in that environment
-3. Return the function (which can reference `name`)
+1. Create a child environment
+2. Evaluate the lambda in that child environment
+3. Bind `name` to the resulting closure in the same child environment
+4. Return the closure, whose body can reference `name`
 
 ---
 

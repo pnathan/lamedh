@@ -37,7 +37,7 @@
 //! discriminant stored in [`LispVal::Builtin`] values.
 
 #![allow(clippy::mutable_key_type)]
-use crate::{BuiltinFunc, LispError, LispVal, environment::Environment};
+use crate::{BuiltinFunc, LispError, LispVal, StructObj, environment::Environment};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -120,6 +120,25 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
         })
 }
 
+fn proper_list_len(list: &LispVal) -> Result<usize, LispError> {
+    let mut len = 0;
+    let mut current = list;
+    loop {
+        match current {
+            LispVal::Nil => return Ok(len),
+            LispVal::Cons { cdr, .. } => {
+                len += 1;
+                current = cdr;
+            }
+            _ => {
+                return Err(LispError::Generic(
+                    "length: argument must be a proper list".to_string(),
+                ));
+            }
+        }
+    }
+}
+
 /// Evaluate a call's operands directly off the cons chain into a single `Vec`.
 ///
 /// This is the hot path for ordinary function/lambda/builtin application. It
@@ -127,14 +146,19 @@ fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
 /// which allocated **two** vectors per call (one of cloned argument *expressions*,
 /// one of evaluated results) and cloned every argument expression. Walking the
 /// cons cells and evaluating each `car` in place does the same work with a
-/// single allocation and no expression clones. (Like the other cons-walking
-/// special forms here — `AND`/`OR`/`PROGN` — an improper tail is simply ignored.)
+/// single allocation and no expression clones while still rejecting malformed
+/// dotted argument lists.
 fn eval_operands(rest: &LispVal, env: &Rc<Environment>) -> Result<Vec<LispVal>, LispError> {
     let mut out = Vec::new();
     let mut cur = rest;
     while let LispVal::Cons { car, cdr } = cur {
         out.push(eval(car, env)?);
         cur = cdr;
+    }
+    if *cur != LispVal::Nil {
+        return Err(LispError::Generic(
+            "function call arguments must be a proper list".to_string(),
+        ));
     }
     Ok(out)
 }
@@ -596,6 +620,15 @@ fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
 /// top of them in `lib/`.
 #[inline(never)]
 fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+    let require_one = |name: &str| -> Result<(), LispError> {
+        if args.len() == 1 {
+            Ok(())
+        } else {
+            Err(LispError::Generic(format!(
+                "{name} requires exactly one argument"
+            )))
+        }
+    };
     let get_str = |i: usize, name: &str| -> Result<String, LispError> {
         match args.get(i) {
             Some(LispVal::String(s)) => Ok(s.clone()),
@@ -655,6 +688,7 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
         }
         BuiltinFunc::CharCode => {
             // (char-code x) — code point of x, where x is a Char or a one-char string.
+            require_one("char-code")?;
             match args.first() {
                 Some(LispVal::Char(b)) => Ok(LispVal::Number(*b as i64)),
                 _ => {
@@ -670,6 +704,7 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
         }
         BuiltinFunc::CodeChar => {
             // (code-char n) — one-character string for code point n.
+            require_one("code-char")?;
             match args.first() {
                 Some(LispVal::Number(n)) if *n >= 0 => char::from_u32(*n as u32)
                     .map(|c| LispVal::String(c.to_string()))
@@ -683,6 +718,7 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
         }
         BuiltinFunc::MakeChar => {
             // (make-char n) — create a Char value from integer code point 0–255.
+            require_one("make-char")?;
             match args.first() {
                 Some(LispVal::Number(n)) if *n >= 0 && *n <= 255 => Ok(LispVal::Char(*n as u8)),
                 Some(LispVal::Number(n)) => Err(LispError::Generic(format!(
@@ -695,6 +731,7 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
         }
         BuiltinFunc::StringToNumber => {
             // (string->number s) — parse as integer, else float, else NIL.
+            require_one("string->number")?;
             let s = get_str(0, "string->number")?;
             let t = s.trim();
             if let Ok(n) = t.parse::<i64>() {
@@ -705,29 +742,34 @@ fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispE
                 Ok(LispVal::Nil)
             }
         }
-        BuiltinFunc::NumberToString => match args.first() {
-            Some(LispVal::Number(n)) => Ok(LispVal::String(n.to_string())),
-            Some(LispVal::Float(f)) => Ok(LispVal::String(f.to_string())),
-            _ => Err(LispError::Generic(
-                "number->string requires a number".to_string(),
-            )),
-        },
-        BuiltinFunc::Prin1ToString => match args.first() {
-            // Readable representation (strings are quoted), via the printer.
-            Some(v) => Ok(LispVal::String(crate::printer::print(v))),
-            None => Err(LispError::Generic(
-                "prin1-to-string requires one argument".to_string(),
-            )),
-        },
-        BuiltinFunc::PrincToString => match args.first() {
-            // Human representation: a top-level string yields its raw contents,
-            // mirroring PRINC; everything else uses the printer.
-            Some(LispVal::String(s)) => Ok(LispVal::String(s.clone())),
-            Some(v) => Ok(LispVal::String(crate::printer::print(v))),
-            None => Err(LispError::Generic(
-                "princ-to-string requires one argument".to_string(),
-            )),
-        },
+        BuiltinFunc::NumberToString => {
+            require_one("number->string")?;
+            match args.first() {
+                Some(LispVal::Number(n)) => Ok(LispVal::String(n.to_string())),
+                Some(LispVal::Float(f)) => Ok(LispVal::String(f.to_string())),
+                _ => Err(LispError::Generic(
+                    "number->string requires a number".to_string(),
+                )),
+            }
+        }
+        BuiltinFunc::Prin1ToString => {
+            require_one("prin1-to-string")?;
+            match args.first() {
+                // Readable representation (strings are quoted), via the printer.
+                Some(v) => Ok(LispVal::String(crate::printer::print(v))),
+                None => unreachable!("arity checked above"),
+            }
+        }
+        BuiltinFunc::PrincToString => {
+            require_one("princ-to-string")?;
+            match args.first() {
+                // Human representation: a top-level string yields its raw contents,
+                // mirroring PRINC; everything else uses the printer.
+                Some(LispVal::String(s)) => Ok(LispVal::String(s.clone())),
+                Some(v) => Ok(LispVal::String(crate::printer::print(v))),
+                None => unreachable!("arity checked above"),
+            }
+        }
         _ => Err(LispError::Generic("Not a string operation".to_string())),
     }
 }
@@ -1316,10 +1358,8 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     }
                 };
                 let mut result = vec![];
-                let mut cur = list.clone();
-                while let LispVal::Cons { car, cdr } = cur {
-                    result.push(eval(&car, &eval_env)?);
-                    cur = cdr.as_ref().clone();
+                for form in list_to_vec(list)? {
+                    result.push(eval(&form, &eval_env)?);
                 }
                 let mut out = LispVal::Nil;
                 for v in result.into_iter().rev() {
@@ -2402,6 +2442,38 @@ fn apply(func: &LispVal, args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
                     ))
                 }
             }
+            BuiltinFunc::Length => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "length takes exactly one argument".to_string(),
+                    ));
+                }
+                Ok(LispVal::Number(proper_list_len(&args[0])? as i64))
+            }
+            BuiltinFunc::ListToArray => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "list->array takes exactly one argument".to_string(),
+                    ));
+                }
+                Ok(LispVal::Array(Rc::new(RefCell::new(list_to_vec(
+                    &args[0],
+                )?))))
+            }
+            BuiltinFunc::ArrayToList => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "array->list takes exactly one argument".to_string(),
+                    ));
+                }
+                if let LispVal::Array(a) = &args[0] {
+                    Ok(vec_to_list(a.borrow().clone()))
+                } else {
+                    Err(LispError::Generic(
+                        "array->list: argument must be an array".to_string(),
+                    ))
+                }
+            }
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:
@@ -2808,6 +2880,10 @@ fn check_function(name: &str, env: &Rc<Environment>) -> String {
 /// Coerce a `LispVal` to a typed [`crate::jit::Value`] for a parameter of type
 /// `ty`. `int64` accepts `Number`; `float64` accepts `Float` or widens `Number`;
 /// `bool` follows Lisp truthiness (`nil` is false, everything else true).
+fn char_byte_from_number(n: i64, context: &str) -> Result<u8, String> {
+    u8::try_from(n).map_err(|_| format!("{context}: {n} out of range 0-255"))
+}
+
 fn lispval_to_typed(lv: &LispVal, ty: &crate::jit::Ty) -> Result<crate::jit::Value, String> {
     use crate::jit::{Ty, Value};
     match ty {
@@ -2823,7 +2899,7 @@ fn lispval_to_typed(lv: &LispVal, ty: &crate::jit::Ty) -> Result<crate::jit::Val
         Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
         Ty::Char => match lv {
             LispVal::Char(b) => Ok(Value::Char(*b)),
-            LispVal::Number(n) => Ok(Value::Char(*n as u8)),
+            LispVal::Number(n) => Ok(Value::Char(char_byte_from_number(*n, "char argument")?)),
             other => Err(format!("expected char argument, got {other:?}")),
         },
         // A `(array char)` parameter accepts a string as its UTF-8 bytes (the
@@ -2843,22 +2919,27 @@ fn lispval_to_typed(lv: &LispVal, ty: &crate::jit::Ty) -> Result<crate::jit::Val
             other => Err(format!("expected array argument, got {other:?}")),
         },
         Ty::Struct(def) => match lv {
-            LispVal::Array(a) => {
-                let items = a.borrow();
-                if items.len() != def.fields.len() {
+            LispVal::Struct(obj) => {
+                if obj.type_name != def.name {
+                    return Err(format!(
+                        "expected struct {}, got {}",
+                        def.name, obj.type_name
+                    ));
+                }
+                if obj.fields.len() != def.fields.len() {
                     return Err(format!(
                         "expected {} fields for struct, got {}",
                         def.fields.len(),
-                        items.len()
+                        obj.fields.len()
                     ));
                 }
-                let mut out = Vec::with_capacity(items.len());
-                for (it, (_, ft)) in items.iter().zip(def.fields.iter()) {
+                let mut out = Vec::with_capacity(obj.fields.len());
+                for (it, (_, ft)) in obj.fields.iter().zip(def.fields.iter()) {
                     out.push(lispval_to_typed(it, ft)?);
                 }
                 Ok(Value::Struct(out))
             }
-            other => Err(format!("expected struct (array of fields), got {other:?}")),
+            other => Err(format!("expected struct {}, got {other:?}", def.name)),
         },
         // Only compileable types back a native edition, so non-compileable
         // types (#162) and unresolved variables never reach the membrane.
@@ -2871,7 +2952,7 @@ fn lispval_to_typed(lv: &LispVal, ty: &crate::jit::Ty) -> Result<crate::jit::Val
 
 /// Re-box a typed [`crate::jit::Value`] result as a `LispVal`, type-directed:
 /// `bool` → `T`/`NIL`, `(array char)` → a string, other arrays → a Lisp array,
-/// structs → a Lisp array of their fields.
+/// structs → a nominal typed struct value.
 fn typed_to_lispval(v: crate::jit::Value, ty: &crate::jit::Ty, env: &Rc<Environment>) -> LispVal {
     use crate::jit::{Ty, Value};
     match v {
@@ -2908,12 +2989,15 @@ fn typed_to_lispval(v: crate::jit::Value, ty: &crate::jit::Ty, env: &Rc<Environm
         },
         Value::Struct(fields) => match ty {
             Ty::Struct(def) => {
-                let lst: Vec<LispVal> = fields
+                let values: Vec<LispVal> = fields
                     .into_iter()
                     .zip(def.fields.iter())
                     .map(|(fv, (_, ft))| typed_to_lispval(fv, ft, env))
                     .collect();
-                LispVal::Array(Rc::new(std::cell::RefCell::new(lst)))
+                LispVal::Struct(Rc::new(StructObj {
+                    type_name: def.name.clone(),
+                    fields: values,
+                }))
             }
             _ => LispVal::Nil,
         },
@@ -3148,15 +3232,14 @@ fn eval_while(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispErro
         cdr: body_list,
     } = rest
     {
+        let body_forms = list_to_vec(body_list)?;
         loop {
             let test = eval(cond_expr, env)?;
             if !is_truthy(&test) {
                 break;
             }
-            let mut current = &**body_list;
-            while let LispVal::Cons { car, cdr } = current {
-                eval(car, env)?;
-                current = cdr;
+            for form in &body_forms {
+                eval(form, env)?;
             }
         }
         Ok(TcoStep::Done(Ok(LispVal::Nil)))
@@ -3180,8 +3263,9 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                 LispError::Generic(format!("Unbound variable: {}", s.borrow().name))
             })?;
 
-            // If the value is a LABEL expression, tail-call evaluate it
-            // This handles recursive LABEL definitions (TCO: TailCall instead of recurse)
+            // Compatibility path for values explicitly bound to a LABEL form.
+            // Normal LABEL evaluation now returns a closure that closes over its
+            // own name binding instead of storing a re-evaluable LABEL graph.
             if let LispVal::Cons { car, cdr: _ } = &value
                 && let LispVal::Symbol(sym) = &**car
                 && sym.borrow().name == "LABEL"
@@ -3204,6 +3288,7 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
         | LispVal::Native(_)
         | LispVal::Environment(_)
         | LispVal::Array(_)
+        | LispVal::Struct(_)
         | LispVal::Extension(_)
         | LispVal::Error(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
@@ -3234,62 +3319,37 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         ))))
                     }
                     "COND" => {
-                        let mut current_clause = &**rest;
-                        loop {
-                            match current_clause {
-                                LispVal::Cons {
-                                    car: clause,
-                                    cdr: next_clauses,
-                                } => {
-                                    if let LispVal::Cons {
-                                        car: predicate,
-                                        cdr: expressions,
-                                    } = &**clause
-                                    {
-                                        let predicate_result = eval(predicate, env)?;
-                                        if is_truthy(&predicate_result) {
-                                            if **expressions == LispVal::Nil {
-                                                return Ok(TcoStep::Done(Ok(predicate_result)));
-                                            } else {
-                                                // Eval all but last normally; TCO for last expr
-                                                let mut current_expr = &**expressions;
-                                                loop {
-                                                    match current_expr {
-                                                        LispVal::Cons {
-                                                            car: expr,
-                                                            cdr: next_exprs,
-                                                        } if **next_exprs != LispVal::Nil => {
-                                                            eval(expr, env)?;
-                                                            current_expr = next_exprs;
-                                                        }
-                                                        LispVal::Cons {
-                                                            car: last_expr, ..
-                                                        } => {
-                                                            // Last expression in the clause body: TCO
-                                                            return Ok(TcoStep::TailCall(
-                                                                last_expr.as_ref().clone(),
-                                                                env.clone(),
-                                                            ));
-                                                        }
-                                                        _ => {
-                                                            return Ok(TcoStep::Done(Ok(
-                                                                LispVal::Nil,
-                                                            )));
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        return Ok(TcoStep::Done(Err(LispError::Generic(
-                                            "cond clauses must be lists".to_string(),
-                                        ))));
-                                    }
-                                    current_clause = next_clauses;
+                        let clauses = list_to_vec(rest)?;
+                        for clause in clauses {
+                            let parts = match list_to_vec(&clause) {
+                                Ok(parts) if !parts.is_empty() => parts,
+                                Ok(_) => {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
+                                        "cond clauses must be non-empty lists".to_string(),
+                                    ))));
                                 }
-                                _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))), // No clause was true
+                                Err(_) => {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
+                                        "cond clauses must be proper lists".to_string(),
+                                    ))));
+                                }
+                            };
+
+                            let predicate_result = eval(&parts[0], env)?;
+                            if is_truthy(&predicate_result) {
+                                if parts.len() == 1 {
+                                    return Ok(TcoStep::Done(Ok(predicate_result)));
+                                }
+                                for expr in &parts[1..parts.len() - 1] {
+                                    eval(expr, env)?;
+                                }
+                                return Ok(TcoStep::TailCall(
+                                    parts.last().expect("COND body is non-empty").clone(),
+                                    env.clone(),
+                                ));
                             }
                         }
+                        Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
                     "IF" => {
                         // Destructure (cond then else) directly off the cons cells —
@@ -3324,24 +3384,22 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                     }
                     "AND" => {
                         let mut last_val = LispVal::Symbol(env.intern_symbol("T"));
-                        let mut current = &**rest;
-                        while let LispVal::Cons { car, cdr } = current {
-                            last_val = eval(car, env)?;
+                        let forms = list_to_vec(rest)?;
+                        for form in forms {
+                            last_val = eval(&form, env)?;
                             if !is_truthy(&last_val) {
                                 return Ok(TcoStep::Done(Ok(LispVal::Nil)));
                             }
-                            current = cdr;
                         }
                         Ok(TcoStep::Done(Ok(last_val)))
                     }
                     "OR" => {
-                        let mut current = &**rest;
-                        while let LispVal::Cons { car, cdr } = current {
-                            let v = eval(car, env)?;
+                        let forms = list_to_vec(rest)?;
+                        for form in forms {
+                            let v = eval(&form, env)?;
                             if is_truthy(&v) {
                                 return Ok(TcoStep::Done(Ok(v)));
                             }
-                            current = cdr;
                         }
                         Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
@@ -3698,14 +3756,31 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                                 )))));
                             }
 
+                            if !matches!(
+                                expr_val,
+                                LispVal::Cons { car, .. }
+                                    if matches!(
+                                        car.as_ref(),
+                                        LispVal::Symbol(lambda_sym)
+                                            if lambda_sym.borrow().name == "LAMBDA"
+                                    )
+                            ) {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "LABEL expression must be a LAMBDA expression".to_string(),
+                                ))));
+                            }
+
                             let new_env = Environment::new_child(env);
-                            let label_expr = LispVal::Cons {
-                                car: Rc::new(LispVal::Symbol(env.intern_symbol("LABEL"))),
-                                cdr: rest.clone(),
-                            };
-                            new_env.set(name_sym.borrow().name.clone(), label_expr);
-                            // TCO: tail call into expr_val with new_env
-                            Ok(TcoStep::TailCall(expr_val.clone(), new_env))
+                            let func = eval(expr_val, &new_env)?;
+                            match func {
+                                LispVal::Lambda(_) => {
+                                    new_env.set(name_sym.borrow().name.clone(), func.clone());
+                                    Ok(TcoStep::Done(Ok(func)))
+                                }
+                                _ => Ok(TcoStep::Done(Err(LispError::Generic(
+                                    "LABEL expression must evaluate to a function".to_string(),
+                                )))),
+                            }
                         } else {
                             Ok(TcoStep::Done(Err(LispError::Generic(
                                 "LABEL name must be a symbol".to_string(),
@@ -3905,24 +3980,17 @@ fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError>
                         }
                     }
                     "PROGN" => {
-                        let mut current = &**rest;
-                        loop {
-                            match current {
-                                LispVal::Cons { car, cdr } if **cdr != LispVal::Nil => {
-                                    // Non-last form: evaluate normally
-                                    eval(car, env)?;
-                                    current = cdr;
-                                }
-                                LispVal::Cons { car: last_expr, .. } => {
-                                    // Last form: TCO
-                                    return Ok(TcoStep::TailCall(
-                                        last_expr.as_ref().clone(),
-                                        env.clone(),
-                                    ));
-                                }
-                                _ => return Ok(TcoStep::Done(Ok(LispVal::Nil))),
-                            }
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Ok(LispVal::Nil)));
                         }
+                        for form in &forms[..forms.len() - 1] {
+                            eval(form, env)?;
+                        }
+                        Ok(TcoStep::TailCall(
+                            forms.last().expect("PROGN body is non-empty").clone(),
+                            env.clone(),
+                        ))
                     }
                     "SETQ" => {
                         // SETQ: Set a variable's value
@@ -5399,6 +5467,7 @@ fn describe_kind(val: &LispVal) -> &'static str {
         LispVal::Nil => "bound to NIL (the empty list / false)",
         LispVal::HashTable(_) => "bound to a hash table",
         LispVal::Array(_) => "bound to an array",
+        LispVal::Struct(_) => "bound to a typed struct",
         LispVal::Environment(_) => "bound to an environment",
         LispVal::Error(_) => "bound to an error/condition object",
         LispVal::Extension(_) => "bound to a host extension value",
@@ -5426,6 +5495,11 @@ fn push_value_detail(out: &mut String, val: &LispVal) {
         )),
         LispVal::Error(e) => out.push_str(&format!("  Message: {}\n", e.message)),
         LispVal::Array(a) => out.push_str(&format!("  Length: {}\n", a.borrow().len())),
+        LispVal::Struct(s) => out.push_str(&format!(
+            "  Type: {}\n  Fields: {}\n",
+            s.type_name,
+            s.fields.len()
+        )),
         // Self-representing scalars/aggregates: show the value itself.
         LispVal::Number(_)
         | LispVal::Float(_)

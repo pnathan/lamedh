@@ -8,8 +8,8 @@
 //! - **Type membrane + inference.** `(deffun-typed (name ret) ((arg ty)...)
 //!   body...)` is elaborated by a bidirectional checker that runs *before*
 //!   runtime and rejects ill-typed definitions. Elaboration *is* type checking
-//!   (Turnstile-style): [`Cx::elab`] returns the typed [`Core`] and its [`Ty`].
-//!   Type agreement is decided by HM-lite **unification** ([`infer`]): explicit
+//!   (Turnstile-style): `Cx::elab` returns the typed [`Core`] and its [`Ty`].
+//!   Type agreement is decided by HM-lite **unification** (`infer`): explicit
 //!   annotations are principal-type pins, and a `let-typed` binding may omit its
 //!   type to have it **inferred** from the initializer. Every type is `resolve`d
 //!   to a concrete scalar before a definition is accepted (issue #135), the
@@ -32,16 +32,16 @@
 //! and comparisons `< > <= >= = /=` (operand-type directed), `and`/`or`/`not`,
 //! `if`, `let-typed`, sequencing, and calls. `char` is an unboxed byte
 //! (`0..=255` in a `u64`): it compares as an integer, converts to/from `int64`
-//! via `char-code` / `code-char`, and crosses the membrane as a `LispVal::Number`
-//! (issue #136).
+//! via `char-code` / `code-char`, and crosses the membrane as a `LispVal::Char`
+//! or an in-range `LispVal::Number` at input.
 //!
 //! Compound types (#137/#138): `(array T)` (element `T` **inferred**, never
 //! annotated) and typed `struct`s. Both are a pointer to a flat `[len, e0, …]`
 //! `u64` buffer rooted in the per-call arena ([`Ctx`]); access is bounds-checked
 //! and panic-free. A `(array char)` is a string. `(array T)` ↔ `LispVal::Array`
-//! / `LispVal::String`, `struct` ↔ array-of-fields, at the membrane.
+//! / `LispVal::String`, `struct` ↔ nominal `LispVal::Struct`, at the membrane.
 //!
-//! Inference (#135): HM-lite unification + occurs-check + resolve ([`infer`])
+//! Inference (#135): HM-lite unification + occurs-check + resolve (`infer`)
 //! drives every type to a concrete monomorphic representation before codegen.
 //! [`Jit::infer_untyped`] types a *fully un-annotated* function when its body is
 //! an inferable typed island — HM firing under `defun` (via `jit-optimize`).
@@ -49,7 +49,7 @@
 //! Integer arithmetic wraps and integer `/`,`mod` by zero yield `0` (no panics);
 //! this diverges from the checked tree-walker and is revisited with #67.
 
-use crate::LispVal;
+use crate::{LispVal, StructObj};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -91,7 +91,7 @@ pub enum Ty {
     /// fixed-shape array with named offsets.
     Struct(Rc<StructDef>),
     /// A type variable (issue #135): an as-yet-undetermined type, identified by
-    /// a fresh id. Variables exist only *during* elaboration; [`Infer::resolve`]
+    /// a fresh id. Variables exist only *during* elaboration; `Infer::resolve`
     /// must drive every one to a concrete type before a definition is accepted,
     /// so no `Var` is ever stored in a function signature or reaches the runtime
     /// membrane.
@@ -233,8 +233,8 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// A byte value (`0..=255`) at the boundary. Boxes to/from `LispVal::Number`
-    /// since there is no `LispVal::Char` (issue #136 membrane decision).
+    /// A byte value (`0..=255`) at the boundary. Boxes to/from `LispVal::Char`;
+    /// in-range numbers are accepted at input for compatibility.
     Char(u8),
     /// A flat array, materialized at the boundary as its element [`Value`]s. The
     /// runtime word is a pointer into the call arena; this is the copied-out view
@@ -254,9 +254,9 @@ impl Value {
             (Value::Float(f), Ty::Float64) => Ok(f.to_bits()),
             (Value::Bool(b), Ty::Bool) => Ok(*b as u64),
             (Value::Char(b), Ty::Char) => Ok(*b as u64),
-            // Membrane coercion: an untyped Number flowing into a `char`
-            // parameter is masked to a byte (the byte value).
-            (Value::Int(n), Ty::Char) => Ok((*n as u8) as u64),
+            (Value::Int(n), Ty::Char) => Ok(u8::try_from(*n)
+                .map_err(|_| format!("char argument: {n} out of range 0-255"))?
+                as u64),
             (Value::Array(items), Ty::Array(elem)) => {
                 let buf = ctx.alloc_buffer(items.len());
                 for (i, it) in items.iter().enumerate() {
@@ -411,7 +411,7 @@ pub enum Core {
     Seq(Vec<Core>),
 }
 
-/// Public mirror of [`NumTy`] so [`Core`] can derive `Debug`/`Clone` cleanly.
+/// Public mirror of `NumTy` so [`Core`] can derive `Debug`/`Clone` cleanly.
 #[derive(Clone, Copy, Debug)]
 pub enum NumKind {
     I,
@@ -2879,6 +2879,10 @@ fn parse_signature(
 /// Type-directed `LispVal` → [`Value`] at the convenience membrane
 /// ([`Jit::call_lisp`]). A `(array char)` accepts a string; arrays/structs
 /// convert element/field-wise. `bool` follows Lisp truthiness.
+fn char_byte_from_number(n: i64, context: &str) -> Result<u8, String> {
+    u8::try_from(n).map_err(|_| format!("{context}: {n} out of range 0-255"))
+}
+
 fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
     match ty {
         Ty::Int64 => match lv {
@@ -2893,7 +2897,7 @@ fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
         Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
         Ty::Char => match lv {
             LispVal::Char(b) => Ok(Value::Char(*b)),
-            LispVal::Number(n) => Ok(Value::Char(*n as u8)),
+            LispVal::Number(n) => Ok(Value::Char(char_byte_from_number(*n, "char")?)),
             other => Err(format!("expected char, got {other:?}")),
         },
         Ty::Array(elem) => match lv {
@@ -2910,15 +2914,28 @@ fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
             other => Err(format!("expected array, got {other:?}")),
         },
         Ty::Struct(def) => match lv {
-            LispVal::Array(a) => {
-                let items = a.borrow();
+            LispVal::Struct(obj) => {
+                if obj.type_name != def.name {
+                    return Err(format!(
+                        "expected struct {}, got {}",
+                        def.name, obj.type_name
+                    ));
+                }
+                if obj.fields.len() != def.fields.len() {
+                    return Err(format!(
+                        "expected {} fields for struct {}, got {}",
+                        def.fields.len(),
+                        def.name,
+                        obj.fields.len()
+                    ));
+                }
                 let mut out = Vec::new();
-                for (it, (_, ft)) in items.iter().zip(def.fields.iter()) {
+                for (it, (_, ft)) in obj.fields.iter().zip(def.fields.iter()) {
                     out.push(lispval_to_value(it, ft)?);
                 }
                 Ok(Value::Struct(out))
             }
-            other => Err(format!("expected struct, got {other:?}")),
+            other => Err(format!("expected struct {}, got {other:?}", def.name)),
         },
         // Non-compileable types (#162) never back a native edition.
         _ => Err(format!("type {} is not compileable", ty_name(ty))),
@@ -2951,13 +2968,14 @@ fn value_to_lispval(v: &Value, ty: &Ty) -> LispVal {
             _ => LispVal::Nil,
         },
         Value::Struct(fields) => match ty {
-            Ty::Struct(def) => LispVal::Array(Rc::new(RefCell::new(
-                fields
+            Ty::Struct(def) => LispVal::Struct(Rc::new(StructObj {
+                type_name: def.name.clone(),
+                fields: fields
                     .iter()
                     .zip(def.fields.iter())
                     .map(|(fv, (_, ft))| value_to_lispval(fv, ft))
                     .collect(),
-            ))),
+            })),
             _ => LispVal::Nil,
         },
     }

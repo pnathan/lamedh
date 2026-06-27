@@ -56,6 +56,19 @@ fn test_eval_with_fresh_env_has_builtins() {
 }
 
 #[test]
+fn test_eval_with_fresh_env_does_not_see_caller_symbol_value() {
+    let env = env_with_stdlib();
+    let output = eval_line(
+        "(progn (def isolated-secret 1234) (eval 'isolated-secret (make-environment)))",
+        &env,
+    );
+    assert!(
+        output.starts_with("Error:"),
+        "fresh eval environment leaked caller binding: {output}"
+    );
+}
+
+#[test]
 fn test_eval_with_child_env_inherits_parent() {
     let env = env_with_stdlib();
     // Define a variable in current env

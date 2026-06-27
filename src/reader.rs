@@ -308,6 +308,12 @@ fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             preceded(ws, char('.')),
             preceded(ws, parse_expr(env.clone())),
         ))(input)?;
+        if tail.is_some() && exprs.is_empty() {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        }
 
         let end = tail.unwrap_or(LispVal::Nil);
         Ok((
@@ -629,6 +635,12 @@ mod tests {
         let env = Rc::new(Environment::new());
         let result = read("(a . b)", &env);
         assert_eq!(result, Ok(cons(symbol("A", &env), symbol("B", &env))));
+    }
+
+    #[test]
+    fn test_read_rejects_dot_without_leading_element() {
+        let env = Rc::new(Environment::new());
+        assert!(read("(. 1)", &env).is_err());
     }
 
     #[test]

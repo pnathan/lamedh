@@ -35,6 +35,25 @@ fn test_list_nested() {
 }
 
 #[test]
+fn test_single_argument_string_char_helpers_reject_extra_args() {
+    for expr in [
+        "(char-code 'a' 'b')",
+        "(code-char 65 66)",
+        "(make-char 65 66)",
+        "(string->number \"1\" \"2\")",
+        "(number->string 1 2)",
+        "(prin1-to-string 'a 'b)",
+        "(princ-to-string 'a 'b)",
+    ] {
+        let out = eval(expr);
+        assert!(
+            out.starts_with("Error:"),
+            "expected {expr} to reject extra args, got: {out}"
+        );
+    }
+}
+
+#[test]
 fn test_last_simple() {
     assert_eq!(eval("(last '(1 2 3))"), "(3)");
 }

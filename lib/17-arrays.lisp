@@ -13,16 +13,11 @@
 
 (defun array->list (arr)
   "Return the elements of ARR as a list."
-  (array->list-aux arr 0 (array-length arr)))
+  ($array->list arr))
 
 (defun list->array (lst)
   "Build a fresh array holding the elements of LST."
-  (let ((arr (array (length lst)))
-        (i 0))
-    (mapc (lambda (x)
-                (store arr i x)
-                (setq i (+ i 1))) lst)
-    arr))
+  ($list->array lst))
 
 (defun array-map (arr fn)
   "Return a new array with FN applied to each element of ARR."

@@ -263,7 +263,11 @@ When applying a function:
 
 ### 4.6.3 Tail Position
 
-Lamedh does not currently implement tail-call optimization. Deep recursion may cause stack overflow.
+Lamedh implements tail-call optimization with an evaluator trampoline for known
+tail positions: function bodies, `IF` branches, matching `COND` consequents,
+`PROGN`, `LET`, `LET*`, and related special forms. Proper tail-recursive loops
+can run without growing the Rust stack; non-tail recursion still consumes stack
+and is guarded by the evaluator recursion limit.
 
 ---
 

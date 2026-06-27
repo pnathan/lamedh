@@ -1,7 +1,7 @@
 # Lamedh Reference Manual
 
 **Lamedh** (Hebrew: ל, "Lamed") — a Lisp 1.5 interpreter written in Rust.  
-Version 0.1.2 · License AGPL-3.0
+Version 0.2.0 · License AGPL-3.0
 
 ---
 
@@ -60,8 +60,9 @@ provides:
 > the Rust evaluator.  The kernel stays a minimal set of primitives; the Lisp
 > layer does the rest.
 
-Lamedh is not a production-grade Lisp.  It does not provide JIT compilation,
-full Common Lisp or Scheme compatibility, or comprehensive debugging facilities.
+Lamedh is not yet a 1.0 production Lisp. It has an experimental typed
+checker/JIT path, but it does not provide full Common Lisp or Scheme
+compatibility, a mature debugger, packages, streams, or a full condition system.
 It *is* a faithful, practical, embeddable Lisp 1.5 dialect with modern
 extensions.
 
@@ -94,7 +95,7 @@ The two workspace members are:
 
 | Crate | Type | Description |
 |-------|------|-------------|
-| `lamedh` | library | Reusable interpreter. Depends only on `nom`. |
+| `lamedh` | library | Reusable interpreter. Default features include the typed JIT backend; use `--no-default-features` for the dependency-light typed checker. |
 | `lamedh-cli` | binary (`lamedh`) | CLI/REPL driver. Depends on `lamedh`, `clap`, `rustyline`. |
 
 Benchmark crates under `benchmarks/*/rust` are **excluded** from the workspace
@@ -588,11 +589,13 @@ Returns the function value of `name` (useful to pass built-ins as values).
 ### 7.14 LABEL
 
 ```lisp
-(label name expr)
+(label name (lambda ...))
 ```
 
-Evaluates `expr` with `name` bound to `expr` itself — enables anonymous
-recursion.
+Creates a recursive function by evaluating the literal lambda in a child
+environment and then binding `name` to the resulting closure in that same child
+environment. The payload must be a `LAMBDA` expression; malformed nested `LABEL`
+graphs are rejected instead of being re-evaluated as delayed expressions.
 
 ```lisp
 ((label fact (lambda (n) (if (zerop n) 1 (* n (fact (sub1 n)))))) 5)
@@ -988,15 +991,12 @@ set and wrapping semantics apply.
 
 | Function | Description |
 |----------|-------------|
-| `ENABLE-FEATURE` | Enable a capability by name |
-| `DISABLE-FEATURE` | Disable a capability |
 | `FEATURE-ENABLED-P` | Test if capability is enabled |
 | `FEATURES` | List all enabled capabilities |
 
 ```lisp
-(enable-feature "SHELL")
-(feature-enabled-p "SHELL")   ; => T
-(features)                    ; => ("SHELL")
+(feature-enabled-p "SHELL")   ; => T if the host granted it
+(features)                    ; => enabled capability names
 ```
 
 ### 8.14 Shell (requires `SHELL` capability)
@@ -1009,10 +1009,12 @@ set and wrapping semantics apply.
 
 See shell helpers in [section 9.7](#97-shell-helpers).
 
-### 8.15 File I/O (requires `FILE-IO` capability)
+### 8.15 File I/O (capability-gated)
 
 ```lisp
-(load-file "mylib.lisp")
+(read-file "notes.txt")          ; requires READ-FS
+(write-file "out.txt" "hello")   ; requires CREATE-FS
+(make-temp-file "lamedh-")       ; requires TEMP-FS
 ```
 
 ---
@@ -1132,7 +1134,7 @@ Requires `SHELL` feature enabled. Wraps the `SHELL` builtin:
 | `SH` | Run command; return stdout or signal error |
 
 ```lisp
-(enable-feature "SHELL")
+; Requires the host or CLI to grant SHELL first.
 (sh "echo hello")          ; => "hello\n"
 (shell-ok-p (shell "ls"))  ; => T
 ```
@@ -1609,16 +1611,21 @@ All potentially dangerous operations are gated behind **feature flags** that are
 | Feature | Operations gated |
 |---------|-----------------|
 | `SHELL` | `(shell cmd)` — run subprocesses |
-| `FILE-IO` | `(load-file path)` — read and evaluate files |
+| `READ-FS` | `load-file`, `read-file`, metadata, and directory queries |
+| `CREATE-FS` | file writes and filesystem mutation |
+| `TEMP-FS` | temporary-file and temporary-directory creation |
 | `IO` | `(read)` — read s-expression from stdin |
 
 ```lisp
-; From Lisp (can be called by the Lisp script itself)
-(enable-feature "SHELL")
-(enable-feature "FILE-IO")
+; From Lisp, inspect capabilities:
+(feature-enabled-p "SHELL")
+(features)
+```
 
-; From Rust (grants at environment creation time)
+```rust
+// From Rust, grant capabilities explicitly:
 env.enable_feature("SHELL");
+env.enable_feature("READ-FS");
 ```
 
 Because `SharedState` is shared across the whole environment chain, enabling a
@@ -1755,7 +1762,7 @@ The help system is implemented entirely in Lisp (`98-help-system.lisp`,
 [dependencies]
 lamedh = { path = "/path/to/lamedh" }
 # or, when published to crates.io:
-# lamedh = "0.1"
+# lamedh = "0.2"
 ```
 
 ### Minimal embedding
@@ -1810,7 +1817,7 @@ let val: LispVal = eval_str("(+ 1 2)", &env)?;
 // Multiple top-level forms
 let vals: Vec<LispVal> = eval_all("(def x 1) (+ x 2)", &env)?;
 
-// Load from a file (requires FILE-IO if called from Lisp)
+// Load from a file (requires READ-FS if reached through Lisp code)
 lamedh::load_file("mylib.lisp", &env)?;
 
 // Load a directory of .lisp files
@@ -1874,7 +1881,9 @@ The name is uppercased automatically.  The function receives evaluated arguments
 
 ```rust
 env.enable_feature("SHELL");
-env.enable_feature("FILE-IO");
+env.enable_feature("READ-FS");
+env.enable_feature("CREATE-FS");
+env.enable_feature("TEMP-FS");
 env.enable_feature("IO");
 
 // Check from Rust
@@ -1944,7 +1953,7 @@ not escape a top-level `eval_str` call under normal use.
 ```toml
 [package]
 name        = "lamedh"
-version     = "0.1.2"
+version     = "0.2.0"
 edition     = "2024"
 description = "An embeddable Lisp 1.5 interpreter written in Rust"
 license     = "AGPL-3.0"
@@ -1954,7 +1963,22 @@ name = "lamedh"
 path = "src/lib.rs"
 
 [dependencies]
-nom = "=7.1.3"   # pinned; only runtime dependency
+nom = "=7.1.3"   # pinned parser dependency
+
+# Native-code backend for the typed JIT. Enabled by default in 0.2.x.
+cranelift-jit      = { version = "0.133", optional = true }
+cranelift-module   = { version = "0.133", optional = true }
+cranelift-codegen  = { version = "0.133", optional = true }
+cranelift-frontend = { version = "0.133", optional = true }
+
+[features]
+default = ["jit"]
+jit = [
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+]
 
 [workspace]
 members         = ["cli"]
@@ -1966,21 +1990,23 @@ exclude = [
 ]
 ```
 
-The library crate has **one** runtime dependency: `nom` (parser combinators).
-It has no CLI, terminal, or filesystem dependencies.
+The library crate's dependency-light build uses `nom` for the reader:
+`cargo build --no-default-features`. The default 0.2.x build also enables the
+typed JIT's Cranelift backend.
 
 ### `cli/Cargo.toml`
 
 ```toml
 [package]
 name        = "lamedh-cli"
-version     = "0.1.2"
+version     = "0.2.0"
 edition     = "2024"
 description = "REPL and command-line driver for the Lamedh Lisp 1.5 interpreter"
 
 [[bin]]
 name = "lamedh"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 lamedh    = { path = ".." }
@@ -1993,6 +2019,7 @@ clap      = { version = "4.5.4", features = ["derive"] }
 | Crate | Used by | Purpose |
 |-------|---------|---------|
 | `nom 7.1.3` | `lamedh` (lib) | Parser combinators for the reader |
+| `cranelift-* 0.133` | `lamedh` default `jit` feature | Native-code backend for typed functions |
 | `rustyline 14.0.0` | `lamedh-cli` | REPL line-editing and history |
 | `clap 4.5.4` | `lamedh-cli` | Command-line argument parsing |
 
@@ -2231,10 +2258,9 @@ clone — creating a child frame is one refcount bump, not four.
 ### Capabilities
 
 ```lisp
-(enable-feature "SHELL")
-(enable-feature "FILE-IO")
-(enable-feature "IO")
 (feature-enabled-p "SHELL")
+(feature-enabled-p "READ-FS")
+(features)
 (shell "ls")
 (load-file "path.lisp")
 (read)

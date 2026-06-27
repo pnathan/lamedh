@@ -173,7 +173,9 @@ Current built-in feature flags:
 | Flag      | Description                                                |
 |-----------|------------------------------------------------------------|
 | `SHELL`   | Allow `(shell ...)` to run subprocesses                    |
-| `FILE-IO` | Allow `(load-file ...)` to read and evaluate Lisp files    |
+| `READ-FS` | Allow filesystem reads, `load-file`, metadata, directories |
+| `CREATE-FS` | Allow file writes and filesystem mutation               |
+| `TEMP-FS` | Allow temporary file and directory creation                |
 | `IO`      | Allow `(read)` to read an s-expression from standard input |
 
 ## Condition flags

@@ -20,6 +20,7 @@ FIB
 - **Iterative loops** — `FOR` (integer range) and `WHILE` with a single reused frame
 - **Capability-gated sandbox** — filesystem, shell, and stdin access all off by default
 - **Lisp-layer optimizer** — constant folding and dead-binding elimination as Lisp passes, keeping the Rust kernel small
+- **Typed checker/JIT path** — HM-style checking for typed islands, with Cranelift native code under the default `jit` feature
 - **Interactive REPL** with line editing, history, and an in-REPL help system (`(help 'car)`)
 - **Embeddable library** — the `lamedh` crate exposes `eval_line()`, `load_file()`, and the `LispValExtension` trait
 
@@ -91,7 +92,7 @@ The workspace has two crates:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `lamedh` | library | Reusable interpreter. Depends only on `nom`. |
+| `lamedh` | library | Reusable interpreter. Default features include the typed JIT backend; `--no-default-features` keeps the dependency-light checker path. |
 | `lamedh-cli` | binary | CLI/REPL driver. Depends on `lamedh`, `clap`, `rustyline`. |
 
 ## Development
@@ -109,6 +110,8 @@ cd benchmarks && ./run_benchmarks.sh        # performance benchmarks
 The full **[Reference Manual](lamedh-manual.md)** covers every special form, built-in function, the standard library, the optimizer, embedding guide, and more.
 
 Shorter topic docs live in [`docs/`](docs/index.md).
+The 1.0 release gates are tracked in [`docs/roadmap_1_0.md`](docs/roadmap_1_0.md);
+the crate version remains on `0.2.x` during that ramp.
 
 ## License
 

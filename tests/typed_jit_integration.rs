@@ -155,6 +155,23 @@ fn typed_string_processing_lands_at_repl() {
 }
 
 #[test]
+fn typed_char_arguments_reject_out_of_range_numbers() {
+    let env = Environment::new_with_builtins();
+    eval_line("(deffun-typed (idc char) ((c char)) c)", &env);
+
+    assert_eq!(eval_line("(char-code (idc 'A'))", &env), "65");
+    assert_eq!(eval_line("(char-code (idc 65))", &env), "65");
+
+    for expr in ["(idc 256)", "(idc -1)"] {
+        let out = eval_line(expr, &env);
+        assert!(
+            out.starts_with("Error:"),
+            "expected {expr} to reject out-of-range char input, got: {out}"
+        );
+    }
+}
+
+#[test]
 fn typed_int_array_kernel_lands_at_repl() {
     // `with_stdlib` for `list->array`; the kernel itself is typed/native.
     let env = Environment::with_stdlib();
@@ -180,12 +197,26 @@ fn typed_struct_lands_at_repl() {
     eval_line("(defstruct-typed Point (x int64) (y int64))", &env);
     assert_eq!(eval_line("(point-x (make-point 3 4))", &env), "3");
     assert_eq!(eval_line("(point-y (make-point 3 4))", &env), "4");
-    // A struct flows through the membrane as an array of its fields.
+    // A struct flows through the typed membrane with its nominal type intact.
     eval_line(
         "(deffun-typed (manhattan int64) ((p Point)) (+ (point-x p) (point-y p)))",
         &env,
     );
     assert_eq!(eval_line("(manhattan (make-point 3 4))", &env), "7");
+}
+
+#[test]
+fn typed_struct_accessors_reject_plain_arrays() {
+    let env = Environment::new_with_builtins();
+    eval_line("(defstruct-typed Point (x int64) (y int64))", &env);
+    let out = eval_line(
+        "(progn (def forged (array 2)) (store forged 0 10) (store forged 1 20) (point-x forged))",
+        &env,
+    );
+    assert!(
+        out.starts_with("Error:"),
+        "typed struct accessor accepted a plain array: {out}"
+    );
 }
 
 #[test]

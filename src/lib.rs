@@ -16,7 +16,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! lamedh = "0.1"
+//! lamedh = "0.2"
 //! ```
 //!
 //! Evaluate Lisp expressions from Rust:
@@ -125,7 +125,7 @@
 //! ```toml
 //! [package]
 //! name        = "lamedh"
-//! version     = "0.1.2"
+//! version     = "0.2.0"
 //! edition     = "2024"
 //! description = "An embeddable Lisp 1.5 interpreter written in Rust"
 //! license     = "AGPL-3.0"
@@ -135,7 +135,23 @@
 //! path = "src/lib.rs"
 //!
 //! [dependencies]
-//! nom = "=7.1.3"   # pinned; the only runtime dependency
+//! nom = "=7.1.3"   # pinned reader dependency
+//!
+//! # Default typed-JIT backend. Disable default features for the
+//! # dependency-light typed checker / closure interpreter path.
+//! cranelift-jit      = { version = "0.133", optional = true }
+//! cranelift-module   = { version = "0.133", optional = true }
+//! cranelift-codegen  = { version = "0.133", optional = true }
+//! cranelift-frontend = { version = "0.133", optional = true }
+//!
+//! [features]
+//! default = ["jit"]
+//! jit = [
+//!     "dep:cranelift-jit",
+//!     "dep:cranelift-module",
+//!     "dep:cranelift-codegen",
+//!     "dep:cranelift-frontend",
+//! ]
 //!
 //! [workspace]
 //! members         = ["cli"]
@@ -144,10 +160,10 @@
 //! # workspace and built directly by benchmarks/run_benchmarks.sh.
 //! ```
 //!
-//! The library crate has **one** runtime dependency: `nom` (parser combinators
-//! for the reader).  It has no CLI, terminal, or filesystem dependencies.  All
-//! I/O is gated behind capability flags so embedders get a sandboxed interpreter
-//! by default.
+//! The dependency-light library build uses `nom` (parser combinators for the
+//! reader). The default 0.2.x build also enables the typed JIT's Cranelift
+//! backend; use `--no-default-features` to omit it. All I/O is gated behind
+//! capability flags so embedders get a sandboxed interpreter by default.
 //!
 //! The companion binary crate `lamedh-cli` (in `cli/`) adds `rustyline` (REPL
 //! line-editing) and `clap` (argument parsing) but does not affect the library.
@@ -454,6 +470,9 @@ pub enum BuiltinFunc {
     ArrayFetch,
     ArrayStore,
     ArrayLength,
+    Length,
+    ListToArray,
+    ArrayToList,
     Arrayp,
     Extensionp,
     ExtensionTypeName,
@@ -753,6 +772,8 @@ pub enum LispVal {
     /// A 0-indexed mutable vector (Lisp 1.5 `array`).  Created by `(array n)`;
     /// accessed with `(fetch a i)` / `(store a i v)`.
     Array(Rc<RefCell<Vec<LispVal>>>),
+    /// A typed, nominal struct value crossing the typed membrane.
+    Struct(Rc<StructObj>),
     /// A host-defined extension value.  Use [`LispVal::ext`] to construct.
     /// See [`LispValExtension`].
     Extension(Rc<dyn LispValExtension>),
@@ -775,6 +796,15 @@ pub struct ErrorObj {
     pub message: String,
     /// Structured payload: a cons list of irritants, or `Nil`.
     pub data: LispVal,
+}
+
+/// The payload of a [`LispVal::Struct`].
+#[derive(Debug, Clone)]
+pub struct StructObj {
+    /// Uppercased typed struct name, e.g. `POINT`.
+    pub type_name: String,
+    /// Field values in declaration order.
+    pub fields: Vec<LispVal>,
 }
 
 impl LispVal {
@@ -803,6 +833,7 @@ impl fmt::Debug for LispVal {
             LispVal::Native(_) => write!(f, "Native(...)"),
             LispVal::Environment(_) => write!(f, "Environment(...)"),
             LispVal::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
+            LispVal::Struct(s) => write!(f, "Struct(type={}, fields={:?})", s.type_name, s.fields),
             LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
             LispVal::Error(e) => write!(f, "Error({:?}, {:?})", e.message, e.data),
         }
@@ -831,9 +862,24 @@ impl Clone for LispVal {
             LispVal::Native(f) => LispVal::Native(Rc::clone(f)),
             LispVal::Environment(e) => LispVal::Environment(Rc::clone(e)),
             LispVal::Array(a) => LispVal::Array(Rc::clone(a)),
+            LispVal::Struct(s) => LispVal::Struct(Rc::clone(s)),
             LispVal::Extension(e) => LispVal::Extension(Rc::clone(e)),
             LispVal::Error(e) => LispVal::Error(Rc::clone(e)),
         }
+    }
+}
+
+fn lisp_float_eq(a: f64, b: f64) -> bool {
+    a == b || (a.is_nan() && b.is_nan())
+}
+
+fn lisp_float_hash_bits(f: f64) -> u64 {
+    if f.is_nan() {
+        f64::NAN.to_bits()
+    } else if f == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        f.to_bits()
     }
 }
 
@@ -843,7 +889,7 @@ impl PartialEq for LispVal {
             (LispVal::Symbol(a), LispVal::Symbol(b)) => Rc::ptr_eq(a, b),
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
             (LispVal::Char(a), LispVal::Char(b)) => a == b,
-            (LispVal::Float(a), LispVal::Float(b)) => a == b,
+            (LispVal::Float(a), LispVal::Float(b)) => lisp_float_eq(*a, *b),
             (LispVal::String(a), LispVal::String(b)) => a == b,
             (
                 LispVal::Cons {
@@ -865,6 +911,9 @@ impl PartialEq for LispVal {
             (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
             (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
             (LispVal::Array(a), LispVal::Array(b)) => Rc::ptr_eq(a, b),
+            (LispVal::Struct(a), LispVal::Struct(b)) => {
+                a.type_name == b.type_name && a.fields == b.fields
+            }
             (LispVal::Extension(a), LispVal::Extension(b)) => a.eq_ext(b.as_ref()),
             (LispVal::Error(a), LispVal::Error(b)) => a.message == b.message && a.data == b.data,
             _ => false,
@@ -880,7 +929,7 @@ impl Hash for LispVal {
             LispVal::Symbol(s) => Rc::as_ptr(s).hash(state),
             LispVal::Number(n) => n.hash(state),
             LispVal::Char(b) => b.hash(state),
-            LispVal::Float(f) => f.to_bits().hash(state),
+            LispVal::Float(f) => lisp_float_hash_bits(*f).hash(state),
             LispVal::String(s) => s.hash(state),
             LispVal::Cons { car, cdr } => {
                 car.hash(state);
@@ -898,6 +947,10 @@ impl Hash for LispVal {
             }
             LispVal::Array(a) => {
                 Rc::as_ptr(a).hash(state);
+            }
+            LispVal::Struct(s) => {
+                s.type_name.hash(state);
+                s.fields.hash(state);
             }
             LispVal::Extension(e) => {
                 e.hash_ext(state);

@@ -140,6 +140,62 @@ fn test_and_no_args() {
 }
 
 #[test]
+fn test_improper_function_call_tail_errors() {
+    let result = eval_str("(+ 1 . 2)");
+    assert!(
+        result.is_err(),
+        "improper function-call tail should error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_improper_progn_tail_errors() {
+    let result = eval_str("(PROGN 1 . 2)");
+    assert!(
+        result.is_err(),
+        "improper PROGN tail should error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_improper_and_or_tails_error() {
+    for expr in ["(AND T . 42)", "(OR NIL . 42)"] {
+        let result = eval_str(expr);
+        assert!(
+            result.is_err(),
+            "improper tail in {expr} should error, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_improper_cond_clause_tail_errors() {
+    let result = eval_str("(COND ((QUOTE T) 1 . 2))");
+    assert!(
+        result.is_err(),
+        "improper COND clause tail should error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_improper_while_body_tail_errors_even_when_condition_is_false() {
+    let result = eval_str("(WHILE NIL 1 . 42)");
+    assert!(
+        result.is_err(),
+        "improper WHILE body tail should error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_improper_evlis_input_errors() {
+    let result = eval_str("(EVLIS (QUOTE ((+ 1 2) . 42)))");
+    assert!(
+        result.is_err(),
+        "EVLIS should reject improper input lists, got {result:?}"
+    );
+}
+
+#[test]
 fn test_or_no_args() {
     // (OR) with no arguments should return NIL
     let result = eval_str("(OR)");

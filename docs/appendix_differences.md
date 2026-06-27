@@ -203,7 +203,9 @@ Similar, but different names:
 
 - Console I/O: `READ`, `PRINT`, `PRIN1`, `PRINC`, `TERPRI`
 - File loading: `LOAD-FILE`
-- No file writing
+- Capability-gated file reading, writing, metadata, directory, mutation, and
+  temporary-file helpers
+- No Common Lisp-style stream system yet
 
 ---
 

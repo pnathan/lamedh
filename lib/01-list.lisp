@@ -19,8 +19,7 @@
         (t (member item (cdr list)))))
 
 (defun length (list)
-  (cond ((null list) 0)
-        (t (+ 1 (length (cdr list))))))
+  ($length list))
 
 (defun reverse-aux (lst acc)
   (if (null lst)

@@ -358,7 +358,10 @@ Once marked, all lookups of that name use the dynamic parent chain. `DEFDYNAMIC`
 
 ### Features (capability gating)
 
-Features are strings stored in `SharedState::features`. All operations guarded by features (SHELL, FILE-IO, IO) check `env.feature_enabled(name)` before proceeding. Since SharedState is shared, enabling a feature in any child environment enables it for all.
+Features are strings stored in `SharedState::features`. All operations guarded
+by features (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) check
+`env.feature_enabled(name)` before proceeding. Since `SharedState` is shared,
+enabling a feature in any child environment enables it for all.
 
 ---
 
@@ -522,10 +525,13 @@ fn builtin_my_fn(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, Lis
 env.set("MY-FN", LispVal::Builtin(builtin_my_fn));
 ```
 
-3. Add a docstring in `lib/06-builtin-docs.lisp`:
+3. Add a structured help record in `lib/99-help-data.lisp`:
 
 ```lisp
-(putp 'my-fn "docstring" "Double a number.")
+(register-doc 'my-fn
+  (list
+    (cons 'NAME 'my-fn)
+    (cons 'DESCRIPTION "Double a number.")))
 ```
 
 4. Write tests in `tests/` and a test in `tests/lisp/`.
