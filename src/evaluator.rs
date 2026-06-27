@@ -2818,9 +2818,12 @@ fn lispval_to_typed(lv: &LispVal, ty: &crate::jit::Ty) -> Result<crate::jit::Val
             }
             other => Err(format!("expected struct (array of fields), got {other:?}")),
         },
-        // Signatures are fully resolved before a function is installed, so a
-        // type variable never reaches the membrane (issue #135).
-        Ty::Var(_) => Err("unresolved type variable at the typed membrane".to_string()),
+        // Only compileable types back a native edition, so non-compileable
+        // types (#162) and unresolved variables never reach the membrane.
+        _ => Err(format!(
+            "type {} is not compileable at the typed membrane",
+            crate::jit::ty_name(ty)
+        )),
     }
 }
 

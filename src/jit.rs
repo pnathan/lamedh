@@ -96,6 +96,48 @@ pub enum Ty {
     /// so no `Var` is ever stored in a function signature or reaches the runtime
     /// membrane.
     Var(u32),
+
+    // --- checkable-but-not-compileable types (issue #162) ------------------
+    // These extend the *checker's* type language past the compileable lattice:
+    // the inference engine can prove a value has one of these types (catching
+    // software type errors), even though codegen does not lower them to unboxed
+    // native code. `is_compileable` partitions the lattice; the codegen gate
+    // (`resolve_compileable`) rejects everything below this line.
+    /// A homogeneous proper list of `T` (boxed `LispVal` cons chain).
+    List(Box<Ty>),
+    /// A cons cell `(car . cdr)` with independently-typed halves.
+    Pair(Box<Ty>, Box<Ty>),
+    /// An interned symbol.
+    Symbol,
+    /// The boxed `LispVal::String` (distinct from `(array char)`).
+    Str,
+    /// An arrow type `(args...) -> ret`, for higher-order checking.
+    Fn(Vec<Ty>, Box<Ty>),
+    /// The gradual top type: the operative/`eval`/create-on-assign frontier
+    /// (Wand). It unifies with anything (absorbing) and propagates, so the
+    /// checker stays sound on the applicative island and makes no claim across
+    /// the membrane.
+    Any,
+}
+
+/// Whether `t` lies in the **compileable** sub-lattice — the types codegen can
+/// lower to unboxed machine words/buffers. Checkable-but-not-compileable types
+/// (issue #162) are well-typed but stay interpreted/boxed.
+pub fn is_compileable(t: &Ty) -> bool {
+    match t {
+        Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char => true,
+        Ty::Array(e) => is_compileable(e),
+        Ty::Struct(d) => d.fields.iter().all(|(_, ft)| is_compileable(ft)),
+        // A variable is not (yet) compileable until resolved; the rest are
+        // checkable only.
+        Ty::Var(_)
+        | Ty::List(_)
+        | Ty::Pair(_, _)
+        | Ty::Symbol
+        | Ty::Str
+        | Ty::Fn(_, _)
+        | Ty::Any => false,
+    }
 }
 
 /// A struct type definition: an ordered list of `(field-name, field-type)`. Two
@@ -153,6 +195,15 @@ pub fn ty_name(t: &Ty) -> String {
         Ty::Struct(s) => s.name.clone(),
         // A variable should never survive to a signature/introspection site.
         Ty::Var(v) => format!("?{v}"),
+        Ty::List(e) => format!("(list {})", ty_name(e)),
+        Ty::Pair(a, b) => format!("(pair {} {})", ty_name(a), ty_name(b)),
+        Ty::Symbol => "symbol".to_string(),
+        Ty::Str => "string".to_string(),
+        Ty::Fn(ps, r) => {
+            let args = ps.iter().map(ty_name).collect::<Vec<_>>().join(" ");
+            format!("(-> ({args}) {})", ty_name(r))
+        }
+        Ty::Any => "any".to_string(),
     }
 }
 
@@ -251,9 +302,18 @@ impl Value {
                 }
                 Value::Struct(fields)
             }
-            // Signatures are fully resolved before storage (see [`Ty::Var`]), so
-            // a variable never crosses the membrane.
-            Ty::Var(_) => unreachable!("from_word on an unresolved type variable"),
+            // Only compileable types cross the membrane: a `Var` is resolved
+            // before storage, and the checkable-only types (#162) never back a
+            // native edition (`is_compileable` is false for them).
+            Ty::Var(_)
+            | Ty::List(_)
+            | Ty::Pair(_, _)
+            | Ty::Symbol
+            | Ty::Str
+            | Ty::Fn(_, _)
+            | Ty::Any => {
+                unreachable!("from_word on a non-compileable type {}", ty_name(ty))
+            }
         }
     }
 }
@@ -2531,7 +2591,8 @@ fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
             }
             other => Err(format!("expected struct, got {other:?}")),
         },
-        Ty::Var(_) => Err("unresolved type variable at the membrane".to_string()),
+        // Non-compileable types (#162) never back a native edition.
+        _ => Err(format!("type {} is not compileable", ty_name(ty))),
     }
 }
 

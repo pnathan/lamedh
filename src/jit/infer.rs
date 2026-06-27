@@ -68,10 +68,12 @@ impl Infer {
         match self.walk(t) {
             Ty::Var(w) => v == w,
             // Compound types recurse into their components.
-            Ty::Array(elem) => self.occurs(v, &elem),
+            Ty::Array(elem) | Ty::List(elem) => self.occurs(v, &elem),
+            Ty::Pair(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
+            Ty::Fn(ps, r) => ps.iter().any(|p| self.occurs(v, p)) || self.occurs(v, &r),
             Ty::Struct(def) => def.fields.iter().any(|(_, ft)| self.occurs(v, ft)),
-            // Scalars contain no variables.
-            Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char => false,
+            // Scalars and nullary checkable types contain no variables.
+            Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Symbol | Ty::Str | Ty::Any => false,
         }
     }
 
@@ -86,19 +88,36 @@ impl Infer {
 
     /// Unify two types, extending the substitution so that they become equal,
     /// or returning an error describing the clash. Variables bind (with an
-    /// occurs-check); equal scalars succeed; arrays unify element-wise; structs
-    /// unify by identity; everything else is a mismatch.
+    /// occurs-check); `Any` (the gradual top, #162) absorbs anything without
+    /// binding; equal scalars succeed; arrays/lists/pairs/arrows unify
+    /// structurally; structs unify by identity; everything else is a mismatch.
     pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), String> {
         let a = self.walk(a);
         let b = self.walk(b);
         match (a, b) {
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
+            // `Any` is absorbing — the operative/`eval` frontier makes no claim
+            // and unifies with everything. Checked *before* variable binding so a
+            // variable meeting `Any` is left free rather than pinned to `Any`.
+            (Ty::Any, _) | (_, Ty::Any) => Ok(()),
             (Ty::Var(x), t) | (t, Ty::Var(x)) => self.bind(x, t),
             (Ty::Int64, Ty::Int64)
             | (Ty::Float64, Ty::Float64)
             | (Ty::Bool, Ty::Bool)
-            | (Ty::Char, Ty::Char) => Ok(()),
-            (Ty::Array(ea), Ty::Array(eb)) => self.unify(&ea, &eb),
+            | (Ty::Char, Ty::Char)
+            | (Ty::Symbol, Ty::Symbol)
+            | (Ty::Str, Ty::Str) => Ok(()),
+            (Ty::Array(ea), Ty::Array(eb)) | (Ty::List(ea), Ty::List(eb)) => self.unify(&ea, &eb),
+            (Ty::Pair(a1, a2), Ty::Pair(b1, b2)) => {
+                self.unify(&a1, &b1)?;
+                self.unify(&a2, &b2)
+            }
+            (Ty::Fn(pa, ra), Ty::Fn(pb, rb)) if pa.len() == pb.len() => {
+                for (x, y) in pa.iter().zip(pb.iter()) {
+                    self.unify(x, y)?;
+                }
+                self.unify(&ra, &rb)
+            }
             (Ty::Struct(sa), Ty::Struct(sb)) if sa == sb => Ok(()),
             (x, y) => Err(format!(
                 "cannot unify {} with {}",
@@ -108,16 +127,44 @@ impl Infer {
         }
     }
 
-    /// Resolve `t` to a concrete monomorphic type under the final substitution,
-    /// descending into compound types. A type variable that is still unbound is
-    /// an error: codegen needs a concrete representation, so an un-pinned type is
-    /// ambiguous and rejected at definition time.
+    /// Resolve `t` to a concrete monomorphic **compileable** type under the final
+    /// substitution — the codegen gate. Errors on an unresolved variable (no
+    /// representation) *or* any checkable-but-not-compileable type (#162), so the
+    /// native backend only ever sees the unboxable lattice.
     pub(crate) fn resolve(&self, t: &Ty) -> Result<Ty, String> {
-        match self.walk(t) {
+        let w = self.walk(t);
+        match &w {
             Ty::Var(v) => Err(format!(
                 "cannot infer type (ambiguous: type variable ?{v} is unconstrained)"
             )),
-            Ty::Array(elem) => Ok(Ty::Array(Box::new(self.resolve(&elem)?))),
+            Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Struct(_) => Ok(w),
+            Ty::Array(elem) => Ok(Ty::Array(Box::new(self.resolve(elem)?))),
+            other => Err(format!("type {} is not compileable", super::ty_name(other))),
+        }
+    }
+
+    /// Resolve `t` to any concrete **checkable** type (the checker's resolve,
+    /// #162), descending into every compound. Only an unresolved variable is an
+    /// error (until generalization lands, Stage 2). Unlike [`resolve`], it
+    /// accepts the non-compileable types (`List`/`Pair`/`Symbol`/`Str`/`Fn`/
+    /// `Any`) — a value can be *well-typed* without having a *compileable* type.
+    #[allow(dead_code)] // wired to the checking surface in a later stage (#162)
+    pub(crate) fn resolve_checked(&self, t: &Ty) -> Result<Ty, String> {
+        match self.walk(t) {
+            Ty::Var(v) => Err(format!("cannot infer type (unresolved type variable ?{v})")),
+            Ty::Array(e) => Ok(Ty::Array(Box::new(self.resolve_checked(&e)?))),
+            Ty::List(e) => Ok(Ty::List(Box::new(self.resolve_checked(&e)?))),
+            Ty::Pair(a, b) => Ok(Ty::Pair(
+                Box::new(self.resolve_checked(&a)?),
+                Box::new(self.resolve_checked(&b)?),
+            )),
+            Ty::Fn(ps, r) => {
+                let mut rps = Vec::with_capacity(ps.len());
+                for p in &ps {
+                    rps.push(self.resolve_checked(p)?);
+                }
+                Ok(Ty::Fn(rps, Box::new(self.resolve_checked(&r)?)))
+            }
             concrete => Ok(concrete),
         }
     }
@@ -242,5 +289,117 @@ mod tests {
         for t in [Ty::Int64, Ty::Float64, Ty::Bool, Ty::Char] {
             assert_eq!(inf.resolve(&t).unwrap(), t);
         }
+    }
+
+    // --- checker type language (#162) --------------------------------------
+
+    #[test]
+    fn any_is_absorbing_and_does_not_bind() {
+        let mut inf = Infer::new();
+        // Any ~ scalar succeeds without constraining anything.
+        inf.unify(&Ty::Any, &Ty::Int64).unwrap();
+        inf.unify(&Ty::Str, &Ty::Any).unwrap();
+        // A variable meeting Any stays free (not pinned to Any), so it can still
+        // be constrained to a real type afterwards.
+        let a = inf.fresh();
+        inf.unify(&a, &Ty::Any).unwrap();
+        inf.unify(&a, &Ty::Bool).unwrap();
+        assert_eq!(inf.resolve(&a).unwrap(), Ty::Bool);
+    }
+
+    #[test]
+    fn lists_and_pairs_unify_structurally() {
+        let mut inf = Infer::new();
+        let a = inf.fresh();
+        inf.unify(
+            &Ty::List(Box::new(a.clone())),
+            &Ty::List(Box::new(Ty::Int64)),
+        )
+        .unwrap();
+        assert_eq!(inf.resolve_checked(&a).unwrap(), Ty::Int64);
+
+        let mut inf = Infer::new();
+        let (x, y) = (inf.fresh(), inf.fresh());
+        inf.unify(
+            &Ty::Pair(Box::new(x.clone()), Box::new(y.clone())),
+            &Ty::Pair(Box::new(Ty::Symbol), Box::new(Ty::Str)),
+        )
+        .unwrap();
+        assert_eq!(inf.resolve_checked(&x).unwrap(), Ty::Symbol);
+        assert_eq!(inf.resolve_checked(&y).unwrap(), Ty::Str);
+    }
+
+    #[test]
+    fn arrow_types_unify_by_arity_and_components() {
+        let mut inf = Infer::new();
+        let r = inf.fresh();
+        let lhs = Ty::Fn(vec![Ty::Int64], Box::new(r.clone()));
+        let rhs = Ty::Fn(vec![Ty::Int64], Box::new(Ty::Bool));
+        inf.unify(&lhs, &rhs).unwrap();
+        assert_eq!(inf.resolve_checked(&r).unwrap(), Ty::Bool);
+        // Arity mismatch is a clash.
+        let mut inf = Infer::new();
+        assert!(
+            inf.unify(
+                &Ty::Fn(vec![Ty::Int64], Box::new(Ty::Bool)),
+                &Ty::Fn(vec![Ty::Int64, Ty::Int64], Box::new(Ty::Bool)),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn occurs_check_rejects_cyclic_list_and_pair() {
+        let mut inf = Infer::new();
+        let a = inf.fresh();
+        assert!(
+            inf.unify(&a, &Ty::List(Box::new(a.clone())))
+                .unwrap_err()
+                .contains("occurs-check")
+        );
+        let mut inf = Infer::new();
+        let b = inf.fresh();
+        assert!(
+            inf.unify(&b, &Ty::Pair(Box::new(Ty::Int64), Box::new(b.clone())))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn compileable_resolve_rejects_checkable_only_types() {
+        let inf = Infer::new();
+        // resolve (codegen gate) rejects non-compileable types...
+        for t in [
+            Ty::Symbol,
+            Ty::Str,
+            Ty::List(Box::new(Ty::Int64)),
+            Ty::Pair(Box::new(Ty::Int64), Box::new(Ty::Int64)),
+            Ty::Any,
+        ] {
+            assert!(inf.resolve(&t).is_err(), "resolve should reject {t:?}");
+            // ...but resolve_checked accepts them.
+            assert!(
+                inf.resolve_checked(&t).is_ok(),
+                "resolve_checked should accept {t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_compileable_partitions_the_lattice() {
+        use super::super::{StructDef, is_compileable};
+        use std::rc::Rc;
+        assert!(is_compileable(&Ty::Int64));
+        assert!(is_compileable(&Ty::Array(Box::new(Ty::Char))));
+        assert!(is_compileable(&Ty::Struct(Rc::new(StructDef {
+            name: "P".into(),
+            fields: vec![("X".into(), Ty::Int64)],
+        }))));
+        assert!(!is_compileable(&Ty::List(Box::new(Ty::Int64))));
+        assert!(!is_compileable(&Ty::Symbol));
+        assert!(!is_compileable(&Ty::Any));
+        assert!(!is_compileable(&Ty::Var(0)));
+        // An array of a non-compileable element is not compileable.
+        assert!(!is_compileable(&Ty::Array(Box::new(Ty::Symbol))));
     }
 }
