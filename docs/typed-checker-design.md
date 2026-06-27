@@ -1,7 +1,9 @@
 # Type-checked Lisp: a non-compiled checker on the HM engine
 
-Status: design / in progress. Part of the typed-JIT epic (#134). Builds directly
-on the inference engine (#135) and the compileable type lattice (#136/#137/#138).
+Status: stages 1–3 landed (type language + engine, generalization, checking
+surface); stages 4–5 remain. Issue #162, part of the typed-JIT epic (#134).
+Builds on the inference engine (#135) and the compileable type lattice
+(#136/#137/#138).
 
 ## 0. The thesis
 
@@ -112,19 +114,23 @@ definitions.
 
 ## 6. Staging
 
-1. **Type language + engine** — add the checkable variants, `Any` (absorbing),
-   structural `unify`/`occurs`, and `resolve_checked`. Unit-test in isolation
-   (the #135 discipline). *(load-bearing; first slice)*
-2. **Generalization** — `Scheme`, `generalize`/`instantiate`, let/defun
-   polymorphism. The piece that makes `id`, `compose`, etc. check.
-3. **Checking surface** — `(check-type …)` reporting inferred types / errors,
-   without compiling. Gradual `Any` at the fexpr/vau/`eval`/create-on-assign
-   boundary.
-4. **Wire to codegen gate** — `infer_untyped` reports checked-typed vs
-   native-compiled; `is_compileable` decides. Type errors surface at definition
-   time even when no native edition is produced.
-5. **Polish** — cond/if branch typing across non-numeric types, list/string
-   builtins' signatures, optional blame on `Any` coercions (later).
+1. **[done] Type language + engine** — checkable variants, `Any` (absorbing),
+   structural `unify`/`occurs`, `resolve_checked`/`is_compileable`. Unit-tested
+   in isolation.
+2. **[done] Generalization** — `Scheme`, `generalize`/`instantiate`/`zonk`,
+   let/defun polymorphism (`id : ∀a. a → a`).
+3. **[done] Checking surface** — `(check-type …)` reporting inferred types /
+   errors without compiling; `Jit::check_untyped`; gradual `Any` at the
+   fexpr/vau/`eval`/free-symbol frontier; checker-mode list/pair/symbol/string
+   forms.
+4. **[todo] Wire to the codegen gate** — have `infer_untyped`/`defun` report
+   *checked-typed vs native-compiled* in one pass (run the checker, then gate
+   native codegen on `is_compileable`), so a definition surfaces type errors at
+   def time even when it gets no native edition. Today the checker
+   (`check-type`) and the optimizer (`jit-optimize`) are separate entry points.
+5. **[todo] Polish** — `cond`/`when`/`case` branch typing, more list/string
+   builtin signatures, optional blame on `Any` coercions, surface annotations for
+   the checkable types.
 
 Throughout: the checker is *additive* and *sound-on-the-island*; it never rejects
 a program the dynamic interpreter would have run (a checker error is a genuine
