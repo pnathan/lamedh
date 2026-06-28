@@ -360,8 +360,15 @@ pub(super) fn lambda_params_body(
 /// Type-check the function bound to `name` (the non-compiled checker, #162) and
 /// return a human-readable result: its inferred type scheme, or a type error.
 pub(super) fn check_function(name: &str, env: &Rc<Environment>) -> String {
-    // A defun-typed function is already fully typed — report its compiled signature.
-    if let Some((params, ret)) = env.jit_named_signature(name) {
+    // The live value-cell binding is authoritative: that is what a call actually
+    // runs. If the function has been (re)defined as a *plain* lambda, a typed
+    // registry entry of the same name is stale (e.g. an earlier `defun*`/
+    // `defun-typed` that was overwritten by an untyped definition) and must not
+    // be reported. Only when the live binding is not a plain lambda — a typed
+    // native membrane, an auto-typed membrane, or absent — do we trust the typed
+    // registry signature.
+    let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
+    if !live_is_plain_lambda && let Some((params, ret)) = env.jit_named_signature(name) {
         let param_str = params
             .iter()
             .map(|(n, t)| format!("({n} {})", crate::jit::ty_name(t)))

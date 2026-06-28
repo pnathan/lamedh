@@ -107,3 +107,58 @@ fn check_type_still_looks_up_functions() {
     let out = eval_line("(check-type inc)", &env);
     assert!(out.contains("int64"), "got: {out}");
 }
+
+#[test]
+fn check_type_is_not_stale_after_redefinition() {
+    // Regression: redefining a compiled typed function as an untyped one must
+    // not leave check-type reporting the stale typed signature. The live value
+    // cell (what a call runs) is authoritative.
+    let env = env_with_stdlib();
+    eval_line("(defun* f (x) (+ x 1))", &env);
+    assert_eq!(eval_line("(f 5)", &env), "6");
+    // Redefine as an untyped function returning a pair.
+    eval_line("(defun* f (x) (cons x x))", &env);
+    assert_eq!(eval_line("(f 5)", &env), "(5 . 5)");
+    let out = eval_line("(check-type f)", &env);
+    // Must NOT claim the old "(X int64) -> int64" signature.
+    assert!(
+        !out.contains("int64"),
+        "stale typed signature leaked after redefinition: {out}"
+    );
+}
+
+#[test]
+fn defun_star_variadic_falls_back_to_lambda() {
+    // A &rest parameter is outside the monomorphic typed core, so defun* must
+    // fall back to an ordinary variadic lambda rather than mis-compiling.
+    let env = env_with_stdlib();
+    eval_line("(defun* f (a &rest b) (cons a b))", &env);
+    assert_eq!(eval_line("(f 1 2 3)", &env), "(1 2 3)");
+}
+
+#[test]
+fn defun_star_typed_array_param() {
+    let env = env_with_stdlib();
+    eval_line(
+        "(defun* sum2 (a (array int64)) (+ (fetch a 0) (fetch a 1)))",
+        &env,
+    );
+    assert_eq!(eval_line("(sum2 (list->array (list 10 20)))", &env), "30");
+}
+
+#[test]
+fn defun_star_return_type_mismatch_falls_back_but_still_runs() {
+    // Declared float64 return but the body is int64: cannot compile, but the
+    // fallback lambda must still produce the right value.
+    let env = env_with_stdlib();
+    eval_line("(defun* f (x int64) float64 (+ x 1))", &env);
+    assert_eq!(eval_line("(f 5)", &env), "6");
+}
+
+#[test]
+fn defun_star_contradicted_pin_falls_back() {
+    // x pinned int64 but used with a float literal: inference fails, lambda runs.
+    let env = env_with_stdlib();
+    eval_line("(defun* f (x int64) (+ x 1.0))", &env);
+    assert_eq!(eval_line("(f 5)", &env), "6.0");
+}
