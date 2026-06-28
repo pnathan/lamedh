@@ -237,6 +237,7 @@ use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// Trait for host-defined value types that can participate in the Lisp system.
@@ -1260,6 +1261,94 @@ pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
     }
 }
 
+fn proper_list_to_vec(list: &LispVal, context: &str) -> Result<Vec<LispVal>, LispError> {
+    let mut out = Vec::new();
+    let mut current = list;
+    while let LispVal::Cons { car, cdr } = current {
+        out.push(car.as_ref().clone());
+        current = cdr;
+    }
+    if *current != LispVal::Nil {
+        return Err(LispError::Generic(format!(
+            "{context}: arguments must be a proper list"
+        )));
+    }
+    Ok(out)
+}
+
+fn include_target(form: &LispVal) -> Result<Option<String>, LispError> {
+    let LispVal::Cons { car, cdr } = form else {
+        return Ok(None);
+    };
+    let LispVal::Symbol(sym) = car.as_ref() else {
+        return Ok(None);
+    };
+    if sym.borrow().name != "INCLUDE" {
+        return Ok(None);
+    }
+
+    let args = proper_list_to_vec(cdr, "include")?;
+    if args.len() != 1 {
+        return Err(LispError::Generic(
+            "include requires exactly one string path".to_string(),
+        ));
+    }
+    match &args[0] {
+        LispVal::String(path) => Ok(Some(path.clone())),
+        _ => Err(LispError::Generic(
+            "include requires a string path".to_string(),
+        )),
+    }
+}
+
+fn resolve_include_path(parent_file: &Path, include: &str) -> PathBuf {
+    let include_path = Path::new(include);
+    if include_path.is_absolute() {
+        return include_path.to_path_buf();
+    }
+    parent_file
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(include_path)
+}
+
+fn load_file_inner(
+    path: &Path,
+    env: &Rc<Environment>,
+    include_stack: &mut Vec<PathBuf>,
+) -> Result<(), LispError> {
+    let cycle_key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if include_stack.iter().any(|p| p == &cycle_key) {
+        let mut chain = include_stack
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>();
+        chain.push(cycle_key.display().to_string());
+        return Err(LispError::Generic(format!(
+            "include cycle detected: {}",
+            chain.join(" -> ")
+        )));
+    }
+
+    let display_path = path.display().to_string();
+    let content = fs::read_to_string(path)
+        .map_err(|e| LispError::Generic(format!("Failed to read file {display_path}: {e}")))?;
+    let expressions = reader::read_all(&content, env)
+        .map_err(|e| LispError::Generic(format!("Failed to parse file {display_path}: {e}")))?;
+
+    include_stack.push(cycle_key);
+    for expr in expressions {
+        if let Some(include) = include_target(&expr)? {
+            let include_path = resolve_include_path(path, &include);
+            load_file_inner(&include_path, env, include_stack)?;
+        } else {
+            evaluator::eval(&expr, env)?;
+        }
+    }
+    include_stack.pop();
+    Ok(())
+}
+
 /// Load and evaluate a single Lisp source file.
 ///
 /// Reads the file at `path`, parses all top-level expressions, and evaluates
@@ -1272,15 +1361,7 @@ pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
 /// Returns the first parse or evaluation error encountered.  Subsequent
 /// expressions in the file are **not** evaluated after a failure.
 pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| LispError::Generic(format!("Failed to read file {path}: {e}")))?;
-    let expressions = reader::read_all(&content, env)
-        .map_err(|e| LispError::Generic(format!("Failed to parse file {path}: {e}")))?;
-
-    for expr in expressions {
-        evaluator::eval(&expr, env)?;
-    }
-    Ok(())
+    load_file_inner(Path::new(path), env, &mut Vec::new())
 }
 
 /// Load and evaluate all `*.lisp` files in a directory, sorted by name.

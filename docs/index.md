@@ -44,7 +44,7 @@ Individual category pages (hand-written with additional context):
 - [Predicates](functions/predicates.md) - Type and value predicates
 - [String Functions](functions/strings.md) - `CONCAT`, `INDEX`, `EXPLODE`, `IMPLODE`
 - [I/O Functions](functions/io.md) - `READ`, `PRINT`, `PRIN1`, `PRINC`, `LOAD-FILE`
-- [Hash Table Functions](functions/hash_tables.md) - `MAKE-HASH-TABLE`, `GET`, `SET-BANG`
+- [Hash Table Functions](functions/hash_tables.md) - `MAKE-HASH-TABLE`, `GETHASH`, `SET-BANG`, `SETHASH`
 - [Property List Functions](functions/plists.md) - `GETP`, `PUTP`, `REMPROP`, `PLIST`
 - [Bitwise Functions](functions/bitwise.md) - `LOGOR`, `LOGAND`, `LOGXOR`, `LEFTSHIFT`
 - [Error Handling](functions/errors.md) - `ERROR`, `ERRORSET`

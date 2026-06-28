@@ -1,6 +1,7 @@
 use lamedh::LispVal;
 use lamedh::environment::Environment;
 use lamedh::evaluator::eval;
+use lamedh::printer;
 use lamedh::reader::read;
 
 fn eval_str(input: &str) -> Result<LispVal, String> {
@@ -193,6 +194,52 @@ fn test_improper_evlis_input_errors() {
         result.is_err(),
         "EVLIS should reject improper input lists, got {result:?}"
     );
+}
+
+#[test]
+fn test_improper_mapcar_input_errors() {
+    for expr in ["(MAPCAR CAR 42)", "(MAPCAR CAR (QUOTE ((A) . 42)))"] {
+        let result = eval_str(expr);
+        assert!(
+            result.is_err(),
+            "MAPCAR should reject improper input list in {expr}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_improper_maplist_input_errors() {
+    for expr in ["(MAPLIST CAR 42)", "(MAPLIST CAR (QUOTE ((A) . 42)))"] {
+        let result = eval_str(expr);
+        assert!(
+            result.is_err(),
+            "MAPLIST should reject improper input list in {expr}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_improper_assoc_tail_errors() {
+    let result = eval_str("(ASSOC (QUOTE B) (QUOTE ((A . 1) . 42)))");
+    assert!(
+        result.is_err(),
+        "ASSOC should reject improper alist tails, got {result:?}"
+    );
+}
+
+#[test]
+fn test_hash_table_advertised_aliases_work() {
+    let result = eval_str(
+        r#"
+        (PROGN
+          (DEF h (MAKE-HASH-TABLE))
+          (SETHASH h 'x 7)
+          (DEF before (GETHASH h 'x))
+          (DELETE-KEY h 'x)
+          (LIST before (GETHASH h 'x)))
+        "#,
+    );
+    assert_eq!(printer::print(&result.unwrap()), "(7 ())");
 }
 
 #[test]

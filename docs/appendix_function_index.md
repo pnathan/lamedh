@@ -107,7 +107,8 @@ An alphabetical index of all functions and macros in Lamedh.
 | Function | Type | Description | Reference |
 |----------|------|-------------|-----------|
 | `GENSYM` | Builtin | Generate symbol | [Strings](functions/strings.md) |
-| `GET` | Builtin | Hash table get | [Hash Tables](functions/hash_tables.md) |
+| `GETHASH` | Builtin | Hash table get | [Hash Tables](functions/hash_tables.md) |
+| `GET` | Builtin | Property get | [Plists](functions/plists.md) |
 | `GETP` | Builtin | Get property | [Plists](functions/plists.md) |
 | `GREATERP` | Builtin | Greater than | [Predicates](functions/predicates.md) |
 

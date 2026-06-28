@@ -335,6 +335,11 @@ impl Environment {
         env.set("GETHASH".to_string(), LispVal::Builtin(BuiltinFunc::Get));
         env.set("GET".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
         env.set("SET-BANG".to_string(), LispVal::Builtin(BuiltinFunc::Set));
+        env.set("SETHASH".to_string(), LispVal::Builtin(BuiltinFunc::Set));
+        env.set(
+            "DELETE-KEY".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeleteKey),
+        );
         env.set(
             "DELETE-KEY-BANG".to_string(),
             LispVal::Builtin(BuiltinFunc::DeleteKey),

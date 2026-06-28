@@ -301,33 +301,33 @@ Returns T if x is NIL (the empty list). (Standard library function)
 
 ### MAPCAR
 
-**Syntax:** `(mapcar list function)`
+**Syntax:** `(mapcar function list)`
 
 Applies function to each element, returns list of results.
 
 ```lisp
-(mapcar '(1 2 3) (lambda (x) (* x 2)))
+(mapcar (lambda (x) (* x 2)) '(1 2 3))
 ; => (2 4 6)
 
-(mapcar '(a b c) (lambda (x) (list x x)))
+(mapcar (lambda (x) (list x x)) '(a b c))
 ; => ((A A) (B B) (C C))
 ```
 
-**Note:** Argument order is (list function), not (function list).
+**Note:** Argument order is (function list), matching the rest of Lamedh's functional toolkit.
 
 ---
 
 ### MAPLIST
 
-**Syntax:** `(maplist list function)`
+**Syntax:** `(maplist function list)`
 
 Applies function to successive tails of list.
 
 ```lisp
-(maplist '(a b c) (lambda (x) (length x)))
+(maplist (lambda (x) (length x)) '(a b c))
 ; => (3 2 1)
 
-(maplist '(1 2 3) (lambda (x) x))
+(maplist (lambda (x) x) '(1 2 3))
 ; => ((1 2 3) (2 3) (3))
 ```
 

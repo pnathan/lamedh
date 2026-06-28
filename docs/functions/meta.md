@@ -254,7 +254,7 @@ Returns a hash table of current bindings.
 (set-bang operations 'mul #'*)
 
 (defun dispatch (op &rest args)
-  (let ((fn (get operations op)))
+  (let ((fn (gethash operations op)))
     (if fn
         (apply fn args)
         (error "Unknown operation"))))

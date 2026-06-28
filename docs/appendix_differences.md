@@ -107,28 +107,27 @@ Variables are looked up in the defining environment:
 
 ### Argument Order
 
-Some functions have different argument orders:
-
 **MAPCAR:**
 ```lisp
-;; Lisp 1.5: (MAPCAR fn list)
-;; Lamedh:   (MAPCAR list fn)
+;; Lamedh uses function-first order:
+(MAPCAR fn list)
 ```
 
 ### Function Names
 
 | Operation | Lisp 1.5 | Lamedh |
 |-----------|----------|--------|
-| Property get | `GET` | `GETP` |
-| Property put | `PUT` | `PUTP` |
-| Hash set | N/A | `SET-BANG` |
+| Property get | `GET` | `GET` / `GETP` |
+| Property put | `PUT` | `PUT` / `PUTP` |
+| Hash get | N/A | `GETHASH` |
+| Hash set | N/A | `SET-BANG` / `SETHASH` |
 
 ### New Functions
 
 Functions not in Lisp 1.5:
 
 - String operations: `CONCAT`, `INDEX`
-- Hash tables: `MAKE-HASH-TABLE`, `GET`, `SET-BANG`
+- Hash tables: `MAKE-HASH-TABLE`, `GETHASH`, `SET-BANG`, `SETHASH`
 - Type predicates: `STRINGP`, `FLOATP`, `FUNCTIONP`
 - Error handling: `ERRORSET`
 

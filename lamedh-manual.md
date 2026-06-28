@@ -536,7 +536,7 @@ return value.
 
 ```lisp
 (defexpr name (args-name) body…)
-(defexpr name (args-name) body… "docstring")
+(defexpr name (args-name) "docstring" body…)
 ```
 
 Create a named fexpr — a function that receives its arguments **unevaluated**
@@ -552,7 +552,7 @@ value directly (not re-evaluated).
 
 ```lisp
 (defmacro name (param… &rest rest) body…)
-(defmacro name (param… &rest rest) body… "docstring")
+(defmacro name (param… &rest rest) "docstring" body…)
 ```
 
 Create a macro. Arguments are received unevaluated; the body must return a
@@ -1439,7 +1439,7 @@ Mutable key-value stores. Keys and values are arbitrary `LispVal`.
 (set-bang h "name" "Alice")
 
 (gethash h 'x)              ; => 42
-(get h 'x)                  ; same (GET = GETHASH for hash tables)
+(get 'sym 'indicator)       ; property-list lookup, not hash-table lookup
 
 (keys h)                    ; => (X "name")  (order unspecified)
 
@@ -1534,6 +1534,26 @@ Lisp 1.5 flag operations (from `09-lisp15.lisp`):
 
 Omitted fields default to `NIL`. The internal `__type__` key holds the struct
 name as a symbol.
+
+Typed code also has nominal structs:
+
+```lisp
+(defstruct-typed Foo (n int64))
+
+(deffun-typed (read-foo int64) ((x Foo))
+  (let-typed ((local Foo x))
+    (foo-n local)))
+```
+
+`DEFSTRUCT-TYPED` registers `Foo` as a user-defined HM type, generates typed
+constructor/accessor functions, and keeps the type nominal: another struct with
+the same fields is still not a `Foo`. `LET-TYPED` annotations use the same type
+parser as function signatures, so scalar types, arrays, and typed structs can be
+pinned locally.
+
+There is no trait/typeclass system or subtyping relation in the current typed
+core. Type agreement is equality-based HM unification: same type, inferred type
+variable, or a type error.
 
 ---
 
@@ -1678,6 +1698,15 @@ transform with side effects.
 ; dead-binding removal + algebraic identity → 1
 
 ($opt expr)    ; evaluate expr after optimization
+```
+
+`DEFFUN-TYPED-OPT` is the explicit optimizer-to-compiler bridge:
+
+```lisp
+(deffun-typed-opt (inc int64) ((x int64))
+  (+ x 0))
+; optimizer rewrites the source, then the normal DEFFUN-TYPED path runs
+; HM checking and installs the compiled typed edition.
 ```
 
 Passes:
@@ -2009,9 +2038,13 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-lamedh    = { path = ".." }
+lamedh    = { path = "..", default-features = false }
 rustyline = "14.0.0"
 clap      = { version = "4.5.4", features = ["derive"] }
+
+[features]
+default = ["jit"]
+jit = ["lamedh/jit"]
 ```
 
 ### Dependency summary
@@ -2263,8 +2296,12 @@ clone — creating a child frame is one refcount bump, not four.
 (features)
 (shell "ls")
 (load-file "path.lisp")
+(include "relative-to-current-file.lisp")
 (read)
 ```
+
+`INCLUDE` is a source-loader directive recognized while loading a file. It is
+intended for top-level file composition, not as a general runtime function.
 
 ---
 

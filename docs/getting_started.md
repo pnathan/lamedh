@@ -229,7 +229,7 @@ Note: All symbols are converted to uppercase internally.
 (cadr '(a b c))       ; => B (second element)
 
 ;; Processing
-(mapcar '(1 2 3) (lambda (x) (* x 2)))  ; => (2 4 6)
+(mapcar (lambda (x) (* x 2)) '(1 2 3))  ; => (2 4 6)
 (length '(a b c))     ; => 3
 (reverse '(a b c))    ; => (C B A)
 (append '(a b) '(c d)) ; => (A B C D)

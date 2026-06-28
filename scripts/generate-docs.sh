@@ -10,11 +10,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 echo "Generating documentation from Lisp source..."
 
 # Generate the main function reference from help database
-# Suppress the "Help system loaded" message
-cargo run --release -- -s "(dump-docs)" 2>/dev/null | grep -v "^Help system loaded" > "$PROJECT_DIR/docs/generated-reference.md"
+cargo run --release -- -s "(dump-docs)" 2>/dev/null > "$PROJECT_DIR/docs/generated-reference.md"
 
 # Generate function index
-cargo run --release -- -s "(render-function-index-md)" 2>/dev/null | grep -v "^Help system loaded" > "$PROJECT_DIR/docs/generated-function-index.md"
+cargo run --release -- -s "(render-function-index-md)" 2>/dev/null > "$PROJECT_DIR/docs/generated-function-index.md"
 
 echo "Generated:"
 echo "  - docs/generated-reference.md   (Complete function reference)"

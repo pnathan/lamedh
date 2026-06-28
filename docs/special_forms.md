@@ -261,8 +261,8 @@ Creates an anonymous function.
 ```lisp
 ((lambda (x) (* x 2)) 5)    ; => 10
 
-(mapcar '(1 2 3)
-        (lambda (x) (* x x)))  ; => (1 4 9)
+(mapcar (lambda (x) (* x x))
+        '(1 2 3))  ; => (1 4 9)
 ```
 
 **Evaluation Rule:**
@@ -391,7 +391,7 @@ Returns the function value of a symbol. Used when passing functions as arguments
 
 ```lisp
 (function car)        ; The CAR function
-(mapcar '(1 2 3) (function (lambda (x) (* x 2))))
+(mapcar (function (lambda (x) (* x 2))) '(1 2 3))
 ```
 
 **Note:** `#'` is Common Lisp syntax; Lamedh uses explicit `(function ...)`.

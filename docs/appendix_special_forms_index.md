@@ -135,7 +135,7 @@ Get function object for a name.
 
 ```lisp
 (function car)
-(mapcar list (function square))
+(mapcar (function square) list)
 ```
 
 ---

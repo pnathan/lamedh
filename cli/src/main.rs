@@ -44,9 +44,13 @@
 //! path = "src/main.rs"
 //!
 //! [dependencies]
-//! lamedh    = { path = ".." }
+//! lamedh    = { path = "..", default-features = false }
 //! rustyline = "14.0.0"
 //! clap      = { version = "4.5.4", features = ["derive"] }
+//!
+//! [features]
+//! default = ["jit"]
+//! jit = ["lamedh/jit"]
 //! ```
 
 use clap::Parser;

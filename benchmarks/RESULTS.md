@@ -5,6 +5,40 @@ Benchmark results comparing lamedh (Lisp 1.5 interpreter) against Rust (compiled
 These numbers are a historical snapshot. Re-run `benchmarks/run_benchmarks.sh`
 on the target machine before using them for current performance claims.
 
+## Local Fibonacci Comparison (n=30, warm typed JIT)
+
+Command:
+
+```bash
+RUN_MS=1000 WARMUP_MS=100 ./benchmarks/fibonacci/compare_local.sh 30
+```
+
+Environment on this laptop:
+- C compiler: GCC 13.3.0 via `cc -O3 -march=native`
+- SBCL: 2.2.9
+- Ruby: 3.0.1
+- Python: 3.12.3
+- Lamedh: embedded warm typed functions, native JIT enabled
+
+| Language | Mean (ms) | Std Dev (ms) | Min (ms) | Max (ms) | Iterations | Result |
+|----------|-----------|--------------|----------|----------|------------|--------|
+| **C** | 2.682 | 0.133 | 2.553 | 3.612 | 373 | 1,346,268 |
+| **SBCL** | 9.072 | 0.643 | 7.999 | 12.000 | 111 | 1,346,268 |
+| **Lamedh-JIT** | 14.637 | 0.277 | 14.179 | 15.670 | 69 | 1,346,268 |
+| **Lamedh-OptJIT** | 15.770 | 0.847 | 14.997 | 20.807 | 64 | 1,346,268 |
+| **Ruby** | 154.654 | 5.081 | 150.328 | 162.527 | 7 | 1,346,268 |
+| **Python** | 243.829 | 5.161 | 237.803 | 250.952 | 5 | 1,346,268 |
+
+`Lamedh-JIT` defines `deffun-typed` functions once, warms them, parses the
+call once, and times already-warm native typed calls. `Lamedh-OptJIT` uses
+`deffun-typed-opt`, which runs the Lisp/vau source optimizer first and then
+hands the optimized form to the same HM typed compiler. On this recursive
+Fibonacci workload the optimizer has little source-level work to do, so the two
+Lamedh rows should be read as effectively the same tier within run noise.
+
+Ratios from this run: Lamedh-JIT is about 5.5× slower than C, 1.6× slower than
+SBCL, 10.6× faster than Ruby, and 16.7× faster than Python.
+
 **Test Environment:**
 - Python: 3.11.14
 - Rust: 1.x (release mode with optimizations)

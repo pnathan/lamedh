@@ -633,7 +633,7 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(load-file filename)")
     (cons 'CATEGORY 'io)
-    (cons 'DESCRIPTION "Loads and evaluates a Lisp source file.")
+    (cons 'DESCRIPTION "Loads and evaluates a Lisp source file. A loaded source file may include another file with a top-level (include \"path.lisp\") directive; relative include paths resolve from the file that contains the include.")
     (cons 'ARGS '((filename "String path to file")))
     (cons 'RETURNS "T on success")
     (cons 'SEE-ALSO '(read eval))))
@@ -947,7 +947,7 @@
     (cons 'SYNTAX "(make-hash-table)")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Creates and returns a new empty hash table.")
-    (cons 'SEE-ALSO '(get set-bang keys))))
+    (cons 'SEE-ALSO '(gethash set-bang sethash keys))))
 
 (register-doc 'get
   (list
@@ -965,8 +965,18 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(set-bang hash-table key value)")
     (cons 'CATEGORY 'hash-tables)
-    (cons 'DESCRIPTION "Sets the value for key in hash-table.")
-    (cons 'SEE-ALSO '(get delete-key make-hash-table))))
+    (cons 'DESCRIPTION "Sets the value for key in hash-table. SETHASH is accepted as a compatibility alias.")
+    (cons 'SEE-ALSO '(gethash sethash delete-key make-hash-table))))
+
+(register-doc 'sethash
+  (list
+    (cons 'NAME 'sethash)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(sethash hash-table key value)")
+    (cons 'CATEGORY 'hash-tables)
+    (cons 'DESCRIPTION "Compatibility alias for SET-BANG. Sets the value for key in hash-table and returns T.")
+    (cons 'EXAMPLES '(((let ((h (make-hash-table))) (sethash h 'x 42) (gethash h 'x)) 42)))
+    (cons 'SEE-ALSO '(set-bang gethash delete-key make-hash-table))))
 
 (register-doc 'keys
   (list
@@ -975,7 +985,7 @@
     (cons 'SYNTAX "(keys hash-table)")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Returns a list of all keys in hash-table.")
-    (cons 'SEE-ALSO '(get set-bang make-hash-table))))
+    (cons 'SEE-ALSO '(gethash set-bang make-hash-table))))
 
 ;;; ============================================================
 ;;; BITWISE FUNCTIONS
@@ -1651,7 +1661,17 @@ The classic Lisp 1.5 spelling.")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Retrieves the value associated with key in hash-table. Returns NIL if the key is not present. Keys are compared by structural equality (like EQUAL). Use GET for property list lookup.")
     (cons 'EXAMPLES '(((let ((h (make-hash-table))) (set-bang h 'x 42) (gethash h 'x)) 42)))
-    (cons 'SEE-ALSO '(set-bang keys delete-key-bang make-hash-table get))))
+    (cons 'SEE-ALSO '(set-bang sethash keys delete-key delete-key-bang make-hash-table get))))
+
+(register-doc 'delete-key
+  (list
+    (cons 'NAME 'delete-key)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(delete-key hash-table key)")
+    (cons 'CATEGORY 'hash-tables)
+    (cons 'DESCRIPTION "Compatibility alias for DELETE-KEY-BANG. Destructively removes key and its associated value from hash-table. Returns T regardless of whether the key was present.")
+    (cons 'EXAMPLES '(((let ((h (make-hash-table))) (set-bang h 'x 1) (delete-key h 'x) (gethash h 'x)) nil)))
+    (cons 'SEE-ALSO '(delete-key-bang set-bang gethash keys make-hash-table))))
 
 (register-doc 'delete-key-bang
   (list
@@ -1661,7 +1681,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Destructively removes key and its associated value from hash-table. Returns T regardless of whether the key was present. The bang suffix signals mutation in place.")
     (cons 'EXAMPLES '(((let ((h (make-hash-table))) (set-bang h 'x 1) (delete-key-bang h 'x) (gethash h 'x)) nil)))
-    (cons 'SEE-ALSO '(set-bang gethash keys make-hash-table))))
+    (cons 'SEE-ALSO '(delete-key set-bang gethash keys make-hash-table))))
 
 ;;; ============================================================
 ;;; ARRAYS (LISP 1.5 APPENDIX A)
@@ -1864,7 +1884,17 @@ The classic Lisp 1.5 spelling.")
     (cons 'DESCRIPTION "Runs the source-level optimizer on form and returns the optimized Lisp expression without evaluating it. The optimizer performs constant folding, dead binding elimination, and other algebraic simplifications. The result is a structurally equivalent but potentially faster form. Used by the REPL and compiler pipeline; also useful for inspecting optimizer output during development.")
     (cons 'EXAMPLES '(((optimize '(+ 1 2)) 3)
                        ((optimize '(let ((x 1)) x)) 1)))
-    (cons 'SEE-ALSO '(eval macroexpand))))
+    (cons 'SEE-ALSO '(eval macroexpand deffun-typed-opt))))
+
+(register-doc 'deffun-typed-opt
+  (list
+    (cons 'NAME 'deffun-typed-opt)
+    (cons 'TYPE 'vau)
+    (cons 'SYNTAX "(deffun-typed-opt (name return-type) ((arg type) ...) body...)")
+    (cons 'CATEGORY 'meta)
+    (cons 'DESCRIPTION "Optimizer-to-compiler bridge for typed functions. Receives a DEFFUN-TYPED-shaped definition as source, runs the Lisp/vau source optimizer over it, then evaluates the optimized DEFFUN-TYPED form so the normal HM checker and native compiler install the typed edition. Use this when you want explicit source optimization before typed compilation without making every DEFFUN-TYPED globally auto-optimized.")
+    (cons 'EXAMPLES '(((deffun-typed-opt (inc int64) ((x int64)) (+ x 0)) inc)))
+    (cons 'SEE-ALSO '(optimize deffun-typed check-type disassemble))))
 
 ;;; ============================================================
 ;;; SPECIAL FORMS: FEXPR AND VAU OPERATIVES
@@ -2304,7 +2334,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'meta
   "Metaprogramming"
-  '(eval apply funcall help documentation evlis evcon optimize macroexpand))
+  '(eval apply funcall help documentation evlis evcon optimize deffun-typed-opt macroexpand))
 
 (register-category 'plists
   "Property lists"
@@ -2388,6 +2418,5 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   "Inspecting registered definitions and compiled code"
   '(describe see-source disassemble documentation))
 
-;;; Done loading help data
-(princ "Help system loaded. Type (help) for documentation.")
-(terpri)
+;;; Done loading help data. Keep stdlib loading silent so CLI -s output is
+;;; machine-readable and benchmark harnesses can parse stdout directly.

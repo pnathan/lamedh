@@ -555,6 +555,35 @@ fn struct_constructed_and_consumed_in_one_typed_function() {
 }
 
 #[test]
+fn let_typed_accepts_nominal_struct_annotations() {
+    let j = build_with(
+        &["(defstruct-typed Box (n int64))"],
+        &["(deffun-typed (unwrap-box int64) ((n int64)) \
+             (let-typed ((b Box (make-box n))) (box-n b)))"],
+    );
+    assert_eq!(agree(&j, "unwrap-box", &[i(42)]), i(42));
+}
+
+#[test]
+fn let_typed_nominal_struct_annotation_rejects_plain_value() {
+    let mut j = build_with(&["(defstruct-typed Box (n int64))"], &[]);
+    let err = j
+        .define(
+            &crate::reader::read(
+                "(deffun-typed (bad int64) () \
+                   (let-typed ((b Box 7)) (box-n b)))",
+                &Environment::new_with_builtins(),
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("declared") && err.contains("init"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn struct_field_type_is_checked() {
     // Passing a float where the field/accessor expects int64 is rejected.
     let mut j = build_with(&["(defstruct-typed Box (n int64))"], &[]);

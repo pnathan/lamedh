@@ -224,7 +224,14 @@ Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_j
   type (usable in signatures) and generates `make-NAME`/`NAME-FIELD`/
   `set-NAME-FIELD` as ordinary typed functions over flat one-word-per-field
   buffers; a struct crosses the membrane as a nominal `LispVal::Struct`, so a
-  plain array with the same shape is not accepted as that struct type.
+  plain array with the same shape is not accepted as that struct type. The same
+  type parser is used for `let-typed` annotations, so locals can be pinned to
+  scalar types, arrays, or nominal typed structs.
+- **No traits/subtyping yet.** Type agreement is still equality-based
+  HM unification: a variable may be inferred, but there is no typeclass
+  constraint solving, dictionary passing, row polymorphism, or subtype relation.
+  If/when traits arrive they should be an explicit constraint layer on top of
+  unification, not an accidental weakening of nominal struct identity.
 - **HM under the hood.** `Jit::infer_untyped` types a *fully un-annotated*
   function (every parameter a fresh variable) when its body is an inferable typed
   island, with clean rollback otherwise. Exposed as the `jit-optimize` special
@@ -317,7 +324,8 @@ direct typed→typed calls (policy (a)), then `float64`, then self-recursive loo
    redefinition/identity model with zero codegen risk. Pure refactor of how the
    evaluator resolves a call to a typed function.
 3. **Cranelift island** for monomorphic int functions (the spike) behind a
-   `jit` cargo feature, default off, so `cargo build`/`clippy` stay green.
+   `jit` cargo feature. It is enabled by default in 0.2.x; use
+   `--no-default-features` to exercise the dependency-light typed checker path.
 4. **Widen** types and call forms; AArch64 falls out of Cranelift.
 5. **Membrane polish:** contract coercions as the universal trampoline; deopt at
    every fexpr/`eval` edge.

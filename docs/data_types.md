@@ -347,7 +347,7 @@ Mutable key-value stores.
 
 ```lisp
 (set-bang my-table "name" "Alice")
-(get my-table "name")        ; => "Alice"
+(gethash my-table "name")    ; => "Alice"
 (keys my-table)              ; => ("name")
 (delete-key my-table "name")
 ```

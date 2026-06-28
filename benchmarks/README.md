@@ -79,7 +79,16 @@ python3 fibonacci/python/fibonacci.py 5000 1000 30
 
 # Lamedh
 python3 fibonacci/lisp/benchmark.py 5000 1000 30
+
+# Local comparison: C, SBCL, Ruby, Python, warm typed Lamedh JIT,
+# and warm Lamedh after the Lisp/vau optimizer-to-compiler bridge.
+RUN_MS=1000 WARMUP_MS=100 ./fibonacci/compare_local.sh 30
 ```
+
+`Lamedh-JIT` embeds the library, defines typed functions once, warms them,
+parses the call once, and times already-warm native typed calls. `Lamedh-OptJIT`
+uses `deffun-typed-opt`, which runs Lisp/vau source optimization first and then
+hands the optimized `deffun-typed` form to the same HM typed compiler.
 
 #### Loops
 

@@ -1,0 +1,13 @@
+[package]
+name = "lamedh-fibonacci-warm"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[[bin]]
+name = "lamedh_fibonacci_warm"
+path = "src/main.rs"
+
+[dependencies]
+lamedh = { path = "../../.." }

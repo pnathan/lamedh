@@ -7,6 +7,7 @@
 ;;; Entry points:
 ;;;   (optimize-form form)   -- pure transform, returns optimized S-expr
 ;;;   $opt                   -- vau: evaluates its argument with optimization applied
+;;;   deffun-typed-opt       -- vau: optimize source, then hand DEFFUN-TYPED to compiler
 
 ;;; ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -200,3 +201,16 @@
 (def $opt
   ($vau (x e)
     (eval (optimize-form (car x)) e)))
+
+;;; ─── Optimizer → typed compiler bridge ───────────────────────────────────
+;;;
+;;; Usage:
+;;;   (deffun-typed-opt (name ret) ((arg ty) ...) body...)
+;;;
+;;; Reconstructs the ordinary DEFFUN-TYPED form, runs the Lisp optimizer passes
+;;; over that source, and evaluates the optimized definition in the caller's
+;;; environment. The evaluator's existing DEFFUN-TYPED path then performs HM
+;;; checking and native compilation as usual.
+(defvau deffun-typed-opt (x e)
+  "Optimize a DEFFUN-TYPED definition before HM checking and native compilation."
+  (eval (optimize-form (cons 'deffun-typed x)) e))

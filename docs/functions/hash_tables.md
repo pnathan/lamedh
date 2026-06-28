@@ -12,7 +12,7 @@ Hash tables provide O(1) average-time key-value storage. They are mutable data s
 (def ht (make-hash-table))
 (set-bang ht "name" "Alice")
 (set-bang ht "age" 30)
-(get ht "name")     ; => "Alice"
+(gethash ht "name") ; => "Alice"
 ```
 
 ---
@@ -35,17 +35,17 @@ Creates a new empty hash table.
 
 ## Access
 
-### GET
+### GETHASH
 
-**Syntax:** `(get hash-table key)`
+**Syntax:** `(gethash hash-table key)`
 
 Retrieves the value associated with key.
 
 ```lisp
 (def ht (make-hash-table))
 (set-bang ht "x" 42)
-(get ht "x")        ; => 42
-(get ht "y")        ; => NIL (not found)
+(gethash ht "x")    ; => 42
+(gethash ht "y")    ; => NIL (not found)
 ```
 
 **Arguments:**
@@ -66,7 +66,7 @@ Sets the value for a key in the hash table.
 (def ht (make-hash-table))
 (set-bang ht "name" "Bob")
 (set-bang ht "name" "Carol")  ; Overwrites
-(get ht "name")    ; => "Carol"
+(gethash ht "name") ; => "Carol"
 ```
 
 **Arguments:**
@@ -90,7 +90,7 @@ Removes a key-value pair from the hash table.
 (def ht (make-hash-table))
 (set-bang ht "x" 1)
 (delete-key ht "x")
-(get ht "x")        ; => NIL
+(gethash ht "x")    ; => NIL
 ```
 
 **Arguments:**
@@ -131,7 +131,8 @@ Returns a list of all keys in the hash table.
 - Integers (`42`)
 
 **Avoid:**
-- Floats (equality issues with -0.0, NaN)
+- Floats for semantic keys. Hashing is internally consistent for `-0.0` and
+  `NaN`, but ordinary floating-point rounding still makes lookup keys surprising.
 - Lists (compared by identity, not value)
 
 ### Symbol vs String Keys
@@ -141,8 +142,8 @@ Returns a list of all keys in the hash table.
 (set-bang ht 'name "with symbol")
 (set-bang ht "name" "with string")
 
-(get ht 'name)      ; => "with symbol"
-(get ht "name")     ; => "with string"
+(gethash ht 'name)  ; => "with symbol"
+(gethash ht "name") ; => "with string"
 ; These are different keys!
 ```
 
@@ -158,8 +159,8 @@ Returns a list of all keys in the hash table.
 (set-bang person "age" 30)
 (set-bang person "city" "Boston")
 
-(get person "name")  ; => "Alice"
-(get person "age")   ; => 30
+(gethash person "name") ; => "Alice"
+(gethash person "age")  ; => 30
 ```
 
 ### Counter
@@ -171,7 +172,7 @@ Returns a list of all keys in the hash table.
 
 (defun increment (table key)
   "Increment counter for KEY in TABLE."
-  (let ((current (get table key)))
+  (let ((current (gethash table key)))
     (set-bang table key
               (if current (+ current 1) 1))))
 
@@ -179,8 +180,8 @@ Returns a list of all keys in the hash table.
 (increment counts 'a)
 (increment counts 'a)
 (increment counts 'b)
-(get counts 'a)     ; => 2
-(get counts 'b)     ; => 1
+(gethash counts 'a) ; => 2
+(gethash counts 'b) ; => 1
 ```
 
 ### Safe Get with Default
@@ -188,7 +189,7 @@ Returns a list of all keys in the hash table.
 ```lisp
 (defun get-or-default (table key default)
   "Get KEY from TABLE, or return DEFAULT if not found."
-  (let ((value (get table key)))
+  (let ((value (gethash table key)))
     (if value value default)))
 
 (get-or-default person "email" "not provided")
@@ -200,12 +201,12 @@ Returns a list of all keys in the hash table.
 ```lisp
 (defun print-table (table)
   "Print all key-value pairs in TABLE."
-  (mapcar (keys table)
-          (lambda (key)
+  (mapcar (lambda (key)
             (princ key)
             (princ ": ")
-            (prin1 (get table key))
-            (terpri))))
+            (prin1 (gethash table key))
+            (terpri))
+          (keys table)))
 
 (print-table person)
 ; name: "Alice"

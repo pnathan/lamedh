@@ -133,6 +133,18 @@ Loads and evaluates a Lisp source file.
 ; => T
 ```
 
+Loaded files can include other files at top level:
+
+```lisp
+;; app.lisp
+(include "utils/helpers.lisp")
+
+(defun main () (helper))
+```
+
+Relative include paths resolve from the file containing the include. Include
+cycles are reported as errors.
+
 **Arguments:**
 - `filename` - String path to file (relative or absolute)
 
