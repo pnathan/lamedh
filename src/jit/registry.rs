@@ -237,6 +237,12 @@ impl Jit {
         Some((ptys, f.ret.borrow().clone()))
     }
 
+    pub fn named_signature(&self, name: &str) -> Option<(Vec<(String, Ty)>, Ty)> {
+        let id = self.id(name)?;
+        let f = &self.funcs[id];
+        Some((f.params.borrow().clone(), f.ret.borrow().clone()))
+    }
+
     /// Type-check and (eagerly) compile a `(defun-typed ...)` form. Returns the
     /// stable function id.
     pub fn define(&mut self, form: &LispVal) -> Result<usize, String> {

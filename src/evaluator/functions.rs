@@ -360,6 +360,20 @@ pub(super) fn lambda_params_body(
 /// Type-check the function bound to `name` (the non-compiled checker, #162) and
 /// return a human-readable result: its inferred type scheme, or a type error.
 pub(super) fn check_function(name: &str, env: &Rc<Environment>) -> String {
+    // A defun-typed function is already fully typed — report its compiled signature.
+    if let Some((params, ret)) = env.jit_named_signature(name) {
+        let param_str = params
+            .iter()
+            .map(|(n, t)| format!("({n} {})", crate::jit::ty_name(t)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let compiled = matches!(env.jit_is_compiled(name), Some(true));
+        let status = if compiled { "compiled" } else { "interpreted" };
+        return format!(
+            "{name} : ({param_str}) -> {} [{status}]",
+            crate::jit::ty_name(&ret)
+        );
+    }
     match lambda_params_body(name, env) {
         Some((params, body)) => match env.jit_check_untyped(name, &params, &body) {
             Ok(scheme) => format!("{name} : {scheme}"),

@@ -1029,6 +1029,14 @@ impl Environment {
         self.shared.jit.borrow().signature(name)
     }
 
+    /// Like `jit_signature` but includes parameter names.
+    pub fn jit_named_signature(
+        &self,
+        name: &str,
+    ) -> Option<(Vec<(String, crate::jit::Ty)>, crate::jit::Ty)> {
+        self.shared.jit.borrow().named_signature(name)
+    }
+
     /// Whether a registered typed function currently has a compiled edition.
     /// `None` if no typed function by that name exists.
     pub fn jit_is_compiled(&self, name: &str) -> Option<bool> {
