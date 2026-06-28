@@ -10,7 +10,8 @@
       "Bash(for f in /home/pnathan/src/lamedh/lib/*.lisp)",
       "Bash(do echo \"Testing $f\")",
       "Bash(done)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(xargs perl -pi -e ' *)"
     ],
     "deny": [],
     "ask": []

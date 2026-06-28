@@ -65,7 +65,7 @@ fn chars(s: &str) -> Value {
 
 #[test]
 fn int_add_sub_mul() {
-    let j = build(&["(deffun-typed (f int64) ((a int64) (b int64)) (+ (* a b) (- a b)))"]);
+    let j = build(&["(defun-typed (f int64) ((a int64) (b int64)) (+ (* a b) (- a b)))"]);
     assert_eq!(agree(&j, "f", &[i(6), i(4)]), i(24 + 2));
     assert_eq!(agree(&j, "f", &[i(-3), i(7)]), i(-21 + -10));
 }
@@ -73,8 +73,8 @@ fn int_add_sub_mul() {
 #[test]
 fn int_div_and_mod() {
     let j = build(&[
-        "(deffun-typed (d int64) ((a int64) (b int64)) (/ a b))",
-        "(deffun-typed (m int64) ((a int64) (b int64)) (mod a b))",
+        "(defun-typed (d int64) ((a int64) (b int64)) (/ a b))",
+        "(defun-typed (m int64) ((a int64) (b int64)) (mod a b))",
     ]);
     assert_eq!(agree(&j, "d", &[i(17), i(5)]), i(3));
     assert_eq!(agree(&j, "m", &[i(17), i(5)]), i(2));
@@ -83,7 +83,7 @@ fn int_div_and_mod() {
 
 #[test]
 fn int_div_by_zero_is_zero_not_panic() {
-    let j = build(&["(deffun-typed (d int64) ((a int64) (b int64)) (/ a b))"]);
+    let j = build(&["(defun-typed (d int64) ((a int64) (b int64)) (/ a b))"]);
     assert_eq!(agree(&j, "d", &[i(5), i(0)]), i(0));
 }
 
@@ -95,8 +95,8 @@ fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
     // (interpreter, closure, and the native Cranelift backend under
     // `--features jit`) must match without faulting.
     let j = build(&[
-        "(deffun-typed (d int64) ((a int64) (b int64)) (/ a b))",
-        "(deffun-typed (m int64) ((a int64) (b int64)) (mod a b))",
+        "(defun-typed (d int64) ((a int64) (b int64)) (/ a b))",
+        "(defun-typed (m int64) ((a int64) (b int64)) (mod a b))",
     ]);
     assert_eq!(agree(&j, "d", &[i(i64::MIN), i(-1)]), i(0));
     assert_eq!(agree(&j, "m", &[i(i64::MIN), i(-1)]), i(0));
@@ -107,7 +107,7 @@ fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
 
 #[test]
 fn int_overflow_wraps() {
-    let j = build(&["(deffun-typed (g int64) ((x int64)) (* x x))"]);
+    let j = build(&["(defun-typed (g int64) ((x int64)) (* x x))"]);
     let big = 5_000_000_000i64;
     assert_eq!(agree(&j, "g", &[i(big)]), i(big.wrapping_mul(big)));
 }
@@ -116,14 +116,14 @@ fn int_overflow_wraps() {
 
 #[test]
 fn float_arithmetic_roundtrips_bits() {
-    let j = build(&["(deffun-typed (avg float64) ((x float64) (y float64)) (/ (+ x y) 2.0))"]);
+    let j = build(&["(defun-typed (avg float64) ((x float64) (y float64)) (/ (+ x y) 2.0))"]);
     assert_eq!(agree(&j, "avg", &[fl(3.0), fl(5.0)]), fl(4.0));
     assert_eq!(agree(&j, "avg", &[fl(-1.5), fl(2.5)]), fl(0.5));
 }
 
 #[test]
 fn float_sub_mul_div() {
-    let j = build(&["(deffun-typed (f float64) ((x float64) (y float64)) (- (* x y) (/ x y)))"]);
+    let j = build(&["(defun-typed (f float64) ((x float64) (y float64)) (- (* x y) (/ x y)))"]);
     assert_eq!(
         agree(&j, "f", &[fl(6.0), fl(2.0)]),
         fl(6.0 * 2.0 - 6.0 / 2.0)
@@ -136,7 +136,7 @@ fn float_sub_mul_div() {
 
 #[test]
 fn negative_and_fractional_floats() {
-    let j = build(&["(deffun-typed (id float64) ((x float64)) x)"]);
+    let j = build(&["(defun-typed (id float64) ((x float64)) x)"]);
     for v in [-0.0, 0.25, -123.456, 1e300, -1e-300] {
         assert_eq!(agree(&j, "id", &[fl(v)]), fl(v));
     }
@@ -147,12 +147,12 @@ fn negative_and_fractional_floats() {
 #[test]
 fn all_int_comparisons() {
     let j = build(&[
-        "(deffun-typed (lt bool) ((a int64) (b int64)) (< a b))",
-        "(deffun-typed (gt bool) ((a int64) (b int64)) (> a b))",
-        "(deffun-typed (le bool) ((a int64) (b int64)) (<= a b))",
-        "(deffun-typed (ge bool) ((a int64) (b int64)) (>= a b))",
-        "(deffun-typed (eq bool) ((a int64) (b int64)) (= a b))",
-        "(deffun-typed (ne bool) ((a int64) (b int64)) (/= a b))",
+        "(defun-typed (lt bool) ((a int64) (b int64)) (< a b))",
+        "(defun-typed (gt bool) ((a int64) (b int64)) (> a b))",
+        "(defun-typed (le bool) ((a int64) (b int64)) (<= a b))",
+        "(defun-typed (ge bool) ((a int64) (b int64)) (>= a b))",
+        "(defun-typed (eq bool) ((a int64) (b int64)) (= a b))",
+        "(defun-typed (ne bool) ((a int64) (b int64)) (/= a b))",
     ]);
     assert_eq!(agree(&j, "lt", &[i(2), i(3)]), bo(true));
     assert_eq!(agree(&j, "gt", &[i(2), i(3)]), bo(false));
@@ -164,7 +164,7 @@ fn all_int_comparisons() {
 
 #[test]
 fn float_comparisons() {
-    let j = build(&["(deffun-typed (le bool) ((a float64) (b float64)) (<= a b))"]);
+    let j = build(&["(defun-typed (le bool) ((a float64) (b float64)) (<= a b))"]);
     assert_eq!(agree(&j, "le", &[fl(0.5), fl(0.5)]), bo(true));
     assert_eq!(agree(&j, "le", &[fl(0.5), fl(0.25)]), bo(false));
 }
@@ -174,9 +174,9 @@ fn float_comparisons() {
 #[test]
 fn and_or_not_truth_tables() {
     let j = build(&[
-        "(deffun-typed (a2 bool) ((p bool) (q bool)) (and p q))",
-        "(deffun-typed (o2 bool) ((p bool) (q bool)) (or p q))",
-        "(deffun-typed (n1 bool) ((p bool)) (not p))",
+        "(defun-typed (a2 bool) ((p bool) (q bool)) (and p q))",
+        "(defun-typed (o2 bool) ((p bool) (q bool)) (or p q))",
+        "(defun-typed (n1 bool) ((p bool)) (not p))",
     ]);
     for (p, q) in [(false, false), (false, true), (true, false), (true, true)] {
         assert_eq!(agree(&j, "a2", &[bo(p), bo(q)]), bo(p && q));
@@ -189,8 +189,8 @@ fn and_or_not_truth_tables() {
 #[test]
 fn range_predicates_compose_logic_and_comparison() {
     let j = build(&[
-        "(deffun-typed (between bool) ((x int64) (lo int64) (hi int64)) (and (>= x lo) (<= x hi)))",
-        "(deffun-typed (outside bool) ((x int64) (lo int64) (hi int64)) (or (< x lo) (> x hi)))",
+        "(defun-typed (between bool) ((x int64) (lo int64) (hi int64)) (and (>= x lo) (<= x hi)))",
+        "(defun-typed (outside bool) ((x int64) (lo int64) (hi int64)) (or (< x lo) (> x hi)))",
     ]);
     assert_eq!(agree(&j, "between", &[i(5), i(1), i(10)]), bo(true));
     assert_eq!(agree(&j, "between", &[i(11), i(1), i(10)]), bo(false));
@@ -200,7 +200,7 @@ fn range_predicates_compose_logic_and_comparison() {
 
 #[test]
 fn bool_literals() {
-    let j = build(&["(deffun-typed (pick bool) ((p bool)) (if p false true))"]);
+    let j = build(&["(defun-typed (pick bool) ((p bool)) (if p false true))"]);
     assert_eq!(agree(&j, "pick", &[bo(true)]), bo(false));
     assert_eq!(agree(&j, "pick", &[bo(false)]), bo(true));
 }
@@ -210,9 +210,9 @@ fn bool_literals() {
 #[test]
 fn if_branches() {
     let j = build(&[
-        "(deffun-typed (absish int64) ((x int64)) (if (< x 0) (- 0 x) x))",
-        "(deffun-typed (maxi int64) ((a int64) (b int64)) (if (> a b) a b))",
-        "(deffun-typed (sign int64) ((x int64)) (if (> x 0) 1 (if (< x 0) (- 0 1) 0)))",
+        "(defun-typed (absish int64) ((x int64)) (if (< x 0) (- 0 x) x))",
+        "(defun-typed (maxi int64) ((a int64) (b int64)) (if (> a b) a b))",
+        "(defun-typed (sign int64) ((x int64)) (if (> x 0) 1 (if (< x 0) (- 0 1) 0)))",
     ]);
     assert_eq!(agree(&j, "absish", &[i(-9)]), i(9));
     assert_eq!(agree(&j, "absish", &[i(9)]), i(9));
@@ -227,8 +227,8 @@ fn if_branches() {
 #[test]
 fn let_single_and_sequential() {
     let j = build(&[
-        "(deffun-typed (poly int64) ((x int64)) (let-typed ((y int64 (* x x))) (+ y x)))",
-        "(deffun-typed (seq int64) ((x int64)) \
+        "(defun-typed (poly int64) ((x int64)) (let-typed ((y int64 (* x x))) (+ y x)))",
+        "(defun-typed (seq int64) ((x int64)) \
            (let-typed ((y int64 (+ x 1)) (z int64 (* y 2))) (+ y z)))",
     ]);
     assert_eq!(agree(&j, "poly", &[i(3)]), i(12));
@@ -238,7 +238,7 @@ fn let_single_and_sequential() {
 
 #[test]
 fn let_shadowing_uses_innermost() {
-    let j = build(&["(deffun-typed (sh int64) ((x int64)) \
+    let j = build(&["(defun-typed (sh int64) ((x int64)) \
            (let-typed ((x int64 (+ x 1))) (let-typed ((x int64 (* x 10))) x)))"]);
     // x=5 -> 6 -> 60
     assert_eq!(agree(&j, "sh", &[i(5)]), i(60));
@@ -246,7 +246,7 @@ fn let_shadowing_uses_innermost() {
 
 #[test]
 fn nested_let_in_branch_does_not_corrupt_outer_slot() {
-    let src = "(deffun-typed (f int64) ((c int64)) \
+    let src = "(defun-typed (f int64) ((c int64)) \
                (let-typed ((a int64 (if (> c 0) (let-typed ((tmp int64 1)) tmp) 0))) \
                  (+ a 100)))";
     let j = build(&[src]);
@@ -256,7 +256,7 @@ fn nested_let_in_branch_does_not_corrupt_outer_slot() {
 
 #[test]
 fn let_with_float() {
-    let j = build(&["(deffun-typed (hyp float64) ((a float64) (b float64)) \
+    let j = build(&["(defun-typed (hyp float64) ((a float64) (b float64)) \
            (let-typed ((s float64 (+ (* a a) (* b b)))) s))"]);
     assert_eq!(agree(&j, "hyp", &[fl(3.0), fl(4.0)]), fl(25.0));
 }
@@ -269,8 +269,8 @@ fn let_infers_type_from_initializer() {
     // int and float versions are the *same surface form*, monomorphized by
     // inference to different representations.
     let j = build(&[
-        "(deffun-typed (poly int64) ((x int64)) (let-typed ((y (* x x))) (+ y x)))",
-        "(deffun-typed (hyp float64) ((a float64) (b float64)) \
+        "(defun-typed (poly int64) ((x int64)) (let-typed ((y (* x x))) (+ y x)))",
+        "(defun-typed (hyp float64) ((a float64) (b float64)) \
            (let-typed ((s (+ (* a a) (* b b)))) s))",
     ]);
     assert_eq!(agree(&j, "poly", &[i(3)]), i(12));
@@ -282,7 +282,7 @@ fn let_inferred_binding_flows_into_typed_context() {
     // An inferred `char` binding must still type-check as a `char` downstream
     // (here, fed back through `char-code`), proving the inferred type — not a
     // default — is what propagates.
-    let j = build(&["(deffun-typed (f int64) ((n int64)) \
+    let j = build(&["(defun-typed (f int64) ((n int64)) \
            (let-typed ((c (code-char n))) (char-code c)))"]);
     assert_eq!(agree(&j, "f", &[i(65)]), i(65));
     assert_eq!(agree(&j, "f", &[i(321)]), i(65)); // 321 & 0xff = 65
@@ -290,7 +290,7 @@ fn let_inferred_binding_flows_into_typed_context() {
 
 #[test]
 fn let_inferred_and_explicit_mix() {
-    let j = build(&["(deffun-typed (g int64) ((x int64)) \
+    let j = build(&["(defun-typed (g int64) ((x int64)) \
            (let-typed ((y (+ x 1)) (z int64 (* y 2))) (+ y z)))"]);
     // x=4 -> y=5 -> z=10 -> 15
     assert_eq!(agree(&j, "g", &[i(4)]), i(15));
@@ -299,7 +299,7 @@ fn let_inferred_and_explicit_mix() {
 #[test]
 fn explicit_annotation_agreeing_with_inference_is_accepted() {
     // The pin matches what inference would derive — accepted.
-    let j = build(&["(deffun-typed (h float64) ((x float64)) \
+    let j = build(&["(defun-typed (h float64) ((x float64)) \
            (let-typed ((y float64 (* x x))) y))"]);
     assert_eq!(agree(&j, "h", &[fl(2.5)]), fl(6.25));
 }
@@ -309,7 +309,7 @@ fn explicit_annotation_conflicting_with_inference_is_rejected() {
     // The initializer is `int64` but the binding is pinned `float64`: the pin
     // and the inferred type fail to unify.
     let err = def_err(
-        "(deffun-typed (f int64) ((x int64)) \
+        "(defun-typed (f int64) ((x int64)) \
            (let-typed ((y float64 (* x x))) x))",
     );
     assert!(
@@ -323,7 +323,7 @@ fn inferred_binding_used_at_two_types_is_rejected() {
     // `y` is inferred from an int initializer, then used where a float is
     // required — a conflict surfaced through the binding's resolved type.
     let err = def_err(
-        "(deffun-typed (f float64) ((a float64)) \
+        "(defun-typed (f float64) ((a float64)) \
            (let-typed ((y (+ 1 2))) (+ y a)))",
     );
     assert!(err.contains("operands disagree"), "got: {err}");
@@ -336,11 +336,11 @@ fn array_new_store_fetch_length_roundtrip() {
     // Build a 3-int array, fill it, read it back, and report its length. The
     // element type is inferred (int64) from the `store` of an int.
     let j = build(&[
-        "(deffun-typed (build int64) ((x int64)) \
+        "(defun-typed (build int64) ((x int64)) \
            (let-typed ((a (array 3))) \
              (store a 0 x) (store a 1 (* x 2)) (store a 2 (* x 3)) \
              (+ (fetch a 0) (+ (fetch a 1) (fetch a 2)))))",
-        "(deffun-typed (len3 int64) () (let-typed ((a (array 3))) (array-length a)))",
+        "(defun-typed (len3 int64) () (let-typed ((a (array 3))) (array-length a)))",
     ]);
     assert_eq!(agree(&j, "build", &[i(5)]), i(5 + 10 + 15));
     assert_eq!(agree(&j, "len3", &[]), i(3));
@@ -350,9 +350,9 @@ fn array_new_store_fetch_length_roundtrip() {
 fn array_out_of_bounds_is_panic_free() {
     // OOB fetch yields 0, OOB store is a no-op — agreeing across all editions.
     let j = build(&[
-        "(deffun-typed (oobget int64) ((idx int64)) \
+        "(defun-typed (oobget int64) ((idx int64)) \
            (let-typed ((a (array 2))) (store a 0 7) (store a 1 9) (fetch a idx)))",
-        "(deffun-typed (oobset int64) ((idx int64)) \
+        "(defun-typed (oobset int64) ((idx int64)) \
            (let-typed ((a (array 2))) (store a idx 42) (+ (fetch a 0) (fetch a 1))))",
     ]);
     assert_eq!(agree(&j, "oobget", &[i(0)]), i(7));
@@ -365,7 +365,7 @@ fn array_out_of_bounds_is_panic_free() {
 fn array_param_element_inferred_from_body() {
     // `a` is declared with the bare `array` keyword; its element type is
     // inferred to int64 from the `fetch`+arithmetic in the body.
-    let j = build(&["(deffun-typed (first-plus int64) ((a array) (k int64)) (+ (fetch a 0) k))"]);
+    let j = build(&["(defun-typed (first-plus int64) ((a array) (k int64)) (+ (fetch a 0) k))"]);
     assert_eq!(agree(&j, "first-plus", &[ints(&[10, 20, 30]), i(5)]), i(15));
 }
 
@@ -373,9 +373,9 @@ fn array_param_element_inferred_from_body() {
 fn array_int_sum_recursive_kernel() {
     // sum-array via recursion over a pinned (array int64).
     let j = build(&[
-        "(deffun-typed (suml int64) ((a (array int64)) (i int64)) \
+        "(defun-typed (suml int64) ((a (array int64)) (i int64)) \
            (if (= i (array-length a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
-        "(deffun-typed (sum int64) ((a (array int64))) (suml a 0))",
+        "(defun-typed (sum int64) ((a (array int64))) (suml a 0))",
     ]);
     assert_eq!(agree(&j, "sum", &[ints(&[1, 2, 3, 4, 5])]), i(15));
     assert_eq!(agree(&j, "sum", &[ints(&[])]), i(0));
@@ -384,10 +384,10 @@ fn array_int_sum_recursive_kernel() {
 #[test]
 fn array_float_dot_product_kernel() {
     let j = build(&[
-        "(deffun-typed (dotl float64) ((a (array float64)) (b (array float64)) (i int64)) \
+        "(defun-typed (dotl float64) ((a (array float64)) (b (array float64)) (i int64)) \
            (if (= i (array-length a)) 0.0 \
              (+ (* (fetch a i) (fetch b i)) (dotl a b (+ i 1)))))",
-        "(deffun-typed (dot float64) ((a (array float64)) (b (array float64))) (dotl a b 0))",
+        "(defun-typed (dot float64) ((a (array float64)) (b (array float64))) (dotl a b 0))",
     ]);
     assert_eq!(
         agree(
@@ -404,8 +404,8 @@ fn same_source_monomorphizes_to_int_and_float_arrays() {
     // Identical `(array 1)`/`store`/`fetch` source, but inference picks int64 in
     // one function and float64 in the other from the value stored.
     let j = build(&[
-        "(deffun-typed (boxi int64) ((x int64)) (let-typed ((a (array 1))) (store a 0 x) (fetch a 0)))",
-        "(deffun-typed (boxf float64) ((x float64)) (let-typed ((a (array 1))) (store a 0 x) (fetch a 0)))",
+        "(defun-typed (boxi int64) ((x int64)) (let-typed ((a (array 1))) (store a 0 x) (fetch a 0)))",
+        "(defun-typed (boxf float64) ((x float64)) (let-typed ((a (array 1))) (store a 0 x) (fetch a 0)))",
     ]);
     assert_eq!(agree(&j, "boxi", &[i(7)]), i(7));
     assert_eq!(agree(&j, "boxf", &[fl(2.5)]), fl(2.5));
@@ -415,9 +415,9 @@ fn same_source_monomorphizes_to_int_and_float_arrays() {
 fn string_is_array_of_char_levenshtein() {
     // A string is `(array char)`: native byte indexing + comparison + recursion.
     let j = build(&[
-        "(deffun-typed (min3 int64) ((a int64) (b int64) (c int64)) \
+        "(defun-typed (min3 int64) ((a int64) (b int64) (c int64)) \
            (if (<= a b) (if (<= a c) a c) (if (<= b c) b c)))",
-        "(deffun-typed (lev int64) ((a (array char)) (b (array char)) (i int64) (j int64)) \
+        "(defun-typed (lev int64) ((a (array char)) (b (array char)) (i int64) (j int64)) \
            (if (= i (array-length a)) (- (array-length b) j) \
              (if (= j (array-length b)) (- (array-length a) i) \
                (if (= (fetch a i) (fetch b j)) \
@@ -425,7 +425,7 @@ fn string_is_array_of_char_levenshtein() {
                    (+ 1 (min3 (lev a b (+ i 1) j) \
                               (lev a b i (+ j 1)) \
                               (lev a b (+ i 1) (+ j 1))))))))",
-        "(deffun-typed (edit int64) ((a (array char)) (b (array char))) (lev a b 0 0))",
+        "(defun-typed (edit int64) ((a (array char)) (b (array char))) (lev a b 0 0))",
     ]);
     assert_eq!(
         agree(&j, "edit", &[chars("kitten"), chars("sitting")]),
@@ -439,10 +439,10 @@ fn string_is_array_of_char_levenshtein() {
 fn char_array_fetch_resolves_element_to_char() {
     // `(fetch s i)` on a char array is a char: feeding it to `char-code`
     // type-checks only because the element resolved to `char`.
-    let j = build(&[
-        "(deffun-typed (code-at int64) ((s (array char)) (i int64)) \
-           (char-code (fetch s i)))",
-    ]);
+    let j = build(
+        &["(defun-typed (code-at int64) ((s (array char)) (i int64)) \
+           (char-code (fetch s i)))"],
+    );
     assert_eq!(agree(&j, "code-at", &[chars("ABC"), i(0)]), i(65));
     assert_eq!(agree(&j, "code-at", &[chars("ABC"), i(2)]), i(67));
 }
@@ -450,7 +450,7 @@ fn char_array_fetch_resolves_element_to_char() {
 #[test]
 fn array_returned_across_membrane() {
     // A typed function may build and return an array; the membrane copies it out.
-    let j = build(&["(deffun-typed (iota (array int64)) ((n int64)) \
+    let j = build(&["(defun-typed (iota (array int64)) ((n int64)) \
            (let-typed ((a (array n))) (store a 0 0) a))"]);
     // (only element 0 written; rest zero-initialized)
     assert_eq!(j.call("iota", &[i(3)]).unwrap(), ints(&[0, 0, 0]));
@@ -460,7 +460,7 @@ fn array_returned_across_membrane() {
 fn array_element_type_conflict_rejected() {
     // Storing an int then a float into the same array is a def-time element clash.
     let err = def_err(
-        "(deffun-typed (bad int64) () \
+        "(defun-typed (bad int64) () \
            (let-typed ((a (array 2))) (store a 0 1) (store a 1 2.0) 0))",
     );
     assert!(
@@ -478,7 +478,7 @@ fn string_membrane_roundtrip_via_call_lisp() {
     let mut j = Jit::new();
     // length of a string (array char) through the LispVal membrane.
     let f = read(
-        "(deffun-typed (slen int64) ((s (array char))) (array-length s))",
+        "(defun-typed (slen int64) ((s (array char))) (array-length s))",
         &env,
     )
     .unwrap();
@@ -531,7 +531,7 @@ fn struct_used_as_typed_parameter() {
     // accessors. Mixed field types (int64 + float64) exercise per-field reads.
     let j = build_with(
         &["(defstruct-typed Vec2 (x float64) (y float64))"],
-        &["(deffun-typed (norm2 float64) ((v Vec2)) \
+        &["(defun-typed (norm2 float64) ((v Vec2)) \
                (+ (* (vec2-x v) (vec2-x v)) (* (vec2-y v) (vec2-y v))))"],
     );
     j.compile_all();
@@ -548,7 +548,7 @@ fn struct_constructed_and_consumed_in_one_typed_function() {
     // struct pointer stays in the call arena the whole time.
     let j = build_with(
         &["(defstruct-typed Pair (a int64) (b int64))"],
-        &["(deffun-typed (sum-pair int64) ((a int64) (b int64)) \
+        &["(defun-typed (sum-pair int64) ((a int64) (b int64)) \
              (let-typed ((p (make-pair a b))) (+ (pair-a p) (pair-b p))))"],
     );
     assert_eq!(agree(&j, "sum-pair", &[i(10), i(32)]), i(42));
@@ -558,7 +558,7 @@ fn struct_constructed_and_consumed_in_one_typed_function() {
 fn let_typed_accepts_nominal_struct_annotations() {
     let j = build_with(
         &["(defstruct-typed Box (n int64))"],
-        &["(deffun-typed (unwrap-box int64) ((n int64)) \
+        &["(defun-typed (unwrap-box int64) ((n int64)) \
              (let-typed ((b Box (make-box n))) (box-n b)))"],
     );
     assert_eq!(agree(&j, "unwrap-box", &[i(42)]), i(42));
@@ -570,7 +570,7 @@ fn let_typed_nominal_struct_annotation_rejects_plain_value() {
     let err = j
         .define(
             &crate::reader::read(
-                "(deffun-typed (bad int64) () \
+                "(defun-typed (bad int64) () \
                    (let-typed ((b Box 7)) (box-n b)))",
                 &Environment::new_with_builtins(),
             )
@@ -590,7 +590,7 @@ fn struct_field_type_is_checked() {
     let err = j
         .define(
             &crate::reader::read(
-                "(deffun-typed (bad float64) ((b Box)) (box-n b))",
+                "(defun-typed (bad float64) ((b Box)) (box-n b))",
                 &Environment::new_with_builtins(),
             )
             .unwrap(),
@@ -643,8 +643,7 @@ fn infer_untyped_rejects_untyped_call_island_escape() {
 
 #[test]
 fn factorial() {
-    let j =
-        build(&["(deffun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))"]);
+    let j = build(&["(defun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))"]);
     assert_eq!(agree(&j, "fact", &[i(5)]), i(120));
     assert_eq!(agree(&j, "fact", &[i(10)]), i(3_628_800));
     assert_eq!(agree(&j, "fact", &[i(20)]), i(2_432_902_008_176_640_000));
@@ -653,7 +652,7 @@ fn factorial() {
 #[test]
 fn fibonacci() {
     let j = build(&[
-        "(deffun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
+        "(defun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
     ]);
     for (n, want) in [(0, 0), (1, 1), (10, 55), (20, 6765), (25, 75025)] {
         assert_eq!(agree(&j, "fib", &[i(n)]), i(want), "fib({n})");
@@ -663,7 +662,7 @@ fn fibonacci() {
 #[test]
 fn gcd_euclid() {
     let j = build(&[
-        "(deffun-typed (gcd int64) ((a int64) (b int64)) (if (= b 0) a (gcd b (mod a b))))",
+        "(defun-typed (gcd int64) ((a int64) (b int64)) (if (= b 0) a (gcd b (mod a b))))",
     ]);
     assert_eq!(agree(&j, "gcd", &[i(48), i(36)]), i(12));
     assert_eq!(agree(&j, "gcd", &[i(17), i(5)]), i(1));
@@ -673,7 +672,7 @@ fn gcd_euclid() {
 #[test]
 fn integer_power() {
     let j = build(&[
-        "(deffun-typed (pw int64) ((base int64) (e int64)) (if (= e 0) 1 (* base (pw base (- e 1)))))",
+        "(defun-typed (pw int64) ((base int64) (e int64)) (if (= e 0) 1 (* base (pw base (- e 1)))))",
     ]);
     assert_eq!(agree(&j, "pw", &[i(2), i(10)]), i(1024));
     assert_eq!(agree(&j, "pw", &[i(3), i(5)]), i(243));
@@ -681,7 +680,7 @@ fn integer_power() {
 
 #[test]
 fn ackermann() {
-    let j = build(&["(deffun-typed (ack int64) ((m int64) (n int64)) \
+    let j = build(&["(defun-typed (ack int64) ((m int64) (n int64)) \
            (if (= m 0) (+ n 1) \
                (if (= n 0) (ack (- m 1) 1) \
                    (ack (- m 1) (ack m (- n 1))))))"]);
@@ -697,7 +696,7 @@ fn deep_recursion_sum_to_n() {
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             let j = build(&[
-                "(deffun-typed (sum int64) ((n int64)) (if (= n 0) 0 (+ n (sum (- n 1)))))",
+                "(defun-typed (sum int64) ((n int64)) (if (= n 0) 0 (+ n (sum (- n 1)))))",
             ]);
             assert_eq!(agree(&j, "sum", &[i(5000)]), i(5000 * 5001 / 2));
         })
@@ -709,7 +708,7 @@ fn deep_recursion_sum_to_n() {
 #[test]
 fn float_recursive_power() {
     let j = build(&[
-        "(deffun-typed (fpow float64) ((b float64) (e int64)) (if (= e 0) 1.0 (* b (fpow b (- e 1)))))",
+        "(defun-typed (fpow float64) ((b float64) (e int64)) (if (= e 0) 1.0 (* b (fpow b (- e 1)))))",
     ]);
     assert_eq!(agree(&j, "fpow", &[fl(2.0), i(10)]), fl(1024.0));
     assert_eq!(agree(&j, "fpow", &[fl(0.5), i(3)]), fl(0.125));
@@ -720,10 +719,10 @@ fn float_recursive_power() {
 #[test]
 fn cross_function_calls() {
     let j = build(&[
-        "(deffun-typed (dbl int64) ((x int64)) (* x 2))",
-        "(deffun-typed (quad int64) ((x int64)) (dbl (dbl x)))",
-        "(deffun-typed (sq int64) ((x int64)) (* x x))",
-        "(deffun-typed (sum-sq int64) ((a int64) (b int64)) (+ (sq a) (sq b)))",
+        "(defun-typed (dbl int64) ((x int64)) (* x 2))",
+        "(defun-typed (quad int64) ((x int64)) (dbl (dbl x)))",
+        "(defun-typed (sq int64) ((x int64)) (* x x))",
+        "(defun-typed (sum-sq int64) ((a int64) (b int64)) (+ (sq a) (sq b)))",
     ]);
     assert_eq!(agree(&j, "quad", &[i(5)]), i(20));
     assert_eq!(agree(&j, "sum-sq", &[i(3), i(4)]), i(25));
@@ -732,8 +731,8 @@ fn cross_function_calls() {
 #[test]
 fn call_across_types() {
     let j = build(&[
-        "(deffun-typed (is-even bool) ((n int64)) (= (mod n 2) 0))",
-        "(deffun-typed (classify int64) ((n int64)) (if (is-even n) 0 1))",
+        "(defun-typed (is-even bool) ((n int64)) (= (mod n 2) 0))",
+        "(defun-typed (classify int64) ((n int64)) (if (is-even n) 0 1))",
     ]);
     assert_eq!(agree(&j, "classify", &[i(4)]), i(0));
     assert_eq!(agree(&j, "classify", &[i(7)]), i(1));
@@ -749,7 +748,7 @@ fn mutual_recursion_even_odd() {
     j.declare("ODD?", &[("N", Ty::Int64)], Ty::Bool);
     j.define(
         &read(
-            "(deffun-typed (even? bool) ((n int64)) (if (= n 0) true (odd? (- n 1))))",
+            "(defun-typed (even? bool) ((n int64)) (if (= n 0) true (odd? (- n 1))))",
             &env,
         )
         .unwrap(),
@@ -757,7 +756,7 @@ fn mutual_recursion_even_odd() {
     .unwrap();
     j.define(
         &read(
-            "(deffun-typed (odd? bool) ((n int64)) (if (= n 0) false (even? (- n 1))))",
+            "(defun-typed (odd? bool) ((n int64)) (if (= n 0) false (even? (- n 1))))",
             &env,
         )
         .unwrap(),
@@ -776,11 +775,11 @@ fn mutual_recursion_even_odd() {
 fn redefine_changes_behavior() {
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
         .unwrap();
     assert_eq!(j.call("SQ", &[i(7)]).unwrap(), i(49));
     // Redefine under the same name -> cube.
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x (* x x)))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x (* x x)))", &env).unwrap())
         .unwrap();
     assert_eq!(j.call("SQ", &[i(7)]).unwrap(), i(343));
 }
@@ -791,13 +790,13 @@ fn caller_sees_redefined_callee_through_the_cell() {
     // `use`'s result because the call goes through the registry cell (policy a).
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
         .unwrap();
-    j.define(&read("(deffun-typed (use int64) ((x int64)) (+ (sq x) 1))", &env).unwrap())
+    j.define(&read("(defun-typed (use int64) ((x int64)) (+ (sq x) 1))", &env).unwrap())
         .unwrap();
     assert_eq!(j.call("USE", &[i(5)]).unwrap(), i(26));
 
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x (* x x)))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x (* x x)))", &env).unwrap())
         .unwrap();
     assert_eq!(j.call("USE", &[i(5)]).unwrap(), i(126)); // 125 + 1, no recompile of USE
 }
@@ -807,7 +806,7 @@ fn redefinition_pins_in_flight_edition() {
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
     let id = j
-        .define(&read("(deffun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
+        .define(&read("(defun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
         .unwrap();
     let f = &j.funcs[id];
     let g0 = f.generation();
@@ -818,7 +817,7 @@ fn redefinition_pins_in_flight_edition() {
     assert_eq!(pinned(&mut [from_i(6)], &ctx), from_i(36));
 
     // Redefine: swap in a new edition. The pinned old one stays valid.
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x (* x x)))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x (* x x)))", &env).unwrap())
         .unwrap();
     let f = &j.funcs[id];
     assert!(f.generation() > g0);
@@ -830,8 +829,8 @@ fn redefinition_pins_in_flight_edition() {
 #[test]
 fn mixed_compiled_and_interpreted_callees() {
     let j = build(&[
-        "(deffun-typed (sq int64) ((x int64)) (* x x))",
-        "(deffun-typed (use int64) ((x int64)) (+ (sq x) 1))",
+        "(defun-typed (sq int64) ((x int64)) (* x x))",
+        "(defun-typed (use int64) ((x int64)) (+ (sq x) 1))",
     ]);
     // sq interpreted, use compiled: dispatch is per-function through the cell.
     j.get("SQ").unwrap().deoptimize();
@@ -845,8 +844,8 @@ fn mixed_compiled_and_interpreted_callees() {
 #[test]
 fn membrane_lispval_roundtrip() {
     let j = build(&[
-        "(deffun-typed (add int64) ((x int64) (y int64)) (+ x y))",
-        "(deffun-typed (scale float64) ((x float64)) (* x 2.0))",
+        "(defun-typed (add int64) ((x int64) (y int64)) (+ x y))",
+        "(defun-typed (scale float64) ((x float64)) (* x 2.0))",
     ]);
     assert_eq!(
         j.call_lisp("ADD", &[LispVal::Number(20), LispVal::Number(22)])
@@ -861,14 +860,14 @@ fn membrane_lispval_roundtrip() {
 
 #[test]
 fn membrane_rejects_wrong_value_type() {
-    let j = build(&["(deffun-typed (add int64) ((x int64) (y int64)) (+ x y))"]);
+    let j = build(&["(defun-typed (add int64) ((x int64) (y int64)) (+ x y))"]);
     let err = j.call("ADD", &[fl(1.0), i(2)]).unwrap_err();
     assert!(err.contains("does not match type"), "got: {err}");
 }
 
 #[test]
 fn membrane_rejects_wrong_arity() {
-    let j = build(&["(deffun-typed (add int64) ((x int64) (y int64)) (+ x y))"]);
+    let j = build(&["(defun-typed (add int64) ((x int64) (y int64)) (+ x y))"]);
     let err = j.call("ADD", &[i(1)]).unwrap_err();
     assert!(err.contains("expected 2 args"), "got: {err}");
 }
@@ -877,67 +876,67 @@ fn membrane_rejects_wrong_arity() {
 
 #[test]
 fn reject_mixed_numeric_operands() {
-    let err = def_err("(deffun-typed (bad float64) ((x float64)) (+ x 1))");
+    let err = def_err("(defun-typed (bad float64) ((x float64)) (+ x 1))");
     assert!(err.contains("operands disagree"), "got: {err}");
 }
 
 #[test]
 fn reject_arithmetic_on_bool() {
-    let err = def_err("(deffun-typed (bad bool) ((p bool) (q bool)) (+ p q))");
+    let err = def_err("(defun-typed (bad bool) ((p bool) (q bool)) (+ p q))");
     assert!(err.contains("numeric operands"), "got: {err}");
 }
 
 #[test]
 fn reject_mod_on_float() {
-    let err = def_err("(deffun-typed (bad float64) ((x float64) (y float64)) (mod x y))");
+    let err = def_err("(defun-typed (bad float64) ((x float64) (y float64)) (mod x y))");
     assert!(err.contains("int64-only"), "got: {err}");
 }
 
 #[test]
 fn reject_not_on_int() {
-    let err = def_err("(deffun-typed (bad bool) ((x int64)) (not x))");
+    let err = def_err("(defun-typed (bad bool) ((x int64)) (not x))");
     assert!(err.contains("`not` expects bool"), "got: {err}");
 }
 
 #[test]
 fn reject_and_on_int() {
-    let err = def_err("(deffun-typed (bad bool) ((x int64) (y int64)) (and x y))");
+    let err = def_err("(defun-typed (bad bool) ((x int64) (y int64)) (and x y))");
     assert!(err.contains("bool operands"), "got: {err}");
 }
 
 #[test]
 fn reject_if_nonbool_condition() {
-    let err = def_err("(deffun-typed (bad int64) ((x int64)) (if x 1 2))");
+    let err = def_err("(defun-typed (bad int64) ((x int64)) (if x 1 2))");
     assert!(err.contains("condition must be bool"), "got: {err}");
 }
 
 #[test]
 fn reject_if_branch_mismatch() {
-    let err = def_err("(deffun-typed (bad int64) ((x int64)) (if (< x 0) 1 2.0))");
+    let err = def_err("(defun-typed (bad int64) ((x int64)) (if (< x 0) 1 2.0))");
     assert!(err.contains("branches disagree"), "got: {err}");
 }
 
 #[test]
 fn reject_return_type_mismatch() {
-    let err = def_err("(deffun-typed (bad int64) ((x int64)) (< x 1))");
+    let err = def_err("(defun-typed (bad int64) ((x int64)) (< x 1))");
     assert!(err.contains("declared return"), "got: {err}");
 }
 
 #[test]
 fn reject_unbound_variable() {
-    let err = def_err("(deffun-typed (bad int64) ((x int64)) (+ x y))");
+    let err = def_err("(defun-typed (bad int64) ((x int64)) (+ x y))");
     assert!(err.contains("unbound"), "got: {err}");
 }
 
 #[test]
 fn reject_unknown_type() {
-    let err = def_err("(deffun-typed (bad widget) ((x int64)) x)");
+    let err = def_err("(defun-typed (bad widget) ((x int64)) x)");
     assert!(err.contains("unknown return type"), "got: {err}");
 }
 
 #[test]
 fn reject_call_to_unknown_function() {
-    let err = def_err("(deffun-typed (bad int64) ((x int64)) (nope x))");
+    let err = def_err("(defun-typed (bad int64) ((x int64)) (nope x))");
     assert!(err.contains("unknown function"), "got: {err}");
 }
 
@@ -945,10 +944,10 @@ fn reject_call_to_unknown_function() {
 fn reject_call_wrong_arity() {
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
         .unwrap();
     let err = j
-        .define(&read("(deffun-typed (bad int64) ((x int64)) (sq x x))", &env).unwrap())
+        .define(&read("(defun-typed (bad int64) ((x int64)) (sq x x))", &env).unwrap())
         .unwrap_err();
     assert!(err.contains("expects 1 args"), "got: {err}");
 }
@@ -957,18 +956,47 @@ fn reject_call_wrong_arity() {
 fn reject_call_wrong_arg_type() {
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
-    j.define(&read("(deffun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
+    j.define(&read("(defun-typed (sq int64) ((x int64)) (* x x))", &env).unwrap())
         .unwrap();
     let err = j
-        .define(&read("(deffun-typed (bad int64) ((x float64)) (sq x))", &env).unwrap())
+        .define(&read("(defun-typed (bad int64) ((x float64)) (sq x))", &env).unwrap())
         .unwrap_err();
     assert!(err.contains("expects Int64"), "got: {err}");
 }
 
 #[test]
 fn reject_arity_on_operator() {
-    let err = def_err("(deffun-typed (bad int64) ((x int64)) (+ x))");
-    assert!(err.contains("expects 2 args"), "got: {err}");
+    // 0-arg `-` has no identity and must error
+    let err = def_err("(defun-typed (bad int64) () (-))");
+    assert!(err.contains("requires at least 1"), "got: {err}");
+}
+
+// --- variadic arithmetic ---------------------------------------------------
+
+#[test]
+fn variadic_add_and_mul() {
+    let j = build(&[
+        "(defun-typed (sum3 int64) ((a int64) (b int64) (c int64)) (+ a b c))",
+        "(defun-typed (prod4 int64) ((a int64) (b int64) (c int64) (d int64)) (* a b c d))",
+        "(defun-typed (unary-add int64) ((x int64)) (+ x))",
+        "(defun-typed (zero-add int64) () (+))",
+        "(defun-typed (one-mul int64) () (*))",
+    ]);
+    assert_eq!(
+        agree(&j, "SUM3", &[Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Value::Int(6)
+    );
+    assert_eq!(
+        agree(
+            &j,
+            "PROD4",
+            &[Value::Int(2), Value::Int(3), Value::Int(4), Value::Int(5)]
+        ),
+        Value::Int(120)
+    );
+    assert_eq!(agree(&j, "UNARY-ADD", &[Value::Int(7)]), Value::Int(7));
+    assert_eq!(agree(&j, "ZERO-ADD", &[]), Value::Int(0));
+    assert_eq!(agree(&j, "ONE-MUL", &[]), Value::Int(1));
 }
 
 // --- differential sweep ----------------------------------------------------
@@ -976,9 +1004,9 @@ fn reject_arity_on_operator() {
 #[test]
 fn differential_sweep_over_many_inputs() {
     let j = build(&[
-        "(deffun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
-        "(deffun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))",
-        "(deffun-typed (gcd int64) ((a int64) (b int64)) (if (= b 0) a (gcd b (mod a b))))",
+        "(defun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
+        "(defun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))",
+        "(defun-typed (gcd int64) ((a int64) (b int64)) (if (= b 0) a (gcd b (mod a b))))",
     ]);
     // Reference implementations in Rust, compared against both editions.
     fn rfib(n: i64) -> i64 {
@@ -1020,11 +1048,11 @@ fn registry_growth_keeps_earlier_functions_callable() {
     // entry cells, not Vec-slot addresses.
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
-    j.define(&read("(deffun-typed (f0 int64) ((x int64)) x)", &env).unwrap())
+    j.define(&read("(defun-typed (f0 int64) ((x int64)) x)", &env).unwrap())
         .unwrap();
     for k in 1..200 {
         let src = format!(
-            "(deffun-typed (f{k} int64) ((x int64)) (+ (f{} x) 1))",
+            "(defun-typed (f{k} int64) ((x int64)) (+ (f{} x) 1))",
             k - 1
         );
         j.define(&read(&src, &env).unwrap()).unwrap();
@@ -1041,11 +1069,11 @@ fn registry_growth_keeps_earlier_functions_callable() {
 fn redefine_in_grown_registry_propagates_through_cells() {
     let env = Environment::new_with_builtins();
     let mut j = Jit::new();
-    j.define(&read("(deffun-typed (g0 int64) ((x int64)) x)", &env).unwrap())
+    j.define(&read("(defun-typed (g0 int64) ((x int64)) x)", &env).unwrap())
         .unwrap();
     for k in 1..60 {
         let src = format!(
-            "(deffun-typed (g{k} int64) ((x int64)) (+ (g{} x) 1))",
+            "(defun-typed (g{k} int64) ((x int64)) (+ (g{} x) 1))",
             k - 1
         );
         j.define(&read(&src, &env).unwrap()).unwrap();
@@ -1053,7 +1081,7 @@ fn redefine_in_grown_registry_propagates_through_cells() {
     assert_eq!(j.call("G50", &[i(0)]).unwrap(), i(50));
     // Redefine the base of the chain; callers must see it through the cell
     // without being recompiled themselves.
-    j.define(&read("(deffun-typed (g0 int64) ((x int64)) (+ x 100))", &env).unwrap())
+    j.define(&read("(defun-typed (g0 int64) ((x int64)) (+ x 100))", &env).unwrap())
         .unwrap();
     assert_eq!(j.call("G50", &[i(0)]).unwrap(), i(150));
 }
@@ -1061,7 +1089,7 @@ fn redefine_in_grown_registry_propagates_through_cells() {
 #[test]
 fn many_let_slots_indexed_stably() {
     // 40 sequential let bindings exercise high-index slot reads/writes.
-    let mut s = String::from("(deffun-typed (chainlet int64) ((x int64)) (let-typed (");
+    let mut s = String::from("(defun-typed (chainlet int64) ((x int64)) (let-typed (");
     s.push_str("(v0 int64 x) ");
     for k in 1..40 {
         s.push_str(&format!("(v{k} int64 (+ v{} 1)) ", k - 1));
@@ -1088,7 +1116,7 @@ fn forward_declared_mutual_recursion_rust_api() {
     j.declare("ODDP", &[("N", Ty::Int64)], Ty::Bool);
     j.define(
         &read(
-            "(deffun-typed (evenp bool) ((n int64)) (if (= n 0) true (oddp (- n 1))))",
+            "(defun-typed (evenp bool) ((n int64)) (if (= n 0) true (oddp (- n 1))))",
             &env,
         )
         .unwrap(),
@@ -1096,7 +1124,7 @@ fn forward_declared_mutual_recursion_rust_api() {
     .unwrap();
     j.define(
         &read(
-            "(deffun-typed (oddp bool) ((n int64)) (if (= n 0) false (evenp (- n 1))))",
+            "(defun-typed (oddp bool) ((n int64)) (if (= n 0) false (evenp (- n 1))))",
             &env,
         )
         .unwrap(),
@@ -1115,20 +1143,20 @@ fn ch(b: u8) -> Value {
 #[test]
 fn char_code_roundtrip() {
     // code-char(char-code(c)) == c for any byte.
-    let j = build(&["(deffun-typed (idc char) ((c char)) (code-char (char-code c)))"]);
+    let j = build(&["(defun-typed (idc char) ((c char)) (code-char (char-code c)))"]);
     assert_eq!(agree(&j, "idc", &[ch(65)]), ch(65));
     assert_eq!(agree(&j, "idc", &[ch(200)]), ch(200));
 }
 
 #[test]
 fn char_code_widens_to_int() {
-    let j = build(&["(deffun-typed (code int64) ((c char)) (char-code c))"]);
+    let j = build(&["(defun-typed (code int64) ((c char)) (char-code c))"]);
     assert_eq!(agree(&j, "code", &[ch(65)]), i(65));
 }
 
 #[test]
 fn code_char_narrows_and_masks() {
-    let j = build(&["(deffun-typed (mk char) ((n int64)) (code-char n))"]);
+    let j = build(&["(defun-typed (mk char) ((n int64)) (code-char n))"]);
     assert_eq!(agree(&j, "mk", &[i(66)]), ch(66));
     // narrowing masks to a byte: 321 & 0xff == 65
     assert_eq!(agree(&j, "mk", &[i(321)]), ch(65));
@@ -1136,10 +1164,10 @@ fn code_char_narrows_and_masks() {
 
 #[test]
 fn char_comparison() {
-    let j = build(&["(deffun-typed (eqa bool) ((c char)) (= c (code-char 65)))"]);
+    let j = build(&["(defun-typed (eqa bool) ((c char)) (= c (code-char 65)))"]);
     assert_eq!(agree(&j, "eqa", &[ch(65)]), bo(true));
     assert_eq!(agree(&j, "eqa", &[ch(66)]), bo(false));
-    let j2 = build(&["(deffun-typed (lt bool) ((a char) (b char)) (< a b))"]);
+    let j2 = build(&["(defun-typed (lt bool) ((a char) (b char)) (< a b))"]);
     assert_eq!(agree(&j2, "lt", &[ch(1), ch(2)]), bo(true));
     assert_eq!(agree(&j2, "lt", &[ch(9), ch(2)]), bo(false));
 }
@@ -1147,21 +1175,21 @@ fn char_comparison() {
 #[test]
 fn byte_arith_via_widening() {
     // Uppercase an ASCII lowercase byte by widening, subtracting 32, narrowing.
-    let j = build(&["(deffun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
+    let j = build(&["(defun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
     assert_eq!(agree(&j, "up", &[ch(97)]), ch(65)); // 'a' -> 'A'
 }
 
 #[test]
 fn char_type_aliases_parse() {
     // u8 and byte are accepted spellings of char.
-    let j = build(&["(deffun-typed (f u8) ((c byte)) c)"]);
+    let j = build(&["(defun-typed (f u8) ((c byte)) c)"]);
     assert_eq!(agree(&j, "f", &[ch(7)]), ch(7));
 }
 
 #[test]
 fn char_rejects_arithmetic() {
     // Bare +/- is not defined on char: you must widen via char-code first.
-    let e = def_err("(deffun-typed (f char) ((a char) (b char)) (+ a b))");
+    let e = def_err("(defun-typed (f char) ((a char) (b char)) (+ a b))");
     assert!(
         e.to_lowercase().contains("char") || e.contains("numeric"),
         "got: {e}"
@@ -1172,7 +1200,7 @@ fn char_rejects_arithmetic() {
 fn char_membrane_boxes_to_char() {
     // From untyped Lisp: a Number flows into a char param (backward compat);
     // a Char also works natively. The char result comes back as LispVal::Char.
-    let j = build(&["(deffun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
+    let j = build(&["(defun-typed (up char) ((c char)) (code-char (- (char-code c) 32)))"]);
     j.compile_all();
     // LispVal::Number still coerces into char params for backward compat.
     let out = j
@@ -1191,7 +1219,7 @@ fn char_membrane_boxes_to_char() {
 #[test]
 fn trace_records_result_and_is_deterministic() {
     let j =
-        build(&["(deffun-typed (poly int64) ((x int64)) (let-typed ((y int64 (* x x))) (+ y x)))"]);
+        build(&["(defun-typed (poly int64) ((x int64)) (let-typed ((y int64 (* x x))) (+ y x)))"]);
     let (val, log) = j.trace_call("POLY", &[i(4)]).unwrap();
     assert_eq!(val, i(20)); // 16 + 4
     assert!(!log.is_empty());
@@ -1205,7 +1233,7 @@ fn trace_records_result_and_is_deterministic() {
 
 #[test]
 fn trace_agrees_with_interpreter_and_compiled() {
-    let j = build(&["(deffun-typed (f int64) ((a int64) (b int64)) (if (> a b) (- a b) (* a b)))"]);
+    let j = build(&["(defun-typed (f int64) ((a int64) (b int64)) (if (> a b) (- a b) (* a b)))"]);
     for (a, b) in [(7, 3), (2, 9), (5, 5)] {
         let compiled = {
             j.compile_all();
@@ -1224,7 +1252,7 @@ fn trace_agrees_with_interpreter_and_compiled() {
 #[test]
 fn trace_short_circuits_leave_no_step() {
     // `(or true <rhs>)` must not evaluate <rhs>: no step is recorded for it.
-    let j = build(&["(deffun-typed (sc bool) ((p bool) (q bool)) (or p q))"]);
+    let j = build(&["(defun-typed (sc bool) ((p bool) (q bool)) (or p q))"]);
     let (val, log) = j.trace_call("SC", &[bo(true), bo(false)]).unwrap();
     assert_eq!(val, bo(true));
     // Steps: var(p) [short-circuits], or. The rhs var(q) is NOT evaluated.
@@ -1237,8 +1265,7 @@ fn trace_short_circuits_leave_no_step() {
 
 #[test]
 fn verify_core_and_node_count_on_lowered_body() {
-    let j =
-        build(&["(deffun-typed (g int64) ((x int64)) (let-typed ((y int64 (+ x 1))) (* y y)))"]);
+    let j = build(&["(defun-typed (g int64) ((x int64)) (let-typed ((y int64 (+ x 1))) (* y y)))"]);
     let tf = j.get("G").unwrap();
     let core = tf.core_clone().expect("defined");
     // Well-formed against its own frame and the (single-function) registry.

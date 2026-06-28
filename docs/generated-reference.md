@@ -84,10 +84,10 @@ Reconstruct the source form the evaluator registered for an operative (lambda, f
 
 **Syntax:** `(disassemble 'sym)`
 
-Print the typed-core pseudo-assembly of a jotted (deffun-typed) function: the typed IR lowered to a flat register/label instruction listing. Reports clearly when the symbol has no typed edition.
+Print the typed-core pseudo-assembly of a jotted (defun-typed) function: the typed IR lowered to a flat register/label instruction listing. Reports clearly when the symbol has no typed edition.
 
 **Arguments:**
-- `SYM` - A quoted symbol naming a typed (deffun-typed) function
+- `SYM` - A quoted symbol naming a typed (defun-typed) function
 
 **Returns:** T (the listing is printed to stdout)
 
@@ -96,7 +96,7 @@ Print the typed-core pseudo-assembly of a jotted (deffun-typed) function: the ty
 (DISASSEMBLE (QUOTE FACT))  ; => T
 ```
 
-**See also:** DESCRIBE, SEE-SOURCE, DEFFUN-TYPED
+**See also:** DESCRIBE, SEE-SOURCE, DEFUN-TYPED
 
 ---
 
@@ -1203,24 +1203,24 @@ Runs the source-level optimizer on form and returns the optimized Lisp expressio
 (OPTIMIZE (QUOTE (LET ((X 1)) X)))  ; => 1
 ```
 
-**See also:** EVAL, MACROEXPAND, DEFFUN-TYPED-OPT
+**See also:** EVAL, MACROEXPAND, DEFUN-TYPED-OPT
 
 ---
 
-### DEFFUN-TYPED-OPT
+### DEFUN-TYPED-OPT
 
 **Type:** `VAU`
 
-**Syntax:** `(deffun-typed-opt (name return-type) ((arg type) ...) body...)`
+**Syntax:** `(defun-typed-opt (name return-type) ((arg type) ...) body...)`
 
-Optimizer-to-compiler bridge for typed functions. Receives a DEFFUN-TYPED-shaped definition as source, runs the Lisp/vau source optimizer over it, then evaluates the optimized DEFFUN-TYPED form so the normal HM checker and native compiler install the typed edition. Use this when you want explicit source optimization before typed compilation without making every DEFFUN-TYPED globally auto-optimized.
+Optimizer-to-compiler bridge for typed functions. Receives a DEFUN-TYPED-shaped definition as source, runs the Lisp/vau source optimizer over it, then evaluates the optimized DEFUN-TYPED form so the normal HM checker and native compiler install the typed edition. Use this when you want explicit source optimization before typed compilation without making every DEFUN-TYPED globally auto-optimized.
 
 **Examples:**
 ```lisp
-(DEFFUN-TYPED-OPT (INC INT64) ((X INT64)) (+ X 0))  ; => INC
+(DEFUN-TYPED-OPT (INC INT64) ((X INT64)) (+ X 0))  ; => INC
 ```
 
-**See also:** OPTIMIZE, DEFFUN-TYPED, CHECK-TYPE, DISASSEMBLE
+**See also:** OPTIMIZE, DEFUN-TYPED, CHECK-TYPE, DISASSEMBLE
 
 ---
 

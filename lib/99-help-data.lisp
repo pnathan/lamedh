@@ -1884,17 +1884,17 @@ The classic Lisp 1.5 spelling.")
     (cons 'DESCRIPTION "Runs the source-level optimizer on form and returns the optimized Lisp expression without evaluating it. The optimizer performs constant folding, dead binding elimination, and other algebraic simplifications. The result is a structurally equivalent but potentially faster form. Used by the REPL and compiler pipeline; also useful for inspecting optimizer output during development.")
     (cons 'EXAMPLES '(((optimize '(+ 1 2)) 3)
                        ((optimize '(let ((x 1)) x)) 1)))
-    (cons 'SEE-ALSO '(eval macroexpand deffun-typed-opt))))
+    (cons 'SEE-ALSO '(eval macroexpand defun-typed-opt))))
 
-(register-doc 'deffun-typed-opt
+(register-doc 'defun-typed-opt
   (list
-    (cons 'NAME 'deffun-typed-opt)
+    (cons 'NAME 'defun-typed-opt)
     (cons 'TYPE 'vau)
-    (cons 'SYNTAX "(deffun-typed-opt (name return-type) ((arg type) ...) body...)")
+    (cons 'SYNTAX "(defun-typed-opt (name return-type) ((arg type) ...) body...)")
     (cons 'CATEGORY 'meta)
-    (cons 'DESCRIPTION "Optimizer-to-compiler bridge for typed functions. Receives a DEFFUN-TYPED-shaped definition as source, runs the Lisp/vau source optimizer over it, then evaluates the optimized DEFFUN-TYPED form so the normal HM checker and native compiler install the typed edition. Use this when you want explicit source optimization before typed compilation without making every DEFFUN-TYPED globally auto-optimized.")
-    (cons 'EXAMPLES '(((deffun-typed-opt (inc int64) ((x int64)) (+ x 0)) inc)))
-    (cons 'SEE-ALSO '(optimize deffun-typed check-type disassemble))))
+    (cons 'DESCRIPTION "Optimizer-to-compiler bridge for typed functions. Receives a DEFUN-TYPED-shaped definition as source, runs the Lisp/vau source optimizer over it, then evaluates the optimized DEFUN-TYPED form so the normal HM checker and native compiler install the typed edition. Use this when you want explicit source optimization before typed compilation without making every DEFUN-TYPED globally auto-optimized.")
+    (cons 'EXAMPLES '(((defun-typed-opt (inc int64) ((x int64)) (+ x 0)) inc)))
+    (cons 'SEE-ALSO '(optimize defun-typed check-type disassemble))))
 
 ;;; ============================================================
 ;;; SPECIAL FORMS: FEXPR AND VAU OPERATIVES
@@ -2334,7 +2334,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'meta
   "Metaprogramming"
-  '(eval apply funcall help documentation evlis evcon optimize deffun-typed-opt macroexpand))
+  '(eval apply funcall help documentation evlis evcon optimize defun-typed-opt macroexpand))
 
 (register-category 'plists
   "Property lists"
@@ -2408,11 +2408,11 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(disassemble 'sym)")
     (cons 'CATEGORY 'introspection)
-    (cons 'DESCRIPTION "Print the typed-core pseudo-assembly of a jotted (deffun-typed) function: the typed IR lowered to a flat register/label instruction listing. Reports clearly when the symbol has no typed edition.")
-    (cons 'ARGS '((sym "A quoted symbol naming a typed (deffun-typed) function")))
+    (cons 'DESCRIPTION "Print the typed-core pseudo-assembly of a jotted (defun-typed) function: the typed IR lowered to a flat register/label instruction listing. Reports clearly when the symbol has no typed edition.")
+    (cons 'ARGS '((sym "A quoted symbol naming a typed (defun-typed) function")))
     (cons 'RETURNS "T (the listing is printed to stdout)")
     (cons 'EXAMPLES '(((disassemble 'fact) T)))
-    (cons 'SEE-ALSO '(describe see-source deffun-typed))))
+    (cons 'SEE-ALSO '(describe see-source defun-typed))))
 
 (register-category 'introspection
   "Inspecting registered definitions and compiled code"

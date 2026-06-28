@@ -182,7 +182,7 @@ struct SharedState {
     /// host or a Lisp program must opt in. This is the foundation for
     /// sandboxing (see issue #64).
     features: RefCell<HashSet<String>>,
-    /// Registry of typed (`deffun-typed`) functions. Shared across the whole
+    /// Registry of typed (`defun-typed`) functions. Shared across the whole
     /// environment chain so a typed definition made at the REPL is visible
     /// everywhere and its compiled edition persists across calls.
     jit: RefCell<crate::jit::Jit>,
@@ -962,7 +962,7 @@ impl Environment {
         self.set(name.to_uppercase(), LispVal::Native(Rc::new(f)));
     }
 
-    /// Type-check and compile a `(deffun-typed ...)` form into the shared typed
+    /// Type-check and compile a `(defun-typed ...)` form into the shared typed
     /// registry. Returns the function's (uppercased) name on success.
     pub fn jit_define(&self, form: &LispVal) -> Result<String, String> {
         let id = self.shared.jit.borrow_mut().define(form)?;

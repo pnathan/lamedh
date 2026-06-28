@@ -20,7 +20,7 @@
 //!
 //! ## What is checked
 //!
-//! For every randomly generated *well-typed* program (a DAG of `deffun-typed`
+//! For every randomly generated *well-typed* program (a DAG of `defun-typed`
 //! functions over `int64`/`float64`/`bool`) and every random input vector we
 //! run, and force into agreement, **four independent evaluators**:
 //!
@@ -125,7 +125,7 @@ impl Rng {
 // ===========================================================================
 // The generator's own AST + an INDEPENDENT reference oracle.
 //
-// This AST is rendered to `deffun-typed` source for the JIT, and *separately*
+// This AST is rendered to `defun-typed` source for the JIT, and *separately*
 // interpreted in Rust by `OType`-aware evaluation here. Two implementations of
 // the same semantics ⇒ a true differential oracle.
 // ===========================================================================
@@ -320,7 +320,7 @@ fn oracle_b(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> bool {
 }
 
 // ===========================================================================
-// Rendering an `E` to `deffun-typed` Lisp source.
+// Rendering an `E` to `defun-typed` Lisp source.
 // ===========================================================================
 
 fn render(e: &E, prog: &[FnDef], out: &mut String) {
@@ -389,7 +389,7 @@ fn render_call(head: &str, args: &[&E], prog: &[FnDef], out: &mut String) {
 
 fn render_defun(f: &FnDef, prog: &[FnDef]) -> String {
     let mut s = String::new();
-    s.push_str("(deffun-typed (");
+    s.push_str("(defun-typed (");
     s.push_str(&f.name);
     s.push(' ');
     s.push_str(f.ret.lisp());
@@ -1093,21 +1093,19 @@ fn metamorphic_redefinition_propagates_through_call_cell() {
     let mut j = Jit::new();
     let def = |src: &str| read(src, &env).unwrap();
 
-    j.define(&def("(deffun-typed (base int64) ((x int64)) (* x x))"))
+    j.define(&def("(defun-typed (base int64) ((x int64)) (* x x))"))
         .unwrap();
     // `user` is compiled once, calling `base` through the registry cell.
     j.define(&def(
-        "(deffun-typed (user int64) ((x int64)) (+ (base x) 1))",
+        "(defun-typed (user int64) ((x int64)) (+ (base x) 1))",
     ))
     .unwrap();
     j.compile_all();
     assert_eq!(j.call("USER", &[Value::Int(5)]).unwrap(), Value::Int(26)); // 25+1
 
     // Redefine the callee; the caller is never recompiled but must see the change.
-    j.define(&def(
-        "(deffun-typed (base int64) ((x int64)) (* x (* x x)))",
-    ))
-    .unwrap();
+    j.define(&def("(defun-typed (base int64) ((x int64)) (* x (* x x)))"))
+        .unwrap();
     assert_eq!(j.call("USER", &[Value::Int(5)]).unwrap(), Value::Int(126)); // 125+1
 
     // The traced reference path must agree with the (cell-routed) compiled path.
@@ -1167,12 +1165,12 @@ fn float_tiers_agree_bit_for_bit() {
     let mut j = Jit::new();
     let def = |s: &str| read(s, &env).unwrap();
     for src in [
-        "(deffun-typed (fadd float64) ((x float64) (y float64)) (+ x y))",
-        "(deffun-typed (fsub float64) ((x float64) (y float64)) (- x y))",
-        "(deffun-typed (fmul float64) ((x float64) (y float64)) (* x y))",
-        "(deffun-typed (fdiv float64) ((x float64) (y float64)) (/ x y))",
-        "(deffun-typed (fcmp bool) ((x float64) (y float64)) (< x y))",
-        "(deffun-typed (fmix float64) ((x float64) (y float64)) \
+        "(defun-typed (fadd float64) ((x float64) (y float64)) (+ x y))",
+        "(defun-typed (fsub float64) ((x float64) (y float64)) (- x y))",
+        "(defun-typed (fmul float64) ((x float64) (y float64)) (* x y))",
+        "(defun-typed (fdiv float64) ((x float64) (y float64)) (/ x y))",
+        "(defun-typed (fcmp bool) ((x float64) (y float64)) (< x y))",
+        "(defun-typed (fmix float64) ((x float64) (y float64)) \
            (if (< x y) (* x y) (- x y)))",
     ] {
         j.define(&def(src)).unwrap();
@@ -1225,12 +1223,12 @@ fn recursive_kernels_match_rust_references() {
         let mut j = Jit::new();
         let def = |s: &str| read(s, &env).unwrap();
         for src in [
-            "(deffun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
-            "(deffun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))",
-            "(deffun-typed (gcd int64) ((a int64) (b int64)) (if (= b 0) a (gcd b (mod a b))))",
-            "(deffun-typed (pw int64) ((b int64) (e int64)) (if (= e 0) 1 (* b (pw b (- e 1)))))",
-            "(deffun-typed (sum int64) ((n int64)) (if (= n 0) 0 (+ n (sum (- n 1)))))",
-            "(deffun-typed (ack int64) ((m int64) (n int64)) \
+            "(defun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
+            "(defun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))",
+            "(defun-typed (gcd int64) ((a int64) (b int64)) (if (= b 0) a (gcd b (mod a b))))",
+            "(defun-typed (pw int64) ((b int64) (e int64)) (if (= e 0) 1 (* b (pw b (- e 1)))))",
+            "(defun-typed (sum int64) ((n int64)) (if (= n 0) 0 (+ n (sum (- n 1)))))",
+            "(defun-typed (ack int64) ((m int64) (n int64)) \
                (if (= m 0) (+ n 1) (if (= n 0) (ack (- m 1) 1) (ack (- m 1) (ack m (- n 1))))))",
         ] {
             j.define(&def(src)).unwrap();

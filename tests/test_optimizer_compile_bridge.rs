@@ -7,7 +7,7 @@ use lamedh::reader::read;
 fn deffun_typed_opt_optimizes_then_compiles() {
     let env = Environment::with_stdlib();
     let def = read(
-        "(deffun-typed-opt (plus-zero int64) ((x int64)) (if t (+ x 0) 99))",
+        "(defun-typed-opt (plus-zero int64) ((x int64)) (if t (+ x 0) 99))",
         &env,
     )
     .unwrap();

@@ -149,7 +149,7 @@ fn jit_compile(core: &Core, ty: &FnType, generation: u64) -> CompiledCode {
 // ---------------------------------------------------------------------------
 // 5. The spike's acceptance, as tests would assert:
 //
-//   (deffun-typed (sq int64) ((x int64)) (* x x))
+//   (defun-typed (sq int64) ((x int64)) (* x x))
 //     -> infer: sq : int64 -> int64
 //     -> Core::Mul(Var(0), Var(0))
 //     -> jit_compile -> edition E0

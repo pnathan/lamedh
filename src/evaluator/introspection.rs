@@ -55,7 +55,7 @@ pub(super) fn apply_introspection(
                 None => {
                     println!("{name} has no typed (JIT) edition — nothing to disassemble.");
                     println!(
-                        "  (define one with (deffun-typed (name ret) ((arg ty)...) body...) to jot it.)"
+                        "  (define one with (defun-typed (name ret) ((arg ty)...) body...) to jot it.)"
                     );
                 }
             }
@@ -197,15 +197,26 @@ pub(super) fn push_docstring(out: &mut String, s: &Rc<RefCell<crate::Symbol>>) {
 /// binding first; the binding (or a directly-passed value) must be a
 /// user-defined operative (lambda/fexpr/macro/vau).
 pub(super) fn see_source_form(arg: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
-    let val = match arg {
-        LispVal::Symbol(s) => {
-            let name = s.borrow().name.clone();
-            env.get(&name)
-                .ok_or_else(|| LispError::Generic(format!("see-source: {name} is unbound")))?
+    // defun-typed / defun-typed-opt annotate the symbol's plist with the
+    // original defining form; check that first before falling back to closure
+    // reconstruction.
+    if let LispVal::Symbol(s) = arg {
+        if let Some(form) = s.borrow().plist.get("source-form").cloned() {
+            return Ok(form);
         }
-        other => other.clone(),
-    };
-    reconstruct_source(&val, env).ok_or_else(|| {
+        let name = s.borrow().name.clone();
+        let val = env
+            .get(&name)
+            .ok_or_else(|| LispError::Generic(format!("see-source: {name} is unbound")))?;
+        return reconstruct_source(&val, env).ok_or_else(|| {
+            LispError::Generic(
+                "see-source: value has no inspectable source (built-in, host-native, typed, \
+                 or not a function)"
+                    .to_string(),
+            )
+        });
+    }
+    reconstruct_source(arg, env).ok_or_else(|| {
         LispError::Generic(
             "see-source: value has no inspectable source (built-in, host-native, typed, \
              or not a function)"

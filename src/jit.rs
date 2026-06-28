@@ -5,7 +5,7 @@
 //! later, as a `jit` cargo feature).
 //!
 //! ## What works
-//! - **Type membrane + inference.** `(deffun-typed (name ret) ((arg ty)...)
+//! - **Type membrane + inference.** `(defun-typed (name ret) ((arg ty)...)
 //!   body...)` is elaborated by a bidirectional checker that runs *before*
 //!   runtime and rejects ill-typed definitions. Elaboration *is* type checking
 //!   (Turnstile-style): `Cx::elab` returns the typed [`Core`] and its [`Ty`].

@@ -71,7 +71,7 @@ pub(super) fn parse_ty(
 }
 
 /// Parse `items[1]` = `(name ret)` and `items[2]` = `((arg ty)...)` shared by
-/// `deffun-typed` and `declare-typed`. Array element types may be inferred, so
+/// `defun-typed` and `declare-typed`. Array element types may be inferred, so
 /// the `infer` provides fresh variables; `define` resolves them after the body.
 pub(super) fn parse_signature(
     items: &[LispVal],

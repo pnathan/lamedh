@@ -1,4 +1,4 @@
-//! Integration tests: the typed subset (`deffun-typed`) landing in the running
+//! Integration tests: the typed subset (`defun-typed`) landing in the running
 //! language. Typed functions are defined at the "REPL" via `eval_line` and then
 //! called from ordinary (untyped) Lisp code through the membrane.
 
@@ -9,7 +9,7 @@ use lamedh::eval_line;
 fn define_and_call_typed_function() {
     let env = Environment::new_with_builtins();
     eval_line(
-        "(deffun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
+        "(defun-typed (fib int64) ((n int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
         &env,
     );
     assert_eq!(eval_line("(fib 10)", &env), "55");
@@ -19,7 +19,7 @@ fn define_and_call_typed_function() {
 #[test]
 fn typed_function_callable_from_untyped_code() {
     let env = Environment::new_with_builtins();
-    eval_line("(deffun-typed (sq int64) ((x int64)) (* x x))", &env);
+    eval_line("(defun-typed (sq int64) ((x int64)) (* x x))", &env);
     // Ordinary builtin `+` consuming the result of a typed call.
     assert_eq!(eval_line("(+ (sq 6) 1)", &env), "37");
     // Bind it like any other value and use it.
@@ -31,7 +31,7 @@ fn typed_function_callable_from_untyped_code() {
 fn float_typed_function_lands() {
     let env = Environment::new_with_builtins();
     eval_line(
-        "(deffun-typed (avg float64) ((a float64) (b float64)) (/ (+ a b) 2.0))",
+        "(defun-typed (avg float64) ((a float64) (b float64)) (/ (+ a b) 2.0))",
         &env,
     );
     assert_eq!(eval_line("(avg 3.0 5.0)", &env), "4.0");
@@ -40,7 +40,7 @@ fn float_typed_function_lands() {
 #[test]
 fn ill_typed_definition_is_rejected_at_the_repl() {
     let env = Environment::new_with_builtins();
-    let out = eval_line("(deffun-typed (bad int64) ((x int64)) (if x 1 2))", &env);
+    let out = eval_line("(defun-typed (bad int64) ((x int64)) (if x 1 2))", &env);
     assert!(
         out.to_lowercase().contains("bool"),
         "expected a type error, got: {out}"
@@ -56,20 +56,17 @@ fn ill_typed_definition_is_rejected_at_the_repl() {
 #[test]
 fn redefinition_at_the_repl_updates_behavior() {
     let env = Environment::new_with_builtins();
-    eval_line("(deffun-typed (f int64) ((x int64)) (* x x))", &env);
+    eval_line("(defun-typed (f int64) ((x int64)) (* x x))", &env);
     assert_eq!(eval_line("(f 5)", &env), "25");
-    eval_line("(deffun-typed (f int64) ((x int64)) (* x (* x x)))", &env);
+    eval_line("(defun-typed (f int64) ((x int64)) (* x (* x x)))", &env);
     assert_eq!(eval_line("(f 5)", &env), "125");
 }
 
 #[test]
 fn typed_calls_typed_across_definitions() {
     let env = Environment::new_with_builtins();
-    eval_line("(deffun-typed (dbl int64) ((x int64)) (* x 2))", &env);
-    eval_line(
-        "(deffun-typed (quad int64) ((x int64)) (dbl (dbl x)))",
-        &env,
-    );
+    eval_line("(defun-typed (dbl int64) ((x int64)) (* x 2))", &env);
+    eval_line("(defun-typed (quad int64) ((x int64)) (dbl (dbl x)))", &env);
     assert_eq!(eval_line("(quad 5)", &env), "20");
 }
 
@@ -78,11 +75,11 @@ fn cross_type_call_via_eval_line() {
     // A bool-returning typed predicate consumed by an int-returning typed function.
     let env = Environment::new_with_builtins();
     eval_line(
-        "(deffun-typed (is-even bool) ((n int64)) (= (mod n 2) 0))",
+        "(defun-typed (is-even bool) ((n int64)) (= (mod n 2) 0))",
         &env,
     );
     eval_line(
-        "(deffun-typed (classify int64) ((n int64)) (if (is-even n) 0 1))",
+        "(defun-typed (classify int64) ((n int64)) (if (is-even n) 0 1))",
         &env,
     );
     assert_eq!(eval_line("(classify 4)", &env), "0");
@@ -97,11 +94,11 @@ fn mutual_recursion_via_declare_typed() {
     eval_line("(declare-typed (even? bool) ((n int64)))", &env);
     eval_line("(declare-typed (odd? bool) ((n int64)))", &env);
     eval_line(
-        "(deffun-typed (even? bool) ((n int64)) (if (= n 0) true (odd? (- n 1))))",
+        "(defun-typed (even? bool) ((n int64)) (if (= n 0) true (odd? (- n 1))))",
         &env,
     );
     eval_line(
-        "(deffun-typed (odd? bool) ((n int64)) (if (= n 0) false (even? (- n 1))))",
+        "(defun-typed (odd? bool) ((n int64)) (if (= n 0) false (even? (- n 1))))",
         &env,
     );
     assert_eq!(eval_line("(even? 10)", &env), "T");
@@ -127,12 +124,12 @@ fn typed_bool_returns_t_and_nil_usable_untyped() {
     // Typed predicates return real Lisp booleans (T / NIL) usable as `if`
     // conditions in ordinary code, and accept Lisp truthiness as bool arguments.
     let env = Environment::new_with_builtins();
-    eval_line("(deffun-typed (big? bool) ((n int64)) (> n 100))", &env);
+    eval_line("(defun-typed (big? bool) ((n int64)) (> n 100))", &env);
     assert_eq!(eval_line("(big? 200)", &env), "T");
     assert_eq!(eval_line("(big? 5)", &env), "()");
     assert_eq!(eval_line("(if (big? 200) 'yes 'no)", &env), "YES");
     // A bool parameter accepts T / NIL via Lisp truthiness.
-    eval_line("(deffun-typed (negate bool) ((p bool)) (not p))", &env);
+    eval_line("(defun-typed (negate bool) ((p bool)) (not p))", &env);
     assert_eq!(eval_line("(negate t)", &env), "()");
     assert_eq!(eval_line("(negate nil)", &env), "T");
 }
@@ -143,12 +140,12 @@ fn typed_string_processing_lands_at_repl() {
     // membrane passes a Lisp string straight in.
     let env = Environment::new_with_builtins();
     eval_line(
-        "(deffun-typed (first-code int64) ((s (array char))) (char-code (fetch s 0)))",
+        "(defun-typed (first-code int64) ((s (array char))) (char-code (fetch s 0)))",
         &env,
     );
     assert_eq!(eval_line("(first-code \"ABC\")", &env), "65");
     eval_line(
-        "(deffun-typed (slen int64) ((s (array char))) (array-length s))",
+        "(defun-typed (slen int64) ((s (array char))) (array-length s))",
         &env,
     );
     assert_eq!(eval_line("(slen \"hello\")", &env), "5");
@@ -157,7 +154,7 @@ fn typed_string_processing_lands_at_repl() {
 #[test]
 fn typed_char_arguments_reject_out_of_range_numbers() {
     let env = Environment::new_with_builtins();
-    eval_line("(deffun-typed (idc char) ((c char)) c)", &env);
+    eval_line("(defun-typed (idc char) ((c char)) c)", &env);
 
     assert_eq!(eval_line("(char-code (idc 'A'))", &env), "65");
     assert_eq!(eval_line("(char-code (idc 65))", &env), "65");
@@ -176,12 +173,12 @@ fn typed_int_array_kernel_lands_at_repl() {
     // `with_stdlib` for `list->array`; the kernel itself is typed/native.
     let env = Environment::with_stdlib();
     eval_line(
-        "(deffun-typed (suml int64) ((a (array int64)) (i int64)) \
+        "(defun-typed (suml int64) ((a (array int64)) (i int64)) \
            (if (= i (array-length a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
         &env,
     );
     eval_line(
-        "(deffun-typed (sum int64) ((a (array int64))) (suml a 0))",
+        "(defun-typed (sum int64) ((a (array int64))) (suml a 0))",
         &env,
     );
     // Pass an untyped Lisp array through the membrane.
@@ -199,7 +196,7 @@ fn typed_struct_lands_at_repl() {
     assert_eq!(eval_line("(point-y (make-point 3 4))", &env), "4");
     // A struct flows through the typed membrane with its nominal type intact.
     eval_line(
-        "(deffun-typed (manhattan int64) ((p Point)) (+ (point-x p) (point-y p)))",
+        "(defun-typed (manhattan int64) ((p Point)) (+ (point-x p) (point-y p)))",
         &env,
     );
     assert_eq!(eval_line("(manhattan (make-point 3 4))", &env), "7");

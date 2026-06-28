@@ -169,7 +169,7 @@ pub struct Jit {
     pub(super) funcs: Vec<Rc<TypedFn>>,
     pub(super) by_name: HashMap<String, usize>,
     /// Registered typed struct definitions, by (uppercased) name. A struct name
-    /// is usable as a type in `deffun-typed` signatures, and its accessor
+    /// is usable as a type in `defun-typed` signatures, and its accessor
     /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
     /// ordinary typed functions over the [`Core`] struct ops.
     pub(super) structs: HashMap<String, Rc<StructDef>>,
@@ -237,18 +237,16 @@ impl Jit {
         Some((ptys, f.ret.borrow().clone()))
     }
 
-    /// Type-check and (eagerly) compile a `(deffun-typed ...)` form. Returns the
+    /// Type-check and (eagerly) compile a `(defun-typed ...)` form. Returns the
     /// stable function id.
     pub fn define(&mut self, form: &LispVal) -> Result<usize, String> {
         let items = list_to_vec(form);
         match items.first() {
-            Some(LispVal::Symbol(s)) if s.borrow().name == "DEFFUN-TYPED" => {}
-            _ => return Err("expected a (deffun-typed ...) form".to_string()),
+            Some(LispVal::Symbol(s)) if s.borrow().name == "DEFUN-TYPED" => {}
+            _ => return Err("expected a (defun-typed ...) form".to_string()),
         }
         if items.len() < 4 {
-            return Err(
-                "deffun-typed: (deffun-typed (name ret) ((arg ty)...) body...)".to_string(),
-            );
+            return Err("defun-typed: (defun-typed (name ret) ((arg ty)...) body...)".to_string());
         }
 
         // One inference state spans signature parsing and the body, so an array
@@ -495,7 +493,7 @@ impl Jit {
     }
 
     /// Define a typed struct from `(defstruct-typed Name (field type)...)`.
-    /// Registers the struct type (usable in `deffun-typed` signatures) and
+    /// Registers the struct type (usable in `defun-typed` signatures) and
     /// generates its accessor functions over the [`Core`] struct ops:
     /// `make-NAME`, `NAME-FIELD` (getter), `set-NAME-FIELD` (setter). Returns the
     /// generated (uppercased) function names so the caller can install membrane

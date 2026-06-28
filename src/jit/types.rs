@@ -135,7 +135,7 @@ impl Ty {
     }
 }
 
-/// Surface-style name of a [`Ty`], matching the `deffun-typed` syntax
+/// Surface-style name of a [`Ty`], matching the `defun-typed` syntax
 /// (`int64`, `float64`, `bool`, `char`, `(array T)`, struct name). Used by
 /// introspection (`describe`, `disassemble`) and diagnostics.
 pub fn ty_name(t: &Ty) -> String {

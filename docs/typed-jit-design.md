@@ -6,7 +6,7 @@ constant factor), #108 (Arc/Send/Sync), #114 (RPLACA aliasing), #62 (TCO).
 This document reframes the JIT in #31 around one idea: **the type checker runs
 before runtime, in the Lisp/vau layer, and the types it proves are exactly what
 let the backend emit unboxed native code.** It also pins down the part the REPL
-makes hard — a `deffun-typed` must be callable as compiled code the instant it is
+makes hard — a `defun-typed` must be callable as compiled code the instant it is
 defined, may be *re*compiled later, and the old edition may be thrown away while a
 call to it is still on the stack. So every call is a runtime dispatch.
 
@@ -19,7 +19,7 @@ optimizing backend**, because there is no SBCL underneath. The type work is the
 easy half; the codegen is the lift, and it lives entirely in #31.
 
 The type layer itself is the Turnstile-style elaborating membrane described in the
-design thread: `deffun-typed`/`let-typed` run Algorithm W at macro-expansion time,
+design thread: `defun-typed`/`let-typed` run Algorithm W at macro-expansion time,
 reject ill-typed definitions, and emit a typed core. We cannot type the fexpr/vau
 layer itself (Wand's triviality result), so anything touching `defexpr`, `eval`,
 `current-environment`, or create-on-assign `setq` is *outside* the typed island by
@@ -87,7 +87,7 @@ typed native code, so it is necessarily a membrane crossing / deopt.
 
 ## 3. The hard part: REPL redefinition makes every call a dispatch
 
-A `deffun-typed` must be runnable as compiled code the moment it is defined; it may
+A `defun-typed` must be runnable as compiled code the moment it is defined; it may
 be recompiled later (better optimization, or a redefinition); and a previous
 compiled edition may need to be discarded **while a call into it is still on the
 stack**. The discipline that makes this safe is an **indirection cell** per
@@ -148,7 +148,7 @@ not a mid-frame patch.
 
 ### 3.3 Define-time and recompile-time behavior
 
-- **On `deffun-typed`:** run HM (reject if ill-typed), install the cell with
+- **On `defun-typed`:** run HM (reject if ill-typed), install the cell with
   `interp` set and `compiled = None`, then kick compilation. Because the types are
   proven we compile **eagerly/AOT** (no call-count warmup like #31's thresholds).
   Until the edition is ready the cell serves the interpreter, so the function is
@@ -175,7 +175,7 @@ replaces the whole body atomically anyway.
 
 ### 3.5 Signature changes invalidate typed callers
 
-If `(deffun-typed (foo str) …)` is redefined with a different signature, callers
+If `(defun-typed (foo str) …)` is redefined with a different signature, callers
 that were type-checked and compiled against the *old* `FnType` are now potentially
 ill-typed. Sound REPL policy: a `generation` bump on `foo` marks dependent compiled
 editions **stale**; on their next call the cell sees the mismatch and falls back to
@@ -200,7 +200,7 @@ first backend (fast compiles suit a REPL).
 
 Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_jit.rs`):
 
-- The membrane (`Jit::define`) elaborates `deffun-typed` with a bidirectional
+- The membrane (`Jit::define`) elaborates `defun-typed` with a bidirectional
   checker and rejects ill-typed defs *before runtime*.
 - **HM-lite inference (#135, `src/jit/infer.rs`).** Type agreement is decided by
   unification over `Ty::Var` with an occurs-check, threaded through elaboration as
@@ -285,7 +285,7 @@ its `JITModule` so its code is freed only when the last in-flight caller drops i
   behind the `Rc` (heap-stable across `Vec` growth), and locals are fixed slot
   indices. Stress-tested with a 200-function chain that forces reallocation.
 
-**It lands in the language.** `DEFFUN-TYPED` is a real special form: the registry
+**It lands in the language.** `DEFUN-TYPED` is a real special form: the registry
 lives in `SharedState` (shared across the whole environment chain), and a
 successful definition installs a `LispVal::Native` entry under the function name.
 So a typed function is callable from ordinary untyped Lisp through the membrane —
@@ -301,7 +301,7 @@ Smallest thing that proves the whole thesis end to end. See
 `docs/spike/typed_jit_spike.rs` (illustrative, not wired into the crate).
 
 1. Pick one monomorphic typed function:
-   `(deffun-typed (sq int64) ((x int64)) (* x x))`.
+   `(defun-typed (sq int64) ((x int64)) (* x x))`.
 2. `infer`: confirm `sq : int64 -> int64`, emit typed core.
 3. Lower the typed core to Cranelift IR (`iadd`/`imul` on `i64`), JIT to an entry.
 4. Install a `FunctionCell` with `interp` = the AST and `compiled` = the JIT
@@ -318,7 +318,7 @@ direct typed→typed calls (policy (a)), then `float64`, then self-recursive loo
 
 ## 6. Staging
 
-1. **Type membrane** (`lib`-level `deffun-typed`/`let-typed`, Algorithm W) — no
+1. **Type membrane** (`lib`-level `defun-typed`/`let-typed`, Algorithm W) — no
    backend yet; rejects ill-typed defs, emits typed core. Independently useful.
 2. **FunctionCell + dispatch** in the interpreter (still interpreting) — proves the
    redefinition/identity model with zero codegen risk. Pure refactor of how the

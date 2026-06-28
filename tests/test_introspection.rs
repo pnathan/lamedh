@@ -56,7 +56,7 @@ fn describe_returns_t() {
 fn disassemble_typed_and_untyped() {
     let env = Environment::with_stdlib();
     eval_line(
-        "(deffun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))",
+        "(defun-typed (fact int64) ((n int64)) (if (<= n 1) 1 (* n (fact (- n 1)))))",
         &env,
     );
     // Both the typed case and the "no typed edition" case return T.

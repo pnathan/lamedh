@@ -60,7 +60,7 @@ mod evaluator_internal_tests {
     #[test]
     fn test_disassemble_typed_function() {
         let env = dummy_env();
-        eval_line_internal(&env, "(deffun-typed (twice int64) ((n int64)) (* n 2))");
+        eval_line_internal(&env, "(defun-typed (twice int64) ((n int64)) (* n 2))");
         let text = env
             .jit_disassemble("TWICE")
             .expect("typed fn should disassemble");

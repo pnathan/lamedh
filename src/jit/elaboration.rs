@@ -124,30 +124,8 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
-        if args.len() != 2 {
-            return Err(format!("`{op}` expects 2 args, got {}", args.len()));
-        }
-        let (a, ta) = self.elab(&args[0], scope, max)?;
-        let (b, tb) = self.elab(&args[1], scope, max)?;
-        if self.unify(&ta, &tb).is_err() {
-            return Err(format!(
-                "`{op}` operands disagree: {:?} vs {:?}",
-                self.walk(&ta),
-                self.walk(&tb)
-            ));
-        }
-        // In checker mode the numeric *kind* is irrelevant (no codegen) and the
-        // operand type may not be pinned yet (e.g. across `if` branches), so we
-        // defer resolution and just propagate the operand type.
-        if self.checking {
-            return Ok((Core::LitI(0), self.walk(&ta)));
-        }
-        let rt = self
-            .resolve(&ta)
-            .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
-        let num = rt
-            .as_num()
-            .ok_or_else(|| format!("`{op}` expects numeric operands, got {rt:?}"))?;
+        // `+` and `*` support 0–N args; `-`, `/`, `MOD` require at least 1.
+        // All forms with ≥2 args left-fold into binary nodes.
         let bop = match op {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
@@ -155,10 +133,75 @@ impl Cx<'_> {
             "/" => BinOp::Div,
             _ => BinOp::Mod,
         };
-        if matches!(bop, BinOp::Mod) && !matches!(num, NumTy::I) {
-            return Err("`mod` is int64-only".to_string());
+        if matches!(bop, BinOp::Sub | BinOp::Div | BinOp::Mod) && args.is_empty() {
+            return Err(format!("`{op}` requires at least 1 argument"));
         }
-        Ok((Core::Bin(num.into(), bop, Box::new(a), Box::new(b)), rt))
+
+        // 0-arg identity: (+ ) = 0, (* ) = 1
+        if args.is_empty() {
+            let identity: i64 = if matches!(bop, BinOp::Mul) { 1 } else { 0 };
+            if self.checking {
+                return Ok((Core::LitI(identity), Ty::Int64));
+            }
+            return Ok((Core::LitI(identity), Ty::Int64));
+        }
+
+        // 1-arg: unary identity — (+ x) = x, (* x) = x, (- x) = (- 0 x)
+        if args.len() == 1 {
+            let (a, ta) = self.elab(&args[0], scope, max)?;
+            if self.checking {
+                return Ok((Core::LitI(0), self.walk(&ta)));
+            }
+            if matches!(bop, BinOp::Sub) {
+                // negate: (- x) => (0 - x)
+                let rt = self
+                    .resolve(&ta)
+                    .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
+                let num = rt
+                    .as_num()
+                    .ok_or_else(|| format!("`{op}` expects a numeric operand, got {rt:?}"))?;
+                return Ok((
+                    Core::Bin(num.into(), BinOp::Sub, Box::new(Core::LitI(0)), Box::new(a)),
+                    rt,
+                ));
+            }
+            // (+ x), (* x), (/ x), (mod x) — just return the arg
+            return Ok((a, ta));
+        }
+
+        // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp tree.
+        let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
+        for arg in &args[1..] {
+            let (b, tb) = self.elab(arg, scope, max)?;
+            if self.unify(&ty, &tb).is_err() {
+                return Err(format!(
+                    "`{op}` operands disagree: {:?} vs {:?}",
+                    self.walk(&ty),
+                    self.walk(&tb)
+                ));
+            }
+            ty = self.walk(&ty);
+            if self.checking {
+                // In checker mode no codegen; keep accumulating the type.
+                acc = Core::LitI(0);
+                continue;
+            }
+            let rt = self
+                .resolve(&ty)
+                .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
+            let num = rt
+                .as_num()
+                .ok_or_else(|| format!("`{op}` expects numeric operands, got {rt:?}"))?;
+            if matches!(bop, BinOp::Mod) && !matches!(num, NumTy::I) {
+                return Err("`mod` is int64-only".to_string());
+            }
+            ty = rt.clone();
+            acc = Core::Bin(num.into(), bop, Box::new(acc), Box::new(b));
+        }
+        if self.checking {
+            return Ok((Core::LitI(0), self.walk(&ty)));
+        }
+        Ok((acc, ty))
     }
 
     fn elab_cmp(
@@ -382,6 +425,17 @@ impl Cx<'_> {
             // but leave them unconstrained (the callee makes no demand). The
             // codegen path keeps rejecting unknown calls.
             None if self.checking => {
+                for a in args {
+                    self.elab(a, scope, max)?;
+                }
+                return Ok((Core::LitI(0), Ty::Any));
+            }
+            // FUNCALL/APPLY are higher-order; they can't be compiled to native code
+            // because the callee is a runtime value with no static type. Bounce the
+            // call: elaborate args so inner type errors surface, yield Any. In
+            // codegen mode the containing defun-typed will fail to resolve Any to a
+            // concrete return type — use an untyped defun wrapper instead.
+            None if matches!(name, "FUNCALL" | "APPLY") => {
                 for a in args {
                     self.elab(a, scope, max)?;
                 }

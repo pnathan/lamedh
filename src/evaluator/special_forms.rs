@@ -870,7 +870,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                         }
                     }
                     "DEFSTRUCT" => eval_defstruct(rest, env),
-                    "DEFFUN-TYPED" => {
+                    "DEFUN-TYPED" => {
                         // Type-check + compile into the shared typed registry,
                         // then install a Native entry so the typed function is
                         // callable from ordinary (untyped) Lisp code through the
@@ -883,7 +883,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                         match env.jit_define(&form) {
                             Ok(name) => {
                                 env.set(name.clone(), make_typed_native(name.clone()));
-                                Ok(TcoStep::Done(Ok(LispVal::Symbol(env.intern_symbol(&name)))))
+                                // Annotate the symbol's plist so see-source can
+                                // reconstruct the defining form.
+                                let sym = env.intern_symbol(&name);
+                                sym.borrow_mut()
+                                    .plist
+                                    .insert("source-form".to_string(), form.clone());
+                                Ok(TcoStep::Done(Ok(LispVal::Symbol(sym))))
                             }
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
                         }
