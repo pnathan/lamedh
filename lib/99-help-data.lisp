@@ -810,6 +810,17 @@
     (cons 'DESCRIPTION "Defines a named function with optional docstring.")
     (cons 'SEE-ALSO '(lambda def defmacro))))
 
+(register-doc 'defun*
+  (list
+    (cons 'NAME 'defun*)
+    (cons 'TYPE 'vau)
+    (cons 'SYNTAX "(defun* name [docstring] params... [return-type] body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Recommended default function definition form. Tries HM type inference automatically and compiles a native typed edition when the body is a fully-inferable typed island; otherwise falls back transparently to an ordinary lambda. Params may be classic ((a b)), flat bare (a b), or typed ((x int64)); an optional bare type keyword after the params pins the return type, and any unspecified type is inferred. Emits a note on stderr when types were inferred and compiled.")
+    (cons 'EXAMPLES '(((defun* sq (x) (* x x)) sq)
+                      ((defun* add (x int64) (y int64) (+ x y)) add)))
+    (cons 'SEE-ALSO '(defun defun-typed defun-typed-opt check-type lambda))))
+
 (register-doc 'defmacro
   (list
     (cons 'NAME 'defmacro)
@@ -818,6 +829,76 @@
     (cons 'CATEGORY 'special-forms)
     (cons 'DESCRIPTION "Defines a macro that transforms code before evaluation.")
     (cons 'SEE-ALSO '(defun defexpr macroexpand))))
+
+(register-doc 'macro
+  (list
+    (cons 'NAME 'macro)
+    (cons 'TYPE 'special-form)
+    (cons 'SYNTAX "(macro (params...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Anonymous macro constructor: evaluates to a macro VALUE (the macro counterpart of LAMBDA). Because operator dispatch resolves the head symbol through the lexical environment, a name locally bound to a macro value is used as an operator in that scope. Backs MACROLET.")
+    (cons 'EXAMPLES '(((let ((sq (macro (x) (list '* x x)))) (sq 6)) 36)))
+    (cons 'SEE-ALSO '(lambda fexpr vau defmacro macrolet))))
+
+(register-doc 'fexpr
+  (list
+    (cons 'NAME 'fexpr)
+    (cons 'TYPE 'special-form)
+    (cons 'SYNTAX "(fexpr (params...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Anonymous fexpr constructor: evaluates to a fexpr VALUE whose operands reach the body unevaluated (the fexpr counterpart of LAMBDA). Backs FEXPRLET.")
+    (cons 'EXAMPLES '(((let ((q (fexpr (a) (car a)))) (q (+ 1 2))) (+ 1 2))))
+    (cons 'SEE-ALSO '(lambda macro vau defexpr fexprlet))))
+
+(register-doc 'flet
+  (list
+    (cons 'NAME 'flet)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(flet ((name (params...) body...) ...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Locally bind named functions (non-recursive) for the extent of the body. Parallel LET semantics: clauses do not see one another. A local binding shadows a global operator of the same name only within the body.")
+    (cons 'EXAMPLES '(((flet ((sq (x) (* x x))) (sq 7)) 49)))
+    (cons 'SEE-ALSO '(let lambda macrolet fexprlet vaulet))))
+
+(register-doc 'macrolet
+  (list
+    (cons 'NAME 'macrolet)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(macrolet ((name (params...) body...) ...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Locally bind macros for the extent of the body. Each clause is expanded at call sites like a DEFMACRO definition. Parallel LET semantics: clauses do not see one another.")
+    (cons 'EXAMPLES '(((macrolet ((twice (e) (list 'progn e e))) (twice 1)) 1)))
+    (cons 'SEE-ALSO '(macro defmacro flet fexprlet vaulet))))
+
+(register-doc 'fexprlet
+  (list
+    (cons 'NAME 'fexprlet)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(fexprlet ((name (params...) body...) ...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Locally bind fexprs (unevaluated-argument operatives) for the extent of the body. Operands reach the body unevaluated, as with DEFEXPR. Parallel LET semantics.")
+    (cons 'EXAMPLES '(((fexprlet ((q (a) (car a))) (q (+ 1 2))) (+ 1 2))))
+    (cons 'SEE-ALSO '(fexpr defexpr flet macrolet vaulet))))
+
+(register-doc 'vaulet
+  (list
+    (cons 'NAME 'vaulet)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(vaulet ((name (operands env) body...) ...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Locally bind vau operatives for the extent of the body. Each clause's OPERANDS receives the unevaluated operand list and ENV the caller's environment, as with VAU. Parallel LET semantics.")
+    (cons 'SEE-ALSO '(vau $vau flet macrolet fexprlet))))
+
+(register-doc 'check-type
+  (list
+    (cons 'NAME 'check-type)
+    (cons 'TYPE 'special-form)
+    (cons 'SYNTAX "(check-type name-or-expression)")
+    (cons 'CATEGORY 'meta)
+    (cons 'DESCRIPTION "Pure type-checking pass that never compiles. Given a function name (check-type f) or (check-type 'f) it reports that function's stored or inferred signature. Given any other expression it elaborates it in checker mode and returns the inferred type as a string: (check-type 10) is \"int64\", (check-type (+ 10 1)) is \"int64\", (check-type (+ 10 1.0)) is a type error, (check-type (array 5)) is \"(forall (a) (array a))\". Returns a string; makes no binding change and generates no code.")
+    (cons 'EXAMPLES '(((check-type 10) "int64")
+                      ((check-type (+ 10 1)) "int64")))
+    (cons 'SEE-ALSO '(defun* defun-typed defun-typed-opt disassemble))))
 
 (register-doc 'progn
   (list
@@ -2320,9 +2401,10 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'special-forms
   "Special forms and macros"
-  '(quote if cond and or def setq let lambda defun defmacro progn prog
+  '(quote if cond and or def setq let lambda defun defun* defmacro progn prog
     block return-from catch throw unwind-protect while for
-    label define defexpr vau $vau))
+    label define defexpr vau $vau
+    macro fexpr flet macrolet fexprlet vaulet))
 
 (register-category 'io
   "Input/Output"

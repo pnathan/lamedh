@@ -1011,6 +1011,11 @@ impl Environment {
             .check_untyped(name, params, body)
     }
 
+    /// Type-check a single expression and return its inferred type as a string.
+    pub fn jit_check_expr(&self, expr: &LispVal) -> Result<String, String> {
+        self.shared.jit.borrow_mut().check_expr(expr)
+    }
+
     /// One-pass analyze: check, then compile if compileable (#162 stage 4).
     pub fn jit_analyze_untyped(
         &self,
@@ -1035,6 +1040,22 @@ impl Environment {
         name: &str,
     ) -> Option<(Vec<(String, crate::jit::Ty)>, crate::jit::Ty)> {
         self.shared.jit.borrow().named_signature(name)
+    }
+
+    /// Compile a function with **partial type hints** (the `defun*` back-end).
+    /// `None` in a param slot or for `ret_hint` means "infer this type". Returns
+    /// `(id, sig_string)` on success; rolls back and returns `Err` on failure.
+    pub fn jit_define_partial(
+        &self,
+        name: &str,
+        params: &[(String, Option<crate::jit::Ty>)],
+        ret_hint: Option<crate::jit::Ty>,
+        body: &[LispVal],
+    ) -> Result<(usize, String), String> {
+        self.shared
+            .jit
+            .borrow_mut()
+            .define_partial(name, params, ret_hint, body)
     }
 
     /// Whether a registered typed function currently has a compiled edition.

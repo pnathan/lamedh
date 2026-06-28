@@ -85,6 +85,8 @@ The codebase follows a classic interpreter architecture with four main modules:
 
 ### Standard Library
 
+**`defun*` is the recommended default function definition form.** It attempts HM type inference automatically and falls back silently to a plain lambda when types are ambiguous. Use `defun` only when you explicitly do not want type inference to run.
+
 **lib/**: Standard library loaded at startup (numbered files loaded in order)
 - **00-core.lisp**: `defun` macro with docstring support
 - **01-list.lisp**: List utilities (`append`, `member`, `length`, `reverse`, `pairlis`, `null`)

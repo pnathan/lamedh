@@ -415,6 +415,91 @@ impl Jit {
         }
     }
 
+    /// Like [`infer_untyped`] but accepts **partial type hints** per param and
+    /// for the return type. `Some(ty)` pins the slot to that type; `None` inserts
+    /// a fresh inference variable. This is the compilation back-end for `defun*`.
+    ///
+    /// Returns `(id, sig_string)` on success, where `sig_string` is the resolved
+    /// full signature (params + return) formatted as surface-syntax text, so the
+    /// caller can emit a note when types were inferred. Rolls back on failure.
+    pub fn define_partial(
+        &mut self,
+        name: &str,
+        params: &[(String, Option<Ty>)],
+        ret_hint: Option<Ty>,
+        body: &[LispVal],
+    ) -> Result<(usize, String), String> {
+        if body.is_empty() {
+            return Err("empty body".to_string());
+        }
+        let mut infer = Infer::new();
+        // Pin specified slots; fresh var for unspecified slots.
+        let param_tys: Vec<(String, Ty)> = params
+            .iter()
+            .map(|(n, opt)| (n.clone(), opt.clone().unwrap_or_else(|| infer.fresh())))
+            .collect();
+        let ret_var = ret_hint.unwrap_or_else(|| infer.fresh());
+
+        let new_id = self.funcs.len();
+        self.funcs.push(Rc::new(TypedFn::placeholder(
+            name.to_string(),
+            param_tys.clone(),
+            ret_var.clone(),
+        )));
+        let prev = self.by_name.insert(name.to_string(), new_id);
+
+        let mut scope: Scope = param_tys.clone();
+        let mut max_slots = scope.len();
+        type Inferred = (Core, Vec<(String, Ty)>, Ty);
+        let outcome: Result<Inferred, String> = (|| {
+            let cx = Cx {
+                funcs: &self.funcs,
+                by_name: &self.by_name,
+                structs: &self.structs,
+                infer: RefCell::new(infer),
+                checking: false,
+            };
+            let (core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
+            cx.unify(&body_ty, &ret_var)
+                .map_err(|_| "return type mismatch".to_string())?;
+            let resolved_ret = cx.resolve(&ret_var)?;
+            let mut resolved_params = Vec::with_capacity(param_tys.len());
+            for (pn, pt) in &param_tys {
+                resolved_params.push((pn.clone(), cx.resolve(pt)?));
+            }
+            Ok((core, resolved_params, resolved_ret))
+        })();
+
+        match outcome {
+            Ok((core, resolved_params, resolved_ret)) => {
+                let sig = resolved_params
+                    .iter()
+                    .map(|(n, t)| format!("({n} {})", ty_name(t)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let sig_str = format!("{sig} -> {}", ty_name(&resolved_ret));
+                let f = self.funcs[new_id].clone();
+                *f.params.borrow_mut() = resolved_params;
+                *f.ret.borrow_mut() = resolved_ret;
+                f.slots.set(max_slots);
+                *f.core.borrow_mut() = Some(core);
+                f.compile_now(&self.funcs);
+                Ok((new_id, sig_str))
+            }
+            Err(e) => {
+                match prev {
+                    Some(p) => {
+                        self.by_name.insert(name.to_string(), p);
+                    }
+                    None => {
+                        self.by_name.remove(name);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// **Type-check** an un-annotated function without compiling it (#162) — the
     /// non-compiled checker. Runs full HM inference (checker mode: lists, pairs,
     /// symbols, strings, and a gradual `Any` at the operative/untyped frontier)
@@ -496,6 +581,27 @@ impl Jit {
                 }
             }
         }
+    }
+
+    /// Type-check a **single expression** without wrapping it in a function.
+    /// Elaborates `expr` in checker mode with an empty scope and returns its
+    /// inferred type as a human-readable string (e.g. `"int64"`, `"float64"`,
+    /// `"(forall (a) (list a))"`) or an error. Used by `(check-type <expr>)`.
+    pub fn check_expr(&mut self, expr: &LispVal) -> Result<String, String> {
+        let infer = Infer::new();
+        let mut scope = Scope::new();
+        let mut max_slots = 0;
+        let cx = Cx {
+            funcs: &self.funcs,
+            by_name: &self.by_name,
+            structs: &self.structs,
+            infer: RefCell::new(infer),
+            checking: true,
+        };
+        let (_, ty) = cx.elab_body(std::slice::from_ref(expr), &mut scope, &mut max_slots)?;
+        let resolved = cx.infer.borrow().zonk(&ty);
+        let scheme = cx.infer.borrow().generalize(&resolved);
+        Ok(super::infer::scheme_name(&scheme))
     }
 
     /// Define a typed struct from `(defstruct-typed Name (field type)...)`.

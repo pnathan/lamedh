@@ -103,7 +103,7 @@ pub struct StructDef {
 }
 
 impl Ty {
-    pub(super) fn parse(name: &str) -> Option<Ty> {
+    pub fn parse(name: &str) -> Option<Ty> {
         match name {
             "INT64" => Some(Ty::Int64),
             "FLOAT64" => Some(Ty::Float64),

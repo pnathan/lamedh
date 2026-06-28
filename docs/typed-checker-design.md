@@ -99,9 +99,17 @@ definitions.
 
 ## 5. Surface & integration
 
-- A pure **checking pass** that never compiles: `(check-type form)` /
-  `(typecheck 'name)` — runs inference, returns the inferred type (or scheme) as
-  a printable type, or a type error. No binding change, no codegen.
+- A pure **checking pass** that never compiles: `(check-type X)` — runs
+  inference, returns the inferred type (or scheme) as a printable type, or a type
+  error. No binding change, no codegen. Two argument shapes, auto-detected:
+  - **function name** — `(check-type f)` / `(check-type 'f)` reports the stored
+    or inferred signature of the function `f`.
+  - **arbitrary expression** — `(check-type 10)` → `"int64"`,
+    `(check-type (+ 10 1))` → `"int64"`, `(check-type (+ 10 1.0))` → a type
+    error, `(check-type (array 5))` → `"(forall (a) (array a))"`. The expression
+    is elaborated in checker mode; if it reduces to the gradual top type `any`
+    (e.g. it is itself a `(defun …)`), it is evaluated and the result re-checked,
+    so `(check-type (defun id (x) x))` reports the polymorphic identity type.
 - The elaborator (`Cx::elab`) learns the new literal/op shapes only as needed:
   `cons`/`car`/`cdr`/`list`/`null`/symbol-literals map to `Pair`/`List`/`Symbol`;
   everything it cannot place becomes `Any` (gradual) rather than an error.

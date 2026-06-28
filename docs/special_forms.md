@@ -300,6 +300,43 @@ Macro that defines a named function. Equivalent to `(def name (lambda ...))`.
 
 ---
 
+## 6.12a DEFUN* — Recommended Default
+
+**Syntax:** `(defun* name [docstring] param* [ret-type] body+)`
+
+**`defun*` is the recommended way to define functions in Lamedh.** It is a unified definition form that tries HM type inference automatically and falls back to an ordinary lambda when inference is inconclusive — so there is no cost to using it everywhere.
+
+**Param forms:**
+- `sym` — bare symbol, type inferred
+- `(sym)` — same as bare symbol but in paren form (useful for visual consistency)
+- `(sym ty)` — symbol with explicit type annotation (`int64`, `float64`, `bool`, `char`, `(array T)`)
+
+**Return type (optional):** a bare type keyword after the params (`int64`, `float64`, …).
+
+**Auto-dispatch rules:**
+1. If type inference succeeds (all types resolve to concrete monomorphic types), the function is natively compiled and a note is emitted when any type was inferred.
+2. If inference fails (ambiguous or touches untyped Lisp), the function is installed as an ordinary lambda — silently if no type hints were given, with a note if hints were present but compile failed.
+
+```lisp
+; Fully inferred — both x and y resolve to float64 from the literal 1.0:
+(defun* add-one (x) (+ x 1.0))
+; note: defun* ADD-ONE : (X float64) -> float64  [compiled]
+
+; Mixed — x pinned, y inferred:
+(defun* scale (x int64) (y) (* x y))
+; note: defun* SCALE : (X int64) (Y int64) -> int64  [compiled]
+
+; Fully specified — silent (same as defun-typed-opt):
+(defun* dot (x int64) (y int64) int64 (* x y))
+
+; No inference possible — silently becomes a plain lambda:
+(defun* greet (name) (string-concat "hello " name))
+```
+
+**Why prefer `defun*` over `defun`?** You get native speed for free whenever the body is a typed island (arithmetic, array ops, calls to other typed functions). You pay nothing when it can't compile — the lambda fallback is identical to plain `defun`.
+
+---
+
 ## 6.13 DEFMACRO
 
 **Syntax:** `(defmacro name (params &rest rest) &optional docstring body...)`
@@ -355,6 +392,72 @@ Defines a function that receives its arguments unevaluated.
 **Difference from macros:**
 - Macros return code that is then evaluated
 - Fexprs directly compute the result
+
+---
+
+## 6.14a Anonymous Operator Constructors: MACRO / FEXPR
+
+`LAMBDA` and `VAU` are expression forms that evaluate to a callable *value*.
+`MACRO` and `FEXPR` complete the set — they are the anonymous constructors for
+macro and fexpr values:
+
+| Form | Yields | Receives args |
+|------|--------|---------------|
+| `(lambda (params...) body...)` | function | evaluated |
+| `(macro (params...) body...)`  | macro    | unevaluated; result is re-evaluated |
+| `(fexpr (params...) body...)`  | fexpr    | unevaluated; result is the value |
+| `(vau (operands env) body...)` | vau      | unevaluated + caller env |
+
+Because Lamedh is a Lisp-1 and operator dispatch resolves the head symbol
+through the ordinary lexical environment chain, a name **locally bound** to any
+of these values is used as an operator within that scope:
+
+```lisp
+(let ((sq (macro (x) (list '* x x))))
+  (sq 6))            ; => 36   ; (sq 6) expands to (* 6 6)
+```
+
+This is the mechanism behind the local-binding forms below.
+
+---
+
+## 6.14b Local Operator Bindings: FLET / MACROLET / FEXPRLET / VAULET
+
+**Syntax:** `(FORM ((name (params...) body...) ...) body...)`
+
+These bind operators **locally**, for the lexical extent of the body — the
+operator counterpart of `LET`. Each is `LET` over the matching anonymous
+constructor (`lambda`/`macro`/`fexpr`/`vau`), and lives in the standard library
+(`lib/12-control.lisp`), not the kernel.
+
+| Form | Local binding | Clause shape |
+|------|---------------|--------------|
+| `flet`     | functions (non-recursive) | `(name (params...) body...)` |
+| `macrolet` | macros                    | `(name (params...) body...)` |
+| `fexprlet` | fexprs                    | `(name (params...) body...)` |
+| `vaulet`   | vau operatives            | `(name (operands env) body...)` |
+
+```lisp
+(flet ((sq (x) (* x x)))
+  (sq 7))                      ; => 49
+
+(macrolet ((twice (e) (list 'progn e e)))
+  (twice (step!)))             ; runs (step!) twice
+
+(fexprlet ((q (a) (car a)))
+  (q (+ 1 2)))                 ; => (+ 1 2)  ; operand is unevaluated
+
+(vaulet ((my-if (ops e)
+           (if (eval (car ops) e)
+               (eval (cadr ops) e)
+               (eval (caddr ops) e))))
+  (my-if t 'yes 'no))          ; => YES
+```
+
+**Bindings are parallel** (`LET` semantics): clauses do not see one another,
+matching Common Lisp `flet`/`macrolet`. `labels`-style mutual recursion is not
+provided (it would require mutation). A local binding shadows a global operator
+of the same name only within the body.
 
 ---
 
@@ -508,8 +611,13 @@ Returns from a PROG with the specified value.
 | `SETQ` | Yes (value) | Update variable |
 | `LET` | Yes (values) | Local scope |
 | `LAMBDA` | No | Create function |
+| `MACRO` | No | Create anonymous macro value |
+| `FEXPR` | No | Create anonymous fexpr value |
+| `VAU` | No | Create anonymous vau value |
+| `DEFUN*` | No | Define function (inferred/typed; recommended) |
 | `DEFMACRO` | No | Define macro |
 | `DEFEXPR` | No | Define fexpr |
+| `FLET`/`MACROLET`/`FEXPRLET`/`VAULET` | No | Local operator bindings |
 | `LABEL` | Special | Named recursion |
 | `FUNCTION` | No | Get function object |
 | `PROG` | Special | Imperative block |

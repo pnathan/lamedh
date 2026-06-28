@@ -125,6 +125,29 @@ pub(super) fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<Tc
     Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym))))
 }
 
+/// Wrap a slice of body forms into a single form for constructors that take one
+/// body expression (`make_macro`/`make_fexpr`). Zero forms → `NIL`, one form →
+/// itself, many → `(progn form...)`.
+fn progn_wrap(forms: &[LispVal], env: &Rc<Environment>) -> LispVal {
+    match forms {
+        [] => LispVal::Nil,
+        [single] => single.clone(),
+        many => {
+            let mut progn = LispVal::Nil;
+            for form in many.iter().rev() {
+                progn = LispVal::Cons {
+                    car: Rc::new(form.clone()),
+                    cdr: Rc::new(progn),
+                };
+            }
+            LispVal::Cons {
+                car: Rc::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
+                cdr: Rc::new(progn),
+            }
+        }
+    }
+}
+
 /// Handle the `FOR` special form: a fast integer-counted loop.
 ///
 /// `(for (var start end [step]) body...)`
@@ -894,6 +917,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
                         }
                     }
+                    "DEFUN*" => eval_defun_star(rest, env),
                     "JIT-OPTIMIZE" => {
                         // Best-effort, transparent typed compilation of an
                         // already-defined (un-annotated) function: try HM
@@ -925,22 +949,48 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                         }
                     }
                     "CHECK-TYPE" => {
-                        // Non-compiled type checker (#162): report the inferred
-                        // type scheme of a function (or a type error) without
-                        // compiling. `(check-type name)` or
-                        // `(check-type (defun f ...))`. Returns a string.
+                        // Type-check a function name or an arbitrary expression.
+                        //
+                        // `(check-type name)` / `(check-type 'name)` — function lookup.
+                        // `(check-type expr)` — first try to elaborate `expr` in
+                        //   checker mode.  If the result is the gradual top type `any`
+                        //   (meaning the elaborator hit an untyped operative and gave
+                        //   up), fall back to evaluating `expr`; if it yields a symbol,
+                        //   do a function lookup on that.  This makes
+                        //   `(check-type (defun id (x) x))` work as before.
                         let cargs = list_to_vec(rest)?;
-                        let name = match cargs.first() {
-                            Some(LispVal::Symbol(s)) => Some(s.borrow().name.clone()),
-                            Some(form) => match eval(form, env)? {
-                                LispVal::Symbol(s) => Some(s.borrow().name.clone()),
-                                _ => None,
+                        let arg = cargs.first();
+                        let msg = match arg {
+                            // Bare symbol → function lookup
+                            Some(LispVal::Symbol(s)) => check_function(&s.borrow().name, env),
+                            // Quoted symbol `'name` → function lookup
+                            Some(LispVal::Cons { car, cdr }) if matches!(car.as_ref(), LispVal::Symbol(s) if s.borrow().name == "QUOTE") =>
+                            {
+                                // (quote name) where name is a symbol → function lookup
+                                if let LispVal::Cons {
+                                    car: inner,
+                                    cdr: nil,
+                                } = cdr.as_ref()
+                                    && *nil.as_ref() == LispVal::Nil
+                                    && let LispVal::Symbol(s) = inner.as_ref()
+                                {
+                                    check_function(&s.borrow().name, env)
+                                } else {
+                                    "check-type: malformed quoted form".to_string()
+                                }
+                            }
+                            // Any other form: try checker elaboration.
+                            // Falls back to eval→check_function when elaboration
+                            // returns the gradual `any` (opaque operative call).
+                            Some(expr) => match env.jit_check_expr(expr) {
+                                Err(e) => format!("type error: {e}"),
+                                Ok(t) if t != "any" => t,
+                                Ok(_) => match eval(expr, env) {
+                                    Ok(LispVal::Symbol(s)) => check_function(&s.borrow().name, env),
+                                    _ => "any".to_string(),
+                                },
                             },
-                            None => None,
-                        };
-                        let msg = match name {
-                            Some(n) => check_function(&n, env),
-                            None => "check-type: expected a function name".to_string(),
+                            None => "check-type: expected an argument".to_string(),
                         };
                         Ok(TcoStep::Done(Ok(LispVal::String(msg))))
                     }
@@ -1216,6 +1266,33 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                         }
                         Ok(TcoStep::TailCall(body, let_env))
                     }
+                    "MACRO" => {
+                        // Anonymous macro constructor: `(macro (params...) body...)`
+                        // yields a Macro *value* (the symmetric completion of
+                        // LAMBDA→Lambda and VAU→Vau). This is what lets `macrolet`
+                        // live entirely in the Lisp layer as a let-over-constructor.
+                        let args = list_to_vec(rest)?;
+                        if args.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "macro requires a parameter list".to_string(),
+                            ))));
+                        }
+                        let body = progn_wrap(&args[1..], env);
+                        Ok(TcoStep::Done(make_macro(&args[0], &body, env)))
+                    }
+                    "FEXPR" => {
+                        // Anonymous fexpr constructor: `(fexpr (params...) body...)`
+                        // yields a Fexpr value (symmetric with MACRO/VAU). Backs the
+                        // Lisp-layer `fexprlet`.
+                        let args = list_to_vec(rest)?;
+                        if args.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "fexpr requires a parameter list".to_string(),
+                            ))));
+                        }
+                        let body = progn_wrap(&args[1..], env);
+                        Ok(TcoStep::Done(make_fexpr(&args[0], &body, env)))
+                    }
                     "VAU" | "$VAU" => {
                         // (vau (operands-param env-param) body...)
                         // operands-param receives the unevaluated operand list;
@@ -1427,6 +1504,239 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
 
                 Ok(TcoStep::Done(apply(&func, &eval_args, env)))
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// defun* — unified smart function definition (#170)
+// ---------------------------------------------------------------------------
+//
+// Accepted parameter styles (all auto-detected):
+//   classic arglist : (defun* name (a b)        body...)   ; like defun
+//   classic + types : (defun* name ((a int64) b) body...)
+//   flat bare       : (defun* name a b          body...)
+//   flat typed      : (defun* name (a int64) (b int64) body...)
+// An optional bare type keyword after the params is the return type, and an
+// optional leading string is a docstring:
+//   (defun* name "doc" (a int64) (b int64) int64 body...)
+//
+// Dispatch rules:
+//   1. Parse params (each Some(ty) pinned / None inferred) + optional ret type.
+//   2. Call jit_define_partial: seeds fresh vars for unspecified slots.
+//   3. On success:  install a typed-native membrane + store source-form on plist.
+//      On failure:  install a plain lambda (silent if no hints given; note if hints).
+//
+// Note policy — eprintln with `;` prefix so it reads as a Lisp comment:
+//   • Inferred (any None slot) + compiled  →  "; defun* NAME : sig  [compiled]"
+//   • Had hints + failed to compile        →  "; defun* NAME: could not compile (why)"
+//   • All specified + compiled             →  silent (expected)
+//   • No hints + failed to compile         →  silent (expected)
+
+/// One parameter of a `defun*`: name + optional pinned type (`None` = inferred).
+type StarParam = (String, Option<crate::jit::Ty>);
+
+/// Parse one element of a *classic* arglist (`sym` or `(sym ty)` or `(sym)`).
+fn classic_arglist_param(item: &LispVal) -> Result<StarParam, LispError> {
+    match item {
+        LispVal::Symbol(s) => Ok((s.borrow().name.clone(), None)),
+        LispVal::Cons { car, cdr } => {
+            if let LispVal::Symbol(s) = car.as_ref() {
+                let ty = match cdr.as_ref() {
+                    LispVal::Nil => None,
+                    LispVal::Cons { car: ty_form, .. } => crate::jit::try_parse_ty_simple(ty_form),
+                    _ => None,
+                };
+                Ok((s.borrow().name.clone(), ty))
+            } else {
+                Err(LispError::Generic(
+                    "defun*: parameter name must be a symbol".to_string(),
+                ))
+            }
+        }
+        _ => Err(LispError::Generic(
+            "defun*: malformed parameter".to_string(),
+        )),
+    }
+}
+
+/// Parse the parameter section of a `defun*`, starting at `items[start]`.
+/// Returns the params and the index of the first post-parameter item (where the
+/// optional return-type / body begins). Handles classic arglists, flat bare
+/// symbols, and flat typed groups (see the module comment above).
+fn parse_star_params(
+    items: &[LispVal],
+    start: usize,
+) -> Result<(Vec<StarParam>, usize), LispError> {
+    let mut params: Vec<StarParam> = Vec::new();
+    let mut i = start;
+
+    // Leading `()` or a non-param-shaped list in first position = classic arglist.
+    match items.get(i) {
+        // Empty arglist: (defun* f () body...)
+        Some(LispVal::Nil) => return Ok((params, i + 1)),
+        Some(item @ LispVal::Cons { car, cdr }) => {
+            // Is this a single flat typed/inferred param — `(sym TYPE)` or `(sym)`?
+            // If so, fall through to the flat loop; otherwise it's a classic arglist.
+            let is_single_flat_param = matches!(car.as_ref(), LispVal::Symbol(_))
+                && match cdr.as_ref() {
+                    LispVal::Nil => true, // (sym)
+                    LispVal::Cons { car: ty, cdr: nil } => {
+                        *nil.as_ref() == LispVal::Nil
+                            && crate::jit::try_parse_ty_simple(ty).is_some()
+                    }
+                    _ => false,
+                };
+            if !is_single_flat_param {
+                // Classic arglist: this one list holds every parameter.
+                for elem in list_to_vec(item)? {
+                    params.push(classic_arglist_param(&elem)?);
+                }
+                return Ok((params, i + 1));
+            }
+        }
+        _ => {}
+    }
+
+    // Flat style: collect consecutive `sym` / `(sym ty)` / `(sym)` until a bare
+    // type keyword (return type) or a non-parameter form (body) is reached.
+    while i < items.len() {
+        match &items[i] {
+            LispVal::Symbol(s) => {
+                if crate::jit::try_parse_ty_simple(&items[i]).is_some() {
+                    break; // bare type keyword → return-type position
+                }
+                params.push((s.borrow().name.clone(), None));
+                i += 1;
+            }
+            LispVal::Cons { car, cdr } if matches!(car.as_ref(), LispVal::Symbol(_)) => {
+                let sname = if let LispVal::Symbol(s) = car.as_ref() {
+                    s.borrow().name.clone()
+                } else {
+                    unreachable!()
+                };
+                match cdr.as_ref() {
+                    LispVal::Nil => {
+                        params.push((sname, None)); // (sym)
+                        i += 1;
+                    }
+                    LispVal::Cons {
+                        car: ty_form,
+                        cdr: nil,
+                    } if *nil.as_ref() == LispVal::Nil
+                        && crate::jit::try_parse_ty_simple(ty_form).is_some() =>
+                    {
+                        params.push((sname, crate::jit::try_parse_ty_simple(ty_form))); // (sym ty)
+                        i += 1;
+                    }
+                    _ => break, // not a flat param → body
+                }
+            }
+            _ => break, // number, string, nested call, … → body
+        }
+    }
+    Ok((params, i))
+}
+
+pub(super) fn eval_defun_star(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+    let items = list_to_vec(rest)?;
+    if items.is_empty() {
+        return Err(LispError::Generic("defun*: missing name".to_string()));
+    }
+
+    // --- name ---
+    let name_sym = match &items[0] {
+        LispVal::Symbol(s) => s.clone(),
+        _ => {
+            return Err(LispError::Generic(
+                "defun*: name must be a symbol".to_string(),
+            ));
+        }
+    };
+    let name = name_sym.borrow().name.clone();
+
+    let mut i = 1usize;
+
+    // --- optional docstring ---
+    let mut docstring: Option<String> = None;
+    if let Some(LispVal::String(s)) = items.get(i) {
+        docstring = Some(s.clone());
+        i += 1;
+    }
+
+    // --- params (classic arglist, flat bare, or flat typed; auto-detected) ---
+    let (params, next) = parse_star_params(&items, i)?;
+    i = next;
+
+    // --- optional return-type annotation ---
+    let mut ret_hint: Option<crate::jit::Ty> = None;
+    if let Some(ty) = items.get(i).and_then(crate::jit::try_parse_ty_simple) {
+        ret_hint = Some(ty);
+        i += 1;
+    }
+
+    // --- body (must be non-empty) ---
+    if i >= items.len() {
+        return Err(LispError::Generic(format!("defun*: {name}: no body forms")));
+    }
+    let body_forms: Vec<LispVal> = items[i..].to_vec();
+
+    // ---- decide what was specified vs. inferred ----
+    let had_hints = params.iter().any(|(_, t)| t.is_some()) || ret_hint.is_some();
+    let had_unspecified = params.iter().any(|(_, t)| t.is_none()) || ret_hint.is_none();
+
+    // ---- attempt typed compilation ----
+    match env.jit_define_partial(&name, &params, ret_hint, &body_forms) {
+        Ok((_id, sig)) => {
+            // Typed compilation succeeded.
+            env.set(name.clone(), make_typed_native(name.clone()));
+            let sym = env.intern_symbol(&name);
+            // Build the source form for see-source introspection.
+            let source_form = LispVal::Cons {
+                car: Rc::new(LispVal::Symbol(env.intern_symbol("DEFUN*"))),
+                cdr: Rc::new(vec_to_list(items)),
+            };
+            sym.borrow_mut()
+                .plist
+                .insert("source-form".to_string(), source_form);
+            if let Some(doc) = docstring {
+                sym.borrow_mut()
+                    .plist
+                    .insert("docstring".to_string(), LispVal::String(doc));
+            }
+            if had_unspecified {
+                eprintln!("; defun* {name} : {sig}  [compiled]");
+            }
+            Ok(TcoStep::Done(Ok(LispVal::Symbol(sym))))
+        }
+        Err(reason) => {
+            // Typed compilation failed — fall back to a plain lambda.
+            // Build a lambda from the (unannotated) param names and body.
+            let param_names: Vec<LispVal> = params
+                .iter()
+                .map(|(n, _)| LispVal::Symbol(env.intern_symbol(n)))
+                .collect();
+            let params_lv = vec_to_list(param_names);
+            let body_val = if body_forms.len() == 1 {
+                body_forms[0].clone()
+            } else {
+                let mut progn = vec![LispVal::Symbol(env.intern_symbol("PROGN"))];
+                progn.extend(body_forms);
+                vec_to_list(progn)
+            };
+            let lambda = make_lambda(&params_lv, &body_val, env)
+                .map_err(|e| LispError::Generic(format!("defun* {name}: {e}")))?;
+            env.set(name.clone(), lambda);
+            let sym = env.intern_symbol(&name);
+            if let Some(doc) = docstring {
+                sym.borrow_mut()
+                    .plist
+                    .insert("docstring".to_string(), LispVal::String(doc));
+            }
+            if had_hints {
+                eprintln!("; defun* {name}: could not compile ({reason}); using untyped lambda");
+            }
+            Ok(TcoStep::Done(Ok(LispVal::Symbol(sym))))
         }
     }
 }

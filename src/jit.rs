@@ -77,5 +77,32 @@ pub use self::types::{
     Analysis, BinOp, CmpOp, Core, NumKind, StructDef, Ty, Value, is_compileable, ty_name,
 };
 
+/// Try to parse a surface type form without a struct registry — handles scalar
+/// keywords (`int64`, `float64`, `bool`, `char`, `u8`, `byte`) and explicit
+/// `(array T)` forms. Used by `defun*` to distinguish a type annotation from
+/// the start of a body form. Returns `None` for anything not recognised.
+pub fn try_parse_ty_simple(form: &crate::LispVal) -> Option<Ty> {
+    match form {
+        crate::LispVal::Symbol(s) => Ty::parse(&s.borrow().name),
+        crate::LispVal::Cons { car, cdr } => {
+            // Only recognise (array T) where T is itself a simple type.
+            if let (
+                crate::LispVal::Symbol(h),
+                crate::LispVal::Cons {
+                    car: elem,
+                    cdr: nil,
+                },
+            ) = (car.as_ref(), cdr.as_ref())
+                && h.borrow().name == "ARRAY"
+                && *nil.as_ref() == crate::LispVal::Nil
+            {
+                return try_parse_ty_simple(elem).map(|t| Ty::Array(Box::new(t)));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests;

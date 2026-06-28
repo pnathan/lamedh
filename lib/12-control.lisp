@@ -101,3 +101,54 @@ Returns RESULT (with VAR bound to COUNT) or NIL."
           (if result
               (list 'let (list (list var n)) (car result))
               nil))))
+
+;;; ------------------------------------------------------------------
+;;; Local operator bindings: flet / macrolet / fexprlet / vaulet.
+;;;
+;;; Lamedh is a Lisp-1, and operator dispatch resolves the head symbol
+;;; through the ordinary lexical environment chain. So a name locally
+;;; bound to a LAMBDA / MACRO / FEXPR / VAU value is automatically used
+;;; as an operator inside that scope — these forms are just LET over the
+;;; matching anonymous constructor. The kernel provides those four value
+;;; constructors (LAMBDA, MACRO, FEXPR, VAU); the binding sugar lives here.
+;;;
+;;; Each clause is (name (params...) body...), mirroring DEFUN/DEFMACRO.
+;;; Bindings are parallel (LET semantics): clauses do not see one another,
+;;; which matches Common Lisp FLET / MACROLET. (LABELS-style mutual
+;;; recursion is intentionally not provided here — it would need mutation.)
+
+(defun make-oplet-binding (head clause)
+  "Turn a (name (params...) body...) clause into a LET binding
+(name (HEAD (params...) body...)) for the given constructor HEAD."
+  (list (car clause) (cons head (cdr clause))))
+
+(defmacro flet (bindings &rest body)
+  "Locally bind named functions for the extent of BODY (non-recursive).
+Each binding is (name (params...) body...)."
+  (cons 'let
+        (cons (mapcar (lambda (b) (make-oplet-binding 'lambda b)) bindings)
+              body)))
+
+(defmacro macrolet (bindings &rest body)
+  "Locally bind macros for the extent of BODY.
+Each binding is (name (params...) body...); the bodies are expanded at
+call sites just like DEFMACRO definitions."
+  (cons 'let
+        (cons (mapcar (lambda (b) (make-oplet-binding 'macro b)) bindings)
+              body)))
+
+(defmacro fexprlet (bindings &rest body)
+  "Locally bind fexprs (unevaluated-argument operatives) for BODY.
+Each binding is (name (params...) body...); the operands reach the body
+unevaluated, as with DEFEXPR."
+  (cons 'let
+        (cons (mapcar (lambda (b) (make-oplet-binding 'fexpr b)) bindings)
+              body)))
+
+(defmacro vaulet (bindings &rest body)
+  "Locally bind vau operatives for the extent of BODY.
+Each binding is (name (operands env) body...): OPERANDS receives the
+unevaluated operand list and ENV the caller's environment, as with VAU."
+  (cons 'let
+        (cons (mapcar (lambda (b) (make-oplet-binding 'vau b)) bindings)
+              body)))
