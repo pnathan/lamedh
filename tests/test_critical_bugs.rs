@@ -359,10 +359,14 @@ fn test_label_self_reference_is_caught() {
 
 #[test]
 fn test_label_circular_reference() {
+    // FIXED (#153): an indirect circular LABEL no longer hangs. The symbol→LABEL
+    // re-evaluation now goes through the depth-counted `eval`, so the cycle is
+    // bounded by the eval-depth guard and surfaces as an error instead of
+    // spinning forever in the trampoline.
     let result = eval_str_big("(LABEL a (LABEL b a))");
     assert!(
         result.is_err(),
-        "indirect circular LABEL should error, got {result:?}"
+        "indirect circular LABEL should error gracefully, got {result:?}"
     );
 }
 

@@ -284,11 +284,21 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
             // Compatibility path for values explicitly bound to a LABEL form.
             // Normal LABEL evaluation now returns a closure that closes over its
             // own name binding instead of storing a re-evaluable LABEL graph.
+            //
+            // This goes through the depth-counted `eval` rather than an uncounted
+            // `TcoStep::TailCall`: an indirect circular LABEL such as
+            // `(LABEL a (LABEL b a))` rewrites endlessly between LABEL forms
+            // (a → (LABEL a …) → (LABEL b a) → a → …) and, as a bare tail call,
+            // would spin in the trampoline forever without ever hitting the
+            // eval-depth guard. Routing through `eval` bounds the cycle and
+            // surfaces it as a `LispError` (issue #153). Legitimate LABEL
+            // recursion carries its loop via lambda application, not this
+            // head-resolution step, so its tail-call behavior is unaffected.
             if let LispVal::Cons { car, cdr: _ } = &value
                 && let LispVal::Symbol(sym) = &**car
                 && sym.borrow().name == "LABEL"
             {
-                return Ok(TcoStep::TailCall(value, env.clone()));
+                return Ok(TcoStep::Done(eval(&value, env)));
             }
 
             Ok(TcoStep::Done(Ok(value)))

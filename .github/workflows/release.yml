@@ -26,21 +26,6 @@ jobs:
             asset_name: lamedh-linux-aarch64
             cross: true
 
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact_name: lamedh
-            asset_name: lamedh-macos-x86_64
-
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            artifact_name: lamedh
-            asset_name: lamedh-macos-aarch64
-
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            artifact_name: lamedh.exe
-            asset_name: lamedh-windows-x86_64.exe
-
     steps:
       - uses: actions/checkout@v4
 
