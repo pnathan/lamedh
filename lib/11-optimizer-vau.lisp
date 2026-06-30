@@ -5,9 +5,66 @@
 ;;; for constant folding and algebraic simplification.
 ;;;
 ;;; Entry points:
-;;;   (optimize-form form)   -- pure transform, returns optimized S-expr
-;;;   $opt                   -- vau: evaluates its argument with optimization applied
-;;;   defun-typed-opt       -- vau: optimize source, then hand DEFUN-TYPED to compiler
+;;;   (optimize-form form)         -- pure transform, returns optimized S-expr
+;;;   $opt                         -- vau: evaluates its argument with optimization applied
+;;;   defun-typed-opt              -- vau: optimize source, then hand DEFUN-TYPED to compiler
+;;;   (defun-check-purity! n body) -- annotate N's plist with "pure"=:PURE if body is pure
+
+;;; ─── Purity checker pass ──────────────────────────────────────────────────
+;;;
+;;; Conservative leaf-level purity certificate for DEFUN bodies.
+;;; A body is considered pure when it contains:
+;;;   - no SETQ or SET forms (no mutation of shared state)
+;;;   - no calls to known IO builtins (listed in *io-builtin-set*)
+;;;
+;;; When this file is loaded, DEFUN automatically runs the check on every
+;;; subsequently-defined function (via the guard in 00-core.lisp) and sets
+;;; (putp name "pure" :PURE) on qualifying symbols.
+;;;
+;;; This is a conservative leaf-level certificate.  Interprocedural
+;;; propagation (e.g. inferring that a caller of only pure functions is itself
+;;; pure) is deferred to a follow-up issue.
+
+;;; Editable list of IO builtins that disqualify a function from purity.
+;;; Add or remove names here to tune the conservativeness of the check.
+(def *io-builtin-set*
+  '(read print prin1 princ terpri
+    shell write-file read-file
+    load load-file
+    open-file close-file
+    format))
+
+;;; Return T if FORM structurally contains no SETQ/SET and no calls to any
+;;; symbol in *io-builtin-set*. Stops at QUOTE to avoid walking data literals.
+;;; Walks the full cons structure so nested calls are caught.
+(defun body-check-pure-p (form)
+  "Return T if FORM contains no SETQ/SET or IO builtin calls."
+  (cond
+    ((null form) t)
+    ((atom form) t)
+    ((eq (car form) 'quote) t)
+    ((or (eq (car form) 'setq) (eq (car form) 'set)) nil)
+    ((member (car form) *io-builtin-set*) nil)
+    (t (and (body-check-pure-p (car form))
+            (body-check-pure-p (cdr form))))))
+
+(defun body-all-pure-p (forms)
+  "Return T if every form in the list is pure per body-check-pure-p."
+  (cond
+    ((null forms) t)
+    ((not (body-check-pure-p (car forms))) nil)
+    (t (body-all-pure-p (cdr forms)))))
+
+;;; Annotate NAME's plist with property \"pure\" = :PURE when all BODY-FORMS
+;;; pass the purity check, or remove the property when they do not.
+;;; Returns :PURE when pure, NIL when impure.
+;;; Called automatically from the DEFUN macro (00-core.lisp) whenever this
+;;; function is bound in the environment.
+(defun defun-check-purity! (name body-forms)
+  "Purity-annotate NAME: set plist \"pure\"=:PURE if BODY-FORMS are pure."
+  (if (body-all-pure-p body-forms)
+      (progn (putp name "pure" :pure) :pure)
+      (progn (remprop name "pure") nil)))
 
 ;;; ─── Helpers ──────────────────────────────────────────────────────────────
 
