@@ -38,7 +38,8 @@
 
 #![allow(clippy::mutable_key_type)]
 use crate::{
-    BuiltinFunc, LispError, LispVal, Shared, SharedCell, StructObj, environment::Environment,
+    BuiltinFunc, LispError, LispVal, Shared, SharedCell, SpecialForm, StructObj,
+    environment::Environment,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
