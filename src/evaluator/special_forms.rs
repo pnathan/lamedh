@@ -272,6 +272,113 @@ pub(super) fn eval_while(rest: &LispVal, env: &Shared<Environment>) -> Result<Tc
     }
 }
 
+/// Handle ordinary function application.
+///
+/// Called from `eval_step` for both symbol-headed calls (after the
+/// special-form tag has been read and the borrow dropped) and non-symbol-head
+/// calls. Centralises the Macro / Vau / Fexpr / Lambda / Builtin dispatch so
+/// there is exactly one copy of this logic in the evaluator (previously it
+/// was duplicated in the `_ =>` arm and in the `else` branch of the
+/// symbol-check).
+///
+/// Safety note (issue #156): callers must ensure that **no borrow** of the
+/// head-symbol `Shared<SharedCell<Symbol>>` is held when this function
+/// runs, so that `apply_owned` (reached via the builtin/native path) can
+/// safely call `borrow_mut()` on the same symbol if it appears as an
+/// argument (e.g. `(putp 'putp ...)`).
+#[inline]
+fn eval_application(
+    first: &LispVal,
+    rest: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<TcoStep, LispError> {
+    let func = eval(first, env)?;
+
+    // Macro expansion: TCO into the expanded form.  Must be intercepted before
+    // evaluating args — macros receive unevaluated operands.
+    if let LispVal::Macro(m) = &func {
+        let args_list = list_to_vec(rest)?;
+        let expanded = expand_macro(m, &args_list, env)?;
+        return Ok(TcoStep::TailCall(expanded, env.clone()));
+    }
+
+    // Vau application: bind unevaluated operands + caller env, TCO into body.
+    if let LispVal::Vau(vau) = &func {
+        let new_env = Environment::new_child(&vau.env);
+        new_env.set(vau.operands_param.clone(), rest.clone());
+        new_env.set(vau.env_param.clone(), LispVal::Environment(env.clone()));
+        return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
+    }
+
+    // Fexpr application: TCO — bind unevaluated args, continue with body.
+    if let LispVal::Fexpr(fexpr) = &func {
+        let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
+        if fexpr.params.len() == 1 {
+            // Single-param: bind entire unevaluated arg list to the one parameter.
+            new_env.set(fexpr.params[0].clone(), rest.clone());
+        } else {
+            // Multi-param: bind each unevaluated arg to its parameter.
+            let unevaluated_args = list_to_vec(rest)?;
+            if unevaluated_args.len() != fexpr.params.len() {
+                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                    "fexpr expected {} arguments, got {}",
+                    fexpr.params.len(),
+                    unevaluated_args.len()
+                )))));
+            }
+            for (param, arg) in fexpr.params.iter().zip(unevaluated_args) {
+                new_env.set(param.clone(), arg);
+            }
+        }
+        return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
+    }
+
+    // Evaluated-argument callables (lambda/builtin/native): evaluate operands
+    // straight off the cons chain — one allocation, no intermediate clones.
+    let eval_args = eval_operands(rest, env)?;
+
+    // Lambda application: TCO — set up new env and continue with body.
+    if let LispVal::Lambda(lambda) = &func {
+        let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+        if let Some(rest_param_name) = &lambda.rest_param {
+            if eval_args.len() < lambda.params.len() {
+                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                    "lambda expected at least {} arguments, got {}",
+                    lambda.params.len(),
+                    eval_args.len()
+                )))));
+            }
+            // Move fixed args into the frame; remaining go to the rest list.
+            let n_fixed = lambda.params.len();
+            let mut eval_args = eval_args;
+            for (param, arg) in lambda.params.iter().zip(eval_args.drain(..n_fixed)) {
+                new_env.set(param.clone(), arg);
+            }
+            let rest_args = vec_to_list(eval_args);
+            new_env.set(rest_param_name.clone(), rest_args);
+        } else {
+            if lambda.params.len() != eval_args.len() {
+                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                    "lambda expected {} arguments, got {}",
+                    lambda.params.len(),
+                    eval_args.len()
+                )))));
+            }
+            // Move every arg directly into the frame — no clone.
+            for (param, arg) in lambda.params.iter().zip(eval_args) {
+                new_env.set(param.clone(), arg);
+            }
+        }
+        return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
+    }
+
+    // All other callables (builtins, natives): apply inline.
+    // The caller guarantees no head-symbol borrow is open, so apply_owned
+    // can safely call borrow_mut() if the head symbol appears as an argument
+    // (issue #156 is resolved by the early borrow-drop in eval_step).
+    Ok(TcoStep::Done(apply_owned(&func, eval_args, env)))
+}
+
 /// Perform one evaluation step. Returns `TcoStep::Done` for final results
 /// and `TcoStep::TailCall` for tail positions (caller loops instead of recursing).
 pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoStep, LispError> {
@@ -335,8 +442,25 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
             cdr: rest,
         } => {
             if let LispVal::Symbol(s) = &**first {
-                match s.borrow().name.as_str() {
-                    "QUOTE" => {
+                // Read the special-form tag as a `Copy` value.  The `Ref`
+                // guard (RefCell) or read-lock guard (arc-val RwLock) is a
+                // temporary whose lifetime ends at the semicolon — so no
+                // borrow of `s` is held when the arm bodies execute.  This
+                // eliminates the re-borrow hazard from issue #156 and lets
+                // `eval_application` call `apply_owned` inline even when the
+                // head symbol appears as an argument (e.g. `(putp 'putp …)`).
+                let sf_tag = s.borrow().special_form;
+
+                // Fast path: ordinary function call (the overwhelmingly common
+                // case in hot loops).  Skips the entire special-form match and
+                // the RefCell borrow entirely.
+                if sf_tag.is_none() {
+                    return eval_application(first, rest, env);
+                }
+
+                // Dispatch on the precomputed enum tag — no string compare.
+                match sf_tag.unwrap() {
+                    SpecialForm::Quote => {
                         if let LispVal::Cons { car, cdr } = &**rest
                             && **cdr == LispVal::Nil
                         {
@@ -346,7 +470,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             "quote takes exactly one argument".to_string(),
                         ))))
                     }
-                    "QUASIQUOTE" => {
+                    SpecialForm::Quasiquote => {
                         if let LispVal::Cons { car, cdr } = &**rest
                             && **cdr == LispVal::Nil
                         {
@@ -356,7 +480,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             "quasiquote takes exactly one argument".to_string(),
                         ))))
                     }
-                    "COND" => {
+                    SpecialForm::Cond => {
                         // Walk the clause list and each clause's body directly off
                         // the cons cells — no `list_to_vec` allocations. COND runs
                         // on the hot path (it is the body of most conditionals and
@@ -430,7 +554,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
-                    "IF" => {
+                    SpecialForm::If => {
                         // Destructure (cond then else) directly off the cons cells —
                         // IF runs on every conditional and loop iteration, so we skip
                         // the `list_to_vec` allocation the general path would do.
@@ -461,7 +585,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             "if takes exactly three arguments".to_string(),
                         ))))
                     }
-                    "AND" => {
+                    SpecialForm::And => {
                         let mut last_val = LispVal::Symbol(env.intern_symbol("T"));
                         let forms = list_to_vec(rest)?;
                         for form in forms {
@@ -472,7 +596,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(last_val)))
                     }
-                    "OR" => {
+                    SpecialForm::Or => {
                         let forms = list_to_vec(rest)?;
                         for form in forms {
                             let v = eval(&form, env)?;
@@ -482,7 +606,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
-                    "UNWIND-PROTECT" => {
+                    SpecialForm::UnwindProtect => {
                         // (unwind-protect body cleanup...) — evaluate BODY, then
                         // always evaluate the CLEANUP forms (even if BODY errors
                         // or performs a non-local exit), then propagate BODY's
@@ -500,7 +624,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(result))
                     }
-                    "CATCH" => {
+                    SpecialForm::Catch => {
                         // (catch tag body...) — establish a catch point for TAG
                         // (evaluated). A (throw TAG value) with an EQUAL tag
                         // unwinds to here and yields VALUE.
@@ -532,7 +656,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(last)))
                     }
-                    "THROW" => {
+                    SpecialForm::Throw => {
                         // (throw tag value) — non-local exit to the matching CATCH.
                         let forms = list_to_vec(rest)?;
                         if forms.len() != 2 {
@@ -548,7 +672,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             value: Box::new(value),
                         })))
                     }
-                    "BLOCK" => {
+                    SpecialForm::Block => {
                         // (block name body...) — NAME is an unevaluated symbol.
                         // A (return-from name value) inside BODY unwinds here.
                         let forms = list_to_vec(rest)?;
@@ -583,7 +707,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(last)))
                     }
-                    "RETURN-FROM" => {
+                    SpecialForm::ReturnFrom => {
                         // (return-from name [value]) — NAME unevaluated.
                         let forms = list_to_vec(rest)?;
                         if forms.is_empty() {
@@ -609,7 +733,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             value: Box::new(value),
                         })))
                     }
-                    "HANDLER-CASE" => {
+                    SpecialForm::HandlerCase => {
                         // (handler-case expr (error (var) handler-body...))
                         // Evaluate EXPR; on a trapped error bind VAR to the
                         // condition value (a LispVal::Error) and run the handler.
@@ -651,7 +775,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Ok(TcoStep::Done(Ok(last)))
                         }
                     }
-                    "DEF" => {
+                    SpecialForm::Def => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 && args.len() != 3 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -681,7 +805,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             ))))
                         }
                     }
-                    "DEFDYNAMIC" | "DEFVAR" => {
+                    SpecialForm::Defdynamic => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 2 || args.len() > 3 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -737,7 +861,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
 
                         Ok(TcoStep::Done(Ok(LispVal::Symbol(symbol.clone()))))
                     }
-                    "LAMBDA" => {
+                    SpecialForm::Lambda => {
                         if let LispVal::Cons {
                             car: params,
                             cdr: body_list,
@@ -756,7 +880,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             "lambda requires params and at least one body expression".to_string(),
                         ))))
                     }
-                    "FUNCTION" => {
+                    SpecialForm::Function => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -816,7 +940,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 .to_string(),
                         ))))
                     }
-                    "LABEL" => {
+                    SpecialForm::Label => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -869,7 +993,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             ))))
                         }
                     }
-                    "DEFINE" => {
+                    SpecialForm::Define => {
                         let defs = list_to_vec(rest)?;
                         if defs.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -909,13 +1033,15 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(vec_to_list(defined_names))))
                     }
-                    "DEFEXPR" | "DEFMACRO" => {
+                    SpecialForm::Defexpr | SpecialForm::Defmacro => {
+                        let is_defexpr = matches!(sf_tag, Some(SpecialForm::Defexpr));
+                        let form_name = if is_defexpr { "DEFEXPR" } else { "DEFMACRO" };
                         let args = list_to_vec(rest)?;
                         if args.len() < 3 || args.len() > 4 {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(
-                                format!("{} takes three or four arguments", s.borrow().name)
-                                    .to_string(),
-                            ))));
+                            return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                "{} takes three or four arguments",
+                                form_name
+                            )))));
                         }
                         if let LispVal::Symbol(name_sym) = &args[0] {
                             let params = &args[1];
@@ -934,7 +1060,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 }
                             }
                             let body = &args[body_idx];
-                            let func = if s.borrow().name == "DEFEXPR" {
+                            let func = if is_defexpr {
                                 make_fexpr(params, body, env)?
                             } else {
                                 make_macro(params, body, env)?
@@ -947,17 +1073,14 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             env.set(def_name, func);
                             Ok(TcoStep::Done(Ok(LispVal::Symbol(name_sym.clone()))))
                         } else {
-                            Ok(TcoStep::Done(Err(LispError::Generic(
-                                format!(
-                                    "{} requires a symbol as its first argument",
-                                    s.borrow().name
-                                )
-                                .to_string(),
-                            ))))
+                            Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                "{} requires a symbol as its first argument",
+                                form_name
+                            )))))
                         }
                     }
-                    "DEFSTRUCT" => eval_defstruct(rest, env),
-                    "DEFUN-TYPED" => {
+                    SpecialForm::Defstruct => eval_defstruct(rest, env),
+                    SpecialForm::DefunTyped => {
                         // Type-check + compile into the shared typed registry,
                         // then install a Native entry so the typed function is
                         // callable from ordinary (untyped) Lisp code through the
@@ -981,8 +1104,8 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
                         }
                     }
-                    "DEFUN*" => eval_defun_star(rest, env),
-                    "JIT-OPTIMIZE" => {
+                    SpecialForm::DefunStar => eval_defun_star(rest, env),
+                    SpecialForm::JitOptimize => {
                         // Best-effort, transparent typed compilation of an
                         // already-defined (un-annotated) function: try HM
                         // inference over its lambda body; on success, rebind the
@@ -1012,7 +1135,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             None => Ok(TcoStep::Done(Ok(LispVal::Nil))),
                         }
                     }
-                    "CHECK-TYPE" => {
+                    SpecialForm::CheckType => {
                         // Type-check a function name or an arbitrary expression.
                         //
                         // `(check-type name)` / `(check-type 'name)` — function lookup.
@@ -1058,7 +1181,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         };
                         Ok(TcoStep::Done(Ok(LispVal::String(msg))))
                     }
-                    "DEFSTRUCT-TYPED" => {
+                    SpecialForm::DefstructTyped => {
                         // Register a typed struct and install membrane entries for
                         // its generated accessors (make-NAME / NAME-FIELD /
                         // set-NAME-FIELD), so structs are usable from untyped Lisp.
@@ -1078,7 +1201,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
                         }
                     }
-                    "DECLARE-TYPED" => {
+                    SpecialForm::DeclareTyped => {
                         // Forward-declare a typed signature (for REPL-level mutual
                         // recursion). Installs the same membrane entry; calling it
                         // before the body is defined returns a clean error.
@@ -1094,7 +1217,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
                         }
                     }
-                    "PROGN" => {
+                    SpecialForm::Progn => {
                         let forms = list_to_vec(rest)?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Ok(LispVal::Nil)));
@@ -1107,7 +1230,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             env.clone(),
                         ))
                     }
-                    "SETQ" => {
+                    SpecialForm::Setq => {
                         // SETQ: Set a variable's value
                         // (SETQ var1 val1 var2 val2 ...)
                         // NOTE: If a variable doesn't exist, SETQ will CREATE it in the
@@ -1154,7 +1277,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         Ok(TcoStep::Done(Ok(last_val)))
                     }
-                    "PROG" => {
+                    SpecialForm::Prog => {
                         let args = list_to_vec(rest)?;
                         if args.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1230,7 +1353,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         };
                         Ok(TcoStep::Done(result))
                     }
-                    "RETURN" => {
+                    SpecialForm::Return => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1240,7 +1363,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let retval = eval(&args[0], env)?;
                         Ok(TcoStep::Done(Err(LispError::Return(Box::new(retval)))))
                     }
-                    "GO" => {
+                    SpecialForm::Go => {
                         let args = list_to_vec(rest)?;
                         if args.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1255,9 +1378,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             ))))
                         }
                     }
-                    "FOR" => eval_for(rest, env),
-                    "WHILE" => eval_while(rest, env),
-                    "LET" => {
+                    SpecialForm::For => eval_for(rest, env),
+                    SpecialForm::While => eval_while(rest, env),
+                    SpecialForm::Let => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1320,7 +1443,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     // Dynamic variables use shallow binding here too; later
                     // bindings in the same let* that reference a just-bound
                     // dynamic variable see the newly installed symbol-cell value.
-                    "LET*" => {
+                    SpecialForm::LetStar => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1360,7 +1483,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Ok(TcoStep::TailCallWithGuards(body, let_env, dynamic_guards))
                         }
                     }
-                    "MACRO" => {
+                    SpecialForm::Macro => {
                         // Anonymous macro constructor: `(macro (params...) body...)`
                         // yields a Macro *value* (the symmetric completion of
                         // LAMBDA→Lambda and VAU→Vau). This is what lets `macrolet`
@@ -1374,7 +1497,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let body = progn_wrap(&args[1..], env);
                         Ok(TcoStep::Done(make_macro(&args[0], &body, env)))
                     }
-                    "FEXPR" => {
+                    SpecialForm::Fexpr => {
                         // Anonymous fexpr constructor: `(fexpr (params...) body...)`
                         // yields a Fexpr value (symmetric with MACRO/VAU). Backs the
                         // Lisp-layer `fexprlet`.
@@ -1387,7 +1510,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let body = progn_wrap(&args[1..], env);
                         Ok(TcoStep::Done(make_fexpr(&args[0], &body, env)))
                     }
-                    "VAU" | "$VAU" => {
+                    SpecialForm::Vau => {
                         // (vau (operands-param env-param) body...)
                         // operands-param receives the unevaluated operand list;
                         // env-param receives the caller's environment.
@@ -1441,171 +1564,10 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             env: env.clone(),
                         })))))
                     }
-                    _ => {
-                        // Function call: evaluate the function head
-                        let func = eval(first, env)?;
-
-                        // Macro expansion: TCO — continue with the expanded form.
-                        // Macros receive UNEVALUATED operands, so build that list
-                        // only on this (comparatively cold) path.
-                        if let LispVal::Macro(m) = &func {
-                            let args_list = list_to_vec(rest)?;
-                            let expanded = expand_macro(m, &args_list, env)?;
-                            return Ok(TcoStep::TailCall(expanded, env.clone()));
-                        }
-
-                        // Vau application: bind operands (unevaluated) and caller env, TCO into body
-                        if let LispVal::Vau(vau) = &func {
-                            let new_env = Environment::new_child(&vau.env);
-                            new_env.set(vau.operands_param.clone(), rest.as_ref().clone());
-                            new_env.set(vau.env_param.clone(), LispVal::Environment(env.clone()));
-                            return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
-                        }
-
-                        // Fexpr application: TCO — continue with fexpr body
-                        if let LispVal::Fexpr(fexpr) = &func {
-                            let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
-                            if fexpr.params.len() == 1 {
-                                // Single-param: bind entire unevaluated arg list to the one parameter.
-                                new_env.set(fexpr.params[0].clone(), rest.as_ref().clone());
-                            } else {
-                                // Multi-param: bind each unevaluated arg to its parameter.
-                                let unevaluated_args = list_to_vec(rest)?;
-                                if unevaluated_args.len() != fexpr.params.len() {
-                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                        "fexpr expected {} arguments, got {}",
-                                        fexpr.params.len(),
-                                        unevaluated_args.len()
-                                    )))));
-                                }
-                                for (param, arg) in fexpr.params.iter().zip(unevaluated_args) {
-                                    new_env.set(param.clone(), arg);
-                                }
-                            }
-                            return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
-                        }
-
-                        // Evaluated-argument callables (lambda/builtin/native): evaluate
-                        // operands straight off the cons chain — one allocation, no
-                        // intermediate list of cloned argument expressions.
-                        let eval_args = eval_operands(rest, env)?;
-
-                        // Lambda application: TCO — set up new env and continue with body
-                        if let LispVal::Lambda(lambda) = &func {
-                            let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-                            if let Some(rest_param_name) = &lambda.rest_param {
-                                if eval_args.len() < lambda.params.len() {
-                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                        "lambda expected at least {} arguments, got {}",
-                                        lambda.params.len(),
-                                        eval_args.len()
-                                    )))));
-                                }
-                                // Move fixed args into the frame; remaining go to the rest list.
-                                let n_fixed = lambda.params.len();
-                                let mut eval_args = eval_args;
-                                for (param, arg) in
-                                    lambda.params.iter().zip(eval_args.drain(..n_fixed))
-                                {
-                                    new_env.set(param.clone(), arg);
-                                }
-                                let rest_args = vec_to_list(eval_args);
-                                new_env.set(rest_param_name.clone(), rest_args);
-                            } else {
-                                if lambda.params.len() != eval_args.len() {
-                                    return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                        "lambda expected {} arguments, got {}",
-                                        lambda.params.len(),
-                                        eval_args.len()
-                                    )))));
-                                }
-                                // Move every arg directly into the frame — no clone.
-                                for (param, arg) in lambda.params.iter().zip(eval_args) {
-                                    new_env.set(param.clone(), arg);
-                                }
-                            }
-                            return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
-                        }
-
-                        // All other callables (builtins, natives): no TCO needed.
-                        // Defer the apply to the driver loop so the head-symbol
-                        // borrow held by the dispatch match above is released
-                        // first (issue #156).
-                        Ok(TcoStep::Apply(func, eval_args))
-                    }
                 }
             } else {
-                // Non-symbol head: evaluate the head expression, then apply
-                let func = eval(first, env)?;
-
-                // Vau: must intercept BEFORE evaluating args
-                if let LispVal::Vau(vau) = &func {
-                    let new_env = Environment::new_child(&vau.env);
-                    new_env.set(vau.operands_param.clone(), rest.as_ref().clone());
-                    new_env.set(vau.env_param.clone(), LispVal::Environment(env.clone()));
-                    return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
-                }
-
-                // Fexpr: must intercept BEFORE evaluating args
-                if let LispVal::Fexpr(fexpr) = &func {
-                    let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
-                    if fexpr.params.len() == 1 {
-                        new_env.set(fexpr.params[0].clone(), rest.as_ref().clone());
-                    } else {
-                        let unevaluated_args = list_to_vec(rest)?;
-                        if unevaluated_args.len() != fexpr.params.len() {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                "fexpr expected {} arguments, got {}",
-                                fexpr.params.len(),
-                                unevaluated_args.len()
-                            )))));
-                        }
-                        for (param, arg) in fexpr.params.iter().zip(unevaluated_args) {
-                            new_env.set(param.clone(), arg);
-                        }
-                    }
-                    return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
-                }
-
-                // Evaluate operands straight off the cons chain (single allocation).
-                let eval_args = eval_operands(rest, env)?;
-
-                // Lambda application: TCO
-                if let LispVal::Lambda(lambda) = &func {
-                    let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-                    if let Some(rest_param_name) = &lambda.rest_param {
-                        if eval_args.len() < lambda.params.len() {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                "lambda expected at least {} arguments, got {}",
-                                lambda.params.len(),
-                                eval_args.len()
-                            )))));
-                        }
-                        // Move fixed args into the frame; remaining go to the rest list.
-                        let n_fixed = lambda.params.len();
-                        let mut eval_args = eval_args;
-                        for (param, arg) in lambda.params.iter().zip(eval_args.drain(..n_fixed)) {
-                            new_env.set(param.clone(), arg);
-                        }
-                        let rest_args = vec_to_list(eval_args);
-                        new_env.set(rest_param_name.clone(), rest_args);
-                    } else {
-                        if lambda.params.len() != eval_args.len() {
-                            return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                                "lambda expected {} arguments, got {}",
-                                lambda.params.len(),
-                                eval_args.len()
-                            )))));
-                        }
-                        // Move every arg directly into the frame — no clone.
-                        for (param, arg) in lambda.params.iter().zip(eval_args) {
-                            new_env.set(param.clone(), arg);
-                        }
-                    }
-                    return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
-                }
-
-                Ok(TcoStep::Done(apply_owned(&func, eval_args, env)))
+                // Non-symbol head: evaluate and apply directly.
+                eval_application(first, rest, env)
             }
         }
     }

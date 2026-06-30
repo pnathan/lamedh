@@ -193,17 +193,6 @@ pub(super) enum TcoStep {
     /// dynamic (`*special*`) variables: each iteration pushes its guard onto
     /// the trampoline-owned vec, and the whole chain is unwound on return.
     TailCallWithGuards(LispVal, Shared<Environment>, Vec<DynamicBinding>),
-    /// Apply a non-tail callable (builtin/native) to already-evaluated args.
-    /// Deferred to the driver loop so the `apply` runs *after* `eval_step`
-    /// returns — releasing any borrow `eval_step` holds on the head symbol
-    /// (e.g. the special-form dispatch `s.borrow()`). Without this, calling
-    /// `apply` inline panics when a symbol-mutating builtin re-borrows the
-    /// same interned symbol used as the call head, e.g. `(putp 'putp ...)`
-    /// (issue #156).
-    ///
-    /// Carries a `Vec<LispVal>` (owned) so args can be moved into the callee's
-    /// environment frame without cloning.
-    Apply(LispVal, Vec<LispVal>),
 }
 
 /// Internal trampoline evaluator. Runs a loop that reuses the current Rust
@@ -242,7 +231,6 @@ pub(super) fn eval_impl(
 
         match step {
             TcoStep::Done(result) => return result,
-            TcoStep::Apply(func, args) => return apply_owned(&func, args, &current_env),
             TcoStep::TailCall(new_val, new_env) => {
                 current_val = new_val;
                 current_env = new_env;

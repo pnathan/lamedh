@@ -29,7 +29,7 @@
 //! to opt in.  Because `SharedState` is shared across the whole chain, a
 //! feature enabled anywhere is visible everywhere.
 
-use crate::{BuiltinFunc, LispError, LispVal, Shared, SharedCell, Symbol};
+use crate::{BuiltinFunc, LispError, LispVal, Shared, SharedCell, SpecialForm, Symbol};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -153,6 +153,7 @@ impl SymbolTable {
             value: None,
             is_keyword: false, // gensym names never start with ':'
             is_dynamic: false,
+            special_form: None, // gensym names are never special forms
         }))
     }
 
@@ -176,9 +177,56 @@ impl SymbolTable {
             return symbol.clone();
         }
 
+        // Compute the special-form tag once at intern time.  Ordinary symbols
+        // (the overwhelming majority) get `None` and skip the string match in
+        // `eval_step` entirely.  The `Copy` tag is read with a borrow that
+        // ends at the `let` statement, before any arm body executes.
+        let special_form = match name {
+            "QUOTE" => Some(SpecialForm::Quote),
+            "QUASIQUOTE" => Some(SpecialForm::Quasiquote),
+            "COND" => Some(SpecialForm::Cond),
+            "IF" => Some(SpecialForm::If),
+            "AND" => Some(SpecialForm::And),
+            "OR" => Some(SpecialForm::Or),
+            "UNWIND-PROTECT" => Some(SpecialForm::UnwindProtect),
+            "CATCH" => Some(SpecialForm::Catch),
+            "THROW" => Some(SpecialForm::Throw),
+            "BLOCK" => Some(SpecialForm::Block),
+            "RETURN-FROM" => Some(SpecialForm::ReturnFrom),
+            "HANDLER-CASE" => Some(SpecialForm::HandlerCase),
+            "DEF" => Some(SpecialForm::Def),
+            "DEFDYNAMIC" | "DEFVAR" => Some(SpecialForm::Defdynamic),
+            "LAMBDA" => Some(SpecialForm::Lambda),
+            "FUNCTION" => Some(SpecialForm::Function),
+            "LABEL" => Some(SpecialForm::Label),
+            "DEFINE" => Some(SpecialForm::Define),
+            "DEFEXPR" => Some(SpecialForm::Defexpr),
+            "DEFMACRO" => Some(SpecialForm::Defmacro),
+            "DEFSTRUCT" => Some(SpecialForm::Defstruct),
+            "DEFUN-TYPED" => Some(SpecialForm::DefunTyped),
+            "DEFUN*" => Some(SpecialForm::DefunStar),
+            "JIT-OPTIMIZE" => Some(SpecialForm::JitOptimize),
+            "CHECK-TYPE" => Some(SpecialForm::CheckType),
+            "DEFSTRUCT-TYPED" => Some(SpecialForm::DefstructTyped),
+            "DECLARE-TYPED" => Some(SpecialForm::DeclareTyped),
+            "PROGN" => Some(SpecialForm::Progn),
+            "SETQ" => Some(SpecialForm::Setq),
+            "PROG" => Some(SpecialForm::Prog),
+            "RETURN" => Some(SpecialForm::Return),
+            "GO" => Some(SpecialForm::Go),
+            "FOR" => Some(SpecialForm::For),
+            "WHILE" => Some(SpecialForm::While),
+            "LET" => Some(SpecialForm::Let),
+            "LET*" => Some(SpecialForm::LetStar),
+            "MACRO" => Some(SpecialForm::Macro),
+            "FEXPR" => Some(SpecialForm::Fexpr),
+            "VAU" | "$VAU" => Some(SpecialForm::Vau),
+            _ => None,
+        };
         let symbol = Shared::new(SharedCell::new(Symbol {
             is_keyword: name.starts_with(':'),
             is_dynamic: false,
+            special_form,
             name: name.to_string(),
             plist: HashMap::new(),
             value: None,

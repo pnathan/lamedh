@@ -1235,8 +1235,8 @@ pub(super) fn apply(
 /// Apply a callable to an **owned** argument vector, moving each value into the
 /// lambda's environment frame instead of cloning it.
 ///
-/// This is the hot path for non-tail calls coming from the TCO driver loop
-/// (`TcoStep::Apply`) and from the non-symbol-head apply site in `eval_step`.
+/// Called from `eval_application` in `eval_step` for builtin/native callables
+/// (the path taken when the head is neither a Lambda nor a Fexpr/Vau/Macro).
 /// For `LispVal::Lambda` the args are consumed via `into_iter()`/`drain` so
 /// no per-argument clone is needed. All other callables (builtins, natives,
 /// fexprs, macros) fall through to [`apply`] via a slice reference.

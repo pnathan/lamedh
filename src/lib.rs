@@ -632,6 +632,99 @@ pub enum BuiltinFunc {
     CloneInterpreter,
 }
 
+/// Precomputed tag for special-form dispatch in `eval_step`.
+///
+/// Stored in [`Symbol::special_form`] and set **once** at intern time by
+/// [`environment::SymbolTable::intern`].  The common case (ordinary function
+/// calls) stores `None` and skips the entire string-compare match.  Each
+/// variant corresponds to exactly one (or more aliased) arm in the special-form
+/// match inside `eval_step`.
+///
+/// `Copy + Eq` so the tag can be read from `s.borrow().special_form` and
+/// the borrow dropped before the arm body executes — avoiding the re-borrow
+/// hazard from issue #156.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialForm {
+    /// `QUOTE`
+    Quote,
+    /// `QUASIQUOTE`
+    Quasiquote,
+    /// `COND`
+    Cond,
+    /// `IF`
+    If,
+    /// `AND`
+    And,
+    /// `OR`
+    Or,
+    /// `UNWIND-PROTECT`
+    UnwindProtect,
+    /// `CATCH`
+    Catch,
+    /// `THROW`
+    Throw,
+    /// `BLOCK`
+    Block,
+    /// `RETURN-FROM`
+    ReturnFrom,
+    /// `HANDLER-CASE`
+    HandlerCase,
+    /// `DEF`
+    Def,
+    /// `DEFDYNAMIC` and its alias `DEFVAR`
+    Defdynamic,
+    /// `LAMBDA`
+    Lambda,
+    /// `FUNCTION`
+    Function,
+    /// `LABEL`
+    Label,
+    /// `DEFINE`
+    Define,
+    /// `DEFEXPR`
+    Defexpr,
+    /// `DEFMACRO`
+    Defmacro,
+    /// `DEFSTRUCT`
+    Defstruct,
+    /// `DEFUN-TYPED`
+    DefunTyped,
+    /// `DEFUN*`
+    DefunStar,
+    /// `JIT-OPTIMIZE`
+    JitOptimize,
+    /// `CHECK-TYPE`
+    CheckType,
+    /// `DEFSTRUCT-TYPED`
+    DefstructTyped,
+    /// `DECLARE-TYPED`
+    DeclareTyped,
+    /// `PROGN`
+    Progn,
+    /// `SETQ`
+    Setq,
+    /// `PROG`
+    Prog,
+    /// `RETURN`
+    Return,
+    /// `GO`
+    Go,
+    /// `FOR`
+    For,
+    /// `WHILE`
+    While,
+    /// `LET`
+    Let,
+    /// `LET*`
+    LetStar,
+    /// `MACRO` (anonymous macro constructor)
+    Macro,
+    /// `FEXPR` (anonymous fexpr constructor)
+    Fexpr,
+    /// `VAU` and its alias `$VAU`
+    Vau,
+}
+
 /// An interned Lisp symbol.
 ///
 /// Symbols are the atomic identifiers of Lisp programs — names like `FOO`,
@@ -671,6 +764,11 @@ pub struct Symbol {
     /// `Environment::resolve`, replacing the `dynamic_vars` set probe on the
     /// hot evaluation path.
     pub is_dynamic: bool,
+    /// Precomputed special-form tag.  `None` for ordinary symbols (the
+    /// overwhelmingly common case — every user-defined function call pays zero
+    /// cost for this field).  Set once at [`environment::SymbolTable::intern`]
+    /// time; never changes afterwards.
+    pub special_form: Option<SpecialForm>,
 }
 
 /// A lexical closure created by `(lambda (params…) body…)` or `defun`.
@@ -1137,6 +1235,7 @@ impl From<bool> for LispVal {
                 value: None,
                 is_keyword: false,
                 is_dynamic: false,
+                special_form: None,
             })))
         } else {
             LispVal::Nil
