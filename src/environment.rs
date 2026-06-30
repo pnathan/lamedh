@@ -811,6 +811,31 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::Disassemble),
         );
 
+        // Concurrency primitives (gated behind the `concurrency` feature)
+        #[cfg(feature = "concurrency")]
+        {
+            env.set(
+                "MAKE-CHANNEL".to_string(),
+                LispVal::Builtin(BuiltinFunc::MakeChannel),
+            );
+            env.set(
+                "CHANNEL-SEND".to_string(),
+                LispVal::Builtin(BuiltinFunc::ChannelSend),
+            );
+            env.set(
+                "CHANNEL-RECV".to_string(),
+                LispVal::Builtin(BuiltinFunc::ChannelRecv),
+            );
+            env.set(
+                "CHANNEL-RECV-TIMEOUT".to_string(),
+                LispVal::Builtin(BuiltinFunc::ChannelRecvTimeout),
+            );
+            env.set(
+                "CLONE-INTERPRETER".to_string(),
+                LispVal::Builtin(BuiltinFunc::CloneInterpreter),
+            );
+        }
+
         env
     }
 

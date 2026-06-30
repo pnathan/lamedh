@@ -323,6 +323,8 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
         | LispVal::Struct(_)
         | LispVal::Extension(_)
         | LispVal::Error(_) => Ok(TcoStep::Done(Ok(val.clone()))),
+        #[cfg(feature = "concurrency")]
+        LispVal::Channel(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
         LispVal::Cons {
             car: first,

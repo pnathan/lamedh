@@ -105,6 +105,8 @@ pub fn print(val: &LispVal) -> String {
         }
         LispVal::Native(_) => "<native>".to_string(),
         LispVal::Environment(_) => "<environment>".to_string(),
+        #[cfg(feature = "concurrency")]
+        LispVal::Channel(_) => "<channel>".to_string(),
         LispVal::Nil => "()".to_string(),
         LispVal::Cons { car, cdr } => {
             format!("({}{})", print(car), print_list_contents(cdr))

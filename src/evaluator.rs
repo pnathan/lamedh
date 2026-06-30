@@ -52,6 +52,9 @@ mod introspection;
 mod quasiquote;
 mod special_forms;
 
+#[cfg(feature = "concurrency")]
+mod builtins_concurrency;
+
 #[cfg(test)]
 mod tests;
 
@@ -64,6 +67,9 @@ use self::functions::*;
 use self::introspection::*;
 use self::quasiquote::*;
 use self::special_forms::*;
+
+#[cfg(feature = "concurrency")]
+use self::builtins_concurrency::*;
 
 pub use self::core::{DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, set_eval_depth_limit};
 pub use self::functions::eval;

@@ -541,6 +541,17 @@ pub enum BuiltinFunc {
     Describe,
     SeeSource,
     Disassemble,
+    // Concurrency primitives (gated behind the `concurrency` feature)
+    #[cfg(feature = "concurrency")]
+    MakeChannel,
+    #[cfg(feature = "concurrency")]
+    ChannelSend,
+    #[cfg(feature = "concurrency")]
+    ChannelRecv,
+    #[cfg(feature = "concurrency")]
+    ChannelRecvTimeout,
+    #[cfg(feature = "concurrency")]
+    CloneInterpreter,
 }
 
 /// An interned Lisp symbol.
@@ -784,6 +795,14 @@ pub enum LispVal {
     /// handler variable in `(handler-case ...)`.  Boxed behind an `Rc` so the
     /// `LispVal` stays small.
     Error(Rc<ErrorObj>),
+    /// A message-passing channel (only present under the `concurrency` feature).
+    ///
+    /// Created with `(make-channel)`.  Both ends are bundled together so that
+    /// one side can be cloned off and used from another evaluation context.
+    /// Values cross the channel boundary as printer-serialised strings and are
+    /// re-read by the receiver.
+    #[cfg(feature = "concurrency")]
+    Channel(std::sync::Arc<ChannelObj>),
 }
 
 /// The payload of a [`LispVal::Error`].
@@ -797,6 +816,27 @@ pub struct ErrorObj {
     pub message: String,
     /// Structured payload: a cons list of irritants, or `Nil`.
     pub data: LispVal,
+}
+
+/// The payload of a [`LispVal::Channel`] (only present under the `concurrency` feature).
+///
+/// A channel allows single-producer / single-consumer message passing between
+/// two Lisp evaluation contexts.  Values are serialised via the printer on the
+/// send side and deserialised via the reader on the receive side, avoiding the
+/// requirement for [`LispVal`] to be `Send`.
+///
+/// The receiver is wrapped in a [`std::sync::Mutex`] so that the whole
+/// `ChannelObj` can be placed behind an [`std::sync::Arc`] and cloned cheaply
+/// (the Mutex guards exclusive access to `recv`).
+#[cfg(feature = "concurrency")]
+#[derive(Debug)]
+pub struct ChannelObj {
+    /// The sending half of the underlying `mpsc` channel.
+    /// `Sender<String>` is `Clone + Send`, so this can be duplicated freely.
+    pub sender: std::sync::mpsc::Sender<String>,
+    /// The receiving half.  `mpsc::Receiver` is neither `Clone` nor `Sync`,
+    /// so we wrap it in a `Mutex` to allow the `ChannelObj` to live behind `Arc`.
+    pub receiver: std::sync::Mutex<std::sync::mpsc::Receiver<String>>,
 }
 
 /// The payload of a [`LispVal::Struct`].
@@ -837,6 +877,8 @@ impl fmt::Debug for LispVal {
             LispVal::Struct(s) => write!(f, "Struct(type={}, fields={:?})", s.type_name, s.fields),
             LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
             LispVal::Error(e) => write!(f, "Error({:?}, {:?})", e.message, e.data),
+            #[cfg(feature = "concurrency")]
+            LispVal::Channel(_) => write!(f, "Channel(...)"),
         }
     }
 }
@@ -866,6 +908,8 @@ impl Clone for LispVal {
             LispVal::Struct(s) => LispVal::Struct(Rc::clone(s)),
             LispVal::Extension(e) => LispVal::Extension(Rc::clone(e)),
             LispVal::Error(e) => LispVal::Error(Rc::clone(e)),
+            #[cfg(feature = "concurrency")]
+            LispVal::Channel(c) => LispVal::Channel(std::sync::Arc::clone(c)),
         }
     }
 }
@@ -917,6 +961,8 @@ impl PartialEq for LispVal {
             }
             (LispVal::Extension(a), LispVal::Extension(b)) => a.eq_ext(b.as_ref()),
             (LispVal::Error(a), LispVal::Error(b)) => a.message == b.message && a.data == b.data,
+            #[cfg(feature = "concurrency")]
+            (LispVal::Channel(a), LispVal::Channel(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -967,6 +1013,8 @@ impl Hash for LispVal {
             | LispVal::Vau(_) => {
                 // Functions are not hashable by value.
             }
+            #[cfg(feature = "concurrency")]
+            LispVal::Channel(c) => std::sync::Arc::as_ptr(c).hash(state),
         }
     }
 }
