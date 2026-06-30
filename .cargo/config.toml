@@ -1,0 +1,21 @@
+# Give the test harness's per-test threads a large stack.
+#
+# The tree-walking interpreter uses large native frames (a deep native call
+# chain per eval level), so building the full standard library
+# (`Environment::with_stdlib` / the `env_with_stdlib` test helper) needs well
+# more than libtest's default ~2 MiB thread stack. The interpreter entry points
+# (the CLI and the Lisp test suites) already run on a 512 MiB thread via
+# `with_large_stack`; this floor extends the same courtesy to the unit and
+# integration tests that build a stdlib environment directly, so a plain
+# `cargo test` works without anyone having to set RUST_MIN_STACK by hand.
+#
+# Notes:
+#   * Only affects threads spawned without an explicit stack size — in practice
+#     libtest's test threads. The CLI/suite interpreter threads set their own
+#     512 MiB size and are unaffected; the main thread is unaffected.
+#   * `force` is left at its default (false), so an explicit RUST_MIN_STACK in
+#     the environment still wins (e.g. for debugging deeper recursion).
+#   * On Linux this is a virtual reservation, committed lazily, so it stays
+#     cheap even across many parallel test threads.
+[env]
+RUST_MIN_STACK = "134217728"  # 128 MiB
