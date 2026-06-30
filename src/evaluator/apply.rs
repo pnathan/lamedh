@@ -1243,7 +1243,7 @@ pub(super) fn apply(
 pub(super) fn apply_owned(
     func: &LispVal,
     args: Vec<LispVal>,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match func {
         LispVal::Lambda(lambda) => {

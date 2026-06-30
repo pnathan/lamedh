@@ -35,7 +35,7 @@ pub(super) fn apply_make_channel(args: &[LispVal]) -> Result<LispVal, LispError>
 /// been dropped.
 pub(super) fn apply_channel_send(
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     if args.len() != 2 {
         return Err(LispError::Generic(
@@ -63,7 +63,7 @@ pub(super) fn apply_channel_send(
 /// Returns `NIL` if the sender has been dropped and the channel is empty.
 pub(super) fn apply_channel_recv(
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     if args.len() != 1 {
         return Err(LispError::Generic(
@@ -94,7 +94,7 @@ pub(super) fn apply_channel_recv(
 /// before a value arrives (or if the sender has been dropped).
 pub(super) fn apply_channel_recv_timeout(
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     if args.len() != 2 {
         return Err(LispError::Generic(
@@ -143,7 +143,7 @@ pub(super) fn apply_channel_recv_timeout(
 /// lifted.
 pub(super) fn apply_clone_interpreter(
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     if !args.is_empty() {
         return Err(LispError::Generic(
@@ -164,7 +164,7 @@ pub(super) fn apply_clone_interpreter(
 // ---------------------------------------------------------------------------
 
 /// Deserialise a `String` received from a channel back into a [`LispVal`].
-fn deserialise_value(s: &str, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+fn deserialise_value(s: &str, env: &Shared<Environment>) -> Result<LispVal, LispError> {
     crate::reader::read(s, env).map_err(|e| {
         LispError::Generic(format!("channel-recv: failed to parse received value: {e}"))
     })

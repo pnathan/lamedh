@@ -43,10 +43,10 @@
        (DEF FOO (LAMBDA (X) (+ X 1)))
        (IF (BOUNDP (QUOTE DEFUN-CHECK-PURITY!))
            (DEFUN-CHECK-PURITY! (QUOTE FOO) (QUOTE ((+ X 1))))
-           NIL)
+           ())
        (IF (BOUNDP (QUOTE DEFUN-UPDATE-CALL-GRAPH!))
            (DEFUN-UPDATE-CALL-GRAPH! (QUOTE FOO) (QUOTE (X)) (QUOTE ((+ X 1))))
-           NIL)
+           ())
        (QUOTE FOO))))
 
 (deftest sf-quasiquote-literal
