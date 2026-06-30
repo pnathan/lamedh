@@ -35,6 +35,34 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
+/// RAII guard for a shallow dynamic (special) variable binding.
+///
+/// On construction the current value in the symbol's global value cell is saved
+/// and the new value is installed. On drop — which fires on every exit path
+/// including `?` early returns, `THROW`, `RETURN-FROM`, PROG `GO`/`RETURN`,
+/// errors, and panics — the saved value is restored. This implements the
+/// save/install/restore protocol required by shallow binding so that dynamic
+/// scoping works correctly without walking the dynamic-parent chain.
+pub struct DynamicBinding {
+    symbol: Rc<RefCell<Symbol>>,
+    saved: Option<LispVal>,
+}
+
+impl DynamicBinding {
+    /// Save the current value of `sym`'s global value cell and install `new_val`.
+    pub fn install(sym: Rc<RefCell<Symbol>>, new_val: LispVal) -> Self {
+        let saved = sym.borrow().value.clone();
+        sym.borrow_mut().value = Some(new_val);
+        DynamicBinding { symbol: sym, saved }
+    }
+}
+
+impl Drop for DynamicBinding {
+    fn drop(&mut self) {
+        self.symbol.borrow_mut().value = self.saved.take();
+    }
+}
+
 /// A small, fast, non-cryptographic hasher (FxHash-style) used for the
 /// per-frame variable-binding map.
 ///
@@ -909,8 +937,9 @@ impl Environment {
     pub fn resolve(&self, sym: &Rc<RefCell<Symbol>>) -> Option<LispVal> {
         let s = sym.borrow();
         if self.shared.has_dynamic.get() && self.shared.dynamic_vars.borrow().contains(&s.name) {
-            // Dynamic variables are rare; the name-based path is fine.
-            return self.get_dynamic(&s.name);
+            // Shallow binding: the current dynamic value is always in the symbol's
+            // value cell — O(1), no dynamic-parent chain walk required.
+            return s.value.clone();
         }
         // Lexical: walk local frames by name; read the root environment's cell.
         let mut frame = self;
@@ -1092,8 +1121,10 @@ impl Environment {
     /// SETQ and is intentional behavior for interactive development.
     pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
         if env.shared.has_dynamic.get() && env.is_dynamic(name) {
-            // For dynamic variables, search the dynamic parent chain
-            Self::update_dynamic(env, name, val);
+            // Shallow binding: the symbol cell IS the current binding — write
+            // there directly so the change is visible to all frames that read
+            // the same cell (O(1), no dynamic-parent chain walk).
+            env.global_set(name, val);
         } else {
             // For lexical variables, search the lexical parent chain
             Self::update_lexical(env, name, val);
@@ -1121,36 +1152,6 @@ impl Environment {
             }
             maybe_env = current_env.parent.clone();
         }
-        // Variable not found - create it in the current environment
-        env.set(name.to_string(), val);
-    }
-
-    /// Update a dynamic variable by walking the dynamic parent chain.
-    fn update_dynamic(env: &Rc<Environment>, name: &str, val: LispVal) {
-        // Root storage is the symbol cell; create-or-update it there.
-        if env.is_root() {
-            env.global_set(name, val);
-            return;
-        }
-
-        // First check current bindings
-        if env.bindings.borrow().contains_key(name) {
-            env.bindings.borrow_mut().insert(name.to_string(), val);
-            return;
-        }
-
-        // Then walk the dynamic parent chain
-        if let Some(dyn_parent) = &env.dynamic_parent {
-            Self::update_dynamic(dyn_parent, name, val);
-            return;
-        }
-
-        // Fall back to lexical parent chain
-        if let Some(parent) = &env.parent {
-            Self::update_dynamic(parent, name, val);
-            return;
-        }
-
         // Variable not found - create it in the current environment
         env.set(name.to_string(), val);
     }
@@ -1238,41 +1239,16 @@ impl Environment {
             return self.get(name);
         }
         if self.is_dynamic(name) {
-            // Dynamic lookup: first check current bindings, then dynamic parent chain
-            self.get_dynamic(name)
+            // Shallow binding: the symbol cell holds the current dynamic value — O(1).
+            self.shared
+                .symbols
+                .borrow()
+                .get_symbol(name)
+                .and_then(|s| s.borrow().value.clone())
         } else {
             // Lexical lookup: walk the lexical parent chain
             self.get(name)
         }
-    }
-
-    /// Dynamic lookup: search current bindings, then walk dynamic parent chain.
-    /// This implements dynamic scoping where variables are resolved based on
-    /// the call stack rather than the lexical definition site.
-    fn get_dynamic(&self, name: &str) -> Option<LispVal> {
-        // Root storage is the symbol cell (the global value of the special).
-        if self.is_root() {
-            return self.global_get(name);
-        }
-
-        // First check current bindings
-        if let Some(val) = self.bindings.borrow().get(name) {
-            return Some(val.clone());
-        }
-
-        // For dynamic variables, walk the dynamic parent chain first (caller's environment)
-        // This is the key difference from lexical scoping
-        if let Some(dyn_parent) = &self.dynamic_parent {
-            return dyn_parent.get_dynamic(name);
-        }
-
-        // Fall back to lexical parent chain for global bindings
-        // (when there's no dynamic parent, or at the bottom of the dynamic chain)
-        if let Some(parent) = &self.parent {
-            return parent.get_dynamic(name);
-        }
-
-        None
     }
 
     // Capability / feature operations.

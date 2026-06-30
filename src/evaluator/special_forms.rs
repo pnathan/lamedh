@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment::DynamicBinding;
 /// Handle the `DEFSTRUCT` special form. Kept out-of-line (`#[inline(never)]`)
 /// so its large stack frame does not bloat the recursive `eval_step` hot path
 /// (see issue #76 — a fat `eval_step` frame exhausts the native stack before
@@ -668,8 +669,11 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                         // Evaluate initial value
                         let value = eval(&args[1], env)?;
 
-                        // Set global value
-                        env.set(name, value);
+                        // Install initial value directly in the symbol's global value
+                        // cell. With shallow binding the cell IS the authoritative
+                        // store for the current dynamic value, so we must write there
+                        // regardless of how deeply nested the call site is.
+                        symbol.borrow_mut().value = Some(value);
 
                         // Optional docstring
                         if args.len() == 3 {
@@ -1233,23 +1237,52 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
 
                         // TCO: Instead of calling eval on an application form, inline the
                         // binding setup and continue the loop with the body expression.
+                        //
+                        // Dynamic variables use shallow binding (O(1) symbol-cell swap)
+                        // rather than a local-frame entry. Each `DynamicBinding` guard
+                        // saves the old cell value and restores it on drop, so all exit
+                        // paths — normal return, `?` early return, THROW, GO, errors —
+                        // correctly restore the previous dynamic binding.
                         let let_env = Environment::new_child(env);
+                        let mut dynamic_guards: Vec<DynamicBinding> = Vec::new();
                         for (param, arg_expr) in params.iter().zip(arg_exprs.iter()) {
                             if let LispVal::Symbol(s) = param {
                                 let v = eval(arg_expr, env)?;
-                                let_env.set(s.borrow().name.clone(), v);
+                                let var_name = s.borrow().name.clone();
+                                if env.is_dynamic(&var_name) {
+                                    // Shallow binding: install value in the symbol cell.
+                                    dynamic_guards.push(DynamicBinding::install(s.clone(), v));
+                                } else {
+                                    let_env.set(var_name, v);
+                                }
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let binding name must be a symbol".to_string(),
                                 ))));
                             }
                         }
-                        Ok(TcoStep::TailCall(body, let_env))
+                        if dynamic_guards.is_empty() {
+                            Ok(TcoStep::TailCall(body, let_env))
+                        } else {
+                            // Cannot TCO when dynamic guards are in play: the guards
+                            // must stay alive until the body finishes so that every
+                            // exit path (error, THROW, RETURN-FROM, normal) restores
+                            // the symbol cells. Evaluate body directly here.
+                            let result = eval(&body, &let_env);
+                            // Restore in LIFO order (last bound is first restored).
+                            while let Some(g) = dynamic_guards.pop() {
+                                drop(g);
+                            }
+                            Ok(TcoStep::Done(result))
+                        }
                     }
                     // let* binds sequentially in a SINGLE frame: each binding is
                     // evaluated in that frame and then written into it, so later
                     // bindings see earlier ones without allocating a frame per
                     // binding (the difference from desugaring to nested LETs).
+                    // Dynamic variables use shallow binding here too; later
+                    // bindings in the same let* that reference a just-bound
+                    // dynamic variable see the newly installed symbol-cell value.
                     "LET*" => {
                         let args = list_to_vec(rest)?;
                         if args.len() < 2 {
@@ -1262,6 +1295,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                         let body = wrap_body_forms(&args[1..], env);
 
                         let let_env = Environment::new_child(env);
+                        let mut dynamic_guards: Vec<DynamicBinding> = Vec::new();
                         for binding in bindings_vec {
                             let pair = list_to_vec(&binding)?;
                             if pair.len() != 2 {
@@ -1271,14 +1305,27 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                             }
                             if let LispVal::Symbol(s) = &pair[0] {
                                 let v = eval(&pair[1], &let_env)?;
-                                let_env.set(s.borrow().name.clone(), v);
+                                let var_name = s.borrow().name.clone();
+                                if env.is_dynamic(&var_name) {
+                                    dynamic_guards.push(DynamicBinding::install(s.clone(), v));
+                                } else {
+                                    let_env.set(var_name, v);
+                                }
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let* binding name must be a symbol".to_string(),
                                 ))));
                             }
                         }
-                        Ok(TcoStep::TailCall(body, let_env))
+                        if dynamic_guards.is_empty() {
+                            Ok(TcoStep::TailCall(body, let_env))
+                        } else {
+                            let result = eval(&body, &let_env);
+                            while let Some(g) = dynamic_guards.pop() {
+                                drop(g);
+                            }
+                            Ok(TcoStep::Done(result))
+                        }
                     }
                     "MACRO" => {
                         // Anonymous macro constructor: `(macro (params...) body...)`
