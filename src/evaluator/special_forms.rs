@@ -354,7 +354,7 @@ fn eval_application(
             for (param, arg) in lambda.params.iter().zip(eval_args.drain(..n_fixed)) {
                 new_env.set(param.clone(), arg);
             }
-            let rest_args = vec_to_list(eval_args);
+            let rest_args = vec_to_list(eval_args.into_vec());
             new_env.set(rest_param_name.clone(), rest_args);
         } else {
             if lambda.params.len() != eval_args.len() {

@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project is a Cargo workspace with two crates:
 
-- **`lamedh`** (repo root, `src/`): the reusable interpreter **library**. Depends only on `nom`. This is what embedders depend on; it has no CLI/terminal dependencies.
+- **`lamedh`** (repo root, `src/`): the reusable interpreter **library**. Minimal dependencies: `nom` (parsing) and `smallvec` (stack-inline operand buffers); `cranelift-*` crates are optional and only active with the `jit` feature. This is what embedders depend on; it has no CLI/terminal dependencies.
 - **`lamedh-cli`** (`cli/`): the **CLI/REPL driver** binary (named `lamedh`). Depends on `lamedh`, `clap`, and `rustyline`. This is the only crate that knows about argument parsing and the terminal.
 
 `default-members` is set so plain `cargo run`/`cargo build`/`cargo test` from the repo root operate on both crates (and `cargo run` launches the `lamedh` binary). The benchmark comparison crates under `benchmarks/*/rust` are `exclude`d from the workspace.
