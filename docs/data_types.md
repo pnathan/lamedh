@@ -99,14 +99,20 @@ foo
 MY-VARIABLE
 *global-setting*
 +special+
+:keyword
 null
 t
 ```
 
 **Rules:**
 - May contain letters, digits, and special characters: `-`, `*`, `+`, `/`, `<`, `>`, `=`, `?`, `!`, `@`
+- May begin with `:` to form a keyword symbol, such as `:op`
 - Cannot start with a digit
 - Case-insensitive (stored as uppercase)
+
+Keyword symbols are ordinary interned symbols whose names begin with `:`, but
+they evaluate to themselves. They are useful as data tags in macros, property
+lists, and DSL forms.
 
 ### 3.3.2 Symbol Interning
 

@@ -18,6 +18,7 @@ All Lamedh code is represented as **S-expressions** (symbolic expressions). An S
 3.14                ; Float
 "hello"             ; String
 foo                 ; Symbol
+:key                ; Keyword symbol
 nil                 ; NIL
 t                   ; T (true)
 ```
@@ -102,6 +103,7 @@ These evaluate to themselves:
 | Numbers | `42` | `42` |
 | Floats | `3.14` | `3.14` |
 | Strings | `"hello"` | `"hello"` |
+| Keywords | `:key` | `:KEY` |
 | NIL | `nil` | `NIL` |
 | T | `t` | `T` |
 
@@ -114,6 +116,14 @@ Symbols evaluate to their bound value:
 x          ; => 42
 
 y          ; Error: Unbound variable Y
+```
+
+Keyword symbols begin with `:` and evaluate to themselves:
+
+```lisp
+:op        ; => :OP
+(list :op 'eqv)
+; => (:OP EQV)
 ```
 
 ### 4.3.3 List Evaluation

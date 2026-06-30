@@ -16,7 +16,7 @@
 //! | `FFh` | Hex literal (`FF₁₆ = 255₁₀`) — assembly-style `H` suffix |
 //! | `'c'` | Character literal → code point as `Number` (`\n \t \r \\ \' \0`) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
-//! | `FOO`, `+`, `*x*` | `LispVal::Symbol` (uppercased, interned) |
+//! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
 //! | `(a . b)` | Dotted pair |
 //! | `'e` | `(QUOTE e)` |
@@ -197,6 +197,31 @@ fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
+fn parse_keyword_symbol(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        map(
+            recognize(pair(
+                tag(":"),
+                pair(
+                    alt((alpha1, tag("&"), tag("$"))),
+                    many0(alt((
+                        alphanumeric1,
+                        tag("-"),
+                        tag("*"),
+                        tag("?"),
+                        tag("!"),
+                        tag("+"),
+                        tag("="),
+                        tag("<"),
+                        tag(">"),
+                    ))),
+                ),
+            )),
+            |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
+        )(input)
+    }
+}
+
 fn is_operator_char(c: char) -> bool {
     matches!(c, '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '~')
 }
@@ -210,6 +235,7 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
             // Parse earmuff symbols (*name*) - dynamic variable naming convention
             // Must come before regular symbols and operators
             parse_earmuff_symbol(env.clone()),
+            parse_keyword_symbol(env.clone()),
             map(
                 recognize(pair(
                     alt((alpha1, tag("&"), tag("$"))),
@@ -553,6 +579,14 @@ mod tests {
         assert_eq!(
             parse_atom(env.clone())("with-hyphen"),
             Ok(("", symbol("WITH-HYPHEN", &env)))
+        );
+        assert_eq!(
+            parse_atom(env.clone())(":op"),
+            Ok(("", symbol(":OP", &env)))
+        );
+        assert_eq!(
+            parse_atom(env.clone())(":with-hyphen"),
+            Ok(("", symbol(":WITH-HYPHEN", &env)))
         );
     }
 
