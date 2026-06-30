@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment::DynamicBinding;
 #[inline(never)]
 pub(super) fn make_lambda(
     params: &LispVal,
@@ -185,6 +186,13 @@ pub(super) enum TcoStep {
     Done(Result<LispVal, LispError>),
     /// Tail call: evaluate `val` in `env` next, reusing this stack frame.
     TailCall(LispVal, Shared<Environment>),
+    /// Tail call that also transfers dynamic-binding RAII guards to the
+    /// trampoline loop.  The guards accumulate across tail calls and are
+    /// restored as a LIFO stack when the trampoline finally returns a value.
+    /// This lets TCO work correctly for tail-recursive functions that rebind
+    /// dynamic (`*special*`) variables: each iteration pushes its guard onto
+    /// the trampoline-owned vec, and the whole chain is unwound on return.
+    TailCallWithGuards(LispVal, Shared<Environment>, Vec<DynamicBinding>),
     /// Apply a non-tail callable (builtin/native) to already-evaluated args.
     /// Deferred to the driver loop so the `apply` runs *after* `eval_step`
     /// returns — releasing any borrow `eval_step` holds on the head symbol
@@ -211,6 +219,16 @@ pub(super) fn eval_impl(
 ) -> Result<LispVal, LispError> {
     let mut current_val: LispVal = initial_val;
     let mut current_env: Shared<Environment> = initial_env;
+    // Dynamic-binding guards accumulated across tail calls (e.g. a tail-
+    // recursive function that rebinds a `*special*` each iteration). They are
+    // restored on *every* exit path by `DynamicGuardStack`'s Drop:
+    //   - `Done`: dropped after the result value is produced,
+    //   - `Apply`: dropped after `apply_owned` runs, so the deferred apply
+    //     still executes inside the bindings' dynamic extent,
+    //   - error/THROW via `?`: dropped as the stack unwinds.
+    // Restoration is LIFO (last installed → first restored), which a plain
+    // `Vec` drop would get wrong for nested same-symbol rebindings.
+    let mut guards = DynamicGuardStack(Vec::new());
 
     loop {
         // Each iteration computes a TcoStep, then either returns or loops.
@@ -228,8 +246,29 @@ pub(super) fn eval_impl(
             TcoStep::TailCall(new_val, new_env) => {
                 current_val = new_val;
                 current_env = new_env;
-                // continue the loop
             }
+            TcoStep::TailCallWithGuards(new_val, new_env, new_guards) => {
+                current_val = new_val;
+                current_env = new_env;
+                guards.0.extend(new_guards);
+            }
+        }
+    }
+}
+
+/// Owns the dynamic-binding guards accumulated by the trampoline loop and
+/// restores them in LIFO order (last installed → first restored) on *any* exit
+/// path: normal return, deferred `Apply`, or error/THROW unwinding via `?`.
+/// A plain `Vec<DynamicBinding>` drop restores front-to-back, which corrupts
+/// nested same-symbol rebindings (e.g. `(let ((*x* 1)) (let ((*x* 2)) ...))`),
+/// so we pop from the back explicitly. The `Vec` does not allocate until the
+/// first guard is pushed, keeping the common no-dynamics path zero-cost.
+struct DynamicGuardStack(Vec<DynamicBinding>);
+
+impl Drop for DynamicGuardStack {
+    fn drop(&mut self) {
+        while let Some(g) = self.0.pop() {
+            drop(g);
         }
     }
 }

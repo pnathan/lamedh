@@ -1269,16 +1269,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         if dynamic_guards.is_empty() {
                             Ok(TcoStep::TailCall(body, let_env))
                         } else {
-                            // Cannot TCO when dynamic guards are in play: the guards
-                            // must stay alive until the body finishes so that every
-                            // exit path (error, THROW, RETURN-FROM, normal) restores
-                            // the symbol cells. Evaluate body directly here.
-                            let result = eval(&body, &let_env);
-                            // Restore in LIFO order (last bound is first restored).
-                            while let Some(g) = dynamic_guards.pop() {
-                                drop(g);
-                            }
-                            Ok(TcoStep::Done(result))
+                            Ok(TcoStep::TailCallWithGuards(body, let_env, dynamic_guards))
                         }
                     }
                     // let* binds sequentially in a SINGLE frame: each binding is
@@ -1325,11 +1316,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         if dynamic_guards.is_empty() {
                             Ok(TcoStep::TailCall(body, let_env))
                         } else {
-                            let result = eval(&body, &let_env);
-                            while let Some(g) = dynamic_guards.pop() {
-                                drop(g);
-                            }
-                            Ok(TcoStep::Done(result))
+                            Ok(TcoStep::TailCallWithGuards(body, let_env, dynamic_guards))
                         }
                     }
                     "MACRO" => {
