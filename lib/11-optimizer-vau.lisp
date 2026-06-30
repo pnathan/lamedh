@@ -188,11 +188,139 @@
         (opt-pass (caddr form))
         (if (cdddr form) (opt-pass (cadddr form)) nil)))
 
+;;; ── COLLAPSE-FRAMES pass ──────────────────────────────────────────────────
+;;;
+;;; Three rewrites:
+;;;   1. (let ((x e)) x)       → e          — identity let elimination
+;;;   2. (let ((x e)) body)    → body[x←e]  — single-use open-position inline
+;;;      when x has exactly one free occurrence that is *not* inside a closure
+;;;      body and is not mutated.  Safe for single-binding lets regardless of
+;;;      whether e is pure, because e is evaluated exactly once in both cases.
+;;;   3. (let outer (let inner body)) → (let merged body)  — frame merge
+;;;      when outer and inner binding names are disjoint AND no inner-binding
+;;;      init references any outer-bound variable (merging would otherwise
+;;;      evaluate those inner inits in the pre-outer scope, changing semantics).
+
+;;; Count free references to SYM that are in "open" (non-closure) position.
+;;; References inside lambda / macro / fexpr / vau bodies are excluded because
+;;; inlining there would change when the init expression is evaluated.
+(defun count-refs-open (sym form)
+  "Count occurrences of SYM in FORM that are outside any closure boundary."
+  (cond
+    ((null form) 0)
+    ((atom form) (if (eq form sym) 1 0))
+    ((eq (car form) 'quote) 0)
+    ;; Closure forms: do not descend — a captured reference is not open.
+    ((member (car form) '(lambda function macro fexpr vau)) 0)
+    ;; Let: inits are in outer (open) scope; body is open only if not shadowed.
+    ((eq (car form) 'let)
+     (let* ((bindings (cadr form))
+            (vars     (mapcar (lambda (b) (car b)) bindings))
+            (inits    (mapcar (lambda (b) (cadr b)) bindings))
+            (init-refs (opt-sum-list
+                         (mapcar (lambda (e) (count-refs-open sym e)) inits)))
+            (body-refs (if (member sym vars)
+                           0
+                           (count-refs-open sym (caddr form)))))
+       (+ init-refs body-refs)))
+    ;; Prog: body is open if sym not in the prog var list.
+    ((eq (car form) 'prog)
+     (if (member sym (cadr form))
+         0
+         (opt-sum-list (mapcar (lambda (s) (count-refs-open sym s)) (cddr form)))))
+    ;; General: walk car and cdr.
+    (t (+ (count-refs-open sym (car form))
+          (count-refs-open sym (cdr form))))))
+
+;;; Return T if any symbol in SYMS appears in SET.
+(defun opt-any-member-p (syms set)
+  "Return T if any element of SYMS is a member of SET."
+  (cond ((null syms) nil)
+        ((member (car syms) set) t)
+        (t (opt-any-member-p (cdr syms) set))))
+
+;;; Return T if INIT references any variable in OUTER-VARS.
+(defun opt-init-uses-outer-p (init outer-vars)
+  "Return T if INIT contains a free reference to any variable in OUTER-VARS."
+  (cond ((null outer-vars) nil)
+        ((> (count-refs (car outer-vars) init) 0) t)
+        (t (opt-init-uses-outer-p init (cdr outer-vars)))))
+
+;;; Return T if any init in INNER-INITS references any variable in OUTER-VARS.
+(defun opt-inner-inits-use-outer-p (outer-vars inner-inits)
+  "Return T if any init in INNER-INITS references a variable in OUTER-VARS."
+  (cond ((null inner-inits) nil)
+        ((opt-init-uses-outer-p (car inner-inits) outer-vars) t)
+        (t (opt-inner-inits-use-outer-p outer-vars (cdr inner-inits)))))
+
+;;; Try to merge (let outer (let inner body)) → (let merged body).
+;;; Bails (returns original nested form) on any of:
+;;;   • name conflict — an inner binding name also appears in outer bindings
+;;;   • init dependency — an inner binding's init references an outer-bound var
+(defun opt-try-merge-lets (outer-bindings inner-form)
+  "Merge two non-shadowing let frames into one, or return the original nested form."
+  (let* ((inner-bindings (cadr inner-form))
+         (inner-body     (caddr inner-form))
+         (outer-vars     (mapcar (lambda (b) (car b)) outer-bindings))
+         (inner-vars     (mapcar (lambda (b) (car b)) inner-bindings))
+         (inner-inits    (mapcar (lambda (b) (cadr b)) inner-bindings))
+         (name-conflict  (opt-any-member-p inner-vars outer-vars))
+         (init-dep       (opt-inner-inits-use-outer-p outer-vars inner-inits)))
+    (if (or name-conflict init-dep)
+        (list 'let outer-bindings inner-form)
+        (list 'let (append outer-bindings inner-bindings) inner-body))))
+
+;;; Apply the single-binding collapse rules to (let ((var init)) body).
+(defun opt-collapse-single-binding (var init body)
+  "Collapse (let ((var init)) body) using identity or single-use open inline."
+  (let* ((total-refs (count-refs var body))
+         (open-refs  (count-refs-open var body)))
+    (cond
+      ;; Rule 1: identity — body is exactly the bound variable.
+      ((eq body var)
+       init)
+      ;; Rule 2: single open-position use, not mutated.
+      ;; count-refs = open-refs = 1 guarantees the occurrence is not inside a
+      ;; closure, so substituting init for var preserves evaluation order.
+      ((and (= total-refs 1)
+            (= open-refs 1)
+            (not (opt-mutated-p var body)))
+       (opt-collapse-frames (subst init var body)))
+      ;; Default: keep the binding.
+      (t (list 'let (list (list var init)) body)))))
+
+;;; Main collapse-frames recursive walk.
+(defun opt-collapse-frames (form)
+  "Recursively apply collapse-frames passes to FORM."
+  (cond
+    ((atom form) form)
+    ((eq (car form) 'quote) form)
+    ((eq (car form) 'lambda)
+     (cons 'lambda
+           (cons (cadr form)
+                 (mapcar #'opt-collapse-frames (cddr form)))))
+    ((eq (car form) 'let)
+     (let* ((bindings (cadr form))
+            (body     (opt-collapse-frames (caddr form))))
+       (cond
+         ;; Single-binding let: try identity / single-use inline.
+         ((and (consp bindings) (null (cdr bindings)))
+          (opt-collapse-single-binding (car (car bindings))
+                                       (cadr (car bindings))
+                                       body))
+         ;; Multi-binding let whose body is itself a let: try frame merge.
+         ((and (consp body) (eq (car body) 'let))
+          (opt-try-merge-lets bindings body))
+         ;; Default: reassemble.
+         (t (list 'let bindings body)))))
+    ;; General: recurse into all sub-expressions.
+    (t (mapcar #'opt-collapse-frames form))))
+
 ;;; ─── Top-level entry point ────────────────────────────────────────────────
 
 (defun optimize-form (form)
-  "Run Lisp-level passes then the builtin constant-folder on FORM."
-  (optimize (opt-pass form)))
+  "Run Lisp-level passes, frame-collapse, then the builtin constant-folder on FORM."
+  (optimize (opt-collapse-frames (opt-pass form))))
 
 ;;; ─── $opt vau ────────────────────────────────────────────────────────────
 ;;;
