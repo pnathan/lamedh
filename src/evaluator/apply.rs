@@ -1181,6 +1181,18 @@ pub(super) fn apply(
                     ))
                 }
             }
+
+            // ── Concurrency primitives (concurrency feature) ─────────────────
+            #[cfg(feature = "concurrency")]
+            BuiltinFunc::MakeChannel => apply_make_channel(args),
+            #[cfg(feature = "concurrency")]
+            BuiltinFunc::ChannelSend => apply_channel_send(args, env),
+            #[cfg(feature = "concurrency")]
+            BuiltinFunc::ChannelRecv => apply_channel_recv(args, env),
+            #[cfg(feature = "concurrency")]
+            BuiltinFunc::ChannelRecvTimeout => apply_channel_recv_timeout(args, env),
+            #[cfg(feature = "concurrency")]
+            BuiltinFunc::CloneInterpreter => apply_clone_interpreter(args, env),
         },
         LispVal::Lambda(lambda) => {
             // Create new environment with:

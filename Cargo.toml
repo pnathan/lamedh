@@ -37,6 +37,11 @@ jit = [
 # contains Cell<bool>; this feature is a stepping stone, not a full
 # multi-threading solution.
 arc-val = []
+# Concurrency primitives: make-channel, channel-send, channel-recv,
+# channel-recv-timeout, clone-interpreter.  Implies arc-val semantics once
+# that flag is implemented; for now values cross thread boundaries via printer/
+# reader serialisation so no external dependencies are required.
+concurrency = []
 
 [workspace]
 members = ["cli"]
