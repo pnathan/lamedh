@@ -196,9 +196,12 @@ impl SymbolTable {
 #[derive(Debug)]
 struct SharedState {
     symbols: SharedCell<SymbolTable>,
-    condition_flags: SharedCell<HashMap<String, bool>>,
+    condition_flags: SharedCell<HashMap<String, bool, BuildHasherDefault<FxHasher>>>,
     /// Set of variable names that are marked as dynamic (special variables).
-    dynamic_vars: SharedCell<HashSet<String>>,
+    /// Uses [`FxHasher`] (not the default SipHash): `resolve` probes this set on
+    /// every variable reference once any dynamic var exists, so the cheaper hash
+    /// is on the hot path.
+    dynamic_vars: SharedCell<HashSet<String, BuildHasherDefault<FxHasher>>>,
     /// Fast-path flag: `true` once any variable has ever been marked dynamic.
     /// While this is `false`, variable resolution can skip the dynamic-set
     /// membership probe entirely (a `HashSet` borrow + string hash that every
@@ -219,8 +222,8 @@ impl SharedState {
     fn new() -> Self {
         SharedState {
             symbols: SharedCell::new(SymbolTable::new()),
-            condition_flags: SharedCell::new(HashMap::new()),
-            dynamic_vars: SharedCell::new(HashSet::new()),
+            condition_flags: SharedCell::new(HashMap::default()),
+            dynamic_vars: SharedCell::new(HashSet::default()),
             has_dynamic: Cell::new(false),
             features: SharedCell::new(HashSet::new()),
             jit: SharedCell::new(crate::jit::Jit::new()),
@@ -231,7 +234,12 @@ impl SharedState {
 #[derive(Debug, Clone)]
 pub struct Environment {
     parent: Option<Shared<Environment>>,
-    bindings: Shared<SharedCell<BindingMap>>,
+    // Per-frame local bindings. Held inline (not behind a `Shared`): each frame
+    // owns its own map and never shares it with another `Environment`, so the
+    // extra reference-count allocation the wrapper required was pure per-call
+    // overhead on the hot path. Identity in `PartialEq` is recovered from the
+    // field's address (unique per `Environment`).
+    bindings: SharedCell<BindingMap>,
     /// Globally-shared interpreter state (symbols, flags, dynamic vars,
     /// features). Shared across the whole environment chain via a single
     /// [`Shared`] pointer.
@@ -255,7 +263,9 @@ impl PartialEq for Environment {
         };
         parents_equal
             && dynamic_parents_equal
-            && Shared::ptr_eq(&self.bindings, &other.bindings)
+            // `bindings` is now inline, so its field address uniquely identifies
+            // this `Environment` (equivalent to the former `Rc` pointer compare).
+            && std::ptr::eq(&self.bindings, &other.bindings)
             && Shared::ptr_eq(&self.shared, &other.shared)
     }
 }
@@ -274,7 +284,7 @@ impl Environment {
     pub fn new() -> Self {
         Environment {
             parent: None,
-            bindings: Shared::new(SharedCell::new(BindingMap::default())),
+            bindings: SharedCell::new(BindingMap::default()),
             shared: Shared::new(SharedState::new()),
             dynamic_parent: None,
         }
@@ -285,7 +295,7 @@ impl Environment {
     pub fn new_child(parent: &Shared<Environment>) -> Shared<Environment> {
         Shared::new(Environment {
             parent: Some(parent.clone()),
-            bindings: Shared::new(SharedCell::new(BindingMap::default())),
+            bindings: SharedCell::new(BindingMap::default()),
             shared: parent.shared.clone(),
             dynamic_parent: parent.dynamic_parent.clone(),
         })
@@ -300,7 +310,7 @@ impl Environment {
     ) -> Shared<Environment> {
         Shared::new(Environment {
             parent: Some(lexical_parent.clone()),
-            bindings: Shared::new(SharedCell::new(BindingMap::default())),
+            bindings: SharedCell::new(BindingMap::default()),
             shared: lexical_parent.shared.clone(),
             dynamic_parent: Some(caller_env.clone()),
         })
