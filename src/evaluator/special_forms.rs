@@ -278,7 +278,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
     match val {
         LispVal::Nil => Ok(TcoStep::Done(Ok(LispVal::Nil))),
         LispVal::Symbol(s) => {
-            if s.borrow().name.starts_with(':') {
+            if s.borrow().is_keyword {
                 return Ok(TcoStep::Done(Ok(LispVal::Symbol(s.clone()))));
             }
 

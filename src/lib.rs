@@ -661,6 +661,16 @@ pub struct Symbol {
     /// `SymbolTable`, these cells are naturally scoped per global namespace, so
     /// independent `make-environment` namespaces stay isolated.
     pub value: Option<LispVal>,
+    /// Cached flag: `true` iff `name.starts_with(':')`.  Set once at intern
+    /// time so the hot `eval_step` symbol arm avoids a string scan on every
+    /// variable reference.
+    pub is_keyword: bool,
+    /// Cached flag: `true` once this symbol has been marked as a dynamic
+    /// (special) variable via [`environment::Environment::mark_dynamic`].  Set
+    /// via `borrow_mut()` in `mark_dynamic`; read via `borrow()` in
+    /// `Environment::resolve`, replacing the `dynamic_vars` set probe on the
+    /// hot evaluation path.
+    pub is_dynamic: bool,
 }
 
 /// A lexical closure created by `(lambda (params…) body…)` or `defun`.
@@ -1125,6 +1135,8 @@ impl From<bool> for LispVal {
                 name: "T".to_string(),
                 plist: HashMap::new(),
                 value: None,
+                is_keyword: false,
+                is_dynamic: false,
             })))
         } else {
             LispVal::Nil
