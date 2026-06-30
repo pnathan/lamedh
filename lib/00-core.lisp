@@ -10,24 +10,30 @@
 ;; (`see-source`) and the numeric edge semantics (overflow / div-by-zero, #67).)
 (defmacro defun (name params &rest body)
   ;; Split off an optional leading docstring so body-forms holds only code.
-  (let* ((has-doc (stringp (car body)))
-         (doc (if has-doc (car body) nil))
-         (body-forms (if has-doc (cdr body) body))
+  (let* ((has-doc     (stringp (car body)))
+         (doc         (if has-doc (car body) nil))
+         (body-forms  (if has-doc (cdr body) body))
          (lambda-expr (cons 'lambda (cons params body-forms))))
-    ;; After binding the function, run the purity checker if it is loaded.
-    ;; The guard keeps early stdlib files (00–10) safe: the checker lives in
-    ;; 11-optimizer-vau.lisp so it is absent during their load pass.
+    ;; After binding the function, run any registered post-defun hooks.
+    ;; Each hook is guarded by BOUNDP so early stdlib files (00-10) load safely
+    ;; before the hooks are defined in 11-optimizer-vau.lisp / 19-call-graph.lisp.
     (if has-doc
       `(progn
          (def ,name ,lambda-expr ,doc)
          (if (boundp 'defun-check-purity!)
              (defun-check-purity! ',name ',body-forms)
              nil)
+         (if (boundp 'defun-update-call-graph!)
+             (defun-update-call-graph! ',name ',params ',body-forms)
+             nil)
          ',name)
       `(progn
          (def ,name ,lambda-expr)
          (if (boundp 'defun-check-purity!)
              (defun-check-purity! ',name ',body-forms)
+             nil)
+         (if (boundp 'defun-update-call-graph!)
+             (defun-update-call-graph! ',name ',params ',body-forms)
              nil)
          ',name))))
 

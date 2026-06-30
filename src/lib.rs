@@ -187,6 +187,7 @@
 //! | `09-lisp15.lisp` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
 //! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
 //! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
+//! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1197,6 +1198,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ),
     ("17-arrays.lisp", include_str!("../lib/17-arrays.lisp")),
     ("18-format.lisp", include_str!("../lib/18-format.lisp")),
+    (
+        "19-call-graph.lisp",
+        include_str!("../lib/19-call-graph.lisp"),
+    ),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),

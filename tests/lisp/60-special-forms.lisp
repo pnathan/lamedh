@@ -35,15 +35,18 @@
 
 (deftest sf-macroexpand
   ;; MACROEXPAND returns the expansion of a macro call without evaluating it.
-  ;; The defun macro wraps def in a progn that also runs the purity checker
-  ;; (when loaded) and returns the defined symbol.
+  ;; DEFUN wraps DEF in a PROGN that runs both the purity-checker hook and the
+  ;; call-graph hook (each guarded by BOUNDP, safe before the hooks are loaded).
   (assert-equal
     (macroexpand '(defun foo (x) (+ x 1)))
     '(PROGN
        (DEF FOO (LAMBDA (X) (+ X 1)))
        (IF (BOUNDP (QUOTE DEFUN-CHECK-PURITY!))
            (DEFUN-CHECK-PURITY! (QUOTE FOO) (QUOTE ((+ X 1))))
-           ())
+           NIL)
+       (IF (BOUNDP (QUOTE DEFUN-UPDATE-CALL-GRAPH!))
+           (DEFUN-UPDATE-CALL-GRAPH! (QUOTE FOO) (QUOTE (X)) (QUOTE ((+ X 1))))
+           NIL)
        (QUOTE FOO))))
 
 (deftest sf-quasiquote-literal
