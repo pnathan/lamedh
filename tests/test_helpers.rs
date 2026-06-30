@@ -1,7 +1,6 @@
-use lamedh::{self, environment::Environment};
-use std::rc::Rc;
+use lamedh::{self, Shared, environment::Environment};
 
-pub fn env_with_stdlib() -> Rc<Environment> {
+pub fn env_with_stdlib() -> Shared<Environment> {
     let env = Environment::new_with_builtins();
     match lamedh::load_file("prologue.lisp", &env) {
         Ok(_) => {}

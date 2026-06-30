@@ -24,8 +24,7 @@
 //! - Macro expansion (done lazily at eval time so redefinition works)
 
 use crate::environment::Environment;
-use crate::{LispError, LispVal};
-use std::rc::Rc;
+use crate::{LispError, LispVal, Shared};
 
 /// Fold a pure arithmetic/numeric call on literal arguments.
 /// Returns `Some(result)` if all args are literals and the op is safe.
@@ -168,8 +167,8 @@ fn vec_to_list(v: Vec<LispVal>) -> LispVal {
     v.into_iter()
         .rev()
         .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
-            car: Rc::new(car),
-            cdr: Rc::new(cdr),
+            car: Shared::new(car),
+            cdr: Shared::new(cdr),
         })
 }
 
@@ -273,8 +272,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                                         parts.push(else_opt);
                                     }
                                     return LispVal::Cons {
-                                        car: Rc::new(parts[0].clone()),
-                                        cdr: Rc::new(vec_to_list(parts[1..].to_vec())),
+                                        car: Shared::new(parts[0].clone()),
+                                        cdr: Shared::new(vec_to_list(parts[1..].to_vec())),
                                     };
                                 }
                             }
@@ -300,8 +299,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                             let mut all = kept;
                             all.push(last);
                             return LispVal::Cons {
-                                car: Rc::new(head.as_ref().clone()),
-                                cdr: Rc::new(vec_to_list(all)),
+                                car: Shared::new(head.as_ref().clone()),
+                                cdr: Shared::new(vec_to_list(all)),
                             };
                         }
                     }
@@ -320,8 +319,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                             }
                             // Rebuild with optimized args
                             return LispVal::Cons {
-                                car: Rc::new(head.as_ref().clone()),
-                                cdr: Rc::new(vec_to_list(opt_args)),
+                                car: Shared::new(head.as_ref().clone()),
+                                cdr: Shared::new(vec_to_list(opt_args)),
                             };
                         }
                     }
@@ -339,8 +338,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                         if let Some(args) = list_to_vec(rest) {
                             let opt_args: Vec<LispVal> = args.iter().map(optimize).collect();
                             return LispVal::Cons {
-                                car: Rc::new(opt_head),
-                                cdr: Rc::new(vec_to_list(opt_args)),
+                                car: Shared::new(opt_head),
+                                cdr: Shared::new(vec_to_list(opt_args)),
                             };
                         }
                     }
@@ -352,14 +351,14 @@ pub fn optimize(expr: &LispVal) -> LispVal {
             if let Some(args) = list_to_vec(rest) {
                 let opt_args: Vec<LispVal> = args.iter().map(optimize).collect();
                 LispVal::Cons {
-                    car: Rc::new(opt_head),
-                    cdr: Rc::new(vec_to_list(opt_args)),
+                    car: Shared::new(opt_head),
+                    cdr: Shared::new(vec_to_list(opt_args)),
                 }
             } else {
                 // Improper list (dotted pair): optimize both sides
                 LispVal::Cons {
-                    car: Rc::new(opt_head),
-                    cdr: Rc::new(optimize(rest)),
+                    car: Shared::new(opt_head),
+                    cdr: Shared::new(optimize(rest)),
                 }
             }
         }
@@ -375,7 +374,7 @@ pub fn optimize(expr: &LispVal) -> LispVal {
 /// # Errors
 ///
 /// Propagates any [`crate::LispError`] returned by the evaluator.
-pub fn optimize_eval(expr: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub fn optimize_eval(expr: &LispVal, env: &Shared<Environment>) -> Result<LispVal, LispError> {
     let optimized = optimize(expr);
     crate::evaluator::eval(&optimized, env)
 }
@@ -385,15 +384,13 @@ mod tests {
     use super::*;
     use crate::environment::Environment;
     use crate::printer::print;
-    use std::rc::Rc;
-
-    fn e() -> Rc<Environment> {
-        Rc::new(Environment::new())
+    fn e() -> Shared<Environment> {
+        Shared::new(Environment::new())
     }
     fn num(n: i64) -> LispVal {
         LispVal::Number(n)
     }
-    fn sym(s: &str, env: &Rc<Environment>) -> LispVal {
+    fn sym(s: &str, env: &Shared<Environment>) -> LispVal {
         LispVal::Symbol(env.intern_symbol(s))
     }
     fn list(items: Vec<LispVal>) -> LispVal {

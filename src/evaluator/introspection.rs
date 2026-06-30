@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn apply_introspection(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     use std::io::{self, Write};
     match op {
@@ -83,7 +83,7 @@ pub(super) fn arity_string(params: &[String], rest: Option<&String>) -> String {
 /// A symbol is described by its current binding; a typed (jotted) function
 /// takes precedence over its membrane `Native` binding as the more informative
 /// view. Any other value is described directly.
-pub(super) fn describe_text(arg: &LispVal, env: &Rc<Environment>) -> String {
+pub(super) fn describe_text(arg: &LispVal, env: &Shared<Environment>) -> String {
     let mut out = String::new();
     if let LispVal::Symbol(s) = arg {
         let name = s.borrow().name.clone();
@@ -187,7 +187,7 @@ pub(super) fn push_value_detail(out: &mut String, val: &LispVal) {
 }
 
 /// Append a `Doc:` line if the symbol carries a `"docstring"` plist entry.
-pub(super) fn push_docstring(out: &mut String, s: &Rc<RefCell<crate::Symbol>>) {
+pub(super) fn push_docstring(out: &mut String, s: &Shared<SharedCell<crate::Symbol>>) {
     if let Some(LispVal::String(doc)) = s.borrow().plist.get("docstring") {
         out.push_str(&format!("  Doc: {doc}\n"));
     }
@@ -196,7 +196,10 @@ pub(super) fn push_docstring(out: &mut String, s: &Rc<RefCell<crate::Symbol>>) {
 /// Reconstruct the source form for `see-source`. A symbol is resolved to its
 /// binding first; the binding (or a directly-passed value) must be a
 /// user-defined operative (lambda/fexpr/macro/vau).
-pub(super) fn see_source_form(arg: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub(super) fn see_source_form(
+    arg: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     // defun-typed / defun-typed-opt annotate the symbol's plist with the
     // original defining form; check that first before falling back to closure
     // reconstruction.
@@ -229,7 +232,7 @@ pub(super) fn see_source_form(arg: &LispVal, env: &Rc<Environment>) -> Result<Li
 pub(super) fn param_list_form(
     params: &[String],
     rest: Option<&String>,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> LispVal {
     let mut syms: Vec<LispVal> = params
         .iter()
@@ -257,7 +260,7 @@ pub(super) fn body_forms(body: &LispVal) -> Vec<LispVal> {
 
 /// Reconstruct an approximate defining form for an operative value. Returns
 /// `None` for values with no Lisp-level source (builtins, natives, scalars).
-pub(super) fn reconstruct_source(val: &LispVal, env: &Rc<Environment>) -> Option<LispVal> {
+pub(super) fn reconstruct_source(val: &LispVal, env: &Shared<Environment>) -> Option<LispVal> {
     let head = |tag: &str| LispVal::Symbol(env.intern_symbol(tag));
     match val {
         LispVal::Lambda(l) => {

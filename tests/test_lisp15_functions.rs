@@ -1,8 +1,9 @@
 use lamedh::{
-    environment::Environment, eval_depth_limit, eval_str, set_eval_depth_limit, with_large_stack,
+    Shared, environment::Environment, eval_depth_limit, eval_str, set_eval_depth_limit,
+    with_large_stack,
 };
 
-fn env() -> std::rc::Rc<Environment> {
+fn env() -> Shared<Environment> {
     Environment::with_stdlib()
 }
 

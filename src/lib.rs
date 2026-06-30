@@ -231,14 +231,91 @@ where
 }
 
 use environment::Environment;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+
+// ── Shared reference-counting and interior-mutability type aliases ─────────
+//
+// When the `arc-val` feature is enabled, reference-counted shared pointers
+// become `Arc` and interior mutable cells become a thin `RwLock`-backed
+// newtype with a `RefCell`-compatible API (`borrow` / `borrow_mut`).
+// The default single-threaded build uses `Rc`/`RefCell` and is unchanged.
+//
+// Note: enabling `arc-val` provides atomic reference counts but does NOT
+// automatically make `LispVal: Send + Sync` because `SharedState` still
+// contains `Cell<bool>`.  This feature is a stepping stone toward full
+// thread safety, not a complete solution on its own.
+
+/// A reference-counted shared pointer.
+///
+/// `Rc<T>` by default; `Arc<T>` with the `arc-val` Cargo feature.
+/// Use `Shared::new(v)`, `Shared::ptr_eq(a, b)`, and `.as_ptr()` so
+/// the same code compiles under both builds.
+#[cfg(not(feature = "arc-val"))]
+pub type Shared<T> = std::rc::Rc<T>;
+#[cfg(feature = "arc-val")]
+pub type Shared<T> = std::sync::Arc<T>;
+
+/// An interior-mutable cell with a `RefCell`-compatible API.
+///
+/// `RefCell<T>` by default; a thin `RwLock<T>` wrapper with the `arc-val`
+/// feature.  Both variants expose `.borrow()` and `.borrow_mut()`.
+#[cfg(not(feature = "arc-val"))]
+pub type SharedCell<T> = std::cell::RefCell<T>;
+
+/// `RwLock`-backed interior-mutable cell with a `RefCell`-compatible API.
+/// Only present with the `arc-val` Cargo feature.
+#[cfg(feature = "arc-val")]
+pub struct SharedCell<T>(std::sync::RwLock<T>);
+
+#[cfg(feature = "arc-val")]
+impl<T> SharedCell<T> {
+    /// Create a new cell wrapping `value`.  Mirrors `RefCell::new`.
+    #[inline]
+    pub fn new(value: T) -> Self {
+        SharedCell(std::sync::RwLock::new(value))
+    }
+    /// Acquire a shared read lock.  Mirrors `RefCell::borrow`.  Panics if
+    /// the lock is poisoned.
+    #[inline]
+    pub fn borrow(&self) -> std::sync::RwLockReadGuard<'_, T> {
+        self.0.read().unwrap()
+    }
+    /// Acquire an exclusive write lock.  Mirrors `RefCell::borrow_mut`.
+    /// Panics if the lock is poisoned.
+    #[inline]
+    pub fn borrow_mut(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+        self.0.write().unwrap()
+    }
+}
+
+#[cfg(feature = "arc-val")]
+impl<T: std::fmt::Debug> std::fmt::Debug for SharedCell<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.read() {
+            Ok(g) => write!(f, "SharedCell({:?})", *g),
+            Err(_) => write!(f, "SharedCell(<poisoned>)"),
+        }
+    }
+}
+
+#[cfg(feature = "arc-val")]
+impl<T: Clone> Clone for SharedCell<T> {
+    fn clone(&self) -> Self {
+        SharedCell::new(self.0.read().unwrap().clone())
+    }
+}
+
+#[cfg(feature = "arc-val")]
+impl<T: PartialEq> PartialEq for SharedCell<T> {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0.read().unwrap() == *other.0.read().unwrap()
+    }
+}
 
 /// Trait for host-defined value types that can participate in the Lisp system.
 ///
@@ -592,7 +669,7 @@ pub struct Lambda {
     /// Body expression (typically `(PROGN ...)` for multi-form bodies).
     pub body: Box<LispVal>,
     /// Captured lexical environment (definition site).
-    pub env: Rc<Environment>,
+    pub env: Shared<Environment>,
 }
 
 impl PartialEq for Lambda {
@@ -600,7 +677,7 @@ impl PartialEq for Lambda {
         self.params == other.params
             && self.rest_param == other.rest_param
             && self.body == other.body
-            && Rc::ptr_eq(&self.env, &other.env)
+            && Shared::ptr_eq(&self.env, &other.env)
     }
 }
 
@@ -621,12 +698,14 @@ pub struct Fexpr {
     /// Body expression.
     pub body: Box<LispVal>,
     /// Captured lexical environment.
-    pub env: Rc<Environment>,
+    pub env: Shared<Environment>,
 }
 
 impl PartialEq for Fexpr {
     fn eq(&self, other: &Self) -> bool {
-        self.params == other.params && self.body == other.body && Rc::ptr_eq(&self.env, &other.env)
+        self.params == other.params
+            && self.body == other.body
+            && Shared::ptr_eq(&self.env, &other.env)
     }
 }
 
@@ -647,7 +726,7 @@ pub struct Macro {
     /// Body expression; evaluating it must produce a valid Lisp form.
     pub body: Box<LispVal>,
     /// Captured lexical environment (definition site).
-    pub env: Rc<Environment>,
+    pub env: Shared<Environment>,
 }
 
 impl PartialEq for Macro {
@@ -655,12 +734,12 @@ impl PartialEq for Macro {
         self.params == other.params
             && self.rest_param == other.rest_param
             && self.body == other.body
-            && Rc::ptr_eq(&self.env, &other.env)
+            && Shared::ptr_eq(&self.env, &other.env)
     }
 }
 
 /// The function signature for host-registered (native) Lisp callables.
-pub type NativeFn = dyn Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError>;
+pub type NativeFn = dyn Fn(&[LispVal], &Shared<Environment>) -> Result<LispVal, LispError>;
 
 /// A Kernel-style vau operative closure.
 ///
@@ -673,7 +752,7 @@ pub struct Vau {
     pub operands_param: String,
     pub env_param: String,
     pub body: Box<LispVal>,
-    pub env: Rc<Environment>,
+    pub env: Shared<Environment>,
 }
 
 impl PartialEq for Vau {
@@ -681,7 +760,7 @@ impl PartialEq for Vau {
         self.operands_param == other.operands_param
             && self.env_param == other.env_param
             && self.body == other.body
-            && Rc::ptr_eq(&self.env, &other.env)
+            && Shared::ptr_eq(&self.env, &other.env)
     }
 }
 
@@ -726,7 +805,7 @@ impl PartialEq for Vau {
 /// ```
 pub enum LispVal {
     /// An interned symbol such as `FOO`, `+`, or `*MY-VAR*`.
-    Symbol(Rc<RefCell<Symbol>>),
+    Symbol(Shared<SharedCell<Symbol>>),
     /// A 64-bit signed integer.
     Number(i64),
     /// A single byte (character, 0–255). Produced by char literals (`'a'` →
@@ -754,36 +833,39 @@ pub enum LispVal {
     Macro(Box<Macro>),
     /// A Kernel-style vau operative.  See [`Vau`].
     Vau(Box<Vau>),
-    /// A cons cell.  Children are `Rc` (not `Box`) so cloning a list is an
-    /// O(1) refcount bump instead of a deep copy — cons cells are immutable in
-    /// this implementation (`rplaca`/`rplacd` return new cells), so structural
-    /// sharing is sound.
-    Cons { car: Rc<LispVal>, cdr: Rc<LispVal> },
+    /// A cons cell.  Children use [`Shared`] (not `Box`) so cloning a list is
+    /// an O(1) refcount bump instead of a deep copy — cons cells are immutable
+    /// in this implementation (`rplaca`/`rplacd` return new cells), so
+    /// structural sharing is sound.
+    Cons {
+        car: Shared<LispVal>,
+        cdr: Shared<LispVal>,
+    },
     /// The empty list / boolean false.  `()` and `NIL` are the same object.
     Nil,
     /// A mutable hash table, used as `(make-hash-table)`.  Keys and values are
     /// arbitrary `LispVal`s.
-    HashTable(Rc<RefCell<HashMap<LispVal, LispVal>>>),
+    HashTable(Shared<SharedCell<HashMap<LispVal, LispVal>>>),
     /// A host-registered Rust closure callable from Lisp.  See
     /// [`environment::Environment::register_fn`].
-    Native(Rc<NativeFn>),
+    Native(Shared<NativeFn>),
     /// A first-class environment.  Obtained via `(the-environment)` or
     /// `(make-environment)`.  Can be passed to `(eval expr env)`.
-    Environment(Rc<Environment>),
+    Environment(Shared<Environment>),
     /// A 0-indexed mutable vector (Lisp 1.5 `array`).  Created by `(array n)`;
     /// accessed with `(fetch a i)` / `(store a i v)`.
-    Array(Rc<RefCell<Vec<LispVal>>>),
+    Array(Shared<SharedCell<Vec<LispVal>>>),
     /// A typed, nominal struct value crossing the typed membrane.
-    Struct(Rc<StructObj>),
+    Struct(Shared<StructObj>),
     /// A host-defined extension value.  Use [`LispVal::ext`] to construct.
     /// See [`LispValExtension`].
-    Extension(Rc<dyn LispValExtension>),
+    Extension(Shared<dyn LispValExtension>),
     /// A first-class error/condition value: a message plus an optional data
     /// payload (a cons list of "irritants", or `Nil`).  Constructed with
     /// `(make-error msg data)`, signalled by `(error ...)`, and bound by the
-    /// handler variable in `(handler-case ...)`.  Boxed behind an `Rc` so the
-    /// `LispVal` stays small.
-    Error(Rc<ErrorObj>),
+    /// handler variable in `(handler-case ...)`.  Boxed behind a [`Shared`]
+    /// pointer so the `LispVal` stays small.
+    Error(Shared<ErrorObj>),
 }
 
 /// The payload of a [`LispVal::Error`].
@@ -811,7 +893,7 @@ pub struct StructObj {
 impl LispVal {
     /// Wrap a host value implementing [`LispValExtension`] into a `LispVal`.
     pub fn ext<T: LispValExtension + 'static>(v: T) -> Self {
-        LispVal::Extension(Rc::new(v))
+        LispVal::Extension(Shared::new(v))
     }
 }
 
@@ -844,7 +926,7 @@ impl fmt::Debug for LispVal {
 impl Clone for LispVal {
     fn clone(&self) -> Self {
         match self {
-            LispVal::Symbol(s) => LispVal::Symbol(Rc::clone(s)),
+            LispVal::Symbol(s) => LispVal::Symbol(s.clone()),
             LispVal::Number(n) => LispVal::Number(*n),
             LispVal::Char(b) => LispVal::Char(*b),
             LispVal::Float(f) => LispVal::Float(*f),
@@ -859,13 +941,13 @@ impl Clone for LispVal {
                 cdr: cdr.clone(),
             },
             LispVal::Nil => LispVal::Nil,
-            LispVal::HashTable(h) => LispVal::HashTable(Rc::clone(h)),
-            LispVal::Native(f) => LispVal::Native(Rc::clone(f)),
-            LispVal::Environment(e) => LispVal::Environment(Rc::clone(e)),
-            LispVal::Array(a) => LispVal::Array(Rc::clone(a)),
-            LispVal::Struct(s) => LispVal::Struct(Rc::clone(s)),
-            LispVal::Extension(e) => LispVal::Extension(Rc::clone(e)),
-            LispVal::Error(e) => LispVal::Error(Rc::clone(e)),
+            LispVal::HashTable(h) => LispVal::HashTable(h.clone()),
+            LispVal::Native(f) => LispVal::Native(f.clone()),
+            LispVal::Environment(e) => LispVal::Environment(e.clone()),
+            LispVal::Array(a) => LispVal::Array(a.clone()),
+            LispVal::Struct(s) => LispVal::Struct(s.clone()),
+            LispVal::Extension(e) => LispVal::Extension(e.clone()),
+            LispVal::Error(e) => LispVal::Error(e.clone()),
         }
     }
 }
@@ -887,7 +969,7 @@ fn lisp_float_hash_bits(f: f64) -> u64 {
 impl PartialEq for LispVal {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (LispVal::Symbol(a), LispVal::Symbol(b)) => Rc::ptr_eq(a, b),
+            (LispVal::Symbol(a), LispVal::Symbol(b)) => Shared::ptr_eq(a, b),
             (LispVal::Number(a), LispVal::Number(b)) => a == b,
             (LispVal::Char(a), LispVal::Char(b)) => a == b,
             (LispVal::Float(a), LispVal::Float(b)) => lisp_float_eq(*a, *b),
@@ -903,15 +985,15 @@ impl PartialEq for LispVal {
                 },
             ) => car1 == car2 && cdr1 == cdr2,
             (LispVal::Nil, LispVal::Nil) => true,
-            (LispVal::HashTable(a), LispVal::HashTable(b)) => Rc::ptr_eq(a, b),
+            (LispVal::HashTable(a), LispVal::HashTable(b)) => Shared::ptr_eq(a, b),
             (LispVal::Builtin(a), LispVal::Builtin(b)) => a == b,
             (LispVal::Lambda(a), LispVal::Lambda(b)) => a == b,
             (LispVal::Fexpr(a), LispVal::Fexpr(b)) => a == b,
             (LispVal::Macro(a), LispVal::Macro(b)) => a == b,
             (LispVal::Vau(a), LispVal::Vau(b)) => a == b,
-            (LispVal::Native(a), LispVal::Native(b)) => Rc::ptr_eq(a, b),
-            (LispVal::Environment(a), LispVal::Environment(b)) => Rc::ptr_eq(a, b),
-            (LispVal::Array(a), LispVal::Array(b)) => Rc::ptr_eq(a, b),
+            (LispVal::Native(a), LispVal::Native(b)) => Shared::ptr_eq(a, b),
+            (LispVal::Environment(a), LispVal::Environment(b)) => Shared::ptr_eq(a, b),
+            (LispVal::Array(a), LispVal::Array(b)) => Shared::ptr_eq(a, b),
             (LispVal::Struct(a), LispVal::Struct(b)) => {
                 a.type_name == b.type_name && a.fields == b.fields
             }
@@ -927,7 +1009,7 @@ impl Eq for LispVal {}
 impl Hash for LispVal {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
-            LispVal::Symbol(s) => Rc::as_ptr(s).hash(state),
+            LispVal::Symbol(s) => Shared::as_ptr(s).hash(state),
             LispVal::Number(n) => n.hash(state),
             LispVal::Char(b) => b.hash(state),
             LispVal::Float(f) => lisp_float_hash_bits(*f).hash(state),
@@ -938,16 +1020,16 @@ impl Hash for LispVal {
             }
             LispVal::Nil => 0.hash(state),
             LispVal::HashTable(h) => {
-                Rc::as_ptr(h).hash(state);
+                Shared::as_ptr(h).hash(state);
             }
             LispVal::Native(f) => {
-                Rc::as_ptr(f).hash(state);
+                Shared::as_ptr(f).hash(state);
             }
             LispVal::Environment(e) => {
-                Rc::as_ptr(e).hash(state);
+                Shared::as_ptr(e).hash(state);
             }
             LispVal::Array(a) => {
-                Rc::as_ptr(a).hash(state);
+                Shared::as_ptr(a).hash(state);
             }
             LispVal::Struct(s) => {
                 s.type_name.hash(state);
@@ -990,7 +1072,7 @@ impl From<f64> for LispVal {
 impl From<bool> for LispVal {
     fn from(b: bool) -> Self {
         if b {
-            LispVal::Symbol(Rc::new(RefCell::new(Symbol {
+            LispVal::Symbol(Shared::new(SharedCell::new(Symbol {
                 name: "T".to_string(),
                 plist: HashMap::new(),
                 value: None,
@@ -1018,8 +1100,8 @@ impl From<Vec<LispVal>> for LispVal {
         v.into_iter()
             .rev()
             .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
-                car: Rc::new(car),
-                cdr: Rc::new(cdr),
+                car: Shared::new(car),
+                cdr: Shared::new(cdr),
             })
     }
 }
@@ -1215,7 +1297,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
 ///
 /// This is called by [`Environment::with_stdlib`]; call it directly if you want
 /// to load the stdlib into an environment you already have.
-pub fn load_stdlib(env: &Rc<Environment>) -> Result<(), LispError> {
+pub fn load_stdlib(env: &Shared<Environment>) -> Result<(), LispError> {
     for (filename, src) in STDLIB_SOURCES {
         let exprs = reader::read_all(src, env)
             .map_err(|e| LispError::Generic(format!("stdlib parse error in {filename}: {e}")))?;
@@ -1231,7 +1313,7 @@ pub fn load_stdlib(env: &Rc<Environment>) -> Result<(), LispError> {
 ///
 /// The input must contain exactly one form; use [`eval_all`] for programs with
 /// multiple top-level forms.
-pub fn eval_str(src: &str, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub fn eval_str(src: &str, env: &Shared<Environment>) -> Result<LispVal, LispError> {
     let form =
         reader::read(src, env).map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
     evaluator::eval(&form, env)
@@ -1241,7 +1323,7 @@ pub fn eval_str(src: &str, env: &Rc<Environment>) -> Result<LispVal, LispError> 
 ///
 /// Expressions are evaluated in order; if any expression fails the error is
 /// returned immediately and subsequent expressions are not evaluated.
-pub fn eval_all(src: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, LispError> {
+pub fn eval_all(src: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, LispError> {
     let forms =
         reader::read_all(src, env).map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
     forms
@@ -1254,7 +1336,7 @@ pub fn eval_all(src: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, LispEr
 ///
 /// This is a thin wrapper over [`eval_str`] for use in the REPL; host code
 /// should prefer [`eval_str`] or [`eval_all`] to get typed results.
-pub fn eval_line(line: &str, env: &Rc<Environment>) -> String {
+pub fn eval_line(line: &str, env: &Shared<Environment>) -> String {
     match eval_str(line, env) {
         Ok(result) => printer::print(&result),
         Err(e) => format!("{e}"),
@@ -1314,7 +1396,7 @@ fn resolve_include_path(parent_file: &Path, include: &str) -> PathBuf {
 
 fn load_file_inner(
     path: &Path,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
     include_stack: &mut Vec<PathBuf>,
 ) -> Result<(), LispError> {
     let cycle_key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -1360,7 +1442,7 @@ fn load_file_inner(
 ///
 /// Returns the first parse or evaluation error encountered.  Subsequent
 /// expressions in the file are **not** evaluated after a failure.
-pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
+pub fn load_file(path: &str, env: &Shared<Environment>) -> Result<(), LispError> {
     load_file_inner(Path::new(path), env, &mut Vec::new())
 }
 
@@ -1372,7 +1454,7 @@ pub fn load_file(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
 /// # Errors
 ///
 /// Returns the first error from any file; subsequent files are not loaded.
-pub fn load_directory(path: &str, env: &Rc<Environment>) -> Result<(), LispError> {
+pub fn load_directory(path: &str, env: &Shared<Environment>) -> Result<(), LispError> {
     let entries = std::fs::read_dir(path)
         .map_err(|e| LispError::Generic(format!("Failed to read directory {path}: {e}")))?;
 

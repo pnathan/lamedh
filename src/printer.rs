@@ -115,13 +115,13 @@ pub fn print(val: &LispVal) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Shared;
     use crate::environment::Environment;
-    use std::rc::Rc;
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
         LispVal::Cons {
-            car: Rc::new(car),
-            cdr: Rc::new(cdr),
+            car: Shared::new(car),
+            cdr: Shared::new(cdr),
         }
     }
 

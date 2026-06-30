@@ -29,6 +29,14 @@ jit = [
     "dep:cranelift-codegen",
     "dep:cranelift-frontend",
 ]
+# Enable this feature to replace Rc->Arc and RefCell->RwLock for shared
+# LispVal inner types (Cons, Symbol, HashTable, Array) and Environment.
+# This uses atomic reference counting at the cost of higher overhead per
+# clone.  The default (single-threaded) build is unchanged.  Note: LispVal
+# is NOT automatically Send+Sync with this feature because SharedState
+# contains Cell<bool>; this feature is a stepping stone, not a full
+# multi-threading solution.
+arc-val = []
 
 [workspace]
 members = ["cli"]

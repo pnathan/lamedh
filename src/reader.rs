@@ -30,6 +30,7 @@
 //! `Foo` all resolve to the same interned `Symbol` named `"FOO"`.
 
 use crate::LispVal;
+use crate::Shared;
 use crate::environment::Environment;
 use nom::{
     IResult,
@@ -40,11 +41,10 @@ use nom::{
     multi::many0,
     sequence::{delimited, pair, preceded, terminated, tuple},
 };
-use std::rc::Rc;
 
 type ParseResult<'a> = IResult<&'a str, LispVal>;
 
-fn parse_expr(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_expr(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         preceded(
             ws,
@@ -190,14 +190,14 @@ fn parse_char_literal(input: &str) -> ParseResult<'_> {
     Ok((rest2, LispVal::Char(code as u8)))
 }
 
-fn parse_one_plus_minus(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_one_plus_minus(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (rest, sym) = alt((tag("1+"), tag("1-")))(input)?;
         Ok((rest, LispVal::Symbol(env.intern_symbol(sym))))
     }
 }
 
-fn parse_keyword_symbol(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_keyword_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(
             recognize(pair(
@@ -226,7 +226,7 @@ fn is_operator_char(c: char) -> bool {
     matches!(c, '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '~')
 }
 
-fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
             // Parse special numeric symbols like 1+ and 1- BEFORE numbers
@@ -270,7 +270,7 @@ fn parse_atom(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
 
 /// Parse earmuff symbols: *name* (dynamic variable naming convention)
 /// Examples: *debug*, *print-level*, *foo123*
-fn parse_earmuff_symbol(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(
             recognize(tuple((
@@ -327,7 +327,7 @@ fn parse_string(input: &str) -> ParseResult<'_> {
     Ok((remaining, LispVal::String(result)))
 }
 
-fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_list_contents(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (input, exprs) = many0(preceded(ws, parse_expr(env.clone())))(input)?;
         let (input, tail) = opt(preceded(
@@ -345,14 +345,14 @@ fn parse_list_contents(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
         Ok((
             input,
             exprs.into_iter().rev().fold(end, |cdr, car| LispVal::Cons {
-                car: Rc::new(car),
-                cdr: Rc::new(cdr),
+                car: Shared::new(car),
+                cdr: Shared::new(cdr),
             }),
         ))
     }
 }
 
-fn parse_list(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_list(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         delimited(
             char('('),
@@ -362,75 +362,75 @@ fn parse_list(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
     }
 }
 
-fn parse_quoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_quoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     let quote_symbol = LispVal::Symbol(env.intern_symbol("QUOTE"));
     move |input: &str| {
         map(preceded(char('\''), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Rc::new(quote_symbol.clone()),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(expr),
-                    cdr: Rc::new(LispVal::Nil),
+                car: Shared::new(quote_symbol.clone()),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(expr),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }
         })(input)
     }
 }
 
-fn parse_quasiquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_quasiquoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     let quasiquote_symbol = LispVal::Symbol(env.intern_symbol("QUASIQUOTE"));
     move |input: &str| {
         map(preceded(char('`'), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Rc::new(quasiquote_symbol.clone()),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(expr),
-                    cdr: Rc::new(LispVal::Nil),
+                car: Shared::new(quasiquote_symbol.clone()),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(expr),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }
         })(input)
     }
 }
 
-fn parse_function_shorthand(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_function_shorthand(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     let function_symbol = LispVal::Symbol(env.intern_symbol("FUNCTION"));
     move |input: &str| {
         map(preceded(tag("#'"), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Rc::new(function_symbol.clone()),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(expr),
-                    cdr: Rc::new(LispVal::Nil),
+                car: Shared::new(function_symbol.clone()),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(expr),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }
         })(input)
     }
 }
 
-fn parse_unquoted(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_unquoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     let unquote_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE"));
     move |input: &str| {
         map(preceded(char(','), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Rc::new(unquote_symbol.clone()),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(expr),
-                    cdr: Rc::new(LispVal::Nil),
+                car: Shared::new(unquote_symbol.clone()),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(expr),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }
         })(input)
     }
 }
 
-fn parse_unquote_spliced(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_unquote_spliced(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     let splice_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE-SPLICING"));
     move |input: &str| {
         map(preceded(tag(",@"), parse_expr(env.clone())), |expr| {
             LispVal::Cons {
-                car: Rc::new(splice_symbol.clone()),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(expr),
-                    cdr: Rc::new(LispVal::Nil),
+                car: Shared::new(splice_symbol.clone()),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(expr),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }
         })(input)
@@ -442,7 +442,7 @@ fn parse_unquote_spliced(env: Rc<Environment>) -> impl Fn(&str) -> ParseResult {
 /// Symbols are interned into `env`'s symbol table and uppercased.
 /// Returns an error if the input contains trailing non-whitespace text after
 /// the first expression — use [`read_all`] to parse multiple forms.
-pub fn read(input: &str, env: &Rc<Environment>) -> Result<LispVal, String> {
+pub fn read(input: &str, env: &Shared<Environment>) -> Result<LispVal, String> {
     match terminated(parse_expr(env.clone()), ws)(input.trim()) {
         Ok(("", val)) => Ok(val),
         Ok((rem, _)) => Err(format!("Unexpected input: {rem}")),
@@ -454,7 +454,7 @@ pub fn read(input: &str, env: &Rc<Environment>) -> Result<LispVal, String> {
 ///
 /// This is the function used for loading files and multi-expression strings.
 /// Stops at EOF; returns an error on the first malformed expression.
-pub fn read_all(input: &str, env: &Rc<Environment>) -> Result<Vec<LispVal>, String> {
+pub fn read_all(input: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, String> {
     let mut results = vec![];
     let mut current_input = input.trim();
     while !current_input.is_empty() {
@@ -475,12 +475,12 @@ mod tests {
 
     fn cons(car: LispVal, cdr: LispVal) -> LispVal {
         LispVal::Cons {
-            car: Rc::new(car),
-            cdr: Rc::new(cdr),
+            car: Shared::new(car),
+            cdr: Shared::new(cdr),
         }
     }
 
-    fn symbol(s: &str, env: &Rc<Environment>) -> LispVal {
+    fn symbol(s: &str, env: &Shared<Environment>) -> LispVal {
         LispVal::Symbol(env.intern_symbol(s))
     }
 
@@ -558,7 +558,7 @@ mod tests {
         // The empty '' is not a char literal.
         assert!(parse_char_literal("''").is_err());
         // Full reader: 'a' is a Char, 'a is (quote a).
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         assert_eq!(read("'A'", &env), Ok(LispVal::Char(65)));
         assert_eq!(
             read("'a", &env),
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_parse_atom() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         assert_eq!(
             parse_atom(env.clone())("abc"),
             Ok(("", symbol("ABC", &env)))
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_parse_multichar_symbols() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         // alpha + operator suffix
         assert_eq!(parse_atom(env.clone())("v+"), Ok(("", symbol("V+", &env))));
         assert_eq!(parse_atom(env.clone())("v-"), Ok(("", symbol("V-", &env))));
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_parse_list() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         assert_eq!(
             parse_list(env.clone())("(PLUS 1 2)"),
             Ok((
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_read_simple_list() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read("(PLUS 10 20)", &env);
         assert_eq!(
             result,
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_read_nested_list() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read("(PLUS 10 (TIMES 5 2))", &env);
         assert_eq!(
             result,
@@ -666,20 +666,20 @@ mod tests {
 
     #[test]
     fn test_read_dotted_list() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read("(a . b)", &env);
         assert_eq!(result, Ok(cons(symbol("A", &env), symbol("B", &env))));
     }
 
     #[test]
     fn test_read_rejects_dot_without_leading_element() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         assert!(read("(. 1)", &env).is_err());
     }
 
     #[test]
     fn test_read_complex_dotted_list() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read("(a b . c)", &env);
         assert_eq!(
             result,
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_comment() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read(
             "
             ; this is a comment
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_read_quoted() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read("'a", &env);
         assert_eq!(
             result,
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_read_quasiquote() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         let result = read("`(a ,b)", &env);
         assert_eq!(
             result,
@@ -749,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_read_unquote_splicing() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         // ,@xs reads as (UNQUOTE-SPLICING xs)
         let result = read(",@xs", &env);
         assert_eq!(
@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_read_unquote_vs_splicing() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         // ,x (no @) stays plain UNQUOTE, not splicing
         let result = read(",x", &env);
         assert_eq!(
@@ -777,13 +777,13 @@ mod tests {
 
     #[test]
     fn test_read_nil() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         assert_eq!(read("NIL", &env), Ok(LispVal::Nil));
     }
 
     #[test]
     fn test_read_t() {
-        let env = Rc::new(Environment::new());
+        let env = Shared::new(Environment::new());
         assert_eq!(read("T", &env), Ok(symbol("T", &env)));
     }
 }

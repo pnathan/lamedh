@@ -3,7 +3,7 @@ use super::*;
 mod evaluator_internal_tests {
     use super::*;
 
-    fn dummy_env() -> Rc<Environment> {
+    fn dummy_env() -> Shared<Environment> {
         Environment::new_with_builtins()
     }
 
@@ -74,7 +74,7 @@ mod evaluator_internal_tests {
         assert!(env.jit_disassemble("CAR").is_none());
     }
 
-    fn eval_line_internal(env: &Rc<Environment>, src: &str) {
+    fn eval_line_internal(env: &Shared<Environment>, src: &str) {
         let expr = crate::reader::read(src, env).unwrap();
         eval(&expr, env).unwrap();
     }

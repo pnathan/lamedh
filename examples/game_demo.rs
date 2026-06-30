@@ -19,8 +19,8 @@
 //! objects.
 
 use lamedh::{
-    LispError, LispVal, LispValExtension, environment::Environment, eval_str, evaluator, load_file,
-    printer, reader,
+    LispError, LispVal, LispValExtension, Shared, environment::Environment, eval_str, evaluator,
+    load_file, printer, reader,
 };
 use std::cell::RefCell;
 use std::hash::Hasher;
@@ -143,7 +143,7 @@ fn expect_args(args: &[LispVal], n: usize, fname: &str) -> Result<(), LispError>
 /// to `[0, GRID_SIZE)` by the host so a script can never wander off the board.
 const GRID_SIZE: i64 = 8;
 
-fn register_game_api(env: &Rc<Environment>) {
+fn register_game_api(env: &Shared<Environment>) {
     // --- constructors -----------------------------------------------------
     // (spawn-entity name x y hp attack) -> entity
     env.register_fn("spawn-entity", |args, _env| {
@@ -333,7 +333,7 @@ fn run() {
 /// costs*. Two independent levers show up:
 ///   - parse once (cache the form) vs. re-parse every call (`eval_str`)
 ///   - do hot math host-side (one boundary call) vs. in interpreted Lisp
-fn perf_comparison(env: &Rc<Environment>, hero: &LispVal, goblin: &LispVal) {
+fn perf_comparison(env: &Shared<Environment>, hero: &LispVal, goblin: &LispVal) {
     const N: u32 = 200_000;
 
     // Pull the raw structs back out for a pure-Rust baseline.
@@ -412,14 +412,14 @@ fn perf_comparison(env: &Rc<Environment>, hero: &LispVal, goblin: &LispVal) {
 }
 
 /// Query an entity's liveness from Rust by evaluating a tiny Lisp expression.
-fn alive(env: &Rc<Environment>, var: &str) -> bool {
+fn alive(env: &Shared<Environment>, var: &str) -> bool {
     eval_str(&format!("(entity-alive? {var})"), env)
         .map(|v| v.is_truthy())
         .unwrap_or(false)
 }
 
 /// Render the board by reading the host objects' display strings.
-fn print_world(env: &Rc<Environment>, named: &[(&str, &LispVal)]) {
+fn print_world(env: &Shared<Environment>, named: &[(&str, &LispVal)]) {
     for (label, val) in named {
         let shown = printer::print(val);
         println!("   {label:<7} {shown}");

@@ -9,7 +9,10 @@ use super::*;
 ///   - `(Name-p x)` type predicate
 ///   - `(Name-field x)` field accessor and `(set-Name-field! x v)` mutator
 #[inline(never)]
-pub(super) fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+pub(super) fn eval_defstruct(
+    rest: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<TcoStep, LispError> {
     let sargs = list_to_vec(rest)?;
     if sargs.is_empty() {
         return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -57,38 +60,38 @@ pub(super) fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<Tc
         }
         stmts.push(LispVal::Symbol(env.intern_symbol("S")));
         let progn = LispVal::Cons {
-            car: Rc::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
-            cdr: Rc::new(vec_to_list(stmts)),
+            car: Shared::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
+            cdr: Shared::new(vec_to_list(stmts)),
         };
         let let_form = crate::reader::read(&format!("(array {})", n_fields + 1), env)
             .map_err(LispError::Generic)?;
         let binding = LispVal::Cons {
-            car: Rc::new(LispVal::Cons {
-                car: Rc::new(LispVal::Symbol(env.intern_symbol("S"))),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(let_form),
-                    cdr: Rc::new(LispVal::Nil),
+            car: Shared::new(LispVal::Cons {
+                car: Shared::new(LispVal::Symbol(env.intern_symbol("S"))),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(let_form),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }),
-            cdr: Rc::new(LispVal::Nil),
+            cdr: Shared::new(LispVal::Nil),
         };
         let full_let = LispVal::Cons {
-            car: Rc::new(LispVal::Symbol(env.intern_symbol("LET"))),
-            cdr: Rc::new(LispVal::Cons {
-                car: Rc::new(binding),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(progn),
-                    cdr: Rc::new(LispVal::Nil),
+            car: Shared::new(LispVal::Symbol(env.intern_symbol("LET"))),
+            cdr: Shared::new(LispVal::Cons {
+                car: Shared::new(binding),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(progn),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }),
         };
         let lambda_form = LispVal::Cons {
-            car: Rc::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
-            cdr: Rc::new(LispVal::Cons {
-                car: Rc::new(vec_to_list(params)),
-                cdr: Rc::new(LispVal::Cons {
-                    car: Rc::new(full_let),
-                    cdr: Rc::new(LispVal::Nil),
+            car: Shared::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
+            cdr: Shared::new(LispVal::Cons {
+                car: Shared::new(vec_to_list(params)),
+                cdr: Shared::new(LispVal::Cons {
+                    car: Shared::new(full_let),
+                    cdr: Shared::new(LispVal::Nil),
                 }),
             }),
         };
@@ -128,7 +131,7 @@ pub(super) fn eval_defstruct(rest: &LispVal, env: &Rc<Environment>) -> Result<Tc
 /// Wrap a slice of body forms into a single form for constructors that take one
 /// body expression (`make_macro`/`make_fexpr`). Zero forms → `NIL`, one form →
 /// itself, many → `(progn form...)`.
-fn progn_wrap(forms: &[LispVal], env: &Rc<Environment>) -> LispVal {
+fn progn_wrap(forms: &[LispVal], env: &Shared<Environment>) -> LispVal {
     match forms {
         [] => LispVal::Nil,
         [single] => single.clone(),
@@ -136,13 +139,13 @@ fn progn_wrap(forms: &[LispVal], env: &Rc<Environment>) -> LispVal {
             let mut progn = LispVal::Nil;
             for form in many.iter().rev() {
                 progn = LispVal::Cons {
-                    car: Rc::new(form.clone()),
-                    cdr: Rc::new(progn),
+                    car: Shared::new(form.clone()),
+                    cdr: Shared::new(progn),
                 };
             }
             LispVal::Cons {
-                car: Rc::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
-                cdr: Rc::new(progn),
+                car: Shared::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
+                cdr: Shared::new(progn),
             }
         }
     }
@@ -168,7 +171,7 @@ fn progn_wrap(forms: &[LispVal], env: &Rc<Environment>) -> LispVal {
 /// inside the body does not change the iteration sequence — the loop driver
 /// overwrites the slot at the top of each pass. `FOR` always returns `NIL`.
 #[inline(never)]
-pub(super) fn eval_for(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoStep, LispError> {
     let args = list_to_vec(rest)?;
     if args.is_empty() {
         return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -244,7 +247,7 @@ pub(super) fn eval_for(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
 /// environment (like `PROGN`), so no per-iteration frame is allocated. Returns
 /// `NIL` once `cond` becomes false (which is immediately if it starts false).
 #[inline(never)]
-pub(super) fn eval_while(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+pub(super) fn eval_while(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoStep, LispError> {
     if let LispVal::Cons {
         car: cond_expr,
         cdr: body_list,
@@ -270,7 +273,7 @@ pub(super) fn eval_while(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoSte
 
 /// Perform one evaluation step. Returns `TcoStep::Done` for final results
 /// and `TcoStep::TailCall` for tail positions (caller loops instead of recursing).
-pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoStep, LispError> {
     match val {
         LispVal::Nil => Ok(TcoStep::Done(Ok(LispVal::Nil))),
         LispVal::Symbol(s) => {
@@ -578,7 +581,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                             Ok(v) => return Ok(TcoStep::Done(Ok(v))),
                             Err(LispError::Signaled(c)) => *c,
                             Err(LispError::Generic(msg)) => {
-                                LispVal::Error(Rc::new(crate::ErrorObj {
+                                LispVal::Error(Shared::new(crate::ErrorObj {
                                     message: msg,
                                     data: LispVal::Nil,
                                 }))
@@ -1345,13 +1348,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                             let mut progn = LispVal::Nil;
                             for form in args[1..].iter().rev() {
                                 progn = LispVal::Cons {
-                                    car: Rc::new(form.clone()),
-                                    cdr: Rc::new(progn),
+                                    car: Shared::new(form.clone()),
+                                    cdr: Shared::new(progn),
                                 };
                             }
                             LispVal::Cons {
-                                car: Rc::new(progn_sym),
-                                cdr: Rc::new(progn),
+                                car: Shared::new(progn_sym),
+                                cdr: Shared::new(progn),
                             }
                         };
                         Ok(TcoStep::Done(Ok(LispVal::Vau(Box::new(crate::Vau {
@@ -1652,7 +1655,10 @@ fn parse_star_params(
     Ok((params, i))
 }
 
-pub(super) fn eval_defun_star(rest: &LispVal, env: &Rc<Environment>) -> Result<TcoStep, LispError> {
+pub(super) fn eval_defun_star(
+    rest: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<TcoStep, LispError> {
     let items = list_to_vec(rest)?;
     if items.is_empty() {
         return Err(LispError::Generic("defun*: missing name".to_string()));
@@ -1707,8 +1713,8 @@ pub(super) fn eval_defun_star(rest: &LispVal, env: &Rc<Environment>) -> Result<T
             let sym = env.intern_symbol(&name);
             // Build the source form for see-source introspection.
             let source_form = LispVal::Cons {
-                car: Rc::new(LispVal::Symbol(env.intern_symbol("DEFUN*"))),
-                cdr: Rc::new(vec_to_list(items)),
+                car: Shared::new(LispVal::Symbol(env.intern_symbol("DEFUN*"))),
+                cdr: Shared::new(vec_to_list(items)),
             };
             sym.borrow_mut()
                 .plist

@@ -72,8 +72,8 @@ pub(super) fn vec_to_list(vec: Vec<LispVal>) -> LispVal {
     vec.into_iter()
         .rev()
         .fold(LispVal::Nil, |cdr, car| LispVal::Cons {
-            car: Rc::new(car),
-            cdr: Rc::new(cdr),
+            car: Shared::new(car),
+            cdr: Shared::new(cdr),
         })
 }
 
@@ -107,7 +107,7 @@ pub(super) fn proper_list_len(list: &LispVal) -> Result<usize, LispError> {
 /// dotted argument lists.
 pub(super) fn eval_operands(
     rest: &LispVal,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<Vec<LispVal>, LispError> {
     let mut out = Vec::new();
     let mut cur = rest;
@@ -130,7 +130,7 @@ pub(super) fn eval_operands(
 /// form. Used by the binding special forms (`LET`/`LET*`) to accept multi-form
 /// bodies. `forms` is expected to be non-empty; an empty slice yields `(PROGN)`,
 /// which evaluates to `NIL`.
-pub(super) fn wrap_body_forms(forms: &[LispVal], env: &Rc<Environment>) -> LispVal {
+pub(super) fn wrap_body_forms(forms: &[LispVal], env: &Shared<Environment>) -> LispVal {
     if forms.len() == 1 {
         forms[0].clone()
     } else {

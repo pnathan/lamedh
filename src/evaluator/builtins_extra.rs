@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn apply_symbol_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::GetP => {
@@ -67,7 +67,7 @@ pub(super) fn apply_symbol_op(
 pub(super) fn apply_io_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Read => {
@@ -154,7 +154,7 @@ pub(super) fn apply_io_op(
 pub(super) fn apply_error_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Error => {
@@ -162,7 +162,7 @@ pub(super) fn apply_error_op(
             // (error existing-error-value)  -> re-signal it unchanged
             // (error message irritants...)  -> signal (make-error message irritants)
             if args.is_empty() {
-                return Err(LispError::Signaled(Box::new(LispVal::Error(Rc::new(
+                return Err(LispError::Signaled(Box::new(LispVal::Error(Shared::new(
                     crate::ErrorObj {
                         message: "Error".to_string(),
                         data: LispVal::Nil,
@@ -179,7 +179,7 @@ pub(super) fn apply_error_op(
             // (error message [data]) — mirrors make-error: an optional single
             // data payload (a cons or any value), defaulting to NIL.
             let data = args.get(1).cloned().unwrap_or(LispVal::Nil);
-            Err(LispError::Signaled(Box::new(LispVal::Error(Rc::new(
+            Err(LispError::Signaled(Box::new(LispVal::Error(Shared::new(
                 crate::ErrorObj { message, data },
             )))))
         }
@@ -210,7 +210,7 @@ pub(super) fn apply_error_op(
 pub(super) fn apply_list_processing(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Subst => {
@@ -227,8 +227,8 @@ pub(super) fn apply_list_processing(
                     new.clone()
                 } else if let LispVal::Cons { car, cdr } = tree {
                     LispVal::Cons {
-                        car: Rc::new(subst_helper(new, old, car)),
-                        cdr: Rc::new(subst_helper(new, old, cdr)),
+                        car: Shared::new(subst_helper(new, old, car)),
+                        cdr: Shared::new(subst_helper(new, old, cdr)),
                     }
                 } else {
                     tree.clone()
@@ -271,8 +271,8 @@ pub(super) fn apply_list_processing(
                     LispVal::Cons { car, cdr } => {
                         // Recursively process both car and cdr
                         LispVal::Cons {
-                            car: Rc::new(sublis_helper(alist, car)),
-                            cdr: Rc::new(sublis_helper(alist, cdr)),
+                            car: Shared::new(sublis_helper(alist, car)),
+                            cdr: Shared::new(sublis_helper(alist, cdr)),
                         }
                     }
                     _ => {
@@ -398,7 +398,7 @@ pub(super) fn apply_list_processing(
             }
             if let LispVal::Cons { car: _, cdr } = &args[0] {
                 Ok(LispVal::Cons {
-                    car: Rc::new(args[1].clone()),
+                    car: Shared::new(args[1].clone()),
                     cdr: cdr.clone(),
                 })
             } else {
@@ -423,7 +423,7 @@ pub(super) fn apply_list_processing(
             if let LispVal::Cons { car, cdr: _ } = &args[0] {
                 Ok(LispVal::Cons {
                     car: car.clone(),
-                    cdr: Rc::new(args[1].clone()),
+                    cdr: Shared::new(args[1].clone()),
                 })
             } else {
                 Err(LispError::Generic(
@@ -442,7 +442,7 @@ pub(super) fn apply_list_processing(
 pub(super) fn apply_bitwise_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Logor => {
@@ -531,7 +531,7 @@ pub(super) fn apply_bitwise_op(
 pub(super) fn apply_new_list_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    _env: &Rc<Environment>,
+    _env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::List => Ok(vec_to_list(args.to_vec())),
@@ -634,7 +634,7 @@ pub(super) fn apply_new_list_ops(
 pub(super) fn apply_new_numeric_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Mod => {
@@ -768,7 +768,7 @@ pub(super) fn apply_new_numeric_ops(
 pub(super) fn apply_type_predicates(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     if args.len() != 1 {
         return Err(LispError::Generic(
@@ -810,7 +810,7 @@ pub(super) fn apply_type_predicates(
 pub(super) fn apply_function_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Funcall => {
