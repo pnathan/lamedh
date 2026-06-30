@@ -1421,11 +1421,15 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                                         eval_args.len()
                                     )))));
                                 }
-                                for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
-                                    new_env.set(param.clone(), arg.clone());
+                                // Move fixed args into the frame; remaining go to the rest list.
+                                let n_fixed = lambda.params.len();
+                                let mut eval_args = eval_args;
+                                for (param, arg) in
+                                    lambda.params.iter().zip(eval_args.drain(..n_fixed))
+                                {
+                                    new_env.set(param.clone(), arg);
                                 }
-                                let rest_args =
-                                    vec_to_list(eval_args[lambda.params.len()..].to_vec());
+                                let rest_args = vec_to_list(eval_args);
                                 new_env.set(rest_param_name.clone(), rest_args);
                             } else {
                                 if lambda.params.len() != eval_args.len() {
@@ -1435,8 +1439,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                                         eval_args.len()
                                     )))));
                                 }
-                                for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
-                                    new_env.set(param.clone(), arg.clone());
+                                // Move every arg directly into the frame — no clone.
+                                for (param, arg) in lambda.params.iter().zip(eval_args) {
+                                    new_env.set(param.clone(), arg);
                                 }
                             }
                             return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
@@ -1496,10 +1501,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                                 eval_args.len()
                             )))));
                         }
-                        for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
-                            new_env.set(param.clone(), arg.clone());
+                        // Move fixed args into the frame; remaining go to the rest list.
+                        let n_fixed = lambda.params.len();
+                        let mut eval_args = eval_args;
+                        for (param, arg) in lambda.params.iter().zip(eval_args.drain(..n_fixed)) {
+                            new_env.set(param.clone(), arg);
                         }
-                        let rest_args = vec_to_list(eval_args[lambda.params.len()..].to_vec());
+                        let rest_args = vec_to_list(eval_args);
                         new_env.set(rest_param_name.clone(), rest_args);
                     } else {
                         if lambda.params.len() != eval_args.len() {
@@ -1509,14 +1517,15 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
                                 eval_args.len()
                             )))));
                         }
-                        for (param, arg) in lambda.params.iter().zip(eval_args.iter()) {
-                            new_env.set(param.clone(), arg.clone());
+                        // Move every arg directly into the frame — no clone.
+                        for (param, arg) in lambda.params.iter().zip(eval_args) {
+                            new_env.set(param.clone(), arg);
                         }
                     }
                     return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
                 }
 
-                Ok(TcoStep::Done(apply(&func, &eval_args, env)))
+                Ok(TcoStep::Done(apply_owned(&func, eval_args, env)))
             }
         }
     }

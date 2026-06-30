@@ -1219,3 +1219,59 @@ pub(super) fn apply(
         _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
     }
 }
+
+/// Apply a callable to an **owned** argument vector, moving each value into the
+/// lambda's environment frame instead of cloning it.
+///
+/// This is the hot path for non-tail calls coming from the TCO driver loop
+/// (`TcoStep::Apply`) and from the non-symbol-head apply site in `eval_step`.
+/// For `LispVal::Lambda` the args are consumed via `into_iter()`/`drain` so
+/// no per-argument clone is needed. All other callables (builtins, natives,
+/// fexprs, macros) fall through to [`apply`] via a slice reference.
+pub(super) fn apply_owned(
+    func: &LispVal,
+    args: Vec<LispVal>,
+    env: &Rc<Environment>,
+) -> Result<LispVal, LispError> {
+    match func {
+        LispVal::Lambda(lambda) => {
+            // Create new environment with:
+            // - Lexical parent: lambda.env (captured closure environment)
+            // - Dynamic parent: env (caller's environment for dynamic variable lookup)
+            let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+            if let Some(rest_param_name) = &lambda.rest_param {
+                if args.len() < lambda.params.len() {
+                    return Err(LispError::Generic(format!(
+                        "lambda expected at least {} arguments, got {}",
+                        lambda.params.len(),
+                        args.len()
+                    )));
+                }
+                // Move fixed args into the frame, keep the rest for the &rest list.
+                let n_fixed = lambda.params.len();
+                let mut args = args;
+                for (param, arg) in lambda.params.iter().zip(args.drain(..n_fixed)) {
+                    new_env.set(param.clone(), arg);
+                }
+                let rest_args = vec_to_list(args);
+                new_env.set(rest_param_name.clone(), rest_args);
+            } else {
+                if lambda.params.len() != args.len() {
+                    return Err(LispError::Generic(format!(
+                        "lambda expected {} arguments, got {}",
+                        lambda.params.len(),
+                        args.len()
+                    )));
+                }
+                // Move every arg directly into the frame — no clone.
+                for (param, arg) in lambda.params.iter().zip(args) {
+                    new_env.set(param.clone(), arg);
+                }
+            }
+            eval(&lambda.body, &new_env)
+        }
+        // For all other callables (builtins, natives, fexprs, macros) the
+        // existing borrowed-slice path is correct.
+        other => apply(other, &args, env),
+    }
+}
