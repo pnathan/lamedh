@@ -28,6 +28,8 @@ The standard library provides essential functions and macros that extend the bui
 | `16-conditions.lisp` | Condition helpers |
 | `17-arrays.lisp` | Array utilities |
 | `18-format.lisp` | `FORMAT` subset |
+| `19-typeclasses.lisp` | Explicit typeclass dictionaries |
+| `20-condensation.lisp` | Condensation metadata and concept helpers |
 | `97-doc-renderer.lisp` | Help renderer |
 | `98-help-system.lisp` | `(HELP ...)` interface |
 | `99-help-data.lisp` | Structured help database |

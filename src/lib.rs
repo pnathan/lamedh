@@ -187,6 +187,15 @@
 //! | `09-lisp15.lisp` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
 //! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
 //! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
+//! | `12-control.lisp` | Control-flow helpers |
+//! | `13-functional.lisp` | Higher-order functional utilities |
+//! | `14-strings.lisp` | String utilities |
+//! | `15-sets-hash.lisp` | Set, association-list, and hash helpers |
+//! | `16-conditions.lisp` | Condition helpers |
+//! | `17-arrays.lisp` | Array utilities |
+//! | `18-format.lisp` | Small `FORMAT` subset |
+//! | `19-typeclasses.lisp` | Explicit typeclass dictionaries |
+//! | `20-condensation.lisp` | Condensation metadata and concept helpers |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1197,6 +1206,14 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ),
     ("17-arrays.lisp", include_str!("../lib/17-arrays.lisp")),
     ("18-format.lisp", include_str!("../lib/18-format.lisp")),
+    (
+        "19-typeclasses.lisp",
+        include_str!("../lib/19-typeclasses.lisp"),
+    ),
+    (
+        "20-condensation.lisp",
+        include_str!("../lib/20-condensation.lisp"),
+    ),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
