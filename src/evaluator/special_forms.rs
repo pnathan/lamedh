@@ -357,35 +357,76 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         ))))
                     }
                     "COND" => {
-                        let clauses = list_to_vec(rest)?;
-                        for clause in clauses {
-                            let parts = match list_to_vec(&clause) {
-                                Ok(parts) if !parts.is_empty() => parts,
-                                Ok(_) => {
-                                    return Ok(TcoStep::Done(Err(LispError::Generic(
-                                        "cond clauses must be non-empty lists".to_string(),
-                                    ))));
-                                }
-                                Err(_) => {
+                        // Walk the clause list and each clause's body directly off
+                        // the cons cells — no `list_to_vec` allocations. COND runs
+                        // on the hot path (it is the body of most conditionals and
+                        // tail-recursive loops), so the former per-eval Vec churn
+                        // was pure overhead.
+                        let mut clauses = rest.as_ref();
+                        loop {
+                            let (clause, rest_clauses) = match clauses {
+                                LispVal::Nil => break,
+                                LispVal::Cons { car, cdr } => (car.as_ref(), cdr.as_ref()),
+                                _ => {
                                     return Ok(TcoStep::Done(Err(LispError::Generic(
                                         "cond clauses must be proper lists".to_string(),
                                     ))));
                                 }
                             };
-
-                            let predicate_result = eval(&parts[0], env)?;
-                            if is_truthy(&predicate_result) {
-                                if parts.len() == 1 {
-                                    return Ok(TcoStep::Done(Ok(predicate_result)));
+                            match clause {
+                                // Empty clause `()` is not allowed.
+                                LispVal::Nil => {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
+                                        "cond clauses must be non-empty lists".to_string(),
+                                    ))));
                                 }
-                                for expr in &parts[1..parts.len() - 1] {
-                                    eval(expr, env)?;
+                                LispVal::Cons {
+                                    car: test,
+                                    cdr: body,
+                                } => {
+                                    let predicate_result = eval(test, env)?;
+                                    if is_truthy(&predicate_result) {
+                                        // `(test)` with no body returns the test value.
+                                        let mut b = body.as_ref();
+                                        if matches!(b, LispVal::Nil) {
+                                            return Ok(TcoStep::Done(Ok(predicate_result)));
+                                        }
+                                        // Evaluate body forms, tail-calling the last.
+                                        loop {
+                                            match b {
+                                                LispVal::Cons {
+                                                    car: form,
+                                                    cdr: next,
+                                                } => {
+                                                    if matches!(next.as_ref(), LispVal::Nil) {
+                                                        return Ok(TcoStep::TailCall(
+                                                            form.as_ref().clone(),
+                                                            env.clone(),
+                                                        ));
+                                                    }
+                                                    eval(form, env)?;
+                                                    b = next.as_ref();
+                                                }
+                                                _ => {
+                                                    return Ok(TcoStep::Done(Err(
+                                                        LispError::Generic(
+                                                            "cond clauses must be proper lists"
+                                                                .to_string(),
+                                                        ),
+                                                    )));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                return Ok(TcoStep::TailCall(
-                                    parts.last().expect("COND body is non-empty").clone(),
-                                    env.clone(),
-                                ));
+                                // Non-nil atom clause: not a list.
+                                _ => {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
+                                        "cond clauses must be proper lists".to_string(),
+                                    ))));
+                                }
                             }
+                            clauses = rest_clauses;
                         }
                         Ok(TcoStep::Done(Ok(LispVal::Nil)))
                     }
