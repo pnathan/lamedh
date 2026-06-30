@@ -34,10 +34,17 @@
     (assert-equal (sf-test-mac hello) 'HELLO)))
 
 (deftest sf-macroexpand
-  ;; MACROEXPAND returns the expansion of a macro call without evaluating it
+  ;; MACROEXPAND returns the expansion of a macro call without evaluating it.
+  ;; The DEFUN macro now wraps the DEF in a PROGN that also triggers the
+  ;; call-graph hook (guarded by BOUNDP so it is safe before file 19 is loaded).
   (assert-equal
     (macroexpand '(defun foo (x) (+ x 1)))
-    '(DEF FOO (LAMBDA (X) (+ X 1)))))
+    '(PROGN
+       (DEF FOO (LAMBDA (X) (+ X 1)))
+       (IF (BOUNDP 'DEFUN-UPDATE-CALL-GRAPH!)
+           (DEFUN-UPDATE-CALL-GRAPH! 'FOO '(X) '((+ X 1)))
+           NIL)
+       'FOO)))
 
 (deftest sf-quasiquote-literal
   ;; Quasiquote with no unquotes produces a plain list

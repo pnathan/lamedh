@@ -214,3 +214,4 @@
 (defvau defun-typed-opt (x e)
   "Optimize a DEFUN-TYPED definition before HM checking and native compilation."
   (eval (optimize-form (cons 'defun-typed x)) e))
+

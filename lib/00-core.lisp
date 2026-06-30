@@ -9,11 +9,27 @@
 ;; it would rebind the name to a native membrane, which changes introspection
 ;; (`see-source`) and the numeric edge semantics (overflow / div-by-zero, #67).)
 (defmacro defun (name params &rest body)
-  (if (stringp (car body))
-    (let ((lambda-expr (cons 'lambda (cons params (cdr body)))))
-      `(def ,name ,lambda-expr ,(car body)))
-    (let ((lambda-expr (cons 'lambda (cons params body))))
-      `(def ,name ,lambda-expr))))
+  ;; Split off an optional leading docstring so body-forms holds only code.
+  (let* ((has-doc     (stringp (car body)))
+         (doc         (if has-doc (car body) nil))
+         (body-forms  (if has-doc (cdr body) body))
+         (lambda-expr (cons 'lambda (cons params body-forms))))
+    ;; After binding the function, run any registered post-defun hooks.
+    ;; The guards keep early stdlib files (00–10) safe: these hooks live in
+    ;; 11-optimizer-vau.lisp and are absent during the initial load pass.
+    (if has-doc
+      `(progn
+         (def ,name ,lambda-expr ,doc)
+         (if (boundp 'defun-update-call-graph!)
+             (defun-update-call-graph! ',name ',params ',body-forms)
+             nil)
+         ',name)
+      `(progn
+         (def ,name ,lambda-expr)
+         (if (boundp 'defun-update-call-graph!)
+             (defun-update-call-graph! ',name ',params ',body-forms)
+             nil)
+         ',name))))
 
 ;; Named vau operative with optional docstring as first body form.
 ;; (defvau name (operands-param env-param) ["docstring"] body...)
