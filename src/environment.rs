@@ -151,6 +151,8 @@ impl SymbolTable {
             name,
             plist: HashMap::new(),
             value: None,
+            is_keyword: false, // gensym names never start with ':'
+            is_dynamic: false,
         }))
     }
 
@@ -175,6 +177,8 @@ impl SymbolTable {
         }
 
         let symbol = Shared::new(SharedCell::new(Symbol {
+            is_keyword: name.starts_with(':'),
+            is_dynamic: false,
             name: name.to_string(),
             plist: HashMap::new(),
             value: None,
@@ -971,9 +975,11 @@ impl Environment {
     /// variable exists.
     pub fn resolve(&self, sym: &Shared<SharedCell<Symbol>>) -> Option<LispVal> {
         let s = sym.borrow();
-        if self.shared.has_dynamic.get() && self.shared.dynamic_vars.borrow().contains(&s.name) {
+        if self.shared.has_dynamic.get() && s.is_dynamic {
             // Shallow binding: the current dynamic value is always in the symbol's
             // value cell — O(1), no dynamic-parent chain walk required.
+            // is_dynamic is a cached flag set by mark_dynamic(), so this avoids
+            // the dynamic_vars HashSet probe on the hot evaluation path.
             return s.value.clone();
         }
         // Lexical: walk local frames by name; read the root environment's cell.
@@ -1256,6 +1262,10 @@ impl Environment {
 
     /// Mark a variable as dynamic (global registration)
     pub fn mark_dynamic(&self, name: String) {
+        // Set is_dynamic on the interned symbol so resolve() can use a plain
+        // bool field read instead of a HashSet probe on the hot path.
+        let sym = self.shared.symbols.borrow_mut().intern(&name);
+        sym.borrow_mut().is_dynamic = true;
         self.shared.dynamic_vars.borrow_mut().insert(name);
         // Flip the fast-path flag so future lookups take the dynamic-aware path.
         self.shared.has_dynamic.set(true);
