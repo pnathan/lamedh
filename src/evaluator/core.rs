@@ -1,4 +1,5 @@
 use super::*;
+use smallvec::SmallVec;
 /// Default maximum recursion depth (number of nested `eval` frames) before a
 /// recoverable error is returned instead of overflowing the native stack.
 ///
@@ -108,8 +109,8 @@ pub(super) fn proper_list_len(list: &LispVal) -> Result<usize, LispError> {
 pub(super) fn eval_operands(
     rest: &LispVal,
     env: &Shared<Environment>,
-) -> Result<Vec<LispVal>, LispError> {
-    let mut out = Vec::new();
+) -> Result<SmallVec<[LispVal; 4]>, LispError> {
+    let mut out = SmallVec::new();
     let mut cur = rest;
     while let LispVal::Cons { car, cdr } = cur {
         out.push(eval(car, env)?);

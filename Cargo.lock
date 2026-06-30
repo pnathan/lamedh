@@ -445,6 +445,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "nom",
+ "smallvec",
 ]
 
 [[package]]

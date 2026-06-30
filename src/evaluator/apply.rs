@@ -1,4 +1,5 @@
 use super::*;
+use smallvec::SmallVec;
 pub(super) fn apply(
     func: &LispVal,
     args: &[LispVal],
@@ -1242,7 +1243,7 @@ pub(super) fn apply(
 /// fexprs, macros) fall through to [`apply`] via a slice reference.
 pub(super) fn apply_owned(
     func: &LispVal,
-    args: Vec<LispVal>,
+    args: SmallVec<[LispVal; 4]>,
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match func {
@@ -1265,7 +1266,7 @@ pub(super) fn apply_owned(
                 for (param, arg) in lambda.params.iter().zip(args.drain(..n_fixed)) {
                     new_env.set(param.clone(), arg);
                 }
-                let rest_args = vec_to_list(args);
+                let rest_args = vec_to_list(args.into_vec());
                 new_env.set(rest_param_name.clone(), rest_args);
             } else {
                 if lambda.params.len() != args.len() {
