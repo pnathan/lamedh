@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn apply_string_symbol_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Explode => {
@@ -134,7 +134,7 @@ pub(super) fn apply_string_symbol_ops(
 pub(super) fn apply_new_bitwise_ops(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Ash => {
@@ -209,7 +209,7 @@ pub(super) fn apply_new_bitwise_ops(
 pub(super) fn apply_plist_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Remprop => {

@@ -2,7 +2,7 @@ use super::*;
 pub(super) fn apply(
     func: &LispVal,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match func {
         LispVal::Builtin(builtin) => match builtin {
@@ -71,8 +71,8 @@ pub(super) fn apply(
                 let mut out = LispVal::Nil;
                 for v in result.into_iter().rev() {
                     out = LispVal::Cons {
-                        car: Rc::new(v),
-                        cdr: Rc::new(out),
+                        car: Shared::new(v),
+                        cdr: Shared::new(out),
                     };
                 }
                 Ok(out)
@@ -753,8 +753,8 @@ pub(super) fn apply(
                     .into_iter()
                     .rev()
                     .fold(LispVal::Nil, |cdr, name| LispVal::Cons {
-                        car: Rc::new(LispVal::String(name)),
-                        cdr: Rc::new(cdr),
+                        car: Shared::new(LispVal::String(name)),
+                        cdr: Shared::new(cdr),
                     });
                 Ok(list)
             }
@@ -1020,8 +1020,8 @@ pub(super) fn apply(
                     .into_iter()
                     .rev()
                     .fold(LispVal::Nil, |cdr, n| LispVal::Cons {
-                        car: Rc::new(LispVal::String(n)),
-                        cdr: Rc::new(cdr),
+                        car: Shared::new(LispVal::String(n)),
+                        cdr: Shared::new(cdr),
                     });
                 Ok(list)
             }
@@ -1032,7 +1032,7 @@ pub(super) fn apply(
                         "the-environment takes no arguments".to_string(),
                     ));
                 }
-                Ok(LispVal::Environment(Rc::clone(env)))
+                Ok(LispVal::Environment(env.clone()))
             }
             BuiltinFunc::MakeEnvironment => match args.len() {
                 0 => Ok(LispVal::Environment(Environment::new_with_builtins())),
@@ -1073,7 +1073,7 @@ pub(super) fn apply(
                     }
                 };
                 let v = vec![LispVal::Nil; n];
-                Ok(LispVal::Array(Rc::new(RefCell::new(v))))
+                Ok(LispVal::Array(Shared::new(SharedCell::new(v))))
             }
             BuiltinFunc::ArrayFetch => {
                 if args.len() != 2 {
@@ -1163,7 +1163,7 @@ pub(super) fn apply(
                         "list->array takes exactly one argument".to_string(),
                     ));
                 }
-                Ok(LispVal::Array(Rc::new(RefCell::new(list_to_vec(
+                Ok(LispVal::Array(Shared::new(SharedCell::new(list_to_vec(
                     &args[0],
                 )?))))
             }

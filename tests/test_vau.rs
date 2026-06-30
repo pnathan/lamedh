@@ -1,15 +1,15 @@
 use lamedh::environment::Environment;
-use lamedh::{eval_all, eval_line};
+use lamedh::{Shared, eval_all, eval_line};
 
-fn env() -> std::rc::Rc<Environment> {
+fn env() -> Shared<Environment> {
     Environment::with_stdlib()
 }
 
-fn eval(src: &str, env: &std::rc::Rc<Environment>) -> String {
+fn eval(src: &str, env: &Shared<Environment>) -> String {
     eval_line(src, env)
 }
 
-fn evals(src: &str, env: &std::rc::Rc<Environment>) -> String {
+fn evals(src: &str, env: &Shared<Environment>) -> String {
     match eval_all(src, env) {
         Ok(results) => results
             .last()

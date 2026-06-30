@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn make_lambda(
     params: &LispVal,
     body: &LispVal,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
@@ -48,7 +48,7 @@ pub(super) fn make_lambda(
 pub(super) fn make_fexpr(
     params: &LispVal,
     body: &LispVal,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let params_vec: Result<Vec<String>, _> = p_list
@@ -75,7 +75,7 @@ pub(super) fn make_fexpr(
 pub(super) fn make_macro(
     params: &LispVal,
     body: &LispVal,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
@@ -120,7 +120,7 @@ pub(super) fn make_macro(
 pub(super) fn expand_macro(
     m: &crate::Macro,
     args: &[LispVal],
-    _env: &Rc<Environment>,
+    _env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let macro_env = Environment::new_child(&m.env);
 
@@ -171,7 +171,7 @@ pub(super) fn expand_macro(
 /// depth exceeded.  [`LispError::Return`] and [`LispError::Go`] are internal
 /// control-flow signals for `PROG`/`RETURN`/`GO` and should not escape a
 /// top-level `eval` call under normal use.
-pub fn eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub fn eval(val: &LispVal, env: &Shared<Environment>) -> Result<LispVal, LispError> {
     // Bound recursion so deep/infinite recursion is a recoverable error rather
     // than a native stack overflow that aborts the whole process (issue #61).
     let _depth_guard = DepthGuard::enter()?;
@@ -184,7 +184,7 @@ pub(super) enum TcoStep {
     /// Evaluation is complete; return this value.
     Done(Result<LispVal, LispError>),
     /// Tail call: evaluate `val` in `env` next, reusing this stack frame.
-    TailCall(LispVal, Rc<Environment>),
+    TailCall(LispVal, Shared<Environment>),
     /// Apply a non-tail callable (builtin/native) to already-evaluated args.
     /// Deferred to the driver loop so the `apply` runs *after* `eval_step`
     /// returns — releasing any borrow `eval_step` holds on the head symbol
@@ -207,10 +207,10 @@ pub(super) enum TcoStep {
 /// guard is correctly applied to non-tail frames.
 pub(super) fn eval_impl(
     initial_val: LispVal,
-    initial_env: Rc<Environment>,
+    initial_env: Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let mut current_val: LispVal = initial_val;
-    let mut current_env: Rc<Environment> = initial_env;
+    let mut current_env: Shared<Environment> = initial_env;
 
     loop {
         // Each iteration computes a TcoStep, then either returns or loops.
@@ -236,8 +236,8 @@ pub(super) fn eval_impl(
 
 /// Build the `Native` membrane entry for a typed function `name`.
 pub(super) fn make_typed_native(name: String) -> LispVal {
-    LispVal::Native(Rc::new(
-        move |args: &[LispVal], env: &Rc<Environment>| -> Result<LispVal, LispError> {
+    LispVal::Native(Shared::new(
+        move |args: &[LispVal], env: &Shared<Environment>| -> Result<LispVal, LispError> {
             let (ptys, ret) = env.jit_signature(&name).ok_or_else(|| {
                 LispError::Generic(format!("typed function {name} is not defined"))
             })?;
@@ -270,8 +270,8 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
 /// compiled; everything else (wrong arity/shape, untyped values) behaves exactly
 /// as the un-optimized function did.
 pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal {
-    LispVal::Native(Rc::new(
-        move |args: &[LispVal], env: &Rc<Environment>| -> Result<LispVal, LispError> {
+    LispVal::Native(Shared::new(
+        move |args: &[LispVal], env: &Shared<Environment>| -> Result<LispVal, LispError> {
             if let Some((ptys, ret)) = env.jit_signature(&name)
                 && args.len() == ptys.len()
             {
@@ -300,7 +300,7 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
 /// success, swap its binding for an auto-typed membrane. Best-effort and silent:
 /// any reason it cannot be typed (variadic, untyped body, ambiguous types) just
 /// leaves the dynamic definition in place.
-pub(super) fn optimize_function(name: &str, env: &Rc<Environment>) -> String {
+pub(super) fn optimize_function(name: &str, env: &Shared<Environment>) -> String {
     let Some(LispVal::Lambda(lam)) = env.get(name) else {
         return format!("{name} is not optimizable (not a lambda)");
     };
@@ -340,7 +340,7 @@ pub(super) fn optimize_function(name: &str, env: &Rc<Environment>) -> String {
 /// unwrapped). `None` for anything that isn't a non-variadic lambda.
 pub(super) fn lambda_params_body(
     name: &str,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Option<(Vec<String>, Vec<LispVal>)> {
     let LispVal::Lambda(lam) = env.get(name)? else {
         return None;
@@ -362,7 +362,7 @@ pub(super) fn lambda_params_body(
 
 /// Type-check the function bound to `name` (the non-compiled checker, #162) and
 /// return a human-readable result: its inferred type scheme, or a type error.
-pub(super) fn check_function(name: &str, env: &Rc<Environment>) -> String {
+pub(super) fn check_function(name: &str, env: &Shared<Environment>) -> String {
     // The live value-cell binding is authoritative: that is what a call actually
     // runs. If the function has been (re)defined as a *plain* lambda, a typed
     // registry entry of the same name is stale (e.g. an earlier `defun*`/
@@ -475,7 +475,7 @@ pub(super) fn lispval_to_typed(
 pub(super) fn typed_to_lispval(
     v: crate::jit::Value,
     ty: &crate::jit::Ty,
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> LispVal {
     use crate::jit::{Ty, Value};
     match v {
@@ -506,7 +506,7 @@ pub(super) fn typed_to_lispval(
                     .into_iter()
                     .map(|x| typed_to_lispval(x, elem, env))
                     .collect();
-                LispVal::Array(Rc::new(std::cell::RefCell::new(lst)))
+                LispVal::Array(Shared::new(SharedCell::new(lst)))
             }
             _ => LispVal::Nil,
         },
@@ -517,7 +517,7 @@ pub(super) fn typed_to_lispval(
                     .zip(def.fields.iter())
                     .map(|(fv, (_, ft))| typed_to_lispval(fv, ft, env))
                     .collect();
-                LispVal::Struct(Rc::new(StructObj {
+                LispVal::Struct(Shared::new(StructObj {
                     type_name: def.name.clone(),
                     fields: values,
                 }))

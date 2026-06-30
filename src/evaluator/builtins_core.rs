@@ -1,6 +1,9 @@
 use super::*;
 #[inline(never)]
-pub(super) fn apply_apply(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub(super) fn apply_apply(
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     if args.len() != 2 {
         return Err(LispError::Generic(
             "APPLY requires exactly two arguments".to_string(),
@@ -71,7 +74,7 @@ pub(super) fn is_truthy(val: &LispVal) -> bool {
 pub(super) fn apply_math_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     // If any argument is a float, promote all to float arithmetic
     let has_float = args.iter().any(|a| matches!(a, LispVal::Float(_)));
@@ -248,8 +251,8 @@ pub(super) fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVa
                 ));
             }
             Ok(LispVal::Cons {
-                car: Rc::new(args[0].clone()),
-                cdr: Rc::new(args[1].clone()),
+                car: Shared::new(args[0].clone()),
+                cdr: Shared::new(args[1].clone()),
             })
         }
         _ => Err(LispError::Generic("Not a list operation".to_string())),
@@ -599,7 +602,10 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
 /// Returns a freshly built list; the input is never mutated (consistent with
 /// the deferred-mutation decision, see #114).
 #[inline(never)]
-pub(super) fn apply_sort(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub(super) fn apply_sort(
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     if args.len() != 2 {
         return Err(LispError::Generic(
             "sort requires exactly two arguments: (sort list comparator)".to_string(),
@@ -656,7 +662,7 @@ pub(super) fn apply_sort(args: &[LispVal], env: &Rc<Environment>) -> Result<Lisp
 pub(super) fn apply_error_value_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::MakeError => {
@@ -672,7 +678,10 @@ pub(super) fn apply_error_value_op(
                 other => crate::printer::print(other),
             };
             let data = args.get(1).cloned().unwrap_or(LispVal::Nil);
-            Ok(LispVal::Error(Rc::new(crate::ErrorObj { message, data })))
+            Ok(LispVal::Error(Shared::new(crate::ErrorObj {
+                message,
+                data,
+            })))
         }
         BuiltinFunc::ErrorP => {
             if args.len() != 1 {
@@ -705,7 +714,7 @@ pub(super) fn apply_error_value_op(
 pub(super) fn apply_numeric_primitives(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Lessp => {
@@ -807,7 +816,7 @@ pub(super) fn apply_numeric_primitives(
 pub(super) fn apply_logical_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::Eq => {
@@ -889,7 +898,7 @@ pub(super) fn apply_logical_op(
 pub(super) fn apply_hashtable_op(
     op: &BuiltinFunc,
     args: &[LispVal],
-    env: &Rc<Environment>,
+    env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
         BuiltinFunc::MakeHashTable => {
@@ -898,7 +907,9 @@ pub(super) fn apply_hashtable_op(
                     "make-hash-table takes no arguments".to_string(),
                 ));
             }
-            Ok(LispVal::HashTable(Rc::new(RefCell::new(HashMap::new()))))
+            Ok(LispVal::HashTable(Shared::new(SharedCell::new(
+                HashMap::new(),
+            ))))
         }
         BuiltinFunc::Set => {
             if args.len() != 3 {
@@ -964,7 +975,7 @@ pub(super) fn apply_hashtable_op(
             for (k, v) in bindings {
                 hash_map.insert(LispVal::Symbol(env.intern_symbol(&k)), v);
             }
-            Ok(LispVal::HashTable(Rc::new(RefCell::new(hash_map))))
+            Ok(LispVal::HashTable(Shared::new(SharedCell::new(hash_map))))
         }
         BuiltinFunc::Keys => {
             if args.len() != 1 {
@@ -1004,7 +1015,7 @@ pub(super) fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, Li
 /// Capability guards for the three filesystem feature tiers.
 ///
 /// Each returns `Ok(())` if the feature is enabled, or a descriptive error otherwise.
-pub(super) fn require_read_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+pub(super) fn require_read_fs(env: &Shared<Environment>) -> Result<(), LispError> {
     if env.feature_enabled("READ-FS") {
         Ok(())
     } else {
@@ -1015,7 +1026,7 @@ pub(super) fn require_read_fs(env: &Rc<Environment>) -> Result<(), LispError> {
     }
 }
 
-pub(super) fn require_create_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+pub(super) fn require_create_fs(env: &Shared<Environment>) -> Result<(), LispError> {
     if env.feature_enabled("CREATE-FS") {
         Ok(())
     } else {
@@ -1026,7 +1037,7 @@ pub(super) fn require_create_fs(env: &Rc<Environment>) -> Result<(), LispError> 
     }
 }
 
-pub(super) fn require_temp_fs(env: &Rc<Environment>) -> Result<(), LispError> {
+pub(super) fn require_temp_fs(env: &Shared<Environment>) -> Result<(), LispError> {
     if env.feature_enabled("TEMP-FS") {
         Ok(())
     } else {
@@ -1061,7 +1072,10 @@ pub(super) fn make_temp_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
 ///
 /// Returns `(exit-code stdout-string stderr-string)`.
 #[inline(never)]
-pub(super) fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub(super) fn apply_shell(
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     if !env.feature_enabled("SHELL") {
         return Err(LispError::Generic(
             "SHELL capability is not enabled (grant it via --capability SHELL or the host API)"
@@ -1104,12 +1118,12 @@ pub(super) fn apply_shell(args: &[LispVal], env: &Rc<Environment>) -> Result<Lis
 
     // Build (code stdout stderr) so Lisp can compose on the result.
     Ok(LispVal::Cons {
-        car: Rc::new(LispVal::Number(code)),
-        cdr: Rc::new(LispVal::Cons {
-            car: Rc::new(LispVal::String(stdout)),
-            cdr: Rc::new(LispVal::Cons {
-                car: Rc::new(LispVal::String(stderr)),
-                cdr: Rc::new(LispVal::Nil),
+        car: Shared::new(LispVal::Number(code)),
+        cdr: Shared::new(LispVal::Cons {
+            car: Shared::new(LispVal::String(stdout)),
+            cdr: Shared::new(LispVal::Cons {
+                car: Shared::new(LispVal::String(stderr)),
+                cdr: Shared::new(LispVal::Nil),
             }),
         }),
     })

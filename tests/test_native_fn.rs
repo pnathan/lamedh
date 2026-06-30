@@ -1,7 +1,6 @@
 /// Tests for LispVal::Native and Environment::register_fn (issue #54).
 use lamedh::environment::Environment;
-use lamedh::{LispVal, NativeFn, eval_line, with_large_stack};
-use std::rc::Rc;
+use lamedh::{LispVal, NativeFn, Shared, eval_line, with_large_stack};
 
 // -------------------------------------------------------------------------
 // Basic registration and call
@@ -110,21 +109,21 @@ fn test_native_is_functionp() {
 
 #[test]
 fn test_native_ptr_equality() {
-    // Two independently created Rc<NativeFn> are not equal (pointer check).
-    let f1: Rc<NativeFn> = Rc::new(|_args, _env| Ok(LispVal::Nil));
-    let f2: Rc<NativeFn> = Rc::new(|_args, _env| Ok(LispVal::Nil));
-    let v1 = LispVal::Native(Rc::clone(&f1));
-    let v2 = LispVal::Native(Rc::clone(&f2));
+    // Two independently created Shared<NativeFn> are not equal (pointer check).
+    let f1: Shared<NativeFn> = Shared::new(|_args, _env| Ok(LispVal::Nil));
+    let f2: Shared<NativeFn> = Shared::new(|_args, _env| Ok(LispVal::Nil));
+    let v1 = LispVal::Native(f1.clone());
+    let v2 = LispVal::Native(f2.clone());
     assert_ne!(v1, v2, "different native fns should not be equal");
 
-    let v3 = LispVal::Native(Rc::clone(&f1));
-    assert_eq!(v1, v3, "same Rc should be equal");
+    let v3 = LispVal::Native(f1.clone());
+    assert_eq!(v1, v3, "same Shared should be equal");
 }
 
 #[test]
 fn test_native_clone_shares_pointer() {
-    let f: Rc<NativeFn> = Rc::new(|_args, _env| Ok(LispVal::Number(1)));
-    let v1 = LispVal::Native(Rc::clone(&f));
+    let f: Shared<NativeFn> = Shared::new(|_args, _env| Ok(LispVal::Number(1)));
+    let v1 = LispVal::Native(f.clone());
     let v2 = v1.clone();
     assert_eq!(v1, v2, "clone of Native should compare equal");
 }

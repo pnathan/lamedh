@@ -1,6 +1,9 @@
 use super::*;
 #[inline(never)]
-pub(super) fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<LispVal, LispError> {
+pub(super) fn quasiquote_eval(
+    val: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     if let LispVal::Cons { car, cdr } = val {
         if let LispVal::Symbol(s) = &**car
             && s.borrow().name == "UNQUOTE"
@@ -28,8 +31,8 @@ pub(super) fn quasiquote_eval(val: &LispVal, env: &Rc<Environment>) -> Result<Li
         let car_eval = quasiquote_eval(car, env)?;
         let cdr_eval = quasiquote_eval(cdr, env)?;
         Ok(LispVal::Cons {
-            car: Rc::new(car_eval),
-            cdr: Rc::new(cdr_eval),
+            car: Shared::new(car_eval),
+            cdr: Shared::new(cdr_eval),
         })
     } else {
         Ok(val.clone())
@@ -64,7 +67,7 @@ pub(super) fn append_lists(front: &LispVal, tail: LispVal) -> Result<LispVal, Li
             let rest = append_lists(cdr, tail)?;
             Ok(LispVal::Cons {
                 car: car.clone(),
-                cdr: Rc::new(rest),
+                cdr: Shared::new(rest),
             })
         }
         _ => Err(LispError::Generic(

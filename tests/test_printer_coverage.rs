@@ -10,10 +10,10 @@
 ///
 /// LispVal::HashTable -> "<hash-table>" (line 40) is also tested here for
 /// completeness even if already covered.
-use lamedh::{Fexpr, Lambda, LispVal, Macro, environment::Environment, printer::print};
-use std::cell::RefCell;
+use lamedh::{
+    Fexpr, Lambda, LispVal, Macro, Shared, SharedCell, environment::Environment, printer::print,
+};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 // ── String escape characters ──────────────────────────────────────────────────
 
@@ -109,7 +109,9 @@ fn test_print_macro_with_rest_param() {
 
 #[test]
 fn test_print_empty_hash_table() {
-    let ht = LispVal::HashTable(Rc::new(RefCell::new(HashMap::<LispVal, LispVal>::new())));
+    let ht = LispVal::HashTable(Shared::new(SharedCell::new(
+        HashMap::<LispVal, LispVal>::new(),
+    )));
     assert_eq!(print(&ht), "<hash-table>");
 }
 
@@ -117,7 +119,7 @@ fn test_print_empty_hash_table() {
 fn test_print_nonempty_hash_table() {
     let mut map: HashMap<LispVal, LispVal> = HashMap::new();
     map.insert(LispVal::Number(1), LispVal::Number(42));
-    let ht = LispVal::HashTable(Rc::new(RefCell::new(map)));
+    let ht = LispVal::HashTable(Shared::new(SharedCell::new(map)));
     assert_eq!(print(&ht), "<hash-table>");
 }
 
@@ -142,12 +144,12 @@ fn test_print_deeply_nested_dotted_pair() {
     // ((a . b) . c)
     let env = Environment::new();
     let inner = LispVal::Cons {
-        car: Rc::new(LispVal::Symbol(env.intern_symbol("A"))),
-        cdr: Rc::new(LispVal::Symbol(env.intern_symbol("B"))),
+        car: Shared::new(LispVal::Symbol(env.intern_symbol("A"))),
+        cdr: Shared::new(LispVal::Symbol(env.intern_symbol("B"))),
     };
     let outer = LispVal::Cons {
-        car: Rc::new(inner),
-        cdr: Rc::new(LispVal::Symbol(env.intern_symbol("C"))),
+        car: Shared::new(inner),
+        cdr: Shared::new(LispVal::Symbol(env.intern_symbol("C"))),
     };
     assert_eq!(print(&outer), "((A . B) . C)");
 }
@@ -156,10 +158,10 @@ fn test_print_deeply_nested_dotted_pair() {
 fn test_print_list_with_dotted_tail() {
     // (1 2 . 3)
     let list = LispVal::Cons {
-        car: Rc::new(LispVal::Number(1)),
-        cdr: Rc::new(LispVal::Cons {
-            car: Rc::new(LispVal::Number(2)),
-            cdr: Rc::new(LispVal::Number(3)),
+        car: Shared::new(LispVal::Number(1)),
+        cdr: Shared::new(LispVal::Cons {
+            car: Shared::new(LispVal::Number(2)),
+            cdr: Shared::new(LispVal::Number(3)),
         }),
     };
     assert_eq!(print(&list), "(1 2 . 3)");

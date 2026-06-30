@@ -29,11 +29,10 @@
 //! to opt in.  Because `SharedState` is shared across the whole chain, a
 //! feature enabled anywhere is visible everywhere.
 
-use crate::{BuiltinFunc, LispError, LispVal, Symbol};
-use std::cell::{Cell, RefCell};
+use crate::{BuiltinFunc, LispError, LispVal, Shared, SharedCell, Symbol};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::rc::Rc;
 
 /// RAII guard for a shallow dynamic (special) variable binding.
 ///
@@ -44,13 +43,13 @@ use std::rc::Rc;
 /// save/install/restore protocol required by shallow binding so that dynamic
 /// scoping works correctly without walking the dynamic-parent chain.
 pub struct DynamicBinding {
-    symbol: Rc<RefCell<Symbol>>,
+    symbol: Shared<SharedCell<Symbol>>,
     saved: Option<LispVal>,
 }
 
 impl DynamicBinding {
     /// Save the current value of `sym`'s global value cell and install `new_val`.
-    pub fn install(sym: Rc<RefCell<Symbol>>, new_val: LispVal) -> Self {
+    pub fn install(sym: Shared<SharedCell<Symbol>>, new_val: LispVal) -> Self {
         let saved = sym.borrow().value.clone();
         sym.borrow_mut().value = Some(new_val);
         DynamicBinding { symbol: sym, saved }
@@ -121,7 +120,7 @@ type BindingMap = HashMap<String, LispVal, BuildHasherDefault<FxHasher>>;
 /// the table — they are guaranteed unique but not sharable by name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolTable {
-    symbols: HashMap<String, Rc<RefCell<Symbol>>>,
+    symbols: HashMap<String, Shared<SharedCell<Symbol>>>,
     gensym_counter: u64,
 }
 
@@ -143,39 +142,39 @@ impl SymbolTable {
     /// Create a fresh uninterned symbol with a unique name (`G0000`, `G0001`, …).
     ///
     /// Uninterned symbols are *not* stored in the table, so two `gensym` calls
-    /// always return distinct `Rc` pointers even if the names collide.
-    pub fn gensym(&mut self) -> Rc<RefCell<Symbol>> {
+    /// always return distinct [`Shared`] pointers even if the names collide.
+    pub fn gensym(&mut self) -> Shared<SharedCell<Symbol>> {
         let name = format!("G{:04}", self.gensym_counter);
         self.gensym_counter += 1;
         // Create an uninterned symbol (not stored in the hash table)
-        Rc::new(RefCell::new(Symbol {
+        Shared::new(SharedCell::new(Symbol {
             name,
             plist: HashMap::new(),
             value: None,
         }))
     }
 
-    pub fn all_symbols(&self) -> Vec<Rc<RefCell<Symbol>>> {
+    pub fn all_symbols(&self) -> Vec<Shared<SharedCell<Symbol>>> {
         self.symbols.values().cloned().collect()
     }
 
     /// Return the interned symbol for `name` if it already exists, without
     /// creating one. Used to read a symbol's global value cell by name on the
     /// (cold) name-based lookup paths.
-    pub fn get_symbol(&self, name: &str) -> Option<Rc<RefCell<Symbol>>> {
+    pub fn get_symbol(&self, name: &str) -> Option<Shared<SharedCell<Symbol>>> {
         self.symbols.get(name).cloned()
     }
 
-    /// Return the interned `Rc` for `name`, creating a new `Symbol` if needed.
+    /// Return the interned [`Shared`] for `name`, creating a new `Symbol` if needed.
     ///
     /// The name must already be uppercased; callers are responsible for
     /// normalisation (the environment does this via [`Environment::intern_symbol`]).
-    pub fn intern(&mut self, name: &str) -> Rc<RefCell<Symbol>> {
+    pub fn intern(&mut self, name: &str) -> Shared<SharedCell<Symbol>> {
         if let Some(symbol) = self.symbols.get(name) {
             return symbol.clone();
         }
 
-        let symbol = Rc::new(RefCell::new(Symbol {
+        let symbol = Shared::new(SharedCell::new(Symbol {
             name: name.to_string(),
             plist: HashMap::new(),
             value: None,
@@ -196,10 +195,10 @@ impl SymbolTable {
 /// (see issue #111, Tier-1 item D1).
 #[derive(Debug)]
 struct SharedState {
-    symbols: RefCell<SymbolTable>,
-    condition_flags: RefCell<HashMap<String, bool>>,
+    symbols: SharedCell<SymbolTable>,
+    condition_flags: SharedCell<HashMap<String, bool>>,
     /// Set of variable names that are marked as dynamic (special variables).
-    dynamic_vars: RefCell<HashSet<String>>,
+    dynamic_vars: SharedCell<HashSet<String>>,
     /// Fast-path flag: `true` once any variable has ever been marked dynamic.
     /// While this is `false`, variable resolution can skip the dynamic-set
     /// membership probe entirely (a `HashSet` borrow + string hash that every
@@ -209,54 +208,55 @@ struct SharedState {
     /// Set of enabled capabilities/features (e.g. "SHELL"). Off by default; the
     /// host or a Lisp program must opt in. This is the foundation for
     /// sandboxing (see issue #64).
-    features: RefCell<HashSet<String>>,
+    features: SharedCell<HashSet<String>>,
     /// Registry of typed (`defun-typed`) functions. Shared across the whole
     /// environment chain so a typed definition made at the REPL is visible
     /// everywhere and its compiled edition persists across calls.
-    jit: RefCell<crate::jit::Jit>,
+    jit: SharedCell<crate::jit::Jit>,
 }
 
 impl SharedState {
     fn new() -> Self {
         SharedState {
-            symbols: RefCell::new(SymbolTable::new()),
-            condition_flags: RefCell::new(HashMap::new()),
-            dynamic_vars: RefCell::new(HashSet::new()),
+            symbols: SharedCell::new(SymbolTable::new()),
+            condition_flags: SharedCell::new(HashMap::new()),
+            dynamic_vars: SharedCell::new(HashSet::new()),
             has_dynamic: Cell::new(false),
-            features: RefCell::new(HashSet::new()),
-            jit: RefCell::new(crate::jit::Jit::new()),
+            features: SharedCell::new(HashSet::new()),
+            jit: SharedCell::new(crate::jit::Jit::new()),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Environment {
-    parent: Option<Rc<Environment>>,
-    bindings: Rc<RefCell<BindingMap>>,
+    parent: Option<Shared<Environment>>,
+    bindings: Shared<SharedCell<BindingMap>>,
     /// Globally-shared interpreter state (symbols, flags, dynamic vars,
-    /// features). Shared across the whole environment chain via a single `Rc`.
-    shared: Rc<SharedState>,
+    /// features). Shared across the whole environment chain via a single
+    /// [`Shared`] pointer.
+    shared: Shared<SharedState>,
     /// Dynamic parent environment (caller's environment for dynamic scoping).
     /// This is used to look up dynamic variables from the call chain.
-    dynamic_parent: Option<Rc<Environment>>,
+    dynamic_parent: Option<Shared<Environment>>,
 }
 
 impl PartialEq for Environment {
     fn eq(&self, other: &Self) -> bool {
         let parents_equal = match (&self.parent, &other.parent) {
-            (Some(p1), Some(p2)) => Rc::ptr_eq(p1, p2),
+            (Some(p1), Some(p2)) => Shared::ptr_eq(p1, p2),
             (None, None) => true,
             _ => false,
         };
         let dynamic_parents_equal = match (&self.dynamic_parent, &other.dynamic_parent) {
-            (Some(p1), Some(p2)) => Rc::ptr_eq(p1, p2),
+            (Some(p1), Some(p2)) => Shared::ptr_eq(p1, p2),
             (None, None) => true,
             _ => false,
         };
         parents_equal
             && dynamic_parents_equal
-            && Rc::ptr_eq(&self.bindings, &other.bindings)
-            && Rc::ptr_eq(&self.shared, &other.shared)
+            && Shared::ptr_eq(&self.bindings, &other.bindings)
+            && Shared::ptr_eq(&self.shared, &other.shared)
     }
 }
 
@@ -274,18 +274,18 @@ impl Environment {
     pub fn new() -> Self {
         Environment {
             parent: None,
-            bindings: Rc::new(RefCell::new(BindingMap::default())),
-            shared: Rc::new(SharedState::new()),
+            bindings: Shared::new(SharedCell::new(BindingMap::default())),
+            shared: Shared::new(SharedState::new()),
             dynamic_parent: None,
         }
     }
 
     /// Create a new child environment for lexical scoping.
     /// The child inherits the parent's dynamic_parent by default.
-    pub fn new_child(parent: &Rc<Environment>) -> Rc<Environment> {
-        Rc::new(Environment {
+    pub fn new_child(parent: &Shared<Environment>) -> Shared<Environment> {
+        Shared::new(Environment {
             parent: Some(parent.clone()),
-            bindings: Rc::new(RefCell::new(BindingMap::default())),
+            bindings: Shared::new(SharedCell::new(BindingMap::default())),
             shared: parent.shared.clone(),
             dynamic_parent: parent.dynamic_parent.clone(),
         })
@@ -295,12 +295,12 @@ impl Environment {
     /// The lexical parent is `lexical_parent` (the captured closure environment),
     /// and the dynamic parent is `caller_env` (for dynamic variable lookup).
     pub fn new_child_with_dynamic(
-        lexical_parent: &Rc<Environment>,
-        caller_env: &Rc<Environment>,
-    ) -> Rc<Environment> {
-        Rc::new(Environment {
+        lexical_parent: &Shared<Environment>,
+        caller_env: &Shared<Environment>,
+    ) -> Shared<Environment> {
+        Shared::new(Environment {
             parent: Some(lexical_parent.clone()),
-            bindings: Rc::new(RefCell::new(BindingMap::default())),
+            bindings: Shared::new(SharedCell::new(BindingMap::default())),
             shared: lexical_parent.shared.clone(),
             dynamic_parent: Some(caller_env.clone()),
         })
@@ -312,8 +312,8 @@ impl Environment {
     /// etc.).  Use [`Environment::with_stdlib`] for a fully-featured environment.
     ///
     /// All capability flags (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are disabled by default.
-    pub fn new_with_builtins() -> Rc<Environment> {
-        let env = Rc::new(Environment::new());
+    pub fn new_with_builtins() -> Shared<Environment> {
+        let env = Shared::new(Environment::new());
         let t_symbol = env.intern_symbol("T");
         env.set("T".to_string(), LispVal::Symbol(t_symbol));
 
@@ -848,7 +848,7 @@ impl Environment {
     ///
     /// Panics if the embedded stdlib fails to parse or evaluate (which would be
     /// a compile-time bug, not a runtime condition).
-    pub fn with_stdlib() -> Rc<Environment> {
+    pub fn with_stdlib() -> Shared<Environment> {
         let env = Self::new_with_builtins();
         crate::load_stdlib(&env).expect("embedded stdlib should always load cleanly");
         env
@@ -871,7 +871,7 @@ impl Environment {
     /// assert!(!env.feature_enabled("READ-FS"));
     /// assert!(!env.feature_enabled("IO"));
     /// ```
-    pub fn new_sandboxed() -> Rc<Environment> {
+    pub fn new_sandboxed() -> Shared<Environment> {
         Self::new_with_builtins()
     }
 
@@ -879,16 +879,16 @@ impl Environment {
     ///
     /// Returns the shared `Rc<RefCell<Symbol>>` for this name, creating a new
     /// entry if the name has not been seen before.
-    pub fn intern_symbol(&self, name: &str) -> Rc<RefCell<Symbol>> {
+    pub fn intern_symbol(&self, name: &str) -> Shared<SharedCell<Symbol>> {
         self.shared.symbols.borrow_mut().intern(name)
     }
 
     /// Generate a fresh uninterned symbol.  Equivalent to `(gensym)` in Lisp.
-    pub fn gensym(&self) -> Rc<RefCell<Symbol>> {
+    pub fn gensym(&self) -> Shared<SharedCell<Symbol>> {
         self.shared.symbols.borrow_mut().gensym()
     }
 
-    pub fn all_symbols(&self) -> Vec<Rc<RefCell<Symbol>>> {
+    pub fn all_symbols(&self) -> Vec<Shared<SharedCell<Symbol>>> {
         self.shared.symbols.borrow().all_symbols()
     }
 
@@ -934,7 +934,7 @@ impl Environment {
     /// Local frames are probed by name; the root binding is read from this
     /// environment's symbol table. Respects dynamic scoping when any dynamic
     /// variable exists.
-    pub fn resolve(&self, sym: &Rc<RefCell<Symbol>>) -> Option<LispVal> {
+    pub fn resolve(&self, sym: &Shared<SharedCell<Symbol>>) -> Option<LispVal> {
         let s = sym.borrow();
         if self.shared.has_dynamic.get() && self.shared.dynamic_vars.borrow().contains(&s.name) {
             // Shallow binding: the current dynamic value is always in the symbol's
@@ -986,9 +986,9 @@ impl Environment {
     /// `(NAME arg1 arg2 ...)` calls the closure with evaluated arguments.
     pub fn register_fn<F>(&self, name: &str, f: F)
     where
-        F: Fn(&[LispVal], &Rc<Environment>) -> Result<LispVal, LispError> + 'static,
+        F: Fn(&[LispVal], &Shared<Environment>) -> Result<LispVal, LispError> + 'static,
     {
-        self.set(name.to_uppercase(), LispVal::Native(Rc::new(f)));
+        self.set(name.to_uppercase(), LispVal::Native(Shared::new(f)));
     }
 
     /// Type-check and compile a `(defun-typed ...)` form into the shared typed
@@ -1119,7 +1119,7 @@ impl Environment {
     /// If the variable is not found in any environment, it is CREATED in
     /// the current environment. This supports dynamic variable creation via
     /// SETQ and is intentional behavior for interactive development.
-    pub fn update(env: &Rc<Environment>, name: &str, val: LispVal) {
+    pub fn update(env: &Shared<Environment>, name: &str, val: LispVal) {
         if env.shared.has_dynamic.get() && env.is_dynamic(name) {
             // Shallow binding: the symbol cell IS the current binding — write
             // there directly so the change is visible to all frames that read
@@ -1132,7 +1132,7 @@ impl Environment {
     }
 
     /// Update a lexical variable by walking the lexical parent chain.
-    fn update_lexical(env: &Rc<Environment>, name: &str, val: LispVal) {
+    fn update_lexical(env: &Shared<Environment>, name: &str, val: LispVal) {
         let mut maybe_env = Some(env.clone());
         while let Some(current_env) = maybe_env {
             if current_env.is_root() {

@@ -1,12 +1,12 @@
 use lamedh::environment::Environment;
-use lamedh::eval_line;
+use lamedh::{Shared, eval_line};
 
 fn eval(expr: &str) -> String {
     let env = Environment::new_with_builtins();
     eval_line(expr, &env)
 }
 
-fn eval_with_env(expr: &str, env: &std::rc::Rc<Environment>) -> String {
+fn eval_with_env(expr: &str, env: &Shared<Environment>) -> String {
     eval_line(expr, env)
 }
 

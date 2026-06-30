@@ -1,7 +1,6 @@
-use lamedh::{environment::Environment, eval_line, evaluator, reader};
-use std::rc::Rc;
+use lamedh::{Shared, environment::Environment, eval_line, evaluator, reader};
 
-fn env_with_prologue() -> Rc<Environment> {
+fn env_with_prologue() -> Shared<Environment> {
     let env = Environment::new_with_builtins();
     lamedh::load_directory("lib", &env).unwrap();
     let prologue = std::fs::read_to_string("prologue.lisp").unwrap();

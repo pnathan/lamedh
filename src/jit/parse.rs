@@ -192,13 +192,13 @@ pub(super) fn value_to_lispval(v: &Value, ty: &Ty) -> LispVal {
                     .collect();
                 LispVal::String(String::from_utf8_lossy(&bytes).into_owned())
             }
-            Ty::Array(elem) => LispVal::Array(Rc::new(RefCell::new(
+            Ty::Array(elem) => LispVal::Array(Shared::new(SharedCell::new(
                 items.iter().map(|x| value_to_lispval(x, elem)).collect(),
             ))),
             _ => LispVal::Nil,
         },
         Value::Struct(fields) => match ty {
-            Ty::Struct(def) => LispVal::Struct(Rc::new(StructObj {
+            Ty::Struct(def) => LispVal::Struct(Shared::new(StructObj {
                 type_name: def.name.clone(),
                 fields: fields
                     .iter()

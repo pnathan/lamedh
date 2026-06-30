@@ -49,7 +49,7 @@
 //! Integer arithmetic wraps and integer `/`,`mod` by zero yield `0` (no panics);
 //! this diverges from the checked tree-walker and is revisited with #67.
 
-use crate::{LispVal, StructObj};
+use crate::{LispVal, Shared, SharedCell, StructObj};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;

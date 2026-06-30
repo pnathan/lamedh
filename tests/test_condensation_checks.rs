@@ -3,7 +3,7 @@ mod test_helpers;
 use lamedh::eval_line;
 use test_helpers::env_with_stdlib;
 
-fn install_invoice(env: &std::rc::Rc<lamedh::environment::Environment>) {
+fn install_invoice(env: &lamedh::Shared<lamedh::environment::Environment>) {
     eval_line(
         "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
         env,

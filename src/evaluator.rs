@@ -37,10 +37,11 @@
 //! discriminant stored in [`LispVal::Builtin`] values.
 
 #![allow(clippy::mutable_key_type)]
-use crate::{BuiltinFunc, LispError, LispVal, StructObj, environment::Environment};
-use std::cell::{Cell, RefCell};
+use crate::{
+    BuiltinFunc, LispError, LispVal, Shared, SharedCell, StructObj, environment::Environment,
+};
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 mod apply;
 mod builtins_core;
