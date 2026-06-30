@@ -34,10 +34,17 @@
     (assert-equal (sf-test-mac hello) 'HELLO)))
 
 (deftest sf-macroexpand
-  ;; MACROEXPAND returns the expansion of a macro call without evaluating it
+  ;; MACROEXPAND returns the expansion of a macro call without evaluating it.
+  ;; The defun macro wraps def in a progn that also runs the purity checker
+  ;; (when loaded) and returns the defined symbol.
   (assert-equal
     (macroexpand '(defun foo (x) (+ x 1)))
-    '(DEF FOO (LAMBDA (X) (+ X 1)))))
+    '(PROGN
+       (DEF FOO (LAMBDA (X) (+ X 1)))
+       (IF (BOUNDP (QUOTE DEFUN-CHECK-PURITY!))
+           (DEFUN-CHECK-PURITY! (QUOTE FOO) (QUOTE ((+ X 1))))
+           ())
+       (QUOTE FOO))))
 
 (deftest sf-quasiquote-literal
   ;; Quasiquote with no unquotes produces a plain list
