@@ -192,6 +192,9 @@ pub(super) enum TcoStep {
     /// `apply` inline panics when a symbol-mutating builtin re-borrows the
     /// same interned symbol used as the call head, e.g. `(putp 'putp ...)`
     /// (issue #156).
+    ///
+    /// Carries a `Vec<LispVal>` (owned) so args can be moved into the callee's
+    /// environment frame without cloning.
     Apply(LispVal, Vec<LispVal>),
 }
 
@@ -221,7 +224,7 @@ pub(super) fn eval_impl(
 
         match step {
             TcoStep::Done(result) => return result,
-            TcoStep::Apply(func, args) => return apply(&func, &args, &current_env),
+            TcoStep::Apply(func, args) => return apply_owned(&func, args, &current_env),
             TcoStep::TailCall(new_val, new_env) => {
                 current_val = new_val;
                 current_env = new_env;

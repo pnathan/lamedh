@@ -96,7 +96,7 @@ pub(super) fn proper_list_len(list: &LispVal) -> Result<usize, LispError> {
     }
 }
 
-/// Evaluate a call's operands directly off the cons chain into a single `Vec`.
+/// Evaluate a call's operands directly off the cons chain.
 ///
 /// This is the hot path for ordinary function/lambda/builtin application. It
 /// replaces the older `list_to_vec(rest)` + `.iter().map(eval).collect()` pair,
