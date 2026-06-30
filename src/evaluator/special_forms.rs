@@ -274,6 +274,10 @@ pub(super) fn eval_step(val: &LispVal, env: &Rc<Environment>) -> Result<TcoStep,
     match val {
         LispVal::Nil => Ok(TcoStep::Done(Ok(LispVal::Nil))),
         LispVal::Symbol(s) => {
+            if s.borrow().name.starts_with(':') {
+                return Ok(TcoStep::Done(Ok(LispVal::Symbol(s.clone()))));
+            }
+
             // Resolve straight from the interned symbol: global/function refs read
             // the symbol's value cell directly (no hash, no chain walk), locals
             // walk their frames. Only the cold unbound path formats the name.
