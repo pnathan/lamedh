@@ -265,6 +265,20 @@ impl Cx<'_> {
         Ok((Core::Not(Box::new(a)), Ty::Bool))
     }
 
+    /// `AND`/`OR` are fully variadic special forms in the evaluator
+    /// (`SpecialForm::And`/`Or`, `src/evaluator/special_forms.rs`: zero or
+    /// more operands, short-circuiting left to right). This must accept any
+    /// arity — rejecting `(and a b c)` as a type error would violate the
+    /// checker's "never reject a program the interpreter runs" contract
+    /// (issue #202) even though the compileable core only has a *binary*
+    /// `Core::And`/`Or` node: 3+ operands fold right-associatively into
+    /// nested binary nodes (`(and a b c)` → `And(a, And(b, c))`), which
+    /// preserves the evaluator's short-circuit order exactly (evaluate left
+    /// to right, stop at the first falsy/truthy operand). Every operand is
+    /// required to be strictly `bool`-typed here (unlike the untyped
+    /// evaluator's "returns the actual last value" semantics), so the folded
+    /// result is that last operand's *boolean* value — observationally the
+    /// same thing, since a `bool` word is already exactly 0 or 1.
     fn elab_logic(
         &self,
         op: &str,
@@ -272,30 +286,55 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
-        if args.len() != 2 {
-            return Err(format!("`{op}` expects 2 args, got {}", args.len()));
-        }
-        let (a, ta) = self.elab(&args[0], scope, max)?;
-        let (b, tb) = self.elab(&args[1], scope, max)?;
-        // Checker mode follows Lisp truthiness: `and`/`or` take any operands and
-        // their value is one of the operands (heterogeneous) → `any`. The codegen
-        // path requires real `bool` operands and yields `bool`.
+        // Checker mode follows Lisp truthiness: `and`/`or` take any number of
+        // operands of any type and the result is one of them (heterogeneous)
+        // → `any`. Still elaborate every operand so a genuine type error
+        // nested inside one of them is reported. The codegen path below
+        // requires real `bool` operands and yields `bool`.
         if self.checking {
+            for a in args {
+                self.elab(a, scope, max)?;
+            }
             return Ok((Core::LitI(0), Ty::Any));
         }
-        if self.unify(&ta, &Ty::Bool).is_err() || self.unify(&tb, &Ty::Bool).is_err() {
-            return Err(format!(
-                "`{op}` expects bool operands, got {:?} and {:?}",
-                self.walk(&ta),
-                self.walk(&tb)
-            ));
+        match args {
+            // Vacuous identity: `(and)` is truthy, `(or)` is falsy — matches
+            // the evaluator's zero-operand result (`T` / `NIL`).
+            [] => {
+                let lit = if op == "AND" { 1 } else { 0 };
+                Ok((Core::LitI(lit), Ty::Bool))
+            }
+            // A single operand's (already-bool) value passes straight
+            // through — `(and a)` and `(or a)` are both just `a`.
+            [only] => {
+                let (a, ta) = self.elab(only, scope, max)?;
+                if self.unify(&ta, &Ty::Bool).is_err() {
+                    return Err(format!(
+                        "`{op}` expects bool operands, got {:?}",
+                        self.walk(&ta)
+                    ));
+                }
+                Ok((a, Ty::Bool))
+            }
+            [first, rest @ ..] => {
+                let (a, ta) = self.elab(first, scope, max)?;
+                if self.unify(&ta, &Ty::Bool).is_err() {
+                    return Err(format!(
+                        "`{op}` expects bool operands, got {:?}",
+                        self.walk(&ta)
+                    ));
+                }
+                // Recursively fold the remainder; bottoms out at the `[only]`
+                // arm once one operand is left.
+                let (b, _tb) = self.elab_logic(op, rest, scope, max)?;
+                let node = if op == "AND" {
+                    Core::And(Box::new(a), Box::new(b))
+                } else {
+                    Core::Or(Box::new(a), Box::new(b))
+                };
+                Ok((node, Ty::Bool))
+            }
         }
-        let node = if op == "AND" {
-            Core::And(Box::new(a), Box::new(b))
-        } else {
-            Core::Or(Box::new(a), Box::new(b))
-        };
-        Ok((node, Ty::Bool))
     }
 
     fn elab_if(

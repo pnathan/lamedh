@@ -186,6 +186,71 @@ fn and_or_not_truth_tables() {
     assert_eq!(agree(&j, "n1", &[bo(false)]), bo(true));
 }
 
+/// Issue #202: `AND`/`OR` are fully variadic special forms in the evaluator
+/// (zero or more operands, short-circuiting left to right); the typed
+/// checker used to reject anything but exactly 2 operands as a type error,
+/// even though the interpreter runs it fine. Covers the vacuous (0-operand),
+/// single-operand, and 3+/4-operand (folded) cases via `agree` (differential
+/// vs. the interpreter), verifying both the value and the short-circuit
+/// result.
+#[test]
+fn and_or_variadic_arities() {
+    let j = build(&[
+        "(defun-typed (a0 bool) () (and))",
+        "(defun-typed (o0 bool) () (or))",
+        "(defun-typed (a1 bool) ((p bool)) (and p))",
+        "(defun-typed (o1 bool) ((p bool)) (or p))",
+        "(defun-typed (a3 bool) ((p bool) (q bool) (r bool)) (and p q r))",
+        "(defun-typed (o4 bool) ((p bool) (q bool) (r bool) (s bool)) (or p q r s))",
+    ]);
+    // 0-ary: vacuous identity (matches the evaluator's `(and)` = T, `(or)` = NIL).
+    assert_eq!(agree(&j, "a0", &[]), bo(true));
+    assert_eq!(agree(&j, "o0", &[]), bo(false));
+    // 1-ary: passes the single operand's value straight through.
+    assert_eq!(agree(&j, "a1", &[bo(true)]), bo(true));
+    assert_eq!(agree(&j, "a1", &[bo(false)]), bo(false));
+    assert_eq!(agree(&j, "o1", &[bo(true)]), bo(true));
+    assert_eq!(agree(&j, "o1", &[bo(false)]), bo(false));
+    // 3-ary AND: true only if every operand is true.
+    assert_eq!(agree(&j, "a3", &[bo(true), bo(true), bo(true)]), bo(true));
+    assert_eq!(agree(&j, "a3", &[bo(true), bo(false), bo(true)]), bo(false));
+    assert_eq!(agree(&j, "a3", &[bo(false), bo(true), bo(true)]), bo(false));
+    // 4-ary OR: true if any operand is true.
+    assert_eq!(
+        agree(&j, "o4", &[bo(false), bo(false), bo(false), bo(false)]),
+        bo(false)
+    );
+    assert_eq!(
+        agree(&j, "o4", &[bo(false), bo(false), bo(false), bo(true)]),
+        bo(true)
+    );
+    assert_eq!(
+        agree(&j, "o4", &[bo(true), bo(false), bo(false), bo(false)]),
+        bo(true)
+    );
+}
+
+/// The folded representation (`(and a b c)` -> `And(a, And(b, c))`) must
+/// still short-circuit left to right exactly like the variadic evaluator —
+/// not evaluate every operand regardless of an earlier falsy one. Checked
+/// via the interpreter's execution trace (a later operand that isn't
+/// reached leaves no step), mirroring the existing
+/// `trace_short_circuits_leave_no_step` test for the 2-ary case.
+#[test]
+fn and_or_variadic_short_circuits() {
+    let j = build(&["(defun-typed (sc bool) ((p bool) (q bool) (r bool)) (and p q r))"]);
+    let (val, log) = j
+        .trace_call("SC", &[bo(false), bo(true), bo(true)])
+        .unwrap();
+    assert_eq!(val, bo(false));
+    // Only `p` (the first `var` step) should be evaluated; `q`/`r` short-circuit away.
+    let var_steps = log.iter().filter(|s| s.op == "var").count();
+    assert_eq!(
+        var_steps, 1,
+        "and should short-circuit at the first falsy operand: {log:?}"
+    );
+}
+
 #[test]
 fn range_predicates_compose_logic_and_comparison() {
     let j = build(&[
@@ -901,6 +966,16 @@ fn reject_not_on_int() {
 #[test]
 fn reject_and_on_int() {
     let err = def_err("(defun-typed (bad bool) ((x int64) (y int64)) (and x y))");
+    assert!(err.contains("bool operands"), "got: {err}");
+}
+
+/// A non-bool operand buried in the *middle* of a 3+-operand AND/OR (issue
+/// #202's variadic fold) must still be rejected — the `Ty::Bool` check has
+/// to run at every level of the right-associative fold
+/// (`(and p q r)` -> `And(p, And(q, r))`), not just on the first operand.
+#[test]
+fn reject_and_on_int_in_middle_of_variadic_chain() {
+    let err = def_err("(defun-typed (bad bool) ((p bool) (q bool)) (and p 5 q))");
     assert!(err.contains("bool operands"), "got: {err}");
 }
 
