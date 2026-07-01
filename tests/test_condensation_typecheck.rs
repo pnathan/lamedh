@@ -14,9 +14,21 @@ fn condense_check_type_records_generated_function_results() {
 
     let out = eval_line("(condense-check-type 'invoice)", &env);
     assert!(out.contains("MAKE-INVOICE"), "got: {out}");
+    // Every generated function here is on the healthy path; assert CHECKED
+    // specifically (not just "one of CHECKED or TYPE-ERROR", which passes
+    // whether the derivation is healthy or broken). In particular
+    // `invoice-equal` (derived by `equality` as a 3-arg
+    // `(and (invoice-p a) (invoice-p b) (equal a b))`, lib/20-condensation.lisp)
+    // is the exact regression issue #202 named: variadic `and`/`or` (3+
+    // operands) used to be rejected as a checker type error even though the
+    // evaluator runs it fine.
     assert!(
-        out.contains("CHECKED") || out.contains("TYPE-ERROR"),
-        "got: {out}"
+        !out.contains("TYPE-ERROR"),
+        "expected no type errors, got: {out}"
+    );
+    assert!(
+        out.contains("(INVOICE-EQUAL CHECKED"),
+        "expected INVOICE-EQUAL to check cleanly (issue #202: variadic AND/OR), got: {out}"
     );
 
     let stored = eval_line(

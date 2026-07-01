@@ -313,6 +313,32 @@ fn check_type_is_gradual_at_the_untyped_frontier() {
     assert!(out.contains("forall") && out.contains("list"), "got: {out}");
 }
 
+#[test]
+fn check_type_accepts_variadic_and_or() {
+    // Issue #202: AND/OR are fully variadic in the evaluator (0+ operands,
+    // short-circuiting); the checker used to reject anything but exactly 2
+    // operands as a type error, violating "never reject a program the
+    // interpreter runs." The exact repro from the issue:
+    let env = Environment::with_stdlib();
+    eval_line("(defun f (a b c) (and a b c))", &env);
+    let out = eval_line("(check-type f)", &env);
+    assert!(
+        !out.to_lowercase().contains("type error"),
+        "3-ary AND must not be a type error, got: {out}"
+    );
+    // 0-, 1-, and 4-ary too, plus OR.
+    eval_line("(defun g0 () (and))", &env);
+    eval_line("(defun g1 (a) (or a))", &env);
+    eval_line("(defun g4 (a b c d) (or a b c d))", &env);
+    for f in ["g0", "g1", "g4"] {
+        let out = eval_line(&format!("(check-type {f})"), &env);
+        assert!(
+            !out.to_lowercase().contains("type error"),
+            "{f} must not be a type error, got: {out}"
+        );
+    }
+}
+
 // --- stage 4: unified check+compile reporting; stage 5: control-flow ---------
 
 #[test]
