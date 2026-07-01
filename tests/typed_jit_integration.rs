@@ -188,6 +188,51 @@ fn typed_int_array_kernel_lands_at_repl() {
     );
 }
 
+/// Issue #214: `elaboration.rs` treats `AREF`/`ASET` as synonyms for
+/// `FETCH`/`STORE` with no checker guard, so they compiled fine in
+/// `defun-typed` bodies -- but were unbound in the plain evaluator, so the
+/// identical body as an ordinary `defun` (or anything that falls back to
+/// interpreted, like `defun*` on ambiguous types) errored "Unbound
+/// variable: AREF" at every call. Both spellings must now agree, typed
+/// *and* interpreted.
+#[test]
+fn aref_aset_work_both_typed_and_interpreted() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (first-typed int64) ((a (array int64))) (aref a 0))",
+        &env,
+    );
+    assert_eq!(
+        eval_line("(first-typed (list->array (list 7 8 9)))", &env),
+        "7"
+    );
+    // The same body as a plain (interpreted) defun must not error.
+    eval_line("(defun first-plain (a) (aref a 0))", &env);
+    assert_eq!(
+        eval_line("(first-plain (list->array (list 7 8 9)))", &env),
+        "7"
+    );
+    eval_line("(defun set-first (a v) (aset a 0 v))", &env);
+    eval_line("(setq test-arr (list->array (list 1 2 3)))", &env);
+    eval_line("(set-first test-arr 42)", &env);
+    assert_eq!(eval_line("(aref test-arr 0)", &env), "42");
+
+    // `ASET` specifically through the compiled `elab_store` path (the
+    // earlier assertions only exercised compiled `AREF`/`elab_fetch`).
+    // `store`/`aset` return the stored value (per their docs), so this
+    // exercises the compiled path without depending on whether a mutation
+    // inside a `defun-typed` call is visible to the caller's array
+    // afterward -- that's a separate, pre-existing membrane question
+    // (also true of plain `store`, not introduced by this fix), not part
+    // of issue #214's scope.
+    eval_line(
+        "(defun-typed (set-first-typed int64) ((a (array int64)) (v int64)) (aset a 0 v))",
+        &env,
+    );
+    eval_line("(setq test-arr-2 (list->array (list 1 2 3)))", &env);
+    assert_eq!(eval_line("(set-first-typed test-arr-2 99)", &env), "99");
+}
+
 #[test]
 fn typed_struct_lands_at_repl() {
     let env = Environment::new_with_builtins();
