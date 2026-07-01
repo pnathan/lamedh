@@ -1060,12 +1060,27 @@ impl Environment {
             // the dynamic_vars HashSet probe on the hot evaluation path.
             return s.value.clone();
         }
-        // Lexical: walk local frames by id; read the root's value cell directly.
+        // Lexical: walk local frames by id; the root binding is the value cell
+        // of the *current namespace's* canonical symbol for this name.
         let id = s.id;
         let mut frame = self;
         loop {
             if frame.is_root() {
-                return s.value.clone(); // O(1) cell read — no hash
+                let table = frame.shared.symbols.borrow();
+                // Fast path: in the common single-namespace case the AST symbol
+                // IS this table's canonical symbol (its id indexes back to the
+                // same `Rc`), so read the cell directly — O(1), no name hash.
+                match table.symbol_by_id(id) {
+                    Some(canon) if Shared::ptr_eq(&canon, sym) => return s.value.clone(),
+                    // First-class environments: `sym` was interned in a different
+                    // namespace/table, so resolve the name against THIS table's
+                    // canonical symbol and read *its* cell (not the caller's).
+                    _ => {
+                        return table
+                            .get_symbol(&s.name)
+                            .and_then(|c| c.borrow().value.clone());
+                    }
+                }
             }
             if let Some(val) = frame.bindings.borrow().get(&id) {
                 return Some(val.clone());
