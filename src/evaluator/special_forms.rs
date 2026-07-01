@@ -369,12 +369,15 @@ fn eval_application(
                 new_env.set_id(*id, arg);
             }
         }
-        // If a compiled body is available, run it through exec (which has its
-        // own TCO trampoline for chains of compiled lambdas).  Otherwise fall
-        // back to the standard TailCall so the outer trampoline handles TCO
-        // for the tree-walking path.
+        // If a compiled body is available, hand off to it as a tail call on
+        // the *same* trampoline (`TcoStep::ExecTail`) rather than invoking a
+        // fresh `exec()` — that used to be a separate, non-tail Rust call
+        // that grew the native stack and eval-depth counter on every
+        // tree-walker → compiled crossing (issue #200 M1' regression).
+        // Otherwise fall back to the standard TailCall so the outer
+        // trampoline handles TCO for the tree-walking path.
         if let Some(compiled) = &lambda.compiled {
-            return Ok(TcoStep::Done(exec(compiled, &new_env)));
+            return Ok(TcoStep::ExecTail(compiled.clone(), new_env));
         }
         return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
     }

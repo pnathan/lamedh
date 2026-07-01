@@ -260,69 +260,46 @@ fn compile_call(head: &LispVal, rest: &Shared<LispVal>, form: &LispVal) -> crate
 
 // ─── exec ────────────────────────────────────────────────────────────────────
 
-/// Internal step result for the exec trampoline.
-enum ExecStep {
-    /// Evaluation is complete.
-    Done(Result<LispVal, LispError>),
-    /// Tail call: continue with this code in this environment.
-    Continue(Shared<crate::Code>, Shared<Environment>),
-}
-
 /// Execute a compiled [`Code`] tree with a TCO trampoline.
+///
+/// This is a thin entry point around the *same* trampoline `eval()` uses
+/// (see [`super::functions::exec_entry`]) — the two share one loop so that a
+/// tail call crossing between compiled `Code` and an uncompiled `Code::Interp`
+/// form (and back) costs no native stack depth. Splitting them into
+/// independent trampolines was the root cause of issue #200 M1's TCO
+/// regression: each crossing was a plain (non-tail) Rust call, so both the
+/// native stack and the eval-depth counter grew per iteration.
 ///
 /// Each call to `exec` counts as one depth frame (via [`DepthGuard`]) so that
 /// non-tail-recursive compiled lambdas are subject to the same recursion-depth
-/// limit as the tree-walker.  TCO tail calls — the `Continue` loop — do *not*
-/// add additional depth because they stay inside the same `exec` invocation.
-///
-/// Tail positions (`If` branches, last form of `Seq`, compiled-lambda `Call`)
-/// update `current`/`current_env` and loop rather than pushing a new Rust
-/// frame.  Non-tail sub-expressions call `exec` recursively (a new depth
-/// frame each time) or fall back to the tree-walking [`eval`].
+/// limit as the tree-walker. Tail calls — whether they stay in `Code` or hand
+/// off to a raw AST form — do *not* add additional depth because they stay on
+/// the same trampoline instance.
 pub(super) fn exec(
     code: &Shared<crate::Code>,
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
-    // Each exec invocation counts as one recursion level so that non-tail
-    // compiled calls are bounded by the same limit as tree-walked eval frames.
-    // TCO tail iterations (Continue loop below) do NOT add further depth.
-    let _depth_guard = DepthGuard::enter()?;
-
-    let mut current: Shared<crate::Code> = code.clone();
-    let mut current_env: Shared<Environment> = env.clone();
-
-    loop {
-        // Evaluate one step.  The borrows of `current` and `current_env` are
-        // confined to this block so they are dropped before the reassignment
-        // below, mirroring the `eval_impl` trampoline pattern.
-        let step: ExecStep = {
-            let c = current.as_ref();
-            let e = &current_env;
-            exec_step(c, e)
-        }?;
-
-        match step {
-            ExecStep::Done(result) => return result,
-            ExecStep::Continue(new_code, new_env) => {
-                current = new_code;
-                current_env = new_env;
-            }
-        }
-    }
+    exec_entry(code.clone(), env)
 }
 
 /// Perform one exec trampoline step.
-fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, LispError> {
+pub(super) fn exec_step(
+    code: &crate::Code,
+    env: &Shared<Environment>,
+) -> Result<TcoStep, LispError> {
     use crate::Code;
     match code {
-        Code::Const(v) => Ok(ExecStep::Done(Ok(v.clone()))),
+        Code::Const(v) => Ok(TcoStep::Done(Ok(v.clone()))),
 
-        Code::Var(sym) => Ok(ExecStep::Done(env.resolve(sym).ok_or_else(|| {
+        Code::Var(sym) => Ok(TcoStep::Done(env.resolve(sym).ok_or_else(|| {
             LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
         }))),
 
-        // Fallback: run the original AST form through the full tree-walker.
-        Code::Interp(form) => Ok(ExecStep::Done(eval(form, env))),
+        // Fallback: hand the original AST form to the tree-walker side of the
+        // *same* trampoline. This must be a tail hand-off (not a plain `eval`
+        // call) because `Interp` can legitimately sit in tail position (e.g. a
+        // dynamic `let` the compiler couldn't lower) — see issue #200 M1'.
+        Code::Interp(form) => Ok(TcoStep::TailCall(form.clone(), env.clone())),
 
         Code::If(cond, then, els) => {
             // Condition is non-tail — evaluate it via exec so compiled
@@ -334,15 +311,15 @@ fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, 
                 els.clone()
             };
             // Then/else branch is tail — loop.
-            Ok(ExecStep::Continue(branch, env.clone()))
+            Ok(TcoStep::ExecTail(branch, env.clone()))
         }
 
         Code::Seq(forms) => {
             match forms.len() {
-                0 => Ok(ExecStep::Done(Ok(LispVal::Nil))),
+                0 => Ok(TcoStep::Done(Ok(LispVal::Nil))),
                 1 => {
                     // Single form — it is the tail.
-                    Ok(ExecStep::Continue(forms[0].clone(), env.clone()))
+                    Ok(TcoStep::ExecTail(forms[0].clone(), env.clone()))
                 }
                 n => {
                     // Evaluate all but the last (non-tail).
@@ -350,7 +327,7 @@ fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, 
                         exec(f, env)?;
                     }
                     // Last form is the tail.
-                    Ok(ExecStep::Continue(forms[n - 1].clone(), env.clone()))
+                    Ok(TcoStep::ExecTail(forms[n - 1].clone(), env.clone()))
                 }
             }
         }
@@ -364,7 +341,7 @@ fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, 
                 let_env.set_id(*id, val);
             }
             // Body is in tail position — loop with the child env.
-            Ok(ExecStep::Continue(body.clone(), let_env))
+            Ok(TcoStep::ExecTail(body.clone(), let_env))
         }
 
         Code::Call {
@@ -377,12 +354,13 @@ fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, 
 
             // Macros, fexprs, and vau operatives need their arguments
             // *unevaluated*.  Delegate the whole call back to the tree-walker
-            // using the stored original AST form.
+            // using the stored original AST form. (Rare at a compiled call
+            // site; not part of the M1' tail-call fix — see issue #200.)
             if matches!(
                 func,
                 LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
             ) {
-                return Ok(ExecStep::Done(eval(original, env)));
+                return Ok(TcoStep::Done(eval(original, env)));
             }
 
             // Evaluate all arguments (non-tail).
@@ -402,12 +380,12 @@ fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, 
                 for (id, val) in lambda.param_ids.iter().zip(eval_args) {
                     new_env.set_id(*id, val);
                 }
-                return Ok(ExecStep::Continue(compiled_body.clone(), new_env));
+                return Ok(TcoStep::ExecTail(compiled_body.clone(), new_env));
             }
 
             // Fall back to `apply` for builtins, natives, uncompiled lambdas,
             // variadic lambdas, and arity mismatches.
-            Ok(ExecStep::Done(apply(&func, &eval_args, env)))
+            Ok(TcoStep::Done(apply(&func, &eval_args, env)))
         }
     }
 }

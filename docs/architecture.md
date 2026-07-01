@@ -152,23 +152,23 @@ The evaluator is the heart of the interpreter at approximately 3,800 lines. Its 
 
 ### Trampolining TCO
 
-The key insight: in a tree-walking interpreter, tail calls normally consume Rust stack frames. Lamedh avoids this via a trampoline:
+The key insight: in a tree-walking interpreter, tail calls normally consume Rust stack frames. Lamedh avoids this via a trampoline. Since Milestone 1 of the compile→execute IR (issue #200), there are two representations that can appear in tail position — a raw AST form (tree-walker) and a compiled `Code` node (`src/evaluator/compile.rs`) — so one loop, `run_trampoline`, drives both:
 
 ```
-eval(expr, env)               ← acquires depth guard, loops eval_impl
-  └── eval_impl(expr, env)    ← loop: calls eval_step, handles TcoStep
-        └── eval_step(expr, env) → TcoStep
-              ├── TcoStep::Done(val)           ← return value, exit loop
-              └── TcoStep::TailCall(expr, env) ← replace expr/env, continue loop
+eval(expr, env)                       ← acquires depth guard, calls run_trampoline(Val(expr), env)
+exec_entry(code, env)                 ← acquires depth guard, calls run_trampoline(Code(code), env)
+  └── run_trampoline(current, env)    ← loop: steps eval_step or exec_step depending on `current`
+        ├── eval_step(expr, env) → TcoStep       (when current = Current::Val)
+        └── exec_step(code, env) → TcoStep       (when current = Current::Code)
+              ├── TcoStep::Done(val)                  ← return value, exit loop
+              ├── TcoStep::TailCall(expr, env)        ← continue as Current::Val
+              ├── TcoStep::TailCallWithGuards(...)     ← continue as Current::Val, accumulate dynamic-binding guards
+              └── TcoStep::ExecTail(code, env)         ← continue as Current::Code
 ```
 
-`eval_step` returns one of:
-- `TcoStep::Done(val)` — computation is complete, return this value
-- `TcoStep::TailCall(new_expr, new_env)` — tail position, restart loop
+This means tail calls in `IF` branches, `PROGN` last form, `LET` body, and lambda bodies consume no additional Rust stack frames — including when a tail call crosses between the tree-walker and the compiled executor (e.g. a compiled lambda tail-calling an uncompiled special form, or a tree-walked call into a compiled lambda body). Splitting that into two independent trampolines was tried in M1 and caused a real regression: each crossing was a plain (non-tail) Rust call, so both the native stack and the eval-depth counter grew per iteration until the depth guard tripped on deep tail recursion. See issue #200 for the postmortem.
 
-This means tail calls in `IF` branches, `PROGN` last form, `LET` body, and lambda bodies consume no additional Rust stack frames.
-
-Non-tail recursive calls (e.g., evaluating arguments to a function) still go through `eval()`, so the depth guard applies to them.
+Non-tail recursive calls (e.g., evaluating arguments to a function) still go through `eval()`/`exec()`, so the depth guard applies to them.
 
 ### Recursion depth guard
 

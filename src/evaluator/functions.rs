@@ -185,10 +185,10 @@ pub(super) fn expand_macro(
 /// Evaluate a single Lisp expression in `env`.
 ///
 /// This is the primary entry point for evaluation.  It acquires a
-/// recursion-depth guard and delegates to `eval_impl`, which uses a trampoline
-/// loop for tail-call optimisation: tail positions (`IF` branches, `PROGN`
-/// last form, `LET` body, lambda bodies) are handled without growing the Rust
-/// call stack.
+/// recursion-depth guard and delegates to `run_trampoline`, which uses a
+/// trampoline loop for tail-call optimisation: tail positions (`IF` branches,
+/// `PROGN` last form, `LET` body, lambda bodies) are handled without growing
+/// the Rust call stack.
 ///
 /// Non-tail recursive calls (e.g. evaluating function arguments) go through
 /// `eval` again so the depth guard applies.
@@ -203,7 +203,20 @@ pub fn eval(val: &LispVal, env: &Shared<Environment>) -> Result<LispVal, LispErr
     // Bound recursion so deep/infinite recursion is a recoverable error rather
     // than a native stack overflow that aborts the whole process (issue #61).
     let _depth_guard = DepthGuard::enter()?;
-    eval_impl(val.clone(), env.clone())
+    run_trampoline(Current::Val(val.clone()), env.clone())
+}
+
+/// Entry point for the compiled-code executor (`compile::exec`). Shares the
+/// same trampoline as `eval` — see [`Current`] and [`TcoStep::ExecTail`] for
+/// why: a compiled lambda's tail call must be able to reuse this loop even
+/// when it crosses back into an uncompiled (`Code::Interp`) form, or TCO
+/// breaks at the boundary (issue #200 M1', split-trampoline regression).
+pub(super) fn exec_entry(
+    code: Shared<crate::Code>,
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    let _depth_guard = DepthGuard::enter()?;
+    run_trampoline(Current::Code(code), env.clone())
 }
 
 /// Represents the outcome of one iteration of the TCO trampoline.
@@ -220,52 +233,75 @@ pub(super) enum TcoStep {
     /// dynamic (`*special*`) variables: each iteration pushes its guard onto
     /// the trampoline-owned vec, and the whole chain is unwound on return.
     TailCallWithGuards(LispVal, Shared<Environment>, Vec<DynamicBinding>),
+    /// Tail call into the compiled-code executor: continue stepping this
+    /// `Code` node in `env` on the *same* trampoline instead of recursing
+    /// into a fresh `exec()`/`eval()` call. Without this, a compiled lambda
+    /// tail-calling an uncompiled form (and back) grows the native stack and
+    /// the eval-depth counter by one per iteration — see issue #200.
+    ExecTail(Shared<crate::Code>, Shared<Environment>),
+}
+
+/// Which representation the trampoline is currently stepping. A single loop
+/// drives both the tree-walker (`Val`) and the compiled executor (`Code`) so
+/// that a tail call crossing between them costs no native stack depth.
+enum Current {
+    Val(LispVal),
+    Code(Shared<crate::Code>),
 }
 
 /// Internal trampoline evaluator. Runs a loop that reuses the current Rust
 /// stack frame for tail calls, achieving proper TCO without consuming extra
-/// native stack depth for each Lisp tail-recursive call.
+/// native stack depth for each Lisp tail-recursive call — whether the tail
+/// position holds a raw AST form or a compiled `Code` node.
 ///
 /// All non-tail recursive calls (e.g. evaluating an IF condition, evaluating
-/// function arguments) still go through the public `eval()` so that the depth
-/// guard is correctly applied to non-tail frames.
-pub(super) fn eval_impl(
-    initial_val: LispVal,
+/// function arguments) still go through the public `eval()`/`exec()` so that
+/// the depth guard is correctly applied to non-tail frames.
+fn run_trampoline(
+    initial: Current,
     initial_env: Shared<Environment>,
 ) -> Result<LispVal, LispError> {
-    let mut current_val: LispVal = initial_val;
+    let mut current: Current = initial;
     let mut current_env: Shared<Environment> = initial_env;
     // Dynamic-binding guards accumulated across tail calls (e.g. a tail-
     // recursive function that rebinds a `*special*` each iteration). They are
     // restored on *every* exit path by `DynamicGuardStack`'s Drop:
     //   - `Done`: dropped after the result value is produced,
-    //   - `Apply`: dropped after `apply_owned` runs, so the deferred apply
-    //     still executes inside the bindings' dynamic extent,
     //   - error/THROW via `?`: dropped as the stack unwinds.
     // Restoration is LIFO (last installed → first restored), which a plain
-    // `Vec` drop would get wrong for nested same-symbol rebindings.
+    // `Vec` drop would get wrong for nested same-symbol rebindings. `Val` and
+    // `Code` steps share this one stack, so a dynamic binding installed by a
+    // tree-walker `TailCallWithGuards` stays live across a subsequent
+    // `ExecTail` into compiled code, exactly as it would within pure
+    // tree-walker recursion.
     let mut guards = DynamicGuardStack(Vec::new());
 
     loop {
         // Each iteration computes a TcoStep, then either returns or loops.
-        // All borrows of current_val/current_env are scoped inside this block
+        // All borrows of `current`/`current_env` are scoped inside this block
         // so they are released before we potentially assign to them.
         let step = {
-            let val = &current_val;
             let env = &current_env;
-            eval_step(val, env)
+            match &current {
+                Current::Val(val) => eval_step(val, env),
+                Current::Code(code) => exec_step(code, env),
+            }
         }?;
 
         match step {
             TcoStep::Done(result) => return result,
             TcoStep::TailCall(new_val, new_env) => {
-                current_val = new_val;
+                current = Current::Val(new_val);
                 current_env = new_env;
             }
             TcoStep::TailCallWithGuards(new_val, new_env, new_guards) => {
-                current_val = new_val;
+                current = Current::Val(new_val);
                 current_env = new_env;
                 guards.0.extend(new_guards);
+            }
+            TcoStep::ExecTail(new_code, new_env) => {
+                current = Current::Code(new_code);
+                current_env = new_env;
             }
         }
     }
