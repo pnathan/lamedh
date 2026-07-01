@@ -824,12 +824,27 @@ impl Environment {
             "ARRAY-FETCH".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayFetch),
         );
+        // Common-Lisp-style alias (issue #214): the typed JIT's elaborator
+        // already treats AREF/ASET as synonyms for FETCH/STORE
+        // (`src/jit/elaboration.rs`'s dispatch), so a `defun-typed` using
+        // them compiled and ran fine while the identical body, run
+        // interpreted (e.g. after `defun*`'s documented silent fallback to
+        // a plain lambda), errored "Unbound variable" -- the elaborator
+        // recognized a name the evaluator had no definition for at all.
+        env.set(
+            "AREF".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayFetch),
+        );
         env.set(
             "STORE".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayStore),
         );
         env.set(
             "ARRAY-STORE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayStore),
+        );
+        env.set(
+            "ASET".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayStore),
         );
         env.set(

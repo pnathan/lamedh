@@ -302,6 +302,23 @@
     (assert-equal (array->list (subarray a 1 3)) '(20 30))
     (assert-equal (array->list (array-fill (array 2) 0)) '(0 0))))
 
+;;; Issue #214: AREF/ASET compiled fine in the typed JIT (elaboration.rs
+;;; already treated them as synonyms for FETCH/STORE) but were unbound in
+;;; the plain evaluator -- so a function using them broke the moment it ran
+;;; interpreted instead of JIT-compiled. Now real Common-Lisp-style aliases.
+(deftest aref-aset-aliases
+  (let ((a (array 3)))
+    (aset a 0 7)
+    (aset a 1 8)
+    (aset a 2 9)
+    (assert-equal (aref a 0) 7)
+    (assert-equal (aref a 1) 8)
+    (assert-equal (aref a 2) 9)
+    ;; AREF/ASET and FETCH/STORE must agree -- they're the same primitive.
+    (assert-equal (aref a 1) (fetch a 1))
+    (store a 1 99)
+    (assert-equal (aref a 1) 99)))
+
 ;;; ---- #150 format ---------------------------------------------------------
 
 (deftest format-basic

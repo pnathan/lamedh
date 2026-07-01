@@ -1794,9 +1794,9 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(fetch array index)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias.")
+    (cons 'DESCRIPTION "Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias, AREF the Common-Lisp-style one.")
     (cons 'EXAMPLES '(((let ((a (array 3))) (store a 1 'hello) (fetch a 1)) hello)))
-    (cons 'SEE-ALSO '(array-fetch store array array-length))))
+    (cons 'SEE-ALSO '(array-fetch aref store array array-length))))
 
 (register-doc 'array-fetch
   (list
@@ -1807,15 +1807,24 @@ The classic Lisp 1.5 spelling.")
     (cons 'DESCRIPTION "Alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.")
     (cons 'SEE-ALSO '(fetch store array-store array-length))))
 
+(register-doc 'aref
+  (list
+    (cons 'NAME 'aref)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(aref array index)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Common-Lisp-style alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.")
+    (cons 'SEE-ALSO '(fetch array-fetch aset store array-length))))
+
 (register-doc 'store
   (list
     (cons 'NAME 'store)
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(store array index value)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias. Mutation is in-place: all references to the same array see the change.")
+    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change.")
     (cons 'EXAMPLES '(((let ((a (array 3))) (store a 0 99) (fetch a 0)) 99)))
-    (cons 'SEE-ALSO '(array-store fetch array array-length))))
+    (cons 'SEE-ALSO '(array-store aset fetch array array-length))))
 
 (register-doc 'array-store
   (list
@@ -1825,6 +1834,15 @@ The classic Lisp 1.5 spelling.")
     (cons 'CATEGORY 'arrays)
     (cons 'DESCRIPTION "Alias for STORE. Destructively sets the element at index. See STORE for full documentation.")
     (cons 'SEE-ALSO '(store fetch array-fetch array-length))))
+
+(register-doc 'aset
+  (list
+    (cons 'NAME 'aset)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(aset array index value)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Common-Lisp-style alias for STORE. Destructively sets the element at index. See STORE for full documentation.")
+    (cons 'SEE-ALSO '(store array-store aref fetch array-length))))
 
 (register-doc 'array-length
   (list
