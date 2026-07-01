@@ -86,8 +86,12 @@ fn compile_cons(car: &Shared<LispVal>, rest: &Shared<LispVal>, form: &LispVal) -
                 Some(SpecialForm::Progn) => compile_progn(rest, form),
                 Some(SpecialForm::Cond) => compile_cond(rest, form),
                 Some(SpecialForm::Let) => compile_let(rest, form),
+                Some(SpecialForm::Setq) => compile_setq(rest, form),
+                Some(SpecialForm::UnwindProtect) => compile_unwind_protect(rest, form),
+                Some(SpecialForm::While) => compile_while(rest, form),
+                Some(SpecialForm::For) => compile_for(rest, form),
                 Some(_) => {
-                    // All other special forms (setq, lambda, defmacro, …):
+                    // All other special forms (lambda, defmacro, catch, prog, …):
                     // fall back to the tree-walker.
                     Code::Interp(form.clone())
                 }
@@ -239,6 +243,87 @@ fn compile_let(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     Code::Let { bindings, body }
 }
 
+/// Compile `(setq v1 e1 v2 e2 …)`.
+///
+/// Each `vi` must be a bare symbol; a malformed (odd-length, or non-symbol
+/// variable) form falls back so the tree-walker reports the right error.
+/// `Environment::update` already handles dynamic vs. lexical resolution (and
+/// creates the variable in the current environment if unbound), matching the
+/// tree-walker's `SETQ` semantics exactly — no dynamic-binding RAII is needed
+/// here because `setq` mutates an existing cell rather than installing one.
+fn compile_setq(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let forms = match safe_list_to_vec(rest) {
+        Some(v) if v.len() % 2 == 0 => v,
+        // Odd arg count or dotted list — tree-walker gives the right error.
+        _ => return Code::Interp(form.clone()),
+    };
+    let mut pairs = Vec::with_capacity(forms.len() / 2);
+    for pair in forms.chunks_exact(2) {
+        match &pair[0] {
+            LispVal::Symbol(s) => pairs.push((s.clone(), compile(&pair[1]))),
+            _ => return Code::Interp(form.clone()),
+        }
+    }
+    Code::SetVar(pairs)
+}
+
+/// Compile `(unwind-protect body cleanup…)`.
+fn compile_unwind_protect(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let forms = match safe_list_to_vec(rest) {
+        Some(v) if !v.is_empty() => v,
+        _ => return Code::Interp(form.clone()),
+    };
+    let body = compile(&forms[0]);
+    let cleanups = forms[1..].iter().map(compile).collect();
+    Code::UnwindProtect { body, cleanups }
+}
+
+/// Compile `(while cond body…)`.
+fn compile_while(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let forms = match safe_list_to_vec(rest) {
+        Some(v) if !v.is_empty() => v,
+        _ => return Code::Interp(form.clone()),
+    };
+    let cond = compile(&forms[0]);
+    let body = forms[1..].iter().map(compile).collect();
+    Code::While { cond, body }
+}
+
+/// Compile `(for (var start end [step]) body…)`.
+fn compile_for(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let args = match safe_list_to_vec(rest) {
+        Some(v) if !v.is_empty() => v,
+        _ => return Code::Interp(form.clone()),
+    };
+    let spec = match safe_list_to_vec(&args[0]) {
+        Some(v) if v.len() == 3 || v.len() == 4 => v,
+        _ => return Code::Interp(form.clone()),
+    };
+    let var_id = match &spec[0] {
+        LispVal::Symbol(s) => s.borrow().id,
+        _ => return Code::Interp(form.clone()),
+    };
+    let start = compile(&spec[1]);
+    let end = compile(&spec[2]);
+    let step = if spec.len() == 4 {
+        Some(compile(&spec[3]))
+    } else {
+        None
+    };
+    let body = args[1..].iter().map(compile).collect();
+    Code::For {
+        var_id,
+        start,
+        end,
+        step,
+        body,
+    }
+}
+
 /// Compile a generic function call `(head arg1 … argN)`.
 fn compile_call(head: &LispVal, rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     use crate::Code;
@@ -344,6 +429,89 @@ pub(super) fn exec_step(
             Ok(TcoStep::ExecTail(body.clone(), let_env))
         }
 
+        Code::SetVar(pairs) => {
+            // Not a tail position: SETQ's result is the last assigned value,
+            // an ordinary (non-tail) expression result.
+            let mut last = LispVal::Nil;
+            for (sym, init) in pairs {
+                let val = exec(init, env)?;
+                // Drop the borrow before `update` (which may itself borrow
+                // the same symbol, e.g. via intern) — issue #156 pattern.
+                let name = sym.borrow().name.clone();
+                Environment::update(env, &name, val.clone());
+                last = val;
+            }
+            Ok(TcoStep::Done(Ok(last)))
+        }
+
+        Code::UnwindProtect { body, cleanups } => {
+            // BODY is non-tail: cleanups must always run after it, even if it
+            // errors or performs a non-local exit (matches `eval`'s handling).
+            let result = exec(body, env);
+            for cleanup in cleanups {
+                let _ = exec(cleanup, env);
+            }
+            Ok(TcoStep::Done(result))
+        }
+
+        Code::While { cond, body } => {
+            loop {
+                if !exec(cond, env)?.is_truthy() {
+                    break;
+                }
+                for f in body {
+                    exec(f, env)?;
+                }
+            }
+            Ok(TcoStep::Done(Ok(LispVal::Nil)))
+        }
+
+        Code::For {
+            var_id,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            let as_int = |v: &LispVal, who: &str| -> Result<i64, LispError> {
+                match v {
+                    LispVal::Number(n) => Ok(*n),
+                    other => Err(LispError::Generic(format!(
+                        "for {who} must be an integer, got {other:?}"
+                    ))),
+                }
+            };
+            let start_i = as_int(&exec(start, env)?, "start")?;
+            let end_i = as_int(&exec(end, env)?, "end")?;
+            let step_i = match step {
+                Some(s) => as_int(&exec(s, env)?, "step")?,
+                None => 1,
+            };
+            if step_i == 0 {
+                return Ok(TcoStep::Done(Err(LispError::Generic(
+                    "for step must be non-zero".to_string(),
+                ))));
+            }
+
+            let loop_env = Environment::new_child(env);
+            let mut i = start_i;
+            loop {
+                // Inclusive bound; direction depends on the sign of step.
+                if (step_i > 0 && i > end_i) || (step_i < 0 && i < end_i) {
+                    break;
+                }
+                loop_env.set_id(*var_id, LispVal::Number(i));
+                for f in body {
+                    exec(f, &loop_env)?;
+                }
+                match i.checked_add(step_i) {
+                    Some(n) => i = n,
+                    None => break,
+                }
+            }
+            Ok(TcoStep::Done(Ok(LispVal::Nil)))
+        }
+
         Code::Call {
             callee,
             args,
@@ -353,14 +521,15 @@ pub(super) fn exec_step(
             let func = exec(callee, env)?;
 
             // Macros, fexprs, and vau operatives need their arguments
-            // *unevaluated*.  Delegate the whole call back to the tree-walker
-            // using the stored original AST form. (Rare at a compiled call
-            // site; not part of the M1' tail-call fix — see issue #200.)
+            // *unevaluated*.  Hand the original AST form to the tree-walker
+            // side of this *same* trampoline (a tail hand-off, not a plain
+            // nested `eval` call) so a tail call through one of these from
+            // compiled code still costs no native stack depth.
             if matches!(
                 func,
                 LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
             ) {
-                return Ok(TcoStep::Done(eval(original, env)));
+                return Ok(TcoStep::TailCall(original.clone(), env.clone()));
             }
 
             // Evaluate all arguments (non-tail).
@@ -369,22 +538,36 @@ pub(super) fn exec_step(
                 eval_args.push(exec(a, env)?);
             }
 
-            // TCO for non-variadic compiled lambdas: skip the Rust frame
-            // entirely by setting up the child env and looping.
+            // TCO for compiled lambdas (fixed-arity or `&rest`): skip the Rust
+            // frame entirely by setting up the child env and looping.
             if let LispVal::Lambda(ref lambda) = func
-                && lambda.rest_param.is_none()
                 && let Some(ref compiled_body) = lambda.compiled
-                && lambda.params.len() == eval_args.len()
             {
-                let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-                for (id, val) in lambda.param_ids.iter().zip(eval_args) {
-                    new_env.set_id(*id, val);
+                match lambda.rest_param_id {
+                    None if lambda.params.len() == eval_args.len() => {
+                        let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+                        for (id, val) in lambda.param_ids.iter().zip(eval_args) {
+                            new_env.set_id(*id, val);
+                        }
+                        return Ok(TcoStep::ExecTail(compiled_body.clone(), new_env));
+                    }
+                    Some(rest_param_id) if eval_args.len() >= lambda.params.len() => {
+                        let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+                        let n_fixed = lambda.params.len();
+                        let mut eval_args = eval_args;
+                        for (id, val) in lambda.param_ids.iter().zip(eval_args.drain(..n_fixed)) {
+                            new_env.set_id(*id, val);
+                        }
+                        new_env.set_id(rest_param_id, vec_to_list(eval_args));
+                        return Ok(TcoStep::ExecTail(compiled_body.clone(), new_env));
+                    }
+                    // Arity mismatch — fall through to `apply` for the error.
+                    _ => {}
                 }
-                return Ok(TcoStep::ExecTail(compiled_body.clone(), new_env));
             }
 
             // Fall back to `apply` for builtins, natives, uncompiled lambdas,
-            // variadic lambdas, and arity mismatches.
+            // and arity mismatches.
             Ok(TcoStep::Done(apply(&func, &eval_args, env)))
         }
     }

@@ -784,16 +784,27 @@ pub struct Symbol {
 /// yet handle is wrapped in [`Code::Interp`], which falls back to the
 /// tree-walking evaluator transparently.
 ///
-/// ## Variants handled in M1
+/// ## Variants handled (M1 + M2)
 ///
-/// | Variant | Lisp form |
-/// |---------|-----------|
-/// | `Const` | literals, `(quote datum)` |
-/// | `Var`   | symbol references |
-/// | `If`    | `(if cond then [else])` |
-/// | `Seq`   | `(progn f1 … fn)` |
-/// | `Let`   | `(let ((v e) …) body…)` with lexical variables only |
-/// | `Call`  | ordinary function calls |
+/// | Variant         | Lisp form |
+/// |-----------------|-----------|
+/// | `Const`         | literals, `(quote datum)` |
+/// | `Var`           | symbol references |
+/// | `If`            | `(if cond then [else])` |
+/// | `Seq`           | `(progn f1 … fn)` |
+/// | `Let`           | `(let ((v e) …) body…)` with lexical variables only |
+/// | `Call`          | ordinary function calls (fixed-arity and `&rest`) |
+/// | `SetVar`        | `(setq v1 e1 …)` |
+/// | `UnwindProtect` | `(unwind-protect body cleanup…)` |
+/// | `While`         | `(while cond body…)` |
+/// | `For`           | `(for (var start end [step]) body…)` |
+///
+/// Dynamic-variable `let`, `catch`/`throw`, `block`/`return-from`, and
+/// `prog`/`go`/`return` are deliberately left as `Code::Interp`: the
+/// tree-walker fallback already handles them correctly (with full TCO, since
+/// the M1' unified trampoline), and the payoff of compiling them is low
+/// relative to the correctness risk (`prog`/`go` in particular doesn't map
+/// onto this tree-shaped IR without a larger, M3-scale redesign).
 /// | `Interp`| fallback to tree-walker |
 #[derive(Debug)]
 pub enum Code {
@@ -829,6 +840,32 @@ pub enum Code {
         args: Vec<Shared<Code>>,
         /// Original AST form for the macro/fexpr/vau fallback path.
         original: LispVal,
+    },
+    /// `(setq v1 e1 v2 e2 …)` — evaluate each `ei` in order and store it into
+    /// `vi` (created in the current environment if not already bound,
+    /// matching the tree-walker). Returns the last value assigned.
+    SetVar(Vec<(Shared<SharedCell<Symbol>>, Shared<Code>)>),
+    /// `(unwind-protect body cleanup…)` — evaluate `body`, then always
+    /// evaluate every `cleanup` form (even if `body` errored or performed a
+    /// non-local exit), then propagate `body`'s result.
+    UnwindProtect {
+        body: Shared<Code>,
+        cleanups: Vec<Shared<Code>>,
+    },
+    /// `(while cond body…)` — re-test `cond` before each iteration; body runs
+    /// in the current environment (no per-iteration frame). Yields `NIL`.
+    While {
+        cond: Shared<Code>,
+        body: Vec<Shared<Code>>,
+    },
+    /// `(for (var start end [step]) body…)` — inclusive integer range, one
+    /// reused child frame, in-place counter mutation. Yields `NIL`.
+    For {
+        var_id: u32,
+        start: Shared<Code>,
+        end: Shared<Code>,
+        step: Option<Shared<Code>>,
+        body: Vec<Shared<Code>>,
     },
     /// Fallback: call the tree-walking `eval` on the original AST form.
     Interp(LispVal),
