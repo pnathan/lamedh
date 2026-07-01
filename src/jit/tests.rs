@@ -890,6 +890,122 @@ fn mutual_recursion_even_odd() {
     assert_eq!(agree(&j, "odd?", &[i(0)]), bo(false));
 }
 
+/// Issue #133 Tier 2a: `even?`/`odd?` tail-call *each other* (not
+/// themselves), so Tier 1's in-function loop never fires for these — before
+/// Tier 2a, each mutual call was an ordinary recursive `Ctx::call`, growing
+/// the native Rust stack by one frame per iteration and segfaulting at
+/// depth. This must now run at a depth deep enough to blow any bounded
+/// per-call-frame stack, on the interpreter/closure path *and* the native
+/// Cranelift path, on the default thread stack (no `with_large_stack`).
+#[test]
+fn tier2a_mutual_tail_recursion_runs_on_default_stack() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("EVEN2?", &[("N", Ty::Int64)], Ty::Bool);
+    j.declare("ODD2?", &[("N", Ty::Int64)], Ty::Bool);
+    j.define(
+        &read(
+            "(defun-typed (even2? bool) ((n int64)) (if (= n 0) true (odd2? (- n 1))))",
+            &env,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    j.define(
+        &read(
+            "(defun-typed (odd2? bool) ((n int64)) (if (= n 0) false (even2? (- n 1))))",
+            &env,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Native Cranelift path.
+    j.compile_all();
+    assert_eq!(j.call("EVEN2?", &[i(50_000_000)]).unwrap(), bo(true));
+    assert_eq!(j.call("EVEN2?", &[i(50_000_001)]).unwrap(), bo(false));
+    assert_eq!(j.call("ODD2?", &[i(50_000_001)]).unwrap(), bo(true));
+
+    // Interpreter (eval_core) path specifically.
+    j.deoptimize_all();
+    assert_eq!(j.call("EVEN2?", &[i(10_000_000)]).unwrap(), bo(true));
+    assert_eq!(j.call("ODD2?", &[i(10_000_001)]).unwrap(), bo(true));
+}
+
+/// A three-function tail cycle (not just a two-function ping-pong), to
+/// confirm the trampoline generalizes beyond a single mutual pair: `a`
+/// tail-calls `b`, `b` tail-calls `c`, `c` tail-calls `a`, decrementing once
+/// per full cycle.
+#[test]
+fn tier2a_three_function_tail_cycle() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("CYCLE-A", &[("N", Ty::Int64)], Ty::Int64);
+    j.declare("CYCLE-B", &[("N", Ty::Int64)], Ty::Int64);
+    j.declare("CYCLE-C", &[("N", Ty::Int64)], Ty::Int64);
+    for src in [
+        "(defun-typed (cycle-a int64) ((n int64)) (if (= n 0) 111 (cycle-b (- n 1))))",
+        "(defun-typed (cycle-b int64) ((n int64)) (cycle-c n))",
+        "(defun-typed (cycle-c int64) ((n int64)) (cycle-a n))",
+    ] {
+        j.define(&read(src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(agree(&j, "cycle-a", &[i(3_000_000)]), i(111));
+}
+
+/// `Ctx.pending_tail` is one shared, single-slot flag reused across every
+/// nested `invoke` call within a whole top-level call. This proves it can't
+/// bleed from one mutual-tail chain into an unrelated one: `both` calls
+/// `ev?` twice from a *non-tail* position (`and`'s operands), each call
+/// independently draining a deep `ev?`/`od?` chain to completion before
+/// `both`'s own body sees a real (never a stale/leftover) result.
+#[test]
+fn tier2a_pending_tail_does_not_leak_across_independent_non_tail_calls() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("EV3?", &[("N", Ty::Int64)], Ty::Bool);
+    j.declare("OD3?", &[("N", Ty::Int64)], Ty::Bool);
+    for src in [
+        "(defun-typed (ev3? bool) ((n int64)) (if (= n 0) true (od3? (- n 1))))",
+        "(defun-typed (od3? bool) ((n int64)) (if (= n 0) false (ev3? (- n 1))))",
+        "(defun-typed (both3 bool) ((n int64)) (and (ev3? n) (ev3? n)))",
+    ] {
+        j.define(&read(src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(agree(&j, "both3", &[i(20_000_000)]), bo(true));
+    assert_eq!(agree(&j, "both3", &[i(20_000_001)]), bo(false));
+}
+
+/// A compound (array) value threaded through a mutual-tail chain: each hop
+/// allocates a fresh array in the shared call arena (never reclaimed until
+/// the whole top-level call returns, so it must stay valid across every
+/// subsequent hop, not just the one that allocated it) and the base case
+/// reads it back.
+#[test]
+fn tier2a_array_survives_across_mutual_tail_hops() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("MAKE-A", &[("N", Ty::Int64)], Ty::Int64);
+    j.declare("MAKE-B", &[("N", Ty::Int64)], Ty::Int64);
+    for src in [
+        // Each hop allocates a fresh 3-element array in the shared call
+        // arena (churn across hops) and tail-calls the other, decrementing;
+        // the base case reads back an array built on this very last hop to
+        // prove it wasn't corrupted by any earlier hop's allocation.
+        "(defun-typed (make-a int64) ((n int64)) \
+           (let-typed ((arr (array 3))) \
+             (store arr 0 n) (store arr 1 n) (store arr 2 n) \
+             (if (= n 0) (fetch arr 1) (make-b (- n 1)))))",
+        "(defun-typed (make-b int64) ((n int64)) \
+           (let-typed ((arr (array 3))) \
+             (store arr 0 n) (store arr 1 n) (store arr 2 n) \
+             (if (= n 0) (fetch arr 2) (make-a (- n 1)))))",
+    ] {
+        j.define(&read(src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(agree(&j, "make-a", &[i(2_000_000)]), i(0));
+}
+
 // --- redefinition / the cell -----------------------------------------------
 
 #[test]

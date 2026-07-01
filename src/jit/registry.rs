@@ -131,9 +131,29 @@ impl TypedFn {
         }
     }
 
-    /// Invoke with already-unboxed words. Builds the callee frame, dispatches to
-    /// the compiled edition if present (pinning it for the call), else interprets.
+    /// Invoke with already-unboxed words. Runs this function's own edition
+    /// once, then drives the cross-function tail-call trampoline (issue
+    /// #133 Tier 2a) until a call completes without leaving a pending tail
+    /// call behind — O(1) native Rust stack for arbitrarily deep mutual/
+    /// general tail recursion, since every iteration is a fresh top-level
+    /// dispatch through [`Ctx::call`]'s own machinery (redefinition safety,
+    /// entry-cell pinning, edition selection — all reused unchanged; no
+    /// `Ctx`-level state persists between iterations except the one pending
+    /// call being handed off).
     pub(super) fn invoke(&self, args: &[u64], ctx: &Ctx) -> u64 {
+        let mut result = self.invoke_once(args, ctx);
+        while let Some((id, tail_args)) = ctx.take_pending_tail() {
+            result = ctx.funcs[id].invoke_once(&tail_args, ctx);
+        }
+        result
+    }
+
+    /// Run this function's own edition (native/closure/interpreter) exactly
+    /// once, without following any pending cross-function tail call it may
+    /// leave behind — that is [`TypedFn::invoke`]'s job. Builds the callee
+    /// frame, dispatches to the compiled edition if present (pinning it for
+    /// the call), else interprets.
+    fn invoke_once(&self, args: &[u64], ctx: &Ctx) -> u64 {
         // Native edition first (pinned for the call so a redefinition can't free
         // the code out from under us). `args` are the parameter words directly;
         // the native function builds its own local frame.
@@ -727,6 +747,7 @@ impl Jit {
         Ctx {
             funcs: &self.funcs,
             arena: RefCell::new(Vec::new()),
+            pending_tail: RefCell::new(None),
         }
     }
 
