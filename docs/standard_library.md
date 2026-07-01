@@ -29,9 +29,7 @@ The standard library provides essential functions and macros that extend the bui
 | `17-arrays.lisp` | Array utilities |
 | `18-format.lisp` | `FORMAT` subset |
 | `19-call-graph.lisp` | Call-graph analysis |
-| `20-condensation.lisp` | Condensation metadata, `DEFCONCEPT`/`DERIVE`, change tracking |
-| `21-typeclasses.lisp` | Explicit typeclass dictionaries |
-| `22-intent.lisp` | Experimental intent layer over typeclass dispatch |
+| `20-condensation.lisp` | Condensation: `DEFCONCEPT`/`DERIVE`, sexpr diff/patch/`EDIT!`, honest checker statuses |
 | `97-doc-renderer.lisp` | Help renderer |
 | `98-help-system.lisp` | `(HELP ...)` interface |
 | `99-help-data.lisp` | Structured help database |

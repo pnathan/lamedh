@@ -41,56 +41,26 @@ fn derive_lens_attaches_a_round_trip_law() {
 }
 
 #[test]
-fn derive_installs_typeclass_instances() {
+fn defconcept_inline_derive_builds_the_whole_bundle_from_one_seed() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))))",
+        "(defconcept invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 0)) (:derive equality lens))",
         &env,
-    );
-    eval_line("(derive invoice lens equality printer)", &env);
-    assert_eq!(
-        eval_line("(typeclass-op 'eqv 'invoice :eqv)", &env),
-        "INVOICE-EQUAL"
-    );
-    assert_eq!(
-        eval_line("(typeclass-op 'show 'invoice :show)", &env),
-        "INVOICE->PLIST"
     );
     assert_eq!(
         eval_line(
-            "(typeclass-call 'lens 'invoice :view (make-invoice 1 2))",
-            &env
-        ),
-        "((ID . 1) (AMOUNT . 2))"
-    );
-    let instances = eval_line("(cdr (assoc 'instances (condense-trace 'invoice)))", &env);
-    assert!(instances.contains("LENS"), "got: {instances}");
-    assert!(instances.contains("EQV"), "got: {instances}");
-    assert!(instances.contains("SHOW"), "got: {instances}");
-}
-
-#[test]
-fn derive_equality_instance_dispatches_through_typeclass_call() {
-    let env = env_with_stdlib();
-    eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))))",
-        &env,
-    );
-    eval_line("(derive invoice equality)", &env);
-    assert_eq!(
-        eval_line(
-            "(typeclass-call 'eqv 'invoice :eqv (make-invoice 1 2) (make-invoice 1 2))",
+            "(invoice-equal (make-invoice 1 2) (make-invoice 1 2))",
             &env
         ),
         "T"
     );
     assert_eq!(
-        eval_line(
-            "(typeclass-call 'eqv 'invoice :eqv (make-invoice 1 2) (make-invoice 9 2))",
-            &env
-        ),
-        "()"
+        eval_line("(invoice-lens-roundtrip (make-invoice 1 2))", &env),
+        "T"
     );
+    let derivations = eval_line("(cdr (assoc 'derivations (condense-trace 'invoice)))", &env);
+    assert!(derivations.contains("EQUALITY"), "got: {derivations}");
+    assert!(derivations.contains("LENS"), "got: {derivations}");
 }
 
 #[test]

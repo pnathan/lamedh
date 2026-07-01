@@ -36,6 +36,22 @@ pub(super) fn apply_introspection(
                 Ok(form)
             }
         }
+        BuiltinFunc::SeeType => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "see-type requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "see-type requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(see_type_form(&name, env))
+        }
         BuiltinFunc::Disassemble => {
             if args.len() != 1 {
                 return Err(LispError::Generic(
