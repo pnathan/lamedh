@@ -81,6 +81,62 @@ fn int_div_and_mod() {
     assert_eq!(agree(&j, "d", &[i(-17), i(5)]), i(-3)); // truncating
 }
 
+/// Issue #209: unlike `+`/`-`/`*`, `/` and `MOD` are strictly binary in the
+/// evaluator (`BuiltinFunc::Divide`/`mod` both reject anything but exactly 2
+/// arguments) -- no unary reciprocal, no variadic chain division/modulus.
+/// `elab_bin` used to accept 0/1/3+ arities anyway, silently compiling a
+/// made-up unary/N-ary meaning for a form the evaluator would refuse to run.
+/// Every wrong arity must now be rejected at every arity boundary. (The
+/// check-type/checker-mode side of this is covered separately in
+/// tests/typed_jit_integration.rs, since `check-type` goes through
+/// `Jit::infer_untyped`/`check_untyped`, not `Jit::define`.)
+#[test]
+fn div_mod_reject_every_arity_but_two() {
+    for op in ["/", "mod"] {
+        let err0 = def_err(&format!("(defun-typed (z int64) () ({op}))"));
+        assert!(err0.contains("exactly 2"), "0-arg `{op}` must be rejected");
+        assert!(
+            err0.contains("got 0"),
+            "0-arg `{op}` error must name the actual arity, got: {err0}"
+        );
+        let err1 = def_err(&format!("(defun-typed (u int64) ((a int64)) ({op} a))"));
+        assert!(err1.contains("exactly 2"), "1-arg `{op}` must be rejected");
+        assert!(
+            err1.contains("got 1"),
+            "1-arg `{op}` error must name the actual arity, got: {err1}"
+        );
+        let err3 = def_err(&format!(
+            "(defun-typed (t3 int64) ((a int64) (b int64) (c int64)) ({op} a b c))"
+        ));
+        assert!(err3.contains("exactly 2"), "3-arg `{op}` must be rejected");
+        assert!(
+            err3.contains("got 3"),
+            "3-arg `{op}` error must name the actual arity, got: {err3}"
+        );
+    }
+}
+
+/// `+`/`-`/`*` must be entirely unaffected by #209's `/`/`MOD` arity guard
+/// at every arity the evaluator actually supports (0-arg identity, unary
+/// negate for `-`, and 3+-ary left-fold for all three).
+#[test]
+fn plus_minus_times_unaffected_by_div_mod_arity_fix() {
+    let j = build(&[
+        "(defun-typed (p0 int64) () (+))",
+        "(defun-typed (t0 int64) () (*))",
+        "(defun-typed (neg int64) ((a int64)) (- a))",
+        "(defun-typed (p3 int64) ((a int64) (b int64) (c int64)) (+ a b c))",
+        "(defun-typed (s3 int64) ((a int64) (b int64) (c int64)) (- a b c))",
+        "(defun-typed (t3 int64) ((a int64) (b int64) (c int64)) (* a b c))",
+    ]);
+    assert_eq!(agree(&j, "p0", &[]), i(0));
+    assert_eq!(agree(&j, "t0", &[]), i(1));
+    assert_eq!(agree(&j, "neg", &[i(5)]), i(-5));
+    assert_eq!(agree(&j, "p3", &[i(1), i(2), i(3)]), i(6));
+    assert_eq!(agree(&j, "s3", &[i(10), i(3), i(2)]), i(5));
+    assert_eq!(agree(&j, "t3", &[i(2), i(3), i(4)]), i(24));
+}
+
 #[test]
 fn int_div_by_zero_is_zero_not_panic() {
     let j = build(&["(defun-typed (d int64) ((a int64) (b int64)) (/ a b))"]);
