@@ -1081,6 +1081,17 @@ pub enum LispVal {
     /// an O(1) refcount bump instead of a deep copy — cons cells are immutable
     /// in this implementation (`rplaca`/`rplacd` return new cells), so
     /// structural sharing is sound.
+    ///
+    /// **This immutability is load-bearing, not just a circular-list guard**
+    /// (issue #114). Because clones share the same `Shared<LispVal>` children,
+    /// any future op that mutates a cons cell *in place* (a real in-place
+    /// `RPLACA`/`RPLACD`, a `SETF`-of-`CAR`, a destructured-slot setter, …)
+    /// would silently mutate every value sharing that sub-structure — parser
+    /// output, captured closure bodies, quasiquote templates, macro-expansion
+    /// inputs. If mutating list ops are ever added, do not mutate through the
+    /// shared pointer: use copy-on-write at the mutation point (e.g.
+    /// `Rc::make_mut`), rebuild the spine being mutated, or gate destructive
+    /// ops behind a distinct `Rc<RefCell<…>>` cell type.
     Cons {
         car: Shared<LispVal>,
         cdr: Shared<LispVal>,
