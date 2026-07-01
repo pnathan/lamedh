@@ -954,6 +954,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::SeeType),
         );
         env.set(
+            "READ-STRING".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadString),
+        );
+        env.set(
             "DISASSEMBLE".to_string(),
             LispVal::Builtin(BuiltinFunc::Disassemble),
         );

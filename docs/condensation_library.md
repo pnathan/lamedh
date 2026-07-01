@@ -95,6 +95,15 @@ positions from the root of a form:
 `condense-diff` and `sexpr-patch` are inverses; each patch edit is guarded on
 `old`, so a stale patch fails loudly instead of applying silently.
 
+Edits may also name the subform instead of counting positions: a two-element
+`(old new)` edit locates `old` uniquely via `sexpr-locate` (absence and
+ambiguity are both errors). This is the ergonomic form for model authors —
+the same unique-match contract as a string-replace tool, but over sexprs:
+
+```lisp
+(edit! 'price '(((* base qty) (* base (+ qty 1)))))
+```
+
 `edit!` is the minimum-change verb over live definitions:
 
 ```lisp
@@ -136,6 +145,33 @@ fingerprinted (via `see-source`) at `defconcept`/`derive` time:
 A hand-edited generated function shows up in the trace's `stale` entry; the
 trace never vouches for code the seed no longer describes. The sanctioned
 channel for changing generated code is editing the seed with `edit!`.
+
+## The Agent Loop: `check-file!`
+
+`edit!` assumes a live image — a REPL workflow. Agents work differently: the
+file is the source of truth, edits happen through the agent's own tools, and
+verification is a fresh batch run. `check-file!` is that verification step:
+
+```sh
+lamedh --capability READ-FS -s '(check-file! "src.lisp")'
+```
+
+```lisp
+(check-file! "src.lisp")
+; => ((FILE . "src.lisp")
+;     (DEFINITIONS (INC CHECKED (CHECKED (-> (INT64) INT64)))
+;                  (BROKEN TYPE-ERROR (TYPE-ERROR "`+` operands disagree: ..."))
+;                  (INVOICE-EQUAL VACUOUS (CHECKED (FORALL (A B C) (-> (A B) C))))
+;                  ...)
+;     (FRONTIER (BROKEN TYPE-ERROR ...) ...))
+```
+
+It evaluates every form, reports an honest verdict per definition (concepts
+expand to their generated symbols), and repeats the unproven/broken remainder
+under `FRONTIER`. Reports are data: run it before and after an edit and
+`condense-diff` the two reports to see exactly what the edit changed in the
+type story. The loop is: **edit the file with your own tools → `check-file!`
+→ read the delta.**
 
 ## Trace
 

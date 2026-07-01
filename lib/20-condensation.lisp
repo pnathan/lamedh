@@ -112,13 +112,48 @@ Equal-length proper lists are compared element-wise so a change localizes to
 a path; any shape change reports the enclosing node whole."
   (condense-diff-node old new nil))
 
+(defun sexpr-locate-children (forms target index path acc)
+  (if (null forms)
+      acc
+      (sexpr-locate-children (cdr forms) target (+ index 1) path
+                             (sexpr-locate-walk (car forms) target
+                                                (cons index path) acc))))
+
+(defun sexpr-locate-walk (form target path acc)
+  (let ((acc (if (equal form target) (cons (reverse path) acc) acc)))
+    (if (and (consp form) (condense-proper-list-p form))
+        (sexpr-locate-children form target 0 path acc)
+        acc)))
+
+(defun sexpr-locate (form target)
+  "Return the unique path of subform TARGET within FORM.
+Absence and ambiguity are both errors: an edit must name its site uniquely."
+  (let ((paths (sexpr-locate-walk form target nil nil)))
+    (cond
+      ((null paths)
+       (error (concat "sexpr-locate: not found: " (princ-to-string target))))
+      ((cdr paths)
+       (error (concat "sexpr-locate: ambiguous, "
+                      (princ-to-string (length paths))
+                      " occurrences of "
+                      (princ-to-string target))))
+      (t (car paths)))))
+
+(defun condense-normalize-edit (form edit)
+  "Normalize EDIT to (path old new). A two-element (old new) edit locates OLD
+uniquely in FORM, so callers can name the subform instead of counting paths."
+  (if (null (cddr edit))
+      (list (sexpr-locate form (car edit)) (car edit) (cadr edit))
+      edit))
+
 (defun sexpr-patch (form edits)
-  "Apply EDITS, (path old new) triples as produced by CONDENSE-DIFF, to FORM.
-Each edit's OLD must match the current subform, or the patch is an error.
+  "Apply EDITS to FORM. An edit is (path old new) -- as produced by
+CONDENSE-DIFF -- or (old new), which locates OLD uniquely. Each edit's OLD
+must match the current subform, or the patch is an error.
 Inverse of CONDENSE-DIFF: (sexpr-patch old (condense-diff old new)) = NEW."
   (if (null edits)
       form
-      (let* ((edit (car edits))
+      (let* ((edit (condense-normalize-edit form (car edits)))
              (path (car edit))
              (old (cadr edit))
              (new (caddr edit))
@@ -587,3 +622,51 @@ plist-><c>, and a <c>-lens-roundtrip law)."
                       (condense-check sym)
                       (cons t nil)))
     (cons 'check-status (condense-check-type sym))))
+
+;;; ---- check-file!: the agent loop -------------------------------------------
+;;;
+;;; Agents do not hold a live image: they edit files with their own tools and
+;;; verify in batch. CHECK-FILE! is that verification step -- load the file,
+;;; report an honest verdict for everything it defines. Reports are data, so
+;;; two runs diff with CONDENSE-DIFF: edit, check, read the delta.
+
+(defun condense-definition-name (form)
+  "Return the symbol a top-level FORM defines, or NIL."
+  (if (and (consp form)
+           (member (car form) '(defun defun* defmacro defexpr defvau
+                                defconcept defun-typed deflaw example))
+           (consp (cdr form)))
+      (if (consp (cadr form)) (car (cadr form)) (cadr form))
+      nil))
+
+(defun condense-check-targets (names)
+  (reduce #'append
+          (mapcar (lambda (n)
+                    (if (eq (condense-kind n) 'concept)
+                        (condense-generated n)
+                        (list n)))
+                  names)
+          nil))
+
+(defvau check-file! (x e)
+  "Load a Lisp file and return honest checker verdicts for what it defines.
+
+  (check-file! \"src.lisp\")
+
+Evaluates every form in the file, then reports (name status verdict) for each
+definition -- concepts expand to their generated symbols -- with the unproven
+and broken remainder repeated under FRONTIER. Requires the READ-FS
+capability. Diff two reports with CONDENSE-DIFF to see exactly what an edit
+changed."
+  (let* ((path (eval (car x) e))
+         (forms (read-string (read-file path)))
+         (names (filter (lambda (n) (not (null n)))
+                        (mapcar #'condense-definition-name forms))))
+    (mapc (lambda (form) (eval form e)) forms)
+    (let* ((results (mapcar #'condense-check-type-one
+                            (condense-check-targets names)))
+           (frontier (filter (lambda (r) (not (condense-verified-p (cadr r))))
+                             results)))
+      (list (cons 'file path)
+            (cons 'definitions results)
+            (cons 'frontier frontier)))))

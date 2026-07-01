@@ -146,3 +146,46 @@ fn concept_last_diff_localizes_the_expansion_change() {
     assert!(diff.contains("0 1"), "got: {diff}");
     assert!(!diff.contains("PROGN"), "diff should localize, got: {diff}");
 }
+
+#[test]
+fn subform_edits_locate_old_uniquely_without_paths() {
+    let env = env_with_stdlib();
+    eval_line("(defun price (base qty) (* base qty))", &env);
+    let report = eval_line("(edit! 'price '(((* base qty) (* base (+ qty 1)))))", &env);
+    assert!(report.contains("(NOW . CHECKED)"), "got: {report}");
+    assert_eq!(eval_line("(price 10 2)", &env), "30");
+    // Ambiguous targets are refused: an edit must name its site uniquely.
+    assert_eq!(
+        eval_line(
+            "(errorset '(sexpr-patch '(+ (f 1) (f 1)) '(((f 1) (g 1)))))",
+            &env
+        ),
+        "()"
+    );
+    assert_eq!(
+        eval_line("(sexpr-locate '(defun f (x) (+ x 1)) '(+ x 1))", &env),
+        "(3)"
+    );
+}
+
+#[test]
+fn check_file_reports_honest_verdicts_for_a_whole_file() {
+    let env = env_with_stdlib();
+    env.enable_feature("READ-FS");
+    let dir = std::env::temp_dir().join("lamedh_check_file_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("agent.lisp");
+    std::fs::write(
+        &path,
+        "(defun inc (x) (+ x 1))\n(defun broken (x) (+ 1 \"s\"))\n(defconcept invoice (:fields ((id int64) (amount int64))) (:derive equality))\n",
+    )
+    .unwrap();
+    let report = eval_line(&format!("(check-file! \"{}\")", path.display()), &env);
+    assert!(report.contains("(INC CHECKED"), "got: {report}");
+    assert!(report.contains("(BROKEN TYPE-ERROR"), "got: {report}");
+    assert!(report.contains("(INVOICE-EQUAL VACUOUS"), "got: {report}");
+    // The frontier is the unproven remainder: BROKEN is on it, INC is not.
+    let frontier = report.split("FRONTIER").nth(1).unwrap_or("");
+    assert!(frontier.contains("BROKEN"), "got: {frontier}");
+    assert!(!frontier.contains("(INC "), "got: {frontier}");
+}

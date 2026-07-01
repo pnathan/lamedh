@@ -52,6 +52,26 @@ pub(super) fn apply_introspection(
             };
             Ok(see_type_form(&name, env))
         }
+        BuiltinFunc::ReadString => {
+            // (read-string "text") — parse TEXT and return the list of forms it
+            // contains. Pure (no I/O): the inverse of PRINC-TO-STRING for code.
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "read-string requires exactly one argument".to_string(),
+                ));
+            }
+            let text = match &args[0] {
+                LispVal::String(s) => s.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "read-string requires a string, got {other:?}"
+                    )));
+                }
+            };
+            let forms = crate::reader::read_all(&text, env)
+                .map_err(|e| LispError::Generic(format!("read-string: {e}")))?;
+            Ok(vec_to_list(forms))
+        }
         BuiltinFunc::Disassemble => {
             if args.len() != 1 {
                 return Err(LispError::Generic(
