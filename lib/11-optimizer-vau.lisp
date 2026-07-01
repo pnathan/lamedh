@@ -8,7 +8,8 @@
 ;;;   (optimize-form form)         -- pure transform, returns optimized S-expr
 ;;;   $opt                         -- vau: evaluates its argument with optimization applied
 ;;;   defun-typed-opt              -- vau: optimize source, then hand DEFUN-TYPED to compiler
-;;;   (defun-check-purity! n body) -- annotate N's plist with "pure"=:PURE if body is pure
+;;;   (pure-p name)                -- lazy, memoized purity query for a named function
+;;;   (defun-check-purity! n body) -- force-annotate N's plist; also sets cache flag
 
 ;;; ─── Purity checker pass ──────────────────────────────────────────────────
 ;;;
@@ -17,9 +18,10 @@
 ;;;   - no SETQ or SET forms (no mutation of shared state)
 ;;;   - no calls to known IO builtins (listed in *io-builtin-set*)
 ;;;
-;;; When this file is loaded, DEFUN automatically runs the check on every
-;;; subsequently-defined function (via the guard in 00-core.lisp) and sets
-;;; (putp name "pure" :PURE) on qualifying symbols.
+;;; Purity is now computed LAZILY on first query via (pure-p name).  The DEFUN
+;;; macro clears the "pure-checked" cache flag on every redefinition so stale
+;;; results cannot accumulate.  Calling (defun-check-purity! name body) still
+;;; works for eager / forced annotation.
 ;;;
 ;;; This is a conservative leaf-level certificate.  Interprocedural
 ;;; propagation (e.g. inferring that a caller of only pure functions is itself
@@ -58,13 +60,41 @@
 ;;; Annotate NAME's plist with property \"pure\" = :PURE when all BODY-FORMS
 ;;; pass the purity check, or remove the property when they do not.
 ;;; Returns :PURE when pure, NIL when impure.
-;;; Called automatically from the DEFUN macro (00-core.lisp) whenever this
-;;; function is bound in the environment.
+;;; No longer called automatically from DEFUN (purity is now lazy, see pure-p).
+;;; Can still be called directly to force an immediate purity annotation.
 (defun defun-check-purity! (name body-forms)
   "Purity-annotate NAME: set plist \"pure\"=:PURE if BODY-FORMS are pure."
   (if (body-all-pure-p body-forms)
-      (progn (putp name "pure" :pure) :pure)
-      (progn (remprop name "pure") nil)))
+      (progn (putp name "pure" :pure)
+             (putp name "pure-checked" t)
+             :pure)
+      (progn (remprop name "pure")
+             (putp name "pure-checked" t)
+             nil)))
+
+;;; Lazy, memoized purity query.
+;;;
+;;; Returns :PURE if NAME's current body is pure, NIL if impure.  The result
+;;; is cached on the symbol's plist under "pure-checked" / "pure" so repeated
+;;; calls are O(1).  The DEFUN macro clears "pure-checked" on each redefinition
+;;; so the cache is always fresh for the current body.
+;;;
+;;; If NAME is not an inspectable user-defined function (e.g. a builtin), the
+;;; call returns NIL without caching anything useful.
+(defun pure-p (name)
+  "Return :PURE if NAME is a pure function, NIL if impure or not inspectable.
+Lazily computes and caches the purity verdict using the current function body."
+  (if (getp name "pure-checked")
+      ;; Cache hit: return the stored verdict (:PURE or NIL).
+      (getp name "pure")
+      ;; Cache miss: retrieve the body via see-source and analyse it.
+      (let ((src (errorset (list 'see-source (list 'quote name)))))
+        (if (null src)
+            ;; Not an inspectable user function — leave cache unpopulated.
+            nil
+            (let* ((lam  (car src))
+                   (body (cddr lam)))
+              (defun-check-purity! name body))))))
 
 ;;; ─── Helpers ──────────────────────────────────────────────────────────────
 
