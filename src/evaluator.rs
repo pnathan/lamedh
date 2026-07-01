@@ -4,14 +4,23 @@
 //!
 //! Evaluation is split into three layers:
 //!
-//! 1. **[`eval`]** — public entry point.  Acquires a recursion-depth guard and
-//!    delegates to `eval_impl`.
-//! 2. **`eval_impl`** — a loop that repeatedly calls `eval_step`.  When
-//!    `eval_step` returns `TcoStep::TailCall` the loop replaces the current
-//!    expression and environment without growing the Rust stack (trampolining
-//!    TCO).  `TcoStep::Done` exits the loop.
-//! 3. **`eval_step`** — the actual pattern-match on the expression.  Returns
-//!    either a finished value or a tail-call request.
+//! 1. **[`eval`]** / **`exec_entry`** — public entry points for the
+//!    tree-walker and the compiled `Code` executor respectively.  Each
+//!    acquires a recursion-depth guard and delegates to the shared
+//!    `run_trampoline`.
+//! 2. **`run_trampoline`** — a single loop that steps either `eval_step` (raw
+//!    AST) or `exec_step` (compiled `Code`), decided by a `Current` enum. When
+//!    a step returns `TcoStep::TailCall`/`TailCallWithGuards` the loop
+//!    continues with a new AST expression; `TcoStep::ExecTail` continues with
+//!    a compiled `Code` node instead — without growing the Rust stack either
+//!    way (trampolining TCO). `TcoStep::Done` exits the loop. Unifying the two
+//!    representations into one loop matters because a tail call can cross
+//!    between them (a compiled lambda tail-calling an uncompiled form, or vice
+//!    versa); two independent trampolines would make each crossing a plain,
+//!    stack-growing Rust call (issue #200 M1' — this was a real regression).
+//! 3. **`eval_step`** / **`exec_step`** — the actual pattern-match on the AST
+//!    node or `Code` node.  Each returns either a finished value or a
+//!    tail-call request.
 //!
 //! ## Recursion depth guard
 //!
@@ -48,6 +57,7 @@ mod apply;
 mod builtins_core;
 mod builtins_extra;
 mod builtins_tail;
+mod compile;
 mod core;
 mod functions;
 mod introspection;
@@ -64,6 +74,7 @@ use self::apply::*;
 use self::builtins_core::*;
 use self::builtins_extra::*;
 use self::builtins_tail::*;
+use self::compile::*;
 use self::core::*;
 use self::functions::*;
 use self::introspection::*;

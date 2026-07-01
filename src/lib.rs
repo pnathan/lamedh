@@ -776,6 +776,101 @@ pub struct Symbol {
     pub special_form: Option<SpecialForm>,
 }
 
+/// Compiled intermediate representation for a lambda body (Milestone 1).
+///
+/// [`Code`] is produced by [`evaluator::compile::compile`] at lambda-creation
+/// time and stored in [`Lambda::compiled`].  [`evaluator::compile::exec`] runs
+/// it with an internal TCO trampoline.  Any form that the compiler does not
+/// yet handle is wrapped in [`Code::Interp`], which falls back to the
+/// tree-walking evaluator transparently.
+///
+/// ## Variants handled (M1 + M2)
+///
+/// | Variant         | Lisp form |
+/// |-----------------|-----------|
+/// | `Const`         | literals, `(quote datum)` |
+/// | `Var`           | symbol references |
+/// | `If`            | `(if cond then [else])` |
+/// | `Seq`           | `(progn f1 … fn)` |
+/// | `Let`           | `(let ((v e) …) body…)` with lexical variables only |
+/// | `Call`          | ordinary function calls (fixed-arity and `&rest`) |
+/// | `SetVar`        | `(setq v1 e1 …)` |
+/// | `UnwindProtect` | `(unwind-protect body cleanup…)` |
+/// | `While`         | `(while cond body…)` |
+/// | `For`           | `(for (var start end [step]) body…)` |
+///
+/// Dynamic-variable `let`, `catch`/`throw`, `block`/`return-from`, and
+/// `prog`/`go`/`return` are deliberately left as `Code::Interp`: the
+/// tree-walker fallback already handles them correctly (with full TCO, since
+/// the M1' unified trampoline), and the payoff of compiling them is low
+/// relative to the correctness risk (`prog`/`go` in particular doesn't map
+/// onto this tree-shaped IR without a larger, M3-scale redesign).
+/// | `Interp`| fallback to tree-walker |
+#[derive(Debug)]
+pub enum Code {
+    /// A constant value — number, string, char, nil, or a quoted datum.
+    Const(LispVal),
+    /// A variable reference: resolve the symbol in the current environment.
+    Var(Shared<SharedCell<Symbol>>),
+    /// `(if cond then else)`.  The else branch is `Const(Nil)` when absent.
+    If(Shared<Code>, Shared<Code>, Shared<Code>),
+    /// `(progn f1 … fn)` — evaluate all, return the last.
+    Seq(Vec<Shared<Code>>),
+    /// `(let ((v1 e1) …) body…)` with only lexical (non-dynamic) bindings.
+    ///
+    /// Each init expression is evaluated in the *outer* environment and then
+    /// bound in a fresh child environment, matching standard `let` semantics.
+    /// Any clause that involves a dynamic variable falls back to `Code::Interp`
+    /// at compile time so that `DynamicBinding` RAII guards are handled
+    /// correctly by the tree-walking evaluator.
+    Let {
+        /// `(symbol_id, init_code)` pairs, evaluated in the outer env.
+        bindings: Vec<(u32, Shared<Code>)>,
+        /// Body evaluated in the child env (tail position).
+        body: Shared<Code>,
+    },
+    /// A function call: evaluate callee and all args, then apply.
+    ///
+    /// `original` is the raw AST form.  It is used as a transparent fallback
+    /// when the callee turns out to be a macro, fexpr, or vau operative at
+    /// runtime — those forms need their arguments *unevaluated* and must be
+    /// re-routed through the tree-walking `eval`.
+    Call {
+        callee: Shared<Code>,
+        args: Vec<Shared<Code>>,
+        /// Original AST form for the macro/fexpr/vau fallback path.
+        original: LispVal,
+    },
+    /// `(setq v1 e1 v2 e2 …)` — evaluate each `ei` in order and store it into
+    /// `vi` (created in the current environment if not already bound,
+    /// matching the tree-walker). Returns the last value assigned.
+    SetVar(Vec<(Shared<SharedCell<Symbol>>, Shared<Code>)>),
+    /// `(unwind-protect body cleanup…)` — evaluate `body`, then always
+    /// evaluate every `cleanup` form (even if `body` errored or performed a
+    /// non-local exit), then propagate `body`'s result.
+    UnwindProtect {
+        body: Shared<Code>,
+        cleanups: Vec<Shared<Code>>,
+    },
+    /// `(while cond body…)` — re-test `cond` before each iteration; body runs
+    /// in the current environment (no per-iteration frame). Yields `NIL`.
+    While {
+        cond: Shared<Code>,
+        body: Vec<Shared<Code>>,
+    },
+    /// `(for (var start end [step]) body…)` — inclusive integer range, one
+    /// reused child frame, in-place counter mutation. Yields `NIL`.
+    For {
+        var_id: u32,
+        start: Shared<Code>,
+        end: Shared<Code>,
+        step: Option<Shared<Code>>,
+        body: Vec<Shared<Code>>,
+    },
+    /// Fallback: call the tree-walking `eval` on the original AST form.
+    Interp(LispVal),
+}
+
 /// A lexical closure created by `(lambda (params…) body…)` or `defun`.
 ///
 /// When called, a new child environment is created whose lexical parent is
@@ -800,6 +895,13 @@ pub struct Lambda {
     pub param_ids: Vec<u32>,
     /// Symbol id for the `&REST` parameter, if any.
     pub rest_param_id: Option<u32>,
+    /// Pre-compiled body for the fast execute path (Milestone 1).
+    ///
+    /// Set by `make_lambda` at definition time.  `None` for lambdas
+    /// constructed outside the evaluator (tests, embedders).  Excluded from
+    /// [`PartialEq`] and hash so that two otherwise-identical lambdas are
+    /// still considered equal regardless of whether they carry a compiled body.
+    pub compiled: Option<Shared<Code>>,
 }
 
 impl PartialEq for Lambda {
@@ -808,6 +910,8 @@ impl PartialEq for Lambda {
             && self.rest_param == other.rest_param
             && self.body == other.body
             && Shared::ptr_eq(&self.env, &other.env)
+        // `compiled` is intentionally excluded — it is a derived artefact and
+        // does not affect the semantic identity of the closure.
     }
 }
 

@@ -242,6 +242,7 @@ fn test_lambda_partialeq_same_env() {
         env: env.clone(),
         param_ids: vec![0],
         rest_param_id: None,
+        compiled: None,
     };
     let lam2 = lamedh::Lambda {
         params: vec!["X".to_string()],
@@ -250,6 +251,7 @@ fn test_lambda_partialeq_same_env() {
         env: env.clone(),
         param_ids: vec![0],
         rest_param_id: None,
+        compiled: None,
     };
     assert_eq!(
         LispVal::Lambda(Box::new(lam1)),
@@ -271,6 +273,7 @@ fn test_lambda_partialeq_different_env() {
         env: env1.clone(),
         param_ids: vec![],
         rest_param_id: None,
+        compiled: None,
     };
     let lam2 = lamedh::Lambda {
         params: vec![],
@@ -279,6 +282,7 @@ fn test_lambda_partialeq_different_env() {
         env: env2.clone(),
         param_ids: vec![],
         rest_param_id: None,
+        compiled: None,
     };
     assert_ne!(
         LispVal::Lambda(Box::new(lam1)),
@@ -417,6 +421,7 @@ fn test_lispval_hash_lambda_no_panic() {
         env: env.clone(),
         param_ids: vec![],
         rest_param_id: None,
+        compiled: None,
     }));
     let mut set: HashSet<LispVal> = HashSet::new();
     set.insert(lam);

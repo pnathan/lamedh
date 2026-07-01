@@ -1226,7 +1226,11 @@ pub(super) fn apply(
                 }
             }
 
-            eval(&lambda.body, &new_env)
+            // Use the compiled body when available; fall back to tree-walker.
+            match &lambda.compiled {
+                Some(compiled) => exec(compiled, &new_env),
+                None => eval(&lambda.body, &new_env),
+            }
         }
         LispVal::Native(f) => f(args, env),
         _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
@@ -1281,7 +1285,11 @@ pub(super) fn apply_owned(
                     new_env.set_id(*id, arg);
                 }
             }
-            eval(&lambda.body, &new_env)
+            // Use the compiled body when available; fall back to tree-walker.
+            match &lambda.compiled {
+                Some(compiled) => exec(compiled, &new_env),
+                None => eval(&lambda.body, &new_env),
+            }
         }
         // For all other callables (builtins, natives, fexprs, macros) the
         // existing borrowed-slice path is correct.

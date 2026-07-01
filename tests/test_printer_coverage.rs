@@ -140,6 +140,7 @@ fn test_print_lambda() {
         env: env.clone(),
         param_ids: vec![0],
         rest_param_id: None,
+        compiled: None,
     }));
     assert_eq!(print(&lam), "<lambda>");
 }
