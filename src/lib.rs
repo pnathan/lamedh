@@ -188,6 +188,8 @@
 //! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
 //! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
 //! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
+//! | `20-condensation.lisp` | Condensation metadata, `DEFCONCEPT`, `DERIVE`, laws/examples, change tracking (`CONDENSE-DIFF`, `CONDENSE-STALE`) |
+//! | `21-typeclasses.lisp` | Explicit typeclass dictionaries: `DEFTYPECLASS`, `DEFINSTANCE`, `RESOLVE-INSTANCE`, `TYPECLASS-CALL` |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1578,6 +1580,14 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     (
         "19-call-graph.lisp",
         include_str!("../lib/19-call-graph.lisp"),
+    ),
+    (
+        "20-condensation.lisp",
+        include_str!("../lib/20-condensation.lisp"),
+    ),
+    (
+        "21-typeclasses.lisp",
+        include_str!("../lib/21-typeclasses.lisp"),
     ),
     (
         "97-doc-renderer.lisp",

@@ -137,3 +137,54 @@ to `*it*` while the `:expect` expression runs:
 (condense-check 'invoice)
 ; => (T (VALID-DRAFT-INVOICE . T))
 ```
+
+## `derive` Targets
+
+v0 ships three deterministic derivations:
+
+| Target | Generates | Installs instance |
+|--------|-----------|-------------------|
+| `printer` | `<c>->plist` | `show` |
+| `equality` | `<c>-equal` | `eqv` |
+| `lens` | `<c>->plist`, `plist-><c>`, `<c>-lens-roundtrip` law | `lens` (`:view`/`:build`) |
+
+When the corresponding standard typeclass (`eqv`, `show`, `lens`, declared in
+`lib/21-typeclasses.lisp`) is present, `derive` also installs the generated function
+as an explicit dictionary instance, and records the class under
+`"condense.instances"`. In a stripped environment without the typeclass layer
+the substrate still works; instances are simply not installed.
+
+`derive <c> lens` is the bidirectional derivation: `<c>->plist` is the view
+direction, `plist-><c>` rebuilds a value from the field alist, and the
+generated `<c>-lens-roundtrip` law asserts `(equal (plist-><c> (<c>->plist
+self)) self)` — the GetPut direction of the lens laws, attached with `deflaw`
+so it is inspectable and re-runnable like any other law.
+
+## Change Tracking
+
+Change is first-class as data on the source/expansion plane — a structural
+diff plus a re-verification trigger, not a new evaluation primitive.
+
+```lisp
+(condense-diff old new)     ; structural diff: ((path old new) ...)
+(condense-stale sym)        ; generated symbols whose definitions drifted
+(condense-drift sym)        ; (symbol . diff) pairs for the drifted ones
+(condense-recheck! sym)     ; staleness + examples + checker status, updated
+```
+
+`condense-diff` walks equal-length proper lists element-wise and reports each
+changed node as `(path old new)`, where `path` is the list of positions from
+the root. Shape changes (different lengths, dotted tails, atoms) report the
+enclosing node as a single change.
+
+`defconcept` and `derive` snapshot the definitions of every generated symbol
+(via `see-source`) into `"condense.fingerprints"`. Condensation is a one-way
+lens — the seed cannot be recovered from an edited expansion — so the
+discipline is regenerate-only, and it is *enforced by detection*: a generated
+function that is hand-edited afterwards shows up in `(condense-stale sym)` and
+in the `stale` entry of `condense-trace`, so the trace never silently vouches
+for code the seed no longer describes.
+
+Redefining a concept records `(condense-diff old-expansion new-expansion)`
+under `"condense.last-diff"`: the change between the two expansions,
+localized to a path, inspectable from the trace.

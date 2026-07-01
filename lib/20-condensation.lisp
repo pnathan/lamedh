@@ -21,6 +21,9 @@
 (def *condense-assert-key* "condense.assert")
 (def *condense-given-key* "condense.given")
 (def *condense-expect-key* "condense.expect")
+(def *condense-fingerprints-key* "condense.fingerprints")
+(def *condense-last-diff-key* "condense.last-diff")
+(def *condense-instances-key* "condense.instances")
 
 (defun condense-put (sym key value)
   "Store condensation metadata VALUE for SYM under KEY."
@@ -116,7 +119,10 @@
     (cons 'concept (condense-get sym *condense-concept-key*))
     (cons 'assert (condense-get sym *condense-assert-key*))
     (cons 'given (condense-get sym *condense-given-key*))
-    (cons 'expect (condense-get sym *condense-expect-key*))))
+    (cons 'expect (condense-get sym *condense-expect-key*))
+    (cons 'instances (condense-get sym *condense-instances-key*))
+    (cons 'last-diff (condense-get sym *condense-last-diff-key*))
+    (cons 'stale (condense-stale sym))))
 
 ;;; ---- defconcept v0 -------------------------------------------------------
 
@@ -219,12 +225,16 @@
         (let* ((field-specs (cadr fields-section))
                (fields (condense-field-names field-specs))
                (expansion (condense-concept-expansion concept fields invariant-section))
-              (generated (condense-concept-generated concept fields))
-               (source (cons 'defconcept x)))
+               (generated (condense-concept-generated concept fields))
+               (source (cons 'defconcept x))
+               (previous (condense-expansion concept)))
           (eval expansion e)
           (condense-record! concept 'concept source expansion generated)
           (condense-put concept *condense-fields-key* field-specs)
           (condense-put concept *condense-invariant-key* invariant-section)
+          (condense-put concept *condense-last-diff-key*
+                        (if previous (condense-diff previous expansion) nil))
+          (condense-fingerprint! concept)
           concept))))
 
 ;;; ---- derive v0 -----------------------------------------------------------
@@ -237,10 +247,25 @@
         (cons `(cons ',field (,accessor self))
               (condense-printer-pairs concept (cdr fields))))))
 
-(defun condense-derive-symbol (concept derivation)
+(defun condense-builder-symbol (concept)
+  (condense-symbol-append3 "PLIST->" concept ""))
+
+(defun condense-lens-law-symbol (concept)
+  (condense-symbol-append3 "" concept "-LENS-ROUNDTRIP"))
+
+(defun condense-builder-args (fields)
+  (if (null fields)
+      nil
+      (cons `(alist-get view ',(car fields))
+            (condense-builder-args (cdr fields)))))
+
+(defun condense-derive-symbol-list (concept derivation)
   (cond
-    ((eq derivation 'printer) (condense-printer-symbol concept))
-    ((eq derivation 'equality) (condense-equality-symbol concept))
+    ((eq derivation 'printer) (list (condense-printer-symbol concept)))
+    ((eq derivation 'equality) (list (condense-equality-symbol concept)))
+    ((eq derivation 'lens) (list (condense-printer-symbol concept)
+                                 (condense-builder-symbol concept)
+                                 (condense-lens-law-symbol concept)))
     (t (error "unknown derive target"))))
 
 (defun condense-derive-form (concept derivation fields)
@@ -256,6 +281,15 @@
           (and (,predicate a)
                (,predicate b)
                (equal a b)))))
+    ((eq derivation 'lens)
+     (let ((printer (condense-printer-symbol concept))
+           (builder (condense-builder-symbol concept))
+           (constructor (condense-constructor-symbol concept)))
+       `(progn
+          (defun ,printer (self)
+            (list ,@(condense-printer-pairs concept fields)))
+          (defun ,builder (view)
+            (,constructor ,@(condense-builder-args fields))))))
     (t (error "unknown derive target"))))
 
 (defun condense-derive-forms (concept derivations fields)
@@ -267,8 +301,69 @@
 (defun condense-derive-symbols (concept derivations)
   (if (null derivations)
       nil
-      (cons (condense-derive-symbol concept (car derivations))
-            (condense-derive-symbols concept (cdr derivations)))))
+      (condense-append-new
+        (condense-derive-symbol-list concept (car derivations))
+        (condense-derive-symbols concept (cdr derivations)))))
+
+;; Derivations map onto standard typeclasses (declared in lib/21-typeclasses.lisp).
+;; An instance is installed only when the class is actually declared, so the
+;; substrate keeps working in a stripped environment without the typeclass
+;; layer.
+(defun condense-instance-form (concept derivation)
+  (cond
+    ((eq derivation 'equality)
+     `(definstance eqv ,concept
+        (:eqv ,(condense-equality-symbol concept))))
+    ((eq derivation 'printer)
+     `(definstance show ,concept
+        (:show ,(condense-printer-symbol concept))))
+    ((eq derivation 'lens)
+     `(definstance lens ,concept
+        (:view ,(condense-printer-symbol concept))
+        (:build ,(condense-builder-symbol concept))))
+    (t nil)))
+
+(defun condense-install-instance (concept derivation e)
+  (let ((form (condense-instance-form concept derivation)))
+    (if (and form (eq (getp (cadr form) "typeclass.kind") 'typeclass))
+        (progn
+          (eval form e)
+          (condense-put concept *condense-instances-key*
+                        (condense-append-new
+                          (condense-get concept *condense-instances-key*)
+                          (list (cadr form))))
+          (cadr form))
+        nil)))
+
+(defun condense-install-instances (concept derivations e)
+  (if (null derivations)
+      nil
+      (progn
+        (condense-install-instance concept (car derivations) e)
+        (condense-install-instances concept (cdr derivations) e))))
+
+(defun condense-derive-post-form (concept derivation)
+  (if (eq derivation 'lens)
+      (let ((law (condense-lens-law-symbol concept))
+            (printer (condense-printer-symbol concept))
+            (builder (condense-builder-symbol concept)))
+        (list `(deflaw ,law
+                 (:for ,concept)
+                 (:assert (equal (,builder (,printer self)) self)))))
+      nil))
+
+(defun condense-derive-post-forms (concept derivations)
+  (if (null derivations)
+      nil
+      (append (condense-derive-post-form concept (car derivations))
+              (condense-derive-post-forms concept (cdr derivations)))))
+
+(defun condense-eval-forms (forms e)
+  (if (null forms)
+      nil
+      (progn
+        (eval (car forms) e)
+        (condense-eval-forms (cdr forms) e))))
 
 (defvau derive (x e)
   "Generate deterministic support code from concept metadata."
@@ -285,9 +380,12 @@
                (expansion (cons 'progn (append forms (list `',concept))))
                (base-generated (condense-concept-generated concept fields)))
           (eval expansion e)
+          (condense-eval-forms (condense-derive-post-forms concept derivations) e)
+          (condense-install-instances concept derivations e)
           (condense-put concept *condense-derivations-key* all-derivations)
           (condense-put concept *condense-generated-key*
-                        (append base-generated generated))
+                        (condense-append-new base-generated generated))
+          (condense-fingerprint! concept)
           concept))))
 
 ;;; ---- laws, examples, and checks -----------------------------------------
@@ -380,3 +478,98 @@
      (let ((result (funcall sym)))
        (cons result (list (cons sym result)))))
     (t (error "condense-check requires a concept or example"))))
+
+;;; ---- change tracking: diffs, fingerprints, staleness ----------------------
+;;;
+;;; Change is first-class as data on the source/expansion plane: a structural
+;;; diff plus a re-verification trigger. Fingerprints snapshot generated
+;;; definitions (via SEE-SOURCE) at derivation time; a definition that drifts
+;;; from its fingerprint marks the condensed seed as stale, so the trace never
+;;; silently vouches for hand-edited expansions.
+
+(defun condense-proper-list-p (x)
+  (cond
+    ((null x) t)
+    ((consp x) (condense-proper-list-p (cdr x)))
+    (t nil)))
+
+(defun condense-diff-children (old new index path)
+  (if (null old)
+      nil
+      (append (condense-diff-node (car old) (car new) (cons index path))
+              (condense-diff-children (cdr old) (cdr new) (+ index 1) path))))
+
+(defun condense-diff-node (old new path)
+  (cond
+    ((equal old new) nil)
+    ((and (consp old)
+          (consp new)
+          (condense-proper-list-p old)
+          (condense-proper-list-p new)
+          (equal (length old) (length new)))
+     (condense-diff-children old new 0 path))
+    (t (list (list (reverse path) old new)))))
+
+(defun condense-diff (old new)
+  "Return a structural diff between OLD and NEW as (path old new) entries.
+Each path is the list of positions from the root to the changed node."
+  (condense-diff-node old new nil))
+
+(defun condense-definition-of (sym)
+  "Return SYM's current definition form, or NIL when it has none."
+  (car (errorset (list 'see-source (list 'quote sym)))))
+
+(defun condense-fingerprint-list (syms)
+  (if (null syms)
+      nil
+      (cons (cons (car syms) (condense-definition-of (car syms)))
+            (condense-fingerprint-list (cdr syms)))))
+
+(defun condense-fingerprint! (sym)
+  "Snapshot the current definitions of SYM's generated symbols."
+  (condense-put sym *condense-fingerprints-key*
+                (condense-fingerprint-list (condense-generated sym)))
+  sym)
+
+(defun condense-stale-entries (fingerprints)
+  (cond
+    ((null fingerprints) nil)
+    ((equal (cdr (car fingerprints))
+            (condense-definition-of (car (car fingerprints))))
+     (condense-stale-entries (cdr fingerprints)))
+    (t (cons (car (car fingerprints))
+             (condense-stale-entries (cdr fingerprints))))))
+
+(defun condense-stale (sym)
+  "Return generated symbols of SYM whose definitions drifted since fingerprinting."
+  (condense-stale-entries (condense-get sym *condense-fingerprints-key*)))
+
+(defun condense-drift-entries (fingerprints)
+  (cond
+    ((null fingerprints) nil)
+    ((equal (cdr (car fingerprints))
+            (condense-definition-of (car (car fingerprints))))
+     (condense-drift-entries (cdr fingerprints)))
+    (t (cons (cons (car (car fingerprints))
+                   (condense-diff (cdr (car fingerprints))
+                                  (condense-definition-of (car (car fingerprints)))))
+             (condense-drift-entries (cdr fingerprints))))))
+
+(defun condense-drift (sym)
+  "Return (generated-symbol . diff) pairs for drifted definitions of SYM."
+  (condense-drift-entries (condense-get sym *condense-fingerprints-key*)))
+
+(defun condense-recheck! (sym)
+  "Re-verify SYM: staleness, examples, and checker status. Updates metadata."
+  (let* ((stale (condense-stale sym))
+         (drift (condense-drift sym))
+         (types (condense-check-type sym))
+         (checks (if (and (eq (condense-kind sym) 'concept)
+                          (condense-get sym *condense-examples-key*))
+                     (condense-check sym)
+                     (cons t nil))))
+    (list
+      (cons 'stale stale)
+      (cons 'drift drift)
+      (cons 'checks checks)
+      (cons 'check-status types))))
