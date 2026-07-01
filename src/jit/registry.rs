@@ -7,6 +7,10 @@ use super::*;
 /// interpreter), and an optional hot-swappable compiled edition.
 pub struct TypedFn {
     pub name: String,
+    /// This function's own id in the registry — needed at compile time to
+    /// recognize a *self* tail call (issue #133 Tier 1) as distinct from an
+    /// ordinary call to another function.
+    pub(super) id: usize,
     pub(super) params: RefCell<Vec<(String, Ty)>>,
     pub(super) ret: RefCell<Ty>,
     pub(super) core: RefCell<Option<Core>>,
@@ -40,10 +44,11 @@ impl std::fmt::Debug for TypedFn {
 }
 
 impl TypedFn {
-    fn placeholder(name: String, params: Vec<(String, Ty)>, ret: Ty) -> TypedFn {
+    fn placeholder(id: usize, name: String, params: Vec<(String, Ty)>, ret: Ty) -> TypedFn {
         let slots = params.len();
         TypedFn {
             name,
+            id,
             params: RefCell::new(params),
             ret: RefCell::new(ret),
             core: RefCell::new(None),
@@ -92,7 +97,7 @@ impl TypedFn {
     pub(super) fn compile_now(&self, funcs: &[Rc<TypedFn>]) {
         let c = self.core.borrow();
         if let Some(core) = c.as_ref() {
-            *self.compiled.borrow_mut() = Some(compile(core));
+            *self.compiled.borrow_mut() = Some(compile_with_tco(core, self.id));
             // With the `jit` feature, also build a native edition. If Cranelift
             // codegen fails for any reason, fall back to the closure edition
             // rather than failing the definition. The entry cell is updated so
@@ -101,7 +106,8 @@ impl TypedFn {
             {
                 let n_params = self.params.borrow().len();
                 let cell_addrs: Vec<usize> = funcs.iter().map(|f| f.entry_cell_addr()).collect();
-                match native::compile_native(core, n_params, self.slots.get(), &cell_addrs) {
+                match native::compile_native(core, self.id, n_params, self.slots.get(), &cell_addrs)
+                {
                     Ok(ed) => {
                         self.entry.set(ed.entry_addr());
                         *self.native.borrow_mut() = Some(Rc::new(ed));
@@ -152,7 +158,7 @@ impl TypedFn {
                         self.name
                     )
                 });
-                eval_core(core, &mut env, ctx)
+                eval_core(core, &mut env, ctx, self.id)
             }
         }
     }
@@ -188,8 +194,12 @@ impl Jit {
             id
         } else {
             let id = self.funcs.len();
-            self.funcs
-                .push(Rc::new(TypedFn::placeholder(name.to_string(), params, ret)));
+            self.funcs.push(Rc::new(TypedFn::placeholder(
+                id,
+                name.to_string(),
+                params,
+                ret,
+            )));
             self.by_name.insert(name.to_string(), id);
             id
         }
@@ -361,6 +371,7 @@ impl Jit {
         // name binding back on failure (the orphaned id is simply never reached).
         let new_id = self.funcs.len();
         self.funcs.push(Rc::new(TypedFn::placeholder(
+            new_id,
             name.to_string(),
             param_tys.clone(),
             ret_var.clone(),
@@ -442,6 +453,7 @@ impl Jit {
 
         let new_id = self.funcs.len();
         self.funcs.push(Rc::new(TypedFn::placeholder(
+            new_id,
             name.to_string(),
             param_tys.clone(),
             ret_var.clone(),
@@ -525,6 +537,7 @@ impl Jit {
         // (rolled back unconditionally — the checker never installs anything).
         let new_id = self.funcs.len();
         self.funcs.push(Rc::new(TypedFn::placeholder(
+            new_id,
             name.to_string(),
             param_tys.clone(),
             ret_var.clone(),

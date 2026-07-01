@@ -1283,3 +1283,112 @@ fn verify_core_rejects_out_of_bounds_slot() {
     let err2 = verify_core(&bad_call, 1, 1).unwrap_err();
     assert!(err2.contains("Call id"), "got: {err2}");
 }
+
+// --- issue #133 Tier 1: self tail-call -> loop -----------------------------
+
+/// The acceptance-criterion example from the issue: a tail-recursive
+/// accumulator loop must run in O(1) native stack, on the *default* test
+/// stack (no spawned large-stack thread — contrast `deep_recursion_sum_to_n`
+/// above, which is genuinely non-tail and still needs one).
+#[test]
+fn tco_self_tail_call_runs_on_default_stack() {
+    let j = build(&[
+        "(defun-typed (sum int64) ((n int64) (acc int64)) (if (= n 0) acc (sum (- n 1) (+ acc n))))",
+    ]);
+    // Sum 1..=100_000_000 = 5_000_000_050_000_000 — would blow any bounded
+    // native stack (one frame per iteration) if this weren't a real loop.
+    assert_eq!(
+        j.call("SUM", &[i(100_000_000), i(0)]).unwrap(),
+        i(5_000_000_050_000_000)
+    );
+}
+
+/// Same shape via the closure-backend interpreter path specifically
+/// (`compile_with_tco`/`eval_core`'s tail loop), not just the native
+/// Cranelift edition — `agree()` runs both, but this asserts the depth
+/// directly against each side after forcing it.
+#[test]
+fn tco_self_tail_call_agrees_native_vs_interpreted_and_both_are_o1_stack() {
+    let j = build(&[
+        "(defun-typed (count int64) ((n int64) (acc int64)) (if (= n 0) acc (count (- n 1) (+ acc 1))))",
+    ]);
+    assert_eq!(agree(&j, "count", &[i(2_000_000), i(0)]), i(2_000_000));
+    // Force the interpreter-only (eval_core) path and re-check depth directly.
+    j.deoptimize_all();
+    assert_eq!(
+        j.call("COUNT", &[i(50_000_000), i(0)]).unwrap(),
+        i(50_000_000)
+    );
+}
+
+/// Factorial-with-accumulator: another idiomatic tail-recursive loop shape,
+/// deep enough to segfault pre-TCO.
+#[test]
+fn tco_factorial_with_accumulator() {
+    let j = build(&[
+        "(defun-typed (fact-acc int64) ((n int64) (acc int64)) (if (= n 0) acc (fact-acc (- n 1) (* acc n))))",
+    ]);
+    assert_eq!(agree(&j, "fact-acc", &[i(10), i(1)]), i(3_628_800));
+}
+
+/// Parallel-assignment correctness (the ticket's one real subtlety): a
+/// two-accumulator tail loop (Fibonacci-by-iteration) where the new value of
+/// one slot depends on the *old* value of another that is simultaneously
+/// being overwritten. If the implementation stored new argument values one
+/// at a time instead of computing all of them before storing any, this would
+/// silently compute the wrong sequence instead of erroring.
+#[test]
+fn tco_parallel_assignment_swap_hazard() {
+    let j = build(&[
+        "(defun-typed (fib-iter int64) ((n int64) (a int64) (b int64)) \
+           (if (= n 0) a (fib-iter (- n 1) b (+ a b))))",
+    ]);
+    // fib-iter(n, 0, 1) is the n-th Fibonacci number.
+    assert_eq!(agree(&j, "fib-iter", &[i(20), i(0), i(1)]), i(6765));
+    assert_eq!(agree(&j, "fib-iter", &[i(30), i(0), i(1)]), i(832040));
+}
+
+/// TCO must fire through nested `if` and `let-typed` tail positions, not
+/// just a bare `(if cond (self-call ...) (self-call ...))` at the top of the
+/// body.
+#[test]
+fn tco_fires_through_nested_if_and_let_typed() {
+    let j = build(&["(defun-typed (loopy int64) ((n int64) (acc int64)) \
+           (let-typed ((doubled (* acc 1))) \
+             (if (> n 0) \
+                 (if (= (mod n 2) 0) \
+                     (loopy (- n 1) (+ doubled 1)) \
+                     (loopy (- n 1) (+ doubled 1))) \
+                 doubled)))"]);
+    assert_eq!(
+        j.call("LOOPY", &[i(3_000_000), i(0)]).unwrap(),
+        i(3_000_000)
+    );
+}
+
+/// A self-call that is *not* in tail position (an operand of `+`, exactly
+/// like `fib`) must remain an ordinary, non-looping recursive call — the
+/// same function also has a genuine tail call elsewhere, so this checks the
+/// tail-position analysis distinguishes the two call sites correctly rather
+/// than either always-looping (wrong answer) or never-looping (defeats the
+/// point).
+#[test]
+fn tco_leaves_non_tail_self_calls_as_ordinary_recursion() {
+    let j = build(&[
+        // Non-tail self-call: `(+ n (almost-tail (- n 1)))`.
+        "(defun-typed (almost-tail int64) ((n int64)) (if (= n 0) 0 (+ n (almost-tail (- n 1)))))",
+    ]);
+    assert_eq!(agree(&j, "almost-tail", &[i(100)]), i(5050));
+}
+
+/// A function whose every branch is a self tail call with no reachable base
+/// case must still *compile* successfully (an infinite loop is a user-level
+/// concern, not a compiler one) — this exercises `branch_merge`'s
+/// both-branches-tail-loop case, where the shared merge block ends up with
+/// no predecessors. Deliberately not called (it would spin forever).
+#[test]
+fn tco_both_branches_tail_looping_still_compiles() {
+    build(&[
+        "(defun-typed (spins int64) ((n int64)) (if (> n 0) (spins (- n 1)) (spins (+ n 1))))",
+    ]);
+}

@@ -123,80 +123,168 @@ unsafe fn field_set(base: u64, idx: usize, val: u64) {
     unsafe { *(base as *mut u64).add(idx + 1) = val }
 }
 
-pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
+/// Evaluate `core` in **tail position** of the function identified by
+/// `self_id`. A `Core::Call(id, ..)` reached here with `id == self_id` is a
+/// **self tail call** (issue #133 Tier 1): instead of recursing through
+/// [`Ctx::call`] (which would grow the native Rust stack once per
+/// iteration), the loop evaluates the new argument values, overwrites
+/// `env`'s parameter slots with them, and restarts from the top of the
+/// body — O(1) native stack for an arbitrarily deep tail-recursive typed
+/// function.
+///
+/// `self_id` exists so a *non-self* call, or a self call reached in a
+/// *non-tail* position (e.g. `fib`'s two recursive calls, or a self-call
+/// used as a `bin`/`cmp` operand or another call's argument), is never
+/// mistaken for a loop: only the tail-preserving constructs this loop
+/// switches on (`if`/`let`/`and`/`or`/`seq`) ever hand a `Call` node to this
+/// function with tail status still in effect; every definitely-non-tail
+/// sub-expression is evaluated via [`eval_core_nontail`], which always
+/// performs an ordinary (depth-bounded) call through the registry, even for
+/// a self-referencing id.
+pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize) -> u64 {
+    let top = core;
+    let mut current = core;
+    loop {
+        match current {
+            Core::If(c, t, e) => {
+                current = if eval_core_nontail(c, env, ctx) != 0 {
+                    t
+                } else {
+                    e
+                };
+            }
+            Core::Let(slot, init, body) => {
+                let v = eval_core_nontail(init, env, ctx);
+                env[*slot] = v;
+                current = body;
+            }
+            Core::And(a, b) => {
+                if eval_core_nontail(a, env, ctx) == 0 {
+                    return 0;
+                }
+                current = b;
+            }
+            Core::Or(a, b) => {
+                if eval_core_nontail(a, env, ctx) != 0 {
+                    return 1;
+                }
+                current = b;
+            }
+            Core::Seq(forms) => match forms.split_last() {
+                Some((last, init)) => {
+                    for f in init {
+                        eval_core_nontail(f, env, ctx);
+                    }
+                    current = last;
+                }
+                None => return 0,
+            },
+            Core::Call(id, args) if *id == self_id => {
+                // Parallel assignment: evaluate every new argument (which may
+                // read *old* slot values that a sibling argument is about to
+                // overwrite, e.g. `(sum (- n 1) (+ acc n))`) before storing
+                // any of them.
+                let vals: Vec<u64> = args
+                    .iter()
+                    .map(|a| eval_core_nontail(a, env, ctx))
+                    .collect();
+                env[..vals.len()].copy_from_slice(&vals);
+                current = top;
+            }
+            other => return eval_core_nontail(other, env, ctx),
+        }
+    }
+}
+
+/// Evaluate `core` as a definitely-non-tail sub-expression: an ordinary,
+/// depth-bounded recursive walk. A `Call` here — even to `self_id` — is a
+/// real function call through the registry, never a tail loop.
+fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
     match core {
         Core::LitI(n) => from_i(*n),
         Core::LitF(f) => from_f(*f),
         Core::Var(i) => env[*i],
         Core::Bin(k, op, a, b) => {
-            let (x, y) = (eval_core(a, env, ctx), eval_core(b, env, ctx));
+            let (x, y) = (
+                eval_core_nontail(a, env, ctx),
+                eval_core_nontail(b, env, ctx),
+            );
             match k {
                 NumKind::I => from_i(int_bin(*op, as_i(x), as_i(y))),
                 NumKind::F => from_f(float_bin(*op, as_f(x), as_f(y))),
             }
         }
         Core::Cmp(k, op, a, b) => {
-            let (x, y) = (eval_core(a, env, ctx), eval_core(b, env, ctx));
+            let (x, y) = (
+                eval_core_nontail(a, env, ctx),
+                eval_core_nontail(b, env, ctx),
+            );
             let r = match k {
                 NumKind::I => int_cmp(*op, as_i(x), as_i(y)),
                 NumKind::F => float_cmp(*op, as_f(x), as_f(y)),
             };
             r as u64
         }
-        Core::Not(a) => (eval_core(a, env, ctx) == 0) as u64,
+        Core::Not(a) => (eval_core_nontail(a, env, ctx) == 0) as u64,
         Core::And(a, b) => {
-            if eval_core(a, env, ctx) != 0 {
-                (eval_core(b, env, ctx) != 0) as u64
+            if eval_core_nontail(a, env, ctx) != 0 {
+                (eval_core_nontail(b, env, ctx) != 0) as u64
             } else {
                 0
             }
         }
         Core::Or(a, b) => {
-            if eval_core(a, env, ctx) != 0 {
+            if eval_core_nontail(a, env, ctx) != 0 {
                 1
             } else {
-                (eval_core(b, env, ctx) != 0) as u64
+                (eval_core_nontail(b, env, ctx) != 0) as u64
             }
         }
         Core::If(c, t, e) => {
-            if eval_core(c, env, ctx) != 0 {
-                eval_core(t, env, ctx)
+            if eval_core_nontail(c, env, ctx) != 0 {
+                eval_core_nontail(t, env, ctx)
             } else {
-                eval_core(e, env, ctx)
+                eval_core_nontail(e, env, ctx)
             }
         }
         Core::Let(slot, init, body) => {
-            let v = eval_core(init, env, ctx);
+            let v = eval_core_nontail(init, env, ctx);
             env[*slot] = v;
-            eval_core(body, env, ctx)
+            eval_core_nontail(body, env, ctx)
         }
         Core::Call(id, args) => {
-            let vals: Vec<u64> = args.iter().map(|a| eval_core(a, env, ctx)).collect();
+            let vals: Vec<u64> = args
+                .iter()
+                .map(|a| eval_core_nontail(a, env, ctx))
+                .collect();
             ctx.call(*id, &vals)
         }
-        Core::ToChar(a) => eval_core(a, env, ctx) & 0xff,
+        Core::ToChar(a) => eval_core_nontail(a, env, ctx) & 0xff,
         Core::ArrayNew(n) => {
-            let len = as_i(eval_core(n, env, ctx)).max(0) as usize;
+            let len = as_i(eval_core_nontail(n, env, ctx)).max(0) as usize;
             ctx.alloc_buffer(len) as u64
         }
         Core::ArrayGet(a, i) => {
-            let base = eval_core(a, env, ctx);
-            let idx = as_i(eval_core(i, env, ctx));
+            let base = eval_core_nontail(a, env, ctx);
+            let idx = as_i(eval_core_nontail(i, env, ctx));
             unsafe { buf_get(base, idx) }
         }
         Core::ArraySet(a, i, v) => {
-            let base = eval_core(a, env, ctx);
-            let idx = as_i(eval_core(i, env, ctx));
-            let val = eval_core(v, env, ctx);
+            let base = eval_core_nontail(a, env, ctx);
+            let idx = as_i(eval_core_nontail(i, env, ctx));
+            let val = eval_core_nontail(v, env, ctx);
             unsafe { buf_set(base, idx, val) };
             val
         }
         Core::ArrayLen(a) => {
-            let base = eval_core(a, env, ctx);
+            let base = eval_core_nontail(a, env, ctx);
             unsafe { *(base as *const u64) }
         }
         Core::StructNew(inits) => {
-            let vals: Vec<u64> = inits.iter().map(|c| eval_core(c, env, ctx)).collect();
+            let vals: Vec<u64> = inits
+                .iter()
+                .map(|c| eval_core_nontail(c, env, ctx))
+                .collect();
             let base = ctx.alloc_buffer(vals.len());
             for (i, v) in vals.iter().enumerate() {
                 unsafe { *base.add(i + 1) = *v };
@@ -204,19 +292,19 @@ pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             base as u64
         }
         Core::FieldGet(s, idx) => {
-            let base = eval_core(s, env, ctx);
+            let base = eval_core_nontail(s, env, ctx);
             unsafe { field_get(base, *idx) }
         }
         Core::FieldSet(s, idx, v) => {
-            let base = eval_core(s, env, ctx);
-            let val = eval_core(v, env, ctx);
+            let base = eval_core_nontail(s, env, ctx);
+            let val = eval_core_nontail(v, env, ctx);
             unsafe { field_set(base, *idx, val) };
             val
         }
         Core::Seq(forms) => {
             let mut r = 0;
             for f in forms {
-                r = eval_core(f, env, ctx);
+                r = eval_core_nontail(f, env, ctx);
             }
             r
         }
@@ -662,6 +750,122 @@ pub fn compile(core: &Core) -> Compiled {
                 }
                 r
             })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Closure-backend tail-call optimization (issue #133 Tier 1).
+// ---------------------------------------------------------------------------
+
+/// Outcome of one step of a tail-position compiled closure: either the final
+/// value, or a signal that a self tail call just overwrote `env`'s parameter
+/// slots and the top-level loop in [`compile_with_tco`] should run the body
+/// again.
+pub(super) enum TailStep {
+    Done(u64),
+    Loop,
+}
+
+/// A tail-position compiled closure — the closure-backend counterpart of
+/// [`eval_core`]'s tail loop.
+pub(super) type CompiledTail = Rc<dyn Fn(&mut [u64], &Ctx) -> TailStep>;
+
+/// Compile `core`, the body of the function identified by `self_id`, to a
+/// [`Compiled`] closure with tail-call optimization: a `Core::Call(id, ..)`
+/// reached in tail position with `id == self_id` loops in place instead of
+/// recursing through [`Ctx::call`] — O(1) native (Rust) stack for an
+/// arbitrarily deep tail-recursive typed function, mirroring [`eval_core`]'s
+/// discipline for the closure backend that `TypedFn::compile_now` actually
+/// installs as the default-build hot path.
+pub fn compile_with_tco(core: &Core, self_id: usize) -> Compiled {
+    let tail = compile_tail(core, self_id);
+    Rc::new(move |env, ctx| {
+        loop {
+            match tail(env, ctx) {
+                TailStep::Done(v) => return v,
+                TailStep::Loop => {}
+            }
+        }
+    })
+}
+
+/// Compile `core` as a tail-position node of the function `self_id`. Tail
+/// status only propagates through the constructs whose value is *exactly*
+/// their tail sub-node's value with no further transformation
+/// (`if`/`let`/`and`/`or`/`seq`); everything else compiles via the ordinary
+/// (non-tail) [`compile`] and is wrapped as an already-`Done` step.
+fn compile_tail(core: &Core, self_id: usize) -> CompiledTail {
+    match core {
+        Core::If(c, t, e) => {
+            let cc = compile(c);
+            let ct = compile_tail(t, self_id);
+            let ce = compile_tail(e, self_id);
+            Rc::new(move |env, ctx| {
+                if cc(env, ctx) != 0 {
+                    ct(env, ctx)
+                } else {
+                    ce(env, ctx)
+                }
+            })
+        }
+        Core::Let(slot, init, body) => {
+            let slot = *slot;
+            let ci = compile(init);
+            let cb = compile_tail(body, self_id);
+            Rc::new(move |env, ctx| {
+                let v = ci(env, ctx);
+                env[slot] = v;
+                cb(env, ctx)
+            })
+        }
+        Core::And(a, b) => {
+            let ca = compile(a);
+            let cb = compile_tail(b, self_id);
+            Rc::new(move |env, ctx| {
+                if ca(env, ctx) != 0 {
+                    cb(env, ctx)
+                } else {
+                    TailStep::Done(0)
+                }
+            })
+        }
+        Core::Or(a, b) => {
+            let ca = compile(a);
+            let cb = compile_tail(b, self_id);
+            Rc::new(move |env, ctx| {
+                if ca(env, ctx) != 0 {
+                    TailStep::Done(1)
+                } else {
+                    cb(env, ctx)
+                }
+            })
+        }
+        Core::Seq(forms) => match forms.split_last() {
+            Some((last, init)) => {
+                let cinit: Vec<Compiled> = init.iter().map(compile).collect();
+                let clast = compile_tail(last, self_id);
+                Rc::new(move |env, ctx| {
+                    for f in &cinit {
+                        f(env, ctx);
+                    }
+                    clast(env, ctx)
+                })
+            }
+            None => Rc::new(|_e, _c| TailStep::Done(0)),
+        },
+        Core::Call(id, args) if *id == self_id => {
+            let cargs: Vec<Compiled> = args.iter().map(compile).collect();
+            Rc::new(move |env, ctx| {
+                // Parallel assignment: see eval_core's identical comment.
+                let vals: Vec<u64> = cargs.iter().map(|ca| ca(env, ctx)).collect();
+                env[..vals.len()].copy_from_slice(&vals);
+                TailStep::Loop
+            })
+        }
+        other => {
+            let cv = compile(other);
+            Rc::new(move |env, ctx| TailStep::Done(cv(env, ctx)))
         }
     }
 }
