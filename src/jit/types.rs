@@ -93,6 +93,28 @@ pub fn is_compileable(t: &Ty) -> bool {
     }
 }
 
+/// Whether `t` is a *flat* array of scalars (`(array int64/float64/bool/char)`,
+/// not an array of arrays or an array of structs) — issue #216: this is the
+/// scope `Jit::call_with_array_writeback` writes a mutated argument back
+/// into the caller's backing store for. Excluded on purpose:
+///
+/// - Nested compounds (`(array (array T))`, `(array Struct)`): `from_word`
+///   would rebuild fresh inner `LispVal`s for every element, so writing the
+///   outer buffer back would silently replace inner-object identity for any
+///   other holder of one of those inner values. That is a genuinely new kind
+///   of aliasing bug, not a fix — out of scope for this pass (see #216).
+/// - Structs at the top level: `LispVal::Struct` has no interior mutability
+///   in the first place (`Shared<StructObj>`, not `Shared<SharedCell<_>>>`),
+///   so there is no existing in-place-mutation contract to honor there,
+///   unlike arrays (`LispVal::Array` is `Shared<SharedCell<Vec<LispVal>>>>`,
+///   and `STORE`'s docs explicitly promise in-place mutation).
+pub(super) fn is_flat_scalar_array(t: &Ty) -> bool {
+    matches!(
+        t,
+        Ty::Array(elem) if matches!(**elem, Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char)
+    )
+}
+
 /// A struct type definition: an ordered list of `(field-name, field-type)`. Two
 /// struct types are equal iff they have the same name and field layout; the
 /// `Rc` keeps clones cheap and identity stable.
@@ -183,6 +205,13 @@ pub enum Value {
     /// A struct, materialized as its field [`Value`]s in declaration order.
     Struct(Vec<Value>),
 }
+
+/// Result of a call that also reports post-call array write-back (issue
+/// #216): the ordinary boxed result, plus one entry per argument that is
+/// `Some(updated_value)` when that argument's type is a flat scalar array
+/// (see [`is_flat_scalar_array`]), `None` otherwise. See
+/// `Jit::call_with_array_writeback`.
+pub type WritebackResult = Result<(Value, Vec<Option<Value>>), String>;
 
 impl Value {
     /// Lower a boundary value to its runtime `u64` word for a parameter of type

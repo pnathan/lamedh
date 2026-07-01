@@ -219,18 +219,100 @@ fn aref_aset_work_both_typed_and_interpreted() {
 
     // `ASET` specifically through the compiled `elab_store` path (the
     // earlier assertions only exercised compiled `AREF`/`elab_fetch`).
-    // `store`/`aset` return the stored value (per their docs), so this
-    // exercises the compiled path without depending on whether a mutation
-    // inside a `defun-typed` call is visible to the caller's array
-    // afterward -- that's a separate, pre-existing membrane question
-    // (also true of plain `store`, not introduced by this fix), not part
-    // of issue #214's scope.
+    // `store`/`aset` return the stored value (per their docs); the mutation
+    // is now also visible in the caller's array afterward (issue #216 --
+    // fixed separately from #214, but the same test doubles as coverage
+    // for both).
     eval_line(
         "(defun-typed (set-first-typed int64) ((a (array int64)) (v int64)) (aset a 0 v))",
         &env,
     );
     eval_line("(setq test-arr-2 (list->array (list 1 2 3)))", &env);
     assert_eq!(eval_line("(set-first-typed test-arr-2 99)", &env), "99");
+    assert_eq!(eval_line("(aref test-arr-2 0)", &env), "99");
+}
+
+/// Issue #216: `STORE`'s docs promise "all references to the same array see
+/// the change" -- but a mutation inside a `defun-typed` body used to be
+/// silently thrown away with the arena buffer it ran in, never reaching the
+/// caller's array at all, with no error at any point.
+#[test]
+fn array_mutation_inside_defun_typed_propagates_to_caller() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (bump int64) ((a (array int64))) (store a 0 (+ (fetch a 0) 1)))",
+        &env,
+    );
+    eval_line("(setq arr (list->array (list 1 2 3)))", &env);
+    // Three repeated mutating calls on the *same* array object must
+    // accumulate, not silently vanish each time.
+    eval_line("(bump arr)", &env);
+    eval_line("(bump arr)", &env);
+    eval_line("(bump arr)", &env);
+    assert_eq!(eval_line("(array->list arr)", &env), "(4 2 3)");
+}
+
+/// `defun*`'s auto-typed native path (`make_auto_typed_native`) must write
+/// mutations back too, not just plain `defun-typed`.
+#[test]
+fn array_mutation_inside_defun_star_propagates_to_caller() {
+    let env = Environment::with_stdlib();
+    eval_line("(defun* bump-star (a) (store a 0 (+ (fetch a 0) 1)))", &env);
+    eval_line("(setq arr (list->array (list 5 6 7)))", &env);
+    eval_line("(bump-star arr)", &env);
+    eval_line("(bump-star arr)", &env);
+    assert_eq!(eval_line("(array->list arr)", &env), "(7 6 7)");
+}
+
+/// A `LispVal::String` passed to an `(array char)` parameter type-checks
+/// exactly like a genuine array (issue #216's write-back scope), but a
+/// Lisp string has no interior mutability at all -- confirm this doesn't
+/// crash or corrupt anything; the string is simply copy-in-only, same as
+/// before this fix.
+#[test]
+fn string_array_char_parameter_is_unaffected_by_writeback() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (first-code int64) ((s (array char))) (char-code (fetch s 0)))",
+        &env,
+    );
+    assert_eq!(eval_line("(first-code \"ABC\")", &env), "65");
+}
+
+/// A nested compound (`(array (array int64))`) is explicitly out of scope
+/// for write-back (inner-object-identity hazard, see `is_flat_scalar_array`'s
+/// doc comment) -- confirm it still reads correctly and doesn't panic; it
+/// is simply copy-in-only, same as before this fix.
+#[test]
+fn nested_array_of_arrays_is_unaffected_by_writeback() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (touch int64) ((a (array (array int64)))) (fetch (fetch a 0) 0))",
+        &env,
+    );
+    eval_line(
+        "(setq nested (list->array (list (list->array (list 1 2)) (list->array (list 3 4)))))",
+        &env,
+    );
+    assert_eq!(eval_line("(touch nested)", &env), "1");
+}
+
+/// Documented, intentional divergence from true aliasing (issue #216):
+/// passing the *same* array object as two distinct arguments is
+/// last-writer-wins in argument order, not simultaneous true aliasing --
+/// classic value-result/copy-in-copy-out semantics. Pinned here so a future
+/// change can't silently alter this without a test noticing.
+#[test]
+fn same_array_passed_twice_is_last_writer_wins() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (both int64) ((a (array int64)) (b (array int64))) \
+           (store a 0 111) (store b 0 222))",
+        &env,
+    );
+    eval_line("(setq arr (list->array (list 1 2 3)))", &env);
+    eval_line("(both arr arr)", &env);
+    assert_eq!(eval_line("(array->list arr)", &env), "(222 2 3)");
 }
 
 #[test]
