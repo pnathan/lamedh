@@ -263,7 +263,7 @@ impl Jit {
     /// This is O(n_typed_fns) but redefinitions with arity changes are rare REPL
     /// events, not hot-path operations.
     fn recompile_all_except(&self, skip_id: usize) {
-        let funcs: Vec<Rc<TypedFn>> = self.funcs.iter().cloned().collect();
+        let funcs: Vec<Rc<TypedFn>> = self.funcs.to_vec();
         for (id, f) in funcs.iter().enumerate() {
             if id != skip_id && f.core.borrow().is_some() {
                 f.deoptimize();
