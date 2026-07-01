@@ -1200,7 +1200,7 @@ pub(super) fn apply(
             // - Lexical parent: lambda.env (captured closure environment)
             // - Dynamic parent: env (caller's environment for dynamic variable lookup)
             let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-            if let Some(rest_param_name) = &lambda.rest_param {
+            if let Some(rest_param_id) = lambda.rest_param_id {
                 if args.len() < lambda.params.len() {
                     return Err(LispError::Generic(format!(
                         "lambda expected at least {} arguments, got {}",
@@ -1208,11 +1208,11 @@ pub(super) fn apply(
                         args.len()
                     )));
                 }
-                for (param, arg) in lambda.params.iter().zip(args.iter()) {
-                    new_env.set(param.clone(), arg.clone());
+                for (id, arg) in lambda.param_ids.iter().zip(args.iter()) {
+                    new_env.set_id(*id, arg.clone());
                 }
                 let rest_args = vec_to_list(args[lambda.params.len()..].to_vec());
-                new_env.set(rest_param_name.clone(), rest_args);
+                new_env.set_id(rest_param_id, rest_args);
             } else {
                 if lambda.params.len() != args.len() {
                     return Err(LispError::Generic(format!(
@@ -1221,8 +1221,8 @@ pub(super) fn apply(
                         args.len()
                     )));
                 }
-                for (param, arg) in lambda.params.iter().zip(args) {
-                    new_env.set(param.clone(), arg.clone());
+                for (id, arg) in lambda.param_ids.iter().zip(args) {
+                    new_env.set_id(*id, arg.clone());
                 }
             }
 
@@ -1252,7 +1252,7 @@ pub(super) fn apply_owned(
             // - Lexical parent: lambda.env (captured closure environment)
             // - Dynamic parent: env (caller's environment for dynamic variable lookup)
             let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-            if let Some(rest_param_name) = &lambda.rest_param {
+            if let Some(rest_param_id) = lambda.rest_param_id {
                 if args.len() < lambda.params.len() {
                     return Err(LispError::Generic(format!(
                         "lambda expected at least {} arguments, got {}",
@@ -1263,11 +1263,11 @@ pub(super) fn apply_owned(
                 // Move fixed args into the frame, keep the rest for the &rest list.
                 let n_fixed = lambda.params.len();
                 let mut args = args;
-                for (param, arg) in lambda.params.iter().zip(args.drain(..n_fixed)) {
-                    new_env.set(param.clone(), arg);
+                for (id, arg) in lambda.param_ids.iter().zip(args.drain(..n_fixed)) {
+                    new_env.set_id(*id, arg);
                 }
                 let rest_args = vec_to_list(args.into_vec());
-                new_env.set(rest_param_name.clone(), rest_args);
+                new_env.set_id(rest_param_id, rest_args);
             } else {
                 if lambda.params.len() != args.len() {
                     return Err(LispError::Generic(format!(
@@ -1277,8 +1277,8 @@ pub(super) fn apply_owned(
                     )));
                 }
                 // Move every arg directly into the frame — no clone.
-                for (param, arg) in lambda.params.iter().zip(args) {
-                    new_env.set(param.clone(), arg);
+                for (id, arg) in lambda.param_ids.iter().zip(args) {
+                    new_env.set_id(*id, arg);
                 }
             }
             eval(&lambda.body, &new_env)

@@ -754,6 +754,11 @@ pub struct Symbol {
     /// `SymbolTable`, these cells are naturally scoped per global namespace, so
     /// independent `make-environment` namespaces stay isolated.
     pub value: Option<LispVal>,
+    /// Monotonic id assigned by [`environment::SymbolTable::intern`] or
+    /// [`environment::SymbolTable::gensym`].  Used as the key in local
+    /// environment frames (`HashMap<u32, LispVal>`) so that binding and lookup
+    /// use integer hashing instead of string hashing/cloning.
+    pub id: u32,
     /// Cached flag: `true` iff `name.starts_with(':')`.  Set once at intern
     /// time so the hot `eval_step` symbol arm avoids a string scan on every
     /// variable reference.
@@ -790,6 +795,11 @@ pub struct Lambda {
     pub body: Box<LispVal>,
     /// Captured lexical environment (definition site).
     pub env: Shared<Environment>,
+    /// Symbol ids for the fixed parameters (parallel to `params`).  Used as
+    /// the binding key in local environment frames instead of cloning Strings.
+    pub param_ids: Vec<u32>,
+    /// Symbol id for the `&REST` parameter, if any.
+    pub rest_param_id: Option<u32>,
 }
 
 impl PartialEq for Lambda {
@@ -819,6 +829,8 @@ pub struct Fexpr {
     pub body: Box<LispVal>,
     /// Captured lexical environment.
     pub env: Shared<Environment>,
+    /// Symbol ids for the parameters (parallel to `params`).
+    pub param_ids: Vec<u32>,
 }
 
 impl PartialEq for Fexpr {
@@ -847,6 +859,10 @@ pub struct Macro {
     pub body: Box<LispVal>,
     /// Captured lexical environment (definition site).
     pub env: Shared<Environment>,
+    /// Symbol ids for the fixed parameters (parallel to `params`).
+    pub param_ids: Vec<u32>,
+    /// Symbol id for the `&REST` parameter, if any.
+    pub rest_param_id: Option<u32>,
 }
 
 impl PartialEq for Macro {
@@ -873,6 +889,10 @@ pub struct Vau {
     pub env_param: String,
     pub body: Box<LispVal>,
     pub env: Shared<Environment>,
+    /// Symbol id for the operands parameter.
+    pub operands_param_id: u32,
+    /// Symbol id for the environment parameter.
+    pub env_param_id: u32,
 }
 
 impl PartialEq for Vau {
@@ -1233,6 +1253,7 @@ impl From<bool> for LispVal {
                 name: "T".to_string(),
                 plist: HashMap::new(),
                 value: None,
+                id: 0, // un-interned; never used as a binding key
                 is_keyword: false,
                 is_dynamic: false,
                 special_form: None,

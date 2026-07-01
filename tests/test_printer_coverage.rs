@@ -75,6 +75,7 @@ fn test_print_fexpr() {
         params: vec!["X".to_string()],
         body: Box::new(LispVal::Nil),
         env: env.clone(),
+        param_ids: vec![0],
     }));
     assert_eq!(print(&fexpr), "<fexpr>");
 }
@@ -89,6 +90,8 @@ fn test_print_macro() {
         rest_param: None,
         body: Box::new(LispVal::Nil),
         env: env.clone(),
+        param_ids: vec![0],
+        rest_param_id: None,
     }));
     assert_eq!(print(&mac), "<macro>");
 }
@@ -101,6 +104,8 @@ fn test_print_macro_with_rest_param() {
         rest_param: Some("ARGS".to_string()),
         body: Box::new(LispVal::Number(0)),
         env: env.clone(),
+        param_ids: vec![],
+        rest_param_id: Some(0),
     }));
     assert_eq!(print(&mac), "<macro>");
 }
@@ -133,6 +138,8 @@ fn test_print_lambda() {
         rest_param: None,
         body: Box::new(LispVal::Number(1)),
         env: env.clone(),
+        param_ids: vec![0],
+        rest_param_id: None,
     }));
     assert_eq!(print(&lam), "<lambda>");
 }

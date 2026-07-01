@@ -187,8 +187,8 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         ))));
     }
 
-    let var_name = if let LispVal::Symbol(s) = &spec[0] {
-        s.borrow().name.clone()
+    let var_id = if let LispVal::Symbol(s) = &spec[0] {
+        s.borrow().id
     } else {
         return Ok(TcoStep::Done(Err(LispError::Generic(
             "for loop variable must be a symbol".to_string(),
@@ -226,7 +226,7 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         if (step > 0 && i > end) || (step < 0 && i < end) {
             break;
         }
-        loop_env.set(var_name.clone(), LispVal::Number(i));
+        loop_env.set_id(var_id, LispVal::Number(i));
         for form in body {
             eval(form, &loop_env)?;
         }
@@ -305,17 +305,17 @@ fn eval_application(
     // Vau application: bind unevaluated operands + caller env, TCO into body.
     if let LispVal::Vau(vau) = &func {
         let new_env = Environment::new_child(&vau.env);
-        new_env.set(vau.operands_param.clone(), rest.clone());
-        new_env.set(vau.env_param.clone(), LispVal::Environment(env.clone()));
+        new_env.set_id(vau.operands_param_id, rest.clone());
+        new_env.set_id(vau.env_param_id, LispVal::Environment(env.clone()));
         return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
     }
 
     // Fexpr application: TCO — bind unevaluated args, continue with body.
     if let LispVal::Fexpr(fexpr) = &func {
         let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
-        if fexpr.params.len() == 1 {
+        if fexpr.param_ids.len() == 1 {
             // Single-param: bind entire unevaluated arg list to the one parameter.
-            new_env.set(fexpr.params[0].clone(), rest.clone());
+            new_env.set_id(fexpr.param_ids[0], rest.clone());
         } else {
             // Multi-param: bind each unevaluated arg to its parameter.
             let unevaluated_args = list_to_vec(rest)?;
@@ -326,8 +326,8 @@ fn eval_application(
                     unevaluated_args.len()
                 )))));
             }
-            for (param, arg) in fexpr.params.iter().zip(unevaluated_args) {
-                new_env.set(param.clone(), arg);
+            for (id, arg) in fexpr.param_ids.iter().zip(unevaluated_args) {
+                new_env.set_id(*id, arg);
             }
         }
         return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
@@ -340,7 +340,7 @@ fn eval_application(
     // Lambda application: TCO — set up new env and continue with body.
     if let LispVal::Lambda(lambda) = &func {
         let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-        if let Some(rest_param_name) = &lambda.rest_param {
+        if let Some(rest_param_id) = lambda.rest_param_id {
             if eval_args.len() < lambda.params.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
                     "lambda expected at least {} arguments, got {}",
@@ -351,11 +351,11 @@ fn eval_application(
             // Move fixed args into the frame; remaining go to the rest list.
             let n_fixed = lambda.params.len();
             let mut eval_args = eval_args;
-            for (param, arg) in lambda.params.iter().zip(eval_args.drain(..n_fixed)) {
-                new_env.set(param.clone(), arg);
+            for (id, arg) in lambda.param_ids.iter().zip(eval_args.drain(..n_fixed)) {
+                new_env.set_id(*id, arg);
             }
             let rest_args = vec_to_list(eval_args.into_vec());
-            new_env.set(rest_param_name.clone(), rest_args);
+            new_env.set_id(rest_param_id, rest_args);
         } else {
             if lambda.params.len() != eval_args.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
@@ -365,8 +365,8 @@ fn eval_application(
                 )))));
             }
             // Move every arg directly into the frame — no clone.
-            for (param, arg) in lambda.params.iter().zip(eval_args) {
-                new_env.set(param.clone(), arg);
+            for (id, arg) in lambda.param_ids.iter().zip(eval_args) {
+                new_env.set_id(*id, arg);
             }
         }
         return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
@@ -1292,7 +1292,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
 
                         for var in var_list {
                             if let LispVal::Symbol(s) = var {
-                                prog_env.set(s.borrow().name.clone(), LispVal::Nil);
+                                prog_env.set_id(s.borrow().id, LispVal::Nil);
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "PROG variable list must contain only symbols".to_string(),
@@ -1417,12 +1417,15 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         for (param, arg_expr) in params.iter().zip(arg_exprs.iter()) {
                             if let LispVal::Symbol(s) = param {
                                 let v = eval(arg_expr, env)?;
-                                let var_name = s.borrow().name.clone();
-                                if env.is_dynamic(&var_name) {
+                                let sb = s.borrow();
+                                if sb.is_dynamic {
                                     // Shallow binding: install value in the symbol cell.
+                                    drop(sb);
                                     dynamic_guards.push(DynamicBinding::install(s.clone(), v));
                                 } else {
-                                    let_env.set(var_name, v);
+                                    let id = sb.id;
+                                    drop(sb);
+                                    let_env.set_id(id, v);
                                 }
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1465,11 +1468,14 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             }
                             if let LispVal::Symbol(s) = &pair[0] {
                                 let v = eval(&pair[1], &let_env)?;
-                                let var_name = s.borrow().name.clone();
-                                if env.is_dynamic(&var_name) {
+                                let sb = s.borrow();
+                                if sb.is_dynamic {
+                                    drop(sb);
                                     dynamic_guards.push(DynamicBinding::install(s.clone(), v));
                                 } else {
-                                    let_env.set(var_name, v);
+                                    let id = sb.id;
+                                    drop(sb);
+                                    let_env.set_id(id, v);
                                 }
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1526,15 +1532,17 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 "vau parameter list must have exactly two symbols: (operands-param env-param)".to_string(),
                             ))));
                         }
-                        let op_param = if let LispVal::Symbol(s) = &param_list[0] {
-                            s.borrow().name.clone()
+                        let (op_param, op_param_id) = if let LispVal::Symbol(s) = &param_list[0] {
+                            let sb = s.borrow();
+                            (sb.name.clone(), sb.id)
                         } else {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau operands parameter must be a symbol".to_string(),
                             ))));
                         };
-                        let env_param = if let LispVal::Symbol(s) = &param_list[1] {
-                            s.borrow().name.clone()
+                        let (env_param, env_param_id) = if let LispVal::Symbol(s) = &param_list[1] {
+                            let sb = s.borrow();
+                            (sb.name.clone(), sb.id)
                         } else {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau environment parameter must be a symbol".to_string(),
@@ -1562,6 +1570,8 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             env_param,
                             body: Box::new(body),
                             env: env.clone(),
+                            operands_param_id: op_param_id,
+                            env_param_id,
                         })))))
                     }
                 }

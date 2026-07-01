@@ -102,13 +102,26 @@ impl Hasher for FxHasher {
     }
 
     #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+
+    #[inline]
     fn finish(&self) -> u64 {
         self.hash
     }
 }
 
 /// `HashMap` specialised to the fast [`FxHasher`] for variable bindings.
-type BindingMap = HashMap<String, LispVal, BuildHasherDefault<FxHasher>>;
+/// Keys are symbol ids (`u32`) — integer hashing is faster than string hashing
+/// and avoids the String clone that the old `HashMap<String, LispVal>` required
+/// on every bind operation.
+type BindingMap = HashMap<u32, LispVal, BuildHasherDefault<FxHasher>>;
 
 /// Global symbol table shared by all environments in an interpreter session.
 ///
@@ -116,12 +129,19 @@ type BindingMap = HashMap<String, LispVal, BuildHasherDefault<FxHasher>>;
 /// symbol name maps to exactly one heap allocation.  Pointer equality of the
 /// `Rc` handles is the Lisp `EQ` predicate for symbols.
 ///
-/// Uninterned symbols (created by [`SymbolTable::gensym`]) are *not* stored in
-/// the table — they are guaranteed unique but not sharable by name.
+/// Uninterned symbols (created by [`SymbolTable::gensym`]) are stored in
+/// `by_id` so they can be used as binding keys in local frames, but they are
+/// *not* stored in the `symbols` name-map — they are guaranteed unique but
+/// not sharable by name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolTable {
     symbols: HashMap<String, Shared<SharedCell<Symbol>>>,
     gensym_counter: u64,
+    /// Monotonic counter for assigning symbol ids.
+    next_id: u32,
+    /// Reverse map: `by_id[id]` is the symbol with that id.  Includes both
+    /// interned and gensym symbols.
+    by_id: Vec<Shared<SharedCell<Symbol>>>,
 }
 
 impl Default for SymbolTable {
@@ -136,25 +156,33 @@ impl SymbolTable {
         SymbolTable {
             symbols: HashMap::new(),
             gensym_counter: 0,
+            next_id: 0,
+            by_id: Vec::new(),
         }
     }
 
     /// Create a fresh uninterned symbol with a unique name (`G0000`, `G0001`, …).
     ///
-    /// Uninterned symbols are *not* stored in the table, so two `gensym` calls
-    /// always return distinct [`Shared`] pointers even if the names collide.
+    /// Gensym symbols get a real id and are pushed to `by_id` so they can be
+    /// used as binding keys in local frames. They are *not* stored in the
+    /// `symbols` name-map, so two `gensym` calls always return distinct
+    /// [`Shared`] pointers even if the names collide.
     pub fn gensym(&mut self) -> Shared<SharedCell<Symbol>> {
         let name = format!("G{:04}", self.gensym_counter);
         self.gensym_counter += 1;
-        // Create an uninterned symbol (not stored in the hash table)
-        Shared::new(SharedCell::new(Symbol {
+        let id = self.next_id;
+        self.next_id += 1;
+        let symbol = Shared::new(SharedCell::new(Symbol {
             name,
             plist: HashMap::new(),
             value: None,
+            id,
             is_keyword: false, // gensym names never start with ':'
             is_dynamic: false,
             special_form: None, // gensym names are never special forms
-        }))
+        }));
+        self.by_id.push(symbol.clone());
+        symbol
     }
 
     pub fn all_symbols(&self) -> Vec<Shared<SharedCell<Symbol>>> {
@@ -166,6 +194,12 @@ impl SymbolTable {
     /// (cold) name-based lookup paths.
     pub fn get_symbol(&self, name: &str) -> Option<Shared<SharedCell<Symbol>>> {
         self.symbols.get(name).cloned()
+    }
+
+    /// Look up a symbol by its numeric id (the reverse of [`intern`]).
+    /// Returns `None` if the id is out of range (should not happen in practice).
+    pub fn symbol_by_id(&self, id: u32) -> Option<Shared<SharedCell<Symbol>>> {
+        self.by_id.get(id as usize).cloned()
     }
 
     /// Return the interned [`Shared`] for `name`, creating a new `Symbol` if needed.
@@ -223,15 +257,19 @@ impl SymbolTable {
             "VAU" | "$VAU" => Some(SpecialForm::Vau),
             _ => None,
         };
+        let id = self.next_id;
+        self.next_id += 1;
         let symbol = Shared::new(SharedCell::new(Symbol {
             is_keyword: name.starts_with(':'),
             is_dynamic: false,
             special_form,
+            id,
             name: name.to_string(),
             plist: HashMap::new(),
             value: None,
         }));
         self.symbols.insert(name.to_string(), symbol.clone());
+        self.by_id.push(symbol.clone());
         symbol
     }
 }
@@ -991,36 +1029,28 @@ impl Environment {
         self.parent.is_none()
     }
 
-    /// Read a global binding from the symbol value cell, by name (cold path:
-    /// interns a read-only lookup into the symbol table).
-    fn global_get(&self, name: &str) -> Option<LispVal> {
-        self.shared
-            .symbols
-            .borrow()
-            .get_symbol(name)
-            .and_then(|s| s.borrow().value.clone())
-    }
-
     /// Write a global binding into the symbol value cell, by name.
     fn global_set(&self, name: &str, val: LispVal) {
         let sym = self.shared.symbols.borrow_mut().intern(name);
         sym.borrow_mut().value = Some(val);
     }
 
-    /// `true` if a global binding exists for `name`.
-    fn global_contains(&self, name: &str) -> bool {
-        self.shared
-            .symbols
-            .borrow()
-            .get_symbol(name)
-            .is_some_and(|s| s.borrow().value.is_some())
+    /// Bind `id` (a symbol's numeric id) to `val` in this local environment frame.
+    ///
+    /// Only valid on non-root frames; the root frame stores bindings in per-symbol
+    /// value cells, not in the binding map.  Panics in debug mode if called on the
+    /// root frame.
+    #[inline]
+    pub fn set_id(&self, id: u32, val: LispVal) {
+        debug_assert!(!self.is_root(), "set_id called on root frame");
+        self.bindings.borrow_mut().insert(id, val);
     }
 
     /// Hot-path variable resolution from the interned symbol the AST holds.
     ///
-    /// Local frames are probed by name; the root binding is read from this
-    /// environment's symbol table. Respects dynamic scoping when any dynamic
-    /// variable exists.
+    /// Local frames are probed by symbol id (u32 integer key); the root binding
+    /// is read from the symbol's value cell directly — O(1), no hash lookup.
+    /// Respects dynamic scoping when any dynamic variable exists.
     pub fn resolve(&self, sym: &Shared<SharedCell<Symbol>>) -> Option<LispVal> {
         let s = sym.borrow();
         if self.shared.has_dynamic.get() && s.is_dynamic {
@@ -1030,42 +1060,61 @@ impl Environment {
             // the dynamic_vars HashSet probe on the hot evaluation path.
             return s.value.clone();
         }
-        // Lexical: walk local frames by name; read the root environment's cell.
+        // Lexical: walk local frames by id; the root binding is the value cell
+        // of the *current namespace's* canonical symbol for this name.
+        let id = s.id;
         let mut frame = self;
         loop {
             if frame.is_root() {
-                return frame.global_get(&s.name);
+                let table = frame.shared.symbols.borrow();
+                // Fast path: in the common single-namespace case the AST symbol
+                // IS this table's canonical symbol (its id indexes back to the
+                // same `Rc`), so read the cell directly — O(1), no name hash.
+                match table.symbol_by_id(id) {
+                    Some(canon) if Shared::ptr_eq(&canon, sym) => return s.value.clone(),
+                    // First-class environments: `sym` was interned in a different
+                    // namespace/table, so resolve the name against THIS table's
+                    // canonical symbol and read *its* cell (not the caller's).
+                    _ => {
+                        return table
+                            .get_symbol(&s.name)
+                            .and_then(|c| c.borrow().value.clone());
+                    }
+                }
             }
-            if let Some(val) = frame.bindings.borrow().get(&s.name) {
+            if let Some(val) = frame.bindings.borrow().get(&id) {
                 return Some(val.clone());
             }
             frame = frame.parent.as_deref().unwrap();
         }
     }
 
-    /// Lexical variable lookup.  Walks the `parent` chain; does **not** check
-    /// the dynamic-parent chain.  Use [`Environment::get_var`] for the
+    /// Lexical variable lookup by name.  Walks the `parent` chain; does **not**
+    /// check the dynamic-parent chain.  Use [`Environment::get_var`] for the
     /// scoping-aware lookup that respects dynamic variables.
+    ///
+    /// This is the cold path (name-based).  The hot path goes through
+    /// [`Environment::resolve`] which uses the symbol id from the AST node
+    /// directly without re-interning the name.
     pub fn get(&self, name: &str) -> Option<LispVal> {
-        if self.is_root() {
-            return self.global_get(name);
-        }
-        if let Some(val) = self.bindings.borrow().get(name) {
-            return Some(val.clone());
-        }
-        self.parent.as_ref().unwrap().get(name)
+        // Find the interned symbol, then use resolve for the actual lookup so
+        // we share the same id-based frame walk as the hot path.
+        let sym = self.shared.symbols.borrow().get_symbol(name)?;
+        self.resolve(&sym)
     }
 
     /// Bind `name` to `val` in this environment frame (not in any parent).
     ///
     /// At the root frame this writes the symbol's global value cell; in a child
-    /// frame it writes the frame's local map. Use [`Environment::update`] to
-    /// modify an existing binding that may live in a parent frame.
+    /// frame it writes the frame's local map using the symbol id as the key.
+    /// Use [`Environment::update`] to modify an existing binding that may live
+    /// in a parent frame.
     pub fn set(&self, name: String, val: LispVal) {
         if self.is_root() {
             self.global_set(&name, val);
         } else {
-            self.bindings.borrow_mut().insert(name, val);
+            let id = self.shared.symbols.borrow_mut().intern(&name).borrow().id;
+            self.bindings.borrow_mut().insert(id, val);
         }
     }
 
@@ -1222,27 +1271,32 @@ impl Environment {
 
     /// Update a lexical variable by walking the lexical parent chain.
     fn update_lexical(env: &Shared<Environment>, name: &str, val: LispVal) {
+        // Intern (or find) the symbol to get its id — do this once.
+        let sym = env.shared.symbols.borrow_mut().intern(name);
+        let id = sym.borrow().id;
+
         let mut maybe_env = Some(env.clone());
         while let Some(current_env) = maybe_env {
             if current_env.is_root() {
-                // Root storage is the symbol cell.
-                if current_env.global_contains(name) {
-                    current_env.global_set(name, val);
+                // Root storage is the symbol value cell.
+                if sym.borrow().value.is_some() {
+                    sym.borrow_mut().value = Some(val);
                     return;
                 }
                 break;
             }
-            if current_env.bindings.borrow().contains_key(name) {
-                current_env
-                    .bindings
-                    .borrow_mut()
-                    .insert(name.to_string(), val);
+            if current_env.bindings.borrow().contains_key(&id) {
+                current_env.bindings.borrow_mut().insert(id, val);
                 return;
             }
             maybe_env = current_env.parent.clone();
         }
-        // Variable not found - create it in the current environment
-        env.set(name.to_string(), val);
+        // Variable not found — create it in the current environment.
+        if env.is_root() {
+            sym.borrow_mut().value = Some(val);
+        } else {
+            env.set_id(id, val);
+        }
     }
 
     /// Collect all bindings visible from this frame (including parent frames).
@@ -1262,7 +1316,13 @@ impl Environment {
         if let Some(parent) = &self.parent {
             all.extend(parent.all_bindings());
         }
-        all.extend(self.bindings.borrow().clone());
+        // Convert id → name via the reverse map.
+        let table = self.shared.symbols.borrow();
+        for (id, val) in self.bindings.borrow().iter() {
+            if let Some(sym) = table.symbol_by_id(*id) {
+                all.insert(sym.borrow().name.clone(), val.clone());
+            }
+        }
         all
     }
 
