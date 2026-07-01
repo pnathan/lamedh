@@ -1266,6 +1266,20 @@ impl Environment {
         Some(jit.call(name, args))
     }
 
+    /// Like [`Environment::jit_call`], but also reads back the post-call
+    /// contents of any flat-scalar-array argument (issue #216), so the
+    /// caller can write a mutation back into its own backing store — see
+    /// `Jit::call_with_array_writeback`.
+    pub fn jit_call_with_array_writeback(
+        &self,
+        name: &str,
+        args: &[crate::jit::Value],
+    ) -> Option<crate::jit::WritebackResult> {
+        let jit = self.shared.jit.borrow();
+        jit.id(name)?;
+        Some(jit.call_with_array_writeback(name, args))
+    }
+
     /// Update a variable's value, searching up the environment chain.
     /// For dynamic variables, this searches the dynamic parent chain.
     /// For lexical variables, this searches the lexical parent chain.

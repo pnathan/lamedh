@@ -325,6 +325,64 @@ impl Drop for DynamicGuardStack {
 }
 
 /// Build the `Native` membrane entry for a typed function `name`.
+/// Issue #216: `STORE`/`ASET` promise in-place mutation visible to every
+/// reference to an array, but the typed runtime's arena buffer is a *copy*
+/// of a `LispVal::Array` argument's contents (`Value::to_word`'s `Array`
+/// arm always allocates a fresh buffer). Without this, a `store` inside a
+/// `defun-typed` body silently never reached the caller's array, even
+/// across repeated calls on the same object. This writes each flat-scalar-
+/// array argument's post-call contents back into the *original*
+/// `LispVal::Array`'s backing `RefCell` in place (preserving its `Rc`
+/// identity — every other reference to the same array object sees the
+/// update, matching ordinary interpreted `store`'s contract).
+///
+/// Scope, matching `Jit::call_with_array_writeback`'s own documented
+/// boundary: only top-level, flat (non-nested) scalar-element arrays are
+/// written back. A `LispVal::String` passed where `(array char)` was
+/// declared type-checks the same as a genuine array here, but `String` has
+/// no interior mutability at all — skipped, not silently corrupted. If the
+/// same array object is passed as two distinct arguments, this is
+/// last-writer-wins in argument order (matching classic value-result/
+/// copy-in-copy-out semantics, not true aliasing) — a documented,
+/// intentional divergence from in-place mutation for that specific case,
+/// not a bug.
+fn apply_array_writeback(
+    args: &[LispVal],
+    updated: Vec<Option<crate::jit::Value>>,
+    env: &Shared<Environment>,
+) {
+    for (orig, upd) in args.iter().zip(updated) {
+        if let (LispVal::Array(rc), Some(crate::jit::Value::Array(items))) = (orig, upd) {
+            // The element type isn't needed here: `typed_to_lispval` only
+            // needs it to distinguish `(array char)` (-> String) from a
+            // genuine element array, and `orig` being `LispVal::Array`
+            // already proves this wasn't the string case (see
+            // `lispval_to_typed`'s `Ty::Array` arm).
+            let new_items: Vec<LispVal> = items
+                .into_iter()
+                .map(|it| match it {
+                    crate::jit::Value::Int(n) => LispVal::Number(n),
+                    crate::jit::Value::Float(f) => LispVal::Float(f),
+                    crate::jit::Value::Bool(b) => {
+                        if b {
+                            LispVal::Symbol(env.intern_symbol("T"))
+                        } else {
+                            LispVal::Nil
+                        }
+                    }
+                    crate::jit::Value::Char(b) => LispVal::Char(b),
+                    // Excluded by `is_flat_scalar_array`: only scalar
+                    // elements reach a flat array's write-back.
+                    crate::jit::Value::Array(_) | crate::jit::Value::Struct(_) => {
+                        unreachable!("flat scalar array write-back produced a compound element")
+                    }
+                })
+                .collect();
+            *rc.borrow_mut() = new_items;
+        }
+    }
+}
+
 pub(super) fn make_typed_native(name: String) -> LispVal {
     LispVal::Native(Shared::new(
         move |args: &[LispVal], env: &Shared<Environment>| -> Result<LispVal, LispError> {
@@ -342,8 +400,11 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
             for (a, ty) in args.iter().zip(ptys.iter()) {
                 vals.push(lispval_to_typed(a, ty).map_err(LispError::Generic)?);
             }
-            match env.jit_call(&name, &vals) {
-                Some(Ok(v)) => Ok(typed_to_lispval(v, &ret, env)),
+            match env.jit_call_with_array_writeback(&name, &vals) {
+                Some(Ok((v, updated))) => {
+                    apply_array_writeback(args, updated, env);
+                    Ok(typed_to_lispval(v, &ret, env))
+                }
                 Some(Err(e)) => Err(LispError::Generic(e)),
                 None => Err(LispError::Generic(format!(
                     "typed function {name} is not defined"
@@ -376,7 +437,10 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                         }
                     }
                 }
-                if fits && let Some(Ok(v)) = env.jit_call(&name, &vals) {
+                if fits
+                    && let Some(Ok((v, updated))) = env.jit_call_with_array_writeback(&name, &vals)
+                {
+                    apply_array_writeback(args, updated, env);
                     return Ok(typed_to_lispval(v, &ret, env));
                 }
             }

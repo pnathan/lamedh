@@ -482,6 +482,90 @@ fn array_out_of_bounds_is_panic_free() {
     assert_eq!(agree(&j, "oobset", &[i(9)]), i(0)); // no-op store, both 0
 }
 
+/// Issue #216: `Jit::call`'s plain path (used by `agree`/`build` throughout
+/// this file) never wrote array mutations back to the caller -- `store`
+/// only ever touched a throwaway arena copy. `call_with_array_writeback`
+/// is the fix's primitive: it must report the post-call contents of a
+/// flat-scalar-array argument, whether or not the callee mutated it.
+#[test]
+fn call_with_array_writeback_reports_post_call_array_contents() {
+    let j =
+        build(&["(defun-typed (bump int64) ((a (array int64))) (store a 0 (+ (fetch a 0) 1)))"]);
+    let (result, updated) = j
+        .call_with_array_writeback("BUMP", &[ints(&[10, 20, 30])])
+        .unwrap();
+    assert_eq!(result, i(11));
+    assert_eq!(updated, vec![Some(ints(&[11, 20, 30]))]);
+
+    // A non-array argument must report `None` (not eligible).
+    let j2 = build(&["(defun-typed (sq int64) ((x int64)) (* x x))"]);
+    let (r2, u2) = j2.call_with_array_writeback("SQ", &[i(5)]).unwrap();
+    assert_eq!(r2, i(25));
+    assert_eq!(u2, vec![None]);
+}
+
+/// Issue #216 x #133 Tier 2a: an array parameter threaded through a
+/// *cross-function tail call* must still write back the whole chain's
+/// final state, not just the outer function's own mutation. The array
+/// argument is one arena-pointer word forwarded unchanged through every
+/// tail hop (never re-copied -- only a *top-level* argument gets its own
+/// arena buffer, at `to_word`), so `g`'s mutation and `f`'s mutation land
+/// in the same buffer that `call_inner` reads back after the whole
+/// trampoline drains.
+#[test]
+fn array_writeback_sees_mutations_from_the_whole_tail_call_chain() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("G216", &[("A", Ty::Array(Box::new(Ty::Int64)))], Ty::Int64);
+    j.define(
+        &read(
+            "(defun-typed (f216 int64) ((a (array int64))) (store a 0 42) (g216 a))",
+            &env,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    j.define(
+        &read(
+            "(defun-typed (g216 int64) ((a (array int64))) (store a 1 99))",
+            &env,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (result, updated) = j
+        .call_with_array_writeback("F216", &[ints(&[1, 2, 3])])
+        .unwrap();
+    assert_eq!(result, i(99));
+    assert_eq!(updated, vec![Some(ints(&[42, 99, 3]))]);
+}
+
+/// `Jit::call_lisp` (the public embedder API, `src/jit/registry.rs`) must
+/// write a mutated array back into the caller's `LispVal::Array` in place
+/// too, mirroring the interpreter's own typed membrane
+/// (`make_typed_native`). Confirms the `Rc` identity is preserved (a second
+/// clone of the same `LispVal::Array` sees the update) rather than the
+/// argument being silently replaced with a disconnected new array.
+#[test]
+fn call_lisp_writes_back_array_mutation_in_place() {
+    let j =
+        build(&["(defun-typed (bump int64) ((a (array int64))) (store a 0 (+ (fetch a 0) 1)))"]);
+    let arr = LispVal::Array(crate::Shared::new(crate::SharedCell::new(vec![
+        LispVal::Number(10),
+        LispVal::Number(20),
+    ])));
+    let alias = arr.clone(); // same Rc -- must see the mutation too.
+    let result = j.call_lisp("BUMP", std::slice::from_ref(&arr)).unwrap();
+    assert_eq!(result, LispVal::Number(11));
+    let LispVal::Array(rc) = &alias else {
+        unreachable!()
+    };
+    assert_eq!(
+        rc.borrow().clone(),
+        vec![LispVal::Number(11), LispVal::Number(20)]
+    );
+}
+
 #[test]
 fn array_param_element_inferred_from_body() {
     // `a` is declared with the bare `array` keyword; its element type is
