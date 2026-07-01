@@ -109,12 +109,23 @@ fn empty_form_list_is_pure() {
     assert_eq!(eval_line("(body-all-pure-p nil)", &env), "T");
 }
 
-// ── defun-check-purity! integration tests ───────────────────────────────────
+// ── pure-p lazy query integration tests ─────────────────────────────────────
+//
+// Purity is now computed lazily on first query via (pure-p name) rather than
+// eagerly at defun time.  The "pure-checked" plist flag is cleared on every
+// redefinition so stale caches cannot accumulate.  Tests below verify:
+//   • pure functions return :PURE from pure-p
+//   • the "pure" plist property is also set after a lazy query
+//   • impure functions return () from pure-p (and no "pure" plist property)
+//   • redefining a function invalidates the cache so the next query is fresh
 
 #[test]
 fn pure_defun_annotated_with_pure_property() {
     let env = env_with_stdlib();
     eval_line("(defun sq (x) (* x x))", &env);
+    // Trigger lazy purity computation
+    assert_eq!(eval_line("(pure-p 'sq)", &env), ":PURE");
+    // The plist is also populated after the lazy query
     assert_eq!(eval_line("(getp 'sq \"pure\")", &env), ":PURE");
 }
 
@@ -122,6 +133,7 @@ fn pure_defun_annotated_with_pure_property() {
 fn defun_with_docstring_pure_annotated() {
     let env = env_with_stdlib();
     eval_line("(defun sq2 (x) \"Square of x.\" (* x x))", &env);
+    assert_eq!(eval_line("(pure-p 'sq2)", &env), ":PURE");
     assert_eq!(eval_line("(getp 'sq2 \"pure\")", &env), ":PURE");
 }
 
@@ -129,6 +141,9 @@ fn defun_with_docstring_pure_annotated() {
 fn impure_defun_not_annotated() {
     let env = env_with_stdlib();
     eval_line("(defun inc! (x) (setq x (+ x 1)) x)", &env);
+    // Lazy query returns () for impure functions
+    assert_eq!(eval_line("(pure-p 'inc!)", &env), "()");
+    // The "pure" property is absent (removed) for impure functions
     assert_eq!(eval_line("(getp 'inc! \"pure\")", &env), "()");
 }
 
@@ -136,6 +151,7 @@ fn impure_defun_not_annotated() {
 fn defun_with_print_not_annotated() {
     let env = env_with_stdlib();
     eval_line("(defun greet (name) (print name))", &env);
+    assert_eq!(eval_line("(pure-p 'greet)", &env), "()");
     assert_eq!(eval_line("(getp 'greet \"pure\")", &env), "()");
 }
 
@@ -175,16 +191,20 @@ fn pure_function_remains_callable_after_check() {
     let env = env_with_stdlib();
     eval_line("(defun add3 (a b c) (+ a b c))", &env);
     assert_eq!(eval_line("(add3 1 2 3)", &env), "6");
+    // Lazy purity query; result is cached for subsequent calls
+    assert_eq!(eval_line("(pure-p 'add3)", &env), ":PURE");
     assert_eq!(eval_line("(getp 'add3 \"pure\")", &env), ":PURE");
 }
 
 #[test]
 fn redefined_impure_clears_pure_property() {
     let env = env_with_stdlib();
-    // First define as pure
+    // First definition is pure; lazy query confirms.
     eval_line("(defun toggled (x) (* x 2))", &env);
-    assert_eq!(eval_line("(getp 'toggled \"pure\")", &env), ":PURE");
-    // Redefine as impure: checker should clear the "pure" property
+    assert_eq!(eval_line("(pure-p 'toggled)", &env), ":PURE");
+    // Redefine as impure: DEFUN clears the "pure-checked" cache flag.
+    // The next pure-p call must re-analyse via see-source and return ().
     eval_line("(defun toggled (x) (print x))", &env);
+    assert_eq!(eval_line("(pure-p 'toggled)", &env), "()");
     assert_eq!(eval_line("(getp 'toggled \"pure\")", &env), "()");
 }

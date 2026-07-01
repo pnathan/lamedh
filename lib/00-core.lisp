@@ -8,32 +8,32 @@
 ;; exactly as-is. (Auto-optimizing *every* defun is deliberately not the default:
 ;; it would rebind the name to a native membrane, which changes introspection
 ;; (`see-source`) and the numeric edge semantics (overflow / div-by-zero, #67).)
+;;
+;; Purity and call-graph analyses are computed LAZILY on first query (via
+;; `pure-p` and `call-graph-callees`/`call-graph-callers`) rather than eagerly
+;; at definition time.  This avoids multi-second startup costs during stdlib
+;; loading.  The purity cache is invalidated on every redefinition so queries
+;; always reflect the current body.  The call-graph pending list ($cg-pending)
+;; accumulates names for `call-graph-callers` to flush on demand.
 (defmacro defun (name params &rest body)
   ;; Split off an optional leading docstring so body-forms holds only code.
   (let* ((has-doc     (stringp (car body)))
          (doc         (if has-doc (car body) nil))
          (body-forms  (if has-doc (cdr body) body))
          (lambda-expr (cons 'lambda (cons params body-forms))))
-    ;; After binding the function, run any registered post-defun hooks.
-    ;; Each hook is guarded by BOUNDP so early stdlib files (00-10) load safely
-    ;; before the hooks are defined in 11-optimizer-vau.lisp / 19-call-graph.lisp.
     (if has-doc
       `(progn
          (def ,name ,lambda-expr ,doc)
-         (if (boundp 'defun-check-purity!)
-             (defun-check-purity! ',name ',body-forms)
-             nil)
-         (if (boundp 'defun-update-call-graph!)
-             (defun-update-call-graph! ',name ',params ',body-forms)
+         (remprop ',name "pure-checked")
+         (if (boundp '$cg-pending)
+             (setq $cg-pending (cons ',name $cg-pending))
              nil)
          ',name)
       `(progn
          (def ,name ,lambda-expr)
-         (if (boundp 'defun-check-purity!)
-             (defun-check-purity! ',name ',body-forms)
-             nil)
-         (if (boundp 'defun-update-call-graph!)
-             (defun-update-call-graph! ',name ',params ',body-forms)
+         (remprop ',name "pure-checked")
+         (if (boundp '$cg-pending)
+             (setq $cg-pending (cons ',name $cg-pending))
              nil)
          ',name))))
 

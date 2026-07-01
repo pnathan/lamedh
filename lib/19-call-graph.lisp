@@ -1,14 +1,17 @@
 ;;; Call-graph analysis pass.
 ;;;
-;;; Builds an incremental caller→callees map from DEFUN definitions and
-;;; stores it in the global hash table $CALL-GRAPH (symbol → list-of-symbols).
+;;; Builds a caller→callees map from DEFUN definitions and stores it in the
+;;; global hash table $CALL-GRAPH (symbol → list-of-symbols).
 ;;;
-;;; The DEFUN macro in 00-core.lisp calls defun-update-call-graph! after each
-;;; definition (guarded by boundp so early stdlib files 00–18 are safe — they
-;;; load before this file).  Functions defined after this file is loaded are
-;;; tracked automatically.  For functions defined before (e.g. all stdlib
-;;; helpers), use call-graph-add! or call-graph-add-many! to retroactively
-;;; populate entries via see-source.
+;;; The analysis is now LAZY: DEFUN no longer triggers eager body-walking.
+;;; Instead, each DEFUN call pushes the function name onto $CG-PENDING.
+;;; Query functions populate entries on demand:
+;;;   - call-graph-callees / call-graph-has-p   populate the single queried name
+;;;   - call-graph-callers                       flushes all $CG-PENDING names first
+;;;     (so reverse lookup always sees every function defined via DEFUN)
+;;;
+;;; For functions defined before this file was loaded (e.g. stdlib helpers in
+;;; files 00–18), use call-graph-add! or call-graph-add-many! explicitly.
 ;;;
 ;;; Algorithm: walk each function body collecting operator-position symbols,
 ;;; skipping:
@@ -19,19 +22,25 @@
 ;;;
 ;;; Entry points:
 ;;;   $CALL-GRAPH                         -- the global forward call-graph hash table
-;;;   (defun-update-call-graph! n p body) -- called by DEFUN hook
-;;;   (call-graph-callees name)           -- list of functions called by NAME
-;;;   (call-graph-callers name)           -- list of functions that call NAME
-;;;   (call-graph-has-p name)             -- T if NAME is in the graph
+;;;   $CG-PENDING                         -- names awaiting call-graph population
+;;;   (defun-update-call-graph! n p body) -- eagerly add an entry (still callable)
+;;;   (call-graph-callees name)           -- callees of NAME; lazy-populates NAME
+;;;   (call-graph-callers name)           -- callers of NAME; flushes $CG-PENDING first
+;;;   (call-graph-has-p name)             -- T if NAME is (or can be) in the graph
 ;;;   (call-graph-all-known)              -- list of all recorded function names
 ;;;   (call-graph-add! name)              -- retroactively add NAME via see-source
 ;;;   (call-graph-add-many! names)        -- retroactively add a list of names
+;;;   (cg-flush-pending!)                 -- flush $CG-PENDING into the graph
 
 ;;; ─── Global store ─────────────────────────────────────────────────────────
 
 ;;; Forward call graph: maps each analyzed function name (symbol) to the list
 ;;; of operator-position symbols it calls (may include builtins/special forms).
 (def $call-graph (make-hash-table))
+
+;;; Pending list: function names pushed by DEFUN that have not yet been added
+;;; to $CALL-GRAPH.  Flushed by call-graph-callers before scanning.
+(def $cg-pending nil)
 
 ;;; ─── Body-walking helpers ─────────────────────────────────────────────────
 
@@ -120,30 +129,44 @@
             (new-locals (adjoin var locals)))
        (cg-collect-let*-bindings (cdr bindings) body new-locals r1)))))
 
-;;; ─── Update hook (called by DEFUN macro) ─────────────────────────────────
+;;; ─── Update hook ──────────────────────────────────────────────────────────
 
 (defun defun-update-call-graph! (name params body-forms)
   "Record in $CALL-GRAPH the set of operator symbols called by NAME.
    PARAMS is the parameter list (seeds the initial locals set so that
    parameter names are not mistakenly classified as callee function names).
-   Called automatically from the DEFUN macro in 00-core.lisp once this
-   function is bound (i.e. after this file is loaded)."
+   No longer called automatically from DEFUN (call-graph is now lazy).
+   Still callable directly for forced/retroactive population."
   (let* ((initial-locals (if params params nil))
          (callees        (cg-collect-forms body-forms initial-locals nil)))
     (set-bang $call-graph name callees)
     name))
 
-;;; ─── Query helpers ────────────────────────────────────────────────────────
+;;; ─── Pending-list flush ───────────────────────────────────────────────────
+
+(defun cg-flush-pending! ()
+  "Add all functions in $CG-PENDING to $CALL-GRAPH, then clear the list.
+   Called by call-graph-callers before scanning so every function defined
+   via DEFUN is visible to the reverse lookup."
+  (call-graph-add-many! $cg-pending)
+  (setq $cg-pending nil))
+
+;;; ─── Query helpers (lazy) ─────────────────────────────────────────────────
 
 (defun call-graph-callees (name)
-  "Return the list of functions called by NAME, or NIL if NAME is not in the graph."
-  (gethash-or $call-graph name nil))
+  "Return the callees of NAME, lazily populating the graph entry if absent."
+  (if (has-key-p $call-graph name)
+      (gethash-or $call-graph name nil)
+      (progn
+        (call-graph-add! name)
+        (gethash-or $call-graph name nil))))
 
 (defun call-graph-callers (name)
-  "Return the list of functions that call NAME (computed by scanning $CALL-GRAPH).
-   O(n) in the number of functions in the graph; intended for one-shot analysis
-   passes, not hot paths.
-   Uses WHILE for iteration to avoid deep Lisp recursion over large graphs."
+  "Return the list of functions that call NAME.
+   Flushes $CG-PENDING first so all DEFUN-defined functions are in the graph.
+   O(n) in the graph size; intended for one-shot passes, not hot paths."
+  ;; Ensure all pending (DEFUN-defined) functions are analysed before scanning.
+  (cg-flush-pending!)
   (let ((result nil)
         (alist (hash->alist $call-graph)))
     (while alist
@@ -155,8 +178,11 @@
     result))
 
 (defun call-graph-has-p (name)
-  "Return T if NAME appears as a key in $CALL-GRAPH (has been analyzed)."
-  (has-key-p $call-graph name))
+  "Return T if NAME is (or can be added to) $CALL-GRAPH.
+   Lazily populates the entry via see-source if NAME is not yet in the graph."
+  (if (has-key-p $call-graph name)
+      t
+      (not (null (call-graph-add! name)))))
 
 (defun call-graph-all-known ()
   "Return the list of all function names recorded in $CALL-GRAPH."

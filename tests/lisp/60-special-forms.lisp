@@ -35,17 +35,17 @@
 
 (deftest sf-macroexpand
   ;; MACROEXPAND returns the expansion of a macro call without evaluating it.
-  ;; DEFUN wraps DEF in a PROGN that runs both the purity-checker hook and the
-  ;; call-graph hook (each guarded by BOUNDP, safe before the hooks are loaded).
+  ;; DEFUN now produces a minimal expansion: bind the function, invalidate the
+  ;; lazy purity cache (cheap remprop), push the name onto the call-graph
+  ;; pending list (guarded by BOUNDP, nil before 19-call-graph.lisp loads),
+  ;; and return the name.  No body-traversal at definition time.
   (assert-equal
     (macroexpand '(defun foo (x) (+ x 1)))
     '(PROGN
        (DEF FOO (LAMBDA (X) (+ X 1)))
-       (IF (BOUNDP (QUOTE DEFUN-CHECK-PURITY!))
-           (DEFUN-CHECK-PURITY! (QUOTE FOO) (QUOTE ((+ X 1))))
-           ())
-       (IF (BOUNDP (QUOTE DEFUN-UPDATE-CALL-GRAPH!))
-           (DEFUN-UPDATE-CALL-GRAPH! (QUOTE FOO) (QUOTE (X)) (QUOTE ((+ X 1))))
+       (REMPROP (QUOTE FOO) "pure-checked")
+       (IF (BOUNDP (QUOTE $CG-PENDING))
+           (SETQ $CG-PENDING (CONS (QUOTE FOO) $CG-PENDING))
            ())
        (QUOTE FOO))))
 
