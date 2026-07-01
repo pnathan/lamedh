@@ -1,0 +1,413 @@
+//! Compile → execute intermediate representation (Milestone 1).
+//!
+//! [`compile`] translates a lambda body into a [`Code`] IR tree once at
+//! definition time.  [`exec`] runs it with an internal TCO trampoline that
+//! preserves tail-call optimisation for chains of compiled lambdas.
+//!
+//! **Fallback rule**: anything the compiler does not yet handle is wrapped in
+//! [`crate::Code::Interp`], which delegates transparently to the existing
+//! tree-walking `eval`.  Correctness is therefore unconditional — a wider
+//! `Interp` coverage just gives up some speed, never correctness.
+
+use super::*;
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Parse the CDR chain of a Lisp form into a fixed-length `Vec`, or return
+/// `None` on error.  Used where falling back to `Code::Interp` is the caller's
+/// responsibility.
+fn safe_list_to_vec(list: &LispVal) -> Option<Vec<LispVal>> {
+    list_to_vec(list).ok()
+}
+
+// ─── compile ─────────────────────────────────────────────────────────────────
+
+/// Compile a Lisp form into a [`Code`] IR node wrapped in a shared pointer.
+///
+/// Conservative: any form or pattern that isn't explicitly recognised falls
+/// through to [`crate::Code::Interp`].
+pub(super) fn compile(form: &LispVal) -> Shared<crate::Code> {
+    Shared::new(compile_inner(form))
+}
+
+fn compile_inner(form: &LispVal) -> crate::Code {
+    use crate::Code;
+    match form {
+        // Self-evaluating atoms
+        LispVal::Nil
+        | LispVal::Number(_)
+        | LispVal::Float(_)
+        | LispVal::String(_)
+        | LispVal::Char(_) => Code::Const(form.clone()),
+
+        LispVal::Symbol(s) => {
+            // Read the cached flags and drop the borrow before doing anything
+            // that might re-borrow the same symbol (issue #156 pattern).
+            let is_keyword = s.borrow().is_keyword;
+            let has_special = s.borrow().special_form.is_some();
+            if is_keyword {
+                // Keywords self-evaluate.
+                Code::Const(form.clone())
+            } else if has_special {
+                // A bare special-form name used as a value — very rare, fall back.
+                Code::Interp(form.clone())
+            } else {
+                // Ordinary symbol → variable reference.
+                Code::Var(s.clone())
+            }
+        }
+
+        LispVal::Cons { car, cdr } => compile_cons(car, cdr, form),
+
+        // Lambdas, builtins, etc. that appear as source forms are unusual;
+        // the tree-walker handles them correctly so just fall back.
+        _ => crate::Code::Interp(form.clone()),
+    }
+}
+
+/// Compile a cons-cell form `(car . rest)`.
+fn compile_cons(car: &Shared<LispVal>, rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    match car.as_ref() {
+        LispVal::Symbol(s) => {
+            // Read the special-form tag and immediately drop the borrow so
+            // that any subsequent code can safely re-borrow the same symbol.
+            let sf = s.borrow().special_form;
+            match sf {
+                Some(SpecialForm::Quote) => {
+                    // (quote datum)
+                    if let LispVal::Cons { car: datum, .. } = rest.as_ref() {
+                        Code::Const(datum.as_ref().clone())
+                    } else {
+                        Code::Interp(form.clone())
+                    }
+                }
+                Some(SpecialForm::If) => compile_if(rest, form),
+                Some(SpecialForm::Progn) => compile_progn(rest, form),
+                Some(SpecialForm::Cond) => compile_cond(rest, form),
+                Some(SpecialForm::Let) => compile_let(rest, form),
+                Some(_) => {
+                    // All other special forms (setq, lambda, defmacro, …):
+                    // fall back to the tree-walker.
+                    Code::Interp(form.clone())
+                }
+                None => {
+                    // Ordinary symbol in head position → function call.
+                    compile_call(car.as_ref(), rest, form)
+                }
+            }
+        }
+        // Non-symbol head (e.g. a lambda literal in call position): compile
+        // as a call — exec will evaluate it and apply the result.
+        other => compile_call(other, rest, form),
+    }
+}
+
+/// Compile `(if cond then [else])`.
+fn compile_if(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let forms = match safe_list_to_vec(rest) {
+        Some(v) => v,
+        None => return Code::Interp(form.clone()),
+    };
+    match forms.len() {
+        2 => {
+            let cond = compile(&forms[0]);
+            let then = compile(&forms[1]);
+            let els = Shared::new(Code::Const(LispVal::Nil));
+            Code::If(cond, then, els)
+        }
+        3 => {
+            let cond = compile(&forms[0]);
+            let then = compile(&forms[1]);
+            let els = compile(&forms[2]);
+            Code::If(cond, then, els)
+        }
+        // Wrong number of sub-forms — tree-walker will give the right error.
+        _ => Code::Interp(form.clone()),
+    }
+}
+
+/// Compile `(progn f1 … fn)`.
+fn compile_progn(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let forms = match safe_list_to_vec(rest) {
+        Some(v) => v,
+        None => return Code::Interp(form.clone()),
+    };
+    if forms.is_empty() {
+        Code::Const(LispVal::Nil)
+    } else {
+        Code::Seq(forms.iter().map(compile).collect())
+    }
+}
+
+/// Compile `(cond (t1 r1…) (t2 r2…) …)` to a chain of nested `Code::If` nodes.
+///
+/// Each clause `(condition result…)` becomes one level of `Code::If`.
+/// Clauses with a single form `(condition)` — which return the condition value
+/// when truthy — cannot be compiled without evaluating the condition twice, so
+/// the whole COND form falls back to `Code::Interp` if any such clause is
+/// encountered.
+fn compile_cond(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    let clauses = match safe_list_to_vec(rest) {
+        Some(v) => v,
+        None => return crate::Code::Interp(form.clone()),
+    };
+    compile_cond_clauses(&clauses, form)
+}
+
+fn compile_cond_clauses(clauses: &[LispVal], form: &LispVal) -> crate::Code {
+    use crate::Code;
+    if clauses.is_empty() {
+        // No matching clause → NIL (same as the tree-walker).
+        return Code::Const(LispVal::Nil);
+    }
+
+    let clause_forms = match safe_list_to_vec(&clauses[0]) {
+        Some(v) if !v.is_empty() => v,
+        _ => return Code::Interp(form.clone()),
+    };
+
+    // Clause `(test)` with no result: return the test value when truthy.
+    // We'd have to evaluate the condition twice (once to test, once to return)
+    // or introduce a temporary binding; fall back to the tree-walker instead.
+    if clause_forms.len() == 1 {
+        return Code::Interp(form.clone());
+    }
+
+    let cond_code = compile(&clause_forms[0]);
+    // Result is either a single form or a sequence (last in tail position).
+    let result_code = if clause_forms.len() == 2 {
+        compile(&clause_forms[1])
+    } else {
+        Shared::new(Code::Seq(clause_forms[1..].iter().map(compile).collect()))
+    };
+    let else_code = Shared::new(compile_cond_clauses(&clauses[1..], form));
+
+    Code::If(cond_code, result_code, else_code)
+}
+
+/// Compile `(let ((v1 e1) …) body…)` for lexical (non-dynamic) variables.
+///
+/// Init expressions are evaluated in the outer environment (standard `let`
+/// semantics).  Any binding that refers to a dynamic variable causes the whole
+/// form to fall back to `Code::Interp` so the tree-walker's `DynamicBinding`
+/// RAII guards are applied correctly.
+fn compile_let(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+
+    let args = match safe_list_to_vec(rest) {
+        Some(v) if v.len() >= 2 => v,
+        // Missing binding list or body → fall back (tree-walker gives a good error).
+        _ => return Code::Interp(form.clone()),
+    };
+
+    let binding_forms = match safe_list_to_vec(&args[0]) {
+        Some(v) => v,
+        None => return Code::Interp(form.clone()),
+    };
+
+    let mut bindings: Vec<(u32, Shared<Code>)> = Vec::with_capacity(binding_forms.len());
+    for binding in &binding_forms {
+        let pair = match safe_list_to_vec(binding) {
+            Some(v) if v.len() == 2 => v,
+            _ => return Code::Interp(form.clone()),
+        };
+        if let LispVal::Symbol(s) = &pair[0] {
+            let sb = s.borrow();
+            if sb.is_dynamic {
+                // Dynamic bindings require RAII guards — fall back.
+                return Code::Interp(form.clone());
+            }
+            let id = sb.id;
+            drop(sb);
+            bindings.push((id, compile(&pair[1])));
+        } else {
+            return Code::Interp(form.clone());
+        }
+    }
+
+    // Body: single form is compiled directly; multiple forms become a Seq so
+    // the last is in tail position.
+    let body = if args.len() == 2 {
+        compile(&args[1])
+    } else {
+        Shared::new(Code::Seq(args[1..].iter().map(compile).collect()))
+    };
+
+    Code::Let { bindings, body }
+}
+
+/// Compile a generic function call `(head arg1 … argN)`.
+fn compile_call(head: &LispVal, rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    let arg_forms = match safe_list_to_vec(rest) {
+        Some(v) => v,
+        // Dotted argument list — the tree-walker will signal the right error.
+        None => return Code::Interp(form.clone()),
+    };
+    let callee = compile(head);
+    let args = arg_forms.iter().map(compile).collect();
+    // Store the original form so exec can fall back to eval when the callee
+    // turns out to be a macro, fexpr, or vau (which need unevaluated args).
+    Code::Call {
+        callee,
+        args,
+        original: form.clone(),
+    }
+}
+
+// ─── exec ────────────────────────────────────────────────────────────────────
+
+/// Internal step result for the exec trampoline.
+enum ExecStep {
+    /// Evaluation is complete.
+    Done(Result<LispVal, LispError>),
+    /// Tail call: continue with this code in this environment.
+    Continue(Shared<crate::Code>, Shared<Environment>),
+}
+
+/// Execute a compiled [`Code`] tree with a TCO trampoline.
+///
+/// Each call to `exec` counts as one depth frame (via [`DepthGuard`]) so that
+/// non-tail-recursive compiled lambdas are subject to the same recursion-depth
+/// limit as the tree-walker.  TCO tail calls — the `Continue` loop — do *not*
+/// add additional depth because they stay inside the same `exec` invocation.
+///
+/// Tail positions (`If` branches, last form of `Seq`, compiled-lambda `Call`)
+/// update `current`/`current_env` and loop rather than pushing a new Rust
+/// frame.  Non-tail sub-expressions call `exec` recursively (a new depth
+/// frame each time) or fall back to the tree-walking [`eval`].
+pub(super) fn exec(
+    code: &Shared<crate::Code>,
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    // Each exec invocation counts as one recursion level so that non-tail
+    // compiled calls are bounded by the same limit as tree-walked eval frames.
+    // TCO tail iterations (Continue loop below) do NOT add further depth.
+    let _depth_guard = DepthGuard::enter()?;
+
+    let mut current: Shared<crate::Code> = code.clone();
+    let mut current_env: Shared<Environment> = env.clone();
+
+    loop {
+        // Evaluate one step.  The borrows of `current` and `current_env` are
+        // confined to this block so they are dropped before the reassignment
+        // below, mirroring the `eval_impl` trampoline pattern.
+        let step: ExecStep = {
+            let c = current.as_ref();
+            let e = &current_env;
+            exec_step(c, e)
+        }?;
+
+        match step {
+            ExecStep::Done(result) => return result,
+            ExecStep::Continue(new_code, new_env) => {
+                current = new_code;
+                current_env = new_env;
+            }
+        }
+    }
+}
+
+/// Perform one exec trampoline step.
+fn exec_step(code: &crate::Code, env: &Shared<Environment>) -> Result<ExecStep, LispError> {
+    use crate::Code;
+    match code {
+        Code::Const(v) => Ok(ExecStep::Done(Ok(v.clone()))),
+
+        Code::Var(sym) => Ok(ExecStep::Done(env.resolve(sym).ok_or_else(|| {
+            LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
+        }))),
+
+        // Fallback: run the original AST form through the full tree-walker.
+        Code::Interp(form) => Ok(ExecStep::Done(eval(form, env))),
+
+        Code::If(cond, then, els) => {
+            // Condition is non-tail — evaluate it via exec so compiled
+            // sub-expressions still benefit from the fast path.
+            let test = exec(cond, env)?;
+            let branch = if test.is_truthy() {
+                then.clone()
+            } else {
+                els.clone()
+            };
+            // Then/else branch is tail — loop.
+            Ok(ExecStep::Continue(branch, env.clone()))
+        }
+
+        Code::Seq(forms) => {
+            match forms.len() {
+                0 => Ok(ExecStep::Done(Ok(LispVal::Nil))),
+                1 => {
+                    // Single form — it is the tail.
+                    Ok(ExecStep::Continue(forms[0].clone(), env.clone()))
+                }
+                n => {
+                    // Evaluate all but the last (non-tail).
+                    for f in &forms[..n - 1] {
+                        exec(f, env)?;
+                    }
+                    // Last form is the tail.
+                    Ok(ExecStep::Continue(forms[n - 1].clone(), env.clone()))
+                }
+            }
+        }
+
+        Code::Let { bindings, body } => {
+            // Evaluate all init expressions in the *outer* env (standard let
+            // semantics: bindings do not see each other).
+            let let_env = Environment::new_child(env);
+            for (id, init_code) in bindings {
+                let val = exec(init_code, env)?;
+                let_env.set_id(*id, val);
+            }
+            // Body is in tail position — loop with the child env.
+            Ok(ExecStep::Continue(body.clone(), let_env))
+        }
+
+        Code::Call {
+            callee,
+            args,
+            original,
+        } => {
+            // Evaluate callee (non-tail).
+            let func = exec(callee, env)?;
+
+            // Macros, fexprs, and vau operatives need their arguments
+            // *unevaluated*.  Delegate the whole call back to the tree-walker
+            // using the stored original AST form.
+            if matches!(
+                func,
+                LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
+            ) {
+                return Ok(ExecStep::Done(eval(original, env)));
+            }
+
+            // Evaluate all arguments (non-tail).
+            let mut eval_args: Vec<LispVal> = Vec::with_capacity(args.len());
+            for a in args {
+                eval_args.push(exec(a, env)?);
+            }
+
+            // TCO for non-variadic compiled lambdas: skip the Rust frame
+            // entirely by setting up the child env and looping.
+            if let LispVal::Lambda(ref lambda) = func
+                && lambda.rest_param.is_none()
+                && let Some(ref compiled_body) = lambda.compiled
+                && lambda.params.len() == eval_args.len()
+            {
+                let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+                for (id, val) in lambda.param_ids.iter().zip(eval_args) {
+                    new_env.set_id(*id, val);
+                }
+                return Ok(ExecStep::Continue(compiled_body.clone(), new_env));
+            }
+
+            // Fall back to `apply` for builtins, natives, uncompiled lambdas,
+            // variadic lambdas, and arity mismatches.
+            Ok(ExecStep::Done(apply(&func, &eval_args, env)))
+        }
+    }
+}

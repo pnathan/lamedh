@@ -369,6 +369,13 @@ fn eval_application(
                 new_env.set_id(*id, arg);
             }
         }
+        // If a compiled body is available, run it through exec (which has its
+        // own TCO trampoline for chains of compiled lambdas).  Otherwise fall
+        // back to the standard TailCall so the outer trampoline handles TCO
+        // for the tree-walking path.
+        if let Some(compiled) = &lambda.compiled {
+            return Ok(TcoStep::Done(exec(compiled, &new_env)));
+        }
         return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
     }
 

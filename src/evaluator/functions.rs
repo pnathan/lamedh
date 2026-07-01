@@ -44,6 +44,8 @@ pub(super) fn make_lambda(
     let rest_param_id: Option<u32> = rest_param
         .as_ref()
         .map(|name| env.intern_symbol(name).borrow().id);
+    // Compile the body once at definition time for the fast execute path.
+    let compiled_body = super::compile::compile(body);
     Ok(LispVal::Lambda(Box::new(crate::Lambda {
         params: params_vec,
         rest_param,
@@ -51,6 +53,7 @@ pub(super) fn make_lambda(
         env: env.clone(),
         param_ids,
         rest_param_id,
+        compiled: Some(compiled_body),
     })))
 }
 
