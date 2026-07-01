@@ -124,8 +124,17 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
-        // `+` and `*` support 0–N args; `-`, `/`, `MOD` require at least 1.
-        // All forms with ≥2 args left-fold into binary nodes.
+        // `+` and `*` support 0–N args; `-` requires at least 1 (unary
+        // negate, or N-ary left-fold). `/` and `MOD` are strictly BINARY in
+        // the evaluator (`BuiltinFunc::Divide` in `apply_math_op`,
+        // `builtins_core.rs`, and `mod` in `builtins_extra.rs` both reject
+        // anything but exactly 2 arguments — no unary reciprocal, no
+        // variadic chain division/modulus) and must be rejected at every
+        // other arity here too, rather than silently accepted with a
+        // made-up unary/N-ary meaning the evaluator doesn't have (issue
+        // #209 — the same "checker/compiler disagrees with the evaluator on
+        // what's valid" bug class as #202, but in the opposite,
+        // over-permissive direction).
         let bop = match op {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
@@ -133,7 +142,13 @@ impl Cx<'_> {
             "/" => BinOp::Div,
             _ => BinOp::Mod,
         };
-        if matches!(bop, BinOp::Sub | BinOp::Div | BinOp::Mod) && args.is_empty() {
+        if matches!(bop, BinOp::Div | BinOp::Mod) && args.len() != 2 {
+            return Err(format!(
+                "`{op}` requires exactly 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        if matches!(bop, BinOp::Sub) && args.is_empty() {
             return Err(format!("`{op}` requires at least 1 argument"));
         }
 
@@ -146,7 +161,8 @@ impl Cx<'_> {
             return Ok((Core::LitI(identity), Ty::Int64));
         }
 
-        // 1-arg: unary identity — (+ x) = x, (* x) = x, (- x) = (- 0 x)
+        // 1-arg: unary identity — (+ x) = x, (* x) = x, (- x) = (- 0 x).
+        // (`/`/`MOD` can never reach here: pinned to exactly 2 args above.)
         if args.len() == 1 {
             let (a, ta) = self.elab(&args[0], scope, max)?;
             if self.checking {
@@ -165,11 +181,13 @@ impl Cx<'_> {
                     rt,
                 ));
             }
-            // (+ x), (* x), (/ x), (mod x) — just return the arg
+            // (+ x), (* x) — just return the arg
             return Ok((a, ta));
         }
 
-        // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp tree.
+        // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp
+        // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
+        // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
         for arg in &args[1..] {
             let (b, tb) = self.elab(arg, scope, max)?;

@@ -339,6 +339,46 @@ fn check_type_accepts_variadic_and_or() {
     }
 }
 
+#[test]
+fn check_type_rejects_wrong_arity_div_and_mod() {
+    // Issue #209: unlike AND/OR (#202, genuinely variadic in the evaluator),
+    // `/` and `mod` are strictly binary in the evaluator -- `(/ 5)` and
+    // `(/ 1 2 3)` are runtime errors there too. So, unlike #202, the checker
+    // rejecting these IS correct: they are not "a program the interpreter
+    // runs," so rejecting them doesn't violate the gradual-typing contract.
+    let env = Environment::with_stdlib();
+    eval_line("(defun nullary-div () (/))", &env);
+    eval_line("(defun unary-div (a) (/ a))", &env);
+    eval_line("(defun triple-div (a b c) (/ a b c))", &env);
+    eval_line("(defun nullary-mod () (mod))", &env);
+    eval_line("(defun unary-mod (a) (mod a))", &env);
+    eval_line("(defun triple-mod (a b c) (mod a b c))", &env);
+    for f in [
+        "nullary-div",
+        "unary-div",
+        "triple-div",
+        "nullary-mod",
+        "unary-mod",
+        "triple-mod",
+    ] {
+        let out = eval_line(&format!("(check-type {f})"), &env);
+        assert!(
+            out.to_lowercase().contains("type error") && out.contains("exactly 2"),
+            "{f} must be a type error naming the arity mismatch, got: {out}"
+        );
+    }
+    // Normal 2-arg / and mod must still check cleanly, in checker mode too.
+    eval_line("(defun ok-div (a b) (/ a b))", &env);
+    eval_line("(defun ok-mod (a b) (mod a b))", &env);
+    for f in ["ok-div", "ok-mod"] {
+        let out = eval_line(&format!("(check-type {f})"), &env);
+        assert!(
+            !out.to_lowercase().contains("type error"),
+            "ordinary 2-arg {f} must not be a type error, got: {out}"
+        );
+    }
+}
+
 // --- stage 4: unified check+compile reporting; stage 5: control-flow ---------
 
 #[test]
