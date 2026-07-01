@@ -98,6 +98,7 @@ unsafe extern "C" fn jit_trampoline(
 /// reallocation) and across redefinition (the word is updated in place).
 pub fn compile_native(
     core: &Core,
+    self_id: usize,
     n_params: usize,
     n_slots: usize,
     cell_addrs: &[usize],
@@ -174,6 +175,15 @@ pub fn compile_native(
             b.ins().stack_store(v, env_slot, (i * 8) as i32);
         }
 
+        // Loop header for self tail calls (issue #133 Tier 1): the prologue
+        // falls through to it once; a self tail call elsewhere in the body
+        // stores its new argument values into `env_slot` and jumps back here
+        // instead of recursing. Not sealed until the whole body is emitted —
+        // every back-edge into it must be known first.
+        let header = b.create_block();
+        b.ins().jump(header, &[]);
+        b.switch_to_block(header);
+
         let mut e = Emitter {
             b: &mut b,
             ptr,
@@ -183,9 +193,22 @@ pub fn compile_native(
             alloc_ref,
             callee_sig,
             cell_addrs,
+            self_id,
+            header,
         };
-        let result = e.emit(core);
-        b.ins().return_(&[result]);
+        match e.emit(core, true) {
+            Emitted::Value(result) => {
+                b.ins().return_(&[result]);
+            }
+            Emitted::TailLooped => {
+                // The whole body is an unconditional self tail call with no
+                // reachable base case (e.g. `(defun-typed (f int64) () (f))`)
+                // — every path already jumped back to `header`; there is no
+                // value to return from here. A user-level infinite loop, not
+                // a compiler error.
+            }
+        }
+        b.seal_block(header);
         b.finalize();
     }
 
@@ -215,6 +238,23 @@ struct Emitter<'a, 'b, 'c> {
     alloc_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
+    /// This function's own registry id — a `Call(id, ..)` reached in tail
+    /// position with `id == self_id` is a self tail call (issue #133 Tier 1).
+    self_id: usize,
+    /// The loop header block a self tail call jumps back to, after storing
+    /// its new argument values into `env_slot`. Not sealed until the whole
+    /// body has been emitted (every back-edge must be known first).
+    header: cranelift_codegen::ir::Block,
+}
+
+/// Outcome of emitting one [`Core`] node. Mirrors [`crate::jit::runtime::TailStep`]
+/// for the native backend: a self tail call terminates its current block
+/// with a jump to the loop header instead of producing a value, so callers
+/// in a tail-propagating position must check for this and skip any further
+/// store/jump they would otherwise add to that (now-terminated) block.
+enum Emitted {
+    Value(Value),
+    TailLooped,
 }
 
 impl Emitter<'_, '_, '_> {
@@ -228,23 +268,40 @@ impl Emitter<'_, '_, '_> {
         self.b.ins().icmp(IntCC::NotEqual, w, z)
     }
 
-    fn emit(&mut self, core: &Core) -> Value {
+    /// Emit `core` in a definitely-non-tail context: always produces a
+    /// value (a self tail call can only arise from a tail-position `emit`
+    /// call, never from here).
+    fn emit_value(&mut self, core: &Core) -> Value {
+        match self.emit(core, false) {
+            Emitted::Value(v) => v,
+            Emitted::TailLooped => unreachable!("non-tail context cannot tail-loop"),
+        }
+    }
+
+    /// Emit `core`, which is in tail position of the function body iff
+    /// `tail` is set. Tail status only propagates through the constructs
+    /// whose value is *exactly* their tail sub-node's value with no further
+    /// transformation (`if`/`let`/`and`/`or`/`seq`); everything else is
+    /// evaluated via [`Self::emit_value`] and wrapped as an already-produced
+    /// value.
+    fn emit(&mut self, core: &Core, tail: bool) -> Emitted {
         match core {
-            Core::LitI(n) => self.iconst(*n),
-            Core::LitF(f) => self.iconst(f.to_bits() as i64),
-            Core::Var(i) => self
-                .b
-                .ins()
-                .stack_load(types::I64, self.env_slot, (*i * 8) as i32),
+            Core::LitI(n) => Emitted::Value(self.iconst(*n)),
+            Core::LitF(f) => Emitted::Value(self.iconst(f.to_bits() as i64)),
+            Core::Var(i) => Emitted::Value(self.b.ins().stack_load(
+                types::I64,
+                self.env_slot,
+                (*i * 8) as i32,
+            )),
             Core::Bin(k, op, a, b) => {
-                let (x, y) = (self.emit(a), self.emit(b));
-                match k {
+                let (x, y) = (self.emit_value(a), self.emit_value(b));
+                Emitted::Value(match k {
                     NumKind::I => self.int_bin(*op, x, y),
                     NumKind::F => self.float_bin(*op, x, y),
-                }
+                })
             }
             Core::Cmp(k, op, a, b) => {
-                let (x, y) = (self.emit(a), self.emit(b));
+                let (x, y) = (self.emit_value(a), self.emit_value(b));
                 let cmp = match k {
                     NumKind::I => self.b.ins().icmp(int_cc(*op), x, y),
                     NumKind::F => {
@@ -252,71 +309,82 @@ impl Emitter<'_, '_, '_> {
                         self.b.ins().fcmp(float_cc(*op), xf, yf)
                     }
                 };
-                self.b.ins().uextend(types::I64, cmp)
+                Emitted::Value(self.b.ins().uextend(types::I64, cmp))
             }
             Core::Not(a) => {
-                let v = self.emit(a);
+                let v = self.emit_value(a);
                 let z = self.iconst(0);
                 let c = self.b.ins().icmp(IntCC::Equal, v, z);
-                self.b.ins().uextend(types::I64, c)
+                Emitted::Value(self.b.ins().uextend(types::I64, c))
             }
             Core::And(a, b) => {
-                // a ? (b != 0) : 0  — short-circuits.
-                let av = self.emit(a);
+                // a ? (b != 0) : 0  — short-circuits. `b` is bool-typed (the
+                // elaborator requires it), so truthy-normalizing it is the
+                // identity on any value that isn't itself a tail-loop.
+                let av = self.emit_value(a);
                 let cond = self.truthy(av);
-                self.branch_to_slot(cond, |s| s.eval_truthy(b), |s| s.iconst(0))
+                self.branch_merge(
+                    cond,
+                    |s| s.emit_truthy(b, tail),
+                    |s| Emitted::Value(s.iconst(0)),
+                )
             }
             Core::Or(a, b) => {
                 // a ? 1 : (b != 0)  — short-circuits.
-                let av = self.emit(a);
+                let av = self.emit_value(a);
                 let cond = self.truthy(av);
-                self.branch_to_slot(cond, |s| s.iconst(1), |s| s.eval_truthy(b))
+                self.branch_merge(
+                    cond,
+                    |s| Emitted::Value(s.iconst(1)),
+                    |s| s.emit_truthy(b, tail),
+                )
             }
             Core::If(c, t, e) => {
-                let cv = self.emit(c);
+                let cv = self.emit_value(c);
                 let cond = self.truthy(cv);
-                self.branch_to_slot(cond, |s| s.emit(t), |s| s.emit(e))
+                self.branch_merge(cond, |s| s.emit(t, tail), |s| s.emit(e, tail))
             }
             Core::Let(slot, init, body) => {
-                let v = self.emit(init);
+                let v = self.emit_value(init);
                 self.b
                     .ins()
                     .stack_store(v, self.env_slot, (*slot * 8) as i32);
-                self.emit(body)
+                self.emit(body, tail)
             }
-            Core::Call(id, args) => self.emit_call(*id, args),
+            Core::Call(id, args) if tail && *id == self.self_id => self.emit_self_tail_call(args),
+            Core::Call(id, args) => Emitted::Value(self.emit_call(*id, args)),
             Core::ToChar(a) => {
                 // Narrow int64 -> char by masking to a byte (issue #136).
-                let v = self.emit(a);
-                self.b.ins().band_imm(v, 0xff)
+                let v = self.emit_value(a);
+                Emitted::Value(self.b.ins().band_imm(v, 0xff))
             }
             Core::ArrayNew(n) => {
-                let n = self.emit(n);
+                let n = self.emit_value(n);
                 // Clamp negative lengths to 0 (matches the interpreter).
                 let zero = self.iconst(0);
                 let neg = self.b.ins().icmp(IntCC::SignedLessThan, n, zero);
                 let len = self.b.ins().select(neg, zero, n);
-                self.alloc(len)
+                Emitted::Value(self.alloc(len))
             }
             Core::ArrayGet(a, i) => {
-                let base = self.emit(a);
-                let idx = self.emit(i);
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
                 let in_range = self.in_bounds(base, idx);
-                self.branch_to_slot(
+                Emitted::Value(self.branch_to_slot(
                     in_range,
                     |s| {
                         let addr = s.elem_addr(base, idx);
                         s.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0)
                     },
                     |s| s.iconst(0),
-                )
+                ))
             }
             Core::ArraySet(a, i, v) => {
-                let base = self.emit(a);
-                let idx = self.emit(i);
-                let val = self.emit(v);
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let val = self.emit_value(v);
                 let in_range = self.in_bounds(base, idx);
-                self.branch_to_slot(
+                Emitted::Value(self.branch_to_slot(
                     in_range,
                     |s| {
                         let addr = s.elem_addr(base, idx);
@@ -324,16 +392,18 @@ impl Emitter<'_, '_, '_> {
                         val
                     },
                     |_s| val,
-                )
+                ))
             }
             Core::ArrayLen(a) => {
-                let base = self.emit(a);
-                self.b
-                    .ins()
-                    .load(types::I64, MemFlagsData::trusted(), base, 0)
+                let base = self.emit_value(a);
+                Emitted::Value(
+                    self.b
+                        .ins()
+                        .load(types::I64, MemFlagsData::trusted(), base, 0),
+                )
             }
             Core::StructNew(inits) => {
-                let vals: Vec<Value> = inits.iter().map(|c| self.emit(c)).collect();
+                let vals: Vec<Value> = inits.iter().map(|c| self.emit_value(c)).collect();
                 let n = self.iconst(vals.len() as i64);
                 let base = self.alloc(n);
                 for (i, v) in vals.iter().enumerate() {
@@ -341,33 +411,116 @@ impl Emitter<'_, '_, '_> {
                         .ins()
                         .store(MemFlagsData::trusted(), *v, base, ((i + 1) * 8) as i32);
                 }
-                base
+                Emitted::Value(base)
             }
             Core::FieldGet(s, idx) => {
-                let base = self.emit(s);
-                self.b.ins().load(
+                let base = self.emit_value(s);
+                Emitted::Value(self.b.ins().load(
                     types::I64,
                     MemFlagsData::trusted(),
                     base,
                     ((*idx + 1) * 8) as i32,
-                )
+                ))
             }
             Core::FieldSet(s, idx, v) => {
-                let base = self.emit(s);
-                let val = self.emit(v);
+                let base = self.emit_value(s);
+                let val = self.emit_value(v);
                 self.b
                     .ins()
                     .store(MemFlagsData::trusted(), val, base, ((*idx + 1) * 8) as i32);
-                val
+                Emitted::Value(val)
             }
-            Core::Seq(forms) => {
-                let mut r = self.iconst(0);
-                for f in forms {
-                    r = self.emit(f);
+            Core::Seq(forms) => match forms.split_last() {
+                Some((last, init)) => {
+                    for f in init {
+                        self.emit_value(f);
+                    }
+                    self.emit(last, tail)
                 }
-                r
-            }
+                None => Emitted::Value(self.iconst(0)),
+            },
         }
+    }
+
+    /// Evaluate `core` and normalize to the boolean word `(value != 0)`,
+    /// tail-aware: if `core` tail-loops, there is no value to normalize —
+    /// propagate the tail-loop unchanged.
+    fn emit_truthy(&mut self, core: &Core, tail: bool) -> Emitted {
+        match self.emit(core, tail) {
+            Emitted::Value(v) => {
+                let t = self.truthy(v);
+                Emitted::Value(self.b.ins().uextend(types::I64, t))
+            }
+            Emitted::TailLooped => Emitted::TailLooped,
+        }
+    }
+
+    /// A self tail call in tail position (issue #133 Tier 1): evaluate every
+    /// new argument value in the *current* env — before any parameter slot
+    /// is overwritten, exactly mirroring `eval_core`'s parallel-assignment
+    /// ordering, since a new argument may read an old parameter a sibling
+    /// argument is about to clobber (`(sum (- n 1) (+ acc n))`) — store them
+    /// into the parameter slots, then jump back to the loop header instead
+    /// of emitting a call. This terminates the current block; the caller
+    /// must not add further instructions to it.
+    fn emit_self_tail_call(&mut self, args: &[Core]) -> Emitted {
+        let vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
+        for (i, v) in vals.iter().enumerate() {
+            self.b.ins().stack_store(*v, self.env_slot, (i * 8) as i32);
+        }
+        self.b.ins().jump(self.header, &[]);
+        Emitted::TailLooped
+    }
+
+    /// Evaluate a two-way branch, tail-aware. Mirrors [`Self::branch_to_slot`]
+    /// (store each branch's value into a shared stack slot and merge) but
+    /// skips the store+jump for a branch that already terminated its block
+    /// via [`Self::emit_self_tail_call`]'s jump to the loop header. If *both*
+    /// branches tail-loop, the merge block is unreachable — report the whole
+    /// node as tail-looping too rather than switching to a block with no
+    /// predecessors (`create_block` alone leaves it "pristine," which
+    /// `FunctionBuilder::finalize` explicitly exempts from the
+    /// sealed/filled check — verified against `cranelift-frontend`'s
+    /// `finalize()`, so an unused `merge_b` is sound to simply never visit).
+    fn branch_merge(
+        &mut self,
+        cond: Value,
+        then_f: impl FnOnce(&mut Self) -> Emitted,
+        else_f: impl FnOnce(&mut Self) -> Emitted,
+    ) -> Emitted {
+        let then_b = self.b.create_block();
+        let else_b = self.b.create_block();
+        let merge_b = self.b.create_block();
+        let res =
+            self.b
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+
+        self.b.ins().brif(cond, then_b, &[], else_b, &[]);
+
+        self.b.switch_to_block(then_b);
+        self.b.seal_block(then_b);
+        let tr = then_f(self);
+        if let Emitted::Value(v) = tr {
+            self.b.ins().stack_store(v, res, 0);
+            self.b.ins().jump(merge_b, &[]);
+        }
+        // else: then's terminal block already ended with a jump to `header`.
+
+        self.b.switch_to_block(else_b);
+        self.b.seal_block(else_b);
+        let er = else_f(self);
+        if let Emitted::Value(v) = er {
+            self.b.ins().stack_store(v, res, 0);
+            self.b.ins().jump(merge_b, &[]);
+        }
+
+        if matches!(tr, Emitted::TailLooped) && matches!(er, Emitted::TailLooped) {
+            return Emitted::TailLooped;
+        }
+
+        self.b.switch_to_block(merge_b);
+        self.b.seal_block(merge_b);
+        Emitted::Value(self.b.ins().stack_load(types::I64, res, 0))
     }
 
     /// Call the host allocator for an `len`-element buffer; returns the header
@@ -485,15 +638,8 @@ impl Emitter<'_, '_, '_> {
         self.b.ins().stack_load(types::I64, res, 0)
     }
 
-    /// Evaluate `core` and normalize to the boolean word `(value != 0)`.
-    fn eval_truthy(&mut self, core: &Core) -> Value {
-        let v = self.emit(core);
-        let t = self.truthy(v);
-        self.b.ins().uextend(types::I64, t)
-    }
-
     fn emit_call(&mut self, id: usize, args: &[Core]) -> Value {
-        let vals: Vec<Value> = args.iter().map(|a| self.emit(a)).collect();
+        let vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
         let argc = vals.len();
         let buf = self.b.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
