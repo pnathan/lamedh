@@ -87,6 +87,42 @@ unsafe extern "C" fn jit_trampoline(
     ctx.call(id as usize, slice)
 }
 
+/// Host trampoline for a *cross*-function tail call (issue #133 Tier 2a).
+/// Unlike [`jit_trampoline`] (which re-enters `Ctx::call` and so grows the
+/// native Rust stack by one frame per call — fine for an ordinary,
+/// non-tail-position call, unsound for a tail-recursive chain of unbounded
+/// depth), this records the target and its argument words on `Ctx` and
+/// returns immediately: the native function that called this then returns
+/// normally (ordinary SystemV return, no calling-convention change), and
+/// `TypedFn::invoke`'s dispatch loop (not this function, and not any native
+/// code) picks up the pending call and re-dispatches — a fresh top-level
+/// call each time, so native stack usage is O(1) regardless of chain depth.
+/// Cranelift's `tail` calling convention / `return_call_indirect` was
+/// evaluated and rejected for this (Tier 2b, deferred): adopting it would
+/// require every typed function to also expose a distinct SystemV entry
+/// thunk (Rust cannot call a `Tail`-CC function directly), plus reworking
+/// the entry-cell Rc-pinning discipline, since `return_call` eliminates the
+/// caller's frame and so invalidates the "pin the callee's edition for the
+/// duration of the (still-existing) caller frame" invariant the redefinition
+/// story depends on. This trampoline sidesteps both problems entirely by
+/// never changing any function's calling convention.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with arguments it constructed:
+/// `ctx` is the pointer threaded from the entry, `args`/`argc` describe a
+/// buffer of `argc` `u64` words that are copied out immediately (need not
+/// outlive this call).
+unsafe extern "C" fn jit_set_pending_tail(
+    ctx: *const c_void,
+    id: u64,
+    args: *const u64,
+    argc: u64,
+) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    let slice = unsafe { std::slice::from_raw_parts(args, argc as usize) };
+    ctx.set_pending_tail(id as usize, slice);
+}
+
 /// Compile `core` (a function body with `n_params` parameters and `n_slots`
 /// total local slots) to a native edition.
 ///
@@ -105,6 +141,7 @@ pub fn compile_native(
 ) -> Result<NativeEdition, String> {
     let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
+    jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
@@ -124,6 +161,17 @@ pub fn compile_native(
     tsig.returns.push(AbiParam::new(types::I64));
     let tramp_id = module
         .declare_function("jit_trampoline", Linkage::Import, &tsig)
+        .map_err(|e| e.to_string())?;
+
+    // Imported cross-function tail-call trampoline signature (issue #133
+    // Tier 2a): (ctx, id, args*, argc) -> (), no return value.
+    let mut ptsig = module.make_signature();
+    ptsig.params.push(AbiParam::new(ptr));
+    ptsig.params.push(AbiParam::new(types::I64));
+    ptsig.params.push(AbiParam::new(ptr));
+    ptsig.params.push(AbiParam::new(types::I64));
+    let pending_tail_id = module
+        .declare_function("jit_set_pending_tail", Linkage::Import, &ptsig)
         .map_err(|e| e.to_string())?;
 
     // Imported allocator: (ctx, n) -> *mut u64, for array/struct allocation.
@@ -149,6 +197,7 @@ pub fn compile_native(
     {
         let mut b = FunctionBuilder::new(&mut ctx_codegen.func, &mut fbctx);
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
+        let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
 
@@ -190,6 +239,7 @@ pub fn compile_native(
             env_slot,
             ctx_ptr,
             tramp_ref,
+            pending_tail_ref,
             alloc_ref,
             callee_sig,
             cell_addrs,
@@ -235,6 +285,9 @@ struct Emitter<'a, 'b, 'c> {
     env_slot: cranelift_codegen::ir::StackSlot,
     ctx_ptr: Value,
     tramp_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`jit_set_pending_tail`] (issue #133 Tier 2a): records a
+    /// cross-function tail call on `Ctx` instead of performing it natively.
+    pending_tail_ref: cranelift_codegen::ir::FuncRef,
     alloc_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
@@ -352,6 +405,7 @@ impl Emitter<'_, '_, '_> {
                 self.emit(body, tail)
             }
             Core::Call(id, args) if tail && *id == self.self_id => self.emit_self_tail_call(args),
+            Core::Call(id, args) if tail => Emitted::Value(self.emit_cross_tail_call(*id, args)),
             Core::Call(id, args) => Emitted::Value(self.emit_call(*id, args)),
             Core::ToChar(a) => {
                 // Narrow int64 -> char by masking to a byte (issue #136).
@@ -470,6 +524,38 @@ impl Emitter<'_, '_, '_> {
         }
         self.b.ins().jump(self.header, &[]);
         Emitted::TailLooped
+    }
+
+    /// A *cross*-function tail call in tail position (issue #133 Tier 2a):
+    /// evaluate the arguments, hand the target id and argument words to the
+    /// host via [`jit_set_pending_tail`], and produce a placeholder value.
+    /// Unlike [`Self::emit_self_tail_call`], this does *not* terminate the
+    /// current block with a jump — the function returns normally (its own
+    /// `return_`, emitted by the ordinary tail-value machinery this value
+    /// flows through), and `TypedFn::invoke`'s Rust-level dispatch loop picks
+    /// up the pending call from there. No calling-convention change, no
+    /// native-to-native jump: this is what keeps native stack usage O(1) for
+    /// mutual/general tail recursion without Cranelift's `tail` CC (see the
+    /// design note on [`jit_set_pending_tail`]).
+    fn emit_cross_tail_call(&mut self, id: usize, args: &[Core]) -> Value {
+        let vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
+        let argc = vals.len();
+        let buf = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (argc.max(1) * 8) as u32,
+            3,
+        ));
+        for (i, v) in vals.iter().enumerate() {
+            self.b.ins().stack_store(*v, buf, (i * 8) as i32);
+        }
+        let buf_addr = self.b.ins().stack_addr(self.ptr, buf, 0);
+        let id_v = self.iconst(id as i64);
+        let argc_v = self.iconst(argc as i64);
+        self.b.ins().call(
+            self.pending_tail_ref,
+            &[self.ctx_ptr, id_v, buf_addr, argc_v],
+        );
+        self.iconst(0)
     }
 
     /// Evaluate a two-way branch, tail-aware. Mirrors [`Self::branch_to_slot`]

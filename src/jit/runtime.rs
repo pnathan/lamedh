@@ -13,6 +13,19 @@ use super::*;
 pub struct Ctx<'a> {
     pub(super) funcs: &'a [Rc<TypedFn>],
     pub(super) arena: RefCell<Vec<Box<[u64]>>>,
+    /// Set by a compiled/interpreted body, instead of performing the call
+    /// itself, when it reaches a *cross-function* tail call (issue #133
+    /// Tier 2a). `TypedFn::invoke`'s dispatch loop checks this immediately
+    /// after every underlying edition call and, if set, clears it and
+    /// re-dispatches to the named function with the given argument words —
+    /// an explicit, host-driven trampoline (mirrors the tree-walker's
+    /// `TcoStep::TailCall`) that keeps native stack usage O(1) for
+    /// arbitrarily deep mutual/general tail recursion, without adopting
+    /// Cranelift's `tail` calling convention (assessed and deferred — see
+    /// the design note above `compile_native` in `native.rs`). A *self*
+    /// tail call (Tier 1) never touches this: it loops within the callee's
+    /// own edition instead.
+    pub(super) pending_tail: RefCell<Option<(usize, Vec<u64>)>>,
 }
 
 impl Ctx<'_> {
@@ -30,6 +43,19 @@ impl Ctx<'_> {
         let ptr = buf.as_mut_ptr();
         self.arena.borrow_mut().push(buf);
         ptr
+    }
+
+    /// Record a pending cross-function tail call for `TypedFn::invoke`'s
+    /// dispatch loop to pick up, instead of performing it here. `args` is
+    /// copied immediately, so the caller's argument buffer (a Cranelift
+    /// stack slot, or a `Vec` about to be dropped) need not outlive this call.
+    pub(super) fn set_pending_tail(&self, id: usize, args: &[u64]) {
+        *self.pending_tail.borrow_mut() = Some((id, args.to_vec()));
+    }
+
+    /// Take (clear) any pending tail call recorded since the last check.
+    pub(super) fn take_pending_tail(&self) -> Option<(usize, Vec<u64>)> {
+        self.pending_tail.borrow_mut().take()
     }
 }
 
@@ -190,6 +216,21 @@ pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize)
                     .collect();
                 env[..vals.len()].copy_from_slice(&vals);
                 current = top;
+            }
+            Core::Call(id, args) => {
+                // Tier 2a (issue #133): a *cross*-function tail call. Hand it
+                // off to the host trampoline (`Ctx::set_pending_tail`, drained
+                // by `TypedFn::invoke`) instead of recursing through
+                // `Ctx::call` — O(1) native Rust stack for arbitrarily deep
+                // mutual/general tail recursion (e.g. `even?`/`odd?`). The
+                // returned value is a placeholder; `invoke`'s trampoline loop
+                // overwrites it with the real result once the chain bottoms out.
+                let vals: Vec<u64> = args
+                    .iter()
+                    .map(|a| eval_core_nontail(a, env, ctx))
+                    .collect();
+                ctx.set_pending_tail(*id, &vals);
+                return 0;
             }
             other => return eval_core_nontail(other, env, ctx),
         }
@@ -861,6 +902,19 @@ fn compile_tail(core: &Core, self_id: usize) -> CompiledTail {
                 let vals: Vec<u64> = cargs.iter().map(|ca| ca(env, ctx)).collect();
                 env[..vals.len()].copy_from_slice(&vals);
                 TailStep::Loop
+            })
+        }
+        Core::Call(id, args) => {
+            // Tier 2a (issue #133): cross-function tail call -> host
+            // trampoline. See eval_core's identical arm for the rationale;
+            // `TailStep::Done`'s value is a placeholder that `invoke`'s
+            // trampoline loop overwrites once the chain bottoms out.
+            let id = *id;
+            let cargs: Vec<Compiled> = args.iter().map(compile).collect();
+            Rc::new(move |env, ctx| {
+                let vals: Vec<u64> = cargs.iter().map(|ca| ca(env, ctx)).collect();
+                ctx.set_pending_tail(id, &vals);
+                TailStep::Done(0)
             })
         }
         other => {
