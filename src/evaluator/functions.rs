@@ -37,11 +37,20 @@ pub(super) fn make_lambda(
         }
     }
 
+    let param_ids: Vec<u32> = params_vec
+        .iter()
+        .map(|name| env.intern_symbol(name).borrow().id)
+        .collect();
+    let rest_param_id: Option<u32> = rest_param
+        .as_ref()
+        .map(|name| env.intern_symbol(name).borrow().id);
     Ok(LispVal::Lambda(Box::new(crate::Lambda {
         params: params_vec,
         rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
+        param_ids,
+        rest_param_id,
     })))
 }
 
@@ -65,10 +74,16 @@ pub(super) fn make_fexpr(
         })
         .collect();
 
+    let params_vec = params_vec?;
+    let param_ids: Vec<u32> = params_vec
+        .iter()
+        .map(|name| env.intern_symbol(name).borrow().id)
+        .collect();
     Ok(LispVal::Fexpr(Box::new(crate::Fexpr {
-        params: params_vec?,
+        params: params_vec,
         body: Box::new(body.clone()),
         env: env.clone(),
+        param_ids,
     })))
 }
 
@@ -109,11 +124,20 @@ pub(super) fn make_macro(
         }
     }
 
+    let param_ids: Vec<u32> = params_vec
+        .iter()
+        .map(|name| env.intern_symbol(name).borrow().id)
+        .collect();
+    let rest_param_id: Option<u32> = rest_param
+        .as_ref()
+        .map(|name| env.intern_symbol(name).borrow().id);
     Ok(LispVal::Macro(Box::new(crate::Macro {
         params: params_vec,
         rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
+        param_ids,
+        rest_param_id,
     })))
 }
 
@@ -125,7 +149,7 @@ pub(super) fn expand_macro(
 ) -> Result<LispVal, LispError> {
     let macro_env = Environment::new_child(&m.env);
 
-    if let Some(rest_param_name) = &m.rest_param {
+    if let Some(rest_param_id) = m.rest_param_id {
         if args.len() < m.params.len() {
             return Err(LispError::Generic(format!(
                 "macro expected at least {} arguments, got {}",
@@ -133,11 +157,11 @@ pub(super) fn expand_macro(
                 args.len()
             )));
         }
-        for (param, arg) in m.params.iter().zip(args.iter()) {
-            macro_env.set(param.clone(), arg.clone());
+        for (id, arg) in m.param_ids.iter().zip(args.iter()) {
+            macro_env.set_id(*id, arg.clone());
         }
         let rest_args = vec_to_list(args[m.params.len()..].to_vec());
-        macro_env.set(rest_param_name.clone(), rest_args);
+        macro_env.set_id(rest_param_id, rest_args);
     } else {
         if m.params.len() != args.len() {
             return Err(LispError::Generic(format!(
@@ -146,8 +170,8 @@ pub(super) fn expand_macro(
                 args.len()
             )));
         }
-        for (param, arg) in m.params.iter().zip(args) {
-            macro_env.set(param.clone(), arg.clone());
+        for (id, arg) in m.param_ids.iter().zip(args) {
+            macro_env.set_id(*id, arg.clone());
         }
     }
 

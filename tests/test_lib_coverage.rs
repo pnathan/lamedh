@@ -240,12 +240,16 @@ fn test_lambda_partialeq_same_env() {
         rest_param: None,
         body: Box::new(LispVal::Number(1)),
         env: env.clone(),
+        param_ids: vec![0],
+        rest_param_id: None,
     };
     let lam2 = lamedh::Lambda {
         params: vec!["X".to_string()],
         rest_param: None,
         body: Box::new(LispVal::Number(1)),
         env: env.clone(),
+        param_ids: vec![0],
+        rest_param_id: None,
     };
     assert_eq!(
         LispVal::Lambda(Box::new(lam1)),
@@ -265,12 +269,16 @@ fn test_lambda_partialeq_different_env() {
         rest_param: None,
         body: Box::new(LispVal::Nil),
         env: env1.clone(),
+        param_ids: vec![],
+        rest_param_id: None,
     };
     let lam2 = lamedh::Lambda {
         params: vec![],
         rest_param: None,
         body: Box::new(LispVal::Nil),
         env: env2.clone(),
+        param_ids: vec![],
+        rest_param_id: None,
     };
     assert_ne!(
         LispVal::Lambda(Box::new(lam1)),
@@ -285,11 +293,13 @@ fn test_fexpr_partialeq_same_env() {
         params: vec!["ARGS".to_string()],
         body: Box::new(LispVal::Nil),
         env: env.clone(),
+        param_ids: vec![0],
     };
     let f2 = lamedh::Fexpr {
         params: vec!["ARGS".to_string()],
         body: Box::new(LispVal::Nil),
         env: env.clone(),
+        param_ids: vec![0],
     };
     assert_eq!(LispVal::Fexpr(Box::new(f1)), LispVal::Fexpr(Box::new(f2)));
 }
@@ -302,12 +312,16 @@ fn test_macro_partialeq_same_env() {
         rest_param: Some("REST".to_string()),
         body: Box::new(LispVal::Number(99)),
         env: env.clone(),
+        param_ids: vec![0],
+        rest_param_id: Some(1),
     };
     let m2 = lamedh::Macro {
         params: vec!["X".to_string()],
         rest_param: Some("REST".to_string()),
         body: Box::new(LispVal::Number(99)),
         env: env.clone(),
+        param_ids: vec![0],
+        rest_param_id: Some(1),
     };
     assert_eq!(LispVal::Macro(Box::new(m1)), LispVal::Macro(Box::new(m2)));
 }
@@ -401,6 +415,8 @@ fn test_lispval_hash_lambda_no_panic() {
         rest_param: None,
         body: Box::new(LispVal::Nil),
         env: env.clone(),
+        param_ids: vec![],
+        rest_param_id: None,
     }));
     let mut set: HashSet<LispVal> = HashSet::new();
     set.insert(lam);
