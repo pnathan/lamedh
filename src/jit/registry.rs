@@ -106,8 +106,16 @@ impl TypedFn {
             {
                 let n_params = self.params.borrow().len();
                 let cell_addrs: Vec<usize> = funcs.iter().map(|f| f.entry_cell_addr()).collect();
-                match native::compile_native(core, self.id, n_params, self.slots.get(), &cell_addrs)
-                {
+                let param_counts: Vec<usize> =
+                    funcs.iter().map(|f| f.params.borrow().len()).collect();
+                match native::compile_native(
+                    core,
+                    self.id,
+                    n_params,
+                    self.slots.get(),
+                    &cell_addrs,
+                    &param_counts,
+                ) {
                     Ok(ed) => {
                         self.entry.set(ed.entry_addr());
                         *self.native.borrow_mut() = Some(Rc::new(ed));
@@ -161,8 +169,14 @@ impl TypedFn {
         {
             let native = self.native.borrow().clone();
             if let Some(ed) = native {
-                let ctx_ptr = ctx as *const Ctx as *const core::ffi::c_void;
-                return unsafe { ed.call(args, ctx_ptr) };
+                // The native prologue reads exactly `n_params` words from the
+                // args pointer.  A stale caller compiled against an old signature
+                // may pass the wrong count; skip native (fall through to the
+                // interpreter edition) instead of reading out-of-bounds.
+                if args.len() == self.params.borrow().len() {
+                    let ctx_ptr = ctx as *const Ctx as *const core::ffi::c_void;
+                    return unsafe { ed.call(args, ctx_ptr) };
+                }
             }
         }
         let mut env = vec![0u64; self.slots.get()];
@@ -206,12 +220,25 @@ impl Jit {
         Jit::default()
     }
 
-    fn intern(&mut self, name: &str, params: Vec<(String, Ty)>, ret: Ty) -> usize {
+    /// Register (or update) the signature for `name`.  Returns `(id, arity_changed)`.
+    /// `arity_changed` is true only when this is a *redefinition* of an existing
+    /// function whose parameter count differs — the caller must then recompile all
+    /// other typed functions so they rebuild their call-site argument buffers with
+    /// the correct size (see `recompile_all_except`).
+    fn intern(&mut self, name: &str, params: Vec<(String, Ty)>, ret: Ty) -> (usize, bool) {
         if let Some(&id) = self.by_name.get(name) {
             let f = &self.funcs[id];
+            let arity_changed = f.params.borrow().len() != params.len();
             *f.params.borrow_mut() = params;
             *f.ret.borrow_mut() = ret;
-            id
+            if arity_changed {
+                // Zero the entry cell immediately so any compiled caller that
+                // tries the fast path before its own recompilation falls through
+                // to the trampoline instead of calling native code with the wrong
+                // number of argument words in the stack buffer.
+                f.deoptimize();
+            }
+            (id, arity_changed)
         } else {
             let id = self.funcs.len();
             self.funcs.push(Rc::new(TypedFn::placeholder(
@@ -221,7 +248,27 @@ impl Jit {
                 ret,
             )));
             self.by_name.insert(name.to_string(), id);
-            id
+            (id, false)
+        }
+    }
+
+    /// Deopt and recompile every typed function except `skip_id`.
+    ///
+    /// Called when `skip_id`'s arity changed on redefinition.  Every other compiled
+    /// function may have baked a fixed-size argument buffer sized for the old arity
+    /// into its native code (`emit_call` allocates `argc * 8` bytes on the stack);
+    /// recompiling with the updated signature visible produces correct buffers and
+    /// eliminates the out-of-bounds read that would otherwise occur.
+    ///
+    /// This is O(n_typed_fns) but redefinitions with arity changes are rare REPL
+    /// events, not hot-path operations.
+    fn recompile_all_except(&self, skip_id: usize) {
+        let funcs: Vec<Rc<TypedFn>> = self.funcs.iter().cloned().collect();
+        for (id, f) in funcs.iter().enumerate() {
+            if id != skip_id && f.core.borrow().is_some() {
+                f.deoptimize();
+                f.compile_now(&funcs);
+            }
         }
     }
 
@@ -232,7 +279,8 @@ impl Jit {
             .iter()
             .map(|(n, t)| ((*n).to_string(), t.clone()))
             .collect();
-        self.intern(name, params, ret)
+        // Declarations never compile; arity_changed is irrelevant here.
+        self.intern(name, params, ret).0
     }
 
     /// Forward-declare from a `(declare-typed (name ret) ((arg ty)...))` form.
@@ -255,7 +303,7 @@ impl Jit {
                 "{name}: a declaration needs concrete types; pin array elements as `(array T)`"
             ));
         }
-        self.intern(&name, params, ret);
+        self.intern(&name, params, ret); // arity_changed ignored — no compilation at declaration time
         Ok(name)
     }
 
@@ -294,7 +342,7 @@ impl Jit {
 
         // Register the signature *before* elaborating the body so a function can
         // call itself (and any already-declared peer).
-        let id = self.intern(&name, params.clone(), ret.clone());
+        let (id, arity_changed) = self.intern(&name, params.clone(), ret.clone());
 
         let mut max_slots = scope.len();
         let (core, resolved_params, resolved_ret) = {
@@ -338,6 +386,13 @@ impl Jit {
         f.slots.set(max_slots);
         *f.core.borrow_mut() = Some(core);
         f.compile_now(&self.funcs);
+        // If the arity changed on redefinition, every other compiled function may
+        // have baked a now-wrong argument-buffer size for calls to this one.
+        // Recompile them with the updated signature visible so they produce
+        // correctly-sized buffers (and correct direct-native entry pointers).
+        if arity_changed {
+            self.recompile_all_except(id);
+        }
         Ok(id)
     }
 
@@ -351,11 +406,14 @@ impl Jit {
         core: Core,
         slots: usize,
     ) -> usize {
-        let id = self.intern(name, params, ret);
+        let (id, arity_changed) = self.intern(name, params, ret);
         let f = self.funcs[id].clone();
         f.slots.set(slots);
         *f.core.borrow_mut() = Some(core);
         f.compile_now(&self.funcs);
+        if arity_changed {
+            self.recompile_all_except(id);
+        }
         id
     }
 

@@ -18,9 +18,10 @@
 //! - **Lexical** (default): lookup walks `parent` pointers — the chain of
 //!   frames from the closure's definition site to the global frame.
 //! - **Dynamic** (opt-in): variables marked via [`Environment::mark_dynamic`]
-//!   are looked up by walking `dynamic_parent` pointers — the actual call
-//!   stack.  Use the `DEFDYNAMIC`/`DEFVAR` special forms or `*EARMUFF*`
-//!   naming to signal dynamic intent.
+//!   use *shallow binding* — the current value is always in the symbol's
+//!   global value cell.  `DEFDYNAMIC`/`DEFVAR` or `*EARMUFF*` naming signal
+//!   dynamic intent; `DynamicBinding` RAII guards save/restore on every
+//!   binding site.  No dynamic-parent chain walk is needed or performed.
 //!
 //! ## Capabilities
 //!
@@ -334,9 +335,6 @@ pub struct Environment {
     /// features). Shared across the whole environment chain via a single
     /// [`Shared`] pointer.
     shared: Shared<SharedState>,
-    /// Dynamic parent environment (caller's environment for dynamic scoping).
-    /// This is used to look up dynamic variables from the call chain.
-    dynamic_parent: Option<Shared<Environment>>,
 }
 
 impl PartialEq for Environment {
@@ -346,13 +344,7 @@ impl PartialEq for Environment {
             (None, None) => true,
             _ => false,
         };
-        let dynamic_parents_equal = match (&self.dynamic_parent, &other.dynamic_parent) {
-            (Some(p1), Some(p2)) => Shared::ptr_eq(p1, p2),
-            (None, None) => true,
-            _ => false,
-        };
         parents_equal
-            && dynamic_parents_equal
             // `bindings` is now inline, so its field address uniquely identifies
             // this `Environment` (equivalent to the former `Rc` pointer compare).
             && std::ptr::eq(&self.bindings, &other.bindings)
@@ -376,34 +368,29 @@ impl Environment {
             parent: None,
             bindings: SharedCell::new(BindingMap::default()),
             shared: Shared::new(SharedState::new()),
-            dynamic_parent: None,
         }
     }
 
     /// Create a new child environment for lexical scoping.
-    /// The child inherits the parent's dynamic_parent by default.
     pub fn new_child(parent: &Shared<Environment>) -> Shared<Environment> {
         Shared::new(Environment {
             parent: Some(parent.clone()),
             bindings: SharedCell::new(BindingMap::default()),
             shared: parent.shared.clone(),
-            dynamic_parent: parent.dynamic_parent.clone(),
         })
     }
 
-    /// Create a new child environment for function application with dynamic scoping.
-    /// The lexical parent is `lexical_parent` (the captured closure environment),
-    /// and the dynamic parent is `caller_env` (for dynamic variable lookup).
+    /// Create a new child environment for function application.
+    ///
+    /// The lexical parent is `lexical_parent` (the captured closure environment).
+    /// Dynamic scoping uses shallow binding — the `DynamicBinding` RAII guard
+    /// saves/restores the symbol's global value cell at each binding site —
+    /// so no dynamic-parent pointer is stored or walked.
     pub fn new_child_with_dynamic(
         lexical_parent: &Shared<Environment>,
-        caller_env: &Shared<Environment>,
+        _caller_env: &Shared<Environment>,
     ) -> Shared<Environment> {
-        Shared::new(Environment {
-            parent: Some(lexical_parent.clone()),
-            bindings: SharedCell::new(BindingMap::default()),
-            shared: lexical_parent.shared.clone(),
-            dynamic_parent: Some(caller_env.clone()),
-        })
+        Environment::new_child(lexical_parent)
     }
 
     /// Create a root environment with all 100+ built-in primitives registered.
