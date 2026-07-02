@@ -35,12 +35,19 @@ pub(super) fn apply_apply(
         }
         LispVal::Fexpr(f) => {
             let new_env = Environment::new_child_with_dynamic(&f.env, env);
+            let has_dyn = new_env.has_any_dynamic();
+            let mut _guards: Vec<DynamicBinding> = Vec::new();
             if f.params.len() == 1 {
-                // Single-param fexpr: bind the whole arg list to the one parameter.
                 let fexpr_arg_list = vec_to_list(unpacked_args);
-                new_env.set(f.params[0].clone(), fexpr_arg_list);
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(f.param_ids[0])
+                    && sym.borrow().is_dynamic
+                {
+                    _guards.push(DynamicBinding::install(sym, fexpr_arg_list));
+                } else {
+                    new_env.set(f.params[0].clone(), fexpr_arg_list);
+                }
             } else {
-                // Multi-param fexpr: bind each arg to the corresponding parameter.
                 if unpacked_args.len() != f.params.len() {
                     return Err(LispError::Generic(format!(
                         "APPLY: fexpr expected {} arguments, got {}",
@@ -48,7 +55,14 @@ pub(super) fn apply_apply(
                         unpacked_args.len()
                     )));
                 }
-                for (param, arg) in f.params.iter().zip(unpacked_args) {
+                for ((param, id), arg) in f.params.iter().zip(&f.param_ids).zip(unpacked_args) {
+                    if has_dyn
+                        && let Some(sym) = new_env.symbol_by_id(*id)
+                        && sym.borrow().is_dynamic
+                    {
+                        _guards.push(DynamicBinding::install(sym, arg));
+                        continue;
+                    }
                     new_env.set(param.clone(), arg);
                 }
             }

@@ -175,42 +175,47 @@ Lazily computes and caches the purity verdict using the current function body."
 
 ;;; ─── Main pass ────────────────────────────────────────────────────────────
 
-(defun opt-pass (form)
-  "Recursively apply Lisp-level optimization passes to FORM."
-  (cond
-    ((atom form) form)
-    ((eq (car form) 'quote) form)
-    ((eq (car form) 'lambda)
-     ;; Optimize lambda body
-     (cons 'lambda
-           (cons (cadr form)
-                 (mapcar #'opt-pass (cddr form)))))
-    ((eq (car form) 'let)
-     (opt-pass-let form))
-    ((eq (car form) 'progn)
-     (opt-pass-progn (cdr form)))
-    ((eq (car form) 'if)
-     (opt-pass-if form))
-    ;; General: optimize all sub-expressions
-    (t (mapcar #'opt-pass form))))
+(defun opt-pass (form &rest bound-arg)
+  "Recursively apply Lisp-level optimization passes to FORM.
+BOUND is an optional list of locally-bound names that shadow globals."
+  (let ((bound (car bound-arg)))
+    (cond
+      ((atom form) form)
+      ((eq (car form) 'quote) form)
+      ((eq (car form) 'lambda)
+       ;; Lambda params shadow outer bound names inside the body
+       (let ((inner-bound (append (cadr form) bound)))
+         (cons 'lambda
+               (cons (cadr form)
+                     (mapcar (lambda (b) (opt-pass b inner-bound)) (cddr form))))))
+      ((eq (car form) 'let)
+       (opt-pass-let form bound))
+      ((eq (car form) 'progn)
+       (opt-pass-progn (cdr form) bound))
+      ((eq (car form) 'if)
+       (opt-pass-if form bound))
+      ;; General: optimize all sub-expressions
+      (t (mapcar (lambda (f) (opt-pass f bound)) form)))))
 
 ;;; ── LET pass ──────────────────────────────────────────────────────────────
 
-(defun opt-pass-let (form)
+(defun opt-pass-let (form &rest bound-arg)
   "Optimize (let ((v e) ...) body) by removing dead bindings and inlining constants."
-  (let* ((bindings (cadr form))
+  (let* ((bound    (car bound-arg))
+         (bindings (cadr form))
          (body     (caddr form))
-         ;; First, optimize all init expressions
-         (opt-bindings (mapcar (lambda (b) (list (car b) (opt-pass (cadr b))))
+         ;; First, optimize all init expressions (in outer scope)
+         (opt-bindings (mapcar (lambda (b) (list (car b) (opt-pass (cadr b) bound)))
                                bindings))
          ;; Filter: remove dead pure bindings, inline atom-constant bindings
          (reduced  (opt-reduce-bindings opt-bindings body)))
     ;; reduced = (new-bindings . new-body)
-    (let ((new-bindings (car reduced))
-          (new-body     (cdr reduced)))
+    (let* ((new-bindings (car reduced))
+           (new-body     (cdr reduced))
+           (inner-bound  (append (mapcar #'car new-bindings) bound)))
       (if (null new-bindings)
-          (opt-pass new-body)
-          (list 'let new-bindings (opt-pass new-body))))))
+          (opt-pass new-body bound)
+          (list 'let new-bindings (opt-pass new-body inner-bound))))))
 
 (defun opt-reduce-bindings (bindings body)
   "Return (new-bindings . body) after dead-binding removal and atom inlining."
@@ -248,13 +253,14 @@ Lazily computes and caches the purity verdict using the current function body."
 
 ;;; ── PROGN pass ────────────────────────────────────────────────────────────
 
-(defun opt-pass-progn (forms)
+(defun opt-pass-progn (forms &rest bound-arg)
   "Flatten nested PROGNs and drop dead non-tail pure forms."
-  (let ((flat (opt-flatten-progn forms)))
+  (let ((bound (car bound-arg))
+        (flat (opt-flatten-progn forms)))
     (cond
       ((null flat) nil)
-      ((null (cdr flat)) (opt-pass (car flat)))
-      (t (cons 'progn (opt-progn-prune flat))))))
+      ((null (cdr flat)) (opt-pass (car flat) bound))
+      (t (cons 'progn (opt-progn-prune flat bound))))))
 
 (defun opt-flatten-progn (forms)
   "Flatten (progn (progn a b) c) -> (a b c)."
@@ -264,23 +270,25 @@ Lazily computes and caches the purity verdict using the current function body."
      (append (cdar forms) (opt-flatten-progn (cdr forms))))
     (t (cons (car forms) (opt-flatten-progn (cdr forms))))))
 
-(defun opt-progn-prune (forms)
+(defun opt-progn-prune (forms &rest bound-arg)
   "Remove pure non-tail forms from a PROGN sequence."
-  (cond
-    ((null forms) nil)
-    ((null (cdr forms)) (list (opt-pass (car forms))))   ; tail: always keep
-    ((opt-pure-p (car forms))                             ; non-tail pure: drop
-     (opt-progn-prune (cdr forms)))
-    (t (cons (opt-pass (car forms)) (opt-progn-prune (cdr forms))))))
+  (let ((bound (car bound-arg)))
+    (cond
+      ((null forms) nil)
+      ((null (cdr forms)) (list (opt-pass (car forms) bound)))   ; tail: always keep
+      ((opt-pure-p (car forms) bound)                             ; non-tail pure: drop
+       (opt-progn-prune (cdr forms) bound))
+      (t (cons (opt-pass (car forms) bound) (opt-progn-prune (cdr forms) bound))))))
 
 ;;; ── IF pass ───────────────────────────────────────────────────────────────
 
-(defun opt-pass-if (form)
+(defun opt-pass-if (form &rest bound-arg)
   "Optimize (if cond then else) — constant-condition cases handled by builtin later."
-  (list 'if
-        (opt-pass (cadr form))
-        (opt-pass (caddr form))
-        (if (cdddr form) (opt-pass (cadddr form)) nil)))
+  (let ((bound (car bound-arg)))
+    (list 'if
+          (opt-pass (cadr form) bound)
+          (opt-pass (caddr form) bound)
+          (if (cdddr form) (opt-pass (cadddr form) bound) nil))))
 
 ;;; ── COLLAPSE-FRAMES pass ──────────────────────────────────────────────────
 ;;;

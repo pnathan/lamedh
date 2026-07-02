@@ -304,7 +304,13 @@ fn compile_for(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         _ => return Code::Interp(form.clone()),
     };
     let var_id = match &spec[0] {
-        LispVal::Symbol(s) => s.borrow().id,
+        LispVal::Symbol(s) => {
+            let sb = s.borrow();
+            if sb.is_dynamic {
+                return Code::Interp(form.clone());
+            }
+            sb.id
+        }
         _ => return Code::Interp(form.clone()),
     };
     let start = compile(&spec[1]);
@@ -553,8 +559,11 @@ pub(super) fn exec_step(
 
             // TCO for compiled lambdas (fixed-arity or `&rest`): skip the Rust
             // frame entirely by setting up the child env and looping.
+            // Skip the fast path when any param is dynamic — fall through to
+            // `apply` which installs DynamicBinding guards correctly.
             if let LispVal::Lambda(ref lambda) = func
                 && let Some(ref compiled_body) = lambda.compiled
+                && !env.has_any_dynamic()
             {
                 match lambda.rest_param_id {
                     None if lambda.params.len() == eval_args.len() => {

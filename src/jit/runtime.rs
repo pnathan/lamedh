@@ -39,7 +39,10 @@ impl Ctx<'_> {
     /// data pointer valid (and stable) until the call returns.
     pub(super) fn alloc_buffer(&self, n: usize) -> *mut u64 {
         const MAX_ELEMENTS: usize = 16 * 1024 * 1024; // 16 M — same cap as interpreted (array)
-        let n = n.min(MAX_ELEMENTS);
+        assert!(
+            n <= MAX_ELEMENTS,
+            "JIT alloc_buffer: requested {n} elements exceeds {MAX_ELEMENTS} limit"
+        );
         let mut buf = vec![0u64; n + 1].into_boxed_slice();
         buf[0] = n as u64;
         let ptr = buf.as_mut_ptr();

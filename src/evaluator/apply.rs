@@ -1228,7 +1228,14 @@ pub(super) fn apply(
                     new_env.set_id(*id, arg.clone());
                 }
                 let rest_args = vec_to_list(args[lambda.params.len()..].to_vec());
-                new_env.set_id(rest_param_id, rest_args);
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(rest_param_id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, rest_args));
+                } else {
+                    new_env.set_id(rest_param_id, rest_args);
+                }
             } else {
                 if lambda.params.len() != args.len() {
                     return Err(LispError::Generic(format!(
@@ -1304,7 +1311,14 @@ pub(super) fn apply_owned(
                     new_env.set_id(*id, arg);
                 }
                 let rest_args = vec_to_list(args.into_vec());
-                new_env.set_id(rest_param_id, rest_args);
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(rest_param_id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, rest_args));
+                } else {
+                    new_env.set_id(rest_param_id, rest_args);
+                }
             } else {
                 if lambda.params.len() != args.len() {
                     return Err(LispError::Generic(format!(

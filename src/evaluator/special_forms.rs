@@ -427,7 +427,14 @@ fn eval_application(
                 new_env.set_id(*id, arg);
             }
             let rest_args = vec_to_list(eval_args.into_vec());
-            new_env.set_id(rest_param_id, rest_args);
+            if has_dyn
+                && let Some(sym) = new_env.symbol_by_id(rest_param_id)
+                && sym.borrow().is_dynamic
+            {
+                guards.push(DynamicBinding::install(sym, rest_args));
+            } else {
+                new_env.set_id(rest_param_id, rest_args);
+            }
         } else {
             if lambda.params.len() != eval_args.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
@@ -1390,10 +1397,18 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let body = &args[1..];
 
                         let prog_env = Environment::new_child(env);
+                        let has_dyn = prog_env.has_any_dynamic();
+                        let mut prog_guards: Vec<DynamicBinding> = Vec::new();
 
                         for var in var_list {
                             if let LispVal::Symbol(s) = var {
-                                prog_env.set_id(s.borrow().id, LispVal::Nil);
+                                let sb = s.borrow();
+                                if has_dyn && sb.is_dynamic {
+                                    drop(sb);
+                                    prog_guards.push(DynamicBinding::install(s, LispVal::Nil));
+                                } else {
+                                    prog_env.set_id(sb.id, LispVal::Nil);
+                                }
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "PROG variable list must contain only symbols".to_string(),

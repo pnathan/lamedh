@@ -59,6 +59,13 @@ impl DynamicBinding {
     pub fn symbol_id(&self) -> u32 {
         self.symbol.borrow().id
     }
+
+    /// Extract the saved value without restoring it.  Used by the trampoline's
+    /// guard-dedup logic to drop the intermediate LispVal before `mem::forget`
+    /// so it is not leaked.
+    pub fn take_saved(&mut self) -> Option<LispVal> {
+        self.saved.take()
+    }
 }
 
 impl Drop for DynamicBinding {

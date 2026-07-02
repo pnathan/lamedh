@@ -173,7 +173,14 @@ pub(super) fn expand_macro(
             macro_env.set_id(*id, arg.clone());
         }
         let rest_args = vec_to_list(args[m.params.len()..].to_vec());
-        macro_env.set_id(rest_param_id, rest_args);
+        if has_dyn
+            && let Some(sym) = macro_env.symbol_by_id(rest_param_id)
+            && sym.borrow().is_dynamic
+        {
+            guards.push(DynamicBinding::install(sym, rest_args));
+        } else {
+            macro_env.set_id(rest_param_id, rest_args);
+        }
     } else {
         if m.params.len() != args.len() {
             return Err(LispError::Generic(format!(
@@ -318,9 +325,13 @@ fn run_trampoline(
                 // guard in the stack, the existing (older) guard holds the real
                 // pre-loop saved value. The new guard saved the previous
                 // iteration's installed value — drop it without restoring.
-                for g in new_guards {
+                for mut g in new_guards {
                     let id = g.symbol_id();
                     if guards.0.iter().any(|existing| existing.symbol_id() == id) {
+                        // Drop the saved LispVal to avoid leaking it, then
+                        // suppress the Drop impl (which would restore the
+                        // intermediate value we don't want).
+                        drop(g.take_saved());
                         std::mem::forget(g);
                     } else {
                         guards.0.push(g);
