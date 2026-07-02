@@ -6,6 +6,12 @@ A tiny, self-contained example of driving a Rust "game" with Lamedh scripts.
 cargo run --example game_demo
 ```
 
+There is a second, pure-Lisp example in this directory: **`npcs.lisp`**, which
+shows polymorphic NPC kinds (shared method names specialized per kind, and
+genuinely shared methods) built from concepts, interfaces, and row types — no
+engine involved. Run it with `cargo run -- -i examples/game/npcs.lisp`; the
+walkthrough is [docs/npc_polymorphism.md](../../docs/npc_polymorphism.md).
+
 ## What it shows
 
 The demo is split across two files:
