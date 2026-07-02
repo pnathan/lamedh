@@ -70,10 +70,31 @@ fn a_kind_missing_the_specialized_op_fails_conformance() {
     let env = env_with_npcs();
     let report = eval_line("(implements? 'training-dummy 'npc)", &env);
     assert!(report.starts_with("(()"), "got: {report}");
+    // The row accessors it does have still CONFORM; only GREET is MISSING.
+    assert!(report.contains("(NAME CONFORMS"), "got: {report}");
     assert!(report.contains("(GREET MISSING"), "got: {report}");
     assert_eq!(
         eval_line("(errorset '(implements! 'training-dummy 'npc))", &env),
         "()"
+    );
+}
+
+#[test]
+fn row_accessor_ops_conform_greet_stays_unproven() {
+    let env = env_with_npcs();
+    // NAME and HP carry DECLARED row schemes that subsume the op signatures at
+    // self := the concept's record type: a real, checker-backed guarantee.
+    let goblin = eval_line("(implements? 'goblin 'npc)", &env);
+    assert!(
+        goblin.contains("(NAME CONFORMS GOBLIN-NAME"),
+        "got: {goblin}"
+    );
+    assert!(goblin.contains("(HP CONFORMS GOBLIN-HP"), "got: {goblin}");
+    // GREET builds a string with CONCAT, defeating inference: its scheme is
+    // vacuous, so it exists but proves nothing — honestly UNPROVEN, not CONFORMS.
+    assert!(
+        goblin.contains("(GREET UNPROVEN GOBLIN-GREET"),
+        "got: {goblin}"
     );
 }
 

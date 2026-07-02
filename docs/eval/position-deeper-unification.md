@@ -53,6 +53,15 @@ question in its own representation and the conversion is missing.
 
 ## 2. Seam A: conformance interrogates the wrong type language — and inverts the incentive
 
+> **Status: fixed on this branch.** The two changes below are implemented —
+> `scheme-subsumes?` is a kernel builtin over the checker's row unifier
+> (`src/jit/registry.rs`, `src/evaluator/introspection.rs`), and
+> `iface-op-status` now substitutes `self` with the concept's record type and
+> asks it (`lib/21-interfaces.lisp`). `goblin-power`, the derived
+> `invoice-equal`, and the `name`/`hp` accessors of `examples/game/npcs.lisp`
+> now grade `CONFORMS`; only genuinely opaque methods (`greet`) stay
+> `UNPROVEN`. The analysis below is retained as the record of *why*.
+
 `implements?` substitutes `self` with the concept **symbol** and unifies
 `(-> (goblin) int64)` against the verdict. But for a row concept the verdict
 lives in the **record** language. The probe:
@@ -97,12 +106,16 @@ thesis calls for, and both halves already exist:
    `iface-unify` entirely. This respects the CLAUDE.md kernel rule: the
    kernel gains one *query*, the conformance *policy* stays in Lisp.
 
-With that, `CONFORMS` becomes a checker verdict rather than a Lisp-side
-approximation of one, `DECLARED` row schemes become confirming evidence
-(they are axioms; the interface layer should trust them exactly as far as
-`condense-verified-p` already does), and the inversion disappears. This is
-a correctness fix to an existing question, not new type machinery; it does
-not need the benchmark gate.
+With that, `CONFORMS` became a checker verdict rather than a Lisp-side
+approximation of one, `DECLARED` row schemes are confirming evidence (they are
+axioms, trusted at call sites), and the inversion is gone. The one wrinkle the
+implementation had to keep: a *vacuous* `CHECKED` scheme (result variable no
+argument constrains — the `greet`/`concat` case) is still gated to `UNPROVEN`
+*before* subsumption, because instantiating it would let its free result
+variable unify with anything and falsely confirm. Honesty is preserved: the
+method exists, but the checker proved nothing about it. This was a correctness
+fix to an existing question, not new type machinery, so it did not need the
+benchmark gate.
 
 ## 3. Seam B: interfaces are not condensation citizens, so claims can rot
 
@@ -176,7 +189,7 @@ system cannot see is a trap for the next author. Options, ranked:
 
 ## 5. The deeper unification, named — and gated
 
-Seams A, B, and D are conversions between existing identities. Seam C is the
+Seams A and B are conversions between existing identities. Seam C is the
 observation that goes further. In the NPC example these two lines state the
 same fact in two languages:
 
@@ -213,13 +226,14 @@ away if the destination is ever funded.
 
 Ranked, admissible-first:
 
-1. **Fix Seam A** — `self ↦` the concept's record type; add the
-   `scheme-subsumes?` kernel query; delete `iface-unify`. Kills the
-   evidence-inversion (MISMATCH on proven-correct methods) and makes
-   `CONFORMS` mean what it says. Correctness fix; no gate.
-2. **Fix Seam D by name-directed dynamic access** — make the `DECLARED`
+1. **Fix Seam A** — ✅ **done on this branch.** `self ↦` the concept's record
+   type; `scheme-subsumes?` kernel query over the checker's row unifier;
+   `iface-unify` deleted. Killed the evidence-inversion (MISMATCH on
+   proven-correct methods) and made `CONFORMS` mean what it says. Correctness
+   fix; no gate.
+2. **Fix Seam C by name-directed dynamic access** — make the `DECLARED`
    axiom true for every layout, not just the shared-prefix convention.
-   Soundness fix; no gate.
+   Soundness fix; no gate. (The next admissible step.)
 3. **Make interfaces condensation citizens (Seam B)** — record through
    `condense-record!`, fingerprint `implements!` claims, re-grade in
    `condense-recheck!`. Pure Lisp; converts one-time stamps into

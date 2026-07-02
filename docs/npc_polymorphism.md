@@ -167,15 +167,16 @@ A training dummy has the shared fields but nobody taught it to speak:
   (:fields ((name string) (hp int64))))
 
 (implements? 'training-dummy 'npc)
-; => (() (NAME UNPROVEN TRAINING-DUMMY-NAME (FORALL (A) ...))
-;        (HP UNPROVEN TRAINING-DUMMY-HP (FORALL (A) ...))
+; => (() (NAME CONFORMS TRAINING-DUMMY-NAME (FORALL (A) ...))
+;        (HP CONFORMS TRAINING-DUMMY-HP (FORALL (A) ...))
 ;        (GREET MISSING TRAINING-DUMMY-GREET))
 ```
 
-`name` and `hp` exist (graded `UNPROVEN` — see the seam note below), `greet`
-is `MISSING`, the overall check fails, and `implements!` would refuse the
-claim. Meanwhile `wounded-p` still works on a dummy — it only needs the
-field. The two membership tests are different questions and stay separate.
+`name` and `hp` `CONFORM` — the dummy carries the fields, so their generated
+accessors' row schemes subsume the op signatures — but `greet` is `MISSING`,
+the overall check fails, and `implements!` would refuse the claim. Meanwhile
+`wounded-p` still works on a dummy — it only needs the field. The two
+membership tests are different questions and stay separate.
 
 Invariants travel with the seed, as executable validators:
 
@@ -184,22 +185,38 @@ Invariants travel with the seed, as executable validators:
 (validate-goblin (make-goblin "Snag" -1 3)) ; => NIL
 ```
 
+## Why `greet` is `UNPROVEN` but `name` is `CONFORMS`
+
+Conformance grades by asking the checker, not by trusting that a function
+exists. `implements?` substitutes `self` with the type's *structural*
+identity — a goblin's closed record `(record ((name string) (hp int64)
+(ferocity int64)))` — and asks the kernel's own row unifier whether the
+method's scheme subsumes the op signature (the `scheme-subsumes?` builtin).
+
+- `name`/`hp` carry `DECLARED` row schemes (`(forall (a) (-> ((record
+  ((hp int64)) a)) int64))`); the closed goblin record is an instance, so
+  they `CONFORM` — a real, checker-backed guarantee.
+- `greet` builds a string with `concat`, which defeats inference: its scheme
+  is `(forall (a b) (-> ((record ((name string)) a)) b))`, whose result `b`
+  is unconstrained. That is *vacuous* — the checker found no contradiction
+  but proved nothing — so it grades `UNPROVEN`, honestly, rather than being
+  waved through as conformant. Give `greet` a checkable body (or a `DECLARED`
+  scheme) and it too would `CONFORM`.
+
+This is the fix for what was a documented seam: an earlier version
+substituted `self` with the concept *symbol* and reimplemented unification in
+Lisp, so a record-typed verdict — the strongest evidence the checker can
+produce — could never confirm, and every row method graded `UNPROVEN`. See
+`docs/eval/position-deeper-unification.md` §2 for the analysis.
+
 ## The fine print
 
-Two honest caveats, both visible in the transcript rather than papered over:
+One honest caveat remains, visible in the transcript rather than papered over:
 
-1. **Conformance grades row-typed methods `UNPROVEN`, not `CONFORMS`.** The
-   interface layer substitutes `self` with the concept *symbol* and unifies
-   `(-> (goblin) string)` against the verdict; the verdict for a row concept
-   is a *record* scheme, so unification cannot confirm it. `DECLARED`/row
-   verdicts therefore grade `UNPROVEN` — present, not contradicted, not
-   proven. This is the documented seam between the interface layer and the
-   row checker (see `docs/eval/position-deeper-unification.md` for the fix
-   direction).
-2. **The shared-fields-first convention is load-bearing.** Accessors are
-   positional at runtime (`goblin-hp` is `(nth 2 self)`) while their declared
-   schemes are by-name. Keeping shared fields in the same leading positions
-   is what makes the row story and the runtime agree. Break the convention
-   and a cross-kind accessor call can type-check yet read the wrong slot —
-   the declared axiom promises more than the positional implementation
-   delivers. Same document for the analysis.
+**The shared-fields-first convention is load-bearing.** Accessors are
+positional at runtime (`goblin-hp` is `(nth 2 self)`) while their declared
+schemes are by-name. Keeping shared fields in the same leading positions is
+what makes the row story and the runtime agree. Break the convention and a
+cross-kind accessor call can type-check yet read the wrong slot — the declared
+axiom promises more than the positional implementation delivers. This is
+Seam C in `docs/eval/position-deeper-unification.md`, still open.

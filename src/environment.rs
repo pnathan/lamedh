@@ -962,6 +962,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::DeclareType),
         );
         env.set(
+            "SCHEME-SUBSUMES?".to_string(),
+            LispVal::Builtin(BuiltinFunc::SchemeSubsumes),
+        );
+        env.set(
             "DISASSEMBLE".to_string(),
             LispVal::Builtin(BuiltinFunc::Disassemble),
         );
@@ -1219,6 +1223,15 @@ impl Environment {
     /// The rendered declared scheme for `name`, if any.
     pub fn jit_declared_scheme(&self, name: &str) -> Option<String> {
         self.shared.jit.borrow().declared_scheme_name(name)
+    }
+
+    /// Does the (possibly polymorphic) `scheme` **subsume** the ground `wanted`
+    /// type — i.e. can it be instantiated to match, under the kernel's own
+    /// unifier (rows included)? Both are surface type forms. The interface
+    /// layer's conformance query: it grades a method against a declared
+    /// signature using the real checker instead of a Lisp reimplementation.
+    pub fn jit_scheme_subsumes(&self, scheme: &LispVal, wanted: &LispVal) -> bool {
+        self.shared.jit.borrow().scheme_subsumes(scheme, wanted)
     }
 
     /// One-pass analyze: check, then compile if compileable (#162 stage 4).

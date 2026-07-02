@@ -356,7 +356,6 @@ impl Infer {
     }
 
     /// Instantiate a scheme with fresh variables for each bound variable.
-    #[allow(dead_code)] // used once call sites instantiate generalized callees (#162)
     pub(crate) fn instantiate(&mut self, s: &Scheme) -> Ty {
         let mapping: HashMap<u32, Ty> = s.vars.iter().map(|v| (*v, self.fresh())).collect();
         Self::subst_vars(&s.ty, &mapping)
