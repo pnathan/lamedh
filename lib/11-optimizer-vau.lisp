@@ -228,12 +228,11 @@ Lazily computes and caches the purity verdict using the current function body."
                (not mutated)
                (atom init)
                (not (null init)))
-          ;; Substitute init for var in remaining bindings and body
-          (let* ((new-body  (subst init var body))
-                 (new-rest  (mapcar (lambda (rb)
-                                      (list (car rb) (subst init var (cadr rb))))
-                                    rest)))
-            (opt-reduce-bindings new-rest new-body)))
+          ;; Substitute init for var in body only; sibling inits are NOT
+          ;; touched because LET evaluates all inits in the enclosing
+          ;; environment — a sibling init's free reference to var always
+          ;; resolves to the outer binding, not the one being inlined.
+          (opt-reduce-bindings rest (subst init var body)))
          ;; Keep binding, recurse on rest
          (t
           (let ((tail (opt-reduce-bindings rest body)))

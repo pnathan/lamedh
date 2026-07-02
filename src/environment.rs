@@ -1010,6 +1010,21 @@ impl Environment {
         self.shared.symbols.borrow_mut().intern(name)
     }
 
+    /// Look up the symbol with the given id in the global symbol table.
+    /// Returns `None` if the id is not registered (should not happen for
+    /// ids produced by `intern`/`gensym`).
+    pub fn symbol_by_id(&self, id: u32) -> Option<Shared<SharedCell<Symbol>>> {
+        self.shared.symbols.borrow().symbol_by_id(id)
+    }
+
+    /// Fast-path check: `true` once any variable has been marked dynamic.
+    /// Binding sites use this to skip the `symbol_by_id` + `is_dynamic` probe
+    /// in the common case where no dynamic variables exist at all.
+    #[inline]
+    pub fn has_any_dynamic(&self) -> bool {
+        self.shared.has_dynamic.get()
+    }
+
     /// Generate a fresh uninterned symbol.  Equivalent to `(gensym)` in Lisp.
     pub fn gensym(&self) -> Shared<SharedCell<Symbol>> {
         self.shared.symbols.borrow_mut().gensym()

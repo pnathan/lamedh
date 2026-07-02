@@ -151,6 +151,8 @@ pub(super) fn expand_macro(
     _env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let macro_env = Environment::new_child(&m.env);
+    let has_dyn = macro_env.has_any_dynamic();
+    let mut guards: Vec<DynamicBinding> = Vec::new();
 
     if let Some(rest_param_id) = m.rest_param_id {
         if args.len() < m.params.len() {
@@ -161,6 +163,13 @@ pub(super) fn expand_macro(
             )));
         }
         for (id, arg) in m.param_ids.iter().zip(args.iter()) {
+            if has_dyn
+                && let Some(sym) = macro_env.symbol_by_id(*id)
+                && sym.borrow().is_dynamic
+            {
+                guards.push(DynamicBinding::install(sym, arg.clone()));
+                continue;
+            }
             macro_env.set_id(*id, arg.clone());
         }
         let rest_args = vec_to_list(args[m.params.len()..].to_vec());
@@ -174,11 +183,19 @@ pub(super) fn expand_macro(
             )));
         }
         for (id, arg) in m.param_ids.iter().zip(args) {
+            if has_dyn
+                && let Some(sym) = macro_env.symbol_by_id(*id)
+                && sym.borrow().is_dynamic
+            {
+                guards.push(DynamicBinding::install(sym, arg.clone()));
+                continue;
+            }
             macro_env.set_id(*id, arg.clone());
         }
     }
 
     eval(&m.body, &macro_env)
+    // guards drops here, restoring any dynamic bindings
 }
 
 /// Public entry point for evaluation. Acquires a depth-guard frame (issue #61)

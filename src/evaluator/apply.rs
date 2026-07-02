@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment::DynamicBinding;
 use smallvec::SmallVec;
 pub(super) fn apply(
     func: &LispVal,
@@ -1200,6 +1201,8 @@ pub(super) fn apply(
             // - Lexical parent: lambda.env (captured closure environment)
             // - Dynamic parent: env (caller's environment for dynamic variable lookup)
             let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+            let has_dyn = new_env.has_any_dynamic();
+            let mut guards: Vec<DynamicBinding> = Vec::new();
             if let Some(rest_param_id) = lambda.rest_param_id {
                 if args.len() < lambda.params.len() {
                     return Err(LispError::Generic(format!(
@@ -1209,6 +1212,13 @@ pub(super) fn apply(
                     )));
                 }
                 for (id, arg) in lambda.param_ids.iter().zip(args.iter()) {
+                    if has_dyn
+                        && let Some(sym) = new_env.symbol_by_id(*id)
+                        && sym.borrow().is_dynamic
+                    {
+                        guards.push(DynamicBinding::install(sym, arg.clone()));
+                        continue;
+                    }
                     new_env.set_id(*id, arg.clone());
                 }
                 let rest_args = vec_to_list(args[lambda.params.len()..].to_vec());
@@ -1222,11 +1232,19 @@ pub(super) fn apply(
                     )));
                 }
                 for (id, arg) in lambda.param_ids.iter().zip(args) {
+                    if has_dyn
+                        && let Some(sym) = new_env.symbol_by_id(*id)
+                        && sym.borrow().is_dynamic
+                    {
+                        guards.push(DynamicBinding::install(sym, arg.clone()));
+                        continue;
+                    }
                     new_env.set_id(*id, arg.clone());
                 }
             }
 
             // Use the compiled body when available; fall back to tree-walker.
+            // guards drops here, restoring any dynamic bindings.
             match &lambda.compiled {
                 Some(compiled) => exec(compiled, &new_env),
                 None => eval(&lambda.body, &new_env),
@@ -1256,6 +1274,8 @@ pub(super) fn apply_owned(
             // - Lexical parent: lambda.env (captured closure environment)
             // - Dynamic parent: env (caller's environment for dynamic variable lookup)
             let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+            let has_dyn = new_env.has_any_dynamic();
+            let mut guards: Vec<DynamicBinding> = Vec::new();
             if let Some(rest_param_id) = lambda.rest_param_id {
                 if args.len() < lambda.params.len() {
                     return Err(LispError::Generic(format!(
@@ -1268,6 +1288,13 @@ pub(super) fn apply_owned(
                 let n_fixed = lambda.params.len();
                 let mut args = args;
                 for (id, arg) in lambda.param_ids.iter().zip(args.drain(..n_fixed)) {
+                    if has_dyn
+                        && let Some(sym) = new_env.symbol_by_id(*id)
+                        && sym.borrow().is_dynamic
+                    {
+                        guards.push(DynamicBinding::install(sym, arg));
+                        continue;
+                    }
                     new_env.set_id(*id, arg);
                 }
                 let rest_args = vec_to_list(args.into_vec());
@@ -1282,10 +1309,18 @@ pub(super) fn apply_owned(
                 }
                 // Move every arg directly into the frame — no clone.
                 for (id, arg) in lambda.param_ids.iter().zip(args) {
+                    if has_dyn
+                        && let Some(sym) = new_env.symbol_by_id(*id)
+                        && sym.borrow().is_dynamic
+                    {
+                        guards.push(DynamicBinding::install(sym, arg));
+                        continue;
+                    }
                     new_env.set_id(*id, arg);
                 }
             }
             // Use the compiled body when available; fall back to tree-walker.
+            // guards drops here, restoring any dynamic bindings.
             match &lambda.compiled {
                 Some(compiled) => exec(compiled, &new_env),
                 None => eval(&lambda.body, &new_env),

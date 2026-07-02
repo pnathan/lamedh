@@ -187,8 +187,8 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         ))));
     }
 
-    let var_id = if let LispVal::Symbol(s) = &spec[0] {
-        s.borrow().id
+    let (var_id, var_sym) = if let LispVal::Symbol(s) = &spec[0] {
+        (s.borrow().id, s.clone())
     } else {
         return Ok(TcoStep::Done(Err(LispError::Generic(
             "for loop variable must be a symbol".to_string(),
@@ -219,6 +219,15 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
 
     let body = &args[1..];
     let loop_env = Environment::new_child(env);
+    let is_dyn = var_sym.borrow().is_dynamic;
+    let _dyn_guard = if is_dyn {
+        Some(DynamicBinding::install(
+            var_sym.clone(),
+            LispVal::Number(start),
+        ))
+    } else {
+        None
+    };
 
     let mut i = start;
     loop {
@@ -226,7 +235,11 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         if (step > 0 && i > end) || (step < 0 && i < end) {
             break;
         }
-        loop_env.set_id(var_id, LispVal::Number(i));
+        if is_dyn {
+            var_sym.borrow_mut().value = Some(LispVal::Number(i));
+        } else {
+            loop_env.set_id(var_id, LispVal::Number(i));
+        }
         for form in body {
             eval(form, &loop_env)?;
         }
@@ -313,9 +326,24 @@ fn eval_application(
     // Fexpr application: TCO — bind unevaluated args, continue with body.
     if let LispVal::Fexpr(fexpr) = &func {
         let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
+        let has_dyn = new_env.has_any_dynamic();
+        let mut guards: Vec<DynamicBinding> = Vec::new();
         if fexpr.param_ids.len() == 1 {
             // Single-param: bind entire unevaluated arg list to the one parameter.
-            new_env.set_id(fexpr.param_ids[0], rest.clone());
+            let id = fexpr.param_ids[0];
+            if has_dyn {
+                if let Some(sym) = new_env.symbol_by_id(id) {
+                    if sym.borrow().is_dynamic {
+                        guards.push(DynamicBinding::install(sym, rest.clone()));
+                    } else {
+                        new_env.set_id(id, rest.clone());
+                    }
+                } else {
+                    new_env.set_id(id, rest.clone());
+                }
+            } else {
+                new_env.set_id(id, rest.clone());
+            }
         } else {
             // Multi-param: bind each unevaluated arg to its parameter.
             let unevaluated_args = list_to_vec(rest)?;
@@ -327,10 +355,25 @@ fn eval_application(
                 )))));
             }
             for (id, arg) in fexpr.param_ids.iter().zip(unevaluated_args) {
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(*id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, arg));
+                    continue;
+                }
                 new_env.set_id(*id, arg);
             }
         }
-        return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
+        if guards.is_empty() {
+            return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
+        } else {
+            return Ok(TcoStep::TailCallWithGuards(
+                *fexpr.body.clone(),
+                new_env,
+                guards,
+            ));
+        }
     }
 
     // Evaluated-argument callables (lambda/builtin/native): evaluate operands
@@ -340,6 +383,8 @@ fn eval_application(
     // Lambda application: TCO — set up new env and continue with body.
     if let LispVal::Lambda(lambda) = &func {
         let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+        let has_dyn = new_env.has_any_dynamic();
+        let mut guards: Vec<DynamicBinding> = Vec::new();
         if let Some(rest_param_id) = lambda.rest_param_id {
             if eval_args.len() < lambda.params.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
@@ -352,6 +397,13 @@ fn eval_application(
             let n_fixed = lambda.params.len();
             let mut eval_args = eval_args;
             for (id, arg) in lambda.param_ids.iter().zip(eval_args.drain(..n_fixed)) {
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(*id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, arg));
+                    continue;
+                }
                 new_env.set_id(*id, arg);
             }
             let rest_args = vec_to_list(eval_args.into_vec());
@@ -366,20 +418,36 @@ fn eval_application(
             }
             // Move every arg directly into the frame — no clone.
             for (id, arg) in lambda.param_ids.iter().zip(eval_args) {
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(*id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, arg));
+                    continue;
+                }
                 new_env.set_id(*id, arg);
             }
         }
-        // If a compiled body is available, hand off to it as a tail call on
-        // the *same* trampoline (`TcoStep::ExecTail`) rather than invoking a
-        // fresh `exec()` — that used to be a separate, non-tail Rust call
-        // that grew the native stack and eval-depth counter on every
-        // tree-walker → compiled crossing (issue #200 M1' regression).
-        // Otherwise fall back to the standard TailCall so the outer
-        // trampoline handles TCO for the tree-walking path.
-        if let Some(compiled) = &lambda.compiled {
-            return Ok(TcoStep::ExecTail(compiled.clone(), new_env));
+        if guards.is_empty() {
+            // If a compiled body is available, hand off to it as a tail call on
+            // the *same* trampoline (`TcoStep::ExecTail`) rather than invoking a
+            // fresh `exec()` — that used to be a separate, non-tail Rust call
+            // that grew the native stack and eval-depth counter on every
+            // tree-walker → compiled crossing (issue #200 M1' regression).
+            // Otherwise fall back to the standard TailCall so the outer
+            // trampoline handles TCO for the tree-walking path.
+            if let Some(compiled) = &lambda.compiled {
+                return Ok(TcoStep::ExecTail(compiled.clone(), new_env));
+            }
+            return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
         }
-        return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
+        // Dynamic params present: fall back to tree-walker so TailCallWithGuards
+        // can carry the guards into the trampoline's DynamicGuardStack.
+        return Ok(TcoStep::TailCallWithGuards(
+            *lambda.body.clone(),
+            new_env,
+            guards,
+        ));
     }
 
     // All other callables (builtins, natives): apply inline.
