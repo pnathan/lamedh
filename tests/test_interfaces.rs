@@ -105,8 +105,9 @@ fn declared_row_schemes_count_as_conformance_evidence() {
         &env,
     );
     let report = eval_line("(implements? 'invoice 'eq-able)", &env);
-    // INVOICE-EQUAL's declared type is over records, not the symbol INVOICE,
-    // so unification against (-> (invoice invoice) bool) cannot confirm — but
-    // the operation exists and the check must not error.
-    assert!(report.contains("(EQUAL"), "got: {report}");
+    // SELF for a row-typed concept substitutes to its closed record, and the
+    // interface unifier is row-aware: the declared equality scheme over open
+    // records unifies with it — CONFORMS, a real guarantee.
+    assert!(report.contains("(EQUAL CONFORMS"), "got: {report}");
+    assert!(report.starts_with("(T"), "got: {report}");
 }

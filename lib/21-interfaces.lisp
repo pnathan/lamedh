@@ -9,7 +9,7 @@
 ;;; assertion on top: check now, record the claim, error loudly on failure.
 ;;;
 ;;; Conformance is graded with the same honesty vocabulary as condensation:
-;;;   CONFORMS  the verdict (TYPED or informative CHECKED) unifies with the
+;;;   CONFORMS  the verdict (TYPED, informative CHECKED, or DECLARED) unifies with the
 ;;;             declared signature at self := type -- a real guarantee
 ;;;   UNPROVEN  the function exists but its verdict is VACUOUS or DYNAMIC --
 ;;;             nothing confirmed, nothing denied
@@ -88,11 +88,23 @@ like any other definition."
 ;;; the declared side is ground, the verdict side may contain its FORALL
 ;;; variables, which bind consistently or the unification fails.
 
+(defun iface-self-type (type)
+  "The type SELF stands for: a concept's closed record when its fields map
+into the checker's row language, otherwise TYPE itself."
+  (let ((fields (if (eq (condense-kind type) 'concept)
+                    (condense-row-fields (condense-get type "condense.fields"))
+                    nil)))
+    (if fields (list 'record fields) type)))
+
 (defun iface-substitute-self (form type)
+  (let ((self-type (iface-self-type type)))
+    (iface-substitute-self-walk form self-type)))
+
+(defun iface-substitute-self-walk (form self-type)
   (cond
-    ((eq form 'self) type)
-    ((consp form) (cons (iface-substitute-self (car form) type)
-                        (iface-substitute-self (cdr form) type)))
+    ((eq form 'self) self-type)
+    ((consp form) (cons (iface-substitute-self-walk (car form) self-type)
+                        (iface-substitute-self-walk (cdr form) self-type)))
     (t form)))
 
 (defun iface-scheme-vars (scheme)
@@ -101,9 +113,13 @@ like any other definition."
 (defun iface-scheme-body (scheme)
   (if (and (consp scheme) (eq (car scheme) 'forall)) (caddr scheme) scheme))
 
+(defun iface-record-p (form)
+  (and (consp form) (eq (car form) 'record)))
+
 (defun iface-unify (want got vars bindings)
   "Unify ground WANT against GOT whose variables are VARS.
-Returns the updated bindings alist, or the symbol FAIL."
+Returns the updated bindings alist, or the symbol FAIL. ANY is absorbing
+(mirroring the checker); records unify by label with row-tail awareness."
   (cond
     ((eq bindings 'fail) 'fail)
     ((member got vars)
@@ -112,7 +128,10 @@ Returns the updated bindings alist, or the symbol FAIL."
          ((null bound) (cons (cons got want) bindings))
          ((equal (cdr bound) want) bindings)
          (t 'fail))))
+    ((or (eq want 'any) (eq got 'any)) bindings)
     ((equal want got) bindings)
+    ((and (iface-record-p want) (iface-record-p got))
+     (iface-unify-records want got vars bindings))
     ((and (consp want)
           (consp got)
           (condense-proper-list-p want)
@@ -120,6 +139,40 @@ Returns the updated bindings alist, or the symbol FAIL."
           (equal (length want) (length got)))
      (iface-unify-list want got vars bindings))
     (t 'fail)))
+
+(defun iface-fields-minus (fields labels)
+  (filter (lambda (f) (not (member (car f) labels))) fields))
+
+(defun iface-unify-fields (want-fields got-fields vars bindings)
+  (cond
+    ((eq bindings 'fail) 'fail)
+    ((null got-fields) bindings)
+    (t (let ((want-field (assoc (car (car got-fields)) want-fields)))
+         (if (null want-field)
+             'fail
+             (iface-unify-fields want-fields (cdr got-fields) vars
+                                 (iface-unify (cadr want-field)
+                                              (cadr (car got-fields))
+                                              vars bindings)))))))
+
+(defun iface-unify-records (want got vars bindings)
+  "Unify a ground (closed) WANT record against a GOT record with an optional
+row tail: every GOT field must appear in WANT with a unifiable type; WANT's
+remaining fields are absorbed by GOT's row tail (or must be none)."
+  (let* ((want-fields (cadr want))
+         (got-fields (cadr got))
+         (got-tail (caddr got))
+         (bindings (iface-unify-fields want-fields got-fields vars bindings)))
+    (cond
+      ((eq bindings 'fail) 'fail)
+      ((null got-tail)
+       (if (equal (length want-fields) (length got-fields)) bindings 'fail))
+      (t (iface-unify (list 'record
+                            (iface-fields-minus want-fields
+                                                (mapcar #'car got-fields)))
+                      got-tail
+                      vars
+                      bindings)))))
 
 (defun iface-unify-list (want got vars bindings)
   (if (null want)
@@ -157,6 +210,12 @@ Returns the updated bindings alist, or the symbol FAIL."
                ((iface-unifies-p want (cadr verdict))
                 (list op 'conforms fn (cadr verdict)))
                (t (list op 'mismatch fn (cadr verdict)))))
+            ;; A DECLARED (row) scheme is generator-backed evidence: unify the
+            ;; wanted signature against it like any other scheme.
+            ((eq (car verdict) 'declared)
+             (if (iface-unifies-p want (cadr verdict))
+                 (list op 'conforms fn (cadr verdict))
+                 (list op 'mismatch fn (cadr verdict))))
             (t (list op 'unproven fn (cadr verdict))))))))
 
 (defun implements? (type iface)

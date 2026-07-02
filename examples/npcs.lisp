@@ -1,0 +1,138 @@
+;;; npcs.lisp -- three kinds of NPC, one shared vocabulary, specialized voices.
+;;;
+;;; This example exercises the whole condensation stack at once:
+;;;
+;;;   - DEFCONCEPT seeds with row-typed fields (one form generates the
+;;;     constructor, predicate, accessors, validator, equality, and lens --
+;;;     each carrying a DECLARED row scheme the checker enforces at call
+;;;     sites);
+;;;   - a SHARED method, written exactly once, row-polymorphically: DAMAGE
+;;;     works on "anything with an int64 hp", and the checker proves it;
+;;;   - a SPECIALIZED method: each kind has its own GREET, dispatched by
+;;;     METHOD (one deterministic name computation, no dispatch table);
+;;;   - a DEFINTERFACE method set, with IMPLEMENTS! verifying each kind's
+;;;     methods against the declared signatures by row unification.
+;;;
+;;; Run it:   cargo run -- -i examples/npcs.lisp
+;;; Check it: cargo run -- --capability READ-FS -s '(check-file! "examples/npcs.lisp")'
+
+;;; ---- the kinds --------------------------------------------------------
+;; All NPC kinds lead with the same two fields, (name string) (hp int64) --
+;; the shared vocabulary. The row types make that sharing a checkable
+;; contract; the leading layout makes the shared accessors below work at
+;; runtime (concepts are positional under the hood).
+
+(defconcept goblin
+  (:fields ((name string) (hp int64) (mischief int64)))
+  (:invariant (>= hp 0))
+  (:derive equality lens))
+
+(defconcept merchant
+  (:fields ((name string) (hp int64) (gold int64)))
+  (:invariant (and (>= hp 0) (>= gold 0)))
+  (:derive equality lens))
+
+(defconcept wisp
+  (:fields ((name string) (hp int64) (glow float64)))
+  (:invariant (>= hp 0))
+  (:derive equality lens))
+
+;;; ---- the shared vocabulary, as rows ------------------------------------
+;; One accessor pair serves every kind. The DECLARE-TYPE! row schemes are the
+;; contract: "any record with a string name / an int64 hp, whatever else it
+;; carries." The checker holds every caller to it.
+
+(defun npc-name (self) (nth 1 self))
+(declare-type! 'npc-name
+               '(forall (r) (-> ((record ((name string)) r)) string)))
+
+(defun npc-hp (self) (nth 2 self))
+(declare-type! 'npc-hp
+               '(forall (r) (-> ((record ((hp int64)) r)) int64)))
+
+;;; ---- shared behavior: written once, typed for every kind ----------------
+;; No annotations below -- the row schemes are INFERRED:
+;;
+;;   (see-type 'alive-p)
+;;   ; => (CHECKED (FORALL (A) (-> ((RECORD ((HP INT64)) A)) BOOL)))
+;;
+;; ALIVE-P and HIT-POINTS-AFTER are one implementation each, shared by
+;; goblins, merchants, wisps, and any future kind with an hp field.
+
+(defun alive-p (npc)
+  "True while NPC still stands. Works for any record with an int64 hp."
+  (> (npc-hp npc) 0))
+
+(defun hit-points-after (npc amount)
+  "NPC's hp after taking AMOUNT damage, floored at zero."
+  (let ((left (- (npc-hp npc) amount)))
+    (if (> left 0) left 0)))
+
+;;; ---- the method set ------------------------------------------------------
+;; GREET is specialized per kind (each has a voice); DAMAGE is specialized
+;; only in its rebuild step (each kind's lens), delegating the shared logic
+;; to HIT-POINTS-AFTER. A method is an ordinary TYPE-OP function -- it
+;; type-checks, edits, and traces like any other definition.
+
+(definterface npc
+  (:ops ((greet (-> (self) string))
+         (damage (-> (self int64) self)))))
+
+(defun goblin-greet (self)
+  (concat (npc-name self) " sharpens a rusty dagger and cackles."))
+
+(defun merchant-greet (self)
+  (concat (npc-name self) " beams: fine wares, fair prices!"))
+
+(defun wisp-greet (self)
+  (concat (npc-name self) " flickers softly in the gloom."))
+
+(defun goblin-damage (self amount)
+  (plist->goblin
+    (alist-put (goblin->plist self) 'hp (hit-points-after self amount))))
+
+(defun merchant-damage (self amount)
+  (plist->merchant
+    (alist-put (merchant->plist self) 'hp (hit-points-after self amount))))
+
+(defun wisp-damage (self amount)
+  (plist->wisp
+    (alist-put (wisp->plist self) 'hp (hit-points-after self amount))))
+
+;; Verify the claims: each op's declared signature is unified against the
+;; checker's verdict for each kind's method (rows and all). MISSING or
+;; MISMATCH would error the load, right here.
+(implements! 'goblin 'npc)
+(implements! 'merchant 'npc)
+(implements! 'wisp 'npc)
+
+;;; ---- a scene --------------------------------------------------------------
+
+(def *party*
+  (list (make-goblin "Grix" 7 9)
+        (make-merchant "Oleander" 12 240)
+        (make-wisp "Sel" 3 0.8)))
+
+(defun taunt-all (npcs)
+  "Every NPC greets in its own voice -- one call site, three voices."
+  (mapcar (lambda (n) (method 'greet n)) npcs))
+
+(defun scuffle (npc amount)
+  "Shared damage logic through each kind's own rebuild."
+  (method 'damage npc amount))
+
+(print (taunt-all *party*))
+(print (mapcar (lambda (n) (npc-hp (scuffle n 5))) *party*))
+(print (mapcar #'alive-p (mapcar (lambda (n) (scuffle n 5)) *party*)))
+
+;; What the checker knows, without a single annotation in this file's logic:
+;;
+;;   (check-type (defun weaken (n) (scuffle n (npc-hp n))))
+;;     -- fine: anything with hp can be weakened by its own hp.
+;;
+;;   (goblin-mischief (make-merchant "Oleander" 12 240))
+;;     ; => TYPE-ERROR: closed record lacks field(s) mischief
+;;     -- cross-kind misuse is caught statically, and EDIT! refuses (and
+;;        rolls back) any edit that would introduce it.
+
+'npcs-loaded
