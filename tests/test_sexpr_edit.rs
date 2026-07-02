@@ -183,7 +183,7 @@ fn check_file_reports_honest_verdicts_for_a_whole_file() {
     let report = eval_line(&format!("(check-file! \"{}\")", path.display()), &env);
     assert!(report.contains("(INC CHECKED"), "got: {report}");
     assert!(report.contains("(BROKEN TYPE-ERROR"), "got: {report}");
-    assert!(report.contains("(INVOICE-EQUAL VACUOUS"), "got: {report}");
+    assert!(report.contains("(INVOICE-EQUAL DECLARED"), "got: {report}");
     // The frontier is the unproven remainder: BROKEN is on it, INC is not.
     let frontier = report.split("FRONTIER").nth(1).unwrap_or("");
     assert!(frontier.contains("BROKEN"), "got: {frontier}");

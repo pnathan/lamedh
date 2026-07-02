@@ -72,6 +72,33 @@ pub(super) fn apply_introspection(
                 .map_err(|e| LispError::Generic(format!("read-string: {e}")))?;
             Ok(vec_to_list(forms))
         }
+        BuiltinFunc::DeclareType => {
+            // (declare-type! 'name '(forall (r) (-> (...) ...))) — register a
+            // declared scheme (experimental rows) for NAME. The declaration is
+            // an axiom the checker will trust at call sites; the caller is
+            // responsible for keeping the implementation in lockstep.
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "declare-type! requires a symbol and a type form".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "declare-type! requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            match env.jit_declare_scheme(&name, &args[1]) {
+                Ok(rendered) => {
+                    let form =
+                        crate::reader::read(&rendered, env).unwrap_or(LispVal::String(rendered));
+                    Ok(form)
+                }
+                Err(e) => Err(LispError::Generic(format!("declare-type!: {e}"))),
+            }
+        }
         BuiltinFunc::Disassemble => {
             if args.len() != 1 {
                 return Err(LispError::Generic(

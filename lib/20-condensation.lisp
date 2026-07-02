@@ -199,17 +199,23 @@ Inverse of CONDENSE-DIFF: (sexpr-patch old (condense-diff old new)) = NEW."
       nil))
 
 (defun condense-classify (verdict)
-  "Classify a SEE-TYPE verdict: TYPED / CHECKED / VACUOUS / DYNAMIC / TYPE-ERROR."
+  "Classify a SEE-TYPE verdict:
+TYPED / CHECKED / DECLARED / VACUOUS / DYNAMIC / TYPE-ERROR.
+DECLARED is an axiom asserted via DECLARE-TYPE! (e.g. a row-typed concept
+accessor): trusted by the checker at call sites, generated in lockstep with
+its implementation, but not derived from the body."
   (cond
     ((eq (car verdict) 'typed) 'typed)
+    ((eq (car verdict) 'declared) 'declared)
     ((eq (car verdict) 'checked)
      (if (condense-vacuous-p (cadr verdict)) 'vacuous 'checked))
     ((eq (car verdict) 'type-error) 'type-error)
     (t 'dynamic)))
 
 (defun condense-verified-p (status)
-  "T for statuses that carry a real guarantee (TYPED, informative CHECKED)."
-  (if (member status '(typed checked)) t nil))
+  "T for statuses that carry a guarantee (TYPED, informative CHECKED) or a
+generator-backed axiom (DECLARED)."
+  (if (member status '(typed checked declared)) t nil))
 
 (defun condense-check-type-one (sym)
   (let ((verdict (see-type sym)))
@@ -432,6 +438,76 @@ artifact. Returns a report alist."
                 ,invariant)))
        ',concept)))
 
+;; Row declarations (experimental): when every field type maps into the
+;; checker's type language, the generated operations get DECLARED row schemes,
+;; so the checker types uses of accessors/constructors across the whole
+;; program -- (defun total (x) (invoice-amount x)) infers
+;; (forall (r) (-> ((record ((amount int64)) r)) int64)), and passing the
+;; wrong concept to an accessor is a static type error.
+(def *condense-row-types* '(int64 float64 bool char string symbol))
+
+(defun condense-row-field (spec)
+  (if (member (cadr spec) *condense-row-types*)
+      (list (car spec) (cadr spec))
+      nil))
+
+(defun condense-row-fields (field-specs)
+  "Map FIELD-SPECS into row fields, or NIL if any field type is unmappable."
+  (let ((mapped (mapcar #'condense-row-field field-specs)))
+    (if (member nil mapped) nil mapped)))
+
+(defun condense-declare-rows! (concept field-specs)
+  (let ((fields (condense-row-fields field-specs)))
+    (if (null fields)
+        nil
+        (progn
+          (declare-type! (condense-constructor-symbol concept)
+                         `(-> ,(mapcar #'cadr fields) (record ,fields)))
+          (declare-type! (condense-predicate-symbol concept)
+                         '(forall (a) (-> (a) bool)))
+          (declare-type! (condense-validator-symbol concept)
+                         `(forall (r) (-> ((record ,fields r)) bool)))
+          (mapc (lambda (field)
+                  (declare-type! (condense-accessor-symbol concept (car field))
+                                 `(forall (r)
+                                    (-> ((record (,field) r)) ,(cadr field)))))
+                fields)
+          t))))
+
+(defun condense-declare-derive-rows! (concept derivations)
+  (let ((fields (condense-row-fields (condense-get concept "condense.fields"))))
+    (if (null fields)
+        nil
+        (mapc (lambda (d)
+                (cond
+                  ((eq d 'equality)
+                   (declare-type! (condense-equality-symbol concept)
+                                  `(forall (r s)
+                                     (-> ((record ,fields r) (record ,fields s))
+                                         bool))))
+                  ;; The printer builds dotted pairs from typed components,
+                  ;; which the checker's list-biased CONS rule rejects; its
+                  ;; scheme is declared (generated in lockstep) instead.
+                  ((eq d 'printer)
+                   (declare-type! (condense-printer-symbol concept)
+                                  `(forall (r)
+                                     (-> ((record ,fields r))
+                                         (list (pair symbol any))))))
+                  ((eq d 'lens)
+                   (progn
+                     (declare-type! (condense-printer-symbol concept)
+                                    `(forall (r)
+                                       (-> ((record ,fields r))
+                                           (list (pair symbol any)))))
+                     (declare-type! (condense-builder-symbol concept)
+                                    `(forall (a)
+                                       (-> ((list a)) (record ,fields))))
+                     (declare-type! (condense-lens-law-symbol concept)
+                                    `(forall (r)
+                                       (-> ((record ,fields r)) bool)))))
+                  (t nil)))
+              derivations))))
+
 (defvau defconcept (x e)
   "Define a compact concept: fields, invariant, generated operations, trace.
 An optional (:derive target ...) section derives support code in the same
@@ -455,6 +531,7 @@ form, so the whole artifact has a single seed to edit."
           (condense-put concept "condense.invariant" invariant-section)
           (condense-put concept "condense.last-diff"
                         (if previous (condense-diff previous expansion) nil))
+          (condense-declare-rows! concept field-specs)
           (condense-fingerprint! concept)
           (if derive-section
               (eval (cons 'derive (cons concept (cdr derive-section))) e)
@@ -537,6 +614,7 @@ plist-><c>, and a <c>-lens-roundtrip law)."
                (base-generated (condense-concept-generated concept fields)))
           (eval (cons 'progn (append forms (list `',concept))) e)
           (mapc (lambda (form) (eval form e)) post)
+          (condense-declare-derive-rows! concept derivations)
           (condense-put concept "condense.derivations" all-derivations)
           (condense-put concept "condense.generated"
                         (condense-append-new base-generated generated))

@@ -53,6 +53,15 @@ pub enum Ty {
     Str,
     /// An arrow type `(args...) -> ret`, for higher-order checking.
     Fn(Vec<Ty>, Box<Ty>),
+    /// A **row-typed record** (experimental): a set of labeled fields plus an
+    /// optional row tail. `rest: None` is a closed record (exactly these
+    /// fields); `rest: Some(Var)` is an open one ("these fields, and the
+    /// rest is ρ"). Rows exist only in the *checker's* type language — they
+    /// come from declared schemes (`declare-type!`), never from codegen, and
+    /// `is_compileable` rejects them. Fields are kept sorted by label; a row
+    /// tail may itself resolve to another `Record`, which unification and
+    /// `zonk` flatten.
+    Record(Vec<(String, Ty)>, Option<Box<Ty>>),
     /// The gradual top type: the operative/`eval`/create-on-assign frontier
     /// (Wand). It unifies with anything (absorbing) and propagates, so the
     /// checker stays sound on the applicative island and makes no claim across
@@ -89,6 +98,7 @@ pub fn is_compileable(t: &Ty) -> bool {
         | Ty::Symbol
         | Ty::Str
         | Ty::Fn(_, _)
+        | Ty::Record(_, _)
         | Ty::Any => false,
     }
 }
@@ -155,6 +165,17 @@ pub fn ty_name(t: &Ty) -> String {
         Ty::Fn(ps, r) => {
             let args = ps.iter().map(ty_name).collect::<Vec<_>>().join(" ");
             format!("(-> ({args}) {})", ty_name(r))
+        }
+        Ty::Record(fields, rest) => {
+            let fs = fields
+                .iter()
+                .map(|(n, t)| format!("({} {})", n.to_lowercase(), ty_name(t)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            match rest {
+                Some(r) => format!("(record ({fs}) {})", ty_name(r)),
+                None => format!("(record ({fs}))"),
+            }
         }
         Ty::Any => "any".to_string(),
     }
@@ -264,6 +285,7 @@ impl Value {
             | Ty::Symbol
             | Ty::Str
             | Ty::Fn(_, _)
+            | Ty::Record(_, _)
             | Ty::Any => {
                 unreachable!("from_word on a non-compileable type {}", ty_name(ty))
             }

@@ -22,17 +22,17 @@ fn condense_check_type_records_generated_function_results() {
         !out.contains("TYPE-ERROR"),
         "expected no type errors, got: {out}"
     );
-    // Honest statuses: the constructor is informatively CHECKED, while
-    // `invoice-equal` infers a vacuous scheme — the checker found no
-    // contradiction but proved nothing — and must be reported as VACUOUS,
-    // not passed off as verified.
+    // With experimental rows, concept operations over mappable field types
+    // carry DECLARED row schemes — generator-backed axioms, reported
+    // distinctly from CHECKED (derived) and never blended into "verified by
+    // the body".
     assert!(
-        out.contains("(MAKE-INVOICE CHECKED"),
-        "expected MAKE-INVOICE to check informatively, got: {out}"
+        out.contains("(MAKE-INVOICE DECLARED"),
+        "expected MAKE-INVOICE to carry a declared row scheme, got: {out}"
     );
     assert!(
-        out.contains("(INVOICE-EQUAL VACUOUS"),
-        "expected INVOICE-EQUAL to be classified vacuous, got: {out}"
+        out.contains("(INVOICE-EQUAL DECLARED"),
+        "expected INVOICE-EQUAL to carry a declared row scheme, got: {out}"
     );
 
     let stored = eval_line(
@@ -45,20 +45,32 @@ fn condense_check_type_records_generated_function_results() {
 #[test]
 fn vacuous_schemes_join_the_unproven_frontier() {
     let env = env_with_stdlib();
-    eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))))",
-        &env,
-    );
-    eval_line("(condense-check-type 'invoice)", &env);
+    // `list` is not a row-mappable field type, so this concept gets NO
+    // declared schemes: its accessors infer vacuous schemes and must sit on
+    // the frontier rather than count as verified.
+    eval_line("(defconcept bag (:fields ((items list))))", &env);
+    eval_line("(condense-check-type 'bag)", &env);
     let frontier = eval_line(
-        "(cdr (assoc 'dynamic-frontier (condense-trace 'invoice)))",
+        "(cdr (assoc 'dynamic-frontier (condense-trace 'bag)))",
         &env,
     );
-    // Accessors infer (FORALL (A B) (-> (A) B)): no promise, so they must
-    // sit on the frontier rather than count as verified.
-    assert!(frontier.contains("INVOICE-ID VACUOUS"), "got: {frontier}");
-    // The constructor's scheme is informative and must NOT be on the frontier.
-    assert!(!frontier.contains("MAKE-INVOICE"), "got: {frontier}");
+    assert!(frontier.contains("BAG-ITEMS VACUOUS"), "got: {frontier}");
+}
+
+#[test]
+fn fully_derived_row_concept_has_an_empty_frontier() {
+    let env = env_with_stdlib();
+    eval_line(
+        "(defconcept invoice (:fields ((id int64) (amount int64))) (:derive equality lens))",
+        &env,
+    );
+    assert_eq!(
+        eval_line(
+            "(cdr (assoc 'dynamic-frontier (condense-trace 'invoice)))",
+            &env
+        ),
+        "()"
+    );
 }
 
 #[test]

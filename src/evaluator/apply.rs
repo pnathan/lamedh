@@ -309,6 +309,7 @@ pub(super) fn apply(
             | BuiltinFunc::SeeSource
             | BuiltinFunc::SeeType
             | BuiltinFunc::ReadString
+            | BuiltinFunc::DeclareType
             | BuiltinFunc::Disassemble => apply_introspection(builtin, args, env),
 
             // String/Symbol operations

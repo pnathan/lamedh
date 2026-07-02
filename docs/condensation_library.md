@@ -67,13 +67,14 @@ contradiction but proved nothing. The full status vocabulary is:
 ```
 TYPED      registered typed function (the island; a real guarantee)
 CHECKED    informative inferred scheme (a real guarantee)
+DECLARED   generator-backed axiom (declare-type!, e.g. row schemes)
 VACUOUS    no contradiction, no promise — unproven
 DYNAMIC    variadic, builtin, or absent — unproven
 TYPE-ERROR the checker rejects it
 ```
 
 `condense-check-type` runs this over every generated symbol and stores the
-results; everything not `TYPED`/`CHECKED` joins
+results; everything not `TYPED`/`CHECKED`/`DECLARED` joins
 `"condense.dynamic-frontier"` — the unproven remainder, visible in the
 trace, never silently blended into "verified". `defconcept` and `derive` run
 it automatically, so a fresh trace is honest from birth.
@@ -128,6 +129,44 @@ whole artifact:
 ; => ((SYMBOL . INVOICE) (LAST-DIFF ...) (DYNAMIC-FRONTIER ...)
 ;     (CHECKS T (VALID-DRAFT . T)) (APPLIED ...))
 ```
+
+## Experimental: Row-Typed Concepts
+
+When every field type of a concept maps into the checker's type language
+(`int64`, `float64`, `bool`, `char`, `string`, `symbol`), `defconcept` and
+`derive` install **declared row schemes** for the generated operations via
+the `declare-type!` builtin:
+
+```lisp
+(see-type 'invoice-amount)
+; => (DECLARED (FORALL (A) (-> ((RECORD ((AMOUNT INT64)) A)) INT64)))
+```
+
+`(record ((amount int64)) a)` reads "any record with an int64 `amount`, and
+the rest is `a`" — a row type. The checker's unifier understands rows, so
+ordinary code over accessors infers row-polymorphic schemes with no
+annotation anywhere:
+
+```lisp
+(check-type (defun sum-amounts (x y) (+ (invoice-amount x) (invoice-amount y))))
+; => (forall (a b) (-> ((record ((amount int64)) a) (record ((amount int64)) b)) int64))
+```
+
+and cross-concept misuse becomes a **static type error** — caught by
+`check-type`, `check-file!`, and the `edit!` barrier:
+
+```lisp
+(see-type (progn (defun bad () (receipt-total (make-invoice 1 5))) 'bad))
+; => (TYPE-ERROR "in call to `RECEIPT-TOTAL`: closed record lacks field(s) total")
+```
+
+The honesty rules: `DECLARED` is an axiom — generated in lockstep with the
+implementation, trusted by the checker at call sites, but not derived from
+the body (a deliberate membrane, like typed natives). Declared schemes are
+checker-only: `is_compileable` rejects records, so nothing here reaches the
+native tier. Concepts with unmappable field types get no declarations and
+fall back to honest `VACUOUS`/`DYNAMIC` verdicts. A fully-derived row
+concept has an **empty dynamic frontier**.
 
 ## Staleness: The One-Way Lens, Enforced By Detection
 

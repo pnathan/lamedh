@@ -958,6 +958,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ReadString),
         );
         env.set(
+            "DECLARE-TYPE!".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeclareType),
+        );
+        env.set(
             "DISASSEMBLE".to_string(),
             LispVal::Builtin(BuiltinFunc::Disassemble),
         );
@@ -1204,6 +1208,17 @@ impl Environment {
     /// Type-check a single expression and return its inferred type as a string.
     pub fn jit_check_expr(&self, expr: &LispVal) -> Result<String, String> {
         self.shared.jit.borrow_mut().check_expr(expr)
+    }
+
+    /// Register a **declared** type scheme (experimental rows, `declare-type!`)
+    /// for `name` from its surface form. Returns the rendered scheme.
+    pub fn jit_declare_scheme(&self, name: &str, form: &LispVal) -> Result<String, String> {
+        self.shared.jit.borrow_mut().declare_scheme(name, form)
+    }
+
+    /// The rendered declared scheme for `name`, if any.
+    pub fn jit_declared_scheme(&self, name: &str) -> Option<String> {
+        self.shared.jit.borrow().declared_scheme_name(name)
     }
 
     /// One-pass analyze: check, then compile if compileable (#162 stage 4).

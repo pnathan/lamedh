@@ -12,6 +12,9 @@ pub(super) struct Cx<'a> {
     pub(super) funcs: &'a [Rc<TypedFn>],
     pub(super) by_name: &'a HashMap<String, usize>,
     pub(super) structs: &'a HashMap<String, Rc<StructDef>>,
+    /// Declared schemes (experimental rows): axioms from `declare-type!`,
+    /// consulted by the checker for callees the typed registry doesn't know.
+    pub(super) declared: &'a HashMap<String, infer::Scheme>,
     /// The inference state for this definition: fresh variables + substitution
     /// (issue #135). Held behind a `RefCell` so the elaboration methods keep
     /// their `&self` signatures while still threading one shared substitution.
@@ -477,6 +480,41 @@ impl Cx<'_> {
     ) -> Result<(Core, Ty), String> {
         let id = match self.by_name.get(name) {
             Some(id) => *id,
+            // A **declared** scheme (experimental rows): the Lisp layer asserted
+            // this callee's type (e.g. a row-polymorphic concept accessor), so
+            // instantiate it, demand it of the arguments, and yield its result
+            // type. Checker-only: codegen still rejects unknown calls.
+            None if self.checking && self.declared.contains_key(name) => {
+                let inst = {
+                    let mut inf = self.infer.borrow_mut();
+                    inf.instantiate(&self.declared[name])
+                };
+                match inst {
+                    Ty::Fn(ps, ret) => {
+                        if ps.len() != args.len() {
+                            return Err(format!(
+                                "`{name}` expects {} args, got {} (declared type)",
+                                ps.len(),
+                                args.len()
+                            ));
+                        }
+                        for (a, p) in args.iter().zip(ps.iter()) {
+                            let (_, at) = self.elab(a, scope, max)?;
+                            self.unify(&at, p)
+                                .map_err(|e| format!("in call to `{name}`: {e}"))?;
+                        }
+                        return Ok((Core::LitI(0), *ret));
+                    }
+                    // A declared non-arrow type says nothing useful about a
+                    // call; stay gradual.
+                    _ => {
+                        for a in args {
+                            self.elab(a, scope, max)?;
+                        }
+                        return Ok((Core::LitI(0), Ty::Any));
+                    }
+                }
+            }
             // Gradual frontier (#162): an unknown/untyped callee yields `Any`. We
             // still elaborate the arguments so type errors *inside* them surface,
             // but leave them unconstrained (the callee makes no demand). The
