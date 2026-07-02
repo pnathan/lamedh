@@ -189,6 +189,7 @@
 //! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
 //! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
 //! | `20-condensation.lisp` | Condensation: `DEFCONCEPT`/`DERIVE`/laws/examples, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`), honest checker statuses over `SEE-TYPE` |
+//! | `21-interfaces.lisp` | Go-style method sets with checker-verified conformance: `DEFINTERFACE`, `IMPLEMENTS?`/`IMPLEMENTS!`, `METHOD` |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1585,6 +1586,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     (
         "20-condensation.lisp",
         include_str!("../lib/20-condensation.lisp"),
+    ),
+    (
+        "21-interfaces.lisp",
+        include_str!("../lib/21-interfaces.lisp"),
     ),
     (
         "97-doc-renderer.lisp",
