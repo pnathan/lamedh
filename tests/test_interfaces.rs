@@ -173,3 +173,46 @@ fn scheme_subsumes_queries_the_kernel_row_unifier() {
         "()"
     );
 }
+
+#[test]
+fn interface_is_a_condensation_citizen() {
+    // Seam B: definterface records through the condensation substrate, so the
+    // interface shares CONDENSE-KIND / CONDENSE-TRACE with concepts instead of
+    // a private key set.
+    let env = env_with_stdlib();
+    eval_line(
+        "(definterface counter (:ops ((bump (-> (self) self)))))",
+        &env,
+    );
+    assert_eq!(eval_line("(condense-kind 'counter)", &env), "INTERFACE");
+    assert_eq!(eval_line("(interface-p 'counter)", &env), "T");
+    assert_eq!(
+        eval_line("(alist-get (condense-trace 'counter) 'kind)", &env),
+        "INTERFACE"
+    );
+}
+
+#[test]
+fn implements_claims_are_fingerprinted_and_detect_drift() {
+    // Seam B: a claim recorded once must not silently outlive the code it
+    // vouched for. IMPLEMENTS! fingerprints the conforming methods, and
+    // IMPLEMENTS-RECHECK! flags a later incompatible redefinition.
+    let env = env_with_stdlib();
+    eval_line(
+        "(definterface greeter (:ops ((greet (-> (self) string)))))",
+        &env,
+    );
+    eval_line("(defconcept goblin (:fields ((name string))))", &env);
+    eval_line("(defun goblin-greet (self) (goblin-name self))", &env);
+    eval_line("(implements! 'goblin 'greeter)", &env);
+    // Fresh claim: it holds and nothing has drifted.
+    let ok = eval_line("(implements-recheck! 'goblin)", &env);
+    assert!(ok.contains("(CONFORMS . T)"), "got: {ok}");
+    assert!(ok.contains("(DRIFT)"), "got: {ok}");
+    // Break the method: now it returns an int, contradicting the signature.
+    eval_line("(defun goblin-greet (self) 42)", &env);
+    let drifted = eval_line("(implements-recheck! 'goblin)", &env);
+    // The claim no longer conforms, and the drifted method is named.
+    assert!(drifted.contains("(CONFORMS)"), "got: {drifted}");
+    assert!(drifted.contains("(DRIFT GOBLIN-GREET)"), "got: {drifted}");
+}

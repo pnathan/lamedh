@@ -32,20 +32,25 @@
            (reset (-> (self) self)))))
 
 SELF in a signature stands for the implementing type. A method of TYPE for
-operation OP is the ordinary function TYPE-OP."
+operation OP is the ordinary function TYPE-OP. The interface is recorded as a
+condensation citizen (kind INTERFACE), so CONDENSE-KIND and CONDENSE-TRACE see
+it and it shares the same metadata conventions as concepts."
   (let* ((name (car x))
          (ops-section (assoc :ops (cdr x))))
     (if (null ops-section)
         (error "definterface requires an :ops section")
         (progn
-          (putp name "interface.kind" 'interface)
-          (putp name "interface.source" (cons 'definterface x))
+          ;; Record through the condensation substrate rather than inventing a
+          ;; private key set: the ops are the "generated" payload; source and
+          ;; kind go where every other citizen keeps them.
+          (condense-record! name 'interface (cons 'definterface x)
+                            nil (mapcar #'car (cadr ops-section)))
           (putp name "interface.ops" (cadr ops-section))
           name))))
 
 (defun interface-p (sym)
   "Return T when SYM names a declared interface."
-  (eq (getp sym "interface.kind") 'interface))
+  (eq (condense-kind sym) 'interface))
 
 (defun interface-ops (iface)
   "Return the (op signature) list declared for IFACE."
@@ -171,9 +176,40 @@ they do not fail the check, and they do not count as verified."
                       results)))
     (cons (null bad) results)))
 
+;;; ---- claims: fingerprinted so they cannot silently rot ---------------------
+;;;
+;;; A structural check is a claim about code that can change afterward: redefine
+;;; a method incompatibly and a claim recorded once would keep vouching for it.
+;;; This is the metadata-rot the condensation fingerprint machinery already
+;;; solves for generated code, so IMPLEMENTS! reuses it -- it snapshots each
+;;; conforming method's definition, and IMPLEMENTS-RECHECK! compares against the
+;;; snapshot to flag drift and re-grade the claim. A recorded IMPLEMENTS! then
+;;; has the epistemic status of a DEFLAW: a re-verifiable contract, not a stamp.
+
+(defun iface-method-fingerprints (type iface)
+  "Snapshot (method-symbol . definition) for each op of IFACE on TYPE."
+  (mapcar (lambda (spec)
+            (let ((fn (method-symbol type (car spec))))
+              (cons fn (condense-definition-of fn))))
+          (interface-ops iface)))
+
+(defun iface-claim (type iface)
+  "The recorded IMPLEMENTS! claim (iface report fingerprints) for IFACE, or NIL."
+  (car (filter (lambda (c) (eq (car c) iface))
+               (getp type "interface.claims"))))
+
+(defun iface-record-claim! (type iface report)
+  "Store (or replace) TYPE's IMPLEMENTS! claim for IFACE with a fresh snapshot."
+  (putp type "interface.claims"
+        (cons (list iface report (iface-method-fingerprints type iface))
+              (filter (lambda (c) (not (eq (car c) iface)))
+                      (getp type "interface.claims")))))
+
 (defun implements! (type iface)
   "Assert TYPE implements IFACE: check now, record the claim, error on failure.
-The Rust-flavored explicit form of the Go-style structural check."
+The Rust-flavored explicit form of the Go-style structural check. The claim is
+fingerprinted so IMPLEMENTS-RECHECK! can detect a later method redefinition
+that would break it."
   (let ((report (implements? type iface)))
     (if (car report)
         (progn
@@ -183,16 +219,43 @@ The Rust-flavored explicit form of the Go-style structural check."
           (putp iface "interface.types"
                 (condense-append-new (getp iface "interface.types")
                                      (list type)))
+          (iface-record-claim! type iface report)
           report)
         (error (concat "implements!: " (princ-to-string type)
                        " does not implement " (princ-to-string iface)
                        ": " (princ-to-string (cdr report)))))))
 
+(defun iface-drifted (type iface)
+  "Method symbols whose definitions changed since TYPE's IMPLEMENTS! claim for
+IFACE was recorded."
+  (let ((claim (iface-claim type iface)))
+    (if (null claim)
+        nil
+        (mapcar #'car
+                (filter (lambda (fp)
+                          (not (equal (cdr fp)
+                                      (condense-definition-of (car fp)))))
+                        (caddr claim))))))
+
+(defun iface-recheck-claim (type claim)
+  (let ((iface (car claim)))
+    (list (cons 'iface iface)
+          (cons 'conforms (car (implements? type iface)))
+          (cons 'drift (iface-drifted type iface)))))
+
+(defun implements-recheck! (type)
+  "Re-verify every recorded IMPLEMENTS! claim on TYPE: for each, the current
+conformance and the methods that drifted since the claim was made. The
+staleness guard the fingerprints exist for -- a claim never silently outlives
+the code it vouched for."
+  (mapcar (lambda (claim) (iface-recheck-claim type claim))
+          (getp type "interface.claims")))
+
 (defun interface-trace (iface)
-  "Return inspectable metadata for IFACE."
+  "Return inspectable metadata for IFACE (a condensation citizen)."
   (iface-require iface)
   (list
     (cons 'kind 'interface)
-    (cons 'source (getp iface "interface.source"))
+    (cons 'source (condense-source iface))
     (cons 'ops (interface-ops iface))
     (cons 'types (getp iface "interface.types"))))

@@ -119,10 +119,19 @@ benchmark gate.
 
 ## 3. Seam B: interfaces are not condensation citizens, so claims can rot
 
+> **Status: fixed on this branch.** `definterface` records through
+> `condense-record!` (kind `interface`), so `condense-kind`/`condense-trace`
+> see it; `interface-p` now reads `condense-kind`. `implements!` fingerprints
+> each conforming method's definition and stores the graded claim, and
+> `implements-recheck!` re-runs `implements?` and reports drift — so a claim
+> can no longer silently outlive the code it vouched for. Kept as its own verb
+> (not a hook inside `condense-recheck!`) to respect the layer boundary:
+> condensation (`lib/20-`) must not depend on interfaces (`lib/21-`).
+
 `condensation_library.md` is explicit: *"Higher-level forms should build on
 `condense-put`/`condense-get`/`condense-record!` instead of inventing private
-conventions."* `definterface` invents `"interface.*"` keys, and
-`interface-trace` is a parallel, poorer `condense-trace`.
+conventions."* `definterface` invented `"interface.*"` keys, and
+`interface-trace` was a parallel, poorer `condense-trace`.
 
 The cost is not aesthetic. Condensation's whole staleness apparatus —
 fingerprints, `condense-stale`, `condense-recheck!` — exists so the trace
@@ -241,13 +250,19 @@ Ranked, admissible-first:
    Row-concept accessors read by name (`condense-field-ref`), so the `DECLARED`
    axiom is true for every layout, not just the shared-prefix convention.
    Soundness fix; no gate.
-3. **Make interfaces condensation citizens (Seam B)** — record through
-   `condense-record!`, fingerprint `implements!` claims, re-grade in
-   `condense-recheck!`. Pure Lisp; converts one-time stamps into
-   re-verifiable contracts.
+3. **Make interfaces condensation citizens (Seam B)** — ✅ **done on this
+   branch.** `definterface` records through `condense-record!`; `implements!`
+   fingerprints its claims; `implements-recheck!` re-grades them and reports
+   drift. Pure Lisp; converts one-time stamps into re-verifiable contracts.
 4. **Write the method-row destination into the design record** (this
    document) **and freeze it** behind the repair benchmark, alongside the
-   rest of the frozen constrained-type program.
+   rest of the frozen constrained-type program. *(Still the gate; unbuilt.)*
+
+With Seams A, B, and C closed, all three admissible conversions between the
+identities are done: conformance asks the checker (A), the runtime honors the
+by-name axiom (C), and a claim is a re-verifiable contract rather than a stamp
+(B). What stays frozen is the destination itself — typing the method namespace
+with rows — until the repair benchmark can show it earns its margin.
 
 The one-line summary the code was already whispering: *brand for dispatch,
 row for checking, trace for repair — one value, three identities, and the
