@@ -1,120 +1,117 @@
 mod test_helpers;
 
-use lamedh::{eval_line, load_file};
+use lamedh::eval_line;
 use test_helpers::env_with_stdlib;
 
 fn env_with_npcs() -> lamedh::Shared<lamedh::environment::Environment> {
     let env = env_with_stdlib();
-    load_file("examples/game/npcs.lisp", &env).expect("npcs.lisp should load");
+    lamedh::load_file("examples/npcs.lisp", &env).expect("examples/npcs.lisp should load");
     env
 }
 
 #[test]
-fn shared_op_dispatches_to_the_specialized_method() {
+fn specialized_greet_dispatches_per_kind_from_one_call_site() {
     let env = env_with_npcs();
     assert_eq!(
-        eval_line("(method 'greet (make-goblin \"Snag\" 7 3))", &env),
-        "\"Grr. Snag waves a rusty knife.\""
+        eval_line("(method 'greet (make-goblin \"Grix\" 7 9))", &env),
+        "\"Grix sharpens a rusty dagger and cackles.\""
     );
     assert_eq!(
-        eval_line("(method 'greet (make-merchant \"Oren\" 12 250))", &env),
-        "\"Welcome! Oren opens a pack of 250 gold worth of wares.\""
+        eval_line("(method 'greet (make-wisp \"Sel\" 3 0.8))", &env),
+        "\"Sel flickers softly in the gloom.\""
     );
 }
 
 #[test]
-fn late_bound_shared_method_works_on_every_kind() {
+fn shared_damage_logic_is_written_once_and_works_for_every_kind() {
     let env = env_with_npcs();
     assert_eq!(
-        eval_line("(introduce (make-goblin \"Snag\" 2 3))", &env),
-        "\"Snag [2 hp]: Grr. Snag waves a rusty knife.\""
+        eval_line(
+            "(npc-hp (method 'damage (make-goblin \"Grix\" 7 9) 5))",
+            &env
+        ),
+        "2"
     );
     assert_eq!(
-        eval_line("(introduce (make-merchant \"Oren\" 12 250))", &env),
-        "\"Oren [12 hp]: Welcome! Oren opens a pack of 250 gold worth of wares.\""
+        eval_line(
+            "(npc-hp (method 'damage (make-merchant \"Oleander\" 12 240) 5))",
+            &env
+        ),
+        "7"
     );
-}
-
-#[test]
-fn row_typed_shared_method_is_proven_and_works_across_kinds() {
-    let env = env_with_npcs();
-    // The shared projection infers a row scheme: any record with an int64 hp.
+    // Floors at zero (the shared HIT-POINTS-AFTER), and the invariant holds.
     assert_eq!(
-        eval_line("(see-type 'npc-hp)", &env),
-        "(CHECKED (FORALL (A) (-> ((RECORD ((HP INT64)) A)) INT64)))"
+        eval_line(
+            "(npc-hp (method 'damage (make-wisp \"Sel\" 3 0.8) 5))",
+            &env
+        ),
+        "0"
     );
     assert_eq!(
-        eval_line("(wounded-p (make-goblin \"Snag\" 2 3))", &env),
+        eval_line(
+            "(validate-wisp (method 'damage (make-wisp \"Sel\" 3 0.8) 5))",
+            &env
+        ),
         "T"
     );
+    // Damage preserves the kind: the result still speaks in its own voice.
     assert_eq!(
-        eval_line("(wounded-p (make-merchant \"Oren\" 12 250))", &env),
-        "()"
+        eval_line(
+            "(method 'greet (method 'damage (make-goblin \"Grix\" 7 9) 3))",
+            &env
+        ),
+        "\"Grix sharpens a rusty dagger and cackles.\""
     );
 }
 
 #[test]
-fn both_kinds_implement_npc_and_the_claims_are_recorded() {
+fn shared_methods_carry_inferred_row_schemes() {
     let env = env_with_npcs();
-    assert!(eval_line("(implements? 'goblin 'npc)", &env).starts_with("(T"));
-    assert!(eval_line("(implements? 'merchant 'npc)", &env).starts_with("(T"));
-    // implements! in the file recorded the claim on both sides.
     assert_eq!(
-        eval_line("(getp 'npc \"interface.types\")", &env),
-        "(GOBLIN MERCHANT)"
+        eval_line("(see-type 'alive-p)", &env),
+        "(CHECKED (FORALL (A) (-> ((RECORD ((HP INT64)) A)) BOOL)))"
     );
+    assert_eq!(eval_line("(alive-p (make-goblin \"Grix\" 7 9))", &env), "T");
+    assert_eq!(eval_line("(alive-p (make-wisp \"Sel\" 0 0.8))", &env), "()");
 }
 
 #[test]
-fn a_kind_missing_the_specialized_op_fails_conformance() {
+fn conformance_is_verified_and_honestly_graded() {
     let env = env_with_npcs();
-    let report = eval_line("(implements? 'training-dummy 'npc)", &env);
-    assert!(report.starts_with("(()"), "got: {report}");
-    // The row accessors it does have still CONFORM; only GREET is MISSING.
-    assert!(report.contains("(NAME CONFORMS"), "got: {report}");
-    assert!(report.contains("(GREET MISSING"), "got: {report}");
+    let report = eval_line("(implements? 'goblin 'npc)", &env);
+    assert!(report.starts_with("(T"), "got: {report}");
+    // DAMAGE is proved by row unification against the declared signature...
+    assert!(report.contains("(DAMAGE CONFORMS"), "got: {report}");
+    // ...while GREET's result flows through CONCAT, which the checker cannot
+    // type today — so the grade says exactly that: unproven, not verified.
+    assert!(report.contains("(GREET UNPROVEN"), "got: {report}");
+    // The load-time IMPLEMENTS! assertions recorded the claims.
     assert_eq!(
-        eval_line("(errorset '(implements! 'training-dummy 'npc))", &env),
-        "()"
+        eval_line("(getp 'wisp \"interface.implements\")", &env),
+        "(NPC)"
     );
 }
 
 #[test]
-fn row_accessor_ops_conform_greet_stays_unproven() {
+fn cross_kind_misuse_is_a_static_type_error() {
     let env = env_with_npcs();
-    // NAME and HP carry DECLARED row schemes that subsume the op signatures at
-    // self := the concept's record type: a real, checker-backed guarantee.
-    let goblin = eval_line("(implements? 'goblin 'npc)", &env);
-    assert!(
-        goblin.contains("(NAME CONFORMS GOBLIN-NAME"),
-        "got: {goblin}"
+    eval_line(
+        "(defun oops () (goblin-mischief (make-merchant \"O\" 12 240)))",
+        &env,
     );
-    assert!(goblin.contains("(HP CONFORMS GOBLIN-HP"), "got: {goblin}");
-    // GREET builds a string with CONCAT, defeating inference: its scheme is
-    // vacuous, so it exists but proves nothing — honestly UNPROVEN, not CONFORMS.
-    assert!(
-        goblin.contains("(GREET UNPROVEN GOBLIN-GREET"),
-        "got: {goblin}"
-    );
-}
-
-#[test]
-fn cross_concept_misuse_is_a_static_type_error() {
-    let env = env_with_npcs();
-    let verdict = eval_line("(see-type 'rob)", &env);
+    let verdict = eval_line("(see-type 'oops)", &env);
     assert!(verdict.starts_with("(TYPE-ERROR"), "got: {verdict}");
-    assert!(verdict.contains("lacks field(s) gold"), "got: {verdict}");
-}
-
-#[test]
-fn invariants_travel_with_the_seed() {
-    let env = env_with_npcs();
-    assert_eq!(
-        eval_line("(validate-goblin (make-goblin \"Snag\" 7 3))", &env),
-        "T"
+    assert!(
+        verdict.contains("lacks field(s) mischief"),
+        "got: {verdict}"
     );
+    // And the edit barrier refuses to introduce the same misuse.
+    eval_line("(defun poke (g) (goblin-mischief g))", &env);
     assert_eq!(
-        eval_line("(validate-goblin (make-goblin \"Snag\" -1 3))", &env),
+        eval_line(
+            "(errorset '(edit! 'poke '(((goblin-mischief g) (goblin-mischief (make-merchant \"O\" 12 240))))))",
+            &env
+        ),
         "()"
     );
 }

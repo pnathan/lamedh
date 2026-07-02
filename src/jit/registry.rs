@@ -229,30 +229,6 @@ impl Jit {
         self.declared.get(name).map(infer::scheme_name)
     }
 
-    /// Does `scheme` **subsume** `wanted` — can the (possibly polymorphic)
-    /// `scheme` be instantiated to the `wanted` type? Both are surface type
-    /// forms: `wanted` a monotype like `(-> ((record ((hp int64)))) int64)`,
-    /// `scheme` a `(forall (vs) ty)` or a bare type. Each form's bound variables
-    /// are instantiated to disjoint fresh inference variables and the two are
-    /// unified; success means the scheme is at least as general as wanted.
-    ///
-    /// This is the interface layer's conformance query — the same row unifier
-    /// the checker uses, exposed as `scheme-subsumes?`. A form that does not
-    /// parse as a type yields `false` (an opaque wanted type is "not confirmed",
-    /// never a crash), so the caller can treat it as UNPROVEN.
-    pub fn scheme_subsumes(&self, scheme: &LispVal, wanted: &LispVal) -> bool {
-        let (Ok(general), Ok(want)) = (
-            parse_scheme_form(scheme, &self.structs),
-            parse_scheme_form(wanted, &self.structs),
-        ) else {
-            return false;
-        };
-        let mut inf = Infer::new();
-        let general_ty = inf.instantiate(&general);
-        let want_ty = inf.instantiate(&want);
-        inf.unify(&general_ty, &want_ty).is_ok()
-    }
-
     fn intern(&mut self, name: &str, params: Vec<(String, Ty)>, ret: Ty) -> usize {
         if let Some(&id) = self.by_name.get(name) {
             let f = &self.funcs[id];

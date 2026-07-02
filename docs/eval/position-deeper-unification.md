@@ -53,14 +53,19 @@ question in its own representation and the conversion is missing.
 
 ## 2. Seam A: conformance interrogates the wrong type language — and inverts the incentive
 
-> **Status: fixed on this branch.** The two changes below are implemented —
-> `scheme-subsumes?` is a kernel builtin over the checker's row unifier
-> (`src/jit/registry.rs`, `src/evaluator/introspection.rs`), and
-> `iface-op-status` now substitutes `self` with the concept's record type and
-> asks it (`lib/21-interfaces.lisp`). `goblin-power`, the derived
-> `invoice-equal`, and the `name`/`hp` accessors of `examples/game/npcs.lisp`
-> now grade `CONFORMS`; only genuinely opaque methods (`greet`) stay
-> `UNPROVEN`. The analysis below is retained as the record of *why*.
+> **Status: fixed upstream (base branch), preserved here.** The first change
+> below — substitute `self` with the concept's closed record type — shipped in
+> `lib/21-interfaces.lisp` (`iface-self-type`), together with a **row-aware
+> interface unifier** written in Lisp (`iface-unify-records`, label-wise field
+> unification with row-tail absorption) that grades `DECLARED` verdicts as
+> evidence. So the derived `invoice-equal` and a row concept's accessors now
+> grade `CONFORMS`; only genuinely opaque methods (`greet`, whose result flows
+> through `CONCAT`) stay `UNPROVEN`. The second option below — a kernel
+> `scheme-subsumes?` query that reuses the checker's own unifier — was the
+> alternative this analysis recommended; the repo took the pure-Lisp path
+> instead, consistent with CLAUDE.md's keep-the-kernel-small rule. The residual
+> risk that argued for the kernel query (two unifiers that must agree) is noted
+> at the end of §6. The analysis below is retained as the record of *why*.
 
 `implements?` substitutes `self` with the concept **symbol** and unifies
 `(-> (goblin) int64)` against the verdict. But for a row concept the verdict
@@ -99,21 +104,24 @@ thesis calls for, and both halves already exist:
    `self ↦ (record ((name string) (hp int64) (ferocity int64)))` when the
    type is a row concept, and keep the symbol for ground types (`int64-bump`
    works today and must keep working).
-2. **Ask the kernel's unifier, not a Lisp reimplementation.** The kernel
-   already has row unification, instantiation, and zonking
-   (`src/jit/infer.rs`). One small query builtin — `scheme-subsumes?`,
-   taking a ground wanted type and a scheme, returning T/NIL — replaces
-   `iface-unify` entirely. This respects the CLAUDE.md kernel rule: the
-   kernel gains one *query*, the conformance *policy* stays in Lisp.
+2. **Teach the unifier about rows.** The unifier that compares the wanted
+   signature to the verdict scheme must absorb a row tail — recognize that
+   `(record ((hp int64)) a)` accepts a goblin's closed record. Two ways to get
+   there: reimplement row unification in the Lisp interface layer (what
+   shipped: `iface-unify-records`, label-wise with row-tail absorption), or add
+   one kernel query builtin — `scheme-subsumes?` — that reuses the checker's
+   own row unifier and keeps the conformance *policy* in Lisp (the alternative
+   this paper recommended, to avoid a second unifier; not taken). Either makes
+   `DECLARED`/informative-`CHECKED` row schemes confirming evidence.
 
-With that, `CONFORMS` became a checker verdict rather than a Lisp-side
-approximation of one, `DECLARED` row schemes are confirming evidence (they are
-axioms, trusted at call sites), and the inversion is gone. The one wrinkle the
-implementation had to keep: a *vacuous* `CHECKED` scheme (result variable no
-argument constrains — the `greet`/`concat` case) is still gated to `UNPROVEN`
-*before* subsumption, because instantiating it would let its free result
-variable unify with anything and falsely confirm. Honesty is preserved: the
-method exists, but the checker proved nothing about it. This was a correctness
+With that, `CONFORMS` means "the method's scheme unifies with the signature at
+`self :=` the concept's record type," `DECLARED` row schemes are confirming
+evidence (they are axioms, trusted at call sites), and the inversion is gone.
+The one wrinkle the implementation keeps: a *vacuous* `CHECKED` scheme (result
+variable no argument constrains — the `greet`/`concat` case) is gated to
+`UNPROVEN` *before* unification, because letting its free result variable unify
+with anything would falsely confirm. Honesty is preserved: the method exists,
+but the checker proved nothing about it. This was a correctness
 fix to an existing question, not new type machinery, so it did not need the
 benchmark gate.
 
@@ -241,11 +249,11 @@ away if the destination is ever funded.
 
 Ranked, admissible-first:
 
-1. **Fix Seam A** — ✅ **done on this branch.** `self ↦` the concept's record
-   type; `scheme-subsumes?` kernel query over the checker's row unifier;
-   `iface-unify` deleted. Killed the evidence-inversion (MISMATCH on
-   proven-correct methods) and made `CONFORMS` mean what it says. Correctness
-   fix; no gate.
+1. **Fix Seam A** — ✅ **done (base branch).** `self ↦` the concept's closed
+   record type + a row-aware interface unifier that grades `DECLARED` verdicts
+   as evidence. Killed the evidence-inversion (MISMATCH on proven-correct
+   methods) and made `CONFORMS` mean what it says. Shipped as pure Lisp; the
+   kernel-query alternative (§2) was not taken. Correctness fix; no gate.
 2. **Fix Seam C by name-directed dynamic access** — ✅ **done on this branch.**
    Row-concept accessors read by name (`condense-field-ref`), so the `DECLARED`
    axiom is true for every layout, not just the shared-prefix convention.
@@ -259,10 +267,19 @@ Ranked, admissible-first:
    rest of the frozen constrained-type program. *(Still the gate; unbuilt.)*
 
 With Seams A, B, and C closed, all three admissible conversions between the
-identities are done: conformance asks the checker (A), the runtime honors the
-by-name axiom (C), and a claim is a re-verifiable contract rather than a stamp
-(B). What stays frozen is the destination itself — typing the method namespace
-with rows — until the repair benchmark can show it earns its margin.
+identities are done: conformance grades against the concept's structural type
+(A), the runtime honors the by-name axiom (C), and a claim is a re-verifiable
+contract rather than a stamp (B). What stays frozen is the destination itself —
+typing the method namespace with rows — until the repair benchmark can show it
+earns its margin.
+
+One caveat the pure-Lisp path leaves open (the residual risk that argued for
+the kernel query): the interface unifier (`iface-unify`/`iface-unify-records`)
+is a second implementation of row unification, separate from the checker's
+(`src/jit/infer.rs`). The two must agree; a divergence would let conformance
+confirm what the checker would reject, or vice versa. Reconciling them — a
+`scheme-subsumes?`-style kernel query that makes the checker the single
+unifier — remains the cleaner end state if that risk ever bites.
 
 The one-line summary the code was already whispering: *brand for dispatch,
 row for checking, trace for repair — one value, three identities, and the

@@ -99,22 +99,6 @@ pub(super) fn apply_introspection(
                 Err(e) => Err(LispError::Generic(format!("declare-type!: {e}"))),
             }
         }
-        BuiltinFunc::SchemeSubsumes => {
-            // (scheme-subsumes? scheme wanted) — T when the (possibly
-            // polymorphic) SCHEME can be instantiated to the ground WANTED type
-            // under the checker's own unifier (rows included). The interface
-            // layer's conformance query; both operands are surface type forms.
-            if args.len() != 2 {
-                return Err(LispError::Generic(
-                    "scheme-subsumes? requires a scheme and a wanted type".to_string(),
-                ));
-            }
-            if env.jit_scheme_subsumes(&args[0], &args[1]) {
-                Ok(LispVal::Symbol(env.intern_symbol("T")))
-            } else {
-                Ok(LispVal::Nil)
-            }
-        }
         BuiltinFunc::Disassemble => {
             if args.len() != 1 {
                 return Err(LispError::Generic(

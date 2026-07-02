@@ -623,7 +623,6 @@ pub enum BuiltinFunc {
     SeeType,
     ReadString,
     DeclareType,
-    SchemeSubsumes,
     Disassemble,
     // Concurrency primitives (gated behind the `concurrency` feature)
     #[cfg(feature = "concurrency")]
