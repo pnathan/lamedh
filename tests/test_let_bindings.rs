@@ -175,7 +175,10 @@ fn optimizer_let_sibling_inits_see_outer_binding_not_local() {
     );
     // Verify the optimizer agrees with direct eval (the regression)
     assert_eq!(
-        eval_line("(eval (optimize-form '(let ((x 99) (y (+ x 10))) (+ y x))) (the-environment))", &env),
+        eval_line(
+            "(eval (optimize-form '(let ((x 99) (y (+ x 10))) (+ y x))) (the-environment))",
+            &env
+        ),
         "110"
     );
 }
