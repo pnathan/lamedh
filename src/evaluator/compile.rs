@@ -528,7 +528,7 @@ pub(super) fn exec_step(
                 func,
                 LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
             ) {
-                let rest = match &*original {
+                let rest = match original {
                     LispVal::Cons { cdr, .. } => (**cdr).clone(),
                     _ => LispVal::Nil,
                 };

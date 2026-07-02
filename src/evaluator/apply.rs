@@ -1066,8 +1066,14 @@ pub(super) fn apply(
                         "array takes exactly one argument".to_string(),
                     ));
                 }
+                const MAX_ARRAY: i64 = 16 * 1024 * 1024; // 16 M elements
                 let n = match &args[0] {
-                    LispVal::Number(n) if *n >= 0 => *n as usize,
+                    LispVal::Number(n) if *n >= 0 && *n <= MAX_ARRAY => *n as usize,
+                    LispVal::Number(n) if *n > MAX_ARRAY => {
+                        return Err(LispError::Generic(format!(
+                            "array: size {n} exceeds maximum of {MAX_ARRAY}"
+                        )));
+                    }
                     _ => {
                         return Err(LispError::Generic(
                             "array: size must be a non-negative integer".to_string(),
