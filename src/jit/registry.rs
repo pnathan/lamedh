@@ -806,6 +806,31 @@ impl Jit {
     /// Call a function by name with boxed [`Value`]s; type-checks the arguments
     /// against the signature and re-boxes the result. This is the public membrane.
     pub fn call(&self, name: &str, args: &[Value]) -> Result<Value, String> {
+        Ok(self.call_inner(name, args)?.0)
+    }
+
+    /// Like [`Jit::call`], but also reads back the post-call contents of any
+    /// flat-scalar-array argument (issue #216: `LispVal::Array` has interior
+    /// mutability and `STORE`'s docs promise in-place mutation for all
+    /// references, but the typed runtime's arena buffer is a *copy* of the
+    /// caller's array by construction — `Value::to_word`'s `Array` arm
+    /// always allocates a fresh arena buffer — so without this, a
+    /// `store`/`aset` inside a `defun-typed` body silently never reached the
+    /// caller). `updated[i]` is `Some(new_value)` whenever argument `i`'s
+    /// *type* is a flat scalar array (see [`is_flat_scalar_array`]); it is
+    /// populated whether or not the callee actually mutated that argument (a
+    /// redundant copy-out for a pure-reader function — simpler and still
+    /// correct, at a small extra-copy cost). Callers holding the original
+    /// backing store (e.g. a `LispVal`) decide whether *their* specific
+    /// argument is actually alias-eligible — e.g. a `LispVal::String` passed
+    /// to an `(array char)` parameter type-checks the same as a genuine
+    /// `LispVal::Array` here, but has no interior mutability to write back
+    /// into, so the caller must skip it.
+    pub fn call_with_array_writeback(&self, name: &str, args: &[Value]) -> WritebackResult {
+        self.call_inner(name, args)
+    }
+
+    fn call_inner(&self, name: &str, args: &[Value]) -> WritebackResult {
         let id = self
             .id(name)
             .ok_or_else(|| format!("unknown function `{name}`"))?;
@@ -822,21 +847,37 @@ impl Jit {
             ));
         }
         // The arena (in `ctx`) must outlive both arg lowering (which allocates
-        // compound buffers into it) and result reading (which copies them out),
-        // so it is created up front and dropped only at return.
+        // compound buffers into it) and result/write-back reading (which
+        // copies them out), so it is created up front and dropped only at
+        // return.
         let ctx = self.ctx();
         let mut words = Vec::with_capacity(args.len());
+        let mut tys = Vec::with_capacity(args.len());
         for (a, (_, ty)) in args.iter().zip(params.iter()) {
             words.push(a.to_word(ty, &ctx)?);
+            tys.push(ty.clone());
         }
         let ret = f.ret.borrow().clone();
         drop(params);
         let w = f.invoke(&words, &ctx);
-        Ok(Value::from_word(w, &ret))
+        let result = Value::from_word(w, &ret);
+        let updated = words
+            .iter()
+            .zip(tys.iter())
+            .map(|(w, ty)| is_flat_scalar_array(ty).then(|| Value::from_word(*w, ty)))
+            .collect();
+        Ok((result, updated))
     }
 
     /// Convenience for callers holding `LispVal`s: maps `Number`/`Float` to
     /// [`Value`], calls, and re-boxes to `Number`/`Float`/(`Number 0/1` for bool).
+    ///
+    /// Issue #216: like the interpreter's own typed membrane
+    /// (`make_typed_native` in `src/evaluator/functions.rs`), this writes a
+    /// mutated flat-scalar-array argument back into the caller's original
+    /// `LispVal::Array` in place — see `Jit::call_with_array_writeback` and
+    /// `is_flat_scalar_array` for the exact scope and the `LispVal::String`
+    /// (no interior mutability) exclusion.
     pub fn call_lisp(&self, name: &str, args: &[LispVal]) -> Result<LispVal, String> {
         let (ptys, ret) = self
             .signature(name)
@@ -852,7 +893,29 @@ impl Jit {
         for (a, ty) in args.iter().zip(ptys.iter()) {
             vals.push(lispval_to_value(a, ty)?);
         }
-        Ok(value_to_lispval(&self.call(name, &vals)?, &ret))
+        let (result, updated) = self.call_with_array_writeback(name, &vals)?;
+        for (orig, upd) in args.iter().zip(updated) {
+            if let (LispVal::Array(rc), Some(Value::Array(items))) = (orig, upd) {
+                // Every item here is scalar (`is_flat_scalar_array` excludes
+                // nested compounds), so this doesn't need a `Ty` to
+                // disambiguate the char-array-as-string case the way
+                // `value_to_lispval`'s `Value::Array` arm does.
+                let new_items: Vec<LispVal> = items
+                    .into_iter()
+                    .map(|it| match it {
+                        Value::Int(n) => LispVal::Number(n),
+                        Value::Float(f) => LispVal::Float(f),
+                        Value::Bool(b) => LispVal::Number(b as i64),
+                        Value::Char(b) => LispVal::Char(b),
+                        Value::Array(_) | Value::Struct(_) => {
+                            unreachable!("flat scalar array write-back produced a compound element")
+                        }
+                    })
+                    .collect();
+                *rc.borrow_mut() = new_items;
+            }
+        }
+        Ok(value_to_lispval(&result, &ret))
     }
 
     /// Trace a call through the **reference (typed-core) interpreter**, returning

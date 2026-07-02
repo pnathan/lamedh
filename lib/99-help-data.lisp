@@ -1822,7 +1822,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(store array index value)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change.")
+    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change, including inside a defun-typed body (issue #216). Two scoped exceptions: an array nested inside another array or a struct does not write back through the outer object (only top-level flat arrays of scalars do); and passing the same array as two distinct arguments to one defun-typed call is last-writer-wins in argument order, not simultaneous true aliasing.")
     (cons 'EXAMPLES '(((let ((a (array 3))) (store a 0 99) (fetch a 0)) 99)))
     (cons 'SEE-ALSO '(array-store aset fetch array array-length))))
 
