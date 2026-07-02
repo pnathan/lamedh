@@ -521,15 +521,18 @@ pub(super) fn exec_step(
             let func = exec(callee, env)?;
 
             // Macros, fexprs, and vau operatives need their arguments
-            // *unevaluated*.  Hand the original AST form to the tree-walker
-            // side of this *same* trampoline (a tail hand-off, not a plain
-            // nested `eval` call) so a tail call through one of these from
-            // compiled code still costs no native stack depth.
+            // *unevaluated*.  The operator (`func`) is already evaluated above;
+            // dispatch it directly with the unevaluated operand tail so we
+            // don't re-evaluate the operator expression (#226).
             if matches!(
                 func,
                 LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
             ) {
-                return Ok(TcoStep::TailCall(original.clone(), env.clone()));
+                let rest = match &*original {
+                    LispVal::Cons { cdr, .. } => (**cdr).clone(),
+                    _ => LispVal::Nil,
+                };
+                return apply_unevaluated(&func, &rest, env);
             }
 
             // Evaluate all arguments (non-tail).

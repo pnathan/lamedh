@@ -285,51 +285,37 @@ pub(super) fn eval_while(rest: &LispVal, env: &Shared<Environment>) -> Result<Tc
     }
 }
 
-/// Handle ordinary function application.
+/// Dispatch an already-evaluated Macro, Vau, or Fexpr with unevaluated args.
 ///
-/// Called from `eval_step` for both symbol-headed calls (after the
-/// special-form tag has been read and the borrow dropped) and non-symbol-head
-/// calls. Centralises the Macro / Vau / Fexpr / Lambda / Builtin dispatch so
-/// there is exactly one copy of this logic in the evaluator (previously it
-/// was duplicated in the `_ =>` arm and in the `else` branch of the
-/// symbol-check).
-///
-/// Safety note (issue #156): callers must ensure that **no borrow** of the
-/// head-symbol `Shared<SharedCell<Symbol>>` is held when this function
-/// runs, so that `apply_owned` (reached via the builtin/native path) can
-/// safely call `borrow_mut()` on the same symbol if it appears as an
-/// argument (e.g. `(putp 'putp ...)`).
-#[inline]
-fn eval_application(
-    first: &LispVal,
+/// Shared by the tree-walker (`eval_application`) and the compiled-code
+/// executor (`exec_step` Code::Call).  Keeping it in one place means:
+///   - the dynamic-binding logic (#222) only exists once
+///   - the compiled path no longer re-evaluates the operator expression when it
+///     resolves to a macro/fexpr/vau, eliminating the double-evaluation bug
+///     (#226)
+pub(super) fn apply_unevaluated(
+    func: &LispVal,
     rest: &LispVal,
     env: &Shared<Environment>,
 ) -> Result<TcoStep, LispError> {
-    let func = eval(first, env)?;
-
-    // Macro expansion: TCO into the expanded form.  Must be intercepted before
-    // evaluating args — macros receive unevaluated operands.
-    if let LispVal::Macro(m) = &func {
+    if let LispVal::Macro(m) = func {
         let args_list = list_to_vec(rest)?;
         let expanded = expand_macro(m, &args_list, env)?;
         return Ok(TcoStep::TailCall(expanded, env.clone()));
     }
 
-    // Vau application: bind unevaluated operands + caller env, TCO into body.
-    if let LispVal::Vau(vau) = &func {
+    if let LispVal::Vau(vau) = func {
         let new_env = Environment::new_child(&vau.env);
         new_env.set_id(vau.operands_param_id, rest.clone());
         new_env.set_id(vau.env_param_id, LispVal::Environment(env.clone()));
         return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
     }
 
-    // Fexpr application: TCO — bind unevaluated args, continue with body.
-    if let LispVal::Fexpr(fexpr) = &func {
+    if let LispVal::Fexpr(fexpr) = func {
         let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
         let has_dyn = new_env.has_any_dynamic();
         let mut guards: Vec<DynamicBinding> = Vec::new();
         if fexpr.param_ids.len() == 1 {
-            // Single-param: bind entire unevaluated arg list to the one parameter.
             let id = fexpr.param_ids[0];
             if has_dyn {
                 if let Some(sym) = new_env.symbol_by_id(id) {
@@ -345,7 +331,6 @@ fn eval_application(
                 new_env.set_id(id, rest.clone());
             }
         } else {
-            // Multi-param: bind each unevaluated arg to its parameter.
             let unevaluated_args = list_to_vec(rest)?;
             if unevaluated_args.len() != fexpr.params.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
@@ -374,6 +359,41 @@ fn eval_application(
                 guards,
             ));
         }
+    }
+
+    Ok(TcoStep::Done(Err(LispError::Generic(format!(
+        "apply_unevaluated: not a macro/fexpr/vau: {func:?}"
+    )))))
+}
+
+/// Handle ordinary function application.
+///
+/// Called from `eval_step` for both symbol-headed calls (after the
+/// special-form tag has been read and the borrow dropped) and non-symbol-head
+/// calls. Centralises the Macro / Vau / Fexpr / Lambda / Builtin dispatch so
+/// there is exactly one copy of this logic in the evaluator (previously it
+/// was duplicated in the `_ =>` arm and in the `else` branch of the
+/// symbol-check).
+///
+/// Safety note (issue #156): callers must ensure that **no borrow** of the
+/// head-symbol `Shared<SharedCell<Symbol>>` is held when this function
+/// runs, so that `apply_owned` (reached via the builtin/native path) can
+/// safely call `borrow_mut()` on the same symbol if it appears as an
+/// argument (e.g. `(putp 'putp ...)`).
+#[inline]
+fn eval_application(
+    first: &LispVal,
+    rest: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<TcoStep, LispError> {
+    let func = eval(first, env)?;
+
+    // Macro / Vau / Fexpr: pass unevaluated args to the shared dispatcher.
+    if matches!(
+        func,
+        LispVal::Macro(_) | LispVal::Vau(_) | LispVal::Fexpr(_)
+    ) {
+        return apply_unevaluated(&func, rest, env);
     }
 
     // Evaluated-argument callables (lambda/builtin/native): evaluate operands
