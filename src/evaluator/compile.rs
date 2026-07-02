@@ -376,9 +376,19 @@ pub(super) fn exec_step(
     match code {
         Code::Const(v) => Ok(TcoStep::Done(Ok(v.clone()))),
 
-        Code::Var(sym) => Ok(TcoStep::Done(env.resolve(sym).ok_or_else(|| {
-            LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
-        }))),
+        Code::Var(sym) => {
+            let value = env.resolve(sym).ok_or_else(|| {
+                LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
+            })?;
+            // LABEL compat: same check the tree-walker does in eval_step.
+            if let LispVal::Cons { car, .. } = &value
+                && let LispVal::Symbol(s) = &**car
+                && s.borrow().name == "LABEL"
+            {
+                return Ok(TcoStep::Done(eval(&value, env)));
+            }
+            Ok(TcoStep::Done(Ok(value)))
+        }
 
         // Fallback: hand the original AST form to the tree-walker side of the
         // *same* trampoline. This must be a tail hand-off (not a plain `eval`

@@ -104,25 +104,30 @@ Lazily computes and caches the purity verdict using the current function body."
         (t (+ (car lst) (opt-sum-list (cdr lst))))))
 
 ;;; Is FORM side-effect free? Conservative: only known pure primitives.
-(defun opt-pure-p (form)
+;;; BOUND is a list of locally-bound names that shadow global definitions;
+;;; a call through a shadowed name is not certifiably pure (#225).
+(defun opt-pure-p (form &rest bound-arg)
   "Return T if FORM has no observable side effects."
-  (cond
-    ((null form) t)
-    ((atom form) t)
-    ((eq (car form) 'quote) t)
-    ((eq (car form) 'lambda) t)
-    ((eq (car form) 'function) t)
-    ((member (car form)
-             '(+ - * / car cdr cons list not null atom
-               numberp floatp symbolp consp listp = < > <= >=
-               eq equal zerop onep minusp plusp fixp))
-     (opt-all-pure-p (cdr form)))
-    (t nil)))
+  (let ((bound (car bound-arg)))
+    (cond
+      ((null form) t)
+      ((atom form) t)
+      ((eq (car form) 'quote) t)
+      ((eq (car form) 'lambda) t)
+      ((eq (car form) 'function) t)
+      ((and (not (member (car form) bound))
+            (member (car form)
+                    '(+ - * / car cdr cons list not null atom
+                      numberp floatp symbolp consp listp = < > <= >=
+                      eq equal zerop onep minusp plusp fixp)))
+       (opt-all-pure-p (cdr form) bound))
+      (t nil))))
 
-(defun opt-all-pure-p (forms)
-  (cond ((null forms) t)
-        ((not (opt-pure-p (car forms))) nil)
-        (t (opt-all-pure-p (cdr forms)))))
+(defun opt-all-pure-p (forms &rest bound-arg)
+  (let ((bound (car bound-arg)))
+    (cond ((null forms) t)
+          ((not (opt-pure-p (car forms) bound)) nil)
+          (t (opt-all-pure-p (cdr forms) bound)))))
 
 ;;; Count free occurrences of SYM in FORM.
 ;;; Scope-aware: does not count into lambda/let bodies where SYM is re-bound.
@@ -219,8 +224,11 @@ Lazily computes and caches the purity verdict using the current function body."
             (uses (count-refs var body))
             (mutated (opt-mutated-p var body)))
        (cond
-         ;; Dead binding: pure init, 0 uses — drop it
-         ((and (= uses 0) (opt-pure-p init))
+         ;; Dead binding: pure init, 0 uses — drop it.
+         ;; Pass the full binding-name list so shadowed pure names
+         ;; are not falsely certified pure (#225).
+         ((and (= uses 0)
+               (opt-pure-p init (mapcar #'car bindings)))
           (opt-reduce-bindings rest body))
          ;; Inline: atom/number init, used exactly once, never mutated
          ;; Safe because atomic inits have no side-effects and are duplicable
@@ -412,9 +420,16 @@ Lazily computes and caches the purity verdict using the current function body."
 ;;;
 ;;; Usage: ($opt expr)
 ;;; Evaluates EXPR with optimization applied before execution.
+;;; Memoized: the same unevaluated form (by eq identity) is optimized once (#234).
+(def $opt-cache (make-hash-table))
 (def $opt
   ($vau (x e)
-    (eval (optimize-form (car x)) e)))
+    (let ((form (car x)))
+      (if (has-key-p $opt-cache form)
+          (eval (gethash form $opt-cache) e)
+          (let ((opt (optimize-form form)))
+            (set-bang $opt-cache form opt)
+            (eval opt e))))))
 
 ;;; ─── Optimizer → typed compiler bridge ───────────────────────────────────
 ;;;

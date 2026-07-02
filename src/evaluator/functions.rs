@@ -314,7 +314,18 @@ fn run_trampoline(
             TcoStep::TailCallWithGuards(new_val, new_env, new_guards) => {
                 current = Current::Val(new_val);
                 current_env = new_env;
-                guards.0.extend(new_guards);
+                // Collapse to O(distinct symbols): if this symbol already has a
+                // guard in the stack, the existing (older) guard holds the real
+                // pre-loop saved value. The new guard saved the previous
+                // iteration's installed value — drop it without restoring.
+                for g in new_guards {
+                    let id = g.symbol_id();
+                    if guards.0.iter().any(|existing| existing.symbol_id() == id) {
+                        std::mem::forget(g);
+                    } else {
+                        guards.0.push(g);
+                    }
+                }
             }
             TcoStep::ExecTail(new_code, new_env) => {
                 current = Current::Code(new_code);

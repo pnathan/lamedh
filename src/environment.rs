@@ -55,6 +55,10 @@ impl DynamicBinding {
         sym.borrow_mut().value = Some(new_val);
         DynamicBinding { symbol: sym, saved }
     }
+
+    pub fn symbol_id(&self) -> u32 {
+        self.symbol.borrow().id
+    }
 }
 
 impl Drop for DynamicBinding {

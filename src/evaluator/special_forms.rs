@@ -1191,12 +1191,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         match env.jit_define(&form) {
                             Ok(name) => {
                                 env.set(name.clone(), make_typed_native(name.clone()));
-                                // Annotate the symbol's plist so see-source can
-                                // reconstruct the defining form.
                                 let sym = env.intern_symbol(&name);
                                 sym.borrow_mut()
                                     .plist
                                     .insert("source-form".to_string(), form.clone());
+                                // Invalidation hooks (#230)
+                                sym.borrow_mut().plist.remove("pure-checked");
+                                invalidate_call_graph(&name, env);
                                 Ok(TcoStep::Done(Ok(LispVal::Symbol(sym))))
                             }
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
@@ -1228,6 +1229,8 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Some(s) => {
                                 let name = s.borrow().name.clone();
                                 let status = optimize_function(&name, env);
+                                s.borrow_mut().plist.remove("pure-checked");
+                                invalidate_call_graph(&name, env);
                                 Ok(TcoStep::Done(Ok(LispVal::String(status))))
                             }
                             None => Ok(TcoStep::Done(Ok(LispVal::Nil))),
@@ -1811,6 +1814,27 @@ fn parse_star_params(
     Ok((params, i))
 }
 
+/// Invalidate the call-graph entry for `name` so stale callee data doesn't
+/// survive a redefinition (#230).  Removes the `$call-graph` hash entry and
+/// pushes the name onto `$cg-pending` (both are Lisp-layer globals).
+fn invalidate_call_graph(name: &str, env: &Shared<Environment>) {
+    let name_sym = env.intern_symbol(name);
+    let name_val = LispVal::Symbol(name_sym.clone());
+    // remhash $call-graph name
+    let cg_sym = env.intern_symbol("$CALL-GRAPH");
+    let ht_opt = cg_sym.borrow().value.clone();
+    if let Some(LispVal::HashTable(ht)) = ht_opt {
+        ht.borrow_mut().remove(&name_val);
+    }
+    // push name onto $cg-pending
+    let pending_sym = env.intern_symbol("$CG-PENDING");
+    let old = pending_sym.borrow().value.clone().unwrap_or(LispVal::Nil);
+    pending_sym.borrow_mut().value = Some(LispVal::Cons {
+        car: Shared::new(name_val),
+        cdr: Shared::new(old),
+    });
+}
+
 pub(super) fn eval_defun_star(
     rest: &LispVal,
     env: &Shared<Environment>,
@@ -1880,6 +1904,10 @@ pub(super) fn eval_defun_star(
                     .plist
                     .insert("docstring".to_string(), LispVal::String(doc));
             }
+            // Invalidation hooks: clear cached purity verdict and
+            // stale call-graph entry so analyses stay sound (#230).
+            sym.borrow_mut().plist.remove("pure-checked");
+            invalidate_call_graph(&name, env);
             if had_unspecified {
                 eprintln!("; defun* {name} : {sig}  [compiled]");
             }
@@ -1909,6 +1937,8 @@ pub(super) fn eval_defun_star(
                     .plist
                     .insert("docstring".to_string(), LispVal::String(doc));
             }
+            sym.borrow_mut().plist.remove("pure-checked");
+            invalidate_call_graph(&name, env);
             if had_hints {
                 eprintln!("; defun* {name}: could not compile ({reason}); using untyped lambda");
             }
