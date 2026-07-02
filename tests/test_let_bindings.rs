@@ -157,3 +157,28 @@ fn let_with_empty_bindings_and_body_is_fine() {
     assert_eq!(eval_line("(let () 42)", &env), "42");
     assert_eq!(eval_line("(let* () (+ 1 2) 42)", &env), "42");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #224 regression: optimizer must not substitute into sibling LET inits
+// ---------------------------------------------------------------------------
+
+#[test]
+fn optimizer_let_sibling_inits_see_outer_binding_not_local() {
+    let env = env_with_stdlib();
+    // x=1 globally; (let ((x 99) (y (+ x 10))) ...) — y's init must use outer x=1
+    // not the sibling x=99.  The optimizer previously inlined x→99 into y's init,
+    // producing y=109 and a final result of 208 instead of 110.
+    eval_line("(def x 1)", &env);
+    assert_eq!(
+        eval_line("(let ((x 99) (y (+ x 10))) (+ y x))", &env),
+        "110"
+    );
+    // Verify the optimizer agrees with direct eval (the regression)
+    assert_eq!(
+        eval_line(
+            "(eval (optimize-form '(let ((x 99) (y (+ x 10))) (+ y x))) (the-environment))",
+            &env
+        ),
+        "110"
+    );
+}

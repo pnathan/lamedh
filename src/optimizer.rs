@@ -133,14 +133,28 @@ fn is_pure(expr: &LispVal) -> bool {
             {
                 return true;
             }
-            // (+ ...) (- ...) (* ...) (/) on pure args — pure
+            // (+ ...) (- ...) (* ...) (/) on pure args — pure, but only
+            // when the symbol still holds its builtin binding (#225).
             if let LispVal::Symbol(s) = car.as_ref() {
-                let name = s.borrow().name.clone();
-                if matches!(
-                    name.as_str(),
-                    "+" | "-" | "*" | "/" | "CAR" | "CDR" | "CONS" | "NULL" | "ATOM" | "EQ" | "NOT"
-                ) {
-                    // Check all args are pure
+                let sym = s.borrow();
+                let name = &sym.name;
+                let still_builtin = matches!(sym.value, Some(LispVal::Builtin(_)) | None);
+                if still_builtin
+                    && matches!(
+                        name.as_str(),
+                        "+" | "-"
+                            | "*"
+                            | "/"
+                            | "CAR"
+                            | "CDR"
+                            | "CONS"
+                            | "NULL"
+                            | "ATOM"
+                            | "EQ"
+                            | "NOT"
+                    )
+                {
+                    drop(sym);
                     let mut rest = cdr.as_ref();
                     loop {
                         match rest {
@@ -307,19 +321,23 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                         }
                     }
 
-                    // Arithmetic: constant folding + algebraic identities
+                    // Arithmetic: constant folding + algebraic identities.
+                    // Only fold when the symbol's value cell still holds the
+                    // builtin — a user redefinition (or shadowing) makes the
+                    // name impure (#225).
                     "+" | "-" | "*" | "/" => {
                         if let Some(args) = list_to_vec(rest) {
                             let opt_args: Vec<LispVal> = args.iter().map(optimize).collect();
-                            // Try constant folding
-                            if let Some(folded) = try_fold_numeric(&name, &opt_args) {
-                                return folded;
+                            let is_builtin =
+                                matches!(s.borrow().value, Some(LispVal::Builtin(_)) | None);
+                            if is_builtin {
+                                if let Some(folded) = try_fold_numeric(&name, &opt_args) {
+                                    return folded;
+                                }
+                                if let Some(simplified) = try_algebraic_identity(&name, &opt_args) {
+                                    return simplified;
+                                }
                             }
-                            // Try algebraic identity
-                            if let Some(simplified) = try_algebraic_identity(&name, &opt_args) {
-                                return simplified;
-                            }
-                            // Rebuild with optimized args
                             return LispVal::Cons {
                                 car: Shared::new(head.as_ref().clone()),
                                 cdr: Shared::new(vec_to_list(opt_args)),

@@ -151,6 +151,8 @@ pub(super) fn expand_macro(
     _env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let macro_env = Environment::new_child(&m.env);
+    let has_dyn = macro_env.has_any_dynamic();
+    let mut guards: Vec<DynamicBinding> = Vec::new();
 
     if let Some(rest_param_id) = m.rest_param_id {
         if args.len() < m.params.len() {
@@ -161,10 +163,24 @@ pub(super) fn expand_macro(
             )));
         }
         for (id, arg) in m.param_ids.iter().zip(args.iter()) {
+            if has_dyn
+                && let Some(sym) = macro_env.symbol_by_id(*id)
+                && sym.borrow().is_dynamic
+            {
+                guards.push(DynamicBinding::install(sym, arg.clone()));
+                continue;
+            }
             macro_env.set_id(*id, arg.clone());
         }
         let rest_args = vec_to_list(args[m.params.len()..].to_vec());
-        macro_env.set_id(rest_param_id, rest_args);
+        if has_dyn
+            && let Some(sym) = macro_env.symbol_by_id(rest_param_id)
+            && sym.borrow().is_dynamic
+        {
+            guards.push(DynamicBinding::install(sym, rest_args));
+        } else {
+            macro_env.set_id(rest_param_id, rest_args);
+        }
     } else {
         if m.params.len() != args.len() {
             return Err(LispError::Generic(format!(
@@ -174,11 +190,19 @@ pub(super) fn expand_macro(
             )));
         }
         for (id, arg) in m.param_ids.iter().zip(args) {
+            if has_dyn
+                && let Some(sym) = macro_env.symbol_by_id(*id)
+                && sym.borrow().is_dynamic
+            {
+                guards.push(DynamicBinding::install(sym, arg.clone()));
+                continue;
+            }
             macro_env.set_id(*id, arg.clone());
         }
     }
 
     eval(&m.body, &macro_env)
+    // guards drops here, restoring any dynamic bindings
 }
 
 /// Public entry point for evaluation. Acquires a depth-guard frame (issue #61)
@@ -297,7 +321,22 @@ fn run_trampoline(
             TcoStep::TailCallWithGuards(new_val, new_env, new_guards) => {
                 current = Current::Val(new_val);
                 current_env = new_env;
-                guards.0.extend(new_guards);
+                // Collapse to O(distinct symbols): if this symbol already has a
+                // guard in the stack, the existing (older) guard holds the real
+                // pre-loop saved value. The new guard saved the previous
+                // iteration's installed value — drop it without restoring.
+                for mut g in new_guards {
+                    let id = g.symbol_id();
+                    if guards.0.iter().any(|existing| existing.symbol_id() == id) {
+                        // Drop the saved LispVal to avoid leaking it, then
+                        // suppress the Drop impl (which would restore the
+                        // intermediate value we don't want).
+                        drop(g.take_saved());
+                        std::mem::forget(g);
+                    } else {
+                        guards.0.push(g);
+                    }
+                }
             }
             TcoStep::ExecTail(new_code, new_env) => {
                 current = Current::Code(new_code);

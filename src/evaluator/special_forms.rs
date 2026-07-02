@@ -187,8 +187,8 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         ))));
     }
 
-    let var_id = if let LispVal::Symbol(s) = &spec[0] {
-        s.borrow().id
+    let (var_id, var_sym) = if let LispVal::Symbol(s) = &spec[0] {
+        (s.borrow().id, s.clone())
     } else {
         return Ok(TcoStep::Done(Err(LispError::Generic(
             "for loop variable must be a symbol".to_string(),
@@ -219,6 +219,15 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
 
     let body = &args[1..];
     let loop_env = Environment::new_child(env);
+    let is_dyn = var_sym.borrow().is_dynamic;
+    let _dyn_guard = if is_dyn {
+        Some(DynamicBinding::install(
+            var_sym.clone(),
+            LispVal::Number(start),
+        ))
+    } else {
+        None
+    };
 
     let mut i = start;
     loop {
@@ -226,7 +235,11 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         if (step > 0 && i > end) || (step < 0 && i < end) {
             break;
         }
-        loop_env.set_id(var_id, LispVal::Number(i));
+        if is_dyn {
+            var_sym.borrow_mut().value = Some(LispVal::Number(i));
+        } else {
+            loop_env.set_id(var_id, LispVal::Number(i));
+        }
         for form in body {
             eval(form, &loop_env)?;
         }
@@ -272,6 +285,87 @@ pub(super) fn eval_while(rest: &LispVal, env: &Shared<Environment>) -> Result<Tc
     }
 }
 
+/// Dispatch an already-evaluated Macro, Vau, or Fexpr with unevaluated args.
+///
+/// Shared by the tree-walker (`eval_application`) and the compiled-code
+/// executor (`exec_step` Code::Call).  Keeping it in one place means:
+///   - the dynamic-binding logic (#222) only exists once
+///   - the compiled path no longer re-evaluates the operator expression when it
+///     resolves to a macro/fexpr/vau, eliminating the double-evaluation bug
+///     (#226)
+pub(super) fn apply_unevaluated(
+    func: &LispVal,
+    rest: &LispVal,
+    env: &Shared<Environment>,
+) -> Result<TcoStep, LispError> {
+    if let LispVal::Macro(m) = func {
+        let args_list = list_to_vec(rest)?;
+        let expanded = expand_macro(m, &args_list, env)?;
+        return Ok(TcoStep::TailCall(expanded, env.clone()));
+    }
+
+    if let LispVal::Vau(vau) = func {
+        let new_env = Environment::new_child(&vau.env);
+        new_env.set_id(vau.operands_param_id, rest.clone());
+        new_env.set_id(vau.env_param_id, LispVal::Environment(env.clone()));
+        return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
+    }
+
+    if let LispVal::Fexpr(fexpr) = func {
+        let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
+        let has_dyn = new_env.has_any_dynamic();
+        let mut guards: Vec<DynamicBinding> = Vec::new();
+        if fexpr.param_ids.len() == 1 {
+            let id = fexpr.param_ids[0];
+            if has_dyn {
+                if let Some(sym) = new_env.symbol_by_id(id) {
+                    if sym.borrow().is_dynamic {
+                        guards.push(DynamicBinding::install(sym, rest.clone()));
+                    } else {
+                        new_env.set_id(id, rest.clone());
+                    }
+                } else {
+                    new_env.set_id(id, rest.clone());
+                }
+            } else {
+                new_env.set_id(id, rest.clone());
+            }
+        } else {
+            let unevaluated_args = list_to_vec(rest)?;
+            if unevaluated_args.len() != fexpr.params.len() {
+                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                    "fexpr expected {} arguments, got {}",
+                    fexpr.params.len(),
+                    unevaluated_args.len()
+                )))));
+            }
+            for (id, arg) in fexpr.param_ids.iter().zip(unevaluated_args) {
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(*id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, arg));
+                    continue;
+                }
+                new_env.set_id(*id, arg);
+            }
+        }
+        if guards.is_empty() {
+            return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
+        } else {
+            return Ok(TcoStep::TailCallWithGuards(
+                *fexpr.body.clone(),
+                new_env,
+                guards,
+            ));
+        }
+    }
+
+    Ok(TcoStep::Done(Err(LispError::Generic(format!(
+        "apply_unevaluated: not a macro/fexpr/vau: {func:?}"
+    )))))
+}
+
 /// Handle ordinary function application.
 ///
 /// Called from `eval_step` for both symbol-headed calls (after the
@@ -294,43 +388,12 @@ fn eval_application(
 ) -> Result<TcoStep, LispError> {
     let func = eval(first, env)?;
 
-    // Macro expansion: TCO into the expanded form.  Must be intercepted before
-    // evaluating args — macros receive unevaluated operands.
-    if let LispVal::Macro(m) = &func {
-        let args_list = list_to_vec(rest)?;
-        let expanded = expand_macro(m, &args_list, env)?;
-        return Ok(TcoStep::TailCall(expanded, env.clone()));
-    }
-
-    // Vau application: bind unevaluated operands + caller env, TCO into body.
-    if let LispVal::Vau(vau) = &func {
-        let new_env = Environment::new_child(&vau.env);
-        new_env.set_id(vau.operands_param_id, rest.clone());
-        new_env.set_id(vau.env_param_id, LispVal::Environment(env.clone()));
-        return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
-    }
-
-    // Fexpr application: TCO — bind unevaluated args, continue with body.
-    if let LispVal::Fexpr(fexpr) = &func {
-        let new_env = Environment::new_child_with_dynamic(&fexpr.env, env);
-        if fexpr.param_ids.len() == 1 {
-            // Single-param: bind entire unevaluated arg list to the one parameter.
-            new_env.set_id(fexpr.param_ids[0], rest.clone());
-        } else {
-            // Multi-param: bind each unevaluated arg to its parameter.
-            let unevaluated_args = list_to_vec(rest)?;
-            if unevaluated_args.len() != fexpr.params.len() {
-                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
-                    "fexpr expected {} arguments, got {}",
-                    fexpr.params.len(),
-                    unevaluated_args.len()
-                )))));
-            }
-            for (id, arg) in fexpr.param_ids.iter().zip(unevaluated_args) {
-                new_env.set_id(*id, arg);
-            }
-        }
-        return Ok(TcoStep::TailCall(*fexpr.body.clone(), new_env));
+    // Macro / Vau / Fexpr: pass unevaluated args to the shared dispatcher.
+    if matches!(
+        func,
+        LispVal::Macro(_) | LispVal::Vau(_) | LispVal::Fexpr(_)
+    ) {
+        return apply_unevaluated(&func, rest, env);
     }
 
     // Evaluated-argument callables (lambda/builtin/native): evaluate operands
@@ -340,6 +403,8 @@ fn eval_application(
     // Lambda application: TCO — set up new env and continue with body.
     if let LispVal::Lambda(lambda) = &func {
         let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+        let has_dyn = new_env.has_any_dynamic();
+        let mut guards: Vec<DynamicBinding> = Vec::new();
         if let Some(rest_param_id) = lambda.rest_param_id {
             if eval_args.len() < lambda.params.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
@@ -352,10 +417,24 @@ fn eval_application(
             let n_fixed = lambda.params.len();
             let mut eval_args = eval_args;
             for (id, arg) in lambda.param_ids.iter().zip(eval_args.drain(..n_fixed)) {
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(*id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, arg));
+                    continue;
+                }
                 new_env.set_id(*id, arg);
             }
             let rest_args = vec_to_list(eval_args.into_vec());
-            new_env.set_id(rest_param_id, rest_args);
+            if has_dyn
+                && let Some(sym) = new_env.symbol_by_id(rest_param_id)
+                && sym.borrow().is_dynamic
+            {
+                guards.push(DynamicBinding::install(sym, rest_args));
+            } else {
+                new_env.set_id(rest_param_id, rest_args);
+            }
         } else {
             if lambda.params.len() != eval_args.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
@@ -366,20 +445,36 @@ fn eval_application(
             }
             // Move every arg directly into the frame — no clone.
             for (id, arg) in lambda.param_ids.iter().zip(eval_args) {
+                if has_dyn
+                    && let Some(sym) = new_env.symbol_by_id(*id)
+                    && sym.borrow().is_dynamic
+                {
+                    guards.push(DynamicBinding::install(sym, arg));
+                    continue;
+                }
                 new_env.set_id(*id, arg);
             }
         }
-        // If a compiled body is available, hand off to it as a tail call on
-        // the *same* trampoline (`TcoStep::ExecTail`) rather than invoking a
-        // fresh `exec()` — that used to be a separate, non-tail Rust call
-        // that grew the native stack and eval-depth counter on every
-        // tree-walker → compiled crossing (issue #200 M1' regression).
-        // Otherwise fall back to the standard TailCall so the outer
-        // trampoline handles TCO for the tree-walking path.
-        if let Some(compiled) = &lambda.compiled {
-            return Ok(TcoStep::ExecTail(compiled.clone(), new_env));
+        if guards.is_empty() {
+            // If a compiled body is available, hand off to it as a tail call on
+            // the *same* trampoline (`TcoStep::ExecTail`) rather than invoking a
+            // fresh `exec()` — that used to be a separate, non-tail Rust call
+            // that grew the native stack and eval-depth counter on every
+            // tree-walker → compiled crossing (issue #200 M1' regression).
+            // Otherwise fall back to the standard TailCall so the outer
+            // trampoline handles TCO for the tree-walking path.
+            if let Some(compiled) = &lambda.compiled {
+                return Ok(TcoStep::ExecTail(compiled.clone(), new_env));
+            }
+            return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
         }
-        return Ok(TcoStep::TailCall(*lambda.body.clone(), new_env));
+        // Dynamic params present: fall back to tree-walker so TailCallWithGuards
+        // can carry the guards into the trampoline's DynamicGuardStack.
+        return Ok(TcoStep::TailCallWithGuards(
+            *lambda.body.clone(),
+            new_env,
+            guards,
+        ));
     }
 
     // All other callables (builtins, natives): apply inline.
@@ -1103,12 +1198,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         match env.jit_define(&form) {
                             Ok(name) => {
                                 env.set(name.clone(), make_typed_native(name.clone()));
-                                // Annotate the symbol's plist so see-source can
-                                // reconstruct the defining form.
                                 let sym = env.intern_symbol(&name);
                                 sym.borrow_mut()
                                     .plist
                                     .insert("source-form".to_string(), form.clone());
+                                // Invalidation hooks (#230)
+                                sym.borrow_mut().plist.remove("pure-checked");
+                                invalidate_call_graph(&name, env);
                                 Ok(TcoStep::Done(Ok(LispVal::Symbol(sym))))
                             }
                             Err(e) => Ok(TcoStep::Done(Err(LispError::Generic(e)))),
@@ -1140,6 +1236,8 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Some(s) => {
                                 let name = s.borrow().name.clone();
                                 let status = optimize_function(&name, env);
+                                s.borrow_mut().plist.remove("pure-checked");
+                                invalidate_call_graph(&name, env);
                                 Ok(TcoStep::Done(Ok(LispVal::String(status))))
                             }
                             None => Ok(TcoStep::Done(Ok(LispVal::Nil))),
@@ -1299,10 +1397,18 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let body = &args[1..];
 
                         let prog_env = Environment::new_child(env);
+                        let has_dyn = prog_env.has_any_dynamic();
+                        let mut prog_guards: Vec<DynamicBinding> = Vec::new();
 
                         for var in var_list {
                             if let LispVal::Symbol(s) = var {
-                                prog_env.set_id(s.borrow().id, LispVal::Nil);
+                                let sb = s.borrow();
+                                if has_dyn && sb.is_dynamic {
+                                    drop(sb);
+                                    prog_guards.push(DynamicBinding::install(s, LispVal::Nil));
+                                } else {
+                                    prog_env.set_id(sb.id, LispVal::Nil);
+                                }
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "PROG variable list must contain only symbols".to_string(),
@@ -1723,6 +1829,27 @@ fn parse_star_params(
     Ok((params, i))
 }
 
+/// Invalidate the call-graph entry for `name` so stale callee data doesn't
+/// survive a redefinition (#230).  Removes the `$call-graph` hash entry and
+/// pushes the name onto `$cg-pending` (both are Lisp-layer globals).
+fn invalidate_call_graph(name: &str, env: &Shared<Environment>) {
+    let name_sym = env.intern_symbol(name);
+    let name_val = LispVal::Symbol(name_sym.clone());
+    // remhash $call-graph name
+    let cg_sym = env.intern_symbol("$CALL-GRAPH");
+    let ht_opt = cg_sym.borrow().value.clone();
+    if let Some(LispVal::HashTable(ht)) = ht_opt {
+        ht.borrow_mut().remove(&name_val);
+    }
+    // push name onto $cg-pending
+    let pending_sym = env.intern_symbol("$CG-PENDING");
+    let old = pending_sym.borrow().value.clone().unwrap_or(LispVal::Nil);
+    pending_sym.borrow_mut().value = Some(LispVal::Cons {
+        car: Shared::new(name_val),
+        cdr: Shared::new(old),
+    });
+}
+
 pub(super) fn eval_defun_star(
     rest: &LispVal,
     env: &Shared<Environment>,
@@ -1792,6 +1919,10 @@ pub(super) fn eval_defun_star(
                     .plist
                     .insert("docstring".to_string(), LispVal::String(doc));
             }
+            // Invalidation hooks: clear cached purity verdict and
+            // stale call-graph entry so analyses stay sound (#230).
+            sym.borrow_mut().plist.remove("pure-checked");
+            invalidate_call_graph(&name, env);
             if had_unspecified {
                 eprintln!("; defun* {name} : {sig}  [compiled]");
             }
@@ -1821,6 +1952,8 @@ pub(super) fn eval_defun_star(
                     .plist
                     .insert("docstring".to_string(), LispVal::String(doc));
             }
+            sym.borrow_mut().plist.remove("pure-checked");
+            invalidate_call_graph(&name, env);
             if had_hints {
                 eprintln!("; defun* {name}: could not compile ({reason}); using untyped lambda");
             }

@@ -100,6 +100,18 @@
     ((eq (car form) 'prog)
      (let ((new-locals (union (cadr form) locals)))
        (cg-collect-forms (cddr form) new-locals result)))
+    ;; FUNCALL / APPLY with a quoted or #'-referenced symbol — record
+    ;; the target as a callee edge (#231).
+    ((and (symbolp (car form))
+          (member (car form) '(funcall apply))
+          (consp (cdr form))
+          (consp (cadr form))
+          (member (car (cadr form)) '(quote function))
+          (symbolp (cadr (cadr form)))
+          (not (member (cadr (cadr form)) locals)))
+     (let* ((target (cadr (cadr form)))
+            (r1 (adjoin (car form) (adjoin target result))))
+       (cg-collect-forms (cddr form) locals r1)))
     ;; General application: car is the operator symbol (or compound)
     (t
      (let* ((op (car form))

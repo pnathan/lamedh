@@ -304,7 +304,13 @@ fn compile_for(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         _ => return Code::Interp(form.clone()),
     };
     let var_id = match &spec[0] {
-        LispVal::Symbol(s) => s.borrow().id,
+        LispVal::Symbol(s) => {
+            let sb = s.borrow();
+            if sb.is_dynamic {
+                return Code::Interp(form.clone());
+            }
+            sb.id
+        }
         _ => return Code::Interp(form.clone()),
     };
     let start = compile(&spec[1]);
@@ -376,9 +382,19 @@ pub(super) fn exec_step(
     match code {
         Code::Const(v) => Ok(TcoStep::Done(Ok(v.clone()))),
 
-        Code::Var(sym) => Ok(TcoStep::Done(env.resolve(sym).ok_or_else(|| {
-            LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
-        }))),
+        Code::Var(sym) => {
+            let value = env.resolve(sym).ok_or_else(|| {
+                LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
+            })?;
+            // LABEL compat: same check the tree-walker does in eval_step.
+            if let LispVal::Cons { car, .. } = &value
+                && let LispVal::Symbol(s) = &**car
+                && s.borrow().name == "LABEL"
+            {
+                return Ok(TcoStep::Done(eval(&value, env)));
+            }
+            Ok(TcoStep::Done(Ok(value)))
+        }
 
         // Fallback: hand the original AST form to the tree-walker side of the
         // *same* trampoline. This must be a tail hand-off (not a plain `eval`
@@ -521,15 +537,18 @@ pub(super) fn exec_step(
             let func = exec(callee, env)?;
 
             // Macros, fexprs, and vau operatives need their arguments
-            // *unevaluated*.  Hand the original AST form to the tree-walker
-            // side of this *same* trampoline (a tail hand-off, not a plain
-            // nested `eval` call) so a tail call through one of these from
-            // compiled code still costs no native stack depth.
+            // *unevaluated*.  The operator (`func`) is already evaluated above;
+            // dispatch it directly with the unevaluated operand tail so we
+            // don't re-evaluate the operator expression (#226).
             if matches!(
                 func,
                 LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
             ) {
-                return Ok(TcoStep::TailCall(original.clone(), env.clone()));
+                let rest = match original {
+                    LispVal::Cons { cdr, .. } => (**cdr).clone(),
+                    _ => LispVal::Nil,
+                };
+                return apply_unevaluated(&func, &rest, env);
             }
 
             // Evaluate all arguments (non-tail).
@@ -540,8 +559,11 @@ pub(super) fn exec_step(
 
             // TCO for compiled lambdas (fixed-arity or `&rest`): skip the Rust
             // frame entirely by setting up the child env and looping.
+            // Skip the fast path when any param is dynamic — fall through to
+            // `apply` which installs DynamicBinding guards correctly.
             if let LispVal::Lambda(ref lambda) = func
                 && let Some(ref compiled_body) = lambda.compiled
+                && !env.has_any_dynamic()
             {
                 match lambda.rest_param_id {
                     None if lambda.params.len() == eval_args.len() => {

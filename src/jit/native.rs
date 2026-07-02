@@ -138,6 +138,7 @@ pub fn compile_native(
     n_params: usize,
     n_slots: usize,
     cell_addrs: &[usize],
+    param_counts: &[usize],
 ) -> Result<NativeEdition, String> {
     let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
@@ -243,6 +244,7 @@ pub fn compile_native(
             alloc_ref,
             callee_sig,
             cell_addrs,
+            param_counts,
             self_id,
             header,
         };
@@ -291,6 +293,11 @@ struct Emitter<'a, 'b, 'c> {
     alloc_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
+    /// Expected parameter count for each callee, parallel to `cell_addrs`.
+    /// Used in `emit_call` to detect call-site/callee arity mismatches at
+    /// native-compile time (arising from redefinitions that changed arity after
+    /// callers were elaborated but before they were recompiled).
+    param_counts: &'c [usize],
     /// This function's own registry id — a `Call(id, ..)` reached in tail
     /// position with `id == self_id` is a self tail call (issue #133 Tier 1).
     self_id: usize,
@@ -736,6 +743,23 @@ impl Emitter<'_, '_, '_> {
             self.b.ins().stack_store(*v, buf, (i * 8) as i32);
         }
         let buf_addr = self.b.ins().stack_addr(self.ptr, buf, 0);
+
+        // If the call-site arity disagrees with the callee's current param count
+        // (callee was redefined with a different arity after this function's Core
+        // was elaborated), skip the native fast path and always route through the
+        // trampoline.  The arity guard in `invoke_once` will then skip the callee's
+        // native edition too, avoiding an out-of-bounds read in its native prologue.
+        let arity_mismatch = id < self.param_counts.len() && argc != self.param_counts[id];
+
+        if arity_mismatch {
+            let id_v = self.iconst(id as i64);
+            let argc_v = self.iconst(argc as i64);
+            let sc = self
+                .b
+                .ins()
+                .call(self.tramp_ref, &[self.ctx_ptr, id_v, buf_addr, argc_v]);
+            return self.b.inst_results(sc)[0];
+        }
 
         // Load the callee's current native entry from its (heap-stable) cell.
         // Non-zero -> call it directly (no host round-trip); zero -> the callee

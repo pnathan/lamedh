@@ -37,8 +37,8 @@
   ;; MACROEXPAND returns the expansion of a macro call without evaluating it.
   ;; DEFUN now produces a minimal expansion: bind the function, invalidate the
   ;; lazy purity cache (cheap remprop), push the name onto the call-graph
-  ;; pending list (guarded by BOUNDP, nil before 19-call-graph.lisp loads),
-  ;; and return the name.  No body-traversal at definition time.
+  ;; pending list (guarded by BOUNDP), clear the stale call-graph entry
+  ;; (#230), and return the name.
   (assert-equal
     (macroexpand '(defun foo (x) (+ x 1)))
     '(PROGN
@@ -46,6 +46,9 @@
        (REMPROP (QUOTE FOO) "pure-checked")
        (IF (BOUNDP (QUOTE $CG-PENDING))
            (SETQ $CG-PENDING (CONS (QUOTE FOO) $CG-PENDING))
+           ())
+       (IF (BOUNDP (QUOTE $CALL-GRAPH))
+           (DELETE-KEY $CALL-GRAPH (QUOTE FOO))
            ())
        (QUOTE FOO))))
 

@@ -28,12 +28,18 @@
          (if (boundp '$cg-pending)
              (setq $cg-pending (cons ',name $cg-pending))
              nil)
+         (if (boundp '$call-graph)
+             (delete-key $call-graph ',name)
+             nil)
          ',name)
       `(progn
          (def ,name ,lambda-expr)
          (remprop ',name "pure-checked")
          (if (boundp '$cg-pending)
              (setq $cg-pending (cons ',name $cg-pending))
+             nil)
+         (if (boundp '$call-graph)
+             (delete-key $call-graph ',name)
              nil)
          ',name))))
 
