@@ -209,14 +209,22 @@ Lisp, so a record-typed verdict — the strongest evidence the checker can
 produce — could never confirm, and every row method graded `UNPROVEN`. See
 `docs/eval/position-deeper-unification.md` §2 for the analysis.
 
-## The fine print
+## Access is by name, so layout does not lie
 
-One honest caveat remains, visible in the transcript rather than papered over:
+A row concept's declared scheme is by *name* — `goblin-hp` accepts "any record
+with an int64 `hp`". Its accessor honors that: it reads the `hp` field of
+whatever branded record it is handed, resolving the slot from the value's own
+brand (`condense-field-ref`), not from a baked-in offset. So two kinds that
+share a field name at different positions cannot read each other's wrong slot —
+the runtime agrees with the declared type for every layout:
 
-**The shared-fields-first convention is load-bearing.** Accessors are
-positional at runtime (`goblin-hp` is `(nth 2 self)`) while their declared
-schemes are by-name. Keeping shared fields in the same leading positions is
-what makes the row story and the runtime agree. Break the convention and a
-cross-kind accessor call can type-check yet read the wrong slot — the declared
-axiom promises more than the positional implementation delivers. This is
-Seam C in `docs/eval/position-deeper-unification.md`, still open.
+```lisp
+(defconcept armored (:fields ((armor int64) (hp int64))))  ; hp at slot 2
+(defconcept slime   (:fields ((hp int64))))                ; hp at slot 1
+(armored-hp (make-slime 9))   ; => 9  (slime's hp, read by name), not NIL
+```
+
+This was Seam C in `docs/eval/position-deeper-unification.md` — a soundness
+gap where the by-name axiom outran a by-offset accessor. It is now closed;
+non-row concepts (unmappable field types, no declared axiom) keep the simpler
+positional accessor, since nothing at the type level over-promises for them.

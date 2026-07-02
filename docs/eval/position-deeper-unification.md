@@ -149,6 +149,12 @@ stamp.
 
 ## 4. Seam C: the axiom and the implementation disagree about what a field is
 
+> **Status: fixed on this branch** by option 1 below. Row-concept accessors are
+> generated to read by name via `condense-field-ref` (resolve the field's slot
+> from the value's own brand), so `(armored-hp (make-slime 9))` now returns `9`,
+> matching its `int64` type. Non-row concepts keep positional access (no
+> declared axiom over-promises for them). The analysis below is retained.
+
 The row commit's honesty note says `DECLARED` schemes are "generated in
 lockstep with the implementation." There is a hole in the lockstep, verified:
 
@@ -231,9 +237,10 @@ Ranked, admissible-first:
    `iface-unify` deleted. Killed the evidence-inversion (MISMATCH on
    proven-correct methods) and made `CONFORMS` mean what it says. Correctness
    fix; no gate.
-2. **Fix Seam C by name-directed dynamic access** — make the `DECLARED`
-   axiom true for every layout, not just the shared-prefix convention.
-   Soundness fix; no gate. (The next admissible step.)
+2. **Fix Seam C by name-directed dynamic access** — ✅ **done on this branch.**
+   Row-concept accessors read by name (`condense-field-ref`), so the `DECLARED`
+   axiom is true for every layout, not just the shared-prefix convention.
+   Soundness fix; no gate.
 3. **Make interfaces condensation citizens (Seam B)** — record through
    `condense-record!`, fingerprint `implements!` claims, re-grade in
    `condense-recheck!`. Pure Lisp; converts one-time stamps into

@@ -396,12 +396,42 @@ artifact. Returns a report alist."
 (defun condense-field-names (field-specs)
   (mapcar #'car field-specs))
 
-(defun condense-accessor-forms (concept fields index)
+;; Name-directed field access (soundness for row concepts). A declared row
+;; scheme is by *name* ("any record with an int64 hp"), but a positional
+;; accessor -- (nth 2 self) -- is by *offset*. When two concepts share a field
+;; name at different offsets, a cross-concept accessor call type-checks (the
+;; declared scheme subsumes) yet reads the wrong slot. CONDENSE-FIELD-REF closes
+;; that gap: it resolves the field's offset from the value's *own* brand, so the
+;; accessor reads the named field of whatever branded record it is given, making
+;; the runtime honor the by-name promise the declared axiom makes.
+(defun condense-field-position (field specs index)
+  "1-based slot of FIELD among the field-spec names in SPECS, or NIL. Slot 0 is
+the concept brand, so the first field lives at slot 1."
+  (cond
+    ((null specs) nil)
+    ((eq (car (car specs)) field) index)
+    (t (condense-field-position field (cdr specs) (+ index 1)))))
+
+(defun condense-field-ref (self field)
+  "Read FIELD from concept value SELF by name, via SELF's own brand."
+  (let ((idx (condense-field-position
+               field (condense-get (car self) "condense.fields") 1)))
+    (if (null idx)
+        (error (concat (princ-to-string (car self))
+                       " has no field " (princ-to-string field)))
+        (nth idx self))))
+
+(defun condense-accessor-forms (concept fields index row-p)
+  "Generate the field accessors for CONCEPT. Row concepts (ROW-P) read by name
+via CONDENSE-FIELD-REF -- the sound path that matches their declared row
+schemes; others keep the direct positional read."
   (if (null fields)
       nil
       (cons `(defun ,(condense-accessor-symbol concept (car fields)) (self)
-               (nth ,index self))
-            (condense-accessor-forms concept (cdr fields) (+ index 1)))))
+               ,(if row-p
+                    `(condense-field-ref self ',(car fields))
+                    `(nth ,index self)))
+            (condense-accessor-forms concept (cdr fields) (+ index 1) row-p))))
 
 (defun condense-validator-bindings (concept fields)
   (mapcar (lambda (field)
@@ -422,7 +452,7 @@ artifact. Returns a report alist."
           (condense-validator-symbol concept))
     (mapcar (lambda (field) (condense-accessor-symbol concept field)) fields)))
 
-(defun condense-concept-expansion (concept fields invariant-section)
+(defun condense-concept-expansion (concept fields invariant-section row-p)
   (let ((constructor (condense-constructor-symbol concept))
         (predicate (condense-predicate-symbol concept))
         (validator (condense-validator-symbol concept))
@@ -431,7 +461,7 @@ artifact. Returns a report alist."
        (defun ,constructor ,fields (list ',concept ,@fields))
        (defun ,predicate (self)
          (and (consp self) (eq (car self) ',concept)))
-       ,@(condense-accessor-forms concept fields 1)
+       ,@(condense-accessor-forms concept fields 1 row-p)
        (defun ,validator (self)
          (and (,predicate self)
               (let ,(condense-validator-bindings concept fields)
@@ -521,7 +551,11 @@ form, so the whole artifact has a single seed to edit."
         (error "defconcept requires a :fields section")
         (let* ((field-specs (cadr fields-section))
                (fields (condense-field-names field-specs))
-               (expansion (condense-concept-expansion concept fields invariant-section))
+               ;; A row concept (every field maps into the checker's type
+               ;; language) gets DECLARED by-name schemes, so its accessors must
+               ;; read by name to stay sound; others keep positional access.
+               (row-p (not (null (condense-row-fields field-specs))))
+               (expansion (condense-concept-expansion concept fields invariant-section row-p))
                (generated (condense-concept-generated concept fields))
                (source (cons 'defconcept x))
                (previous (condense-expansion concept)))

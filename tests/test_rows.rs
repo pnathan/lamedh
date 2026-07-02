@@ -134,6 +134,31 @@ fn unmappable_field_types_fall_back_to_undeclared() {
 }
 
 #[test]
+fn row_accessor_reads_the_named_field_regardless_of_layout() {
+    // Seam C: a DECLARED row scheme is by-name, so the accessor must read by
+    // name. ARMORED puts hp at slot 2; SLIME puts it at slot 1. Applying
+    // ARMORED-HP to a SLIME type-checks (the closed slime record has an int64
+    // hp), and must now *return that hp*, not the garbage at a fixed offset.
+    let env = env_with_stdlib();
+    eval_line(
+        "(defconcept armored (:fields ((armor int64) (hp int64))))",
+        &env,
+    );
+    eval_line("(defconcept slime (:fields ((hp int64))))", &env);
+    eval_line("(defun probe () (armored-hp (make-slime 9)))", &env);
+    // The cross-concept call type-checks as int64...
+    assert_eq!(
+        eval_line("(see-type 'probe)", &env),
+        "(CHECKED (-> () INT64))"
+    );
+    // ...and the runtime now agrees with the type: 9, not NIL.
+    assert_eq!(eval_line("(probe)", &env), "9");
+    // Same-concept access is unchanged.
+    assert_eq!(eval_line("(armored-hp (make-armored 5 42))", &env), "42");
+    assert_eq!(eval_line("(armored-armor (make-armored 5 42))", &env), "5");
+}
+
+#[test]
 fn declare_type_validates_its_input() {
     let env = env_with_stdlib();
     // Duplicate record labels are rejected.

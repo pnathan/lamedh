@@ -16,10 +16,10 @@
 ;;;     "any record with these fields", so one definition is *proven*
 ;;;     shared across every NPC kind that carries the fields.
 ;;;
-;;; Layout convention: every NPC kind lists the shared fields first, in
-;;; the same order -- (name string) (hp int64) -- then its own fields.
-;;; Accessors are positional at runtime while their declared row schemes
-;;; are by-name, so the convention is what keeps the two in agreement.
+;;; A row concept's accessors read the named field of whatever branded record
+;;; they are handed (name-directed access), so their declared by-name schemes
+;;; and the runtime agree no matter where a field sits -- two kinds that share
+;;; a field name at different offsets cannot read each other's wrong slot.
 
 ;;; ---- two kinds of NPC ------------------------------------------------------
 
