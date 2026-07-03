@@ -199,7 +199,10 @@
                 (princ (doc-get entry 'CATEGORY))
                 (princ " |")
                 (terpri))))
-          (keys HELP-DB)))
+          (sort (keys HELP-DB)
+                (lambda (a b)
+                  (string-lessp (prin1-to-string a)
+                                (prin1-to-string b))))))
 
 ;;; Convenience function to dump docs
 (defun dump-docs ()
