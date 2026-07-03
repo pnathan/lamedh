@@ -618,16 +618,22 @@ symbol's plist (Lisp 1.5 style).
 ```
 
 Generates a constructor, predicate, field accessors, and field mutators.
-Structs are implemented as hash tables with a `__type__` key.
+Structs are implemented as arrays with the type tag at index 0.
+
+The constructor accepts either positional arguments (all fields, in order)
+or CL-style `:field value` keyword pairs (any order; omitted fields default
+to `NIL`).
 
 ```lisp
 (defstruct point x y)
 
-(def p (make-point :x 3 :y 4))
+(def p (make-point :x 3 :y 4))   ; keyword form
+(def q (make-point 3 4))          ; positional form — same result
 (point-p p)           ; => T
 (point-x p)           ; => 3
 (set-point-x! p 10)   ; mutate
 (point-x p)           ; => 10
+(setf (point-x p) 11) ; equivalent mutation via SETF (lib/21-cl-compat)
 ```
 
 Generated names:

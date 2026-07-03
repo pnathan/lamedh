@@ -4,13 +4,16 @@ pub(super) fn apply_apply(
     args: &[LispVal],
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
-    if args.len() != 2 {
+    // CL-style spread: (apply f a b '(c d)) calls (f a b c d).  The last
+    // argument must be a proper list; any arguments between the function and
+    // that list are prepended to it (issue #245).
+    if args.len() < 2 {
         return Err(LispError::Generic(
-            "APPLY requires exactly two arguments".to_string(),
+            "APPLY requires a function and an argument list".to_string(),
         ));
     }
     let func_arg = &args[0];
-    let arg_list = &args[1];
+    let arg_list = &args[args.len() - 1];
 
     let func = match func_arg {
         LispVal::Symbol(s) => env
@@ -19,12 +22,14 @@ pub(super) fn apply_apply(
         _ => Ok(func_arg.clone()),
     }?;
 
-    let unpacked_args = match list_to_vec(arg_list) {
-        Ok(vec) => vec,
+    let mut unpacked_args: Vec<LispVal> = args[1..args.len() - 1].to_vec();
+    match list_to_vec(arg_list) {
+        Ok(vec) => unpacked_args.extend(vec),
         Err(_) => {
-            return Err(LispError::Generic(
-                "APPLY second argument must be a proper list".to_string(),
-            ));
+            return Err(LispError::Generic(format!(
+                "APPLY: last argument must be a proper list, got {}",
+                err_val(arg_list)
+            )));
         }
     };
 
@@ -99,9 +104,10 @@ pub(super) fn apply_math_op(
                 LispVal::Number(n) => Ok(*n as f64),
                 LispVal::Char(b) => Ok(*b as f64),
                 LispVal::Float(f) => Ok(*f),
-                _ => Err(LispError::Generic(
-                    "Math functions only accept numbers".to_string(),
-                )),
+                other => Err(LispError::Generic(format!(
+                    "Math functions only accept numbers, got {}",
+                    err_val(other)
+                ))),
             })
             .collect();
         let floats = floats?;
@@ -126,9 +132,10 @@ pub(super) fn apply_math_op(
                         "/ requires exactly two arguments".to_string(),
                     ));
                 }
-                if floats[1] == 0.0 {
-                    return Err(LispError::Generic("Division by zero".to_string()));
-                }
+                // IEEE 754 semantics: float division by zero yields ±inf (or
+                // NaN for 0.0/0.0) rather than an error — the printer and
+                // reader both round-trip inf/NaN (issue #245). Integer
+                // division by zero below remains an error.
                 Ok(LispVal::Float(floats[0] / floats[1]))
             }
             _ => Err(LispError::Generic("Not a math operation".to_string())),
@@ -143,9 +150,10 @@ pub(super) fn apply_math_op(
         match arg {
             LispVal::Number(n) => Ok(*n),
             LispVal::Char(b) => Ok(*b as i64),
-            _ => Err(LispError::Generic(
-                "Math functions only accept numbers".to_string(),
-            )),
+            other => Err(LispError::Generic(format!(
+                "Math functions only accept numbers, got {}",
+                err_val(other)
+            ))),
         }
     }
 
@@ -243,7 +251,10 @@ pub(super) fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVa
             match &args[0] {
                 LispVal::Cons { car, .. } => Ok(car.as_ref().clone()),
                 LispVal::Nil => Ok(LispVal::Nil),
-                _ => Err(LispError::Generic("car requires a list".to_string())),
+                other => Err(LispError::Generic(format!(
+                    "car requires a list, got {}",
+                    err_val(other)
+                ))),
             }
         }
         BuiltinFunc::Cdr => {
@@ -255,7 +266,10 @@ pub(super) fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVa
             match &args[0] {
                 LispVal::Cons { cdr, .. } => Ok(cdr.as_ref().clone()),
                 LispVal::Nil => Ok(LispVal::Nil),
-                _ => Err(LispError::Generic("cdr requires a list".to_string())),
+                other => Err(LispError::Generic(format!(
+                    "cdr requires a list, got {}",
+                    err_val(other)
+                ))),
             }
         }
         BuiltinFunc::Cons => {
@@ -281,9 +295,10 @@ pub(super) fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lisp
                 .iter()
                 .map(|arg| match arg {
                     LispVal::String(s) => Ok(s.clone()),
-                    _ => Err(LispError::Generic(
-                        "concat only accepts strings".to_string(),
-                    )),
+                    other => Err(LispError::Generic(format!(
+                        "concat only accepts strings, got {}",
+                        err_val(other)
+                    ))),
                 })
                 .collect();
             Ok(LispVal::String(strs?.concat()))
@@ -943,40 +958,52 @@ pub(super) fn apply_hashtable_op(
             }
         }
         BuiltinFunc::Get => {
+            // Accepts (gethash table key) — the historical Lamedh order — or
+            // CL's (gethash key table); a hash table is unambiguous in either
+            // position (issue #246).
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "gethash takes exactly two arguments".to_string(),
                 ));
             }
-            if let LispVal::HashTable(h) = &args[0] {
-                let key = &args[1];
-                if let Some(val) = h.borrow().get(key) {
-                    Ok(val.clone())
-                } else {
-                    Ok(LispVal::Nil)
+            let (h, key) = match (&args[0], &args[1]) {
+                (LispVal::HashTable(h), key) => (h, key),
+                (key, LispVal::HashTable(h)) => (h, key),
+                (other, _) => {
+                    return Err(LispError::Generic(format!(
+                        "gethash requires a hash table argument, got {} and {}",
+                        err_val(other),
+                        err_val(&args[1])
+                    )));
                 }
+            };
+            if let Some(val) = h.borrow().get(key) {
+                Ok(val.clone())
             } else {
-                Err(LispError::Generic(
-                    "gethash requires a hash table as its first argument".to_string(),
-                ))
+                Ok(LispVal::Nil)
             }
         }
         BuiltinFunc::DeleteKey => {
+            // Accepts (delete-key! table key) or CL-style (remhash key table)
+            // order, like GETHASH above (issue #246).
             if args.len() != 2 {
                 return Err(LispError::Generic(
                     "delete-key/delete-key-bang takes exactly two arguments".to_string(),
                 ));
             }
-            if let LispVal::HashTable(h) = &args[0] {
-                let key = &args[1];
-                h.borrow_mut().remove(key);
-                Ok(LispVal::Symbol(env.intern_symbol("T")))
-            } else {
-                Err(LispError::Generic(
-                    "delete-key/delete-key-bang requires a hash table as its first argument"
-                        .to_string(),
-                ))
-            }
+            let (h, key) = match (&args[0], &args[1]) {
+                (LispVal::HashTable(h), key) => (h, key),
+                (key, LispVal::HashTable(h)) => (h, key),
+                (other, _) => {
+                    return Err(LispError::Generic(format!(
+                        "delete-key/delete-key-bang requires a hash table argument, got {} and {}",
+                        err_val(other),
+                        err_val(&args[1])
+                    )));
+                }
+            };
+            h.borrow_mut().remove(key);
+            Ok(LispVal::Symbol(env.intern_symbol("T")))
         }
         BuiltinFunc::CurrentEnvironment => {
             if !args.is_empty() {

@@ -52,17 +52,28 @@
 
 ;; --- registration -----------------------------------------------------------
 
+(defun tests-remove (name lst)
+  "Drop any registered test named NAME from LST (supports re-registration)."
+  (cond ((null lst) nil)
+        ((eq (car (car lst)) name) (tests-remove name (cdr lst)))
+        (t (cons (car lst) (tests-remove name (cdr lst))))))
+
 (defmacro deftest (name &rest body)
-  "Register a test NAME whose BODY is a sequence of assertions."
+  "Register a test NAME whose BODY is a sequence of assertions.
+Re-registering an existing NAME replaces the old test (issue #241),
+so reloading a test file does not double-run everything."
   `(def *tests*
         (cons (cons ',name ,(cons 'lambda (cons nil body)))
-              *tests*)))
+              (tests-remove ',name *tests*))))
 
 ;; --- runner -----------------------------------------------------------------
 
 (defun run-one-test (entry)
+  "Run one test, trapping any error escaping its body as a failure.
+A buggy test must not take down the whole run (issue #241)."
   (setq *current-test* (car entry))
-  (funcall (cdr entry)))
+  (handler-case (funcall (cdr entry))
+    (error (e) (test-fail (list 'test-body-error (error-message e))))))
 
 (defun run-test-list (lst)
   (if (null lst)

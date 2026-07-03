@@ -43,6 +43,23 @@ pub(super) fn apply(
             | BuiltinFunc::NumberToString
             | BuiltinFunc::Prin1ToString
             | BuiltinFunc::PrincToString => apply_string_lib(builtin, args),
+            BuiltinFunc::ReadFromString => {
+                // (read-from-string "(+ 1 2)") — parse one s-expression into
+                // data via the reader (issue #245). Enables Lisp-side tooling
+                // (config parsing, code manipulation) without file I/O.
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "read-from-string takes exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::String(s) => crate::reader::read(s, env).map_err(LispError::Generic),
+                    other => Err(LispError::Generic(format!(
+                        "read-from-string requires a string, got {}",
+                        err_val(other)
+                    ))),
+                }
+            }
             BuiltinFunc::MakeError
             | BuiltinFunc::ErrorP
             | BuiltinFunc::ErrorMessage
@@ -201,6 +218,25 @@ pub(super) fn apply(
             | BuiltinFunc::Terpri
             | BuiltinFunc::Spaces => apply_io_op(builtin, args, env),
 
+            // Process control: terminate with an optional exit code.  This is
+            // deliberately not capability-gated — ending the process is not an
+            // escape from the sandbox, and scripts/CI need it to report status
+            // (issue #241).
+            BuiltinFunc::Exit => {
+                let code = match args {
+                    [] => 0,
+                    [LispVal::Number(n)] => *n as i32,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "exit takes an optional integer exit code".to_string(),
+                        ));
+                    }
+                };
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                std::process::exit(code);
+            }
+
             // Error handling
             BuiltinFunc::Error | BuiltinFunc::Errorset => apply_error_op(builtin, args, env),
 
@@ -242,6 +278,17 @@ pub(super) fn apply(
                 }
                 match &args[0] {
                     LispVal::Char(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
+                    _ => Ok(LispVal::Nil),
+                }
+            }
+            BuiltinFunc::HashTablep => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "hash-table-p requires exactly one argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    LispVal::HashTable(_) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
                     _ => Ok(LispVal::Nil),
                 }
             }
@@ -1163,7 +1210,13 @@ pub(super) fn apply(
                         "length takes exactly one argument".to_string(),
                     ));
                 }
-                Ok(LispVal::Number(proper_list_len(&args[0])? as i64))
+                // CL-style polymorphic length: proper lists, strings (in
+                // characters, matching STRING-LENGTH), and arrays (issue #245).
+                match &args[0] {
+                    LispVal::String(s) => Ok(LispVal::Number(s.chars().count() as i64)),
+                    LispVal::Array(a) => Ok(LispVal::Number(a.borrow().len() as i64)),
+                    other => Ok(LispVal::Number(proper_list_len(other)? as i64)),
+                }
             }
             BuiltinFunc::ListToArray => {
                 if args.len() != 1 {

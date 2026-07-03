@@ -45,14 +45,14 @@ fn test_apply_with_symbol_holding_list() {
 fn test_apply_error_wrong_number_of_args() {
     let env = env_with_stdlib();
     let result = lamedh::eval_line("(APPLY '+)", &env);
-    assert!(result.contains("APPLY requires exactly two arguments"));
+    assert!(result.contains("APPLY requires a function and an argument list"));
 }
 
 #[test]
 fn test_apply_error_not_a_list() {
     let env = env_with_stdlib();
     let result = lamedh::eval_line("(APPLY '+ 1)", &env);
-    assert!(result.contains("APPLY second argument must be a proper list"));
+    assert!(result.contains("APPLY: last argument must be a proper list"));
 }
 
 #[test]

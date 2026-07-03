@@ -40,64 +40,64 @@ pub(super) fn eval_defstruct(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let n_fields = fields.len();
 
-    // Constructor: (make-NAME v1 v2 ...) — positional.
-    // Builds (lambda (f1 ...) (let ((s (array N+1))) (store s 0 'TYPE) (store s i fi) ... s))
+    // Constructor: (make-NAME v1 v2 ...) positional, or CL-style
+    // (make-NAME :field1 v1 :field2 v2 ...) keyword pairs (issue #243).
+    // Keyword calls may omit fields (they default to NIL) and give each
+    // field in any order.  A native closure (not a generated lambda) so the
+    // keyword protocol can be parsed at call time with precise errors.
     {
         let tn = type_name.clone();
-        let params: Vec<LispVal> = fields
-            .iter()
-            .map(|f| LispVal::Symbol(env.intern_symbol(f)))
-            .collect();
-        let mut stmts: Vec<LispVal> = vec![
-            crate::reader::read(&format!("(store s 0 '{tn})"), env).map_err(LispError::Generic)?,
-        ];
-        for (i, f) in fields.iter().enumerate() {
-            stmts.push(
-                crate::reader::read(&format!("(store s {} {f})", i + 1), env)
-                    .map_err(LispError::Generic)?,
-            );
-        }
-        stmts.push(LispVal::Symbol(env.intern_symbol("S")));
-        let progn = LispVal::Cons {
-            car: Shared::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
-            cdr: Shared::new(vec_to_list(stmts)),
-        };
-        let let_form = crate::reader::read(&format!("(array {})", n_fields + 1), env)
-            .map_err(LispError::Generic)?;
-        let binding = LispVal::Cons {
-            car: Shared::new(LispVal::Cons {
-                car: Shared::new(LispVal::Symbol(env.intern_symbol("S"))),
-                cdr: Shared::new(LispVal::Cons {
-                    car: Shared::new(let_form),
-                    cdr: Shared::new(LispVal::Nil),
-                }),
-            }),
-            cdr: Shared::new(LispVal::Nil),
-        };
-        let full_let = LispVal::Cons {
-            car: Shared::new(LispVal::Symbol(env.intern_symbol("LET"))),
-            cdr: Shared::new(LispVal::Cons {
-                car: Shared::new(binding),
-                cdr: Shared::new(LispVal::Cons {
-                    car: Shared::new(progn),
-                    cdr: Shared::new(LispVal::Nil),
-                }),
-            }),
-        };
-        let lambda_form = LispVal::Cons {
-            car: Shared::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
-            cdr: Shared::new(LispVal::Cons {
-                car: Shared::new(vec_to_list(params)),
-                cdr: Shared::new(LispVal::Cons {
-                    car: Shared::new(full_let),
-                    cdr: Shared::new(LispVal::Nil),
-                }),
-            }),
-        };
-        let ctor = eval(&lambda_form, env)?;
-        env.set(format!("MAKE-{}", tn), ctor);
+        let ctor_fields = fields.clone();
+        let type_sym = env.intern_symbol(&tn);
+        env.register_fn(&format!("MAKE-{tn}"), move |args, _env| {
+            let n = ctor_fields.len();
+            let mut slots = vec![LispVal::Nil; n + 1];
+            slots[0] = LispVal::Symbol(type_sym.clone());
+            let keyword_call =
+                matches!(args.first(), Some(LispVal::Symbol(s)) if s.borrow().is_keyword);
+            if keyword_call {
+                if !args.len().is_multiple_of(2) {
+                    return Err(LispError::Generic(format!(
+                        "MAKE-{tn}: keyword arguments must come in :field value pairs"
+                    )));
+                }
+                for pair in args.chunks_exact(2) {
+                    let key_name = match &pair[0] {
+                        LispVal::Symbol(s) if s.borrow().is_keyword => s.borrow().name.clone(),
+                        other => {
+                            return Err(LispError::Generic(format!(
+                                "MAKE-{tn}: expected a :field keyword, got {}",
+                                crate::printer::print(other)
+                            )));
+                        }
+                    };
+                    let field_name = key_name.trim_start_matches(':');
+                    match ctor_fields.iter().position(|f| f == field_name) {
+                        Some(i) => slots[i + 1] = pair[1].clone(),
+                        None => {
+                            return Err(LispError::Generic(format!(
+                                "MAKE-{tn}: unknown field {key_name}; fields are: {}",
+                                ctor_fields.join(", ")
+                            )));
+                        }
+                    }
+                }
+            } else {
+                if args.len() != n {
+                    return Err(LispError::Generic(format!(
+                        "MAKE-{tn} takes {n} positional argument(s) ({}) \
+                         or :field value pairs, got {} argument(s)",
+                        ctor_fields.join(" "),
+                        args.len()
+                    )));
+                }
+                for (i, v) in args.iter().enumerate() {
+                    slots[i + 1] = v.clone();
+                }
+            }
+            Ok(LispVal::Array(Shared::new(SharedCell::new(slots))))
+        });
     }
 
     // Predicate: (lambda (x) (and (arrayp x) (eq (fetch x 0) 'TypeName)))
@@ -188,6 +188,9 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
     }
 
     let (var_id, var_sym) = if let LispVal::Symbol(s) = &spec[0] {
+        if let Err(e) = check_bindable(&s.borrow().name, "FOR") {
+            return Ok(TcoStep::Done(Err(e)));
+        }
         (s.borrow().id, s.clone())
     } else {
         return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -889,6 +892,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         if let LispVal::Symbol(s) = &args[0] {
                             let name = s.borrow().name.clone();
+                            if let Err(e) = check_bindable(&name, "DEF") {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             let v = eval(&args[1], env)?;
                             if args.len() == 3 {
                                 if let LispVal::String(doc) = &args[2] {
@@ -929,6 +935,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         };
 
                         let name = symbol.borrow().name.clone();
+                        if let Err(e) = check_bindable(&name, "DEFDYNAMIC") {
+                            return Ok(TcoStep::Done(Err(e)));
+                        }
 
                         // Check naming convention (*earmuffs*)
                         if !name.starts_with('*') || !name.ends_with('*') || name.len() < 3 {
@@ -1370,10 +1379,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 ))));
                             };
                             if let LispVal::Symbol(s) = &**var {
-                                let v = eval(val_expr, env)?;
                                 // Release the read borrow before update: a global
                                 // SETQ writes the symbol's value cell (borrow_mut).
                                 let var_name = s.borrow().name.clone();
+                                if let Err(e) = check_bindable(&var_name, "SETQ") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
+                                let v = eval(val_expr, env)?;
                                 Environment::update(env, &var_name, v.clone());
                                 last_val = v;
                             } else {
@@ -1402,6 +1414,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
 
                         for var in var_list {
                             if let LispVal::Symbol(s) = var {
+                                if let Err(e) = check_bindable(&s.borrow().name, "PROG") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                                 let sb = s.borrow();
                                 if has_dyn && sb.is_dynamic {
                                     drop(sb);
@@ -1532,6 +1547,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let mut dynamic_guards: Vec<DynamicBinding> = Vec::new();
                         for (param, arg_expr) in params.iter().zip(arg_exprs.iter()) {
                             if let LispVal::Symbol(s) = param {
+                                if let Err(e) = check_bindable(&s.borrow().name, "LET") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                                 let v = eval(arg_expr, env)?;
                                 let sb = s.borrow();
                                 if sb.is_dynamic {
@@ -1583,6 +1601,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 ))));
                             }
                             if let LispVal::Symbol(s) = &pair[0] {
+                                if let Err(e) = check_bindable(&s.borrow().name, "LET*") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                                 let v = eval(&pair[1], &let_env)?;
                                 let sb = s.borrow();
                                 if sb.is_dynamic {
@@ -1650,6 +1671,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                         let (op_param, op_param_id) = if let LispVal::Symbol(s) = &param_list[0] {
                             let sb = s.borrow();
+                            if let Err(e) = check_param_name(&sb.name, "vau") {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             (sb.name.clone(), sb.id)
                         } else {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
@@ -1658,6 +1682,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         };
                         let (env_param, env_param_id) = if let LispVal::Symbol(s) = &param_list[1] {
                             let sb = s.borrow();
+                            if let Err(e) = check_param_name(&sb.name, "vau") {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             (sb.name.clone(), sb.id)
                         } else {
                             return Ok(TcoStep::Done(Err(LispError::Generic(

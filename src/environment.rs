@@ -460,6 +460,10 @@ impl Environment {
         // GETHASH for hash-table lookup; GET is the Lisp 1.5 plist lookup (= GETP)
         env.set("GETHASH".to_string(), LispVal::Builtin(BuiltinFunc::Get));
         env.set("GET".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
+        env.set(
+            "HASH-TABLE-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::HashTablep),
+        );
         env.set("SET-BANG".to_string(), LispVal::Builtin(BuiltinFunc::Set));
         env.set("SETHASH".to_string(), LispVal::Builtin(BuiltinFunc::Set));
         env.set(
@@ -511,6 +515,9 @@ impl Environment {
         env.set("PRIN1".to_string(), LispVal::Builtin(BuiltinFunc::Prin1));
         env.set("PRINC".to_string(), LispVal::Builtin(BuiltinFunc::Princ));
         env.set("TERPRI".to_string(), LispVal::Builtin(BuiltinFunc::Terpri));
+
+        // Process control
+        env.set("EXIT".to_string(), LispVal::Builtin(BuiltinFunc::Exit));
 
         // Error handling
         env.set("ERROR".to_string(), LispVal::Builtin(BuiltinFunc::Error));
@@ -913,6 +920,10 @@ impl Environment {
         env.set(
             "NUMBER->STRING".to_string(),
             LispVal::Builtin(BuiltinFunc::NumberToString),
+        );
+        env.set(
+            "READ-FROM-STRING".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFromString),
         );
         env.set(
             "PRIN1-TO-STRING".to_string(),

@@ -38,12 +38,17 @@ SQUARE
 25
 ```
 
-Exit with Ctrl-D or Ctrl-C.
+Multi-line forms work: while your parentheses are unbalanced the REPL shows
+a ` ...>` continuation prompt. Ctrl-C cancels the input in progress; exit
+with Ctrl-D or `(exit)`.
 
 ## 2.3 Command-Line Options
 
 ```bash
-# Load and run a file
+# Run a script; arguments after the path are available as *ARGV*
+cargo run -- myscript.lisp arg1 arg2
+
+# Load and run a file, then stay in the REPL
 cargo run -- -i myfile.lisp
 
 # Load multiple files
@@ -55,6 +60,9 @@ cargo run -- -i mylib/
 # Execute a single expression
 cargo run -- -s "(+ 1 2)"
 ```
+
+Scripts may start with a `#!` shebang line, and `(exit n)` sets the process
+exit code — `(exit (if (run-tests) 0 1))` makes test files CI-ready.
 
 ## 2.4 Your First Program
 

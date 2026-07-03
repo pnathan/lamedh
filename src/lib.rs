@@ -188,6 +188,7 @@
 //! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
 //! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
 //! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
+//! | `21-cl-compat.lisp` | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -468,6 +469,8 @@ pub enum BuiltinFunc {
     Prin1,
     Princ,
     Terpri,
+    // Process control: (exit [code]) terminates the process
+    Exit,
     // Error handling
     Error,
     Errorset,
@@ -491,6 +494,7 @@ pub enum BuiltinFunc {
     Fixp,
     Floatp,
     Charp,
+    HashTablep,
     Symbolp,
     Boundp,
     Functionp,
@@ -607,6 +611,8 @@ pub enum BuiltinFunc {
     MakeChar,
     StringToNumber,
     NumberToString,
+    // Parse one s-expression from a string via the reader
+    ReadFromString,
     // Value -> string rendering (backs FORMAT and friends)
     Prin1ToString,
     PrincToString,
@@ -1580,6 +1586,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/19-call-graph.lisp"),
     ),
     (
+        "21-cl-compat.lisp",
+        include_str!("../lib/21-cl-compat.lisp"),
+    ),
+    (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
     ),
@@ -1614,8 +1624,9 @@ pub fn load_stdlib(env: &Shared<Environment>) -> Result<(), LispError> {
 /// The input must contain exactly one form; use [`eval_all`] for programs with
 /// multiple top-level forms.
 pub fn eval_str(src: &str, env: &Shared<Environment>) -> Result<LispVal, LispError> {
-    let form =
-        reader::read(src, env).map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
+    // Reader errors are already self-describing ("parse error at line L,
+    // column C: ..."), so no extra prefix is added here.
+    let form = reader::read(src, env).map_err(LispError::Generic)?;
     evaluator::eval(&form, env)
 }
 
@@ -1624,8 +1635,7 @@ pub fn eval_str(src: &str, env: &Shared<Environment>) -> Result<LispVal, LispErr
 /// Expressions are evaluated in order; if any expression fails the error is
 /// returned immediately and subsequent expressions are not evaluated.
 pub fn eval_all(src: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, LispError> {
-    let forms =
-        reader::read_all(src, env).map_err(|e| LispError::Generic(format!("Parse error: {e}")))?;
+    let forms = reader::read_all(src, env).map_err(LispError::Generic)?;
     forms
         .iter()
         .map(|form| evaluator::eval(form, env))
@@ -1715,20 +1725,50 @@ fn load_file_inner(
     let display_path = path.display().to_string();
     let content = fs::read_to_string(path)
         .map_err(|e| LispError::Generic(format!("Failed to read file {display_path}: {e}")))?;
-    let expressions = reader::read_all(&content, env)
-        .map_err(|e| LispError::Generic(format!("Failed to parse file {display_path}: {e}")))?;
 
+    // Parse and evaluate incrementally (issue #239): forms before an error
+    // still take effect, and both parse and eval errors report the file,
+    // line, and column of the offending form instead of discarding the whole
+    // file with no position.
     include_stack.push(cycle_key);
-    for expr in expressions {
-        if let Some(include) = include_target(&expr)? {
-            let include_path = resolve_include_path(path, &include);
-            load_file_inner(&include_path, env, include_stack)?;
-        } else {
-            evaluator::eval(&expr, env)?;
+    let result = (|| {
+        let src = reader::strip_shebang(&content);
+        let mut rest = src;
+        loop {
+            rest = reader::skip_ws(rest);
+            let form_offset = src.len() - rest.len();
+            match reader::read_next(rest, env) {
+                Ok(None) => return Ok(()),
+                Ok(Some((expr, rem))) => {
+                    let step = if let Some(include) = include_target(&expr)? {
+                        let include_path = resolve_include_path(path, &include);
+                        load_file_inner(&include_path, env, include_stack)
+                    } else {
+                        evaluator::eval(&expr, env).map(|_| ())
+                    };
+                    match step {
+                        Ok(()) => rest = rem,
+                        Err(LispError::Generic(msg)) => {
+                            let (line, col) = reader::position_of(src, form_offset);
+                            return Err(LispError::Generic(format!(
+                                "{display_path}:{line}:{col}: {msg}"
+                            )));
+                        }
+                        Err(other) => return Err(other),
+                    }
+                }
+                Err((offset, detail)) => {
+                    let anchor = reader::error_anchor(src, form_offset, offset, &detail);
+                    let (line, col) = reader::position_of(src, anchor);
+                    return Err(LispError::Generic(format!(
+                        "{display_path}:{line}:{col}: parse error: {detail}"
+                    )));
+                }
+            }
         }
-    }
+    })();
     include_stack.pop();
-    Ok(())
+    result
 }
 
 /// Load and evaluate a single Lisp source file.
@@ -1740,8 +1780,9 @@ fn load_file_inner(
 ///
 /// # Errors
 ///
-/// Returns the first parse or evaluation error encountered.  Subsequent
-/// expressions in the file are **not** evaluated after a failure.
+/// Returns the first parse or evaluation error encountered, prefixed with
+/// `path:line:column`.  Forms **before** the error have already been
+/// evaluated and stay in effect; subsequent forms are not evaluated.
 pub fn load_file(path: &str, env: &Shared<Environment>) -> Result<(), LispError> {
     load_file_inner(Path::new(path), env, &mut Vec::new())
 }

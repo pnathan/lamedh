@@ -14,7 +14,7 @@
 //! | `3.14`, `-1e5` | `LispVal::Float(f64)` |
 //! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
 //! | `FFh` | Hex literal (`FF₁₆ = 255₁₀`) — assembly-style `H` suffix |
-//! | `'c'` | Character literal → code point as `Number` (`\n \t \r \\ \' \0`) |
+//! | `'c'` | Character literal → `LispVal::Char` (byte 0–255; escapes `\n \t \r \\ \' \0`) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
@@ -24,7 +24,12 @@
 //! | `,e` | `(UNQUOTE e)` |
 //! | `,@e` | `(UNQUOTE-SPLICING e)` |
 //! | `#'f` | `(FUNCTION f)` |
+//! | `#x1F`, `#b101`, `#o17` | Radix literals (hex, binary, octal) |
 //! | `; comment` | Ignored to end of line |
+//! | `#\| comment \|#` | Block comment (nests) |
+//! | `#!...` (first line) | Shebang line, ignored |
+//!
+//! Parse errors are reported with 1-based line/column positions (issue #238).
 //!
 //! Symbols are **always** uppercased during interning, so `foo`, `FOO`, and
 //! `Foo` all resolve to the same interned `Symbol` named `"FOO"`.
@@ -37,9 +42,9 @@ use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, take_while, take_while1},
     character::complete::{alpha1, alphanumeric1, char, digit1, hex_digit1, multispace1, one_of},
-    combinator::{map, map_res, opt, recognize},
+    combinator::{cut, map, map_res, opt, recognize},
     multi::many0,
-    sequence::{delimited, pair, preceded, terminated, tuple},
+    sequence::{delimited, pair, preceded, tuple},
 };
 
 type ParseResult<'a> = IResult<&'a str, LispVal>;
@@ -71,9 +76,46 @@ fn parse_comment(input: &str) -> IResult<&str, &str> {
     recognize(pair(tag(";"), is_not("\n\r")))(input)
 }
 
-// A parser for whitespace, including comments
+// A parser for a (nesting) block comment: #| ... |# (issue #248).
+// An unterminated block comment is a hard Failure so the error position
+// points at its opening `#|`.
+fn parse_block_comment(input: &str) -> IResult<&str, &str> {
+    if !input.starts_with("#|") {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
+    }
+    let bytes = input.as_bytes();
+    let mut depth = 1usize;
+    let mut i = 2usize;
+    while i < bytes.len() {
+        if bytes[i] == b'#' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'#' {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                return Ok((&input[i..], &input[..i]));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Err(nom::Err::Failure(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::TakeUntil,
+    )))
+}
+
+// A parser for whitespace, including line and block comments
 fn ws(input: &str) -> IResult<&str, &str> {
-    recognize(many0(alt((multispace1, parse_comment))))(input)
+    recognize(many0(alt((
+        multispace1,
+        parse_comment,
+        parse_block_comment,
+    ))))(input)
 }
 
 fn parse_float(input: &str) -> ParseResult<'_> {
@@ -143,9 +185,36 @@ fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
     }
 }
 
+// CL-style radix literals: #x1F / #X1f (hex), #b101 (binary), #o17 (octal),
+// with an optional sign after the marker (issue #248).
+fn parse_radix_literal(input: &str) -> ParseResult<'_> {
+    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
+    let (rest, _) = tag("#")(input)?;
+    let (rest, marker) = one_of("xXbBoO")(rest)?;
+    let radix = match marker {
+        'x' | 'X' => 16,
+        'b' | 'B' => 2,
+        _ => 8,
+    };
+    let (rest, neg) = opt(tag("-"))(rest)?;
+    let (rest, digits) = take_while1(|c: char| c.is_digit(radix))(rest)?;
+    // Boundary guard: a trailing identifier char means this was malformed
+    // (e.g. #b102 or #xFG) — fail rather than half-consume.
+    if let Some(c) = rest.chars().next()
+        && (c.is_alphanumeric() || c == '-')
+    {
+        return Err(err());
+    }
+    match i64::from_str_radix(digits, radix) {
+        Ok(n) => Ok((rest, LispVal::Number(if neg.is_some() { -n } else { n }))),
+        Err(_) => Err(err()),
+    }
+}
+
 fn parse_number(input: &str) -> ParseResult<'_> {
     alt((
         parse_float,
+        parse_radix_literal,
         parse_hex_integer,
         parse_octal_integer,
         parse_integer_or_overflow_float,
@@ -354,10 +423,14 @@ fn parse_list_contents(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult
 
 fn parse_list(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
+        // `cut` after the opening paren: once `(` is consumed no other parser
+        // can apply, so a missing `)` becomes a hard Failure whose position
+        // points at the offending spot instead of backtracking to the form
+        // start (issue #238).
         delimited(
             char('('),
             parse_list_contents(env.clone()),
-            preceded(ws, char(')')),
+            preceded(ws, cut(char(')'))),
         )(input)
     }
 }
@@ -437,16 +510,197 @@ fn parse_unquote_spliced(env: Shared<Environment>) -> impl Fn(&str) -> ParseResu
     }
 }
 
+// ---------------------------------------------------------------------------
+// Positions, error rendering, and the incremental read API (issue #238)
+// ---------------------------------------------------------------------------
+
+/// Compute the 1-based (line, column) of byte `offset` within `src`.
+pub fn position_of(src: &str, offset: usize) -> (usize, usize) {
+    let clamped = offset.min(src.len());
+    let prefix = &src[..clamped];
+    let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
+    let col = prefix
+        .rsplit('\n')
+        .next()
+        .map(|l| l.chars().count())
+        .unwrap_or(0)
+        + 1;
+    (line, col)
+}
+
+/// Render a parse error message with line/column context.
+pub fn format_parse_error(src: &str, offset: usize, detail: &str) -> String {
+    let (line, col) = position_of(src, offset);
+    format!("parse error at line {line}, column {col}: {detail}")
+}
+
+/// Describe the unparseable text starting at `rest` (one truncated line).
+fn error_detail(rest: &str) -> String {
+    if rest.trim().is_empty() {
+        "unexpected end of input (unclosed '(' or unterminated string?)".to_string()
+    } else {
+        let line = rest.lines().next().unwrap_or(rest);
+        let snippet: String = line.chars().take(40).collect();
+        format!("unexpected input near '{snippet}'")
+    }
+}
+
+/// Skip leading whitespace and comments (line and block).
+pub fn skip_ws(input: &str) -> &str {
+    match ws(input) {
+        Ok((rest, _)) => rest,
+        Err(_) => input,
+    }
+}
+
+/// Drop a leading `#!` shebang line so `.lisp` files can be executable
+/// scripts (issue #248).
+pub fn strip_shebang(input: &str) -> &str {
+    if input.starts_with("#!") {
+        // Keep the trailing newline so line numbers in later errors are
+        // unaffected by the stripped shebang.
+        match input.find('\n') {
+            Some(i) => &input[i..],
+            None => "",
+        }
+    } else {
+        input
+    }
+}
+
+/// Parse the next single form from `input`.
+///
+/// Returns `Ok(None)` when only whitespace/comments remain, or
+/// `Ok(Some((form, rest)))` with the remaining input on success.
+/// On failure returns `(byte_offset, detail)` where the offset is relative to
+/// `input` — render it with [`format_parse_error`] (or map it into a larger
+/// source buffer first, as [`crate::load_file`] does).
+#[allow(clippy::type_complexity)]
+pub fn read_next<'a>(
+    input: &'a str,
+    env: &Shared<Environment>,
+) -> Result<Option<(LispVal, &'a str)>, (usize, String)> {
+    let rest = skip_ws(input);
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    match parse_expr(env.clone())(rest) {
+        Ok((rem, val)) => Ok(Some((val, rem))),
+        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+            Err((input.len() - e.input.len(), error_detail(e.input)))
+        }
+        Err(nom::Err::Incomplete(_)) => Err((input.len(), "incomplete input".to_string())),
+    }
+}
+
+/// Return `true` when `input` looks like a *prefix* of a valid program —
+/// an unclosed `(`, an unterminated string, or an open block comment — as
+/// opposed to text that is malformed outright.  The REPL uses this to decide
+/// between prompting for a continuation line and reporting an error
+/// (issue #240).
+pub fn is_incomplete(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+    let mut i = 0usize;
+    let mut depth: i64 = 0;
+    let mut block_depth = 0usize;
+    // Byte-wise scan is UTF-8 safe: every byte matched below is ASCII, and
+    // UTF-8 continuation bytes can never equal an ASCII byte.
+    while i < n {
+        if block_depth > 0 {
+            if bytes[i] == b'#' && i + 1 < n && bytes[i + 1] == b'|' {
+                block_depth += 1;
+                i += 2;
+            } else if bytes[i] == b'|' && i + 1 < n && bytes[i + 1] == b'#' {
+                block_depth -= 1;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        match bytes[i] {
+            b';' => {
+                while i < n && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'#' if i + 1 < n && bytes[i + 1] == b'|' => {
+                block_depth = 1;
+                i += 2;
+            }
+            b'"' => {
+                i += 1;
+                let mut closed = false;
+                while i < n {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'"' => {
+                            closed = true;
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if !closed {
+                    return true;
+                }
+            }
+            b'\'' => {
+                // Skip a char literal ('c' or '\c') so a quoted paren such as
+                // '(' does not skew the depth count.
+                let rest = &input[i + 1..];
+                let mut chars = rest.chars();
+                let consumed = match chars.next() {
+                    Some('\\') => match (chars.next(), chars.next()) {
+                        (Some(c2), Some('\'')) => 1 + c2.len_utf8() + 1,
+                        _ => 0,
+                    },
+                    Some(c1) if c1 != '\'' => match chars.next() {
+                        Some('\'') => c1.len_utf8() + 1,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                i += 1 + consumed;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    depth > 0 || block_depth > 0
+}
+
 /// Parse a single s-expression from `input`.
 ///
 /// Symbols are interned into `env`'s symbol table and uppercased.
 /// Returns an error if the input contains trailing non-whitespace text after
 /// the first expression — use [`read_all`] to parse multiple forms.
 pub fn read(input: &str, env: &Shared<Environment>) -> Result<LispVal, String> {
-    match terminated(parse_expr(env.clone()), ws)(input.trim()) {
-        Ok(("", val)) => Ok(val),
-        Ok((rem, _)) => Err(format!("Unexpected input: {rem}")),
-        Err(e) => Err(e.to_string()),
+    let src = strip_shebang(input);
+    match read_next(src, env) {
+        Ok(None) => Err("empty input".to_string()),
+        Ok(Some((val, rest))) => {
+            let rest = skip_ws(rest);
+            if rest.is_empty() {
+                Ok(val)
+            } else {
+                Err(format_parse_error(
+                    src,
+                    src.len() - rest.len(),
+                    &format!("unexpected trailing input: {}", rest.trim_end()),
+                ))
+            }
+        }
+        Err((offset, detail)) => Err(format_parse_error(src, offset, &detail)),
     }
 }
 
@@ -455,18 +709,36 @@ pub fn read(input: &str, env: &Shared<Environment>) -> Result<LispVal, String> {
 /// This is the function used for loading files and multi-expression strings.
 /// Stops at EOF; returns an error on the first malformed expression.
 pub fn read_all(input: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, String> {
+    let src = strip_shebang(input);
     let mut results = vec![];
-    let mut current_input = input.trim();
-    while !current_input.is_empty() {
-        match terminated(parse_expr(env.clone()), ws)(current_input) {
-            Ok((rem, val)) => {
+    let mut current = src;
+    loop {
+        current = skip_ws(current);
+        let form_offset = src.len() - current.len();
+        match read_next(current, env) {
+            Ok(None) => return Ok(results),
+            Ok(Some((val, rest))) => {
                 results.push(val);
-                current_input = rem;
+                current = rest;
             }
-            Err(e) => return Err(e.to_string()),
+            Err((offset, detail)) => {
+                let absolute = error_anchor(src, form_offset, offset, &detail);
+                return Err(format_parse_error(src, absolute, &detail));
+            }
         }
     }
-    Ok(results)
+}
+
+/// Pick the byte offset to report for a parse error: normally where parsing
+/// stopped, but for errors at end of input (an unclosed form) the *start* of
+/// the offending form — "line 3: unclosed '('" beats "line 47: end of file".
+pub fn error_anchor(src: &str, form_offset: usize, error_offset: usize, detail: &str) -> usize {
+    let absolute = form_offset + error_offset;
+    if detail.contains("end of input") || absolute >= src.trim_end().len() {
+        form_offset
+    } else {
+        absolute
+    }
 }
 
 #[cfg(test)]

@@ -124,6 +124,51 @@ pub(super) fn eval_operands(
     Ok(out)
 }
 
+/// Render a value for inclusion in an error message, truncated so a huge
+/// list or string cannot flood the output (issue #247).
+pub(super) fn err_val(v: &LispVal) -> String {
+    let s = crate::printer::print(v);
+    if s.chars().count() > 60 {
+        let head: String = s.chars().take(57).collect();
+        format!("{head}...")
+    } else {
+        s
+    }
+}
+
+/// Reject binding/assignment targets that must stay constant.
+///
+/// `T` is the canonical truth constant and keywords are self-evaluating;
+/// rebinding either silently corrupts truth tests far from the mistake
+/// (issue #237). `NIL` needs no check here — it reads as the `Nil` value,
+/// not a symbol, so it can never reach a binder as a name.
+pub(super) fn check_bindable(name: &str, context: &str) -> Result<(), LispError> {
+    if name == "T" {
+        Err(LispError::Generic(format!(
+            "{context}: cannot rebind the constant T"
+        )))
+    } else if name.starts_with(':') {
+        Err(LispError::Generic(format!(
+            "{context}: cannot bind the keyword {name}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Reject unsupported lambda-list keywords (`&OPTIONAL`, `&KEY`, ...) so they
+/// fail loudly at definition time instead of silently becoming parameters
+/// literally named `&OPTIONAL` (issue #242). Callers handle `&REST` before
+/// this check, so any `&`-name reaching here is unsupported.
+pub(super) fn check_param_name(name: &str, kind: &str) -> Result<(), LispError> {
+    if name.starts_with('&') {
+        return Err(LispError::Generic(format!(
+            "{name} is not supported in {kind} parameter lists (only &REST is)"
+        )));
+    }
+    check_bindable(name, kind)
+}
+
 /// Wrap a body of one or more forms into a single evaluable expression.
 ///
 /// A lone form is returned as-is; several forms are wrapped in `(PROGN ...)`
