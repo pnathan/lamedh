@@ -493,6 +493,7 @@ pub enum BuiltinFunc {
     Fixp,
     Floatp,
     Charp,
+    HashTablep,
     Symbolp,
     Boundp,
     Functionp,
@@ -609,6 +610,8 @@ pub enum BuiltinFunc {
     MakeChar,
     StringToNumber,
     NumberToString,
+    // Parse one s-expression from a string via the reader
+    ReadFromString,
     // Value -> string rendering (backs FORMAT and friends)
     Prin1ToString,
     PrincToString,
@@ -1580,6 +1583,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     (
         "19-call-graph.lisp",
         include_str!("../lib/19-call-graph.lisp"),
+    ),
+    (
+        "21-cl-compat.lisp",
+        include_str!("../lib/21-cl-compat.lisp"),
     ),
     (
         "97-doc-renderer.lisp",

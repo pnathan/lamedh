@@ -315,10 +315,11 @@ pub(super) fn apply_list_processing(
                         }
                         alist = cdr;
                     }
-                    _ => {
-                        return Err(LispError::Generic(
-                            "assoc requires a proper association list".to_string(),
-                        ));
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "assoc requires a proper association list, got tail {}",
+                            err_val(other)
+                        )));
                     }
                 }
             }
@@ -559,9 +560,10 @@ pub(super) fn apply_new_list_ops(
             let n = if let LispVal::Number(n) = &args[0] {
                 *n as usize
             } else {
-                return Err(LispError::Generic(
-                    "nth requires a number as first argument".to_string(),
-                ));
+                return Err(LispError::Generic(format!(
+                    "nth requires a number as first argument, got {}",
+                    err_val(&args[0])
+                )));
             };
             let mut current = &args[1];
             for _ in 0..n {

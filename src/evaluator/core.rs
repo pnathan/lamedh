@@ -124,6 +124,18 @@ pub(super) fn eval_operands(
     Ok(out)
 }
 
+/// Render a value for inclusion in an error message, truncated so a huge
+/// list or string cannot flood the output (issue #247).
+pub(super) fn err_val(v: &LispVal) -> String {
+    let s = crate::printer::print(v);
+    if s.chars().count() > 60 {
+        let head: String = s.chars().take(57).collect();
+        format!("{head}...")
+    } else {
+        s
+    }
+}
+
 /// Reject binding/assignment targets that must stay constant.
 ///
 /// `T` is the canonical truth constant and keywords are self-evaluating;

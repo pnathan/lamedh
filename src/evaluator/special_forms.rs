@@ -42,62 +42,63 @@ pub(super) fn eval_defstruct(
         .collect::<Result<Vec<_>, _>>()?;
     let n_fields = fields.len();
 
-    // Constructor: (make-NAME v1 v2 ...) — positional.
-    // Builds (lambda (f1 ...) (let ((s (array N+1))) (store s 0 'TYPE) (store s i fi) ... s))
+    // Constructor: (make-NAME v1 v2 ...) positional, or CL-style
+    // (make-NAME :field1 v1 :field2 v2 ...) keyword pairs (issue #243).
+    // Keyword calls may omit fields (they default to NIL) and give each
+    // field in any order.  A native closure (not a generated lambda) so the
+    // keyword protocol can be parsed at call time with precise errors.
     {
         let tn = type_name.clone();
-        let params: Vec<LispVal> = fields
-            .iter()
-            .map(|f| LispVal::Symbol(env.intern_symbol(f)))
-            .collect();
-        let mut stmts: Vec<LispVal> = vec![
-            crate::reader::read(&format!("(store s 0 '{tn})"), env).map_err(LispError::Generic)?,
-        ];
-        for (i, f) in fields.iter().enumerate() {
-            stmts.push(
-                crate::reader::read(&format!("(store s {} {f})", i + 1), env)
-                    .map_err(LispError::Generic)?,
-            );
-        }
-        stmts.push(LispVal::Symbol(env.intern_symbol("S")));
-        let progn = LispVal::Cons {
-            car: Shared::new(LispVal::Symbol(env.intern_symbol("PROGN"))),
-            cdr: Shared::new(vec_to_list(stmts)),
-        };
-        let let_form = crate::reader::read(&format!("(array {})", n_fields + 1), env)
-            .map_err(LispError::Generic)?;
-        let binding = LispVal::Cons {
-            car: Shared::new(LispVal::Cons {
-                car: Shared::new(LispVal::Symbol(env.intern_symbol("S"))),
-                cdr: Shared::new(LispVal::Cons {
-                    car: Shared::new(let_form),
-                    cdr: Shared::new(LispVal::Nil),
-                }),
-            }),
-            cdr: Shared::new(LispVal::Nil),
-        };
-        let full_let = LispVal::Cons {
-            car: Shared::new(LispVal::Symbol(env.intern_symbol("LET"))),
-            cdr: Shared::new(LispVal::Cons {
-                car: Shared::new(binding),
-                cdr: Shared::new(LispVal::Cons {
-                    car: Shared::new(progn),
-                    cdr: Shared::new(LispVal::Nil),
-                }),
-            }),
-        };
-        let lambda_form = LispVal::Cons {
-            car: Shared::new(LispVal::Symbol(env.intern_symbol("LAMBDA"))),
-            cdr: Shared::new(LispVal::Cons {
-                car: Shared::new(vec_to_list(params)),
-                cdr: Shared::new(LispVal::Cons {
-                    car: Shared::new(full_let),
-                    cdr: Shared::new(LispVal::Nil),
-                }),
-            }),
-        };
-        let ctor = eval(&lambda_form, env)?;
-        env.set(format!("MAKE-{}", tn), ctor);
+        let ctor_fields = fields.clone();
+        let type_sym = env.intern_symbol(&tn);
+        env.register_fn(&format!("MAKE-{tn}"), move |args, _env| {
+            let n = ctor_fields.len();
+            let mut slots = vec![LispVal::Nil; n + 1];
+            slots[0] = LispVal::Symbol(type_sym.clone());
+            let keyword_call =
+                matches!(args.first(), Some(LispVal::Symbol(s)) if s.borrow().is_keyword);
+            if keyword_call {
+                if !args.len().is_multiple_of(2) {
+                    return Err(LispError::Generic(format!(
+                        "MAKE-{tn}: keyword arguments must come in :field value pairs"
+                    )));
+                }
+                for pair in args.chunks_exact(2) {
+                    let key_name = match &pair[0] {
+                        LispVal::Symbol(s) if s.borrow().is_keyword => s.borrow().name.clone(),
+                        other => {
+                            return Err(LispError::Generic(format!(
+                                "MAKE-{tn}: expected a :field keyword, got {}",
+                                crate::printer::print(other)
+                            )));
+                        }
+                    };
+                    let field_name = key_name.trim_start_matches(':');
+                    match ctor_fields.iter().position(|f| f == field_name) {
+                        Some(i) => slots[i + 1] = pair[1].clone(),
+                        None => {
+                            return Err(LispError::Generic(format!(
+                                "MAKE-{tn}: unknown field {key_name}; fields are: {}",
+                                ctor_fields.join(", ")
+                            )));
+                        }
+                    }
+                }
+            } else {
+                if args.len() != n {
+                    return Err(LispError::Generic(format!(
+                        "MAKE-{tn} takes {n} positional argument(s) ({}) \
+                         or :field value pairs, got {} argument(s)",
+                        ctor_fields.join(" "),
+                        args.len()
+                    )));
+                }
+                for (i, v) in args.iter().enumerate() {
+                    slots[i + 1] = v.clone();
+                }
+            }
+            Ok(LispVal::Array(Shared::new(SharedCell::new(slots))))
+        });
     }
 
     // Predicate: (lambda (x) (and (arrayp x) (eq (fetch x 0) 'TypeName)))

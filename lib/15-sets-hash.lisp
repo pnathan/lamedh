@@ -37,9 +37,15 @@
         ((equal (cdr (car alist)) val) (car alist))
         (t (rassoc val (cdr alist)))))
 
-(defun alist-get (alist key)
-  "Return the value associated with KEY in ALIST (EQUAL), or NIL."
-  (let ((cell (assoc key alist)))
+(defun alist-get (a b)
+  "Return the value associated with a key in an alist (EQUAL), or NIL.
+Accepts (alist-get alist key) or Elisp-style (alist-get key alist) —
+whichever argument is the list is treated as the alist (issue #246).
+When both are lists (a list-valued key), the historical (alist key)
+order applies."
+  (let* ((alist (if (listp a) a b))
+         (key (if (listp a) b a))
+         (cell (assoc key alist)))
     (if cell (cdr cell) nil)))
 
 (defun alist-put (alist key val)
@@ -63,10 +69,14 @@
   "Number of entries in hash TABLE."
   (length (keys table)))
 
-(defun maphash (table fn)
-  "Call (FN key value) for each entry of TABLE; return NIL."
-  (mapc (lambda (k) (funcall fn k (gethash table k))) (keys table))
-  nil)
+(defun maphash (a b)
+  "Call (FN key value) for each entry of TABLE; return NIL.
+Accepts (maphash table fn) or CL-style (maphash fn table) — the hash
+table is recognised by type in either position (issue #246)."
+  (let* ((table (if (hash-table-p a) a b))
+         (fn (if (hash-table-p a) b a)))
+    (mapc (lambda (k) (funcall fn k (gethash table k))) (keys table))
+    nil))
 
 (defun hash->alist (table)
   "Return TABLE's entries as an alist of (key . value)."
