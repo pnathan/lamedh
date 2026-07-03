@@ -252,7 +252,7 @@ pub(super) fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVa
                 LispVal::Cons { car, .. } => Ok(car.as_ref().clone()),
                 LispVal::Nil => Ok(LispVal::Nil),
                 other => Err(LispError::Generic(format!(
-                    "car requires a list, got {}",
+                    "CAR: expected a list, got {}",
                     err_val(other)
                 ))),
             }
@@ -267,7 +267,7 @@ pub(super) fn apply_list_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVa
                 LispVal::Cons { cdr, .. } => Ok(cdr.as_ref().clone()),
                 LispVal::Nil => Ok(LispVal::Nil),
                 other => Err(LispError::Generic(format!(
-                    "cdr requires a list, got {}",
+                    "CDR: expected a list, got {}",
                     err_val(other)
                 ))),
             }
@@ -296,7 +296,7 @@ pub(super) fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lisp
                 .map(|arg| match arg {
                     LispVal::String(s) => Ok(s.clone()),
                     other => Err(LispError::Generic(format!(
-                        "concat only accepts strings, got {}",
+                        "CONCAT: expected strings, got {}",
                         err_val(other)
                     ))),
                 })
@@ -312,21 +312,26 @@ pub(super) fn apply_string_op(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lisp
             let s = if let LispVal::String(s) = &args[0] {
                 s
             } else {
-                return Err(LispError::Generic(
-                    "index requires a string as its first argument".to_string(),
-                ));
+                return Err(LispError::Generic(format!(
+                    "INDEX: expected a string as its first argument, got {}",
+                    err_val(&args[0])
+                )));
             };
             let i = if let LispVal::Number(n) = &args[1] {
                 *n as usize
             } else {
-                return Err(LispError::Generic(
-                    "index requires a number as its second argument".to_string(),
-                ));
+                return Err(LispError::Generic(format!(
+                    "INDEX: expected a number as its second argument, got {}",
+                    err_val(&args[1])
+                )));
             };
             if let Some(ch) = s.chars().nth(i) {
                 Ok(LispVal::String(ch.to_string()))
             } else {
-                Err(LispError::Generic("index out of bounds".to_string()))
+                Err(LispError::Generic(format!(
+                    "INDEX: index {i} out of bounds (length {})",
+                    s.chars().count()
+                )))
             }
         }
         _ => Err(LispError::Generic("Not a string operation".to_string())),
@@ -339,7 +344,11 @@ pub(super) fn as_f64(v: &LispVal, ctx: &str) -> Result<f64, LispError> {
         LispVal::Number(n) => Ok(*n as f64),
         LispVal::Char(b) => Ok(*b as f64),
         LispVal::Float(f) => Ok(*f),
-        _ => Err(LispError::Generic(format!("{ctx} requires a number"))),
+        other => Err(LispError::Generic(format!(
+            "{}: expected a number, got {}",
+            ctx.to_uppercase(),
+            err_val(other)
+        ))),
     }
 }
 
@@ -415,7 +424,11 @@ pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispV
             want(2, "gcd")?;
             match (&args[0], &args[1]) {
                 (LispVal::Number(a), LispVal::Number(b)) => Ok(LispVal::Number(gcd_i64(*a, *b))),
-                _ => Err(LispError::Generic("gcd requires integers".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "GCD: expected integers, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                ))),
             }
         }
         BuiltinFunc::Lcm => {
@@ -429,17 +442,25 @@ pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispV
                         Ok(LispVal::Number((a / g * b).abs()))
                     }
                 }
-                _ => Err(LispError::Generic("lcm requires integers".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "LCM: expected integers, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                ))),
             }
         }
         BuiltinFunc::Isqrt => {
             want(1, "isqrt")?;
             match &args[0] {
                 LispVal::Number(n) if *n >= 0 => Ok(LispVal::Number((*n as f64).sqrt() as i64)),
-                LispVal::Number(_) => Err(LispError::Generic(
-                    "isqrt requires a non-negative integer".to_string(),
-                )),
-                _ => Err(LispError::Generic("isqrt requires an integer".to_string())),
+                LispVal::Number(_) => Err(LispError::Generic(format!(
+                    "ISQRT: expected a non-negative integer, got {}",
+                    err_val(&args[0])
+                ))),
+                _ => Err(LispError::Generic(format!(
+                    "ISQRT: expected an integer, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::Signum => {
@@ -447,7 +468,10 @@ pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispV
             match &args[0] {
                 LispVal::Number(n) => Ok(LispVal::Number(n.signum())),
                 LispVal::Float(f) => Ok(LispVal::Float(if *f == 0.0 { 0.0 } else { f.signum() })),
-                _ => Err(LispError::Generic("signum requires a number".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "SIGNUM: expected a number, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         _ => Err(LispError::Generic("Not a math operation".to_string())),
@@ -482,7 +506,12 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
     let get_str = |i: usize, name: &str| -> Result<String, LispError> {
         match args.get(i) {
             Some(LispVal::String(s)) => Ok(s.clone()),
-            _ => Err(LispError::Generic(format!(
+            Some(other) => Err(LispError::Generic(format!(
+                "{}: expected a string, got {}",
+                name.to_uppercase(),
+                err_val(other)
+            ))),
+            None => Err(LispError::Generic(format!(
                 "{name} requires a string argument"
             ))),
         }
@@ -512,18 +541,20 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
             let start = match &args[1] {
                 LispVal::Number(n) if *n >= 0 => (*n as usize).min(len),
                 _ => {
-                    return Err(LispError::Generic(
-                        "substring start must be a non-negative integer".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "SUBSTRING: start must be a non-negative integer, got {}",
+                        err_val(&args[1])
+                    )));
                 }
             };
             let end = if args.len() == 3 {
                 match &args[2] {
                     LispVal::Number(n) if *n >= 0 => (*n as usize).min(len),
                     _ => {
-                        return Err(LispError::Generic(
-                            "substring end must be a non-negative integer".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "SUBSTRING: end must be a non-negative integer, got {}",
+                            err_val(&args[2])
+                        )));
                     }
                 }
             } else {
@@ -545,9 +576,10 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
                     let s = get_str(0, "char-code")?;
                     match s.chars().next() {
                         Some(c) => Ok(LispVal::Number(c as i64)),
-                        None => Err(LispError::Generic(
-                            "char-code requires a non-empty string".to_string(),
-                        )),
+                        None => Err(LispError::Generic(format!(
+                            "CHAR-CODE: expected a non-empty string, got {}",
+                            err_val(&LispVal::String(s.clone()))
+                        ))),
                     }
                 }
             }
@@ -561,9 +593,10 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
                     .ok_or_else(|| {
                         LispError::Generic(format!("code-char: {n} is not a valid code point"))
                     }),
-                _ => Err(LispError::Generic(
-                    "code-char requires a non-negative integer".to_string(),
-                )),
+                _ => Err(LispError::Generic(format!(
+                    "CODE-CHAR: expected a non-negative integer, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::MakeChar => {
@@ -574,9 +607,10 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
                 Some(LispVal::Number(n)) => Err(LispError::Generic(format!(
                     "make-char: {n} out of range 0–255"
                 ))),
-                _ => Err(LispError::Generic(
-                    "make-char requires a non-negative integer".to_string(),
-                )),
+                _ => Err(LispError::Generic(format!(
+                    "MAKE-CHAR: expected a non-negative integer, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::StringToNumber => {
@@ -597,9 +631,10 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
             match args.first() {
                 Some(LispVal::Number(n)) => Ok(LispVal::String(n.to_string())),
                 Some(LispVal::Float(f)) => Ok(LispVal::String(f.to_string())),
-                _ => Err(LispError::Generic(
-                    "number->string requires a number".to_string(),
-                )),
+                _ => Err(LispError::Generic(format!(
+                    "NUMBER->STRING: expected a number, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::Prin1ToString => {
@@ -725,13 +760,21 @@ pub(super) fn apply_error_value_op(
         }
         BuiltinFunc::ErrorMessage => match args.first() {
             Some(LispVal::Error(e)) => Ok(LispVal::String(e.message.clone())),
-            _ => Err(LispError::Generic(
+            Some(other) => Err(LispError::Generic(format!(
+                "ERROR-MESSAGE: expected an error value, got {}",
+                err_val(other)
+            ))),
+            None => Err(LispError::Generic(
                 "error-message requires an error value".to_string(),
             )),
         },
         BuiltinFunc::ErrorData => match args.first() {
             Some(LispVal::Error(e)) => Ok(e.data.clone()),
-            _ => Err(LispError::Generic(
+            Some(other) => Err(LispError::Generic(format!(
+                "ERROR-DATA: expected an error value, got {}",
+                err_val(other)
+            ))),
+            None => Err(LispError::Generic(
                 "error-data requires an error value".to_string(),
             )),
         },
@@ -788,7 +831,10 @@ pub(super) fn apply_numeric_primitives(
                     LispVal::Nil
                 })
             } else {
-                Err(LispError::Generic("zerop requires number".to_string()))
+                Err(LispError::Generic(format!(
+                    "ZEROP: expected a number, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Remainder => {
@@ -807,7 +853,11 @@ pub(super) fn apply_numeric_primitives(
                     Ok(LispVal::Number(x % y))
                 }
             } else {
-                Err(LispError::Generic("remainder requires numbers".to_string()))
+                Err(LispError::Generic(format!(
+                    "REMAINDER: expected numbers, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                )))
             }
         }
         BuiltinFunc::Expt => {
@@ -834,7 +884,11 @@ pub(super) fn apply_numeric_primitives(
                     Ok(LispVal::Float((*base as f64).powf(*exp)))
                 }
                 (LispVal::Float(base), LispVal::Float(exp)) => Ok(LispVal::Float(base.powf(*exp))),
-                _ => Err(LispError::Generic("expt requires numbers".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "EXPT: expected numbers, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                ))),
             }
         }
         _ => Err(LispError::Generic("Not a numeric primitive".to_string())),
@@ -912,9 +966,11 @@ pub(super) fn apply_logical_op(
                                 LispVal::Nil
                             })
                         }
-                        _ => Err(LispError::Generic(
-                            "= requires numeric arguments".to_string(),
-                        )),
+                        _ => Err(LispError::Generic(format!(
+                            "=: expected numeric arguments, got {} and {}",
+                            err_val(&args[0]),
+                            err_val(&args[1])
+                        ))),
                     }
                 }
             }
@@ -952,9 +1008,10 @@ pub(super) fn apply_hashtable_op(
                 h.borrow_mut().insert(key, val);
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
-                Err(LispError::Generic(
-                    "sethash/set-bang requires a hash table as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "SETHASH/SET-BANG: expected a hash table as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Get => {
@@ -971,7 +1028,7 @@ pub(super) fn apply_hashtable_op(
                 (key, LispVal::HashTable(h)) => (h, key),
                 (other, _) => {
                     return Err(LispError::Generic(format!(
-                        "gethash requires a hash table argument, got {} and {}",
+                        "GETHASH: expected a hash table argument, got {} and {}",
                         err_val(other),
                         err_val(&args[1])
                     )));
@@ -996,7 +1053,7 @@ pub(super) fn apply_hashtable_op(
                 (key, LispVal::HashTable(h)) => (h, key),
                 (other, _) => {
                     return Err(LispError::Generic(format!(
-                        "delete-key/delete-key-bang requires a hash table argument, got {} and {}",
+                        "DELETE-KEY/DELETE-KEY-BANG: expected a hash table argument, got {} and {}",
                         err_val(other),
                         err_val(&args[1])
                     )));
@@ -1028,9 +1085,10 @@ pub(super) fn apply_hashtable_op(
                 let keys = h.borrow().keys().cloned().collect();
                 Ok(vec_to_list(keys))
             } else {
-                Err(LispError::Generic(
-                    "keys requires a hash table as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "KEYS: expected a hash table as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         _ => Err(LispError::Generic("Not a hash table operation".to_string())),
@@ -1048,7 +1106,9 @@ pub(super) fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, Li
         LispVal::Symbol(s) => Ok(s.borrow().name.clone()),
         LispVal::String(s) => Ok(s.clone()),
         _ => Err(LispError::Generic(format!(
-            "{who} requires a symbol or string"
+            "{}: expected a symbol or string, got {}",
+            who.to_uppercase(),
+            err_val(&args[0])
         ))),
     }
 }
@@ -1136,10 +1196,11 @@ pub(super) fn apply_shell(
             LispVal::Symbol(s) => parts.push(s.borrow().name.clone()),
             LispVal::Number(n) => parts.push(n.to_string()),
             LispVal::Float(f) => parts.push(f.to_string()),
-            _ => {
-                return Err(LispError::Generic(
-                    "shell arguments must be strings, symbols, or numbers".to_string(),
-                ));
+            other => {
+                return Err(LispError::Generic(format!(
+                    "SHELL: arguments must be strings, symbols, or numbers, got {}",
+                    err_val(other)
+                )));
             }
         }
     }

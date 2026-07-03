@@ -1412,13 +1412,28 @@ impl From<Vec<LispVal>> for LispVal {
 // TryFrom<LispVal> for Rust primitives — fallible extractions
 // ---------------------------------------------------------------------------
 
+/// Render a value for inclusion in an error message, truncated so a huge list
+/// or string cannot flood the output (issue #247). Mirrors
+/// `evaluator::core::err_val`, which is private to the evaluator module and
+/// so not reachable from here.
+fn err_val_display(v: &LispVal) -> String {
+    let s = printer::print(v);
+    if s.chars().count() > 60 {
+        let head: String = s.chars().take(57).collect();
+        format!("{head}...")
+    } else {
+        s
+    }
+}
+
 impl TryFrom<LispVal> for i64 {
     type Error = LispError;
     fn try_from(val: LispVal) -> Result<Self, Self::Error> {
         match val {
             LispVal::Number(n) => Ok(n),
             other => Err(LispError::Generic(format!(
-                "expected integer, got {other:?}"
+                "expected integer, got {}",
+                err_val_display(&other)
             ))),
         }
     }
@@ -1431,7 +1446,8 @@ impl TryFrom<LispVal> for f64 {
             LispVal::Float(f) => Ok(f),
             LispVal::Number(n) => Ok(n as f64),
             other => Err(LispError::Generic(format!(
-                "expected number, got {other:?}"
+                "expected number, got {}",
+                err_val_display(&other)
             ))),
         }
     }
@@ -1450,7 +1466,8 @@ impl TryFrom<LispVal> for String {
         match val {
             LispVal::String(s) => Ok(s),
             other => Err(LispError::Generic(format!(
-                "expected string, got {other:?}"
+                "expected string, got {}",
+                err_val_display(&other)
             ))),
         }
     }
@@ -1483,7 +1500,8 @@ impl LispVal {
         match self {
             LispVal::Number(n) => Ok(*n),
             other => Err(LispError::Generic(format!(
-                "expected integer, got {other:?}"
+                "expected integer, got {}",
+                err_val_display(other)
             ))),
         }
     }
@@ -1494,7 +1512,8 @@ impl LispVal {
             LispVal::Float(f) => Ok(*f),
             LispVal::Number(n) => Ok(*n as f64),
             other => Err(LispError::Generic(format!(
-                "expected number, got {other:?}"
+                "expected number, got {}",
+                err_val_display(other)
             ))),
         }
     }
@@ -1504,7 +1523,8 @@ impl LispVal {
         match self {
             LispVal::String(s) => Ok(s.as_str()),
             other => Err(LispError::Generic(format!(
-                "expected string, got {other:?}"
+                "expected string, got {}",
+                err_val_display(other)
             ))),
         }
     }
@@ -1520,9 +1540,10 @@ impl LispVal {
                     result.push(car.as_ref().clone());
                     current = cdr;
                 }
-                _ => {
+                other => {
                     return Err(LispError::Generic(format!(
-                        "not a proper list: dotted pair ending in {current:?}"
+                        "not a proper list: dotted pair ending in {}",
+                        err_val_display(other)
                     )));
                 }
             }
@@ -1662,7 +1683,8 @@ fn proper_list_to_vec(list: &LispVal, context: &str) -> Result<Vec<LispVal>, Lis
     }
     if *current != LispVal::Nil {
         return Err(LispError::Generic(format!(
-            "{context}: arguments must be a proper list"
+            "{context}: arguments must be a proper list, got tail {}",
+            err_val_display(current)
         )));
     }
     Ok(out)
@@ -1687,9 +1709,10 @@ fn include_target(form: &LispVal) -> Result<Option<String>, LispError> {
     }
     match &args[0] {
         LispVal::String(path) => Ok(Some(path.clone())),
-        _ => Err(LispError::Generic(
-            "include requires a string path".to_string(),
-        )),
+        other => Err(LispError::Generic(format!(
+            "INCLUDE: expected a string path, got {}",
+            err_val_display(other)
+        ))),
     }
 }
 

@@ -16,9 +16,10 @@ pub(super) fn apply_symbol_op(
                 LispVal::String(s) => s.clone(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
-                    return Err(LispError::Generic(
-                        "get-p requires a symbol or string as its second argument".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "GET-P: expected a symbol or string as its second argument, got {}",
+                        err_val(&args[1])
+                    )));
                 }
             };
             if let LispVal::Symbol(s) = &args[0] {
@@ -28,9 +29,10 @@ pub(super) fn apply_symbol_op(
                     Ok(LispVal::Nil)
                 }
             } else {
-                Err(LispError::Generic(
-                    "get-p requires a symbol as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "GET-P: expected a symbol as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::PutP => {
@@ -43,9 +45,10 @@ pub(super) fn apply_symbol_op(
                 LispVal::String(s) => s.clone(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
-                    return Err(LispError::Generic(
-                        "put-p requires a symbol or string as its second argument".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "PUT-P: expected a symbol or string as its second argument, got {}",
+                        err_val(&args[1])
+                    )));
                 }
             };
             if let LispVal::Symbol(s) = &args[0] {
@@ -53,9 +56,10 @@ pub(super) fn apply_symbol_op(
                 s.borrow_mut().plist.insert(prop, val);
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             } else {
-                Err(LispError::Generic(
-                    "put-p requires a symbol as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "PUT-P: expected a symbol as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         _ => Err(LispError::Generic("Not a symbol operation".to_string())),
@@ -140,9 +144,10 @@ pub(super) fn apply_io_op(
                 let _ = std::io::stdout().flush();
                 Ok(LispVal::Nil)
             } else {
-                Err(LispError::Generic(
-                    "spaces requires a number argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "SPACES: expected a number, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         _ => Err(LispError::Generic("Not an I/O operation".to_string())),
@@ -317,7 +322,7 @@ pub(super) fn apply_list_processing(
                     }
                     other => {
                         return Err(LispError::Generic(format!(
-                            "assoc requires a proper association list, got tail {}",
+                            "ASSOC: expected a proper association list, got tail {}",
                             err_val(other)
                         )));
                     }
@@ -345,10 +350,11 @@ pub(super) fn apply_list_processing(
                         result.push(applied);
                         current = cdr.as_ref().clone();
                     }
-                    _ => {
-                        return Err(LispError::Generic(
-                            "maplist requires a proper list".to_string(),
-                        ));
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "MAPLIST: expected a proper list, got tail {}",
+                            err_val(other)
+                        )));
                     }
                 }
             }
@@ -375,10 +381,11 @@ pub(super) fn apply_list_processing(
                         result.push(applied);
                         current = cdr;
                     }
-                    _ => {
-                        return Err(LispError::Generic(
-                            "mapcar requires a proper list".to_string(),
-                        ));
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "MAPCAR: expected a proper list, got tail {}",
+                            err_val(other)
+                        )));
                     }
                 }
             }
@@ -403,9 +410,10 @@ pub(super) fn apply_list_processing(
                     cdr: cdr.clone(),
                 })
             } else {
-                Err(LispError::Generic(
-                    "rplaca requires a cons cell as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "RPLACA: expected a cons cell as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Rplacd => {
@@ -427,9 +435,10 @@ pub(super) fn apply_list_processing(
                     cdr: Shared::new(args[1].clone()),
                 })
             } else {
-                Err(LispError::Generic(
-                    "rplacd requires a cons cell as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "RPLACD: expected a cons cell as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         _ => Err(LispError::Generic(
@@ -452,9 +461,10 @@ pub(super) fn apply_bitwise_op(
                 if let LispVal::Number(n) = arg {
                     result |= n;
                 } else {
-                    return Err(LispError::Generic(
-                        "logor requires integer arguments".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "LOGOR: expected integer arguments, got {}",
+                        err_val(arg)
+                    )));
                 }
             }
             Ok(LispVal::Number(result))
@@ -466,17 +476,19 @@ pub(super) fn apply_bitwise_op(
             let mut result = if let LispVal::Number(n) = &args[0] {
                 *n
             } else {
-                return Err(LispError::Generic(
-                    "logand requires integer arguments".to_string(),
-                ));
+                return Err(LispError::Generic(format!(
+                    "LOGAND: expected integer arguments, got {}",
+                    err_val(&args[0])
+                )));
             };
             for arg in &args[1..] {
                 if let LispVal::Number(n) = arg {
                     result &= n;
                 } else {
-                    return Err(LispError::Generic(
-                        "logand requires integer arguments".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "LOGAND: expected integer arguments, got {}",
+                        err_val(arg)
+                    )));
                 }
             }
             Ok(LispVal::Number(result))
@@ -487,9 +499,10 @@ pub(super) fn apply_bitwise_op(
                 if let LispVal::Number(n) = arg {
                     result ^= n;
                 } else {
-                    return Err(LispError::Generic(
-                        "logxor requires integer arguments".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "LOGXOR: expected integer arguments, got {}",
+                        err_val(arg)
+                    )));
                 }
             }
             Ok(LispVal::Number(result))
@@ -518,9 +531,11 @@ pub(super) fn apply_bitwise_op(
                     Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
                 }
             } else {
-                Err(LispError::Generic(
-                    "leftshift requires integer arguments".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "LEFTSHIFT: expected integer arguments, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                )))
             }
         }
         _ => Err(LispError::Generic("Not a bitwise operation".to_string())),
@@ -561,7 +576,7 @@ pub(super) fn apply_new_list_ops(
                 *n as usize
             } else {
                 return Err(LispError::Generic(format!(
-                    "nth requires a number as first argument, got {}",
+                    "NTH: expected a number as first argument, got {}",
                     err_val(&args[0])
                 )));
             };
@@ -588,9 +603,10 @@ pub(super) fn apply_new_list_ops(
             let n = if let LispVal::Number(n) = &args[0] {
                 *n as usize
             } else {
-                return Err(LispError::Generic(
-                    "nthcdr requires a number as first argument".to_string(),
-                ));
+                return Err(LispError::Generic(format!(
+                    "NTHCDR: expected a number as first argument, got {}",
+                    err_val(&args[0])
+                )));
             };
             let mut current = args[1].clone();
             for _ in 0..n {
@@ -652,9 +668,11 @@ pub(super) fn apply_new_numeric_ops(
                 // Use checked_rem_euclid to handle i64::MIN % -1 (overflow)
                 Ok(LispVal::Number(x.checked_rem_euclid(*y).unwrap_or(0)))
             } else {
-                Err(LispError::Generic(
-                    "mod requires integer arguments".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "MOD: expected integer arguments, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                )))
             }
         }
         BuiltinFunc::Plusp => {
@@ -678,7 +696,10 @@ pub(super) fn apply_new_numeric_ops(
                         Ok(LispVal::Nil)
                     }
                 }
-                _ => Err(LispError::Generic("plusp requires a number".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "PLUSP: expected a number, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::Evenp => {
@@ -694,7 +715,10 @@ pub(super) fn apply_new_numeric_ops(
                     Ok(LispVal::Nil)
                 }
             } else {
-                Err(LispError::Generic("evenp requires an integer".to_string()))
+                Err(LispError::Generic(format!(
+                    "EVENP: expected an integer, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Oddp => {
@@ -710,7 +734,10 @@ pub(super) fn apply_new_numeric_ops(
                     Ok(LispVal::Nil)
                 }
             } else {
-                Err(LispError::Generic("oddp requires an integer".to_string()))
+                Err(LispError::Generic(format!(
+                    "ODDP: expected an integer, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Add1 => {
@@ -722,7 +749,10 @@ pub(super) fn apply_new_numeric_ops(
             match &args[0] {
                 LispVal::Number(n) => Ok(LispVal::Number(n + 1)),
                 LispVal::Float(f) => Ok(LispVal::Float(f + 1.0)),
-                _ => Err(LispError::Generic("add1 requires a number".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "ADD1: expected a number, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::Sub1 => {
@@ -734,7 +764,10 @@ pub(super) fn apply_new_numeric_ops(
             match &args[0] {
                 LispVal::Number(n) => Ok(LispVal::Number(n - 1)),
                 LispVal::Float(f) => Ok(LispVal::Float(f - 1.0)),
-                _ => Err(LispError::Generic("sub1 requires a number".to_string())),
+                _ => Err(LispError::Generic(format!(
+                    "SUB1: expected a number, got {}",
+                    err_val(&args[0])
+                ))),
             }
         }
         BuiltinFunc::Random => {
@@ -745,9 +778,10 @@ pub(super) fn apply_new_numeric_ops(
             }
             if let LispVal::Number(n) = &args[0] {
                 if *n <= 0 {
-                    return Err(LispError::Generic(
-                        "random requires a positive integer".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "RANDOM: expected a positive integer, got {}",
+                        err_val(&args[0])
+                    )));
                 }
                 // Simple linear congruential generator using system time as seed
                 use std::time::{SystemTime, UNIX_EPOCH};
@@ -758,7 +792,10 @@ pub(super) fn apply_new_numeric_ops(
                 let random_val = (seed % (*n as u64)) as i64;
                 Ok(LispVal::Number(random_val))
             } else {
-                Err(LispError::Generic("random requires an integer".to_string()))
+                Err(LispError::Generic(format!(
+                    "RANDOM: expected an integer, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         _ => Err(LispError::Generic("Not a numeric operation".to_string())),
@@ -784,7 +821,10 @@ pub(super) fn apply_type_predicates(
             if let LispVal::Symbol(s) = arg {
                 env.is_bound(&s.borrow().name)
             } else {
-                return Err(LispError::Generic("boundp requires a symbol".to_string()));
+                return Err(LispError::Generic(format!(
+                    "BOUNDP: expected a symbol, got {}",
+                    err_val(arg)
+                )));
             }
         }
         BuiltinFunc::Functionp => matches!(

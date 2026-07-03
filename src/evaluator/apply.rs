@@ -55,7 +55,7 @@ pub(super) fn apply(
                 match &args[0] {
                     LispVal::String(s) => crate::reader::read(s, env).map_err(LispError::Generic),
                     other => Err(LispError::Generic(format!(
-                        "read-from-string requires a string, got {}",
+                        "READ-FROM-STRING: expected a string, got {}",
                         err_val(other)
                     ))),
                 }
@@ -72,9 +72,10 @@ pub(super) fn apply(
                         if let LispVal::Environment(e) = &args[1] {
                             (&args[0], e.clone())
                         } else {
-                            return Err(LispError::Generic(
-                                "evlis: second argument must be an environment".to_string(),
-                            ));
+                            return Err(LispError::Generic(format!(
+                                "EVLIS: second argument must be an environment, got {}",
+                                err_val(&args[1])
+                            )));
                         }
                     }
                     _ => {
@@ -105,9 +106,10 @@ pub(super) fn apply(
                         if let LispVal::Environment(e) = &args[1] {
                             (&args[0], e.clone())
                         } else {
-                            return Err(LispError::Generic(
-                                "evcon: second argument must be an environment".to_string(),
-                            ));
+                            return Err(LispError::Generic(format!(
+                                "EVCON: second argument must be an environment, got {}",
+                                err_val(&args[1])
+                            )));
                         }
                     }
                     _ => {
@@ -123,9 +125,10 @@ pub(super) fn apply(
                         LispVal::Cons { car, cdr } => {
                             let clause = list_to_vec(&car)?;
                             if clause.len() != 2 {
-                                return Err(LispError::Generic(
-                                    "evcon: each clause must be (test value)".to_string(),
-                                ));
+                                return Err(LispError::Generic(format!(
+                                    "EVCON: each clause must be (test value), got {}",
+                                    err_val(&car)
+                                )));
                             }
                             let test = eval(&clause[0], &eval_env)?;
                             if test != LispVal::Nil {
@@ -133,10 +136,11 @@ pub(super) fn apply(
                             }
                             cur = cdr.as_ref().clone();
                         }
-                        _ => {
-                            return Err(LispError::Generic(
-                                "evcon: clauses must be a proper list".to_string(),
-                            ));
+                        other => {
+                            return Err(LispError::Generic(format!(
+                                "EVCON: clauses must be a proper list, got tail {}",
+                                err_val(&other)
+                            )));
                         }
                     }
                 }
@@ -147,9 +151,10 @@ pub(super) fn apply(
                     if let LispVal::Environment(eval_env) = &args[1] {
                         eval(&args[0], eval_env)
                     } else {
-                        Err(LispError::Generic(
-                            "eval: second argument must be an environment".to_string(),
-                        ))
+                        Err(LispError::Generic(format!(
+                            "EVAL: second argument must be an environment, got {}",
+                            err_val(&args[1])
+                        )))
                     }
                 }
                 _ => Err(LispError::Generic(
@@ -320,9 +325,10 @@ pub(super) fn apply(
                 if let LispVal::Extension(e) = &args[0] {
                     Ok(LispVal::String(e.type_name().to_string()))
                 } else {
-                    Err(LispError::Generic(
-                        "extension-type: argument must be an extension value".to_string(),
-                    ))
+                    Err(LispError::Generic(format!(
+                        "EXTENSION-TYPE: argument must be an extension value, got {}",
+                        err_val(&args[0])
+                    )))
                 }
             }
 
@@ -375,18 +381,20 @@ pub(super) fn apply(
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "float= requires numeric arguments".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLOAT=: expected numeric arguments, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let f2 = match &args[1] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "float= requires numeric arguments".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLOAT=: expected numeric arguments, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 // Use bitwise equality to distinguish -0.0 from 0.0
@@ -407,18 +415,20 @@ pub(super) fn apply(
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "float< requires numeric arguments".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLOAT<: expected numeric arguments, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let f2 = match &args[1] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "float< requires numeric arguments".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLOAT<: expected numeric arguments, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 if f1 < f2 {
@@ -438,18 +448,20 @@ pub(super) fn apply(
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "float> requires numeric arguments".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLOAT>: expected numeric arguments, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let f2 = match &args[1] {
                     LispVal::Float(f) => *f,
                     LispVal::Number(n) => *n as f64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "float> requires numeric arguments".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLOAT>: expected numeric arguments, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 if f1 > f2 {
@@ -470,9 +482,10 @@ pub(super) fn apply(
                 let filename = if let LispVal::String(path) = &args[0] {
                     path.clone()
                 } else {
-                    return Err(LispError::Generic(
-                        "load-file requires a string filename".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "LOAD-FILE: expected a string filename, got {}",
+                        err_val(&args[0])
+                    )));
                 };
 
                 crate::load_file(&filename, env)?;
@@ -489,9 +502,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "read-file: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "READ-FILE: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let contents = std::fs::read_to_string(&path)
@@ -509,17 +523,19 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "read-file-byte: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "READ-FILE-BYTE: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let offset = match &args[1] {
                     LispVal::Number(n) if *n >= 0 => *n as u64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "read-file-byte: offset must be a non-negative integer".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "READ-FILE-BYTE: offset must be a non-negative integer, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 use std::io::{Read, Seek, SeekFrom};
@@ -549,25 +565,28 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "read-file-section: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "READ-FILE-SECTION: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let offset = match &args[1] {
                     LispVal::Number(n) if *n >= 0 => *n as u64,
                     _ => {
-                        return Err(LispError::Generic(
-                            "read-file-section: offset must be a non-negative integer".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "READ-FILE-SECTION: offset must be a non-negative integer, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 let len = match &args[2] {
                     LispVal::Number(n) if *n >= 0 => *n as usize,
                     _ => {
-                        return Err(LispError::Generic(
-                            "read-file-section: len must be a non-negative integer".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "READ-FILE-SECTION: len must be a non-negative integer, got {}",
+                            err_val(&args[2])
+                        )));
                     }
                 };
                 use std::io::{Read, Seek, SeekFrom};
@@ -593,17 +612,19 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "write-file: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "WRITE-FILE: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let content = match &args[1] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "write-file: content must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "WRITE-FILE: content must be a string, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 std::fs::write(&path, content.as_bytes())
@@ -622,9 +643,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-exists-p: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-EXISTS-P: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 if std::path::Path::new(&path).exists() {
@@ -644,9 +666,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "directory-p: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "DIRECTORY-P: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 if std::path::Path::new(&path).is_dir() {
@@ -666,9 +689,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-p: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-P: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 if std::path::Path::new(&path).is_file() {
@@ -688,9 +712,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-readable-p: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-READABLE-P: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 // Opening for read is the most reliable check with std-only.
@@ -711,9 +736,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-writable-p: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-WRITABLE-P: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let writable = std::fs::metadata(&path)
@@ -736,9 +762,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-executable-p: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-EXECUTABLE-P: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 #[cfg(unix)]
@@ -767,9 +794,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-size: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-SIZE: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let size = std::fs::metadata(&path)
@@ -788,9 +816,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "directory-files: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "DIRECTORY-FILES: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let mut names: Vec<String> = std::fs::read_dir(&path)
@@ -818,9 +847,11 @@ pub(super) fn apply(
                 let (p1, p2) = match (&args[0], &args[1]) {
                     (LispVal::String(a), LispVal::String(b)) => (a.clone(), b.clone()),
                     _ => {
-                        return Err(LispError::Generic(
-                            "file-newer-p: both arguments must be strings".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FILE-NEWER-P: both arguments must be strings, got {} and {}",
+                            err_val(&args[0]),
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 let mtime1 = std::fs::metadata(&p1)
@@ -847,9 +878,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "chmod: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "CHMOD: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 // Mode: integer (use directly) or octal string like "755".
@@ -859,9 +891,10 @@ pub(super) fn apply(
                         LispError::Generic(format!("chmod: cannot parse \"{s}\" as an octal mode"))
                     })?,
                     _ => {
-                        return Err(LispError::Generic(
-                            "chmod: mode must be an integer or octal string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "CHMOD: mode must be an integer or octal string, got {}",
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 #[cfg(unix)]
@@ -888,9 +921,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "create-directory: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "CREATE-DIRECTORY: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 std::fs::create_dir_all(&path)
@@ -908,9 +942,10 @@ pub(super) fn apply(
                 let path = match &args[0] {
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "delete-file: path must be a string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "DELETE-FILE: path must be a string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 std::fs::remove_file(&path)
@@ -928,9 +963,11 @@ pub(super) fn apply(
                 let (from, to) = match (&args[0], &args[1]) {
                     (LispVal::String(a), LispVal::String(b)) => (a.clone(), b.clone()),
                     _ => {
-                        return Err(LispError::Generic(
-                            "rename-file: both arguments must be strings".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "RENAME-FILE: both arguments must be strings, got {} and {}",
+                            err_val(&args[0]),
+                            err_val(&args[1])
+                        )));
                     }
                 };
                 std::fs::rename(&from, &to)
@@ -944,10 +981,11 @@ pub(super) fn apply(
                 let prefix = match args.first() {
                     Some(LispVal::String(s)) => s.clone(),
                     None => String::new(),
-                    _ => {
-                        return Err(LispError::Generic(
-                            "make-temp-file: optional prefix must be a string".to_string(),
-                        ));
+                    Some(other) => {
+                        return Err(LispError::Generic(format!(
+                            "MAKE-TEMP-FILE: optional prefix must be a string, got {}",
+                            err_val(other)
+                        )));
                     }
                 };
                 let path = make_temp_path(&prefix, "");
@@ -965,10 +1003,11 @@ pub(super) fn apply(
                 let prefix = match args.first() {
                     Some(LispVal::String(s)) => s.clone(),
                     None => String::new(),
-                    _ => {
-                        return Err(LispError::Generic(
-                            "make-temp-directory: optional prefix must be a string".to_string(),
-                        ));
+                    Some(other) => {
+                        return Err(LispError::Generic(format!(
+                            "MAKE-TEMP-DIRECTORY: optional prefix must be a string, got {}",
+                            err_val(other)
+                        )));
                     }
                 };
                 let path = make_temp_path(&prefix, "");
@@ -988,9 +1027,10 @@ pub(super) fn apply(
                     LispVal::Symbol(s) => s.borrow().name.clone(),
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "set-flag requires a symbol or string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "SET-FLAG: expected a symbol or string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 env.set_flag(&flag_name);
@@ -1007,9 +1047,10 @@ pub(super) fn apply(
                     LispVal::Symbol(s) => s.borrow().name.clone(),
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "clear-flag requires a symbol or string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "CLEAR-FLAG: expected a symbol or string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 env.clear_flag(&flag_name);
@@ -1026,9 +1067,10 @@ pub(super) fn apply(
                     LispVal::Symbol(s) => s.borrow().name.clone(),
                     LispVal::String(s) => s.clone(),
                     _ => {
-                        return Err(LispError::Generic(
-                            "flag-set-p requires a symbol or string".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "FLAG-SET-P: expected a symbol or string, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 if env.flag_set(&flag_name) {
@@ -1089,9 +1131,10 @@ pub(super) fn apply(
                     if let LispVal::Environment(parent) = &args[0] {
                         Ok(LispVal::Environment(Environment::new_child(parent)))
                     } else {
-                        Err(LispError::Generic(
-                            "make-environment: argument must be an environment".to_string(),
-                        ))
+                        Err(LispError::Generic(format!(
+                            "MAKE-ENVIRONMENT: argument must be an environment, got {}",
+                            err_val(&args[0])
+                        )))
                     }
                 }
                 _ => Err(LispError::Generic(
@@ -1122,9 +1165,10 @@ pub(super) fn apply(
                         )));
                     }
                     _ => {
-                        return Err(LispError::Generic(
-                            "array: size must be a non-negative integer".to_string(),
-                        ));
+                        return Err(LispError::Generic(format!(
+                            "ARRAY: size must be a non-negative integer, got {}",
+                            err_val(&args[0])
+                        )));
                     }
                 };
                 let v = vec![LispVal::Nil; n];
@@ -1140,9 +1184,10 @@ pub(super) fn apply(
                     let idx = match &args[1] {
                         LispVal::Number(n) if *n >= 0 => *n as usize,
                         _ => {
-                            return Err(LispError::Generic(
-                                "fetch: index must be a non-negative integer".to_string(),
-                            ));
+                            return Err(LispError::Generic(format!(
+                                "FETCH: index must be a non-negative integer, got {}",
+                                err_val(&args[1])
+                            )));
                         }
                     };
                     let v = a.borrow();
@@ -1154,9 +1199,10 @@ pub(super) fn apply(
                     }
                     Ok(v[idx].clone())
                 } else {
-                    Err(LispError::Generic(
-                        "fetch: first argument must be an array".to_string(),
-                    ))
+                    Err(LispError::Generic(format!(
+                        "FETCH: first argument must be an array, got {}",
+                        err_val(&args[0])
+                    )))
                 }
             }
             BuiltinFunc::ArrayStore => {
@@ -1169,9 +1215,10 @@ pub(super) fn apply(
                     let idx = match &args[1] {
                         LispVal::Number(n) if *n >= 0 => *n as usize,
                         _ => {
-                            return Err(LispError::Generic(
-                                "store: index must be a non-negative integer".to_string(),
-                            ));
+                            return Err(LispError::Generic(format!(
+                                "STORE: index must be a non-negative integer, got {}",
+                                err_val(&args[1])
+                            )));
                         }
                     };
                     let val = args[2].clone();
@@ -1185,9 +1232,10 @@ pub(super) fn apply(
                     v[idx] = val.clone();
                     Ok(val)
                 } else {
-                    Err(LispError::Generic(
-                        "store: first argument must be an array".to_string(),
-                    ))
+                    Err(LispError::Generic(format!(
+                        "STORE: first argument must be an array, got {}",
+                        err_val(&args[0])
+                    )))
                 }
             }
             BuiltinFunc::ArrayLength => {
@@ -1199,9 +1247,10 @@ pub(super) fn apply(
                 if let LispVal::Array(a) = &args[0] {
                     Ok(LispVal::Number(a.borrow().len() as i64))
                 } else {
-                    Err(LispError::Generic(
-                        "array-length: argument must be an array".to_string(),
-                    ))
+                    Err(LispError::Generic(format!(
+                        "ARRAY-LENGTH: argument must be an array, got {}",
+                        err_val(&args[0])
+                    )))
                 }
             }
             BuiltinFunc::Length => {
@@ -1237,9 +1286,10 @@ pub(super) fn apply(
                 if let LispVal::Array(a) = &args[0] {
                     Ok(vec_to_list(a.borrow().clone()))
                 } else {
-                    Err(LispError::Generic(
-                        "array->list: argument must be an array".to_string(),
-                    ))
+                    Err(LispError::Generic(format!(
+                        "ARRAY->LIST: argument must be an array, got {}",
+                        err_val(&args[0])
+                    )))
                 }
             }
 

@@ -611,18 +611,18 @@ pub(super) fn lispval_to_typed(
     match ty {
         Ty::Int64 => match lv {
             LispVal::Number(n) => Ok(Value::Int(*n)),
-            other => Err(format!("expected int64 argument, got {other:?}")),
+            other => Err(format!("expected int64 argument, got {}", err_val(other))),
         },
         Ty::Float64 => match lv {
             LispVal::Float(f) => Ok(Value::Float(*f)),
             LispVal::Number(n) => Ok(Value::Float(*n as f64)),
-            other => Err(format!("expected float64 argument, got {other:?}")),
+            other => Err(format!("expected float64 argument, got {}", err_val(other))),
         },
         Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
         Ty::Char => match lv {
             LispVal::Char(b) => Ok(Value::Char(*b)),
             LispVal::Number(n) => Ok(Value::Char(char_byte_from_number(*n, "char argument")?)),
-            other => Err(format!("expected char argument, got {other:?}")),
+            other => Err(format!("expected char argument, got {}", err_val(other))),
         },
         // A `(array char)` parameter accepts a string as its UTF-8 bytes (the
         // #137 membrane); any array accepts a Lisp array, converted element-wise.
@@ -638,7 +638,7 @@ pub(super) fn lispval_to_typed(
                 }
                 Ok(Value::Array(out))
             }
-            other => Err(format!("expected array argument, got {other:?}")),
+            other => Err(format!("expected array argument, got {}", err_val(other))),
         },
         Ty::Struct(def) => match lv {
             LispVal::Struct(obj) => {
@@ -661,7 +661,11 @@ pub(super) fn lispval_to_typed(
                 }
                 Ok(Value::Struct(out))
             }
-            other => Err(format!("expected struct {}, got {other:?}", def.name)),
+            other => Err(format!(
+                "expected struct {}, got {}",
+                def.name,
+                err_val(other)
+            )),
         },
         // Only compileable types back a native edition, so non-compileable
         // types (#162) and unresolved variables never reach the membrane.

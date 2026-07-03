@@ -70,8 +70,9 @@ pub(super) fn append_lists(front: &LispVal, tail: LispVal) -> Result<LispVal, Li
                 cdr: Shared::new(rest),
             })
         }
-        _ => Err(LispError::Generic(
-            "unquote-splicing requires a list argument".to_string(),
-        )),
+        other => Err(LispError::Generic(format!(
+            "UNQUOTE-SPLICING: expected a list argument, got {}",
+            err_val(other)
+        ))),
     }
 }

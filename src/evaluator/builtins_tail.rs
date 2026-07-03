@@ -30,9 +30,10 @@ pub(super) fn apply_string_symbol_ops(
                     .map(|c| LispVal::Symbol(env.intern_symbol(&c.to_string())))
                     .collect(),
                 _ => {
-                    return Err(LispError::Generic(
-                        "explode requires a symbol, string, or number".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "EXPLODE: expected a symbol, string, or number, got {}",
+                        err_val(&args[0])
+                    )));
                 }
             };
             Ok(vec_to_list(chars))
@@ -49,10 +50,11 @@ pub(super) fn apply_string_symbol_ops(
                 match ch {
                     LispVal::Symbol(s) => result.push_str(&s.borrow().name),
                     LispVal::String(s) => result.push_str(&s),
-                    _ => {
-                        return Err(LispError::Generic(
-                            "implode requires a list of symbols or strings".to_string(),
-                        ));
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "IMPLODE: expected a list of symbols or strings, got {}",
+                            err_val(&other)
+                        )));
                     }
                 }
             }
@@ -71,10 +73,11 @@ pub(super) fn apply_string_symbol_ops(
                 match ch {
                     LispVal::Symbol(s) => result.push_str(&s.borrow().name),
                     LispVal::String(s) => result.push_str(&s),
-                    _ => {
-                        return Err(LispError::Generic(
-                            "maknam requires a list of symbols or strings".to_string(),
-                        ));
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "MAKNAM: expected a list of symbols or strings, got {}",
+                            err_val(&other)
+                        )));
                     }
                 }
             }
@@ -96,9 +99,10 @@ pub(super) fn apply_string_symbol_ops(
                 LispVal::String(s) => s.to_uppercase(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
-                    return Err(LispError::Generic(
-                        "intern requires a string or symbol".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "INTERN: expected a string or symbol, got {}",
+                        err_val(&args[0])
+                    )));
                 }
             };
             Ok(LispVal::Symbol(env.intern_symbol(&name)))
@@ -118,9 +122,10 @@ pub(super) fn apply_string_symbol_ops(
                 }
                 Ok(vec_to_list(result))
             } else {
-                Err(LispError::Generic(
-                    "plist requires a symbol as its argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "PLIST: expected a symbol, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         _ => Err(LispError::Generic(
@@ -165,9 +170,11 @@ pub(super) fn apply_new_bitwise_ops(
                     }
                 }
             } else {
-                Err(LispError::Generic(
-                    "ash requires integer arguments".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "ASH: expected integer arguments, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                )))
             }
         }
         BuiltinFunc::Lognot => {
@@ -179,9 +186,10 @@ pub(super) fn apply_new_bitwise_ops(
             if let LispVal::Number(n) = &args[0] {
                 Ok(LispVal::Number(!n))
             } else {
-                Err(LispError::Generic(
-                    "lognot requires an integer argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "LOGNOT: expected an integer argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Rot => {
@@ -195,9 +203,11 @@ pub(super) fn apply_new_bitwise_ops(
                 let count = count.rem_euclid(64) as u32;
                 Ok(LispVal::Number(((*n as u64).rotate_left(count)) as i64))
             } else {
-                Err(LispError::Generic(
-                    "rot requires integer arguments".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "ROT: expected integer arguments, got {} and {}",
+                    err_val(&args[0]),
+                    err_val(&args[1])
+                )))
             }
         }
         _ => Err(LispError::Generic("Not a bitwise operation".to_string())),
@@ -222,9 +232,10 @@ pub(super) fn apply_plist_op(
                 LispVal::String(s) => s.clone(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
-                    return Err(LispError::Generic(
-                        "remprop requires a symbol or string as its second argument".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "REMPROP: expected a symbol or string as its second argument, got {}",
+                        err_val(&args[1])
+                    )));
                 }
             };
             if let LispVal::Symbol(s) = &args[0] {
@@ -235,9 +246,10 @@ pub(super) fn apply_plist_op(
                     Ok(LispVal::Nil)
                 }
             } else {
-                Err(LispError::Generic(
-                    "remprop requires a symbol as its first argument".to_string(),
-                ))
+                Err(LispError::Generic(format!(
+                    "REMPROP: expected a symbol as its first argument, got {}",
+                    err_val(&args[0])
+                )))
             }
         }
         BuiltinFunc::Deflist => {
@@ -251,9 +263,10 @@ pub(super) fn apply_plist_op(
                 LispVal::String(s) => s.clone(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
-                    return Err(LispError::Generic(
-                        "deflist requires a symbol or string as its second argument".to_string(),
-                    ));
+                    return Err(LispError::Generic(format!(
+                        "DEFLIST: expected a symbol or string as its second argument, got {}",
+                        err_val(&args[1])
+                    )));
                 }
             };
             let mut current = pairs;
