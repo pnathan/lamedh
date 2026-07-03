@@ -20,7 +20,9 @@ pub(super) fn make_lambda(
                             "Only one symbol can follow &rest".to_string(),
                         ));
                     }
-                    rest_param = Some(rest_p_sym.borrow().name.clone());
+                    let rest_name = rest_p_sym.borrow().name.clone();
+                    check_param_name(&rest_name, "lambda")?;
+                    rest_param = Some(rest_name);
                     break; // No more params after &rest
                 } else {
                     return Err(LispError::Generic(
@@ -28,7 +30,9 @@ pub(super) fn make_lambda(
                     ));
                 }
             } else {
-                params_vec.push(s.borrow().name.clone());
+                let name = s.borrow().name.clone();
+                check_param_name(&name, "lambda")?;
+                params_vec.push(name);
             }
         } else {
             return Err(LispError::Generic(
@@ -68,7 +72,9 @@ pub(super) fn make_fexpr(
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
-                Ok(s.borrow().name.clone())
+                let name = s.borrow().name.clone();
+                check_param_name(&name, "fexpr")?;
+                Ok(name)
             } else {
                 Err(LispError::Generic(
                     "fexpr parameters must be symbols".to_string(),
@@ -110,7 +116,9 @@ pub(super) fn make_macro(
                             "Only one symbol can follow &rest".to_string(),
                         ));
                     }
-                    rest_param = Some(rest_p_sym.borrow().name.clone());
+                    let rest_name = rest_p_sym.borrow().name.clone();
+                    check_param_name(&rest_name, "macro")?;
+                    rest_param = Some(rest_name);
                     break; // No more params after &rest
                 } else {
                     return Err(LispError::Generic(
@@ -118,7 +126,9 @@ pub(super) fn make_macro(
                     ));
                 }
             } else {
-                params_vec.push(s.borrow().name.clone());
+                let name = s.borrow().name.clone();
+                check_param_name(&name, "macro")?;
+                params_vec.push(name);
             }
         } else {
             return Err(LispError::Generic(

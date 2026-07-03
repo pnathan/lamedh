@@ -468,6 +468,8 @@ pub enum BuiltinFunc {
     Prin1,
     Princ,
     Terpri,
+    // Process control: (exit [code]) terminates the process
+    Exit,
     // Error handling
     Error,
     Errorset,

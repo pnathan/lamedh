@@ -512,6 +512,9 @@ impl Environment {
         env.set("PRINC".to_string(), LispVal::Builtin(BuiltinFunc::Princ));
         env.set("TERPRI".to_string(), LispVal::Builtin(BuiltinFunc::Terpri));
 
+        // Process control
+        env.set("EXIT".to_string(), LispVal::Builtin(BuiltinFunc::Exit));
+
         // Error handling
         env.set("ERROR".to_string(), LispVal::Builtin(BuiltinFunc::Error));
         env.set(

@@ -201,6 +201,25 @@ pub(super) fn apply(
             | BuiltinFunc::Terpri
             | BuiltinFunc::Spaces => apply_io_op(builtin, args, env),
 
+            // Process control: terminate with an optional exit code.  This is
+            // deliberately not capability-gated — ending the process is not an
+            // escape from the sandbox, and scripts/CI need it to report status
+            // (issue #241).
+            BuiltinFunc::Exit => {
+                let code = match args {
+                    [] => 0,
+                    [LispVal::Number(n)] => *n as i32,
+                    _ => {
+                        return Err(LispError::Generic(
+                            "exit takes an optional integer exit code".to_string(),
+                        ));
+                    }
+                };
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                std::process::exit(code);
+            }
+
             // Error handling
             BuiltinFunc::Error | BuiltinFunc::Errorset => apply_error_op(builtin, args, env),
 

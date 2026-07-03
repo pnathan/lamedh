@@ -220,8 +220,9 @@ fn compile_let(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         };
         if let LispVal::Symbol(s) = &pair[0] {
             let sb = s.borrow();
-            if sb.is_dynamic {
-                // Dynamic bindings require RAII guards — fall back.
+            if sb.is_dynamic || check_bindable(&sb.name, "LET").is_err() {
+                // Dynamic bindings require RAII guards; constant/keyword
+                // targets must error via the tree-walker (#237) — fall back.
                 return Code::Interp(form.clone());
             }
             let id = sb.id;
@@ -261,7 +262,11 @@ fn compile_setq(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     let mut pairs = Vec::with_capacity(forms.len() / 2);
     for pair in forms.chunks_exact(2) {
         match &pair[0] {
-            LispVal::Symbol(s) => pairs.push((s.clone(), compile(&pair[1]))),
+            // Constant/keyword targets (T, :FOO) fall back to the tree-walker
+            // so the SETQ arm raises its "cannot rebind" error (issue #237).
+            LispVal::Symbol(s) if check_bindable(&s.borrow().name, "SETQ").is_ok() => {
+                pairs.push((s.clone(), compile(&pair[1])))
+            }
             _ => return Code::Interp(form.clone()),
         }
     }
@@ -306,7 +311,7 @@ fn compile_for(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     let var_id = match &spec[0] {
         LispVal::Symbol(s) => {
             let sb = s.borrow();
-            if sb.is_dynamic {
+            if sb.is_dynamic || check_bindable(&sb.name, "FOR").is_err() {
                 return Code::Interp(form.clone());
             }
             sb.id
