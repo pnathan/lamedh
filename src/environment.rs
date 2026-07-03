@@ -1101,7 +1101,22 @@ impl Environment {
         }
         // Lexical: walk local frames by id; the root binding is the value cell
         // of the *current namespace's* canonical symbol for this name.
-        let id = s.id;
+        //
+        // Cross-namespace fix (issue #223): when a lambda is created inside a
+        // foreign `(make-environment)`, `param_ids` are interned under that
+        // environment's SymbolTable, but the AST body symbols retain the
+        // *original* table's ids.  Detect the mismatch once here and remap to
+        // the canonical id so local-frame lookups use the right key.
+        let id = {
+            let table = self.shared.symbols.borrow();
+            match table.symbol_by_id(s.id) {
+                Some(canon) if Shared::ptr_eq(&canon, sym) => s.id,
+                _ => match table.get_symbol(&s.name) {
+                    Some(canon) => canon.borrow().id,
+                    None => s.id,
+                },
+            }
+        };
         let mut frame = self;
         loop {
             if frame.is_root() {
