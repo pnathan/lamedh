@@ -228,8 +228,8 @@ fn test_getp_non_symbol_first_arg_error() {
             "getp with number first arg should error; got: {result}"
         );
         assert!(
-            result.contains("get-p requires a symbol as its first argument"),
-            "expected 'get-p requires a symbol as its first argument'; got: {result}"
+            result.contains("expected a symbol as its first argument, got"),
+            "expected 'expected a symbol as its first argument, got'; got: {result}"
         );
     });
 }
@@ -244,8 +244,8 @@ fn test_getp_non_string_second_arg_error() {
             "getp with number second arg should error; got: {result}"
         );
         assert!(
-            result.contains("get-p requires a symbol or string as its second argument"),
-            "expected 'get-p requires a symbol or string as its second argument'; got: {result}"
+            result.contains("expected a symbol or string as its second argument, got"),
+            "expected 'expected a symbol or string as its second argument, got'; got: {result}"
         );
     });
 }
@@ -276,8 +276,8 @@ fn test_putp_non_symbol_first_arg_error() {
             "putp with number first arg should error; got: {result}"
         );
         assert!(
-            result.contains("put-p requires a symbol as its first argument"),
-            "expected 'put-p requires a symbol as its first argument'; got: {result}"
+            result.contains("expected a symbol as its first argument, got"),
+            "expected 'expected a symbol as its first argument, got'; got: {result}"
         );
     });
 }
@@ -292,8 +292,8 @@ fn test_putp_non_string_second_arg_error() {
             "putp with number second arg should error; got: {result}"
         );
         assert!(
-            result.contains("put-p requires a symbol or string as its second argument"),
-            "expected 'put-p requires a symbol or string as its second argument'; got: {result}"
+            result.contains("expected a symbol or string as its second argument, got"),
+            "expected 'expected a symbol or string as its second argument, got'; got: {result}"
         );
     });
 }

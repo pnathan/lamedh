@@ -66,8 +66,8 @@ fn test_set_flag_number_arg_error() {
             "set-flag with number should error; got: {result}"
         );
         assert!(
-            result.contains("set-flag requires a symbol or string"),
-            "expected 'set-flag requires a symbol or string'; got: {result}"
+            result.contains("expected a symbol or string, got"),
+            "expected 'expected a symbol or string, got'; got: {result}"
         );
     });
 }
@@ -82,8 +82,8 @@ fn test_clear_flag_number_arg_error() {
             "clear-flag with number should error; got: {result}"
         );
         assert!(
-            result.contains("clear-flag requires a symbol or string"),
-            "expected 'clear-flag requires a symbol or string'; got: {result}"
+            result.contains("expected a symbol or string, got"),
+            "expected 'expected a symbol or string, got'; got: {result}"
         );
     });
 }
@@ -98,8 +98,8 @@ fn test_flag_set_p_number_arg_error() {
             "flag-set-p with number should error; got: {result}"
         );
         assert!(
-            result.contains("flag-set-p requires a symbol or string"),
-            "expected 'flag-set-p requires a symbol or string'; got: {result}"
+            result.contains("expected a symbol or string, got"),
+            "expected 'expected a symbol or string, got'; got: {result}"
         );
     });
 }
@@ -408,8 +408,8 @@ fn test_shell_with_cons_arg_error() {
             "shell with cons arg should error; got: {result}"
         );
         assert!(
-            result.contains("shell arguments must be strings, symbols, or numbers"),
-            "expected 'shell arguments must be strings, symbols, or numbers'; got: {result}"
+            result.contains("arguments must be strings, symbols, or numbers, got"),
+            "expected 'arguments must be strings, symbols, or numbers, got'; got: {result}"
         );
     });
 }

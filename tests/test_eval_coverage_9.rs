@@ -119,8 +119,8 @@ fn test_rplaca_non_cons() {
             "rplaca on non-cons should error; got: {result}"
         );
         assert!(
-            result.contains("rplaca requires a cons cell"),
-            "expected 'rplaca requires a cons cell'; got: {result}"
+            result.contains("expected a cons cell as its first argument, got"),
+            "expected 'expected a cons cell as its first argument, got'; got: {result}"
         );
     });
 }
@@ -159,8 +159,8 @@ fn test_rplacd_non_cons() {
             "rplacd on non-cons should error; got: {result}"
         );
         assert!(
-            result.contains("rplacd requires a cons cell"),
-            "expected 'rplacd requires a cons cell'; got: {result}"
+            result.contains("expected a cons cell as its first argument, got"),
+            "expected 'expected a cons cell as its first argument, got'; got: {result}"
         );
     });
 }
@@ -179,8 +179,8 @@ fn test_logand_non_integer_second_arg() {
             "logand with non-integer second arg should error; got: {result}"
         );
         assert!(
-            result.contains("logand requires integer arguments"),
-            "expected 'logand requires integer arguments'; got: {result}"
+            result.contains("expected integer arguments, got"),
+            "expected 'expected integer arguments, got'; got: {result}"
         );
     });
 }

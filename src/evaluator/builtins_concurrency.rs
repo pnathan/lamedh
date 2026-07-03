@@ -45,9 +45,10 @@ pub(super) fn apply_channel_send(
     let ch = match &args[0] {
         LispVal::Channel(c) => Arc::clone(c),
         _ => {
-            return Err(LispError::Generic(
-                "channel-send: first argument must be a channel".to_string(),
-            ));
+            return Err(LispError::Generic(format!(
+                "CHANNEL-SEND: first argument must be a channel, got {}",
+                err_val(&args[0])
+            )));
         }
     };
     let serialised = crate::printer::print(&args[1]);
@@ -73,9 +74,10 @@ pub(super) fn apply_channel_recv(
     let ch = match &args[0] {
         LispVal::Channel(c) => Arc::clone(c),
         _ => {
-            return Err(LispError::Generic(
-                "channel-recv: argument must be a channel".to_string(),
-            ));
+            return Err(LispError::Generic(format!(
+                "CHANNEL-RECV: argument must be a channel, got {}",
+                err_val(&args[0])
+            )));
         }
     };
     let guard = ch
@@ -104,18 +106,19 @@ pub(super) fn apply_channel_recv_timeout(
     let ch = match &args[0] {
         LispVal::Channel(c) => Arc::clone(c),
         _ => {
-            return Err(LispError::Generic(
-                "channel-recv-timeout: first argument must be a channel".to_string(),
-            ));
+            return Err(LispError::Generic(format!(
+                "CHANNEL-RECV-TIMEOUT: first argument must be a channel, got {}",
+                err_val(&args[0])
+            )));
         }
     };
     let ms = match &args[1] {
         LispVal::Number(n) if *n >= 0 => *n as u64,
         _ => {
-            return Err(LispError::Generic(
-                "channel-recv-timeout: second argument must be a non-negative integer (ms)"
-                    .to_string(),
-            ));
+            return Err(LispError::Generic(format!(
+                "CHANNEL-RECV-TIMEOUT: second argument must be a non-negative integer (ms), got {}",
+                err_val(&args[1])
+            )));
         }
     };
     let timeout = std::time::Duration::from_millis(ms);

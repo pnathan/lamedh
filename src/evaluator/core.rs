@@ -61,9 +61,10 @@ pub(super) fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
         current = cdr;
     }
     if *current != LispVal::Nil {
-        return Err(LispError::Generic(
-            "list_to_vec: not a proper list".to_string(),
-        ));
+        return Err(LispError::Generic(format!(
+            "list_to_vec: not a proper list, got tail {}",
+            err_val(current)
+        )));
     }
     Ok(vec)
 }
@@ -88,10 +89,11 @@ pub(super) fn proper_list_len(list: &LispVal) -> Result<usize, LispError> {
                 len += 1;
                 current = cdr;
             }
-            _ => {
-                return Err(LispError::Generic(
-                    "length: argument must be a proper list".to_string(),
-                ));
+            other => {
+                return Err(LispError::Generic(format!(
+                    "length: argument must be a proper list, got tail {}",
+                    err_val(other)
+                )));
             }
         }
     }
@@ -117,9 +119,10 @@ pub(super) fn eval_operands(
         cur = cdr;
     }
     if *cur != LispVal::Nil {
-        return Err(LispError::Generic(
-            "function call arguments must be a proper list".to_string(),
-        ));
+        return Err(LispError::Generic(format!(
+            "function call arguments must be a proper list, got tail {}",
+            err_val(cur)
+        )));
     }
     Ok(out)
 }
