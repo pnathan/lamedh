@@ -636,14 +636,14 @@ Alias for ARRAY. Creates a mutable array of n NIL-initialised elements. See ARRA
 
 **Syntax:** `(fetch array index)`
 
-Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias.
+Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias, AREF the Common-Lisp-style one.
 
 **Examples:**
 ```lisp
 (LET ((A (ARRAY 3))) (STORE A 1 (QUOTE HELLO)) (FETCH A 1))  ; => HELLO
 ```
 
-**See also:** ARRAY-FETCH, STORE, ARRAY, ARRAY-LENGTH
+**See also:** ARRAY-FETCH, AREF, STORE, ARRAY, ARRAY-LENGTH
 
 ---
 
@@ -665,14 +665,14 @@ Alias for FETCH. Returns the element of array at 0-based index. See FETCH for fu
 
 **Syntax:** `(store array index value)`
 
-Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias. Mutation is in-place: all references to the same array see the change.
+Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change, including inside a defun-typed body (issue #216). Two scoped exceptions: an array nested inside another array or a struct does not write back through the outer object (only top-level flat arrays of scalars do); and passing the same array as two distinct arguments to one defun-typed call is last-writer-wins in argument order, not simultaneous true aliasing.
 
 **Examples:**
 ```lisp
 (LET ((A (ARRAY 3))) (STORE A 0 99) (FETCH A 0))  ; => 99
 ```
 
-**See also:** ARRAY-STORE, FETCH, ARRAY, ARRAY-LENGTH
+**See also:** ARRAY-STORE, ASET, FETCH, ARRAY, ARRAY-LENGTH
 
 ---
 
@@ -1637,6 +1637,24 @@ Defines a named function with optional docstring.
 
 ---
 
+### DEFUN*
+
+**Type:** `VAU`
+
+**Syntax:** `(defun* name [docstring] params... [return-type] body...)`
+
+Recommended default function definition form. Tries HM type inference automatically and compiles a native typed edition when the body is a fully-inferable typed island; otherwise falls back transparently to an ordinary lambda. Params may be classic ((a b)), flat bare (a b), or typed ((x int64)); an optional bare type keyword after the params pins the return type, and any unspecified type is inferred. Emits a note on stderr when types were inferred and compiled.
+
+**Examples:**
+```lisp
+(DEFUN* SQ (X) (* X X))  ; => SQ
+(DEFUN* ADD (X INT64) (Y INT64) (+ X Y))  ; => ADD
+```
+
+**See also:** DEFUN, DEFUN-TYPED, DEFUN-TYPED-OPT, CHECK-TYPE, LAMBDA
+
+---
+
 ### DEFMACRO
 
 **Type:** `SPECIAL-FORM`
@@ -1735,6 +1753,103 @@ In Lamedh the $VAU alias is also recognised (the dollar sign is idiomatic Kernel
 ```
 
 **See also:** DEFEXPR, DEFMACRO, LAMBDA, EVAL, THE-ENVIRONMENT, MAKE-ENVIRONMENT
+
+---
+
+### MACRO
+
+**Type:** `SPECIAL-FORM`
+
+**Syntax:** `(macro (params...) body...)`
+
+Anonymous macro constructor: evaluates to a macro VALUE (the macro counterpart of LAMBDA). Because operator dispatch resolves the head symbol through the lexical environment, a name locally bound to a macro value is used as an operator in that scope. Backs MACROLET.
+
+**Examples:**
+```lisp
+(LET ((SQ (MACRO (X) (LIST (QUOTE *) X X)))) (SQ 6))  ; => 36
+```
+
+**See also:** LAMBDA, FEXPR, VAU, DEFMACRO, MACROLET
+
+---
+
+### FEXPR
+
+**Type:** `SPECIAL-FORM`
+
+**Syntax:** `(fexpr (params...) body...)`
+
+Anonymous fexpr constructor: evaluates to a fexpr VALUE whose operands reach the body unevaluated (the fexpr counterpart of LAMBDA). Backs FEXPRLET.
+
+**Examples:**
+```lisp
+(LET ((Q (FEXPR (A) (CAR A)))) (Q (+ 1 2)))  ; => (+ 1 2)
+```
+
+**See also:** LAMBDA, MACRO, VAU, DEFEXPR, FEXPRLET
+
+---
+
+### FLET
+
+**Type:** `MACRO`
+
+**Syntax:** `(flet ((name (params...) body...) ...) body...)`
+
+Locally bind named functions (non-recursive) for the extent of the body. Parallel LET semantics: clauses do not see one another. A local binding shadows a global operator of the same name only within the body.
+
+**Examples:**
+```lisp
+(FLET ((SQ (X) (* X X))) (SQ 7))  ; => 49
+```
+
+**See also:** LET, LAMBDA, MACROLET, FEXPRLET, VAULET
+
+---
+
+### MACROLET
+
+**Type:** `MACRO`
+
+**Syntax:** `(macrolet ((name (params...) body...) ...) body...)`
+
+Locally bind macros for the extent of the body. Each clause is expanded at call sites like a DEFMACRO definition. Parallel LET semantics: clauses do not see one another.
+
+**Examples:**
+```lisp
+(MACROLET ((TWICE (E) (LIST (QUOTE PROGN) E E))) (TWICE 1))  ; => 1
+```
+
+**See also:** MACRO, DEFMACRO, FLET, FEXPRLET, VAULET
+
+---
+
+### FEXPRLET
+
+**Type:** `MACRO`
+
+**Syntax:** `(fexprlet ((name (params...) body...) ...) body...)`
+
+Locally bind fexprs (unevaluated-argument operatives) for the extent of the body. Operands reach the body unevaluated, as with DEFEXPR. Parallel LET semantics.
+
+**Examples:**
+```lisp
+(FEXPRLET ((Q (A) (CAR A))) (Q (+ 1 2)))  ; => (+ 1 2)
+```
+
+**See also:** FEXPR, DEFEXPR, FLET, MACROLET, VAULET
+
+---
+
+### VAULET
+
+**Type:** `MACRO`
+
+**Syntax:** `(vaulet ((name (operands env) body...) ...) body...)`
+
+Locally bind vau operatives for the extent of the body. Each clause's OPERANDS receives the unevaluated operand list and ENV the caller's environment, as with VAU. Parallel LET semantics.
+
+**See also:** VAU, $VAU, FLET, MACROLET, FEXPRLET
 
 ---
 
