@@ -39,7 +39,8 @@ The codebase follows a classic interpreter architecture with four main modules:
    - Parses s-expressions, atoms, strings, numbers, floats
    - Handles reader macros: quote ('), quasiquote (`), unquote (,)
    - Character literals: `'c'` reads as `LispVal::Char(b)` where `b` is the byte (0–255). `Char` is a distinct type: `charp` is its predicate, `make-char` converts integer to Char, `char-code` accepts both Char and one-character string and returns the integer code point, `code-char` takes an integer and returns a one-character string. In arithmetic and numeric comparison, Char promotes to i64 (like C integer promotion). The printer round-trips chars as `'c'`. Escapes `\n \t \r \\ \' \0`. Tried before the quote macro: `'a'` is a char, `'a` stays `(quote a)`. Numbers are decimal, Lisp 1.5 octal (`177Q`), or assembly-style hex with an `H` suffix (`FFh` = 255, case-insensitive; a trailing identifier char disqualifies it so `ffhello` stays a symbol).
-   - Supports dotted pairs and comments
+   - Supports dotted pairs, line comments (`;`), nesting block comments (`#| ... |#`), CL radix literals (`#x1F`, `#b101`, `#o17`), and a leading `#!` shebang line (ignored, so `.lisp` files can be executable scripts)
+   - Parse errors carry 1-based line/column positions; `read_next`/`skip_ws`/`is_incomplete`/`position_of` expose an incremental API used by the REPL (continuation prompts) and `load_file` (partial loads with `file:line:col` errors)
    - All symbols are interned and case-normalized to uppercase
 
 2. **evaluator.rs**: Evaluation engine
@@ -47,7 +48,9 @@ The codebase follows a classic interpreter architecture with four main modules:
    - Non-local exit: `CATCH`/`THROW` (tag-based) and `BLOCK`/`RETURN-FROM` (name-based) use `LispError::Throw`/`LispError::ReturnFrom`; `UNWIND-PROTECT` runs cleanup forms regardless of how the body exits. `ERRORSET` (a function taking a quoted form) traps ordinary errors only and lets control-flow signals pass through.
    - `FOR`/`WHILE` are fast iterative loops: `(for (var start end [step]) body...)` (inclusive integer range, one reused frame, in-place counter mutation) and `(while cond body...)`
    - Applies built-in functions and user-defined lambdas/fexprs/macros
-   - Supports fexprs (unevaluated argument functions) and macros with &REST
+   - Supports fexprs (unevaluated argument functions) and macros with &REST. `&REST` is the only lambda-list keyword; `&OPTIONAL`/`&KEY` are rejected at definition time (#242)
+   - `T` and keywords cannot be rebound or used as binding/parameter names — SETQ/DEF/LET/LET*/PROG/FOR and lambda lists all reject them (#237)
+   - `apply` spreads leading arguments CL-style: `(apply f a b '(c d))` calls `(f a b c d)`
    - PROG provides labeled statements with GO/RETURN for non-local control flow
    - Quasiquotation with backtick (`) and unquote (,) for code generation
 
@@ -77,9 +80,11 @@ The codebase follows a classic interpreter architecture with four main modules:
 ### Entry Points
 
 - **cli/src/main.rs**: CLI with rustyline REPL (the `lamedh-cli` crate)
-  - Automatically loads `prologue.lisp` and `lib/` directory at startup if present
-  - `-i <path>`: Load file or directory (can be used multiple times)
-  - `-s "<expr>"`: Execute single s-expression and exit
+  - Loads the embedded stdlib; `-i <path>` loads extra files/directories (can be used multiple times)
+  - `lamedh script.lisp arg1 arg2`: script mode — loads the file (shebang OK), binds the remaining args as the `*ARGV*` list, exits when done; `(exit n)` sets the exit code
+  - `-s "<expr>"`: Execute s-expression(s) and exit
+  - Batch modes (`-s`/script) exit 1 on any `-i` load failure; the REPL warns and continues
+  - REPL: incomplete input gets a ` ...>` continuation prompt; Ctrl-C cancels the current input (Ctrl-D exits); a warning is printed when a top-level form newly sets the OVERFLOW flag
 
 - **src/lib.rs**: The `lamedh` library — provides `eval_line()`, `load_file()`, `load_directory()`, `with_large_stack()` and the `LispValExtension` trait for embedders
 
@@ -97,13 +102,22 @@ The codebase follows a classic interpreter architecture with four main modules:
 - **12-control.lisp**: Control-flow macros (`when`, `unless`, `prog1`, `case`, `dolist`, `dotimes`) — non-mutating (epic #141)
 - **13-functional.lisp**: Functional list toolkit (`reduce`, `filter`, `find`, `position`, `every`/`some`, `take`/`drop`, `iota`/`range`, `zip`, `flatten`, `group-by`, combinators) — function-first arg order (Common Lisp style), matching the `map*` family
 - **14-strings.lisp**: String layer over the Rust primitives (`string-upcase`, `string-split`/`-join`, `string-trim`, `starts-with-p`, char predicates) — `foo-p` predicate naming
-- **15-sets-hash.lisp**: Set/alist/hash helpers (`union`, `intersection`, `adjoin`, `alist-get`/`-put`, `maphash`, `hash->alist`)
+- **15-sets-hash.lisp**: Set/alist/hash helpers (`union`, `intersection`, `adjoin`, `alist-get`/`-put`, `maphash`, `hash->alist`) — `maphash`/`alist-get` (and the kernel `gethash`/`delete-key!`) accept their two arguments in either order, dispatching on type (#246)
 - **16-conditions.lisp**: Condition macros over `errorset` (`ignore-errors`, `handler-case`); `catch`/`throw`, `block`/`return-from`, `unwind-protect` are kernel special forms
 - **17-arrays.lisp**: Array helpers over the array primitives (`array->list`, `list->array`, `array-map`, `array-fill`, `array-copy`, `subarray`)
 - **18-format.lisp**: `format` (CL-style subset: `~a ~s ~d ~% ~~`)
+- **19-call-graph.lisp**: Call-graph analysis (`$call-graph`, `call-graph-callees`/`-callers`)
+- **21-cl-compat.lisp**: Common Lisp compatibility layer (#245): `setf` (symbol/gethash/aref/fetch/elt/struct-accessor places), `push`/`pop`/`incf`/`decf`, `defparameter`, `remove`, `count`(`-if`), `copy-list`, `list-length`, `nreverse`, `subseq`, `elt`, string-aware `reverse`, `first`/`rest`/`second`/`third`, `rem`, `remhash`
 
 Files 06–11 and 97–99 cover builtin docs, shell helpers, vau forms, Lisp 1.5
 appendix, the testing framework, the optimizer, and the help system.
+`20-condensation.lisp` is **not** embedded in the binary — it loads only when
+the on-disk `lib/` directory is passed via `-i`.
+
+The testing framework (`10-testing.lisp`) isolates test-body errors (an
+erroring test records a failure and the run continues), `deftest` replaces a
+same-named test on re-registration, and `(exit (if (run-tests) 0 1))` gives CI
+a real exit code.
 
 **prologue.lisp**: Legacy prologue file (minimal, just sets `lisp` to `'lamedh`)
 

@@ -21,6 +21,10 @@ arbitrary precision bignums.
 (flag-set-p 'overflow)  ; Check after arithmetic that may overflow
 ```
 
+The CLI prints a warning to stderr whenever a top-level evaluation newly
+sets the `OVERFLOW` flag, so silent wraparound is visible in the REPL and
+in `-s`/script runs.
+
 ### Float Precision
 
 Floats are 64-bit IEEE 754:
@@ -45,14 +49,18 @@ Floats are 64-bit IEEE 754:
 ### Limited Operations
 
 Strings support escapes (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`), substring,
-length, character-code conversion, and value-to-string rendering. Missing
-string operations include:
+length, character-code conversion, and value-to-string rendering. The
+string layer (`lib/14-strings.lisp`) additionally provides search
+(`string-index-of`, `contains-p`, `starts-with-p`, `ends-with-p`), case
+conversion (`string-upcase`, `string-downcase`, `char-upcase`,
+`char-downcase`), comparison (`string=`, `string-lessp`), splitting and
+joining, trimming, and `string-replace`. Missing string operations
+include:
 
-- String search
-- Case conversion
 - Regular expressions
 - Locale-aware collation and Unicode normalization
-- A full Common Lisp string comparison family
+- A full Common Lisp string comparison family (case-insensitive
+  `string-equal`, `string<`, …)
 
 ---
 
@@ -161,7 +169,8 @@ Use GENSYM to avoid:
 
 ### Basic Mechanism
 
-- No stack traces
+- Parse errors carry line/column positions and file loads report
+  `file:line:column`, but runtime errors have **no stack traces**
 - No restarts
 - No full Common Lisp condition system
 
@@ -270,11 +279,11 @@ Convert to iterative with PROG:
 
 ### String Comparison
 
-Intern and use EQ:
+Use the string layer directly:
 
 ```lisp
-(defun string-equal (s1 s2)
-  (eq (intern s1) (intern s2)))
+(string= "abc" "abc")      ; => T
+(string-lessp "abc" "abd") ; => T
 ```
 
 ### Checking for Errors

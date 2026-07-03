@@ -40,7 +40,6 @@ pub(super) fn eval_defstruct(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let n_fields = fields.len();
 
     // Constructor: (make-NAME v1 v2 ...) positional, or CL-style
     // (make-NAME :field1 v1 :field2 v2 ...) keyword pairs (issue #243).
