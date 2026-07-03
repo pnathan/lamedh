@@ -100,6 +100,39 @@ fn test_eval_one_arg_still_works() {
 }
 
 #[test]
+fn test_cross_namespace_lambda_params_issue_223() {
+    let env = env_with_stdlib();
+    // Lambda created inside a foreign (make-environment) should bind params
+    // under that table's ids and resolve them correctly at call time.
+    let output = eval_line(
+        "(let ((fresh (make-environment)) (f nil)) \
+           (eval '(setq y 999) fresh) \
+           (setq f (eval '(lambda (y) y) fresh)) \
+           (funcall f 42))",
+        &env,
+    );
+    assert_eq!(output, "42", "param should shadow global, got: {output}");
+
+    // Without a pre-set global, should also work (not raise unbound).
+    let output2 = eval_line(
+        "(let ((fresh (make-environment)) (f nil)) \
+           (setq f (eval '(lambda (y) y) fresh)) \
+           (funcall f 7))",
+        &env,
+    );
+    assert_eq!(output2, "7", "param should bind, got: {output2}");
+
+    // Multi-parameter cross-namespace lambda.
+    let output3 = eval_line(
+        "(let ((fresh (make-environment)) (f nil)) \
+           (setq f (eval '(lambda (a b) (+ a b)) fresh)) \
+           (funcall f 10 20))",
+        &env,
+    );
+    assert_eq!(output3, "30", "multi-param cross-ns, got: {output3}");
+}
+
+#[test]
 fn test_make_environment_bad_arg_errors() {
     let env = env_with_stdlib();
     let output = eval_line("(make-environment 42)", &env);
