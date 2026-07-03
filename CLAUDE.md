@@ -1,166 +1,138 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex and other coding agents when working with this repository. `AGENTS.md` is Codex's preferred information file; `CLAUDE.md` is kept as a compatibility symlink target.
 
 ## Project Overview
 
-**Lamedh** (ל, "Lamed") is a Lisp 1.5 implementation written in Rust. It provides a REPL and supports loading/evaluating Lisp files. The interpreter follows classic Lisp 1.5 semantics with modern extensions.
+**Lamedh** (ל, "Lamed") is an embeddable Lisp 1.5 interpreter written in Rust. It provides a reusable interpreter library, a command-line REPL/script runner, an embedded standard library, and modern extensions such as lexical closures, macros, fexprs, Kernel-style `vau` operatives, dynamic variables, sandbox capabilities, arrays, hash tables, structs, conditions, and an optional typed JIT.
 
 ## Workspace Layout
 
-The project is a Cargo workspace with two crates:
+This repository is a Cargo workspace with two primary crates:
 
-- **`lamedh`** (repo root, `src/`): the reusable interpreter **library**. Minimal dependencies: `nom` (parsing) and `smallvec` (stack-inline operand buffers); `cranelift-*` crates are optional and only active with the `jit` feature. This is what embedders depend on; it has no CLI/terminal dependencies.
-- **`lamedh-cli`** (`cli/`): the **CLI/REPL driver** binary (named `lamedh`). Depends on `lamedh`, `clap`, and `rustyline`. This is the only crate that knows about argument parsing and the terminal.
+- **`lamedh`** (repo root, `src/`): the reusable interpreter library. It owns parsing, evaluation, environments, printing, optimization, the typed JIT support, sandbox capability checks, and stdlib embedding.
+- **`lamedh-cli`** (`cli/`): the CLI/REPL driver binary, named `lamedh`. It owns argument parsing, terminal line editing, capability flags, script mode, `-i` loading, and `-s` expression execution.
 
-`default-members` is set so plain `cargo run`/`cargo build`/`cargo test` from the repo root operate on both crates (and `cargo run` launches the `lamedh` binary). The benchmark comparison crates under `benchmarks/*/rust` are `exclude`d from the workspace.
+`default-members = [".", "cli"]`, so plain `cargo build`, `cargo test`, and `cargo run` from the repo root operate on both crates, and `cargo run` launches the `lamedh` binary. Benchmark comparison crates under `benchmarks/*/rust` are excluded from the workspace and are built directly by `benchmarks/run_benchmarks.sh`.
 
 ## Build, Test, and Run Commands
 
-- **Build**: `cargo build` (whole workspace)
-- **Run REPL**: `cargo run` (launches the `lamedh` binary from `lamedh-cli`)
-- **Load file(s)**: `cargo run -- -i <file.lisp>` (can be used multiple times, also accepts directories)
-- **Execute s-expression**: `cargo run -- -s "<expression>"`
+- **Build**: `cargo build`
+- **Build without the default Cranelift JIT backend**: `cargo build --no-default-features`
+- **Run REPL**: `cargo run`
+- **Run REPL with sandbox capabilities**: `cargo run -- --capability READ-FS --capability SHELL`
+- **Load file(s) or directories before REPL/batch execution**: `cargo run -- -i <file-or-dir>` (repeatable)
+- **Execute s-expression(s)**: `cargo run -- -s "<expression>"`
+- **Run script with arguments**: `cargo run -- path/to/script.lisp arg1 arg2`
 - **Run all tests**: `cargo test`
-- **Run specific test**: `cargo test <test_name>`
-- **Run benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
+- **Run a specific test**: `cargo test <test_name>`
 - **Lint**: `cargo clippy --workspace --all-targets`
 - **Format**: `cargo fmt --all`
+- **Benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
 
-> Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before every commit; treat a clean clippy run as part of "done".
+Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before every commit; treat a clean clippy run as part of "done".
 
 ## Architecture
 
-### Core Modules (src/)
+### Core Rust Modules (`src/`)
 
-The codebase follows a classic interpreter architecture with four main modules:
+1. **`reader.rs`**: `nom`-based parser for s-expressions.
+   - Parses atoms, strings, integers, floats, lists, dotted pairs, quote, quasiquote, unquote, characters, comments, radix literals, and shebang lines.
+   - Symbols are interned and case-normalized to uppercase.
+   - Parse errors include 1-based line/column positions; incremental reader helpers are used by the REPL and file loading.
 
-1. **reader.rs**: Parser using nom combinators
-   - Parses s-expressions, atoms, strings, numbers, floats
-   - Handles reader macros: quote ('), quasiquote (`), unquote (,)
-   - Character literals: `'c'` reads as `LispVal::Char(b)` where `b` is the byte (0–255). `Char` is a distinct type: `charp` is its predicate, `make-char` converts integer to Char, `char-code` accepts both Char and one-character string and returns the integer code point, `code-char` takes an integer and returns a one-character string. In arithmetic and numeric comparison, Char promotes to i64 (like C integer promotion). The printer round-trips chars as `'c'`. Escapes `\n \t \r \\ \' \0`. Tried before the quote macro: `'a'` is a char, `'a` stays `(quote a)`. Numbers are decimal, Lisp 1.5 octal (`177Q`), or assembly-style hex with an `H` suffix (`FFh` = 255, case-insensitive; a trailing identifier char disqualifies it so `ffhello` stays a symbol).
-   - Supports dotted pairs, line comments (`;`), nesting block comments (`#| ... |#`), CL radix literals (`#x1F`, `#b101`, `#o17`), and a leading `#!` shebang line (ignored, so `.lisp` files can be executable scripts)
-   - Parse errors carry 1-based line/column positions; `read_next`/`skip_ws`/`is_incomplete`/`position_of` expose an incremental API used by the REPL (continuation prompts) and `load_file` (partial loads with `file:line:col` errors)
-   - All symbols are interned and case-normalized to uppercase
+2. **`evaluator/` and `evaluator.rs`**: evaluation engine.
+   - Implements special forms, application, macros, fexprs, `vau`, quasiquote, dynamic variables, non-local control flow, conditions, builtins, tail-call mechanics, and optional compilation bridges.
+   - Keep special forms and builtins small and prefer Lisp-layer definitions when practical.
 
-2. **evaluator.rs**: Evaluation engine
-   - Special forms: QUOTE, QUASIQUOTE, IF, COND, AND, OR, DEF, LAMBDA, FUNCTION, LABEL, DEFINE, DEFEXPR, DEFMACRO, PROGN, SETQ, PROG, RETURN, GO, FOR, WHILE, LET, UNWIND-PROTECT, CATCH, THROW, BLOCK, RETURN-FROM
-   - Non-local exit: `CATCH`/`THROW` (tag-based) and `BLOCK`/`RETURN-FROM` (name-based) use `LispError::Throw`/`LispError::ReturnFrom`; `UNWIND-PROTECT` runs cleanup forms regardless of how the body exits. `ERRORSET` (a function taking a quoted form) traps ordinary errors only and lets control-flow signals pass through.
-   - `FOR`/`WHILE` are fast iterative loops: `(for (var start end [step]) body...)` (inclusive integer range, one reused frame, in-place counter mutation) and `(while cond body...)`
-   - Applies built-in functions and user-defined lambdas/fexprs/macros
-   - Supports fexprs (unevaluated argument functions) and macros with &REST. `&REST` is the only lambda-list keyword; `&OPTIONAL`/`&KEY` are rejected at definition time (#242)
-   - `T` and keywords cannot be rebound or used as binding/parameter names — SETQ/DEF/LET/LET*/PROG/FOR and lambda lists all reject them (#237)
-   - `apply` spreads leading arguments CL-style: `(apply f a b '(c d))` calls `(f a b c d)`
-   - PROG provides labeled statements with GO/RETURN for non-local control flow
-   - Quasiquotation with backtick (`) and unquote (,) for code generation
+3. **`environment.rs`**: environment and symbol table.
+   - Provides lexical parent chains, symbol interning, property lists, dynamic/special bindings, feature/capability flags, and builtin registration.
+   - Use `Environment::with_stdlib()` for normal interpreter startup; use `new_with_builtins()` only when tests need a minimal kernel.
 
-3. **environment.rs**: Environment and symbol table
-   - Lexically scoped environments with parent chain
-   - Global symbol table (SymbolTable) for interning symbols
-   - Each symbol has a property list (plist) for metadata like docstrings
-   - Builtins registered in `new_with_builtins()`
+4. **`printer.rs`**: readable output formatting for `LispVal` values.
 
-4. **printer.rs**: Output formatting
-   - Pretty-prints LispVal types back to readable Lisp syntax
+5. **`optimizer.rs`** and **`lib/11-optimizer-vau.lisp`**: source-level optimization support.
+   - Rust exposes kernel hooks; Lisp implements most Lisp-to-Lisp optimization passes.
 
-### Data Model (lib.rs)
+6. **`jit/` and `jit.rs`**: typed JIT / native-code backend support.
+   - The default workspace build enables the `jit` feature, which pulls in Cranelift. Use `--no-default-features` for the dependency-light typed checker / closure-interpreter path.
 
-**LispVal enum**: Core data type representing all Lisp values
-- Symbol (with plist for properties like docstrings)
-- Number (i64), Float (f64), String
-- Cons cells (car/cdr pairs)
-- Nil
-- Builtin functions
-- Lambda, Fexpr, Macro (closures with captured environments)
-- HashTable (Rc<RefCell<HashMap>>)
-- Error (first-class condition: a message `String` + a `data` cons/Nil) — built with `make-error`, signalled by `error`, bound by `handler-case`
+### Data Model (`src/lib.rs`)
 
-**Environment**: Lexically scoped with parent chain. Symbols are globally interned via SymbolTable.
+`LispVal` is the central runtime value type. It includes symbols, numbers, floats, strings, chars, cons cells, nil, builtins, lambdas, fexprs, macros, hash tables, arrays, structs/extensions, first-class errors, and typed/JIT-related values. `Environment` values are shared handles around lexical/dynamic scopes and the global symbol table.
 
-### Entry Points
+The tree-walking evaluator uses large Rust stack frames for non-tail calls. Entry points that run user Lisp should use `lamedh::with_large_stack`, which spawns a 512 MiB stack thread; the CLI and test harness already do this.
 
-- **cli/src/main.rs**: CLI with rustyline REPL (the `lamedh-cli` crate)
-  - Loads the embedded stdlib; `-i <path>` loads extra files/directories (can be used multiple times)
-  - `lamedh script.lisp arg1 arg2`: script mode — loads the file (shebang OK), binds the remaining args as the `*ARGV*` list, exits when done; `(exit n)` sets the exit code
-  - `-s "<expr>"`: Execute s-expression(s) and exit
-  - Batch modes (`-s`/script) exit 1 on any `-i` load failure; the REPL warns and continues
-  - REPL: incomplete input gets a ` ...>` continuation prompt; Ctrl-C cancels the current input (Ctrl-D exits); a warning is printed when a top-level form newly sets the OVERFLOW flag
+## CLI Behavior
 
-- **src/lib.rs**: The `lamedh` library — provides `eval_line()`, `load_file()`, `load_directory()`, `with_large_stack()` and the `LispValExtension` trait for embedders
+`cli/src/main.rs` starts with `Environment::with_stdlib()`, grants any `--capability/-c` flags, binds script arguments as `*ARGV*`, loads each `-i` path, then chooses script mode, `-s` batch mode, or the REPL.
 
-### Standard Library
+Important CLI semantics:
 
-**`defun*` is the recommended default function definition form.** It attempts HM type inference automatically and falls back silently to a plain lambda when types are ambiguous. Use `defun` only when you explicitly do not want type inference to run.
+- `-i` accepts files or directories; directories load sorted `*.lisp` files.
+- Batch modes (`script.lisp` or `-s`) exit non-zero on `-i` load failures.
+- REPL mode reports `-i` load failures and continues.
+- Script mode supports a leading shebang line and exposes remaining args as `*ARGV*`.
+- `(exit n)` sets the process exit code.
+- Incomplete REPL input gets a continuation prompt; Ctrl-C cancels the current input; Ctrl-D exits.
+- Top-level integer overflow transitions print a warning and set the `OVERFLOW` flag.
 
-**lib/**: Standard library loaded at startup (numbered files loaded in order)
-- **00-core.lisp**: `defun` macro with docstring support
-- **01-list.lisp**: List utilities (`append`, `member`, `length`, `reverse`, `pairlis`, `null`)
-- **02-cxr.lisp**: CXR functions (caar, cadr, caddr, etc.) generated via `defcxr` macro
-- **03-meta.lisp**: Metaprogramming (`documentation`)
-- **04-predicates.lisp**: Type predicates (`equal`, `consp`, `listp`)
-- **05-math.lisp**: Math utilities (`<=`, `>=`, `/=`, `onep`, `minusp`, `add1`, `sub1`, `max`, `min`, `abs`)
-- **12-control.lisp**: Control-flow macros (`when`, `unless`, `prog1`, `case`, `dolist`, `dotimes`) — non-mutating (epic #141)
-- **13-functional.lisp**: Functional list toolkit (`reduce`, `filter`, `find`, `position`, `every`/`some`, `take`/`drop`, `iota`/`range`, `zip`, `flatten`, `group-by`, combinators) — function-first arg order (Common Lisp style), matching the `map*` family
-- **14-strings.lisp**: String layer over the Rust primitives (`string-upcase`, `string-split`/`-join`, `string-trim`, `starts-with-p`, char predicates) — `foo-p` predicate naming
-- **15-sets-hash.lisp**: Set/alist/hash helpers (`union`, `intersection`, `adjoin`, `alist-get`/`-put`, `maphash`, `hash->alist`) — `maphash`/`alist-get` (and the kernel `gethash`/`delete-key!`) accept their two arguments in either order, dispatching on type (#246)
-- **16-conditions.lisp**: Condition macros over `errorset` (`ignore-errors`, `handler-case`); `catch`/`throw`, `block`/`return-from`, `unwind-protect` are kernel special forms
-- **17-arrays.lisp**: Array helpers over the array primitives (`array->list`, `list->array`, `array-map`, `array-fill`, `array-copy`, `subarray`)
-- **18-format.lisp**: `format` (CL-style subset: `~a ~s ~d ~% ~~`)
-- **19-call-graph.lisp**: Call-graph analysis (`$call-graph`, `call-graph-callees`/`-callers`)
-- **21-cl-compat.lisp**: Common Lisp compatibility layer (#245): `setf` (symbol/gethash/aref/fetch/elt/struct-accessor places), `push`/`pop`/`incf`/`decf`, `defparameter`, `remove`, `count`(`-if`), `copy-list`, `list-length`, `nreverse`, `subseq`, `elt`, string-aware `reverse`, `first`/`rest`/`second`/`third`, `rem`, `remhash`
+## Sandboxing and Capabilities
 
-Files 06–11 and 97–99 cover builtin docs, shell helpers, vau forms, Lisp 1.5
-appendix, the testing framework, the optimizer, and the help system.
-`20-condensation.lisp` is **not** embedded in the binary — it loads only when
-the on-disk `lib/` directory is passed via `-i`.
+Potentially dangerous host capabilities are disabled by default. Enable them explicitly in host code with `env.enable_feature(...)` or in the CLI with `--capability`:
 
-The testing framework (`10-testing.lisp`) isolates test-body errors (an
-erroring test records a failure and the run continues), `deftest` replaces a
-same-named test on re-registration, and `(exit (if (run-tests) 0 1))` gives CI
-a real exit code.
+- `READ-FS`: read-only filesystem operations.
+- `CREATE-FS`: filesystem mutations.
+- `TEMP-FS`: temporary file/directory creation.
+- `SHELL`: shell helpers from `lib/07-shell.lisp` and related builtins.
+- `IO`: stdin-consuming read operations.
 
-**prologue.lisp**: Legacy prologue file (minimal, just sets `lisp` to `'lamedh`)
+Keep new host-facing side effects capability-gated.
 
-## Key Implementation Details
+## Standard Library (`lib/`)
 
-- **Symbol interning**: All symbols are stored once in the global SymbolTable and compared by pointer equality
-- **Property lists**: Symbols have plists for storing metadata (e.g., docstrings via GETP/PUTP)
-- **Macro expansion**: Macros support `&REST` for variadic arguments and expand before evaluation
-- **Fexprs vs Macros**: Fexprs receive unevaluated arguments directly; macros expand to code that's then evaluated
-- **PROG control flow**: PROG creates labels and uses LispError::Return/LispError::Go for non-local exits
-- **Quasiquotation**: Implemented recursively in evaluator, unquote evaluates nested expressions
+The embedded standard library is loaded by `Environment::with_stdlib()` from the compile-time `STDLIB` list in `src/lib.rs`. `20-condensation.lisp` is intentionally **not** embedded; it loads only when passed from disk, for example via `-i lib/`.
+
+Notable modules:
+
+- `00-core.lisp`: `defun`, `defun*`, `prog2`, `cset`, `csetq`.
+- `01-list.lisp`, `02-cxr.lisp`, `04-predicates.lisp`, `05-math.lisp`: core list, CXR, predicate, and math helpers.
+- `07-shell.lisp`: shell convenience layer; requires `SHELL` capability.
+- `08-vau.lisp`: Kernel-style derived forms.
+- `09-lisp15.lisp`: Lisp 1.5 appendix compatibility.
+- `10-testing.lisp`: Lisp xUnit helpers.
+- `11-optimizer-vau.lisp`: source optimizer passes.
+- `12-control.lisp` through `18-format.lisp`: control, functional, strings, sets/hash, conditions, arrays, and format helpers.
+- `19-call-graph.lisp`: call graph analysis.
+- `21-cl-compat.lisp`: Common Lisp compatibility forms such as `setf`, `push`, `pop`, `incf`, `decf`, `subseq`, and `elt`.
+- `97-doc-renderer.lisp`, `98-help-system.lisp`, `99-help-data.lisp`: REPL help/documentation.
+
+`defun*` is the recommended default function definition form when HM-style type inference should be attempted automatically. It falls back silently to a plain lambda when types are ambiguous. Use `defun` when type inference should not run.
 
 ## Optimization Philosophy
 
-**Prefer the Lisp layer; keep the Rust kernel small.** When an optimization can be
-expressed as a Lisp-to-Lisp transform, implement it as an optimizer pass in
-`lib/11-optimizer-vau.lisp` (e.g. constant folding, dead-binding removal, the
-planned frame-collapse pass) rather than growing the Rust evaluator. The kernel
-should stay a minimal set of primitives.
+Prefer the Lisp layer; keep the Rust kernel small. If an optimization can be expressed as a Lisp-to-Lisp transform, implement it as an optimizer pass in `lib/11-optimizer-vau.lisp` rather than growing the Rust evaluator.
 
-The exception is **hot-path evaluation mechanics that have no Lisp-layer
-expression** — e.g. how arguments are collected, how environment frames are
-allocated, or the in-memory size of `LispVal`. Those are intrinsically kernel
-concerns and are optimized in Rust (see the boxing of large `LispVal` variants
-and the single-allocation operand evaluation). When in doubt, ask whether the
-change could be a Lisp pass; if yes, it belongs there.
+Kernel/Rust changes are appropriate for hot-path evaluation mechanics that have no Lisp-layer expression, such as argument collection, environment-frame allocation, value representation, stack behavior, or native-code backend integration.
 
-## Testing
+## Testing Guidance
 
-Tests are organized in `tests/` directory:
-- Unit tests in individual modules (e.g., reader.rs)
-- Integration tests for language features (arithmetic, control flow, functions, lists, prog)
-- Lisp test files (e.g., docstring_test.lisp, prog_test.lisp)
+Tests live in `tests/` and module-level `#[cfg(test)]` blocks. Integration coverage includes arithmetic, lists, control flow, functions, fexprs/vau, dynamic variables, conditions, sandboxing, optimizer/compile bridge behavior, typed JIT behavior, and Lisp stdlib suites.
 
-Use `cargo test <test_name>` to run specific tests during development.
+When changing behavior:
 
-## Benchmarks
+- Add focused Rust integration tests under `tests/` for host-visible semantics.
+- Add Lisp tests when the behavior belongs to the Lisp layer or stdlib.
+- Use `cargo test <name>` for tight iteration, then run `cargo test` before finishing.
+- Run `cargo fmt --all` before committing.
+- Run `cargo clippy --workspace --all-targets` when practical; note any environment-only failures.
 
-The `benchmarks/` directory contains performance benchmarks comparing Lamedh against Rust and Python:
-- **fibonacci**: Recursive fibonacci calculation (tests function call overhead)
-- **loops**: Nested loop performance (tests iteration speed)
-- **levenshtein**: String edit distance (aspirational - tests DP and strings)
+## Coding Conventions
 
-Run benchmarks: `cd benchmarks && ./run_benchmarks.sh`
-
-See `benchmarks/README.md` for details on benchmark structure, running individual tests, and interpreting results.
+- Rust edition is 2024.
+- Do not wrap imports in `try`/`catch`-style blocks.
+- Keep CLI concerns in `cli/`; keep interpreter logic in the library crate.
+- Keep host side effects sandboxed behind explicit capability checks.
+- Preserve Lisp 1.5 compatibility unless a modern extension is clearly documented.
+- Prefer adding stdlib functionality in Lisp over adding Rust builtins unless performance, host integration, or representation access requires Rust.
+- Keep benchmark comparison crates excluded from the workspace.
