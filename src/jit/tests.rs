@@ -168,6 +168,63 @@ fn int_overflow_wraps() {
     assert_eq!(agree(&j, "g", &[i(big)]), i(big.wrapping_mul(big)));
 }
 
+/// The overflow / div-by-zero flags must agree between the native and the
+/// reference (closure) editions — not just the result values. `agree` only
+/// compares values, so a flag-only divergence (e.g. `i64::MIN % -1` setting
+/// OVERFLOW natively but not in the reference `int_bin`, issue #228) slips past
+/// it. This asserts the *flags* match across editions.
+#[test]
+fn int_bin_condition_flags_agree_across_editions() {
+    // (name, args, expect_overflow, expect_div_by_zero)
+    let cases: &[(&str, [i64; 2], bool, bool)] = &[
+        ("mul", [i64::MAX, i64::MAX], true, false),
+        ("add", [i64::MAX, 1], true, false),
+        ("sub", [i64::MIN, 1], true, false),
+        ("divv", [i64::MIN, -1], true, false), // MIN / -1 overflows
+        ("modd", [i64::MIN, -1], true, false), // MIN % -1 overflows (the #228 gap)
+        ("divv", [10, 0], false, true),        // division by zero
+        ("modd", [10, 0], false, true),        // remainder by zero
+        ("add", [2, 3], false, false),         // ordinary: no flags
+        ("divv", [10, 3], false, false),
+        ("modd", [10, 3], false, false),
+    ];
+    let j = build(&[
+        "(defun-typed (add int64) ((a int64) (b int64)) (+ a b))",
+        "(defun-typed (sub int64) ((a int64) (b int64)) (- a b))",
+        "(defun-typed (mul int64) ((a int64) (b int64)) (* a b))",
+        "(defun-typed (divv int64) ((a int64) (b int64)) (/ a b))",
+        "(defun-typed (modd int64) ((a int64) (b int64)) (mod a b))",
+    ]);
+
+    let flags_of = |j: &Jit, name: &str, args: &[i64; 2]| -> JitFlags {
+        let (_r, _u, flags) = j
+            .call_with_array_writeback(name, &[i(args[0]), i(args[1])])
+            .unwrap();
+        flags
+    };
+
+    for (name, args, want_ovf, want_dbz) in cases {
+        j.compile_all();
+        let native = flags_of(&j, name, args);
+        j.deoptimize_all();
+        let reference = flags_of(&j, name, args);
+        assert_eq!(
+            (native.overflow, native.div_by_zero),
+            (reference.overflow, reference.div_by_zero),
+            "native vs reference flags disagree for {name}{args:?}: native=({},{}) reference=({},{})",
+            native.overflow,
+            native.div_by_zero,
+            reference.overflow,
+            reference.div_by_zero,
+        );
+        assert_eq!(
+            (native.overflow, native.div_by_zero),
+            (*want_ovf, *want_dbz),
+            "unexpected flags for {name}{args:?}",
+        );
+    }
+}
+
 // --- arithmetic: float -----------------------------------------------------
 
 #[test]

@@ -469,11 +469,15 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
             }
             match env.jit_call_with_array_writeback(&name, &vals) {
                 Some(Ok((v, updated, flags))) => {
-                    if flags.div_by_zero {
-                        return Err(LispError::Generic("Division by zero".to_string()));
-                    }
+                    // Set OVERFLOW before signalling a division error: the
+                    // tree-walker evaluates left-to-right, so an inner overflow
+                    // leaves the flag observable even when a later division by
+                    // zero raises — match that ordering exactly (#228).
                     if flags.overflow {
                         env.set_flag("OVERFLOW");
+                    }
+                    if flags.div_by_zero {
+                        return Err(LispError::Generic("Division by zero".to_string()));
                     }
                     apply_array_writeback(args, updated, env);
                     Ok(typed_to_lispval(v, &ret, env))
@@ -514,11 +518,15 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                     && let Some(Ok((v, updated, flags))) =
                         env.jit_call_with_array_writeback(&name, &vals)
                 {
-                    if flags.div_by_zero {
-                        return Err(LispError::Generic("Division by zero".to_string()));
-                    }
+                    // Set OVERFLOW before signalling a division error: the
+                    // tree-walker evaluates left-to-right, so an inner overflow
+                    // leaves the flag observable even when a later division by
+                    // zero raises — match that ordering exactly (#228).
                     if flags.overflow {
                         env.set_flag("OVERFLOW");
+                    }
+                    if flags.div_by_zero {
+                        return Err(LispError::Generic("Division by zero".to_string()));
                     }
                     apply_array_writeback(args, updated, env);
                     return Ok(typed_to_lispval(v, &ret, env));

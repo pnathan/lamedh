@@ -590,3 +590,17 @@ fn jit_min_div_neg1_wraps_and_sets_overflow() {
     assert_eq!(out, "-9223372036854775808");
     assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "T");
 }
+
+/// Issue #228 follow-up: `i64::MIN % -1` returns 0 but overflows, so it must
+/// set OVERFLOW too — matching the tree-walker's Remainder handling.
+#[test]
+fn jit_min_mod_neg1_sets_overflow() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (m int64) ((x int64) (y int64)) (mod x y))",
+        &env,
+    );
+    let out = eval_line("(m -9223372036854775808 -1)", &env);
+    assert_eq!(out, "0");
+    assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "T");
+}
