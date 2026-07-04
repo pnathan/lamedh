@@ -743,8 +743,8 @@ fn test_remprop_non_symbol_first_arg() {
             "remprop with non-symbol first arg should error; got: {result}"
         );
         assert!(
-            result.contains("remprop requires a symbol"),
-            "expected 'remprop requires a symbol'; got: {result}"
+            result.contains("REMPROP") && result.contains("symbol"),
+            "expected REMPROP symbol error; got: {result}"
         );
     });
 }
@@ -763,8 +763,8 @@ fn test_remprop_non_string_second_arg() {
             "remprop with non-string second arg should error; got: {result}"
         );
         assert!(
-            result.contains("remprop requires a symbol or string"),
-            "expected 'remprop requires a symbol or string'; got: {result}"
+            result.contains("REMPROP") && result.contains("symbol or string"),
+            "expected REMPROP symbol-or-string error; got: {result}"
         );
     });
 }
@@ -803,8 +803,8 @@ fn test_deflist_non_string_second_arg() {
             "deflist with non-string second arg should error; got: {result}"
         );
         assert!(
-            result.contains("deflist requires a symbol or string"),
-            "expected 'deflist requires a symbol or string'; got: {result}"
+            result.contains("DEFLIST") && result.contains("symbol or string"),
+            "expected DEFLIST symbol-or-string error; got: {result}"
         );
     });
 }
