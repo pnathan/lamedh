@@ -36,11 +36,13 @@
 //!    status 1 (issue #239).
 //! 5. Otherwise the REPL loop starts, using rustyline for history and
 //!    line-editing.  History persists across sessions in `~/.lamedh_history`
-//!    (loaded on startup, saved on a normal exit), and Tab completes on the
-//!    names of every symbol currently interned in the environment (builtins,
-//!    stdlib functions, and user definitions).  Incomplete input (unclosed
-//!    parens/strings) prompts for continuation lines; Ctrl-C cancels the
-//!    current input; exit with Ctrl-D or `(exit)`.
+//!    (loaded on startup, and saved after each accepted entry so it survives
+//!    `(exit)` — which exits the process from inside the evaluator — as well
+//!    as Ctrl-D), and Tab completes on the names of every symbol currently
+//!    interned in the environment (builtins, stdlib functions, and user
+//!    definitions).  Incomplete input (unclosed parens/strings) prompts for
+//!    continuation lines; Ctrl-C cancels the current input; exit with Ctrl-D
+//!    or `(exit)`.
 //!
 //! ## Cargo manifest
 //!
@@ -75,6 +77,43 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
 use std::fs;
 
+/// A character that ends a Lisp token: whitespace or a reader special char.
+/// Used both to find the token under the cursor and to reject symbol names
+/// that could not be re-typed as a single token.
+fn is_token_delimiter(c: char) -> bool {
+    c.is_whitespace() || "()'\"`,;".contains(c)
+}
+
+/// Byte offset where the token under `pos` begins: scan back from `pos` for a
+/// delimiter and start just after it (or at 0). `pos` is a rustyline cursor
+/// byte offset, always on a char boundary, so the slicing here never panics.
+fn token_start(line: &str, pos: usize) -> usize {
+    line[..pos]
+        .rfind(is_token_delimiter)
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+/// Completion candidates (lowercased, ready to insert) for `prefix` against the
+/// interned symbol `names`. Symbols are interned uppercase and the reader
+/// upcases on read, so we match case-insensitively and display lowercase.
+///
+/// Names that embed a delimiter — e.g. a symbol made via `(intern "a b")` — are
+/// dropped: inserting one would split the edit line into several tokens instead
+/// of completing a single identifier.
+fn symbol_completions(names: Vec<String>, prefix: &str) -> Vec<String> {
+    let upper_prefix = prefix.to_uppercase();
+    let mut out: Vec<String> = names
+        .into_iter()
+        .filter(|name| name.starts_with(&upper_prefix))
+        .filter(|name| !name.chars().any(is_token_delimiter))
+        .map(|name| name.to_lowercase())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// `rustyline` line-editor helper providing tab-completion over every symbol
 /// currently interned in the interpreter's global symbol table (builtins,
 /// stdlib functions, and anything the user has defined at the REPL).
@@ -101,30 +140,16 @@ impl Completer for LispHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Find the start of the current symbol by scanning backwards from
-        // `pos` for a Lisp delimiter (whitespace or a reader special char).
-        let start = line[..pos]
-            .rfind(|c: char| c.is_whitespace() || "()'\"`,;".contains(c))
-            .map(|i| i + 1)
-            .unwrap_or(0);
+        let start = token_start(line, pos);
         let prefix = &line[start..pos];
         if prefix.is_empty() {
             return Ok((pos, vec![]));
         }
-        // Symbols are interned uppercase; users type lowercase, so compare
-        // case-insensitively but display lowercase for ergonomics.
-        let upper_prefix = prefix.to_uppercase();
-        let matches: Vec<Pair> = self
-            .env
-            .all_symbol_names()
+        let matches: Vec<Pair> = symbol_completions(self.env.all_symbol_names(), prefix)
             .into_iter()
-            .filter(|name| name.starts_with(&upper_prefix))
-            .map(|name| {
-                let display = name.to_lowercase();
-                Pair {
-                    display: display.clone(),
-                    replacement: display,
-                }
+            .map(|display| Pair {
+                display: display.clone(),
+                replacement: display,
             })
             .collect();
         Ok((start, matches))
@@ -324,6 +349,14 @@ fn run(args: Args) {
                 }
                 let input = std::mem::take(&mut buffer);
                 let _ = rl.add_history_entry(input.as_str());
+                // Persist eagerly, before evaluating: `(exit)` calls
+                // `std::process::exit` from inside the evaluator and never
+                // returns to the post-loop save, so a deferred-only save would
+                // silently drop the whole session's history. Saving here also
+                // survives a crash or non-local exit mid-eval.
+                if let Some(ref path) = history_path {
+                    let _ = rl.save_history(path);
+                }
                 let had_overflow = env.flag_set("OVERFLOW");
                 match eval_all(&input, &env) {
                     Ok(results) => {
@@ -356,5 +389,52 @@ fn run(args: Args) {
 
     if let Some(ref path) = history_path {
         let _ = rl.save_history(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{symbol_completions, token_start};
+
+    #[test]
+    fn token_start_finds_identifier_boundary() {
+        assert_eq!(token_start("de", 2), 0);
+        assert_eq!(token_start("(de", 3), 1);
+        assert_eq!(token_start("(foo de", 7), 5);
+        assert_eq!(token_start("(foo 'de", 8), 6); // quote is a delimiter
+        assert_eq!(token_start("", 0), 0);
+        // A multibyte char before an ASCII-boundary cursor must not panic.
+        assert_eq!(token_start("(déf", "(déf".len()), 1);
+    }
+
+    #[test]
+    fn completions_match_prefix_case_insensitively_and_lowercase() {
+        let names = vec![
+            "DEFUN".to_string(),
+            "DEFMACRO".to_string(),
+            "CAR".to_string(),
+        ];
+        let got = symbol_completions(names, "de");
+        assert_eq!(got, vec!["defmacro".to_string(), "defun".to_string()]);
+    }
+
+    #[test]
+    fn completions_skip_names_with_embedded_delimiters() {
+        // A symbol made via (intern "foo bar") must never be offered — inserting
+        // it would split the edit line into two tokens.
+        let names = vec![
+            "FOO BAR".to_string(), // embedded space
+            "FOO".to_string(),
+            "FOO(X".to_string(),  // embedded delimiter
+            "FOO\"Q".to_string(), // embedded quote
+        ];
+        let got = symbol_completions(names, "foo");
+        assert_eq!(got, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn completions_empty_when_no_match() {
+        let names = vec!["CAR".to_string(), "CDR".to_string()];
+        assert!(symbol_completions(names, "zzz").is_empty());
     }
 }
