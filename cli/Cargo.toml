@@ -14,6 +14,7 @@ doc = false
 lamedh = { path = "..", default-features = false }
 rustyline = "14.0.0"
 clap = { version = "4.5.4", features = ["derive"] }
+dirs = "6"
 
 [features]
 default = ["jit"]

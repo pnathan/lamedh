@@ -35,9 +35,12 @@
 //!    the process exits.  In these batch modes any load error exits with
 //!    status 1 (issue #239).
 //! 5. Otherwise the REPL loop starts, using rustyline for history and
-//!    line-editing.  Incomplete input (unclosed parens/strings) prompts for
-//!    continuation lines; Ctrl-C cancels the current input; exit with Ctrl-D
-//!    or `(exit)`.
+//!    line-editing.  History persists across sessions in `~/.lamedh_history`
+//!    (loaded on startup, saved on a normal exit), and Tab completes on the
+//!    names of every symbol currently interned in the environment (builtins,
+//!    stdlib functions, and user definitions).  Incomplete input (unclosed
+//!    parens/strings) prompts for continuation lines; Ctrl-C cancels the
+//!    current input; exit with Ctrl-D or `(exit)`.
 //!
 //! ## Cargo manifest
 //!
@@ -55,6 +58,7 @@
 //! lamedh    = { path = "..", default-features = false }
 //! rustyline = "14.0.0"
 //! clap      = { version = "4.5.4", features = ["derive"] }
+//! dirs      = "6"
 //!
 //! [features]
 //! default = ["jit"]
@@ -63,9 +67,69 @@
 
 use clap::Parser;
 use lamedh::{Shared, environment::Environment, eval_all, load_directory, load_file, printer};
-use rustyline::DefaultEditor;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{Context, Helper};
 use std::fs;
+
+/// `rustyline` line-editor helper providing tab-completion over every symbol
+/// currently interned in the interpreter's global symbol table (builtins,
+/// stdlib functions, and anything the user has defined at the REPL).
+///
+/// Hinting/highlighting/validation are left at their default (no-op)
+/// implementations; only completion is customized.
+struct LispHelper {
+    env: Shared<Environment>,
+}
+
+impl Helper for LispHelper {}
+impl Hinter for LispHelper {
+    type Hint = String;
+}
+impl Highlighter for LispHelper {}
+impl Validator for LispHelper {}
+
+impl Completer for LispHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // Find the start of the current symbol by scanning backwards from
+        // `pos` for a Lisp delimiter (whitespace or a reader special char).
+        let start = line[..pos]
+            .rfind(|c: char| c.is_whitespace() || "()'\"`,;".contains(c))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let prefix = &line[start..pos];
+        if prefix.is_empty() {
+            return Ok((pos, vec![]));
+        }
+        // Symbols are interned uppercase; users type lowercase, so compare
+        // case-insensitively but display lowercase for ergonomics.
+        let upper_prefix = prefix.to_uppercase();
+        let matches: Vec<Pair> = self
+            .env
+            .all_symbol_names()
+            .into_iter()
+            .filter(|name| name.starts_with(&upper_prefix))
+            .map(|name| {
+                let display = name.to_lowercase();
+                Pair {
+                    display: display.clone(),
+                    replacement: display,
+                }
+            })
+            .collect();
+        Ok((start, matches))
+    }
+}
 
 /// Command-line arguments for the `lamedh` binary.
 ///
@@ -208,14 +272,30 @@ fn run(args: Args) {
         return;
     }
 
-    // If no script and no -s flag, start REPL
-    let mut rl = match DefaultEditor::new() {
+    // If no script and no -s flag, start REPL. Configure history (persisted
+    // across sessions to ~/.lamedh_history) and tab-completion over every
+    // symbol currently interned in the environment.
+    let config = match rustyline::Config::builder().max_history_size(1000) {
+        Ok(builder) => builder.build(),
+        Err(e) => {
+            eprintln!("Failed to configure line editor: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut rl = match rustyline::Editor::with_config(config) {
         Ok(editor) => editor,
         Err(e) => {
             eprintln!("Failed to initialize line editor: {e}");
             std::process::exit(1);
         }
     };
+    rl.set_helper(Some(LispHelper { env: env.clone() }));
+
+    let history_path = dirs::home_dir().map(|p| p.join(".lamedh_history"));
+    if let Some(ref path) = history_path {
+        let _ = rl.load_history(path);
+    }
+
     println!("Lamed (ל) Lisp 1.5");
     println!("Press Ctrl+D or type (exit) to quit; Ctrl+C cancels the current input");
 
@@ -272,5 +352,9 @@ fn run(args: Args) {
                 break;
             }
         }
+    }
+
+    if let Some(ref path) = history_path {
+        let _ = rl.save_history(path);
     }
 }
