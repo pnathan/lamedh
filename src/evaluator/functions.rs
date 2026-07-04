@@ -6,6 +6,26 @@ pub(super) fn make_lambda(
     body: &LispVal,
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
+    // Compile the body once at definition time for the fast execute path.
+    let compiled_body = super::compile::compile(body);
+    build_lambda(params, body, compiled_body, env)
+}
+
+/// Construct a [`crate::Lambda`] from `params`/`body` and an already-compiled
+/// body, capturing `env` as the closure's definition environment.
+///
+/// This is `make_lambda` minus the `compile` step: the compiled body is
+/// supplied by the caller so that a lambda literal embedded in a compiled
+/// function body (`Code::MakeLambda`) can reuse a body compiled once at the
+/// enclosing definition's compile time instead of recompiling it on every
+/// construction (issue #233).
+#[inline(never)]
+pub(super) fn build_lambda(
+    params: &LispVal,
+    body: &LispVal,
+    compiled_body: Shared<crate::Code>,
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
     let mut rest_param = None;
@@ -48,8 +68,6 @@ pub(super) fn make_lambda(
     let rest_param_id: Option<u32> = rest_param
         .as_ref()
         .map(|name| env.intern_symbol(name).borrow().id);
-    // Compile the body once at definition time for the fast execute path.
-    let compiled_body = super::compile::compile(body);
     Ok(LispVal::Lambda(Box::new(crate::Lambda {
         params: params_vec,
         rest_param,

@@ -90,8 +90,9 @@ fn compile_cons(car: &Shared<LispVal>, rest: &Shared<LispVal>, form: &LispVal) -
                 Some(SpecialForm::UnwindProtect) => compile_unwind_protect(rest, form),
                 Some(SpecialForm::While) => compile_while(rest, form),
                 Some(SpecialForm::For) => compile_for(rest, form),
+                Some(SpecialForm::Lambda) => compile_lambda(rest, form),
                 Some(_) => {
-                    // All other special forms (lambda, defmacro, catch, prog, …):
+                    // All other special forms (defmacro, catch, prog, …):
                     // fall back to the tree-walker.
                     Code::Interp(form.clone())
                 }
@@ -335,6 +336,45 @@ fn compile_for(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     }
 }
 
+/// Compile a `(lambda (params…) body…)` literal.
+///
+/// The body is compiled **once** here (at the enclosing definition's compile
+/// time) into a [`Code::MakeLambda`] node.  Executing that node only builds the
+/// closure — capturing the current environment and interning parameter ids —
+/// and reuses this pre-compiled body, instead of handing the literal back to
+/// the tree-walker (which re-ran `compile` on every call before issue #233).
+///
+/// The pre-compiled body mirrors what `make_lambda`'s `compile(final_body)`
+/// would produce: a single body expression compiles directly; multiple
+/// expressions become a `Code::Seq` (identical to compiling a `PROGN` wrapper).
+fn compile_lambda(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
+    use crate::Code;
+    // rest = (params . body_list)
+    let LispVal::Cons {
+        car: params,
+        cdr: body_list,
+    } = rest.as_ref()
+    else {
+        return Code::Interp(form.clone());
+    };
+    let body_forms = match safe_list_to_vec(body_list) {
+        // An empty or dotted body is a malformed lambda — let the tree-walker
+        // produce the canonical error message.
+        Some(v) if !v.is_empty() => v,
+        _ => return Code::Interp(form.clone()),
+    };
+    let compiled_body = if body_forms.len() == 1 {
+        compile(&body_forms[0])
+    } else {
+        Shared::new(Code::Seq(body_forms.iter().map(compile).collect()))
+    };
+    Code::MakeLambda {
+        params: params.as_ref().clone(),
+        body_forms,
+        compiled_body,
+    }
+}
+
 /// Compile a generic function call `(head arg1 … argN)`.
 fn compile_call(head: &LispVal, rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     use crate::Code;
@@ -399,6 +439,29 @@ pub(super) fn exec_step(
                 return Ok(TcoStep::Done(eval(&value, env)));
             }
             Ok(TcoStep::Done(Ok(value)))
+        }
+
+        Code::MakeLambda {
+            params,
+            body_forms,
+            compiled_body,
+        } => {
+            // Reconstruct the same raw body form `make_lambda` would build (a
+            // lone expression, or a PROGN wrapper for several) so the closure's
+            // introspectable `body` matches the tree-walker exactly — then
+            // build it with the pre-compiled body, skipping recompilation.
+            let final_body = if body_forms.len() == 1 {
+                body_forms[0].clone()
+            } else {
+                let progn_sym = LispVal::Symbol(env.intern_symbol("PROGN"));
+                vec_to_list([vec![progn_sym], body_forms.clone()].concat())
+            };
+            Ok(TcoStep::Done(super::functions::build_lambda(
+                params,
+                &final_body,
+                compiled_body.clone(),
+                env,
+            )))
         }
 
         // Fallback: hand the original AST form to the tree-walker side of the
