@@ -1056,6 +1056,21 @@ impl Environment {
         self.shared.symbols.borrow().all_symbols()
     }
 
+    /// Return the (uppercased, canonical) names of every interned symbol.
+    ///
+    /// Convenience wrapper over [`Environment::all_symbols`] for callers that
+    /// only need names — e.g. REPL tab-completion — and don't want to deal
+    /// with borrowing each symbol cell themselves.
+    pub fn all_symbol_names(&self) -> Vec<String> {
+        self.shared
+            .symbols
+            .borrow()
+            .all_symbols()
+            .iter()
+            .map(|sym| sym.borrow().name.clone())
+            .collect()
+    }
+
     /// Return `true` if `name` is bound anywhere in the lexical chain.
     pub fn is_bound(&self, name: &str) -> bool {
         self.get(name).is_some()
