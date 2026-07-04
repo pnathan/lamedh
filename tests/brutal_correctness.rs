@@ -229,7 +229,7 @@ impl OVal {
 /// The reference oracle: interpret `e` with `scope` (name→value) over the whole
 /// program `prog` (so `Call`s resolve to earlier functions). Semantics mirror
 /// `jit::eval_core` exactly: wrapping integer arithmetic, `/`/`mod` by zero ⇒ 0,
-/// truncating `mod` (`checked_rem`), short-circuit `and`/`or`.
+/// `MIN/-1` wraps (div) / yields 0 (mod), short-circuit `and`/`or`.
 fn oracle(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> OVal {
     match e {
         E::LitI(n) => OVal::I(*n),
@@ -248,8 +248,20 @@ fn oracle(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> OVal {
                 IBin::Add => x.wrapping_add(y),
                 IBin::Sub => x.wrapping_sub(y),
                 IBin::Mul => x.wrapping_mul(y),
-                IBin::Div => x.checked_div(y).unwrap_or(0),
-                IBin::Mod => x.checked_rem(y).unwrap_or(0),
+                IBin::Div => {
+                    if y == 0 {
+                        0
+                    } else {
+                        x.wrapping_div(y)
+                    }
+                }
+                IBin::Mod => {
+                    if y == 0 || (x == i64::MIN && y == -1) {
+                        0
+                    } else {
+                        x % y
+                    }
+                }
             }),
             (OVal::F(x), OVal::F(y)) => OVal::F(match op {
                 IBin::Add => x + y,

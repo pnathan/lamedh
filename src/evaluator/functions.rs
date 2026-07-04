@@ -450,7 +450,13 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
                 vals.push(lispval_to_typed(a, ty).map_err(LispError::Generic)?);
             }
             match env.jit_call_with_array_writeback(&name, &vals) {
-                Some(Ok((v, updated))) => {
+                Some(Ok((v, updated, flags))) => {
+                    if flags.div_by_zero {
+                        return Err(LispError::Generic("Division by zero".to_string()));
+                    }
+                    if flags.overflow {
+                        env.set_flag("OVERFLOW");
+                    }
                     apply_array_writeback(args, updated, env);
                     Ok(typed_to_lispval(v, &ret, env))
                 }
@@ -487,8 +493,15 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                     }
                 }
                 if fits
-                    && let Some(Ok((v, updated))) = env.jit_call_with_array_writeback(&name, &vals)
+                    && let Some(Ok((v, updated, flags))) =
+                        env.jit_call_with_array_writeback(&name, &vals)
                 {
+                    if flags.div_by_zero {
+                        return Err(LispError::Generic("Division by zero".to_string()));
+                    }
+                    if flags.overflow {
+                        env.set_flag("OVERFLOW");
+                    }
                     apply_array_writeback(args, updated, env);
                     return Ok(typed_to_lispval(v, &ret, env));
                 }

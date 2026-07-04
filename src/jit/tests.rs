@@ -147,14 +147,14 @@ fn int_div_by_zero_is_zero_not_panic() {
 fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
     // `i64::MIN / -1` and `i64::MIN % -1` overflow signed division and trap
     // (SIGFPE) on hardware `sdiv`/`srem`. The reference editions use
-    // `checked_div`/`checked_rem(...).unwrap_or(0)` ⇒ `0`; every edition
+    // `wrapping_div` (sets OVERFLOW flag); mod yields 0. Every edition
     // (interpreter, closure, and the native Cranelift backend under
     // `--features jit`) must match without faulting.
     let j = build(&[
         "(defun-typed (d int64) ((a int64) (b int64)) (/ a b))",
         "(defun-typed (m int64) ((a int64) (b int64)) (mod a b))",
     ]);
-    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(-1)]), i(0));
+    assert_eq!(agree(&j, "d", &[i(i64::MIN), i(-1)]), i(i64::MIN));
     assert_eq!(agree(&j, "m", &[i(i64::MIN), i(-1)]), i(0));
     // Sanity: ordinary division around the boundary still works.
     assert_eq!(agree(&j, "d", &[i(i64::MIN), i(1)]), i(i64::MIN));
@@ -491,7 +491,7 @@ fn array_out_of_bounds_is_panic_free() {
 fn call_with_array_writeback_reports_post_call_array_contents() {
     let j =
         build(&["(defun-typed (bump int64) ((a (array int64))) (store a 0 (+ (fetch a 0) 1)))"]);
-    let (result, updated) = j
+    let (result, updated, _flags) = j
         .call_with_array_writeback("BUMP", &[ints(&[10, 20, 30])])
         .unwrap();
     assert_eq!(result, i(11));
@@ -499,7 +499,7 @@ fn call_with_array_writeback_reports_post_call_array_contents() {
 
     // A non-array argument must report `None` (not eligible).
     let j2 = build(&["(defun-typed (sq int64) ((x int64)) (* x x))"]);
-    let (r2, u2) = j2.call_with_array_writeback("SQ", &[i(5)]).unwrap();
+    let (r2, u2, _) = j2.call_with_array_writeback("SQ", &[i(5)]).unwrap();
     assert_eq!(r2, i(25));
     assert_eq!(u2, vec![None]);
 }
@@ -533,7 +533,7 @@ fn array_writeback_sees_mutations_from_the_whole_tail_call_chain() {
         .unwrap(),
     )
     .unwrap();
-    let (result, updated) = j
+    let (result, updated, _) = j
         .call_with_array_writeback("F216", &[ints(&[1, 2, 3])])
         .unwrap();
     assert_eq!(result, i(99));
