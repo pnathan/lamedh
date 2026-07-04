@@ -74,8 +74,8 @@ use self::types::*;
 pub use self::registry::{Jit, TypedFn};
 pub use self::runtime::{TraceStep, core_node_count, verify_core};
 pub use self::types::{
-    Analysis, BinOp, CmpOp, Core, NumKind, StructDef, Ty, Value, WritebackResult, is_compileable,
-    ty_name,
+    Analysis, BinOp, CmpOp, Core, JitFlags, NumKind, StructDef, Ty, Value, WritebackResult,
+    is_compileable, ty_name,
 };
 
 /// Try to parse a surface type form without a struct registry — handles scalar

@@ -550,3 +550,43 @@ fn check_type_handles_cond_and_truthiness() {
     let h = eval_line("(check-type head0)", &env);
     assert!(h.contains("(-> ((list int64)) int64)"), "got: {h}");
 }
+
+/// Issue #228: typed JIT arithmetic must set the OVERFLOW flag and signal
+/// division-by-zero errors, matching the tree-walking evaluator.
+#[test]
+fn jit_overflow_sets_flag() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (big-mul int64) ((x int64) (y int64)) (* x y))",
+        &env,
+    );
+    let out = eval_line("(big-mul 9223372036854775807 2)", &env);
+    assert_eq!(out, "-2");
+    assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "T");
+}
+
+#[test]
+fn jit_div_by_zero_errors() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (divvy int64) ((x int64) (y int64)) (/ x y))",
+        &env,
+    );
+    let out = eval_line("(divvy 10 0)", &env);
+    assert!(
+        out.contains("Division by zero"),
+        "expected div-by-zero error, got: {out}"
+    );
+}
+
+#[test]
+fn jit_min_div_neg1_wraps_and_sets_overflow() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (d int64) ((x int64) (y int64)) (/ x y))",
+        &env,
+    );
+    let out = eval_line("(d -9223372036854775808 -1)", &env);
+    assert_eq!(out, "-9223372036854775808");
+    assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "T");
+}

@@ -806,6 +806,8 @@ impl Jit {
             funcs: &self.funcs,
             arena: RefCell::new(Vec::new()),
             pending_tail: RefCell::new(None),
+            overflow: Cell::new(false),
+            div_by_zero: Cell::new(false),
         }
     }
 
@@ -866,13 +868,17 @@ impl Jit {
         let ret = f.ret.borrow().clone();
         drop(params);
         let w = f.invoke(&words, &ctx);
+        let flags = JitFlags {
+            overflow: ctx.overflow.get(),
+            div_by_zero: ctx.div_by_zero.get(),
+        };
         let result = Value::from_word(w, &ret);
         let updated = words
             .iter()
             .zip(tys.iter())
             .map(|(w, ty)| is_flat_scalar_array(ty).then(|| Value::from_word(*w, ty)))
             .collect();
-        Ok((result, updated))
+        Ok((result, updated, flags))
     }
 
     /// Convenience for callers holding `LispVal`s: maps `Number`/`Float` to
@@ -899,7 +905,7 @@ impl Jit {
         for (a, ty) in args.iter().zip(ptys.iter()) {
             vals.push(lispval_to_value(a, ty)?);
         }
-        let (result, updated) = self.call_with_array_writeback(name, &vals)?;
+        let (result, updated, _flags) = self.call_with_array_writeback(name, &vals)?;
         for (orig, upd) in args.iter().zip(updated) {
             if let (LispVal::Array(rc), Some(Value::Array(items))) = (orig, upd) {
                 // Every item here is scalar (`is_flat_scalar_array` excludes

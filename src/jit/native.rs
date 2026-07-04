@@ -645,18 +645,36 @@ impl Emitter<'_, '_, '_> {
         self.b.ins().band(ge0, lt)
     }
 
+    /// Set a flag byte in `Ctx` to 1 (branchless OR into the existing value).
+    fn set_ctx_flag(&mut self, offset: usize, flag_i8: Value) {
+        let addr = self.b.ins().iadd_imm(self.ctx_ptr, offset as i64);
+        let old = self
+            .b
+            .ins()
+            .load(types::I8, MemFlagsData::trusted(), addr, 0);
+        let new = self.b.ins().bor(old, flag_i8);
+        self.b.ins().store(MemFlagsData::trusted(), new, addr, 0);
+    }
+
     fn int_bin(&mut self, op: BinOp, x: Value, y: Value) -> Value {
+        use super::runtime::Ctx;
         match op {
-            BinOp::Add => self.b.ins().iadd(x, y),
-            BinOp::Sub => self.b.ins().isub(x, y),
-            BinOp::Mul => self.b.ins().imul(x, y),
+            BinOp::Add => {
+                let (result, of) = self.b.ins().sadd_overflow(x, y);
+                self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, of);
+                result
+            }
+            BinOp::Sub => {
+                let (result, of) = self.b.ins().ssub_overflow(x, y);
+                self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, of);
+                result
+            }
+            BinOp::Mul => {
+                let (result, of) = self.b.ins().smul_overflow(x, y);
+                self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, of);
+                result
+            }
             BinOp::Div | BinOp::Mod => {
-                // `sdiv`/`srem` trap (SIGFPE) on *two* inputs: divide-by-zero
-                // and the signed-overflow case `i64::MIN / -1`. The reference
-                // editions use `checked_div(y).unwrap_or(0)` /
-                // `checked_rem(y).unwrap_or(0)`, which yield `0` for both. Guard
-                // both here (divide by a safe non-zero, then select 0) so the
-                // native edition matches and never faults.
                 let zero = self.iconst(0);
                 let one = self.iconst(1);
                 let neg_one = self.iconst(-1);
@@ -667,13 +685,18 @@ impl Emitter<'_, '_, '_> {
                 let y_is_neg1 = self.b.ins().icmp(IntCC::Equal, y, neg_one);
                 let is_overflow = self.b.ins().band(x_is_min, y_is_neg1);
                 let is_unsafe = self.b.ins().bor(is_zero, is_overflow);
+                // Set flags on Ctx
+                self.set_ctx_flag(Ctx::DIV_BY_ZERO_OFFSET, is_zero);
+                self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, is_overflow);
+                // Use safe_y=1 to avoid hardware trap
                 let safe_y = self.b.ins().select(is_unsafe, one, y);
                 let q = if matches!(op, BinOp::Div) {
                     self.b.ins().sdiv(x, safe_y)
                 } else {
                     self.b.ins().srem(x, safe_y)
                 };
-                self.b.ins().select(is_unsafe, zero, q)
+                // div-by-zero → 0; overflow (MIN/-1) → wrapping result (MIN/1=MIN for div, 0 for mod)
+                self.b.ins().select(is_zero, zero, q)
             }
         }
     }

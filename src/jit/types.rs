@@ -211,7 +211,16 @@ pub enum Value {
 /// `Some(updated_value)` when that argument's type is a flat scalar array
 /// (see [`is_flat_scalar_array`]), `None` otherwise. See
 /// `Jit::call_with_array_writeback`.
-pub type WritebackResult = Result<(Value, Vec<Option<Value>>), String>;
+/// Condition flags set by typed arithmetic during a JIT call (issue #228).
+/// The membrane reads these after the call returns and propagates them to
+/// the evaluator (OVERFLOW flag / division-by-zero error).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JitFlags {
+    pub overflow: bool,
+    pub div_by_zero: bool,
+}
+
+pub type WritebackResult = Result<(Value, Vec<Option<Value>>, JitFlags), String>;
 
 impl Value {
     /// Lower a boundary value to its runtime `u64` word for a parameter of type

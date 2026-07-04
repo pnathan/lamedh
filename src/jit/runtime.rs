@@ -26,9 +26,22 @@ pub struct Ctx<'a> {
     /// tail call (Tier 1) never touches this: it loops within the callee's
     /// own edition instead.
     pub(super) pending_tail: RefCell<Option<(usize, Vec<u64>)>>,
+    /// Set by `int_bin` when a checked integer operation overflows (issue #228).
+    /// The membrane reads this after the call returns and sets the evaluator's
+    /// `OVERFLOW` condition flag.
+    pub(super) overflow: Cell<bool>,
+    /// Set by `int_bin` when integer division or remainder by zero is attempted.
+    /// The membrane reads this and raises a `Division by zero` error.
+    pub(super) div_by_zero: Cell<bool>,
 }
 
 impl Ctx<'_> {
+    /// Byte offset of the `overflow` field from the start of `Ctx`.
+    /// Used by native codegen to store the flag without branches.
+    pub(super) const OVERFLOW_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, overflow);
+    /// Byte offset of the `div_by_zero` field from the start of `Ctx`.
+    pub(super) const DIV_BY_ZERO_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, div_by_zero);
+
     #[inline]
     pub(super) fn call(&self, id: usize, args: &[u64]) -> u64 {
         self.funcs[id].invoke(args, self)
@@ -76,13 +89,50 @@ pub(crate) unsafe extern "C" fn jit_alloc(ctx: *const core::ffi::c_void, n: u64)
     ctx.alloc_buffer(n as usize)
 }
 
-pub(super) fn int_bin(op: BinOp, x: i64, y: i64) -> i64 {
+pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
     match op {
-        BinOp::Add => x.wrapping_add(y),
-        BinOp::Sub => x.wrapping_sub(y),
-        BinOp::Mul => x.wrapping_mul(y),
-        BinOp::Div => x.checked_div(y).unwrap_or(0),
-        BinOp::Mod => x.checked_rem(y).unwrap_or(0),
+        BinOp::Add => match x.checked_add(y) {
+            Some(v) => v,
+            None => {
+                ctx.overflow.set(true);
+                x.wrapping_add(y)
+            }
+        },
+        BinOp::Sub => match x.checked_sub(y) {
+            Some(v) => v,
+            None => {
+                ctx.overflow.set(true);
+                x.wrapping_sub(y)
+            }
+        },
+        BinOp::Mul => match x.checked_mul(y) {
+            Some(v) => v,
+            None => {
+                ctx.overflow.set(true);
+                x.wrapping_mul(y)
+            }
+        },
+        BinOp::Div => {
+            if y == 0 {
+                ctx.div_by_zero.set(true);
+                0
+            } else if x == i64::MIN && y == -1 {
+                ctx.overflow.set(true);
+                x.wrapping_div(y)
+            } else {
+                x / y
+            }
+        }
+        BinOp::Mod => {
+            if y == 0 {
+                ctx.div_by_zero.set(true);
+                0
+            } else if x == i64::MIN && y == -1 {
+                0
+            } else {
+                x % y
+            }
+        }
     }
 }
 
@@ -256,7 +306,7 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
                 eval_core_nontail(b, env, ctx),
             );
             match k {
-                NumKind::I => from_i(int_bin(*op, as_i(x), as_i(y))),
+                NumKind::I => from_i(int_bin(*op, as_i(x), as_i(y), ctx)),
                 NumKind::F => from_f(float_bin(*op, as_f(x), as_f(y))),
             }
         }
@@ -418,7 +468,7 @@ pub(super) fn eval_core_traced(
             let x = eval_core_traced(a, env, ctx, depth + 1, log);
             let y = eval_core_traced(b, env, ctx, depth + 1, log);
             let r = match k {
-                NumKind::I => from_i(int_bin(*op, as_i(x), as_i(y))),
+                NumKind::I => from_i(int_bin(*op, as_i(x), as_i(y), ctx)),
                 NumKind::F => from_f(float_bin(*op, as_f(x), as_f(y))),
             };
             step!("bin", r, NO_SLOT, NO_CALLEE)
@@ -654,7 +704,7 @@ pub fn compile(core: &Core) -> Compiled {
             let (ca, cb, op) = (compile(a), compile(b), *op);
             match k {
                 NumKind::I => {
-                    Rc::new(move |e, c| from_i(int_bin(op, as_i(ca(e, c)), as_i(cb(e, c)))))
+                    Rc::new(move |e, c| from_i(int_bin(op, as_i(ca(e, c)), as_i(cb(e, c)), c)))
                 }
                 NumKind::F => {
                     Rc::new(move |e, c| from_f(float_bin(op, as_f(ca(e, c)), as_f(cb(e, c)))))
