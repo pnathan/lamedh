@@ -170,3 +170,95 @@ fn compiled_tail_call_through_macro_is_tco() {
         );
     });
 }
+
+// ─── issue #233: lambda literals in compiled bodies ──────────────────────────
+//
+// A `(lambda …)` literal inside a compiled `defun` body is now lowered to a
+// `Code::MakeLambda` node whose body is compiled once at definition time, not
+// re-compiled on every call. These tests pin the *semantics* that lowering
+// must preserve: closures still capture the runtime environment, close over
+// mutable state, nest, and take `&rest`.
+
+/// A closure returned from a compiled body captures its defining argument.
+#[test]
+fn compiled_lambda_literal_closes_over_argument() {
+    let env = env_with_stdlib();
+    eval_line("(defun adder (n) (lambda (x) (+ x n)))", &env);
+    eval_line("(def add5 (adder 5))", &env);
+    eval_line("(def add10 (adder 10))", &env);
+    // Each closure keeps its own captured `n` — no sharing/recompilation drift.
+    assert_eq!(eval_line("(funcall add5 100)", &env), "105");
+    assert_eq!(eval_line("(funcall add10 100)", &env), "110");
+    assert_eq!(eval_line("(funcall add5 1)", &env), "6");
+}
+
+/// A closure over a `let`-bound cell mutated via `setq` must see the *same*
+/// runtime cell on every call — proof the lambda captures the runtime env,
+/// not a compile-time snapshot.
+#[test]
+fn compiled_lambda_literal_closes_over_mutable_cell() {
+    let env = env_with_stdlib();
+    eval_line(
+        "(defun make-counter () (let ((c 0)) (lambda () (setq c (+ c 1)))))",
+        &env,
+    );
+    eval_line("(def ctr (make-counter))", &env);
+    assert_eq!(eval_line("(funcall ctr)", &env), "1");
+    assert_eq!(eval_line("(funcall ctr)", &env), "2");
+    assert_eq!(eval_line("(funcall ctr)", &env), "3");
+    // A second counter is independent.
+    eval_line("(def ctr2 (make-counter))", &env);
+    assert_eq!(eval_line("(funcall ctr2)", &env), "1");
+    assert_eq!(eval_line("(funcall ctr)", &env), "4");
+}
+
+/// Constructing the same closure many times in a loop yields correct results
+/// every iteration (the body is compiled once, reused each construction).
+#[test]
+fn compiled_lambda_literal_reused_in_loop() {
+    let env = env_with_stdlib();
+    eval_line(
+        "(defun sum-of-adders (n) \
+           (let ((total 0)) \
+             (for (i 1 n) (setq total (+ total (funcall (lambda (x) (* x i)) 2)))) \
+             total))",
+        &env,
+    );
+    // sum over i=1..5 of (2*i) = 2+4+6+8+10 = 30
+    assert_eq!(eval_line("(sum-of-adders 5)", &env), "30");
+}
+
+/// Nested lambda literals and a multi-expression body both lower correctly.
+#[test]
+fn compiled_lambda_literal_nested_and_multi_body() {
+    let env = env_with_stdlib();
+    eval_line(
+        "(defun make-adder-maker () (lambda (a) (lambda (b) (+ a b))))",
+        &env,
+    );
+    eval_line("(def mk (make-adder-maker))", &env);
+    eval_line("(def add3 (funcall mk 3))", &env);
+    assert_eq!(eval_line("(funcall add3 4)", &env), "7");
+
+    // Multi-expression lambda body (compiled into a Seq): side effect then value.
+    eval_line(
+        "(defun tally () (let ((n 0)) (lambda (x) (setq n (+ n x)) (* n 2))))",
+        &env,
+    );
+    eval_line("(def t1 (tally))", &env);
+    assert_eq!(eval_line("(funcall t1 5)", &env), "10");
+    assert_eq!(eval_line("(funcall t1 5)", &env), "20");
+}
+
+/// A `&rest` lambda literal built inside a compiled body collects extra args.
+#[test]
+fn compiled_lambda_literal_with_rest_param() {
+    let env = env_with_stdlib();
+    eval_line(
+        "(defun variadic-maker () (lambda (first &rest more) (cons first more)))",
+        &env,
+    );
+    eval_line("(def f (variadic-maker))", &env);
+    assert_eq!(eval_line("(funcall f 1 2 3 4)", &env), "(1 2 3 4)");
+    assert_eq!(eval_line("(funcall f 9)", &env), "(9)");
+}

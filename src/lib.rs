@@ -873,6 +873,22 @@ pub enum Code {
         step: Option<Shared<Code>>,
         body: Vec<Shared<Code>>,
     },
+    /// A `(lambda (params…) body…)` literal appearing inside a compiled body.
+    ///
+    /// The body is compiled **once**, at the enclosing definition's compile
+    /// time; each execution only constructs the [`Lambda`] value — capturing
+    /// the current environment and interning the parameter ids — and reuses
+    /// this pre-compiled body instead of recompiling it on every call
+    /// (issue #233).
+    MakeLambda {
+        /// Raw parameter list form (e.g. `(x y &REST z)`), parsed at
+        /// construction time against the running environment.
+        params: LispVal,
+        /// The lambda body expressions (the form's cdr after the params).
+        body_forms: Vec<LispVal>,
+        /// The body pre-compiled once at enclosing-compile time.
+        compiled_body: Shared<Code>,
+    },
     /// Fallback: call the tree-walking `eval` on the original AST form.
     Interp(LispVal),
 }
