@@ -318,6 +318,14 @@ struct SharedState {
     /// environment chain so a typed definition made at the REPL is visible
     /// everywhere and its compiled edition persists across calls.
     jit: SharedCell<crate::jit::Jit>,
+    /// Maximum s-expression nesting depth the evaluator-facing reader entry
+    /// points (`load_file`, `eval_str`/`eval_all`, `read-from-string`) will
+    /// parse. Defaults to the conservative [`crate::reader::DEFAULT_READER_DEPTH`]
+    /// (512, sized for stacks >= ~4 MiB); [`Environment::with_stdlib`] raises
+    /// it to 50,000 because those entry points are documented to run on the
+    /// 512 MiB [`crate::with_large_stack`] thread. Tune with
+    /// [`Environment::set_reader_depth_limit`] (issue #270).
+    reader_depth_limit: Cell<usize>,
 }
 
 impl SharedState {
@@ -329,6 +337,7 @@ impl SharedState {
             has_dynamic: Cell::new(false),
             features: SharedCell::new(HashSet::new()),
             jit: SharedCell::new(crate::jit::Jit::new()),
+            reader_depth_limit: Cell::new(crate::reader::DEFAULT_READER_DEPTH),
         }
     }
 }
@@ -999,6 +1008,16 @@ impl Environment {
     /// a compile-time bug, not a runtime condition).
     pub fn with_stdlib() -> Shared<Environment> {
         let env = Self::new_with_builtins();
+        // The interpreter entry points that consume this environment
+        // (`load_file`, `eval_str`/`eval_all`, `read-from-string`) are
+        // documented to run on the 512 MiB `with_large_stack` thread, so the
+        // reader depth limit can be far more generous than the conservative
+        // library default of 512. At the measured ~6.4 KB of native stack per
+        // nesting level (debug build; see `reader::DEFAULT_READER_DEPTH`),
+        // 50,000 levels is ~320 MB — inside the 512 MiB stack, and ~1.7x
+        // under the empirically observed crash boundary of ~84,000-90,000
+        // levels on that thread (issue #270).
+        env.set_reader_depth_limit(50_000);
         crate::load_stdlib(&env).expect("embedded stdlib should always load cleanly");
         env
     }
@@ -1514,5 +1533,28 @@ impl Environment {
     /// List enabled capabilities.
     pub fn features_list(&self) -> Vec<String> {
         self.shared.features.borrow().iter().cloned().collect()
+    }
+
+    // Reader depth limit (issue #270).
+    // Shared across the whole environment chain, like features.
+
+    /// The maximum s-expression nesting depth the evaluator-facing reader
+    /// entry points (`load_file`, `eval_str`/`eval_all`, `read-from-string`)
+    /// will parse with this environment. Defaults to
+    /// [`crate::reader::DEFAULT_READER_DEPTH`] (512);
+    /// [`Environment::with_stdlib`] raises it to 50,000 for use on the
+    /// 512 MiB [`crate::with_large_stack`] thread.
+    pub fn reader_depth_limit(&self) -> usize {
+        self.shared.reader_depth_limit.get()
+    }
+
+    /// Set the maximum reader nesting depth for this environment chain.
+    ///
+    /// Size it to the stack the interpreter runs on: parsing costs roughly
+    /// 6.4 KB of native stack per nesting level (measured, debug build), so
+    /// keep `limit * 6.4 KB` at no more than about half the available stack.
+    /// Embedders running on small threads (< 4 MiB) should *lower* this.
+    pub fn set_reader_depth_limit(&self, limit: usize) {
+        self.shared.reader_depth_limit.set(limit);
     }
 }

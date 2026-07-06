@@ -49,23 +49,70 @@ use nom::{
 
 type ParseResult<'a> = IResult<&'a str, LispVal>;
 
-fn parse_expr(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+/// Default maximum nesting depth `parse_expr` will recurse through — bounds
+/// the parser's native call-stack usage so that pathological input like tens
+/// of thousands of nested `(` or a long `'''...` chain produces a parse error
+/// instead of a native stack overflow (issue #270).
+///
+/// Chosen empirically (see the issue #270 PR for the measurement methodology):
+/// on this platform, unbounded recursion on nested-paren input crashes an
+/// 8 MiB thread at a depth of about 1300-1320 in a debug build, i.e. roughly
+/// 6.4 KB of stack per nesting level. 512 therefore leaves ~2.5x headroom on
+/// any stack of 8 MiB or more (a typical main thread).
+///
+/// **What this default does and does not protect:** callers of the plain
+/// [`read`] / [`read_all`] / [`read_next`] entry points are protected as long
+/// as they run on a stack of at least ~4 MiB (512 levels x ~6.4 KB ≈ 3.3 MiB
+/// worst case). On *smaller* stacks — e.g. a 2 MiB spawned thread, whose
+/// capacity is only ~330 levels — this default is **not** low enough; such
+/// callers must use [`read_with_depth_limit`] (or the other `_with_depth_limit`
+/// variants) with a limit sized to their stack. Conversely, callers on the
+/// 512 MiB [`crate::with_large_stack`] thread (the CLI, `load_file`,
+/// `read-from-string`) can afford a far higher limit — the evaluator-facing
+/// entry points read it from
+/// [`crate::environment::Environment::reader_depth_limit`], which
+/// [`crate::environment::Environment::with_stdlib`] raises to 50,000
+/// (~320 MB worst case, still under the 512 MiB stack; the empirical crash
+/// boundary there is ~84,000-90,000 levels).
+pub const DEFAULT_READER_DEPTH: usize = 512;
+
+/// `nom::error::ErrorKind` used as a sentinel to distinguish the "nesting too
+/// deep" failure from ordinary parse errors so [`read_next_with_depth_limit`]
+/// can render a dedicated message. Not otherwise produced by this module.
+const TOO_DEEP_KIND: nom::error::ErrorKind = nom::error::ErrorKind::TooLarge;
+
+fn too_deep_error(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    // A hard `Failure` (not `Error`): once the depth limit is hit we want to
+    // unwind immediately rather than have `alt`/`many0`/`opt` backtrack and
+    // retry other productions at the same (already too-deep) position.
+    nom::Err::Failure(nom::error::Error::new(input, TOO_DEEP_KIND))
+}
+
+/// `remaining` counts *down* from the caller-chosen depth limit: the top-level
+/// entry points pass the limit itself, each nesting production passes
+/// `remaining - 1`, and hitting zero raises the too-deep failure. Counting
+/// down (rather than up against a threaded limit) keeps the recursion to a
+/// single extra parameter.
+fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
+        if remaining == 0 {
+            return Err(too_deep_error(input));
+        }
         preceded(
             ws,
             alt((
                 parse_atom(env.clone()),
                 parse_string,
-                parse_list(env.clone()),
+                parse_list(env.clone(), remaining),
                 // Char literal 'c' before the quote reader macro: 'a' is a char,
                 // 'a (no closing quote) stays (quote a).
                 parse_char_literal,
-                parse_quoted(env.clone()),
-                parse_quasiquoted(env.clone()),
+                parse_quoted(env.clone(), remaining),
+                parse_quasiquoted(env.clone(), remaining),
                 // ,@ before , : `,@e` is splicing, `,e` is plain unquote.
-                parse_unquote_spliced(env.clone()),
-                parse_unquoted(env.clone()),
-                parse_function_shorthand(env.clone()),
+                parse_unquote_spliced(env.clone(), remaining),
+                parse_unquoted(env.clone(), remaining),
+                parse_function_shorthand(env.clone(), remaining),
             )),
         )(input)
     }
@@ -396,12 +443,12 @@ fn parse_string(input: &str) -> ParseResult<'_> {
     Ok((remaining, LispVal::String(result)))
 }
 
-fn parse_list_contents(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_list_contents(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (input, exprs) = many0(preceded(ws, parse_expr(env.clone())))(input)?;
+        let (input, exprs) = many0(preceded(ws, parse_expr(env.clone(), remaining)))(input)?;
         let (input, tail) = opt(preceded(
             preceded(ws, char('.')),
-            preceded(ws, parse_expr(env.clone())),
+            preceded(ws, parse_expr(env.clone(), remaining)),
         ))(input)?;
         if tail.is_some() && exprs.is_empty() {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -421,7 +468,7 @@ fn parse_list_contents(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult
     }
 }
 
-fn parse_list(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_list(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         // `cut` after the opening paren: once `(` is consumed no other parser
         // can apply, so a missing `)` becomes a hard Failure whose position
@@ -429,84 +476,95 @@ fn parse_list(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
         // start (issue #238).
         delimited(
             char('('),
-            parse_list_contents(env.clone()),
+            parse_list_contents(env.clone(), remaining - 1),
             preceded(ws, cut(char(')'))),
         )(input)
     }
 }
 
-fn parse_quoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_quoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     let quote_symbol = LispVal::Symbol(env.intern_symbol("QUOTE"));
     move |input: &str| {
-        map(preceded(char('\''), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(char('\''), parse_expr(env.clone(), remaining - 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(quote_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_quasiquoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_quasiquoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     let quasiquote_symbol = LispVal::Symbol(env.intern_symbol("QUASIQUOTE"));
     move |input: &str| {
-        map(preceded(char('`'), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(char('`'), parse_expr(env.clone(), remaining - 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(quasiquote_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_function_shorthand(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_function_shorthand(
+    env: Shared<Environment>,
+    remaining: usize,
+) -> impl Fn(&str) -> ParseResult {
     let function_symbol = LispVal::Symbol(env.intern_symbol("FUNCTION"));
     move |input: &str| {
-        map(preceded(tag("#'"), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(tag("#'"), parse_expr(env.clone(), remaining - 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(function_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_unquoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_unquoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     let unquote_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE"));
     move |input: &str| {
-        map(preceded(char(','), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(char(','), parse_expr(env.clone(), remaining - 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(unquote_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_unquote_spliced(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_unquote_spliced(
+    env: Shared<Environment>,
+    remaining: usize,
+) -> impl Fn(&str) -> ParseResult {
     let splice_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE-SPLICING"));
     move |input: &str| {
-        map(preceded(tag(",@"), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(tag(",@"), parse_expr(env.clone(), remaining - 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(splice_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
@@ -568,7 +626,8 @@ pub fn strip_shebang(input: &str) -> &str {
     }
 }
 
-/// Parse the next single form from `input`.
+/// Parse the next single form from `input` with the default nesting-depth
+/// limit ([`DEFAULT_READER_DEPTH`]).
 ///
 /// Returns `Ok(None)` when only whitespace/comments remain, or
 /// `Ok(Some((form, rest)))` with the remaining input on success.
@@ -580,14 +639,34 @@ pub fn read_next<'a>(
     input: &'a str,
     env: &Shared<Environment>,
 ) -> Result<Option<(LispVal, &'a str)>, (usize, String)> {
+    read_next_with_depth_limit(input, env, DEFAULT_READER_DEPTH)
+}
+
+/// Like [`read_next`], but with a caller-chosen nesting-depth limit.
+///
+/// Pick `depth_limit` from the stack the parse runs on, at roughly 6.4 KB of
+/// stack per nesting level (measured; debug build — see
+/// [`DEFAULT_READER_DEPTH`]) with at least 2x margin. Nesting beyond the limit
+/// yields a normal positioned parse error (`nesting too deep (limit N)`).
+#[allow(clippy::type_complexity)]
+pub fn read_next_with_depth_limit<'a>(
+    input: &'a str,
+    env: &Shared<Environment>,
+    depth_limit: usize,
+) -> Result<Option<(LispVal, &'a str)>, (usize, String)> {
     let rest = skip_ws(input);
     if rest.is_empty() {
         return Ok(None);
     }
-    match parse_expr(env.clone())(rest) {
+    match parse_expr(env.clone(), depth_limit)(rest) {
         Ok((rem, val)) => Ok(Some((val, rem))),
         Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
-            Err((input.len() - e.input.len(), error_detail(e.input)))
+            let detail = if e.code == TOO_DEEP_KIND {
+                format!("nesting too deep (limit {depth_limit})")
+            } else {
+                error_detail(e.input)
+            };
+            Err((input.len() - e.input.len(), detail))
         }
         Err(nom::Err::Incomplete(_)) => Err((input.len(), "incomplete input".to_string())),
     }
@@ -679,14 +758,28 @@ pub fn is_incomplete(input: &str) -> bool {
     depth > 0 || block_depth > 0
 }
 
-/// Parse a single s-expression from `input`.
+/// Parse a single s-expression from `input` with the default nesting-depth
+/// limit ([`DEFAULT_READER_DEPTH`]) — safe on any stack of ~4 MiB or more.
+/// Callers on smaller stacks should use [`read_with_depth_limit`] with a
+/// lower limit; callers on the 512 MiB [`crate::with_large_stack`] thread may
+/// use a much higher one.
 ///
 /// Symbols are interned into `env`'s symbol table and uppercased.
 /// Returns an error if the input contains trailing non-whitespace text after
 /// the first expression — use [`read_all`] to parse multiple forms.
 pub fn read(input: &str, env: &Shared<Environment>) -> Result<LispVal, String> {
+    read_with_depth_limit(input, env, DEFAULT_READER_DEPTH)
+}
+
+/// Like [`read`], but with a caller-chosen nesting-depth limit (see
+/// [`read_next_with_depth_limit`] for how to size it).
+pub fn read_with_depth_limit(
+    input: &str,
+    env: &Shared<Environment>,
+    depth_limit: usize,
+) -> Result<LispVal, String> {
     let src = strip_shebang(input);
-    match read_next(src, env) {
+    match read_next_with_depth_limit(src, env, depth_limit) {
         Ok(None) => Err("empty input".to_string()),
         Ok(Some((val, rest))) => {
             let rest = skip_ws(rest);
@@ -704,18 +797,29 @@ pub fn read(input: &str, env: &Shared<Environment>) -> Result<LispVal, String> {
     }
 }
 
-/// Parse zero or more s-expressions from `input` and return them in order.
+/// Parse zero or more s-expressions from `input` and return them in order,
+/// with the default nesting-depth limit ([`DEFAULT_READER_DEPTH`]).
 ///
 /// This is the function used for loading files and multi-expression strings.
 /// Stops at EOF; returns an error on the first malformed expression.
 pub fn read_all(input: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, String> {
+    read_all_with_depth_limit(input, env, DEFAULT_READER_DEPTH)
+}
+
+/// Like [`read_all`], but with a caller-chosen nesting-depth limit (see
+/// [`read_next_with_depth_limit`] for how to size it).
+pub fn read_all_with_depth_limit(
+    input: &str,
+    env: &Shared<Environment>,
+    depth_limit: usize,
+) -> Result<Vec<LispVal>, String> {
     let src = strip_shebang(input);
     let mut results = vec![];
     let mut current = src;
     loop {
         current = skip_ws(current);
         let form_offset = src.len() - current.len();
-        match read_next(current, env) {
+        match read_next_with_depth_limit(current, env, depth_limit) {
             Ok(None) => return Ok(results),
             Ok(Some((val, rest))) => {
                 results.push(val);
@@ -890,7 +994,7 @@ mod tests {
     fn test_parse_list() {
         let env = Shared::new(Environment::new());
         assert_eq!(
-            parse_list(env.clone())("(PLUS 1 2)"),
+            parse_list(env.clone(), DEFAULT_READER_DEPTH)("(PLUS 1 2)"),
             Ok((
                 "",
                 cons(

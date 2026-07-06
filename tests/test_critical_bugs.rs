@@ -544,7 +544,26 @@ fn test_prog_go_to_duplicate_label() {
 
 #[test]
 fn test_deeply_nested_quasiquote() {
-    // Deep but finite quasiquote nesting must evaluate on the large stack.
+    // The original bug: deep nesting crashed the process with a native stack
+    // overflow. Since issue #270 the reader bounds its recursion at
+    // `reader::DEFAULT_READER_DEPTH` (512) for the plain entry points, so
+    // nesting past the limit now yields a clean, catchable parse error
+    // instead of evaluating — and instead of crashing. Deep-but-under-the-
+    // limit nesting must still evaluate.
+    let mut s = "`".to_string();
+    for _ in 0..400 {
+        s.push_str("(a ");
+    }
+    for _ in 0..400 {
+        s.push(')');
+    }
+    let result = eval_str_big(&s);
+    assert!(
+        result.is_ok(),
+        "400-deep quasiquote should evaluate, got {result:?}"
+    );
+
+    // Past the reader depth limit: a parse error, never a crash (issue #270).
     let mut s = "`".to_string();
     for _ in 0..1000 {
         s.push_str("(a ");
@@ -552,11 +571,38 @@ fn test_deeply_nested_quasiquote() {
     for _ in 0..1000 {
         s.push(')');
     }
-
     let result = eval_str_big(&s);
+    match result {
+        Err(msg) => assert!(
+            msg.contains("nesting too deep"),
+            "expected a nesting-too-deep parse error, got: {msg}"
+        ),
+        Ok(v) => panic!("expected a parse error past the reader depth limit, got Ok({v})"),
+    }
+
+    // The original bug #13 contract — 1000-deep quasiquote evaluates on the
+    // large stack — is preserved through the configurable limit (issue #270
+    // review follow-up): an environment with a raised reader depth limit
+    // parses and evaluates it as before.
+    let mut s = "`".to_string();
+    for _ in 0..1000 {
+        s.push_str("(a ");
+    }
+    for _ in 0..1000 {
+        s.push(')');
+    }
+    let result = lamedh::with_large_stack(move || {
+        let env = Environment::new_with_builtins();
+        env.set_reader_depth_limit(2_000);
+        let expr = lamedh::reader::read_with_depth_limit(&s, &env, env.reader_depth_limit())
+            .map_err(|e| format!("Parse error: {e}"))?;
+        eval(&expr, &env)
+            .map(|v| lamedh::printer::print(&v))
+            .map_err(|e| format!("Eval error: {e:?}"))
+    });
     assert!(
         result.is_ok(),
-        "deep quasiquote should evaluate, got {result:?}"
+        "1000-deep quasiquote should evaluate with a raised limit, got {result:?}"
     );
 }
 
