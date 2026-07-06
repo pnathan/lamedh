@@ -141,3 +141,46 @@ fn test_new_sandboxed_read_blocked() {
         "read should be blocked in sandboxed env, got: {out}"
     );
 }
+
+// ---- RENAME-FILE capability tests (issue #273) ----
+
+#[test]
+fn test_rename_file_requires_read_fs_too() {
+    // CREATE-FS alone must not be enough: rename observes the source path
+    // (existence probing via error messages), so it also needs READ-FS.
+    let env = env_with_stdlib();
+    env.enable_feature("CREATE-FS");
+    let out = eval_line("(rename-file \"/tmp/a\" \"/tmp/b\")", &env);
+    assert!(
+        out.contains("READ-FS capability"),
+        "expected READ-FS capability error with only CREATE-FS granted, got: {out}"
+    );
+}
+
+#[test]
+fn test_rename_file_requires_create_fs_too() {
+    let env = env_with_stdlib();
+    env.enable_feature("READ-FS");
+    let out = eval_line("(rename-file \"/tmp/a\" \"/tmp/b\")", &env);
+    assert!(
+        out.contains("CREATE-FS capability"),
+        "expected CREATE-FS capability error with only READ-FS granted, got: {out}"
+    );
+}
+
+#[test]
+fn test_rename_file_passes_capability_checks_with_both() {
+    // With both capabilities the checks pass; a nonexistent source then
+    // yields an ordinary I/O error, not a capability error.
+    let env = env_with_stdlib();
+    env.enable_feature("READ-FS");
+    env.enable_feature("CREATE-FS");
+    let out = eval_line(
+        "(rename-file \"/nonexistent/source/xyzzy\" \"/nonexistent/dest/xyzzy\")",
+        &env,
+    );
+    assert!(
+        !out.contains("capability"),
+        "should not get a capability error with both granted, got: {out}"
+    );
+}
