@@ -504,7 +504,7 @@ impl Jit {
         }
     }
 
-    /// Like [`infer_untyped`] but accepts **partial type hints** per param and
+    /// Like [`Self::infer_untyped`] but accepts **partial type hints** per param and
     /// for the return type. `Some(ty)` pins the slot to that type; `None` inserts
     /// a fresh inference variable. This is the compilation back-end for `defun*`.
     ///
@@ -825,7 +825,7 @@ impl Jit {
     /// always allocates a fresh arena buffer — so without this, a
     /// `store`/`aset` inside a `defun-typed` body silently never reached the
     /// caller). `updated[i]` is `Some(new_value)` whenever argument `i`'s
-    /// *type* is a flat scalar array (see [`is_flat_scalar_array`]); it is
+    /// *type* is a flat scalar array (see `is_flat_scalar_array`); it is
     /// populated whether or not the callee actually mutated that argument (a
     /// redundant copy-out for a pure-reader function — simpler and still
     /// correct, at a small extra-copy cost). Callers holding the original

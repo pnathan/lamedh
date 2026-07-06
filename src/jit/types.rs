@@ -209,7 +209,7 @@ pub enum Value {
 /// Result of a call that also reports post-call array write-back (issue
 /// #216): the ordinary boxed result, plus one entry per argument that is
 /// `Some(updated_value)` when that argument's type is a flat scalar array
-/// (see [`is_flat_scalar_array`]), `None` otherwise. See
+/// (see `is_flat_scalar_array`), `None` otherwise. See
 /// `Jit::call_with_array_writeback`.
 /// Condition flags set by typed arithmetic during a JIT call (issue #228).
 /// The membrane reads these after the call returns and propagates them to
