@@ -10,6 +10,11 @@ cargo build --release
 
 The executable will be at `target/release/lamedh`.
 
+The default build enables the Cranelift-backed `jit` feature. To keep the typed
+checker and closure backend without Cranelift, build with
+`cargo build --release --no-default-features`; that library build still depends
+on `nom` and `smallvec`.
+
 ## 2.2 Running the REPL
 
 Start the interactive REPL:
@@ -128,7 +133,8 @@ Load order is alphabetical within directories.
 
 ```lisp
 "Hello, World!"
-"Line one"
+"Line one\nLine two"
+"A quoted word: \"Lamedh\""
 ```
 
 ### Symbols
@@ -245,7 +251,8 @@ Note: All symbols are converted to uppercase internally.
 
 ## 2.10 The Standard Library
 
-Lamedh automatically loads files from `lib/` at startup:
+`Environment::with_stdlib()` starts with these modules embedded in the binary;
+it does not scan the on-disk `lib/` directory at runtime:
 
 | File | Contents |
 |------|----------|
@@ -255,7 +262,7 @@ Lamedh automatically loads files from `lib/` at startup:
 | `03-meta.lisp` | `DOCUMENTATION` |
 | `04-predicates.lisp` | `EQUAL` |
 | `05-math.lisp` | `ABS`, `MAX`, `MIN`, `ONEP`, `MINUSP` |
-| `07-shell.lisp` ... `18-format.lisp` | Shell, vau, Lisp 1.5, testing, optimizer, control, functional, string, set/hash, condition, array, and format helpers |
+| `07-shell.lisp` ... `19-call-graph.lisp`, `21-cl-compat.lisp` | Shell, vau, Lisp 1.5, testing, optimizer, control, functional, string, set/hash, condition, array, format, call-graph, and Common Lisp compatibility helpers |
 | `97-doc-renderer.lisp` ... `99-help-data.lisp` | REPL help system and structured documentation database |
 
 ## 2.11 Example: Fibonacci

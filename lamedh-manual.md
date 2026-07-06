@@ -95,8 +95,8 @@ The two workspace members are:
 
 | Crate | Type | Description |
 |-------|------|-------------|
-| `lamedh` | library | Reusable interpreter. Default features include the typed JIT backend; use `--no-default-features` for the dependency-light typed checker. |
-| `lamedh-cli` | binary (`lamedh`) | CLI/REPL driver. Depends on `lamedh`, `clap`, `rustyline`. |
+| `lamedh` | library | Reusable interpreter. Its core dependencies are `nom` and `smallvec`; the default `jit` feature additionally enables Cranelift. |
+| `lamedh-cli` | binary (`lamedh`) | CLI/REPL driver. Depends on `lamedh`, `clap`, `rustyline`, and `dirs`. |
 
 Benchmark crates under `benchmarks/*/rust` are **excluded** from the workspace
 and built directly by `benchmarks/run_benchmarks.sh`.
@@ -1999,6 +1999,7 @@ path = "src/lib.rs"
 
 [dependencies]
 nom = "=7.1.3"   # pinned parser dependency
+smallvec = "1"    # compact evaluator argument/frame storage
 
 # Native-code backend for the typed JIT. Enabled by default in 0.2.x.
 cranelift-jit      = { version = "0.133", optional = true }
@@ -2025,9 +2026,9 @@ exclude = [
 ]
 ```
 
-The library crate's dependency-light build uses `nom` for the reader:
-`cargo build --no-default-features`. The default 0.2.x build also enables the
-typed JIT's Cranelift backend.
+The library crate's dependency-light build uses `nom` for the reader and
+`smallvec` in the evaluator: `cargo build --no-default-features`. The default
+0.2.x build additionally enables the typed JIT's Cranelift backend.
 
 ### `cli/Cargo.toml`
 
@@ -2047,6 +2048,7 @@ doc = false
 lamedh    = { path = "..", default-features = false }
 rustyline = "14.0.0"
 clap      = { version = "4.5.4", features = ["derive"] }
+dirs      = "6"
 
 [features]
 default = ["jit"]
@@ -2058,9 +2060,11 @@ jit = ["lamedh/jit"]
 | Crate | Used by | Purpose |
 |-------|---------|---------|
 | `nom 7.1.3` | `lamedh` (lib) | Parser combinators for the reader |
+| `smallvec 1` | `lamedh` (lib) | Compact evaluator argument and frame storage |
 | `cranelift-* 0.133` | `lamedh` default `jit` feature | Native-code backend for typed functions |
 | `rustyline 14.0.0` | `lamedh-cli` | REPL line-editing and history |
 | `clap 4.5.4` | `lamedh-cli` | Command-line argument parsing |
+| `dirs 6` | `lamedh-cli` | Platform-specific REPL history directory |
 
 ---
 
@@ -2108,8 +2112,10 @@ eval(expr, env)
                                    loop continues, no Rust frame consumed
 ```
 
-Tail calls in `IF`, `COND`, `PROGN`, `LET`, `LET*`, `AND`, `OR`, and function
-bodies all return `TcoStep::TailCall` and execute without growing the Rust stack.
+Tail calls in `IF`, `COND`, `PROGN`, `LET`, `LET*`, and function bodies return
+`TcoStep::TailCall` and execute without growing the Rust stack. `AND` and `OR`
+currently evaluate their final operands through ordinary `eval`, so calls in
+those positions are not trampolined.
 
 ### Environment structure
 
@@ -2160,7 +2166,7 @@ clone — creating a child frame is one refcount bump, not four.
 | Vau | No | Yes (Kernel-style operative) |
 | TCO | No | Yes (trampolined) |
 | Garbage collection | Mark-sweep | `Rc` reference counting |
-| Tail calls | Stack overflow | Recovered (trampoline) |
+| Tail calls | Stack overflow | Known positions use a trampoline |
 | Recursion depth | Stack-limited | Guarded (default 10,000) |
 | Array indexing | 1-based | 0-based |
 | Floating point | Separate type | Promotes on mixed arithmetic |
@@ -2171,8 +2177,8 @@ clone — creating a child frame is one refcount bump, not four.
 
 - **No tail call in `COND` predicate position**: only the last expression of a
   matching clause is TCO.
-- **No splicing in quasiquote** (`@,list`): unquote-splicing is not yet
-  implemented in the reader/evaluator (use `append` instead).
+- **No user-defined reader macros**: quote, quasiquote, `,`/`,@`, function
+  shorthand, character, comment, and radix syntax are built in.
 - **No continuations**: `CALL/CC` is not available.
 - **No tail-recursive `PROG`**: GO/RETURN use `LispError` signals through the
   Rust stack, not trampolining.
