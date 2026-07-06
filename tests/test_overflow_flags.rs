@@ -242,19 +242,35 @@ fn test_gcd_happy_path_no_overflow() {
 
 #[test]
 fn test_gcd_min_and_positive_sets_overflow() {
-    // gcd(i64::MIN, 5) requires |i64::MIN|, which is unrepresentable in i64.
+    // gcd(i64::MIN, 5) requires |i64::MIN|, which is unrepresentable in i64,
+    // so OVERFLOW is set — but the Euclid loop preserves the magnitude and
+    // the sign is normalized, so the *true* gcd is still returned.
     let input = r#"
         (PROGN
             (CLEAR-ALL-FLAGS)
-            (GCD -9223372036854775808 5)
-            (FLAG-SET-P 'OVERFLOW))
+            (LIST (GCD -9223372036854775808 5) (FLAG-SET-P 'OVERFLOW)))
     "#;
     let result = eval_str(input);
     assert!(result.is_ok(), "must not panic/abort: {result:?}");
-    match result.unwrap() {
-        LispVal::Symbol(s) => assert_eq!(s.borrow().name, "T"),
-        _ => panic!("Expected T (overflow flag set)"),
-    }
+    let items = lisp_list_to_vec(&result.unwrap());
+    assert_eq!(items[0], LispVal::Number(1), "gcd(i64::MIN, 5) must be 1");
+    assert!(is_truthy_symbol(&items[1]), "overflow flag must be set");
+}
+
+#[test]
+fn test_gcd_min_and_six_sets_overflow_with_true_gcd() {
+    // gcd(i64::MIN, 6): |i64::MIN| = 2^63 shares a factor of 2 with 6, so the
+    // true gcd is 2. OVERFLOW is still set because |i64::MIN| overflowed.
+    let input = r#"
+        (PROGN
+            (CLEAR-ALL-FLAGS)
+            (LIST (GCD -9223372036854775808 6) (FLAG-SET-P 'OVERFLOW)))
+    "#;
+    let result = eval_str(input);
+    assert!(result.is_ok(), "must not panic/abort: {result:?}");
+    let items = lisp_list_to_vec(&result.unwrap());
+    assert_eq!(items[0], LispVal::Number(2), "gcd(i64::MIN, 6) must be 2");
+    assert!(is_truthy_symbol(&items[1]), "overflow flag must be set");
 }
 
 #[test]
