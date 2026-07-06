@@ -544,7 +544,25 @@ fn test_prog_go_to_duplicate_label() {
 
 #[test]
 fn test_deeply_nested_quasiquote() {
-    // Deep but finite quasiquote nesting must evaluate on the large stack.
+    // The original bug: deep nesting crashed the process with a native stack
+    // overflow. Since issue #270 the reader bounds its recursion at
+    // `reader::MAX_READER_DEPTH` (512), so nesting past the limit now yields
+    // a clean, catchable parse error instead of evaluating — and instead of
+    // crashing. Deep-but-under-the-limit nesting must still evaluate.
+    let mut s = "`".to_string();
+    for _ in 0..400 {
+        s.push_str("(a ");
+    }
+    for _ in 0..400 {
+        s.push(')');
+    }
+    let result = eval_str_big(&s);
+    assert!(
+        result.is_ok(),
+        "400-deep quasiquote should evaluate, got {result:?}"
+    );
+
+    // Past the reader depth limit: a parse error, never a crash (issue #270).
     let mut s = "`".to_string();
     for _ in 0..1000 {
         s.push_str("(a ");
@@ -552,12 +570,14 @@ fn test_deeply_nested_quasiquote() {
     for _ in 0..1000 {
         s.push(')');
     }
-
     let result = eval_str_big(&s);
-    assert!(
-        result.is_ok(),
-        "deep quasiquote should evaluate, got {result:?}"
-    );
+    match result {
+        Err(msg) => assert!(
+            msg.contains("nesting too deep"),
+            "expected a nesting-too-deep parse error, got: {msg}"
+        ),
+        Ok(v) => panic!("expected a parse error past the reader depth limit, got Ok({v})"),
+    }
 }
 
 #[test]

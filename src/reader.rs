@@ -49,23 +49,53 @@ use nom::{
 
 type ParseResult<'a> = IResult<&'a str, LispVal>;
 
-fn parse_expr(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+/// Maximum nesting depth `parse_expr` will recurse through — bounds the
+/// parser's native call-stack usage so that pathological input like tens of
+/// thousands of nested `(` or a long `'''...` chain produces a parse error
+/// instead of a native stack overflow (issue #270).
+///
+/// Chosen empirically (see the issue #270 PR description for the measurement
+/// methodology): on this platform, unbounded recursion on nested-paren input
+/// crashes a default-size 8 MiB thread (the smallest stack the reader is
+/// expected to run on — see [`crate::with_large_stack`]) at a depth of about
+/// 1300–1320 in a debug build. 512 leaves roughly 2.5x headroom below that
+/// empirical crash boundary, comfortably covering compiler/platform variance,
+/// while still being far below what the 512 MiB [`crate::with_large_stack`]
+/// thread can sustain (empirically ~84,000-90,000 for the same input shape).
+pub const MAX_READER_DEPTH: usize = 512;
+
+/// `nom::error::ErrorKind` used as a sentinel to distinguish the "nesting too
+/// deep" failure from ordinary parse errors so [`read_next`] can render a
+/// dedicated message. Not otherwise produced by this module.
+const TOO_DEEP_KIND: nom::error::ErrorKind = nom::error::ErrorKind::TooLarge;
+
+fn too_deep_error(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    // A hard `Failure` (not `Error`): once the depth limit is hit we want to
+    // unwind immediately rather than have `alt`/`many0`/`opt` backtrack and
+    // retry other productions at the same (already too-deep) position.
+    nom::Err::Failure(nom::error::Error::new(input, TOO_DEEP_KIND))
+}
+
+fn parse_expr(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
+        if depth >= MAX_READER_DEPTH {
+            return Err(too_deep_error(input));
+        }
         preceded(
             ws,
             alt((
                 parse_atom(env.clone()),
                 parse_string,
-                parse_list(env.clone()),
+                parse_list(env.clone(), depth),
                 // Char literal 'c' before the quote reader macro: 'a' is a char,
                 // 'a (no closing quote) stays (quote a).
                 parse_char_literal,
-                parse_quoted(env.clone()),
-                parse_quasiquoted(env.clone()),
+                parse_quoted(env.clone(), depth),
+                parse_quasiquoted(env.clone(), depth),
                 // ,@ before , : `,@e` is splicing, `,e` is plain unquote.
-                parse_unquote_spliced(env.clone()),
-                parse_unquoted(env.clone()),
-                parse_function_shorthand(env.clone()),
+                parse_unquote_spliced(env.clone(), depth),
+                parse_unquoted(env.clone(), depth),
+                parse_function_shorthand(env.clone(), depth),
             )),
         )(input)
     }
@@ -396,12 +426,12 @@ fn parse_string(input: &str) -> ParseResult<'_> {
     Ok((remaining, LispVal::String(result)))
 }
 
-fn parse_list_contents(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_list_contents(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (input, exprs) = many0(preceded(ws, parse_expr(env.clone())))(input)?;
+        let (input, exprs) = many0(preceded(ws, parse_expr(env.clone(), depth)))(input)?;
         let (input, tail) = opt(preceded(
             preceded(ws, char('.')),
-            preceded(ws, parse_expr(env.clone())),
+            preceded(ws, parse_expr(env.clone(), depth)),
         ))(input)?;
         if tail.is_some() && exprs.is_empty() {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -421,7 +451,7 @@ fn parse_list_contents(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult
     }
 }
 
-fn parse_list(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_list(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         // `cut` after the opening paren: once `(` is consumed no other parser
         // can apply, so a missing `)` becomes a hard Failure whose position
@@ -429,84 +459,92 @@ fn parse_list(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
         // start (issue #238).
         delimited(
             char('('),
-            parse_list_contents(env.clone()),
+            parse_list_contents(env.clone(), depth + 1),
             preceded(ws, cut(char(')'))),
         )(input)
     }
 }
 
-fn parse_quoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_quoted(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     let quote_symbol = LispVal::Symbol(env.intern_symbol("QUOTE"));
     move |input: &str| {
-        map(preceded(char('\''), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(char('\''), parse_expr(env.clone(), depth + 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(quote_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_quasiquoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_quasiquoted(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     let quasiquote_symbol = LispVal::Symbol(env.intern_symbol("QUASIQUOTE"));
     move |input: &str| {
-        map(preceded(char('`'), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(char('`'), parse_expr(env.clone(), depth + 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(quasiquote_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_function_shorthand(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_function_shorthand(
+    env: Shared<Environment>,
+    depth: usize,
+) -> impl Fn(&str) -> ParseResult {
     let function_symbol = LispVal::Symbol(env.intern_symbol("FUNCTION"));
     move |input: &str| {
-        map(preceded(tag("#'"), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(tag("#'"), parse_expr(env.clone(), depth + 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(function_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_unquoted(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_unquoted(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     let unquote_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE"));
     move |input: &str| {
-        map(preceded(char(','), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(char(','), parse_expr(env.clone(), depth + 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(unquote_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
-fn parse_unquote_spliced(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+fn parse_unquote_spliced(env: Shared<Environment>, depth: usize) -> impl Fn(&str) -> ParseResult {
     let splice_symbol = LispVal::Symbol(env.intern_symbol("UNQUOTE-SPLICING"));
     move |input: &str| {
-        map(preceded(tag(",@"), parse_expr(env.clone())), |expr| {
-            LispVal::Cons {
+        map(
+            preceded(tag(",@"), parse_expr(env.clone(), depth + 1)),
+            |expr| LispVal::Cons {
                 car: Shared::new(splice_symbol.clone()),
                 cdr: Shared::new(LispVal::Cons {
                     car: Shared::new(expr),
                     cdr: Shared::new(LispVal::Nil),
                 }),
-            }
-        })(input)
+            },
+        )(input)
     }
 }
 
@@ -584,10 +622,15 @@ pub fn read_next<'a>(
     if rest.is_empty() {
         return Ok(None);
     }
-    match parse_expr(env.clone())(rest) {
+    match parse_expr(env.clone(), 0)(rest) {
         Ok((rem, val)) => Ok(Some((val, rem))),
         Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
-            Err((input.len() - e.input.len(), error_detail(e.input)))
+            let detail = if e.code == TOO_DEEP_KIND {
+                format!("nesting too deep (limit {MAX_READER_DEPTH})")
+            } else {
+                error_detail(e.input)
+            };
+            Err((input.len() - e.input.len(), detail))
         }
         Err(nom::Err::Incomplete(_)) => Err((input.len(), "incomplete input".to_string())),
     }
@@ -890,7 +933,7 @@ mod tests {
     fn test_parse_list() {
         let env = Shared::new(Environment::new());
         assert_eq!(
-            parse_list(env.clone())("(PLUS 1 2)"),
+            parse_list(env.clone(), 0)("(PLUS 1 2)"),
             Ok((
                 "",
                 cons(
