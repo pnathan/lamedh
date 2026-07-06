@@ -144,6 +144,8 @@ pub fn compile_native(
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
+    jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
+    jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
 
@@ -184,6 +186,26 @@ pub fn compile_native(
         .declare_function("jit_alloc", Linkage::Import, &asig)
         .map_err(|e| e.to_string())?;
 
+    // Imported non-tail-call depth guard (issue #271): `jit_enter_call`
+    // (ctx) -> bool-as-i64 (nonzero = ok, depth bumped; zero = at the cap, a
+    // recursion-limit error is now pending) and `jit_exit_call` (ctx) -> (),
+    // its counterpart. Wraps every non-tail `Call` (`emit_call`) so the
+    // direct native-to-native `call_indirect` fast path — which never
+    // otherwise reaches `Ctx::call` — is guarded too, not just calls that
+    // fall through to the host trampoline.
+    let mut esig = module.make_signature();
+    esig.params.push(AbiParam::new(ptr));
+    esig.returns.push(AbiParam::new(types::I64));
+    let enter_call_id = module
+        .declare_function("jit_enter_call", Linkage::Import, &esig)
+        .map_err(|e| e.to_string())?;
+
+    let mut xsig = module.make_signature();
+    xsig.params.push(AbiParam::new(ptr));
+    let exit_call_id = module
+        .declare_function("jit_exit_call", Linkage::Import, &xsig)
+        .map_err(|e| e.to_string())?;
+
     // The function we are building: (args*, ctx*) -> u64.
     let mut ctx_codegen = module.make_context();
     ctx_codegen.func.signature.params.push(AbiParam::new(ptr));
@@ -200,6 +222,8 @@ pub fn compile_native(
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
         let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
+        let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
+        let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
 
         let entry = b.create_block();
@@ -242,6 +266,8 @@ pub fn compile_native(
             tramp_ref,
             pending_tail_ref,
             alloc_ref,
+            enter_call_ref,
+            exit_call_ref,
             callee_sig,
             cell_addrs,
             param_counts,
@@ -291,6 +317,10 @@ struct Emitter<'a, 'b, 'c> {
     /// cross-function tail call on `Ctx` instead of performing it natively.
     pending_tail_ref: cranelift_codegen::ir::FuncRef,
     alloc_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
+    /// #271): the non-tail call depth guard `emit_call` wraps every call in.
+    enter_call_ref: cranelift_codegen::ir::FuncRef,
+    exit_call_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
     /// Expected parameter count for each callee, parallel to `cell_addrs`.
@@ -421,11 +451,11 @@ impl Emitter<'_, '_, '_> {
             }
             Core::ArrayNew(n) => {
                 let n = self.emit_value(n);
-                // Clamp negative lengths to 0 (matches the interpreter).
-                let zero = self.iconst(0);
-                let neg = self.b.ins().icmp(IntCC::SignedLessThan, n, zero);
-                let len = self.b.ins().select(neg, zero, n);
-                Emitted::Value(self.alloc(len))
+                // Pass the signed length through unchanged: `jit_alloc`
+                // routes it to `Ctx::alloc_buffer_signed`, which records the
+                // evaluator's "non-negative integer" error for a negative
+                // size (issue #271) instead of silently clamping to 0.
+                Emitted::Value(self.alloc(n))
             }
             Core::ArrayGet(a, i) => {
                 let base = self.emit_value(a);
@@ -754,6 +784,16 @@ impl Emitter<'_, '_, '_> {
         self.b.ins().stack_load(types::I64, res, 0)
     }
 
+    /// Emit a non-tail call to typed function `id`, guarded by the depth
+    /// cap (issue #271): every non-tail call — whether it ends up taking the
+    /// direct native `call_indirect` fast path or falling back to the host
+    /// trampoline — grows *some* call stack (native or, via the trampoline,
+    /// `Ctx::call`'s own Rust recursion) once per call, unbounded without
+    /// this. `jit_enter_call`/`jit_exit_call` mirror `Ctx::enter_call`/
+    /// `exit_call` so the fast path — which never otherwise touches
+    /// `Ctx::call` at all — is covered too, not just the trampoline-routed
+    /// cases (which would also be caught by `Ctx::call`'s own guard, one
+    /// frame further in).
     fn emit_call(&mut self, id: usize, args: &[Core]) -> Value {
         let vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
         let argc = vals.len();
@@ -767,6 +807,48 @@ impl Emitter<'_, '_, '_> {
         }
         let buf_addr = self.b.ins().stack_addr(self.ptr, buf, 0);
 
+        let ok = {
+            let ec = self.b.ins().call(self.enter_call_ref, &[self.ctx_ptr]);
+            self.b.inst_results(ec)[0]
+        };
+        let allowed = self.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
+
+        let outer_res =
+            self.b
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let call_b = self.b.create_block();
+        let over_limit_b = self.b.create_block();
+        let outer_merge_b = self.b.create_block();
+        self.b.ins().brif(allowed, call_b, &[], over_limit_b, &[]);
+
+        // Depth cap hit: `jit_enter_call` already recorded the pending
+        // recursion-limit error; skip the call entirely and substitute a
+        // zero-length arena buffer — a valid, non-null pointer that is also
+        // a harmless plain integer if the caller treats this call's result
+        // as a scalar. The membrane discards it once it sees the error.
+        self.b.switch_to_block(over_limit_b);
+        self.b.seal_block(over_limit_b);
+        let zero_len = self.iconst(0);
+        let sentinel = self.alloc(zero_len);
+        self.b.ins().stack_store(sentinel, outer_res, 0);
+        self.b.ins().jump(outer_merge_b, &[]);
+
+        self.b.switch_to_block(call_b);
+        self.b.seal_block(call_b);
+        let call_result = self.emit_call_unguarded(id, argc, buf_addr);
+        self.b.ins().call(self.exit_call_ref, &[self.ctx_ptr]);
+        self.b.ins().stack_store(call_result, outer_res, 0);
+        self.b.ins().jump(outer_merge_b, &[]);
+
+        self.b.switch_to_block(outer_merge_b);
+        self.b.seal_block(outer_merge_b);
+        self.b.ins().stack_load(types::I64, outer_res, 0)
+    }
+
+    /// The actual call dispatch `emit_call` wraps with the depth guard:
+    /// arity-mismatch/native-direct/trampoline selection, unchanged from
+    /// before issue #271 other than taking the already-built argument buffer.
+    fn emit_call_unguarded(&mut self, id: usize, argc: usize, buf_addr: Value) -> Value {
         // If the call-site arity disagrees with the callee's current param count
         // (callee was redefined with a different arity after this function's Core
         // was elaborated), skip the native fast path and always route through the

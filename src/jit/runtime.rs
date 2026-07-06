@@ -33,6 +33,32 @@ pub struct Ctx<'a> {
     /// Set by `int_bin` when integer division or remainder by zero is attempted.
     /// The membrane reads this and raises a `Division by zero` error.
     pub(super) div_by_zero: Cell<bool>,
+    /// Non-tail call depth (issue #271). Incremented/decremented by
+    /// [`Ctx::enter_call`]/[`Ctx::exit_call`] around every non-tail call
+    /// reached through [`Ctx::call`] — the interpreter and closure editions'
+    /// own `Core::Call` arms, and any native call that falls through to the
+    /// host trampoline — *and*, via the imported `jit_enter_call`/
+    /// `jit_exit_call` trampolines a native edition calls directly (see
+    /// `native::compile_native`'s `emit_call`), around the direct
+    /// native-to-native `call_indirect` fast path that otherwise never
+    /// touches `Ctx::call` at all. See [`Ctx::MAX_CALL_DEPTH`] for the limit
+    /// and how it was derived.
+    pub(super) depth: Cell<usize>,
+    /// First reachable-error condition recorded during a call that has no
+    /// sensible "keep computing, flag it" resolution the way overflow/div-by-
+    /// zero do (issue #271): an oversized array/struct allocation, the
+    /// non-tail recursion cap, calling a `declare-typed`d-but-never-defined
+    /// function, or a stale-arity call site left over by an arity-changing
+    /// redefinition. Every site that would otherwise panic instead records a
+    /// message here (first one wins, matching the tree-walker's left-to-right
+    /// evaluation order) and returns a memory-safe substitute value (a
+    /// zero-length arena buffer — a valid, non-null pointer that is also a
+    /// harmless word if the caller treats it as a scalar) so execution can run
+    /// to completion; the membrane checks this after the top-level call
+    /// returns and raises it as a Lisp error in place of the (meaningless)
+    /// result, exactly as `div_by_zero` already does for its one fixed
+    /// message.
+    pub(super) pending_error: RefCell<Option<String>>,
 }
 
 impl Ctx<'_> {
@@ -42,25 +68,119 @@ impl Ctx<'_> {
     /// Byte offset of the `div_by_zero` field from the start of `Ctx`.
     pub(super) const DIV_BY_ZERO_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, div_by_zero);
 
+    /// Maximum non-tail call depth before a typed call is refused with a
+    /// recursion-limit error instead of growing the call stack further
+    /// (issue #271).
+    ///
+    /// Arithmetic: the evaluator thread runs under [`crate::with_large_stack`],
+    /// a 512 MiB stack (`INTERPRETER_STACK_SIZE`). The interpreter/closure
+    /// editions reached through [`Ctx::call`] recurse as ordinary Rust calls —
+    /// `eval_core`/`eval_core_nontail`'s own frame plus the per-call `Vec<u64>`
+    /// argument buffer and the callee's fresh `env` `Vec` — call it a generous
+    /// 2 KiB/frame upper bound (smaller than, but the same order of magnitude
+    /// as, the tree-walker's own per-`eval`-frame budget behind
+    /// `DEFAULT_EVAL_DEPTH_LIMIT`, since typed-core frames do far less
+    /// per-node bookkeeping). A native frame guarded via
+    /// `jit_enter_call`/`jit_exit_call` is far smaller still (a handful of
+    /// 8-byte stack slots), so the same cap is comfortably conservative
+    /// there too. `MAX_CALL_DEPTH * 2 KiB` ≈ 100 MiB, leaving well over
+    /// 400 MiB of headroom in the 512 MiB budget for the rest of the call
+    /// chain that led to this typed call (evaluator frames, other typed calls
+    /// already on the stack, …) — generous enough not to trip on realistic
+    /// recursive typed programs, small enough to trip long before the stack
+    /// is actually exhausted.
+    pub(super) const MAX_CALL_DEPTH: usize = 50_000;
+
+    /// Record `msg` as the pending error for this call, unless one is already
+    /// recorded — first error wins, matching the tree-walker's left-to-right
+    /// evaluation order (and the existing overflow-before-div-by-zero
+    /// ordering, issue #228).
+    pub(super) fn set_pending_error(&self, msg: String) {
+        let mut slot = self.pending_error.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(msg);
+        }
+    }
+
+    /// Enter a non-tail call: bump the depth counter, or refuse — recording a
+    /// recursion-limit [`pending_error`](Ctx::pending_error) — if already at
+    /// [`Ctx::MAX_CALL_DEPTH`]. Returns `true` on success; a successful
+    /// `enter_call` must be paired with exactly one [`Ctx::exit_call`] once
+    /// the call returns.
+    pub(super) fn enter_call(&self) -> bool {
+        let d = self.depth.get();
+        if d >= Self::MAX_CALL_DEPTH {
+            self.set_pending_error(format!(
+                "recursion limit exceeded ({} non-tail typed calls); rewrite as a tail call or iteratively",
+                Self::MAX_CALL_DEPTH
+            ));
+            false
+        } else {
+            self.depth.set(d + 1);
+            true
+        }
+    }
+
+    /// Leave a non-tail call entered via [`Ctx::enter_call`].
+    pub(super) fn exit_call(&self) {
+        self.depth.set(self.depth.get().saturating_sub(1));
+    }
+
     #[inline]
     pub(super) fn call(&self, id: usize, args: &[u64]) -> u64 {
-        self.funcs[id].invoke(args, self)
+        if !self.enter_call() {
+            // Memory-safe substitute: a valid (non-null) pointer to a
+            // zero-length buffer, harmless whether the caller treats the
+            // result as a scalar word or as an array/struct pointer. The
+            // membrane discards it once it sees `pending_error` set.
+            return self.alloc_buffer(0) as u64;
+        }
+        let r = self.funcs[id].invoke(args, self);
+        self.exit_call();
+        r
     }
 
     /// Allocate an `n`-element buffer `[n, 0, 0, …]` in the arena and return a
     /// raw pointer to its header word. The arena owns the `Box`, keeping the
     /// data pointer valid (and stable) until the call returns.
+    ///
+    /// `n` over the limit (issue #271; reachable from `jit_alloc` with a
+    /// Cranelift-computed `n` — a negative array-size expression reinterprets
+    /// as a huge `usize`) no longer asserts: it records a
+    /// [`pending_error`](Ctx::pending_error) mirroring the evaluator's own
+    /// `MakeArray` over-limit message (`src/evaluator/apply.rs`) and falls
+    /// back to a zero-length allocation, which keeps every bounds-checked
+    /// buffer access (`buf_get`/`buf_set`) safe for the rest of the call; the
+    /// membrane raises the recorded error once the call returns.
     pub(super) fn alloc_buffer(&self, n: usize) -> *mut u64 {
         const MAX_ELEMENTS: usize = 16 * 1024 * 1024; // 16 M — same cap as interpreted (array)
-        assert!(
-            n <= MAX_ELEMENTS,
-            "JIT alloc_buffer: requested {n} elements exceeds {MAX_ELEMENTS} limit"
-        );
+        let n = if n > MAX_ELEMENTS {
+            self.set_pending_error(format!("array: size {n} exceeds maximum of {MAX_ELEMENTS}"));
+            0
+        } else {
+            n
+        };
         let mut buf = vec![0u64; n + 1].into_boxed_slice();
         buf[0] = n as u64;
         let ptr = buf.as_mut_ptr();
         self.arena.borrow_mut().push(buf);
         ptr
+    }
+
+    /// [`Ctx::alloc_buffer`] for a *signed* element count, as computed by
+    /// typed code. A negative size records the evaluator's own
+    /// "non-negative integer" `ARRAY` error (issue #271 — the interpreter and
+    /// tracing tiers used to clamp negatives to 0 silently, while the native
+    /// tier reinterpreted them as huge unsigned sizes; all three now agree
+    /// with the tree-walker) and falls back to a zero-length allocation.
+    pub(super) fn alloc_buffer_signed(&self, n: i64) -> *mut u64 {
+        if n < 0 {
+            self.set_pending_error(format!(
+                "ARRAY: size must be a non-negative integer, got {n}"
+            ));
+            return self.alloc_buffer(0);
+        }
+        self.alloc_buffer(n as usize)
     }
 
     /// Record a pending cross-function tail call for `TypedFn::invoke`'s
@@ -86,7 +206,39 @@ impl Ctx<'_> {
 #[cfg(feature = "jit")]
 pub(crate) unsafe extern "C" fn jit_alloc(ctx: *const core::ffi::c_void, n: u64) -> *mut u64 {
     let ctx = unsafe { &*(ctx as *const Ctx) };
-    ctx.alloc_buffer(n as usize)
+    // `n` is a typed-code (signed) element count that crossed the ABI as a
+    // word; reinterpret it back so a negative size gets the evaluator's
+    // "non-negative integer" error instead of becoming a huge unsigned size.
+    ctx.alloc_buffer_signed(n as i64)
+}
+
+/// Host trampoline a native edition calls immediately before making a
+/// non-tail call (issue #271): mirrors [`Ctx::enter_call`] for the direct
+/// native-to-native `call_indirect` fast path, which otherwise never reaches
+/// [`Ctx::call`] and so would recurse with no depth guard at all. Returns
+/// nonzero (call is allowed; the depth counter has been bumped) or zero (the
+/// depth cap was hit; a recursion-limit error is now pending and the native
+/// caller must skip the call, substituting `jit_alloc(ctx, 0)` for its value).
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_enter_call(ctx: *const core::ffi::c_void) -> u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.enter_call() as u64
+}
+
+/// Host trampoline a native edition calls after a non-tail call it guarded
+/// with [`jit_enter_call`] returns — the native-side counterpart of
+/// [`Ctx::exit_call`].
+///
+/// # Safety
+/// As [`jit_enter_call`].
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_exit_call(ctx: *const core::ffi::c_void) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.exit_call();
 }
 
 pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
@@ -361,8 +513,8 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         }
         Core::ToChar(a) => eval_core_nontail(a, env, ctx) & 0xff,
         Core::ArrayNew(n) => {
-            let len = as_i(eval_core_nontail(n, env, ctx)).max(0) as usize;
-            ctx.alloc_buffer(len) as u64
+            let len = as_i(eval_core_nontail(n, env, ctx));
+            ctx.alloc_buffer_signed(len) as u64
         }
         Core::ArrayGet(a, i) => {
             let base = eval_core_nontail(a, env, ctx);
@@ -532,8 +684,13 @@ pub(super) fn eval_core_traced(
             step!("tochar", v & 0xff, NO_SLOT, NO_CALLEE)
         }
         Core::ArrayNew(n) => {
-            let len = as_i(eval_core_traced(n, env, ctx, depth + 1, log)).max(0) as usize;
-            step!("arraynew", ctx.alloc_buffer(len) as u64, NO_SLOT, NO_CALLEE)
+            let len = as_i(eval_core_traced(n, env, ctx, depth + 1, log));
+            step!(
+                "arraynew",
+                ctx.alloc_buffer_signed(len) as u64,
+                NO_SLOT,
+                NO_CALLEE
+            )
         }
         Core::ArrayGet(a, i) => {
             let base = eval_core_traced(a, env, ctx, depth + 1, log);
@@ -785,8 +942,8 @@ pub fn compile(core: &Core) -> Compiled {
         Core::ArrayNew(n) => {
             let cn = compile(n);
             Rc::new(move |e, c| {
-                let len = as_i(cn(e, c)).max(0) as usize;
-                c.alloc_buffer(len) as u64
+                let len = as_i(cn(e, c));
+                c.alloc_buffer_signed(len) as u64
             })
         }
         Core::ArrayGet(a, i) => {

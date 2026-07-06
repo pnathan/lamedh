@@ -179,6 +179,22 @@ impl TypedFn {
                 }
             }
         }
+        // Interpreter/closure fallthrough. Guard against exactly the same
+        // stale-arity hazard the native path above guards against (issue
+        // #271): without this, a redefinition that changed this function's
+        // arity could leave an old compiled caller (native or closure) still
+        // passing the previous argument count until it is recompiled
+        // (`recompile_all_except`), and `env[..args.len()].copy_from_slice`
+        // below would index out of bounds and panic.
+        if args.len() != self.params.borrow().len() {
+            ctx.set_pending_error(format!(
+                "{}: expected {} argument(s), got {} (stale call site after redefinition)",
+                self.name,
+                self.params.borrow().len(),
+                args.len()
+            ));
+            return ctx.alloc_buffer(0) as u64;
+        }
         let mut env = vec![0u64; self.slots.get()];
         env[..args.len()].copy_from_slice(args);
         let edition = self.compiled.borrow().clone();
@@ -186,13 +202,22 @@ impl TypedFn {
             Some(f) => f(&mut env, ctx),
             None => {
                 let core = self.core.borrow();
-                let core = core.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "typed function `{}` called before it was defined",
-                        self.name
-                    )
-                });
-                eval_core(core, &mut env, ctx, self.id)
+                match core.as_ref() {
+                    Some(core) => eval_core(core, &mut env, ctx, self.id),
+                    None => {
+                        // Reached only for a `declare-typed`d forward
+                        // reference that was never actually defined (issue
+                        // #271); the public membrane's `call_inner` already
+                        // guards this with `is_defined()`, but an internal
+                        // `ctx.call` from another typed function's body has
+                        // no such check.
+                        ctx.set_pending_error(format!(
+                            "typed function `{}` called before it was defined",
+                            self.name
+                        ));
+                        ctx.alloc_buffer(0) as u64
+                    }
+                }
             }
         }
     }
@@ -808,6 +833,8 @@ impl Jit {
             pending_tail: RefCell::new(None),
             overflow: Cell::new(false),
             div_by_zero: Cell::new(false),
+            depth: Cell::new(0),
+            pending_error: RefCell::new(None),
         }
     }
 
@@ -868,6 +895,14 @@ impl Jit {
         let ret = f.ret.borrow().clone();
         drop(params);
         let w = f.invoke(&words, &ctx);
+        // A reachable-panic condition (issue #271: oversized allocation,
+        // recursion cap, undefined callee, stale-arity call site) takes
+        // priority over the ordinary overflow/div-by-zero flags below — it
+        // means the computed word `w` is a meaningless placeholder, not a
+        // real (if flagged) result.
+        if let Some(msg) = ctx.pending_error.borrow_mut().take() {
+            return Err(msg);
+        }
         let flags = JitFlags {
             overflow: ctx.overflow.get(),
             div_by_zero: ctx.div_by_zero.get(),
@@ -966,6 +1001,12 @@ impl Jit {
         }
         let mut log = Vec::new();
         let w = eval_core_traced(&core, &mut frame, &ctx, 0, &mut log);
+        // See the identical check in `call_inner` (issue #271): a nested call
+        // reached via `Ctx::call` may have recorded a reachable-panic
+        // condition instead of a real result.
+        if let Some(msg) = ctx.pending_error.borrow_mut().take() {
+            return Err(msg);
+        }
         let ret = f.ret.borrow().clone();
         Ok((Value::from_word(w, &ret), log))
     }
