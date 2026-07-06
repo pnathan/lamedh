@@ -28,7 +28,13 @@ pub(super) fn build_lambda(
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
+    // Ids come from the parameter symbol objects themselves (via
+    // `binder_id`), not from re-interning the names — re-interning minted a
+    // fresh id for gensym parameters, leaving the body's occurrence of the
+    // same symbol unresolvable (issue #285).
+    let mut param_ids: Vec<u32> = Vec::new();
     let mut rest_param = None;
+    let mut rest_param_id: Option<u32> = None;
     let mut iter = p_list.iter();
 
     while let Some(p) = iter.next() {
@@ -43,6 +49,7 @@ pub(super) fn build_lambda(
                     let rest_name = rest_p_sym.borrow().name.clone();
                     check_param_name(&rest_name, "lambda")?;
                     rest_param = Some(rest_name);
+                    rest_param_id = Some(env.binder_id(rest_p_sym));
                     break; // No more params after &rest
                 } else {
                     return Err(LispError::Generic(
@@ -53,6 +60,7 @@ pub(super) fn build_lambda(
                 let name = s.borrow().name.clone();
                 check_param_name(&name, "lambda")?;
                 params_vec.push(name);
+                param_ids.push(env.binder_id(s));
             }
         } else {
             return Err(LispError::Generic(
@@ -60,14 +68,6 @@ pub(super) fn build_lambda(
             ));
         }
     }
-
-    let param_ids: Vec<u32> = params_vec
-        .iter()
-        .map(|name| env.intern_symbol(name).borrow().id)
-        .collect();
-    let rest_param_id: Option<u32> = rest_param
-        .as_ref()
-        .map(|name| env.intern_symbol(name).borrow().id);
     Ok(LispVal::Lambda(Box::new(crate::Lambda {
         params: params_vec,
         rest_param,
@@ -86,13 +86,15 @@ pub(super) fn make_fexpr(
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
-    let params_vec: Result<Vec<String>, _> = p_list
+    // Names and ids collected together from the symbol objects — see the
+    // issue #285 note in `build_lambda`.
+    let pairs: Result<Vec<(String, u32)>, _> = p_list
         .iter()
         .map(|p| {
             if let LispVal::Symbol(s) = p {
                 let name = s.borrow().name.clone();
                 check_param_name(&name, "fexpr")?;
-                Ok(name)
+                Ok((name, env.binder_id(s)))
             } else {
                 Err(LispError::Generic(
                     "fexpr parameters must be symbols".to_string(),
@@ -101,11 +103,9 @@ pub(super) fn make_fexpr(
         })
         .collect();
 
-    let params_vec = params_vec?;
-    let param_ids: Vec<u32> = params_vec
-        .iter()
-        .map(|name| env.intern_symbol(name).borrow().id)
-        .collect();
+    let pairs = pairs?;
+    let params_vec: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
+    let param_ids: Vec<u32> = pairs.iter().map(|(_, id)| *id).collect();
     Ok(LispVal::Fexpr(Box::new(crate::Fexpr {
         params: params_vec,
         body: Box::new(body.clone()),
@@ -122,7 +122,10 @@ pub(super) fn make_macro(
 ) -> Result<LispVal, LispError> {
     let p_list = list_to_vec(params)?;
     let mut params_vec = Vec::new();
+    // Ids from the symbol objects via `binder_id` — see build_lambda (#285).
+    let mut param_ids: Vec<u32> = Vec::new();
     let mut rest_param = None;
+    let mut rest_param_id: Option<u32> = None;
     let mut iter = p_list.iter();
 
     while let Some(p) = iter.next() {
@@ -137,6 +140,7 @@ pub(super) fn make_macro(
                     let rest_name = rest_p_sym.borrow().name.clone();
                     check_param_name(&rest_name, "macro")?;
                     rest_param = Some(rest_name);
+                    rest_param_id = Some(env.binder_id(rest_p_sym));
                     break; // No more params after &rest
                 } else {
                     return Err(LispError::Generic(
@@ -147,6 +151,7 @@ pub(super) fn make_macro(
                 let name = s.borrow().name.clone();
                 check_param_name(&name, "macro")?;
                 params_vec.push(name);
+                param_ids.push(env.binder_id(s));
             }
         } else {
             return Err(LispError::Generic(
@@ -154,14 +159,6 @@ pub(super) fn make_macro(
             ));
         }
     }
-
-    let param_ids: Vec<u32> = params_vec
-        .iter()
-        .map(|name| env.intern_symbol(name).borrow().id)
-        .collect();
-    let rest_param_id: Option<u32> = rest_param
-        .as_ref()
-        .map(|name| env.intern_symbol(name).borrow().id);
     Ok(LispVal::Macro(Box::new(crate::Macro {
         params: params_vec,
         rest_param,

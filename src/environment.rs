@@ -1353,6 +1353,84 @@ impl Environment {
         Some(jit.call_with_array_writeback(name, args))
     }
 
+    /// The id a binder (lambda/fexpr/macro parameter, SETQ target, …) should
+    /// key its frame entry under for `sym` — the binding-side mirror of
+    /// [`Environment::resolve`]'s canonicalization (issues #223/#262, #285):
+    ///
+    /// - If `sym` is canonical in this environment's symbol table (its id
+    ///   indexes back to the same `Rc` — true for ordinary interned symbols
+    ///   and for gensyms, which live in `by_id` but not the name map), use
+    ///   its own id. This is what lets a `gensym` work as a binder: the body
+    ///   occurrence is the same object and resolves to the same id (#285).
+    /// - Otherwise the symbol came from a foreign table (first-class
+    ///   environments, #223): intern its *name* here and use the canonical
+    ///   id, matching the name-remap `resolve` performs on lookups.
+    pub fn binder_id(&self, sym: &Shared<SharedCell<Symbol>>) -> u32 {
+        let (own_id, name) = {
+            let s = sym.borrow();
+            (s.id, s.name.clone())
+        };
+        let canonical_here = {
+            let table = self.shared.symbols.borrow();
+            matches!(table.symbol_by_id(own_id), Some(canon) if Shared::ptr_eq(&canon, sym))
+        };
+        if canonical_here {
+            own_id
+        } else {
+            self.intern_symbol(&name).borrow().id
+        }
+    }
+
+    /// [`Environment::update`], but for a known symbol object: the frame walk
+    /// and the root cell both use the canonical binding for `sym` per
+    /// [`Environment::binder_id`], so SETQ on a gensym writes the gensym's
+    /// own cell/frame entry instead of minting an interned twin (#285).
+    pub fn update_sym(env: &Shared<Environment>, sym: &Shared<SharedCell<Symbol>>, val: LispVal) {
+        let (is_dynamic, name) = {
+            let s = sym.borrow();
+            (s.is_dynamic, s.name.clone())
+        };
+        if env.shared.has_dynamic.get() && is_dynamic {
+            // Shallow binding: the (interned) symbol cell IS the binding.
+            env.global_set(&name, val);
+            return;
+        }
+        // Canonical symbol + id, then the same walk as `update_lexical`.
+        let canon = {
+            let canonical_here = {
+                let table = env.shared.symbols.borrow();
+                matches!(table.symbol_by_id(sym.borrow().id), Some(c) if Shared::ptr_eq(&c, sym))
+            };
+            if canonical_here {
+                sym.clone()
+            } else {
+                env.intern_symbol(&name)
+            }
+        };
+        let id = canon.borrow().id;
+        let mut maybe_env = Some(env.clone());
+        while let Some(current_env) = maybe_env {
+            if current_env.is_root() {
+                if canon.borrow().value.is_some() {
+                    canon.borrow_mut().value = Some(val);
+                    return;
+                }
+                break;
+            }
+            if current_env.bindings.borrow().contains_key(&id) {
+                current_env.bindings.borrow_mut().insert(id, val);
+                return;
+            }
+            maybe_env = current_env.parent.clone();
+        }
+        // Not found — create it in the current environment (SETQ semantics).
+        if env.is_root() {
+            canon.borrow_mut().value = Some(val);
+        } else {
+            env.set_id(id, val);
+        }
+    }
+
     /// Update a variable's value, searching up the environment chain.
     /// For dynamic variables, this searches the dynamic parent chain.
     /// For lexical variables, this searches the lexical parent chain.

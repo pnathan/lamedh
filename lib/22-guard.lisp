@@ -109,19 +109,14 @@ every enclosing WITH-CAPABILITIES fence."
   (mapcar (lambda (p) (if (consp p) (car p) p)) params))
 
 ;; The symbol the walker emits tick calls under. Each WITH-FUEL fence mints
-;; a fresh per-fence name before walking, so accidentally rebinding
-;; $GUARD-TICK inside guarded code does not sever charging. (A true GENSYM
-;; would be preferable, but a gensym cannot currently be bound as a lambda
-;; parameter — kernel bug, see the issue filed from this work.) $GUARD-TICK
-;; stays bound in each fence too, as the chaining channel nested fences
-;; probe for.
+;; a fresh GENSYM before walking, so guarded code has no nameable path to
+;; the tick and cannot rebind its way out of being charged (gensyms as
+;; binders work since the issue #285 fix). $GUARD-TICK stays bound in each
+;; fence too, as the chaining channel nested fences probe for.
 (setq $guard-walk-tick-name '$guard-tick)
-(setq $guard-fence-counter 0)
 
 (defun $guard-fresh-tick-name ()
-  (setq $guard-fence-counter (+ $guard-fence-counter 1))
-  (read-from-string
-   (concat "$GUARD-TICK-" (princ-to-string $guard-fence-counter))))
+  (gensym))
 
 (defun $guard-tick-call ()
   (list $guard-walk-tick-name))

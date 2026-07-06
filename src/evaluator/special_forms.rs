@@ -1386,7 +1386,10 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                     return Ok(TcoStep::Done(Err(e)));
                                 }
                                 let v = eval(val_expr, env)?;
-                                Environment::update(env, &var_name, v.clone());
+                                // Symbol-aware update: a gensym target writes
+                                // its own cell/frame entry, not an interned
+                                // twin minted from the name (issue #285).
+                                Environment::update_sym(env, s, v.clone());
                                 last_val = v;
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(

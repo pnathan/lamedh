@@ -519,10 +519,11 @@ pub(super) fn exec_step(
             let mut last = LispVal::Nil;
             for (sym, init) in pairs {
                 let val = exec(init, env)?;
-                // Drop the borrow before `update` (which may itself borrow
-                // the same symbol, e.g. via intern) — issue #156 pattern.
-                let name = sym.borrow().name.clone();
-                Environment::update(env, &name, val.clone());
+                // Symbol-aware update (issue #285): a gensym target writes
+                // its own cell/frame entry, not an interned twin. update_sym
+                // takes only short-lived borrows of `sym` internally, so the
+                // issue #156 borrow-discipline concern does not apply.
+                Environment::update_sym(env, sym, val.clone());
                 last = val;
             }
             Ok(TcoStep::Done(Ok(last)))
