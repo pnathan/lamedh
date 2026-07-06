@@ -957,6 +957,10 @@ pub(super) fn apply(
             }
 
             BuiltinFunc::RenameFile => {
+                // Renaming both observes the source path (existence probing
+                // via error messages) and mutates the filesystem, so it
+                // needs READ-FS in addition to CREATE-FS (issue #273).
+                require_read_fs(env)?;
                 require_create_fs(env)?;
                 if args.len() != 2 {
                     return Err(LispError::Generic(
