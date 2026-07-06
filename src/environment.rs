@@ -208,7 +208,7 @@ impl SymbolTable {
         self.symbols.get(name).cloned()
     }
 
-    /// Look up a symbol by its numeric id (the reverse of [`intern`]).
+    /// Look up a symbol by its numeric id (the reverse of [`Self::intern`]).
     /// Returns `None` if the id is out of range (should not happen in practice).
     pub fn symbol_by_id(&self, id: u32) -> Option<Shared<SharedCell<Symbol>>> {
         self.by_id.get(id as usize).cloned()

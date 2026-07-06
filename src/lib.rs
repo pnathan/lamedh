@@ -784,8 +784,8 @@ pub struct Symbol {
 
 /// Compiled intermediate representation for a lambda body (Milestone 1).
 ///
-/// [`Code`] is produced by [`evaluator::compile::compile`] at lambda-creation
-/// time and stored in [`Lambda::compiled`].  [`evaluator::compile::exec`] runs
+/// [`Code`] is produced by `evaluator::compile::compile` at lambda-creation
+/// time and stored in [`Lambda::compiled`].  `evaluator::compile::exec` runs
 /// it with an internal TCO trampoline.  Any form that the compiler does not
 /// yet handle is wrapped in [`Code::Interp`], which falls back to the
 /// tree-walking evaluator transparently.
