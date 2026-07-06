@@ -68,7 +68,8 @@ Variables are looked up in the defining environment:
 **Lamedh:**
 - 64-bit signed integers
 - 64-bit IEEE 754 floats
-- No octal notation
+- Lisp 1.5 octal notation (`1750Q`) plus `#o`, `#b`, `#x`, and `H`-suffix
+  radix literals
 
 ---
 
@@ -150,8 +151,8 @@ Functions not in Lisp 1.5:
 
 Same syntax, but:
 - Variables are lexically scoped
-- Labels are checked at parse time
-- Duplicate labels warn (may error in future)
+- Labels are collected when `PROG` is evaluated
+- Duplicate labels warn and the later label is used
 
 ---
 
@@ -186,7 +187,7 @@ Similar, but different names:
 
 - `ERROR` function
 - `ERRORSET` for catching errors
-- No condition/restart system
+- Partial condition handling, but no restart system
 
 ---
 
@@ -286,12 +287,10 @@ Features in Lisp 1.5 not in Lamedh:
 
 | Feature | Notes |
 |---------|-------|
-| `TRACE`/`UNTRACE` | Debugging functions |
-| `CSET`/`CSETQ` | Constant setting |
+| `TRACE`/`UNTRACE` execution hooks | The compatibility functions only mark symbol plists; the evaluator does not emit traces |
 | `OBLIST` | Symbol table access |
 | `REMOB` | Remove from symbol table |
-| Octal numbers | `1750Q` notation |
-| Read macros | Beyond `'` and `` ` `` |
+| User-defined reader macros | Built-in quote, quasiquote/unquote, function shorthand, character, comment, and radix syntax is fixed |
 | S-expression I/O | Punch cards, tapes |
 
 ---

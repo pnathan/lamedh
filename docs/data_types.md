@@ -158,11 +158,13 @@ Strings are sequences of characters enclosed in double quotes.
 
 ```lisp
 "Hello, World!"
-"This is a string"
+"Line one\nLine two"
+"A quoted word: \"Lamedh\""
 ""                  ; Empty string
 ```
 
-**Note:** Escape sequences are not currently supported.
+Supported escapes are `\n`, `\t`, `\r`, `\\`, `\"`, and `\0`. Unknown escape
+sequences retain the backslash and following character.
 
 ### 3.4.2 String Operations
 

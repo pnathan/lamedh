@@ -81,6 +81,9 @@ cargo build --no-default-features
 cargo test -p lamedh --no-default-features
 ```
 
+That build retains the library's `nom` parser and `smallvec` evaluator
+dependencies. The default `jit` feature additionally pulls in Cranelift.
+
 ## Fexprs
 
 `DEFEXPR` defines a function-like object whose operands are not evaluated before

@@ -48,9 +48,9 @@ Floats are 64-bit IEEE 754:
 
 ### Limited Operations
 
-Strings support escapes (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`), substring,
-length, character-code conversion, and value-to-string rendering. The
-string layer (`lib/14-strings.lisp`) additionally provides search
+The reader supports string escapes (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`). Strings
+also support substring, length, character-code conversion, and value-to-string
+rendering. The string layer (`lib/14-strings.lisp`) additionally provides search
 (`string-index-of`, `contains-p`, `starts-with-p`, `ends-with-p`), case
 conversion (`string-upcase`, `string-downcase`, `char-upcase`,
 `char-downcase`), comparison (`string=`, `string-lessp`), splitting and
@@ -69,8 +69,8 @@ include:
 ### Tail Calls Are Recognized, Not Universal
 
 The evaluator trampolines known tail positions (`IF`, `COND`, `PROGN`, `LET`,
-`LET*`, function bodies, and related paths). Non-tail recursion still consumes
-Rust stack frames and is protected by a recursion-depth guard.
+`LET*`, and function bodies). Non-tail recursion still consumes Rust stack
+frames and is protected by a recursion-depth guard.
 
 ```lisp
 (defun count-down-tail (n)
@@ -97,10 +97,11 @@ PROG provides basic imperative control, but:
 
 ### Capability-Gated, Not Stream-Based
 
-Lamedh has capability-gated file reading, writing, metadata queries, directory
-listing, file mutation, and temporary-file helpers. It does not yet provide a
-Common Lisp-style stream system, `WITH-OPEN-FILE`, append/update modes, or true
-binary byte-vector I/O. Text APIs assume UTF-8 or lossy UTF-8 conversion.
+Lamedh has capability-gated file reading (`READ-FS`), writing and mutation
+(`CREATE-FS`), and temporary-file helpers (`TEMP-FS`). `WRITE-FILE` creates or
+replaces a text file. Lamedh does not yet provide a Common Lisp-style stream
+system, `WITH-OPEN-FILE`, append/update modes, or true binary byte-vector I/O.
+Text APIs assume UTF-8 or lossy UTF-8 conversion.
 
 ---
 
@@ -208,9 +209,10 @@ Unlike some Lisps, SETQ creates variables if undefined:
 
 ### Optimization Is Partial
 
-Lamedh has a source optimizer, tail-call trampolining, and an experimental typed
-JIT/type-checking path for monomorphic typed islands. The ordinary dynamic
-language remains a boxed tree-walking interpreter.
+Lamedh has Rust source rewrites through `OPTIMIZE`, additional Lisp passes
+through `OPTIMIZE-FORM`/`$OPT`, tail-call trampolining, and an experimental
+typed JIT/type-checking path for monomorphic typed islands. The ordinary
+dynamic language remains a boxed tree-walking interpreter.
 
 Missing or incomplete performance work includes:
 
@@ -248,7 +250,7 @@ Expect ordinary dynamic code to be much slower than compiled native code.
 | Packages | Yes | No |
 | CLOS | Yes | No |
 | FORMAT | Yes | Partial subset |
-| Conditions/Restarts | Yes | No |
+| Conditions/Restarts | Yes | Partial conditions; no restarts |
 
 ### Differences from Lisp 1.5
 

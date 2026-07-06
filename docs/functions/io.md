@@ -292,30 +292,30 @@ cycles are reported as errors.
 Lamedh has limited I/O capabilities:
 
 **Not Available:**
-- File writing (no WRITE-FILE, WITH-OPEN-FILE)
-- Binary I/O
+- Common Lisp-style streams or `WITH-OPEN-FILE`
+- Append/update modes and binary byte-vector I/O
 - Network I/O
-- File metadata (existence check, size, etc.)
-- Stream manipulation
-- Formatted output (FORMAT)
 
 **Available:**
-- Read from stdin
-- Write to stdout
-- Load Lisp source files
+- Read from stdin with the `IO` capability and write to stdout
+- Load and read files with `READ-FS`
+- Create or replace text files with `WRITE-FILE` and mutate the filesystem with
+  `CREATE-FS`
+- Query file metadata and directory contents with `READ-FS`
+- Create temporary files and directories with `TEMP-FS`
+- A partial Common Lisp-style `FORMAT` implementation
 
 ---
 
 ## Automatic Loading
 
-At startup, Lamedh automatically loads:
-
-1. `prologue.lisp` (if present)
-2. All `.lisp` files in `lib/` (alphabetically)
-3. Files specified with `-i` flag
+At startup, Lamedh loads its standard library from sources embedded in the
+binary. The CLI then loads paths specified with `-i`; a directory path loads
+its `*.lisp` files alphabetically. It does not automatically load
+`prologue.lisp` or scan the on-disk `lib/` directory.
 
 ```bash
-# Load order: lib/*, myconfig.lisp, main.lisp
+# Load order: embedded standard library, myconfig.lisp, main.lisp
 cargo run -- -i myconfig.lisp -i main.lisp
 ```
 
