@@ -33,7 +33,7 @@ pub(super) fn apply(
             | BuiltinFunc::Gcd
             | BuiltinFunc::Lcm
             | BuiltinFunc::Isqrt
-            | BuiltinFunc::Signum => apply_math_lib(builtin, args),
+            | BuiltinFunc::Signum => apply_math_lib(builtin, args, env),
             BuiltinFunc::StringLength
             | BuiltinFunc::Substring
             | BuiltinFunc::CharCode
