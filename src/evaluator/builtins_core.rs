@@ -359,7 +359,11 @@ pub(super) fn as_f64(v: &LispVal, ctx: &str) -> Result<f64, LispError> {
 /// number and returns an `i64`. Integer ops (`gcd`/`lcm`/`isqrt`) require
 /// integers; `signum` preserves the input's int/float kind.
 #[inline(never)]
-pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispVal, LispError> {
+pub(super) fn apply_math_lib(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
     // gcd/lcm are variadic in spirit but we keep them binary here; the rest are unary.
     let want = |n: usize, name: &str| -> Result<(), LispError> {
         if args.len() != n {
@@ -423,7 +427,9 @@ pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispV
         BuiltinFunc::Gcd => {
             want(2, "gcd")?;
             match (&args[0], &args[1]) {
-                (LispVal::Number(a), LispVal::Number(b)) => Ok(LispVal::Number(gcd_i64(*a, *b))),
+                (LispVal::Number(a), LispVal::Number(b)) => {
+                    Ok(LispVal::Number(gcd_i64(*a, *b, env)))
+                }
                 _ => Err(LispError::Generic(format!(
                     "GCD: expected integers, got {} and {}",
                     err_val(&args[0]),
@@ -438,8 +444,37 @@ pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispV
                     if *a == 0 || *b == 0 {
                         Ok(LispVal::Number(0))
                     } else {
-                        let g = gcd_i64(*a, *b);
-                        Ok(LispVal::Number((a / g * b).abs()))
+                        let g = gcd_i64(*a, *b, env);
+                        let quotient = if g == 0 {
+                            // Should not happen for nonzero a/b, but guard
+                            // against a division by zero panic if wrapping
+                            // arithmetic in gcd_i64 ever produces 0.
+                            env.set_flag("OVERFLOW");
+                            0
+                        } else {
+                            match a.checked_div(g) {
+                                Some(v) => v,
+                                None => {
+                                    env.set_flag("OVERFLOW");
+                                    a.wrapping_div(g)
+                                }
+                            }
+                        };
+                        let product = match quotient.checked_mul(*b) {
+                            Some(v) => v,
+                            None => {
+                                env.set_flag("OVERFLOW");
+                                quotient.wrapping_mul(*b)
+                            }
+                        };
+                        let result = match product.checked_abs() {
+                            Some(v) => v,
+                            None => {
+                                env.set_flag("OVERFLOW");
+                                product.wrapping_abs()
+                            }
+                        };
+                        Ok(LispVal::Number(result))
                     }
                 }
                 _ => Err(LispError::Generic(format!(
@@ -478,15 +513,44 @@ pub(super) fn apply_math_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<LispV
     }
 }
 
-pub(super) fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
-    a = a.abs();
-    b = b.abs();
+/// Euclidean GCD on raw `i64` inputs. `i64::MIN.abs()` cannot be represented
+/// in `i64` (its magnitude is `2^63`), so a checked-abs failure sets the
+/// `OVERFLOW` flag and falls back to the wrapped (still-negative) value,
+/// matching the checked/wrapping-plus-flag idiom used by `+`/`-`/`*`//`
+/// above.
+///
+/// Post-fix behavior when an operand is `i64::MIN` (`OVERFLOW` is set in
+/// every such case, since `|i64::MIN|` is unrepresentable):
+///
+/// - Mixed cases like `gcd(i64::MIN, 5)` run the Euclid loop with the
+///   wrapped (negative) seed; the loop preserves the correct magnitude, and
+///   the final sign normalization below negates a representable negative
+///   result, so the *true* mathematical gcd is returned (`gcd(MIN, 5)` = 1,
+///   `gcd(MIN, 6)` = 2).
+/// - `gcd(i64::MIN, 0)` and `gcd(i64::MIN, i64::MIN)` mathematically equal
+///   `2^63`, which is unrepresentable; they return the poisoned wrapped
+///   value `i64::MIN` per the wrapping convention.
+fn gcd_i64(mut a: i64, mut b: i64, env: &Shared<Environment>) -> i64 {
+    let checked_abs_flagged = |n: i64, env: &Shared<Environment>| -> i64 {
+        match n.checked_abs() {
+            Some(v) => v,
+            None => {
+                env.set_flag("OVERFLOW");
+                n.wrapping_abs()
+            }
+        }
+    };
+    a = checked_abs_flagged(a, env);
+    b = checked_abs_flagged(b, env);
     while b != 0 {
         let t = b;
         b = a % b;
         a = t;
     }
-    a
+    // A wrapped i64::MIN seed can leave a negative (correct-magnitude)
+    // result. Normalize the sign when representable; i64::MIN itself (the
+    // gcd(MIN, 0) / gcd(MIN, MIN) cases) stays as the poisoned wrapped value.
+    if a < 0 && a != i64::MIN { -a } else { a }
 }
 
 /// String-operation kernel primitives (issue #147). These cannot be expressed
