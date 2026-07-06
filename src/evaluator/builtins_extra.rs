@@ -91,7 +91,7 @@ pub(super) fn apply_io_op(
                 .lock()
                 .read_line(&mut line)
                 .map_err(|e| LispError::Generic(format!("Failed to read input: {}", e)))?;
-            crate::reader::read(&line, env)
+            crate::reader::read_with_depth_limit(&line, env, env.reader_depth_limit())
                 .map_err(|e| LispError::Generic(format!("Failed to parse input: {}", e)))
         }
         BuiltinFunc::Prin1 => {

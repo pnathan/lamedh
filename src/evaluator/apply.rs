@@ -53,7 +53,10 @@ pub(super) fn apply(
                     ));
                 }
                 match &args[0] {
-                    LispVal::String(s) => crate::reader::read(s, env).map_err(LispError::Generic),
+                    LispVal::String(s) => {
+                        crate::reader::read_with_depth_limit(s, env, env.reader_depth_limit())
+                            .map_err(LispError::Generic)
+                    }
                     other => Err(LispError::Generic(format!(
                         "READ-FROM-STRING: expected a string, got {}",
                         err_val(other)

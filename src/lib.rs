@@ -1662,8 +1662,12 @@ pub fn load_stdlib(env: &Shared<Environment>) -> Result<(), LispError> {
 /// multiple top-level forms.
 pub fn eval_str(src: &str, env: &Shared<Environment>) -> Result<LispVal, LispError> {
     // Reader errors are already self-describing ("parse error at line L,
-    // column C: ..."), so no extra prefix is added here.
-    let form = reader::read(src, env).map_err(LispError::Generic)?;
+    // column C: ..."), so no extra prefix is added here. The nesting-depth
+    // limit comes from the environment (issue #270): the eval entry points
+    // are documented to run under `with_large_stack`, where `with_stdlib`'s
+    // generous limit is safe.
+    let form = reader::read_with_depth_limit(src, env, env.reader_depth_limit())
+        .map_err(LispError::Generic)?;
     evaluator::eval(&form, env)
 }
 
@@ -1672,7 +1676,8 @@ pub fn eval_str(src: &str, env: &Shared<Environment>) -> Result<LispVal, LispErr
 /// Expressions are evaluated in order; if any expression fails the error is
 /// returned immediately and subsequent expressions are not evaluated.
 pub fn eval_all(src: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, LispError> {
-    let forms = reader::read_all(src, env).map_err(LispError::Generic)?;
+    let forms = reader::read_all_with_depth_limit(src, env, env.reader_depth_limit())
+        .map_err(LispError::Generic)?;
     forms
         .iter()
         .map(|form| evaluator::eval(form, env))
@@ -1776,7 +1781,7 @@ fn load_file_inner(
         loop {
             rest = reader::skip_ws(rest);
             let form_offset = src.len() - rest.len();
-            match reader::read_next(rest, env) {
+            match reader::read_next_with_depth_limit(rest, env, env.reader_depth_limit()) {
                 Ok(None) => return Ok(()),
                 Ok(Some((expr, rem))) => {
                     let step = if let Some(include) = include_target(&expr)? {
