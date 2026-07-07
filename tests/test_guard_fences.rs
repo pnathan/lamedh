@@ -324,3 +324,74 @@ fn self_escalation_is_impossible_from_guarded_code() {
         assert!(!e.feature_enabled("SHELL"));
     });
 }
+
+// ------------------------------------------------- capability manifests ----
+
+#[test]
+fn capabilities_needed_infers_transitively_and_cycle_safely() {
+    with_large_stack(|| {
+        let e = env();
+        eval_line("(defun cn-fetch (p) (read-file p))", &e);
+        eval_line(
+            "(defun cn-deploy (p q) (cn-fetch p) (rename-file p q) (sh \"true\"))",
+            &e,
+        );
+        eval_line("(defun cn-pure (x) (* x x))", &e);
+        // Self-recursive caller: the walk must terminate.
+        eval_line(
+            "(defun cn-loop (n) (if (< n 1) (cn-deploy \"a\" \"b\") (cn-loop (- n 1))))",
+            &e,
+        );
+        assert_eq!(
+            eval_line("(capabilities-needed 'cn-fetch)", &e),
+            "(READ-FS)"
+        );
+        // Transitive closure incl. the Lisp-layer SH -> SHELL builtin edge,
+        // and RENAME-FILE's dual requirement (#273).
+        let deploy = eval_line("(capabilities-needed 'cn-deploy)", &e);
+        for cap in ["SHELL", "READ-FS", "CREATE-FS"] {
+            assert!(
+                deploy.contains(cap),
+                "deploy manifest missing {cap}: {deploy}"
+            );
+        }
+        assert_eq!(eval_line("(capabilities-needed 'cn-pure)", &e), "()");
+        assert_eq!(eval_line("(capabilities-needed 'cn-loop)", &e), deploy);
+    });
+}
+
+#[test]
+fn capabilities_needed_form_analyzes_raw_forms() {
+    with_large_stack(|| {
+        let e = env();
+        let out = eval_line(
+            "(capabilities-needed-form '(write-file \"x\" (sh \"date\")))",
+            &e,
+        );
+        assert!(
+            out.contains("CREATE-FS") && out.contains("SHELL"),
+            "got: {out}"
+        );
+        assert_eq!(eval_line("(capabilities-needed-form '(+ 1 2))", &e), "()");
+    });
+}
+
+#[test]
+fn manifest_drives_a_minimal_fence_end_to_end() {
+    with_large_stack(|| {
+        let e = env();
+        e.enable_feature("READ-FS");
+        e.enable_feature("CREATE-FS");
+        // Infer the manifest, grant exactly that, and confirm an operation
+        // OUTSIDE the manifest is denied inside the fence.
+        eval_line("(defun mf-probe (p) (file-exists-p p))", &e);
+        let out = eval_line(
+            "(with-capabilities (capabilities-needed 'mf-probe)
+               (list (mf-probe \"/etc/hostname\")
+                     (handler-case (write-file \"/tmp/mf-x\" \"hi\")
+                       (error (er) 'denied))))",
+            &e,
+        );
+        assert!(out.ends_with("DENIED)"), "got: {out}");
+    });
+}
