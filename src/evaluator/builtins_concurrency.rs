@@ -172,3 +172,93 @@ fn deserialise_value(s: &str, env: &Shared<Environment>) -> Result<LispVal, Lisp
         LispError::Generic(format!("channel-recv: failed to parse received value: {e}"))
     })
 }
+
+/// `(spawn-thread body-string caps-list fuel-or-nil)` — the kernel half of the
+/// `spawn` operative (issue #140, capability-process design). Spins a fresh
+/// 512 MiB interpreter thread with its own share-nothing environment: parse
+/// the serialized BODY-STRING, grant exactly the capabilities named in
+/// CAPS-LIST (already intersected with the parent's grants by the Lisp
+/// `spawn` operative — this builtin trusts that list), arm the kernel fuel
+/// backstop if FUEL is a number, evaluate, and post the result (or error)
+/// back over a returned channel as a `(:ok value)` / `(:error "msg")` datum.
+/// Everything crossing the thread boundary is a `String`/`Vec<String>`/`u64`,
+/// so the `Rc`-based `LispVal` never needs `Send`.
+pub(super) fn apply_spawn(
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    if args.len() != 3 {
+        return Err(LispError::Generic(
+            "spawn-thread requires exactly three arguments: body-string caps-list fuel".to_string(),
+        ));
+    }
+    let body_src = match &args[0] {
+        LispVal::String(s) => s.clone(),
+        other => {
+            return Err(LispError::Generic(format!(
+                "SPAWN-THREAD: body must be a string, got {}",
+                err_val(other)
+            )));
+        }
+    };
+    let caps: Vec<String> = list_to_vec(&args[1])?
+        .iter()
+        .map(|c| match c {
+            LispVal::Symbol(s) => Ok(s.borrow().name.clone()),
+            LispVal::String(s) => Ok(s.clone()),
+            other => Err(LispError::Generic(format!(
+                "SPAWN-THREAD: capability must be a symbol or string, got {}",
+                err_val(other)
+            ))),
+        })
+        .collect::<Result<_, _>>()?;
+    let fuel: Option<u64> = match &args[2] {
+        LispVal::Nil => None,
+        LispVal::Number(n) if *n >= 0 => Some(*n as u64),
+        other => {
+            return Err(LispError::Generic(format!(
+                "SPAWN-THREAD: fuel must be a non-negative integer or nil, got {}",
+                err_val(other)
+            )));
+        }
+    };
+
+    // The result channel: the child holds the sender, the caller the whole
+    // ChannelObj to `channel-recv` on.
+    let (sender, receiver) = mpsc::channel::<String>();
+    let handle = Arc::new(ChannelObj {
+        sender: sender.clone(),
+        receiver: std::sync::Mutex::new(receiver),
+    });
+
+    // Everything below is Send: String body, Vec<String> caps, Option<u64>
+    // fuel, and the Sender. The environment is built INSIDE the thread and
+    // never crosses the boundary.
+    std::thread::Builder::new()
+        .stack_size(crate::INTERPRETER_STACK_SIZE)
+        .spawn(move || {
+            let child = Environment::with_stdlib();
+            for cap in &caps {
+                child.enable_feature(cap);
+            }
+            if let Some(f) = fuel {
+                crate::evaluator::set_kernel_fuel(Some(f));
+            }
+            let outcome = match crate::reader::read(&body_src, &child) {
+                Ok(form) => match crate::evaluator::eval(&form, &child) {
+                    Ok(v) => format!("(:OK {})", crate::printer::print(&v)),
+                    Err(e) => format!(
+                        "(:ERROR {})",
+                        crate::printer::print(&LispVal::String(format!("{e:?}")))
+                    ),
+                },
+                Err(e) => format!("(:ERROR {})", crate::printer::print(&LispVal::String(e))),
+            };
+            // A disconnected receiver (caller dropped the handle) is fine.
+            let _ = sender.send(outcome);
+        })
+        .map_err(|e| LispError::Generic(format!("spawn-thread: failed to spawn thread: {e}")))?;
+
+    let _ = env;
+    Ok(LispVal::Channel(handle))
+}

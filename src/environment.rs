@@ -1043,6 +1043,10 @@ impl Environment {
                 LispVal::Builtin(BuiltinFunc::MakeChannel),
             );
             env.set(
+                "SPAWN-THREAD".to_string(),
+                LispVal::Builtin(BuiltinFunc::SpawnProcess),
+            );
+            env.set(
                 "CHANNEL-SEND".to_string(),
                 LispVal::Builtin(BuiltinFunc::ChannelSend),
             );

@@ -414,3 +414,70 @@ call executes on every path. NIL means no gated builtin is reachable."
   "CAPABILITIES-NEEDED for a raw FORM: analyze the form's own calls (via
 the call-graph collector) and close over the call graph transitively."
   ($guard-caps-walk (cg-collect-callees form nil nil) nil nil))
+
+;;; ------------------------------------------------------------------
+;;; Capability processes (issue #140): SPAWN is the fences worn as a
+;;; thread. A spawned child is a share-nothing interpreter with its own
+;;; 512 MiB stack, its authority the intersection of the requested
+;;; capabilities with what the parent effectively holds (attenuation only,
+;;; the same monotone law as WITH-CAPABILITIES), and an optional fuel
+;;; budget wired to the kernel step backstop. The body crosses the thread
+;;; boundary as serialized data — code is data — and the result comes back
+;;; the same way, so nothing shared, nothing to race.
+;;;
+;;;   (spawn (:capabilities (READ-FS) :fuel 1000000) form...)  ; => handle
+;;;   (await handle)          ; block for the child's value (or re-signal
+;;;                           ; its error in the parent)
+;;;   (spawn-value handle)    ; the raw (:ok v) / (:error msg) datum
+;;;
+;;; For an agent this is orchestration with capability arithmetic: fan work
+;;; out to workers that provably cannot exceed the authority you grant or
+;;; run longer than the fuel you set.
+
+(defvau spawn (x e)
+  "(SPAWN (:capabilities (CAP...) :fuel N) form...) — evaluate FORMs on a
+fresh share-nothing interpreter thread whose capabilities are the
+requested set intersected with the parent's effective set, under an
+optional fuel budget. Returns a handle to AWAIT. The body is serialized
+across the boundary, so it must be self-contained data (no captured
+closures); refer to spawned workers by the values they return."
+  (let* ((spec (car x))
+         (body (cdr x))
+         (requested (or ($guard-plist-get spec ':capabilities) nil))
+         (fuel (or ($guard-plist-get spec ':fuel) nil))
+         ;; Resolve CAPABILITIES-EFFECTIVE in the CALLER's environment so an
+         ;; enclosing WITH-CAPABILITIES fence's attenuation is honored (the
+         ;; operative's own lexical scope would see only the global).
+         (outer-caps (funcall ($guard-probe 'capabilities-effective e)))
+         (effective ($guard-intersect requested outer-caps))
+         (body-form (if (null (cdr body)) (car body) (cons 'progn body)))
+         (body-src (prin1-to-string body-form)))
+    (spawn-thread body-src effective fuel)))
+
+(defun spawn* (spec form)
+  "Functional SPAWN: like SPAWN but FORM is an already-built, evaluated
+data form (so the caller can splice runtime values into a self-contained
+body — the share-nothing boundary carries no closures). SPEC is a plist
+with optional :capabilities and :fuel. Example, a parameterized fan-out:
+  (mapcar (lambda (n) (spawn* () (list 'squared n))) items)"
+  (let* ((requested (or ($guard-plist-get spec ':capabilities) nil))
+         (fuel (or ($guard-plist-get spec ':fuel) nil))
+         (effective ($guard-intersect requested (capabilities-effective))))
+    (spawn-thread (prin1-to-string form) effective fuel)))
+
+(defun spawn-value (handle)
+  "Block until the spawned child completes; return its raw outcome datum,
+either (:OK value) or (:ERROR message)."
+  (channel-recv handle))
+
+(defun spawn-error-p (outcome)
+  "T when a SPAWN-VALUE outcome is an error."
+  (and (consp outcome) (eq (car outcome) ':error)))
+
+(defun await (handle)
+  "Block for the spawned child's value. Returns it on success; re-signals
+the child's error in the parent on failure."
+  (let ((outcome (spawn-value handle)))
+    (if (spawn-error-p outcome)
+        (error (concat "spawned child failed: " (car (cdr outcome))))
+        (car (cdr outcome)))))

@@ -191,7 +191,7 @@
 //! | `20-condensation.lisp` | Condensation: `DEFCONCEPT`/`DERIVE`/laws/examples, row concepts with branded field access, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`) |
 //! | `21-cl-compat.lisp` | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
 //! | `21-interfaces.lisp` | Go-style method sets with checker-verified conformance and a row-aware unifier: `DEFINTERFACE`, `IMPLEMENTS?`/`IMPLEMENTS!`, `METHOD` |
-//! | `22-guard.lisp` | Guard fences (issue #284): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `FUEL-REMAINING`, `CAPABILITIES-EFFECTIVE` |
+//! | `22-guard.lisp` | Guard fences (#284) + capability processes (#140): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `CAPABILITIES-NEEDED`, `SPAWN`/`SPAWN*`/`AWAIT` |
 //! | `23-match.lisp` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
 //! | `24-rules.lisp` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
@@ -644,6 +644,8 @@ pub enum BuiltinFunc {
     // Concurrency primitives (gated behind the `concurrency` feature)
     #[cfg(feature = "concurrency")]
     MakeChannel,
+    #[cfg(feature = "concurrency")]
+    SpawnProcess,
     #[cfg(feature = "concurrency")]
     ChannelSend,
     #[cfg(feature = "concurrency")]

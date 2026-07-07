@@ -1401,6 +1401,8 @@ pub(super) fn apply(
             #[cfg(feature = "concurrency")]
             BuiltinFunc::MakeChannel => apply_make_channel(args),
             #[cfg(feature = "concurrency")]
+            BuiltinFunc::SpawnProcess => apply_spawn(args, env),
+            #[cfg(feature = "concurrency")]
             BuiltinFunc::ChannelSend => apply_channel_send(args, env),
             #[cfg(feature = "concurrency")]
             BuiltinFunc::ChannelRecv => apply_channel_recv(args, env),
