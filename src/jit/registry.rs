@@ -238,11 +238,34 @@ pub struct Jit {
     /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
     /// ordinary typed functions over the [`Core`] struct ops.
     pub(super) structs: HashMap<String, Rc<StructDef>>,
+    /// **Declared** type schemes (experimental rows, `declare-type!`): axioms
+    /// asserted by the Lisp layer for dynamically-implemented functions (e.g.
+    /// concept accessors declared row-polymorphic). Consulted by the *checker*
+    /// when a callee is otherwise unknown; never by codegen, so nothing here
+    /// can reach the native tier.
+    pub(super) declared: HashMap<String, infer::Scheme>,
 }
 
 impl Jit {
     pub fn new() -> Jit {
         Jit::default()
+    }
+
+    /// Register a **declared** scheme for `name` from its surface form, e.g.
+    /// `(forall (r) (-> ((record ((amount int64)) r)) int64))`. Returns the
+    /// rendered scheme. The declaration is an axiom, not a checked fact — the
+    /// caller (the condensation layer) is responsible for generating the
+    /// implementation in lockstep.
+    pub fn declare_scheme(&mut self, name: &str, form: &LispVal) -> Result<String, String> {
+        let scheme = parse_scheme_form(form, &self.structs)?;
+        let rendered = infer::scheme_name(&scheme);
+        self.declared.insert(name.to_string(), scheme);
+        Ok(rendered)
+    }
+
+    /// The rendered declared scheme for `name`, if one was registered.
+    pub fn declared_scheme_name(&self, name: &str) -> Option<String> {
+        self.declared.get(name).map(infer::scheme_name)
     }
 
     /// Register (or update) the signature for `name`.  Returns `(id, arity_changed)`.
@@ -372,6 +395,7 @@ impl Jit {
         let mut max_slots = scope.len();
         let (core, resolved_params, resolved_ret) = {
             let cx = Cx {
+                declared: &self.declared,
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
@@ -487,6 +511,7 @@ impl Jit {
         type Inferred = (Core, Vec<(String, Ty)>, Ty);
         let outcome: Result<Inferred, String> = (|| {
             let cx = Cx {
+                declared: &self.declared,
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
@@ -568,6 +593,7 @@ impl Jit {
         type Inferred = (Core, Vec<(String, Ty)>, Ty);
         let outcome: Result<Inferred, String> = (|| {
             let cx = Cx {
+                declared: &self.declared,
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
@@ -651,6 +677,7 @@ impl Jit {
         let mut max_slots = scope.len();
         let outcome: Result<String, String> = (|| {
             let cx = Cx {
+                declared: &self.declared,
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
@@ -708,6 +735,7 @@ impl Jit {
         let mut scope = Scope::new();
         let mut max_slots = 0;
         let cx = Cx {
+            declared: &self.declared,
             funcs: &self.funcs,
             by_name: &self.by_name,
             structs: &self.structs,
@@ -1225,5 +1253,132 @@ impl Jit {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Declared-scheme parsing (experimental rows, `declare-type!`).
+// ---------------------------------------------------------------------------
+
+/// Parse a surface scheme form: `(forall (vars...) ty)` or a bare `ty`.
+fn parse_scheme_form(
+    form: &LispVal,
+    structs: &HashMap<String, Rc<StructDef>>,
+) -> Result<infer::Scheme, String> {
+    let parts = list_to_vec(form);
+    let (var_names, body) = match parts.as_slice() {
+        [LispVal::Symbol(s), vars_form, body] if s.borrow().name == "FORALL" => {
+            let mut names = Vec::new();
+            for v in list_to_vec(vars_form) {
+                match v {
+                    LispVal::Symbol(sym) => names.push(sym.borrow().name.clone()),
+                    other => {
+                        return Err(format!("declare-type!: bad type variable {other:?}"));
+                    }
+                }
+            }
+            (names, body.clone())
+        }
+        _ => (Vec::new(), form.clone()),
+    };
+    let mut vars: HashMap<String, u32> = HashMap::new();
+    for (i, n) in var_names.iter().enumerate() {
+        if vars.insert(n.clone(), i as u32).is_some() {
+            return Err(format!("declare-type!: duplicate type variable {n}"));
+        }
+    }
+    let ty = parse_declared_ty(&body, &vars, structs)?;
+    Ok(infer::Scheme {
+        vars: (0..var_names.len() as u32).collect(),
+        ty,
+    })
+}
+
+fn parse_declared_ty(
+    form: &LispVal,
+    vars: &HashMap<String, u32>,
+    structs: &HashMap<String, Rc<StructDef>>,
+) -> Result<Ty, String> {
+    match form {
+        LispVal::Symbol(s) => {
+            let n = s.borrow().name.clone();
+            if let Some(id) = vars.get(&n) {
+                return Ok(Ty::Var(*id));
+            }
+            match n.as_str() {
+                "INT64" => Ok(Ty::Int64),
+                "FLOAT64" => Ok(Ty::Float64),
+                "BOOL" => Ok(Ty::Bool),
+                "CHAR" => Ok(Ty::Char),
+                "SYMBOL" => Ok(Ty::Symbol),
+                "STRING" => Ok(Ty::Str),
+                "ANY" => Ok(Ty::Any),
+                other => structs
+                    .get(other)
+                    .map(|d| Ty::Struct(d.clone()))
+                    .ok_or_else(|| format!("declare-type!: unknown type `{other}`")),
+            }
+        }
+        LispVal::Cons { .. } => {
+            let parts = list_to_vec(form);
+            let head = match parts.first() {
+                Some(LispVal::Symbol(s)) => s.borrow().name.clone(),
+                _ => return Err("declare-type!: malformed compound type".to_string()),
+            };
+            let sub = |f: &LispVal| parse_declared_ty(f, vars, structs);
+            match head.as_str() {
+                "LIST" if parts.len() == 2 => Ok(Ty::List(Box::new(sub(&parts[1])?))),
+                "ARRAY" if parts.len() == 2 => Ok(Ty::Array(Box::new(sub(&parts[1])?))),
+                "PAIR" if parts.len() == 3 => Ok(Ty::Pair(
+                    Box::new(sub(&parts[1])?),
+                    Box::new(sub(&parts[2])?),
+                )),
+                "->" if parts.len() == 3 => {
+                    let mut args = Vec::new();
+                    for a in list_to_vec(&parts[1]) {
+                        args.push(sub(&a)?);
+                    }
+                    Ok(Ty::Fn(args, Box::new(sub(&parts[2])?)))
+                }
+                "RECORD" if parts.len() == 2 || parts.len() == 3 => {
+                    let mut fields = Vec::new();
+                    for f in list_to_vec(&parts[1]) {
+                        let fp = list_to_vec(&f);
+                        match fp.as_slice() {
+                            [LispVal::Symbol(l), t] => {
+                                fields.push((l.borrow().name.clone(), sub(t)?));
+                            }
+                            _ => {
+                                return Err(
+                                    "declare-type!: record field must be (label type)".to_string()
+                                );
+                            }
+                        }
+                    }
+                    fields.sort_by(|a, b| a.0.cmp(&b.0));
+                    for w in fields.windows(2) {
+                        if w[0].0 == w[1].0 {
+                            return Err(format!(
+                                "declare-type!: duplicate record label {}",
+                                w[0].0
+                            ));
+                        }
+                    }
+                    let rest = if parts.len() == 3 {
+                        let tail = sub(&parts[2])?;
+                        if !matches!(tail, Ty::Var(_)) {
+                            return Err("declare-type!: record row tail must be a type variable"
+                                .to_string());
+                        }
+                        Some(Box::new(tail))
+                    } else {
+                        None
+                    };
+                    Ok(Ty::Record(fields, rest))
+                }
+                other => Err(format!("declare-type!: unknown type constructor `{other}`")),
+            }
+        }
+        other => Err(format!("declare-type!: malformed type {other:?}")),
     }
 }

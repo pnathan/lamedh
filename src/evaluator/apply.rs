@@ -362,9 +362,12 @@ pub(super) fn apply(
             }
 
             // Introspection
-            BuiltinFunc::Describe | BuiltinFunc::SeeSource | BuiltinFunc::Disassemble => {
-                apply_introspection(builtin, args, env)
-            }
+            BuiltinFunc::Describe
+            | BuiltinFunc::SeeSource
+            | BuiltinFunc::SeeType
+            | BuiltinFunc::ReadString
+            | BuiltinFunc::DeclareType
+            | BuiltinFunc::Disassemble => apply_introspection(builtin, args, env),
 
             // String/Symbol operations
             BuiltinFunc::Explode
