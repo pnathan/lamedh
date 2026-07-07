@@ -1097,6 +1097,44 @@ pub(super) fn apply(
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
 
+            BuiltinFunc::KernelFuelSet => {
+                // (kernel-fuel-set! n-or-nil) — arm/disarm the current
+                // thread's kernel step budget; returns the previous state
+                // (a count or NIL) so callers can restore it on exit.
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "kernel-fuel-set! takes exactly one argument (a non-negative integer or nil)"
+                            .to_string(),
+                    ));
+                }
+                let requested = match &args[0] {
+                    LispVal::Nil => None,
+                    LispVal::Number(n) if *n >= 0 => Some(*n as u64),
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "KERNEL-FUEL-SET!: expected a non-negative integer or nil, got {}",
+                            err_val(other)
+                        )));
+                    }
+                };
+                match crate::evaluator::set_kernel_fuel(requested) {
+                    Some(prev) => Ok(LispVal::Number(prev.min(i64::MAX as u64) as i64)),
+                    None => Ok(LispVal::Nil),
+                }
+            }
+
+            BuiltinFunc::KernelFuelRemaining => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "kernel-fuel-remaining takes no arguments".to_string(),
+                    ));
+                }
+                match crate::evaluator::kernel_fuel_remaining() {
+                    Some(n) => Ok(LispVal::Number(n.min(i64::MAX as u64) as i64)),
+                    None => Ok(LispVal::Nil),
+                }
+            }
+
             // Capabilities / features (read-only from Lisp)
             BuiltinFunc::FeatureEnabledP => {
                 let name = feature_name_arg(args, "feature-enabled-p")?;

@@ -395,3 +395,94 @@ fn manifest_drives_a_minimal_fence_end_to_end() {
         assert!(out.ends_with("DENIED)"), "got: {out}");
     });
 }
+
+// ------------------------------------------- kernel fuel backstop (#284) ----
+
+#[test]
+fn kernel_backstop_catches_pre_fence_closure_loops() {
+    with_large_stack(|| {
+        let e = env();
+        // The flagship Phase-1 leak: a function defined OUTSIDE the fence is
+        // not instrumented, so the Lisp-level ticks never fire — the kernel
+        // step budget must terminate it anyway, catchably.
+        eval_line(
+            "(defun kb-spin (n) (if (< n 1) 'leaked (kb-spin (- n 1))))",
+            &e,
+        );
+        let out = eval_line(
+            "(handler-case (with-fuel 50 (kb-spin 100000000))
+               (error (er) (error-message er)))",
+            &e,
+        );
+        assert!(
+            out.contains("fuel exhausted"),
+            "kernel backstop must catch the uninstrumented loop, got: {out}"
+        );
+        // The interpreter (and the disarmed counter) are healthy afterwards.
+        assert_eq!(eval_line("(+ 1 2)", &e), "3");
+        assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+    });
+}
+
+#[test]
+fn kernel_backstop_arms_and_restores_around_fences() {
+    with_large_stack(|| {
+        let e = env();
+        // Unarmed outside any fence.
+        assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+        // Armed inside at budget * multiplier (minus setup steps).
+        let inside: i64 = eval_line("(with-fuel 100 (kernel-fuel-remaining))", &e)
+            .parse()
+            .expect("armed count");
+        assert!(
+            inside > 20_000 && inside <= 25_600,
+            "expected ~100*256 steps armed, got {inside}"
+        );
+        // Disarmed again after the fence exits.
+        assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+    });
+}
+
+#[test]
+fn kernel_backstop_nested_exhaustion_leaves_outer_fence_alive() {
+    with_large_stack(|| {
+        let e = env();
+        eval_line(
+            "(defun kb-spin2 (n) (if (< n 1) 'leaked (kb-spin2 (- n 1))))",
+            &e,
+        );
+        let out = eval_line(
+            "(with-fuel 1000
+               (list (handler-case (with-fuel 50 (kb-spin2 100000000))
+                       (error (er) 'inner-caught))
+                     (if (kernel-fuel-remaining) 'outer-rearmed 'outer-disarmed)
+                     (fuel-remaining)))",
+            &e,
+        );
+        assert_eq!(out, "(INNER-CAUGHT OUTER-REARMED 1000)");
+    });
+}
+
+#[test]
+fn kernel_fuel_setter_denied_inside_fence_usable_outside() {
+    with_large_stack(|| {
+        let e = env();
+        let out = eval_line(
+            "(handler-case (with-fuel 100 (kernel-fuel-set! nil))
+               (error (er) 'setter-denied))",
+            &e,
+        );
+        assert_eq!(out, "SETTER-DENIED");
+        // Host-level use outside any fence: arm, read, disarm.
+        assert_eq!(eval_line("(kernel-fuel-set! 5000)", &e), "()");
+        let rem: i64 = eval_line("(kernel-fuel-remaining)", &e)
+            .parse()
+            .expect("count");
+        assert!(rem > 4_000 && rem <= 5_000);
+        let prev: i64 = eval_line("(kernel-fuel-set! nil)", &e)
+            .parse()
+            .expect("previous count");
+        assert!(prev > 3_000 && prev < 5_000);
+        assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+    });
+}

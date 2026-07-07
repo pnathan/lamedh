@@ -663,6 +663,17 @@ impl Environment {
             "CLEAR-ALL-FLAGS".to_string(),
             LispVal::Builtin(BuiltinFunc::ClearAllFlags),
         );
+        // Kernel fuel (issue #284 Phase 2). WITH-FUEL fences shadow the
+        // setter inside guarded code; hosts and top-level scripts may use it
+        // directly.
+        env.set(
+            "KERNEL-FUEL-SET!".to_string(),
+            LispVal::Builtin(BuiltinFunc::KernelFuelSet),
+        );
+        env.set(
+            "KERNEL-FUEL-REMAINING".to_string(),
+            LispVal::Builtin(BuiltinFunc::KernelFuelRemaining),
+        );
 
         // Capabilities / features — read-only from Lisp.
         // Grant/revoke capabilities only from the host API (env.enable_feature)

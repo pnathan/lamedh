@@ -118,6 +118,16 @@ every enclosing WITH-CAPABILITIES fence."
 (defun $guard-fresh-tick-name ()
   (gensym))
 
+;; Kernel-fuel backstop (issue #284 Phase 2). The Lisp-level budget is
+;; charged at function entries and loop back-edges; the kernel counter is
+;; charged once per evaluator trampoline step, closing the Phase-1 leaks
+;; (closures defined outside the fence, user macros expanding to loops,
+;; quasiquote bodies). One back-edge tick spans many trampoline steps, so
+;; the kernel budget is the Lisp budget times this multiplier — generous
+;; enough that ordinary fenced work exhausts the Lisp budget first, small
+;; enough that leaked unmetered loops still terminate.
+(setq $guard-kernel-step-multiplier 256)
+
 (defun $guard-tick-call ()
   (list $guard-walk-tick-name))
 
@@ -217,6 +227,12 @@ remainder and every step charges all enclosing fences. Inside the fence,
              (cons '$guard-tick tick)
              (cons '$guard-fuel-reader reader)
              (cons 'fuel-remaining reader)
+             ;; The kernel backstop's setter is fence-internal state: deny
+             ;; it to guarded code (reading via KERNEL-FUEL-REMAINING stays
+             ;; allowed, per the introspection-visible policy).
+             (cons 'kernel-fuel-set!
+                   (lambda (n)
+                     (error "kernel-fuel-set! is disabled inside a guard fence (#284)")))
              ;; Escape hatches: EVAL re-instruments and re-seals with this
              ;; fence's own bindings (shared cell — eval'd work charges us);
              ;; the higher-order functions charge per callback so external,
@@ -245,12 +261,25 @@ remainder and every step charges all enclosing fences. Inside the fence,
                      (sort lst (lambda (a b) (funcall tick) (funcall pred a b))))))))
       (store bcell 0 bindings)
       (setq $guard-walk-tick-name tick-name)
-      (unwind-protect
-          (eval ($guard-seal ($guard-walk-list (cdr x)) bindings) e)
-        ;; Retire the fence: closures that escaped this extent keep their
-        ;; captured tick, but against an effectively infinite budget (they
-        ;; still chain to any still-active enclosing fences).
-        (store cell 0 1000000000000)))))
+      ;; Arm the kernel step backstop (issue #284 Phase 2), clamped to any
+      ;; enclosing fence's remaining kernel budget.
+      (let* ((kprev (kernel-fuel-remaining))
+             (kbudget (* effective $guard-kernel-step-multiplier))
+             (karmed (if kprev (min kprev kbudget) kbudget)))
+        (kernel-fuel-set! karmed)
+        (unwind-protect
+            (eval ($guard-seal ($guard-walk-list (cdr x)) bindings) e)
+          (progn
+            ;; Retire the fence: closures that escaped this extent keep
+            ;; their captured tick, but against an effectively infinite
+            ;; budget (they still chain to any still-active enclosing
+            ;; fences).
+            (store cell 0 1000000000000)
+            ;; Restore the enclosing kernel budget without refunding what
+            ;; this fence spent: the smaller of the snapshot and what is
+            ;; left now. NIL snapshot disarms.
+            (let ((know (kernel-fuel-remaining)))
+              (kernel-fuel-set! (if (and kprev know) (min kprev know) kprev)))))))))
 
 ;;; ------------------------------------------------------------------
 ;;; WITH-CAPABILITIES.
