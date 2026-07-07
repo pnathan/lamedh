@@ -853,6 +853,11 @@ pub enum Code {
     Let {
         /// `(symbol_id, init_code)` pairs, evaluated in the outer env.
         bindings: Vec<(u32, Shared<Code>)>,
+        /// Slot routing for the child frame (issue #200 M3 slice 2): the
+        /// binder ids, one shared table per LET form so frame creation
+        /// does not allocate it. Present iff the binders are distinct —
+        /// degenerate duplicate-binder LETs keep the map path.
+        routing: Option<Shared<Vec<u32>>>,
         /// Body evaluated in the child env (tail position).
         body: Shared<Code>,
     },

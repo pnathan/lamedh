@@ -91,3 +91,59 @@ fn tco_and_first_class_env_still_hold() {
         assert_eq!(eval_line("(eval 'v (sf-cap 42))", &e), "42");
     });
 }
+
+// ------------------------------------------ LET slot frames (slice 2) ----
+
+#[test]
+fn let_binders_read_through_slots() {
+    let e = env();
+    eval_line(
+        "(defun sf-lv2 (a) (let ((b (+ a 1)) (c 2)) (+ a (+ b c))))",
+        &e,
+    );
+    assert_eq!(eval_line("(sf-lv2 20)", &e), "43");
+}
+
+#[test]
+fn macro_shadow_write_of_a_let_binder_is_observed() {
+    let e = env();
+    eval_line("(defmacro sf-clob-b () '(setq b 999))", &e);
+    eval_line("(defun sf-lm (a) (let ((b 1)) (sf-clob-b) b))", &e);
+    assert_eq!(eval_line("(sf-lm 0)", &e), "999");
+}
+
+#[test]
+fn duplicate_let_binders_keep_map_semantics() {
+    let e = env();
+    // Degenerate but defined: the last duplicate wins, as in the map path.
+    assert_eq!(eval_line("(let ((x 1) (x 2)) x)", &e), "2");
+}
+
+#[test]
+fn closures_capture_let_slot_bindings() {
+    let e = env();
+    eval_line(
+        "(defun sf-cap-let (a) (let ((b 10)) (funcall (lambda (c) (list a b c)) 3)))",
+        &e,
+    );
+    assert_eq!(eval_line("(sf-cap-let 1)", &e), "(1 10 3)");
+}
+
+#[test]
+fn for_bodies_address_enclosing_binders_correctly() {
+    let e = env();
+    // The subarray shape that caught the original For depth omission:
+    // params and a let binder both read from inside a `for` body.
+    eval_line(
+        "(defun sf-sub (arr start end)
+           (let ((out (array (- end start))))
+             (for (i start (- end 1))
+                  (store out (- i start) (fetch arr i)))
+             out))",
+        &e,
+    );
+    assert_eq!(
+        eval_line("(array->list (sf-sub (list->array '(10 20 30)) 1 3))", &e),
+        "(20 30)"
+    );
+}

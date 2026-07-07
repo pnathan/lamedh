@@ -330,15 +330,31 @@ fn compile_let(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         }
     }
 
-    // Body: single form is compiled directly; multiple forms become a Seq so
-    // the last is in tail position. The body sees one new run-time frame,
-    // tracked as an Opaque scope level (issue #200 M3): LET binders stay on
-    // the map path in v1, but the level must count toward the depth of any
-    // LocalGet reaching past it to an enclosing lambda's parameters.
+    // Body: single form is compiled directly; multiple forms become a Seq
+    // so the last is in tail position. The body sees one new run-time
+    // frame. With distinct binders that frame is a slot frame (issue #200
+    // M3 slice 2): binder reads become LocalGet and the level is a Slot
+    // scope. Duplicate binder ids (degenerate `(let ((x 1) (x 2)) …)`)
+    // keep the map path — position-based slots would resolve the first
+    // occurrence where map semantics keep the last.
+    let ids: Vec<u32> = bindings.iter().map(|(id, _)| *id).collect();
+    let distinct = {
+        let mut seen = ids.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len() == ids.len()
+    };
+    let routing = if distinct {
+        Some(Shared::new(ids.clone()))
+    } else {
+        None
+    };
     let body = {
-        let _g = ScopeGuard::push(ScopeLevel::Opaque(
-            bindings.iter().map(|(id, _)| *id).collect(),
-        ));
+        let _g = ScopeGuard::push(if distinct {
+            ScopeLevel::Slot(ids)
+        } else {
+            ScopeLevel::Opaque(ids)
+        });
         if args.len() == 2 {
             compile(&args[1])
         } else {
@@ -346,7 +362,11 @@ fn compile_let(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         }
     };
 
-    Code::Let { bindings, body }
+    Code::Let {
+        bindings,
+        routing,
+        body,
+    }
 }
 
 /// Compile `(setq v1 e1 v2 e2 …)`.
@@ -430,7 +450,18 @@ fn compile_for(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     } else {
         None
     };
-    let body = args[1..].iter().map(compile).collect();
+    // INVARIANT (issue #200 M3): every compiled construct whose exec arm
+    // creates a run-time frame must push a scope level around the code
+    // compiled to run inside that frame, or LocalGet depths go stale —
+    // For's exec binds `var` in a `loop_env` child frame, so its body
+    // compiles under an Opaque level. (Bounds/step evaluate in the OUTER
+    // env and compile outside it.) The original omission mis-addressed
+    // enclosing params from inside `for` bodies — caught by the stdlib
+    // suite's `subarray` and pinned by tests/test_slot_frames.rs.
+    let body = {
+        let _g = ScopeGuard::push(ScopeLevel::Opaque(vec![var_id]));
+        args[1..].iter().map(compile).collect()
+    };
     Code::For {
         var_id,
         start,
@@ -642,14 +673,31 @@ pub(super) fn exec_step(
             }
         }
 
-        Code::Let { bindings, body } => {
+        Code::Let {
+            bindings,
+            routing,
+            body,
+        } => {
             // Evaluate all init expressions in the *outer* env (standard let
-            // semantics: bindings do not see each other).
-            let let_env = Environment::new_child(env);
-            for (id, init_code) in bindings {
-                let val = exec(init_code, env)?;
-                let_env.set_id(*id, val);
-            }
+            // semantics: bindings do not see each other), then bind — into a
+            // slot frame when the compiler built a routing table (#200 M3).
+            let let_env = match routing {
+                Some(rt) => {
+                    let mut values = Vec::with_capacity(bindings.len());
+                    for (_, init_code) in bindings {
+                        values.push(exec(init_code, env)?);
+                    }
+                    Environment::new_child_with_slots(env, rt.clone(), values)
+                }
+                None => {
+                    let let_env = Environment::new_child(env);
+                    for (id, init_code) in bindings {
+                        let val = exec(init_code, env)?;
+                        let_env.set_id(*id, val);
+                    }
+                    let_env
+                }
+            };
             // Body is in tail position — loop with the child env.
             Ok(TcoStep::ExecTail(body.clone(), let_env))
         }
