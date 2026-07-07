@@ -344,3 +344,44 @@ WITH-CAPABILITIES in one fence. Either key may be omitted."
         ((null (cdr plist)) nil)
         ((eq (car plist) key) (car (cdr plist)))
         (t ($guard-plist-get (cdr (cdr plist)) key))))
+
+;;; ------------------------------------------------------------------
+;;; Static capability manifests (issue #284 follow-on): join the call
+;;; graph (lib/19-call-graph.lisp) with the gated-builtin table to answer
+;;; "which capabilities does running this function need?" before running
+;;; it — so a host can grant minimally, or wrap the call in the matching
+;;; WITH-CAPABILITIES fence.
+
+(defun $guard-union (a b)
+  "Set union of A into B (EQUAL), preserving B then A's new elements."
+  (cond ((null a) b)
+        (($guard-member (car a) b) ($guard-union (cdr a) b))
+        (t ($guard-union (cdr a) (append b (list (car a)))))))
+
+(defun $guard-caps-walk (worklist seen caps)
+  (cond ((null worklist) caps)
+        (($guard-member (car worklist) seen)
+         ($guard-caps-walk (cdr worklist) seen caps))
+        (t (let* ((name (car worklist))
+                  (entry (assoc name $guard-gated-builtins))
+                  (caps2 (if entry ($guard-union (cdr entry) caps) caps))
+                  (callees (if (call-graph-has-p name)
+                               (call-graph-callees name)
+                               nil)))
+             ($guard-caps-walk (append callees (cdr worklist))
+                               (cons name seen)
+                               caps2)))))
+
+(defun capabilities-needed (name)
+  "Static capability manifest for the function bound to symbol NAME: the
+union of capability requirements of every gated builtin reachable through
+the call graph (transitive, cycle-safe). Conservative in both directions:
+dynamic calls (FUNCALL/APPLY of computed values, EVAL of data) are
+invisible to the call graph, and reachability does not mean the gated
+call executes on every path. NIL means no gated builtin is reachable."
+  ($guard-caps-walk (list name) nil nil))
+
+(defun capabilities-needed-form (form)
+  "CAPABILITIES-NEEDED for a raw FORM: analyze the form's own calls (via
+the call-graph collector) and close over the call graph transitively."
+  ($guard-caps-walk (cg-collect-callees form nil nil) nil nil))
