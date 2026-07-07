@@ -188,7 +188,9 @@
 //! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
 //! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
 //! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
+//! | `20-condensation.lisp` | Condensation: `DEFCONCEPT`/`DERIVE`/laws/examples, row concepts with branded field access, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`) |
 //! | `21-cl-compat.lisp` | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
+//! | `21-interfaces.lisp` | Go-style method sets with checker-verified conformance and a row-aware unifier: `DEFINTERFACE`, `IMPLEMENTS?`/`IMPLEMENTS!`, `METHOD` |
 //! | `22-guard.lisp` | Guard fences (issue #284): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `FUEL-REMAINING`, `CAPABILITIES-EFFECTIVE` |
 //! | `23-match.lisp` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
 //! | `24-rules.lisp` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
@@ -539,6 +541,11 @@ pub enum BuiltinFunc {
     ClearFlag,
     FlagSetP,
     ClearAllFlags,
+    // Introspective typing surface (rows port, #297 step 0): structured
+    // checker verdicts, pure string->forms parsing, and declared schemes.
+    SeeType,
+    ReadString,
+    DeclareType,
     // Kernel fuel (issue #284 Phase 2): per-thread step budget backstop.
     KernelFuelSet,
     KernelFuelRemaining,
@@ -1654,8 +1661,16 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/19-call-graph.lisp"),
     ),
     (
+        "20-condensation.lisp",
+        include_str!("../lib/20-condensation.lisp"),
+    ),
+    (
         "21-cl-compat.lisp",
         include_str!("../lib/21-cl-compat.lisp"),
+    ),
+    (
+        "21-interfaces.lisp",
+        include_str!("../lib/21-interfaces.lisp"),
     ),
     ("22-guard.lisp", include_str!("../lib/22-guard.lisp")),
     ("23-match.lisp", include_str!("../lib/23-match.lisp")),

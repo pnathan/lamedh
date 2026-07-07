@@ -81,6 +81,10 @@ impl Infer {
             Ty::Array(elem) | Ty::List(elem) => self.occurs(v, &elem),
             Ty::Pair(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
             Ty::Fn(ps, r) => ps.iter().any(|p| self.occurs(v, p)) || self.occurs(v, &r),
+            Ty::Record(fields, rest) => {
+                fields.iter().any(|(_, ft)| self.occurs(v, ft))
+                    || rest.map(|r| self.occurs(v, &r)).unwrap_or(false)
+            }
             Ty::Struct(def) => def.fields.iter().any(|(_, ft)| self.occurs(v, ft)),
             // Scalars and nullary checkable types contain no variables.
             Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Symbol | Ty::Str | Ty::Any => false,
@@ -129,11 +133,106 @@ impl Infer {
                 self.unify(&ra, &rb)
             }
             (Ty::Struct(sa), Ty::Struct(sb)) if sa == sb => Ok(()),
+            (Ty::Record(fa, ra), Ty::Record(fb, rb)) => self.unify_rows(fa, ra, fb, rb),
             (x, y) => Err(format!(
                 "cannot unify {} with {}",
                 super::ty_name(&x),
                 super::ty_name(&y)
             )),
+        }
+    }
+
+    /// Flatten a record under the substitution: walk a row tail bound to
+    /// another record and merge its fields, until the tail is an unbound
+    /// variable or absent. Returns the merged fields (sorted) and the tail.
+    fn flatten_row(
+        &self,
+        fields: Vec<(String, Ty)>,
+        rest: Option<Box<Ty>>,
+    ) -> (Vec<(String, Ty)>, Option<Ty>) {
+        let mut fs = fields;
+        let mut tail = rest.map(|r| self.walk(&r));
+        while let Some(Ty::Record(more, next)) = tail {
+            fs.extend(more);
+            tail = next.map(|r| self.walk(&r));
+        }
+        fs.sort_by(|a, b| a.0.cmp(&b.0));
+        (fs, tail)
+    }
+
+    /// Row unification (Rémy-style, experimental): shared labels unify
+    /// pointwise; each side's missing labels must be absorbed by the other
+    /// side's row tail, with both remainders sharing one fresh tail so the
+    /// "rest" stays a single row. A closed record absorbs nothing.
+    fn unify_rows(
+        &mut self,
+        fa: Vec<(String, Ty)>,
+        ra: Option<Box<Ty>>,
+        fb: Vec<(String, Ty)>,
+        rb: Option<Box<Ty>>,
+    ) -> Result<(), String> {
+        let (fa, ra) = self.flatten_row(fa, ra);
+        let (fb, rb) = self.flatten_row(fb, rb);
+        for (label, ta) in &fa {
+            if let Some((_, tb)) = fb.iter().find(|(l, _)| l == label) {
+                self.unify(ta, tb)?;
+            }
+        }
+        let only_a: Vec<(String, Ty)> = fa
+            .iter()
+            .filter(|(l, _)| !fb.iter().any(|(m, _)| m == l))
+            .cloned()
+            .collect();
+        let only_b: Vec<(String, Ty)> = fb
+            .iter()
+            .filter(|(l, _)| !fa.iter().any(|(m, _)| m == l))
+            .cloned()
+            .collect();
+        let missing = |side: &[(String, Ty)]| {
+            side.iter()
+                .map(|(l, _)| l.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match (ra, rb) {
+            (None, None) => {
+                if only_a.is_empty() && only_b.is_empty() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "record fields disagree: {{{}}} vs {{{}}}",
+                        missing(&only_a),
+                        missing(&only_b)
+                    ))
+                }
+            }
+            (Some(Ty::Var(va)), None) => {
+                if !only_a.is_empty() {
+                    return Err(format!("closed record lacks field(s) {}", missing(&only_a)));
+                }
+                self.bind(va, Ty::Record(only_b, None))
+            }
+            (None, Some(Ty::Var(vb))) => {
+                if !only_b.is_empty() {
+                    return Err(format!("closed record lacks field(s) {}", missing(&only_b)));
+                }
+                self.bind(vb, Ty::Record(only_a, None))
+            }
+            (Some(Ty::Var(va)), Some(Ty::Var(vb))) => {
+                if va == vb {
+                    if only_a.is_empty() && only_b.is_empty() {
+                        Ok(())
+                    } else {
+                        Err("record rows with a shared tail disagree on fields".to_string())
+                    }
+                } else {
+                    let shared = self.fresh();
+                    self.bind(va, Ty::Record(only_b, Some(Box::new(shared.clone()))))?;
+                    self.bind(vb, Ty::Record(only_a, Some(Box::new(shared))))
+                }
+            }
+            // flatten_row only leaves a Var (or nothing) in tail position.
+            (a, b) => Err(format!("malformed record row tail: {a:?} / {b:?}")),
         }
     }
 
@@ -175,6 +274,16 @@ impl Infer {
                 }
                 Ok(Ty::Fn(rps, Box::new(self.resolve_checked(&r)?)))
             }
+            Ty::Record(fields, rest) => {
+                let (fs, tail) = self.flatten_row(fields, rest);
+                let mut rfs = Vec::with_capacity(fs.len());
+                for (n, ft) in &fs {
+                    rfs.push((n.clone(), self.resolve_checked(ft)?));
+                }
+                // An open row tail is fine on the checking side: the record is
+                // well-typed for these fields whatever else it carries.
+                Ok(Ty::Record(rfs, tail.map(Box::new)))
+            }
             concrete => Ok(concrete),
         }
     }
@@ -192,6 +301,15 @@ impl Infer {
                 ps.iter().map(|p| self.zonk(p)).collect(),
                 Box::new(self.zonk(&r)),
             ),
+            Ty::Record(fields, rest) => {
+                let (fs, tail) = self.flatten_row(fields, rest);
+                Ty::Record(
+                    fs.iter()
+                        .map(|(n, ft)| (n.clone(), self.zonk(ft)))
+                        .collect(),
+                    tail.map(Box::new),
+                )
+            }
             other => other, // scalars, Struct, Symbol, Str, Any, free Var
         }
     }
@@ -215,6 +333,14 @@ impl Infer {
                 }
                 Self::free_vars(r, out);
             }
+            Ty::Record(fields, rest) => {
+                for (_, ft) in fields {
+                    Self::free_vars(ft, out);
+                }
+                if let Some(r) = rest {
+                    Self::free_vars(r, out);
+                }
+            }
             _ => {}
         }
     }
@@ -230,7 +356,7 @@ impl Infer {
     }
 
     /// Instantiate a scheme with fresh variables for each bound variable.
-    #[allow(dead_code)] // used once call sites instantiate generalized callees (#162)
+    #[allow(dead_code)] // used by tests; call sites instantiate generalized callees (#162)
     pub(crate) fn instantiate(&mut self, s: &Scheme) -> Ty {
         let mapping: HashMap<u32, Ty> = s.vars.iter().map(|v| (*v, self.fresh())).collect();
         Self::subst_vars(&s.ty, &mapping)
@@ -248,6 +374,13 @@ impl Infer {
             Ty::Fn(ps, r) => Ty::Fn(
                 ps.iter().map(|p| Self::subst_vars(p, m)).collect(),
                 Box::new(Self::subst_vars(r, m)),
+            ),
+            Ty::Record(fields, rest) => Ty::Record(
+                fields
+                    .iter()
+                    .map(|(n, ft)| (n.clone(), Self::subst_vars(ft, m)))
+                    .collect(),
+                rest.as_ref().map(|r| Box::new(Self::subst_vars(r, m))),
             ),
             other => other.clone(),
         }
@@ -305,6 +438,17 @@ fn ty_name_vars(t: &Ty, names: &HashMap<u32, String>) -> String {
                 .collect::<Vec<_>>()
                 .join(" ");
             format!("(-> ({args}) {})", ty_name_vars(r, names))
+        }
+        Ty::Record(fields, rest) => {
+            let fs = fields
+                .iter()
+                .map(|(n, t)| format!("({} {})", n.to_lowercase(), ty_name_vars(t, names)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            match rest {
+                Some(r) => format!("(record ({fs}) {})", ty_name_vars(r, names)),
+                None => format!("(record ({fs}))"),
+            }
         }
         other => super::ty_name(other),
     }

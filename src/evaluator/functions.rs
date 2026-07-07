@@ -774,3 +774,55 @@ pub(super) fn typed_to_lispval(
         },
     }
 }
+
+/// Structured checker verdict for `name`, as data (the `see-type` builtin):
+///
+/// - `(TYPED (-> (t ...) ret) COMPILED|INTERPRETED)` — registered typed function
+/// - `(CHECKED scheme)` — plain lambda the checker accepts; `scheme` is the
+///   inferred type as a readable form, e.g. `(FORALL (A) (-> (A A) BOOL))`
+/// - `(TYPE-ERROR "msg")` — the checker rejects it
+/// - `(DYNAMIC "reason")` — variadic, a builtin, or not a function
+///
+/// The classification burden (e.g. distinguishing informative from vacuous
+/// schemes) lives in the Lisp layer; this only reports what the checker knows,
+/// structurally, so no consumer has to parse the human-readable string.
+pub(super) fn see_type_form(name: &str, env: &Shared<Environment>) -> LispVal {
+    let sym = |s: &str| LispVal::Symbol(env.intern_symbol(s));
+    let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
+    if !live_is_plain_lambda && let Some((params, ret)) = env.jit_named_signature(name) {
+        let args = params
+            .iter()
+            .map(|(_, t)| crate::jit::ty_name(t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let sig = format!("(-> ({args}) {})", crate::jit::ty_name(&ret));
+        let sig_form = crate::reader::read(&sig, env).unwrap_or(LispVal::Nil);
+        let status = if matches!(env.jit_is_compiled(name), Some(true)) {
+            "COMPILED"
+        } else {
+            "INTERPRETED"
+        };
+        return vec_to_list(vec![sym("TYPED"), sig_form, sym(status)]);
+    }
+    // A **declared** scheme (experimental rows): an axiom asserted by the Lisp
+    // layer (e.g. a row-polymorphic concept accessor). Reported distinctly —
+    // the checker trusts it at call sites but never derived it from the body.
+    if let Some(rendered) = env.jit_declared_scheme(name) {
+        let form = crate::reader::read(&rendered, env).unwrap_or(LispVal::String(rendered));
+        return vec_to_list(vec![sym("DECLARED"), form]);
+    }
+    match lambda_params_body(name, env) {
+        Some((params, body)) => match env.jit_check_untyped(name, &params, &body) {
+            Ok(scheme) => {
+                let form =
+                    crate::reader::read(&scheme, env).unwrap_or(LispVal::String(scheme.clone()));
+                vec_to_list(vec![sym("CHECKED"), form])
+            }
+            Err(e) => vec_to_list(vec![sym("TYPE-ERROR"), LispVal::String(e)]),
+        },
+        None => vec_to_list(vec![
+            sym("DYNAMIC"),
+            LispVal::String("variadic or not a plain lambda".to_string()),
+        ]),
+    }
+}

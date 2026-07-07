@@ -91,7 +91,7 @@ Keep new host-facing side effects capability-gated.
 
 ## Standard Library (`lib/`)
 
-The embedded standard library is loaded by `Environment::with_stdlib()` from the compile-time `STDLIB` list in `src/lib.rs`. `20-condensation.lisp` is intentionally **not** embedded; it loads only when passed from disk, for example via `-i lib/`.
+The embedded standard library is loaded by `Environment::with_stdlib()` from the compile-time `STDLIB` list in `src/lib.rs`. Since the rows port (#297 step 0), `20-condensation.lisp` and `21-interfaces.lisp` are embedded like the rest.
 
 Notable modules:
 
@@ -104,7 +104,12 @@ Notable modules:
 - `11-optimizer-vau.lisp`: source optimizer passes.
 - `12-control.lisp` through `18-format.lisp`: control, functional, strings, sets/hash, conditions, arrays, and format helpers.
 - `19-call-graph.lisp`: call graph analysis.
+- `20-condensation.lisp`: condensation layer — `defconcept`/`derive`, row concepts with branded field access, the sexpr change plane.
 - `21-cl-compat.lisp`: Common Lisp compatibility forms such as `setf`, `push`, `pop`, `incf`, `decf`, `subseq`, and `elt`.
+- `21-interfaces.lisp`: Go-style method sets with checker-verified conformance and a row-aware unifier (`definterface`, `implements?`/`implements!`).
+- `22-guard.lisp`: guard fences — `with-fuel`, `with-capabilities`, `sandboxed`, capability manifests (`capabilities-needed`).
+- `23-match.lisp`: structural pattern language — `pat-match`, `match`, `destructuring-bind`, `sgrep`/`sgrep-file`, `rewrite`.
+- `24-rules.lisp`: the rulebook optimizer — `defrule`/`list-rules`/`apply-rules` feeding `optimize-form`.
 - `97-doc-renderer.lisp`, `98-help-system.lisp`, `99-help-data.lisp`: REPL help/documentation.
 
 `defun*` is the recommended default function definition form when HM-style type inference should be attempted automatically. It falls back silently to a plain lambda when types are ambiguous. Use `defun` when type inference should not run.
