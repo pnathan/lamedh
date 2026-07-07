@@ -134,11 +134,76 @@ impl Infer {
             }
             (Ty::Struct(sa), Ty::Struct(sb)) if sa == sb => Ok(()),
             (Ty::Record(fa, ra), Ty::Record(fb, rb)) => self.unify_rows(fa, ra, fb, rb),
+            // A nominal struct meets a row (#297 stage 2): the struct IS its
+            // closed row of fields plus identity, so it subsumes into any
+            // record it structurally satisfies — this is what lets one
+            // row-typed function accept every conforming defstruct-typed
+            // value while `Foo`/`Bar` with identical fields stay distinct
+            // nominally (the Struct/Struct arm above is untouched).
+            (Ty::Struct(def), Ty::Record(fields, rest))
+            | (Ty::Record(fields, rest), Ty::Struct(def)) => {
+                self.unify_struct_row(&def, &fields, &rest)
+            }
             (x, y) => Err(format!(
                 "cannot unify {} with {}",
                 super::ty_name(&x),
                 super::ty_name(&y)
             )),
+        }
+    }
+
+    /// A struct against a record row (#297 stage 2): every record field must
+    /// exist on the struct with a unifying type; the struct's remaining
+    /// fields form a CLOSED remainder (a struct has nothing beyond its
+    /// definition) bound to the record's row tail. A closed record therefore
+    /// requires an exact field-set match.
+    fn unify_struct_row(
+        &mut self,
+        def: &std::rc::Rc<super::StructDef>,
+        fields: &[(String, Ty)],
+        rest: &Option<Box<Ty>>,
+    ) -> Result<(), String> {
+        let (fields, rest) = self.flatten_row(fields.to_vec(), rest.clone());
+        for (label, ty) in &fields {
+            match def.fields.iter().find(|(n, _)| n == label) {
+                Some((_, sty)) => self.unify(sty, ty)?,
+                None => {
+                    return Err(format!(
+                        "struct {} has no field {}",
+                        def.name,
+                        label.to_lowercase()
+                    ));
+                }
+            }
+        }
+        let mut remainder: Vec<(String, Ty)> = def
+            .fields
+            .iter()
+            .filter(|(n, _)| !fields.iter().any(|(l, _)| l == n))
+            .map(|(n, t)| (n.clone(), t.clone()))
+            .collect();
+        remainder.sort_by(|a, b| a.0.cmp(&b.0));
+        match rest {
+            None => {
+                if remainder.is_empty() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "closed record does not mention struct {}'s field {}",
+                        def.name,
+                        remainder[0].0.to_lowercase()
+                    ))
+                }
+            }
+            Some(tail) => match self.walk(&tail) {
+                Ty::Var(v) => self.bind(v, Ty::Record(remainder, None)),
+                Ty::Record(more, next) => {
+                    // Tail already partially resolved: recurse against the
+                    // remainder as a synthetic closed struct-row.
+                    self.unify_rows(remainder, None, more, next)
+                }
+                other => Err(format!("malformed record row tail: {other:?}")),
+            },
         }
     }
 
