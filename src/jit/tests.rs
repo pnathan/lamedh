@@ -147,7 +147,8 @@ fn int_div_by_zero_is_zero_not_panic() {
 fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
     // `i64::MIN / -1` and `i64::MIN % -1` overflow signed division and trap
     // (SIGFPE) on hardware `sdiv`/`srem`. The reference editions use
-    // `wrapping_div` (sets OVERFLOW flag); mod yields 0. Every edition
+    // `wrapping_div` (sets OVERFLOW flag); Euclidean mod yields the exact 0
+    // with no flag (#280). Every edition
     // (interpreter, closure, and the native Cranelift backend under
     // `--features jit`) must match without faulting.
     let j = build(&[
@@ -159,6 +160,15 @@ fn int_div_mod_overflow_min_by_neg1_is_zero_not_trap() {
     // Sanity: ordinary division around the boundary still works.
     assert_eq!(agree(&j, "d", &[i(i64::MIN), i(1)]), i(i64::MIN));
     assert_eq!(agree(&j, "d", &[i(i64::MIN), i(2)]), i(i64::MIN / 2));
+    // Euclidean MOD values (#280), every edition: the result carries the
+    // divisor's sign space, never the dividend's.
+    assert_eq!(agree(&j, "m", &[i(-7), i(3)]), i(2));
+    assert_eq!(agree(&j, "m", &[i(7), i(-3)]), i(7i64.rem_euclid(-3)));
+    assert_eq!(agree(&j, "m", &[i(-7), i(-3)]), i((-7i64).rem_euclid(-3)));
+    assert_eq!(
+        agree(&j, "m", &[i(i64::MIN), i(3)]),
+        i(i64::MIN.rem_euclid(3))
+    );
 }
 
 #[test]
@@ -181,12 +191,16 @@ fn int_bin_condition_flags_agree_across_editions() {
         ("add", [i64::MAX, 1], true, false),
         ("sub", [i64::MIN, 1], true, false),
         ("divv", [i64::MIN, -1], true, false), // MIN / -1 overflows
-        ("modd", [i64::MIN, -1], true, false), // MIN % -1 overflows (the #228 gap)
-        ("divv", [10, 0], false, true),        // division by zero
-        ("modd", [10, 0], false, true),        // remainder by zero
-        ("add", [2, 3], false, false),         // ordinary: no flags
+        // #280: MOD is Euclidean — MIN % -1 is exactly 0, NO flag (only DIV
+        // wraps there). This row used to expect the flag under the truncated-
+        // remainder assumption (the #228 gap).
+        ("modd", [i64::MIN, -1], false, false),
+        ("divv", [10, 0], false, true), // division by zero
+        ("modd", [10, 0], false, true), // remainder by zero
+        ("add", [2, 3], false, false),  // ordinary: no flags
         ("divv", [10, 3], false, false),
         ("modd", [10, 3], false, false),
+        ("modd", [-7, 3], false, false), // Euclidean: 2, not -1 (#280)
     ];
     let j = build(&[
         "(defun-typed (add int64) ((a int64) (b int64)) (+ a b))",

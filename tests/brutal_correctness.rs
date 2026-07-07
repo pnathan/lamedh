@@ -256,10 +256,12 @@ fn oracle(e: &E, scope: &mut Vec<(String, OVal)>, prog: &[FnDef]) -> OVal {
                     }
                 }
                 IBin::Mod => {
-                    if y == 0 || (x == i64::MIN && y == -1) {
+                    // Euclidean, matching the evaluator's MOD (#280); the
+                    // MIN % -1 intermediate overflow yields the exact 0.
+                    if y == 0 {
                         0
                     } else {
-                        x % y
+                        x.checked_rem_euclid(y).unwrap_or(0)
                     }
                 }
             }),

@@ -91,25 +91,25 @@ fn overflow_flag_parity_on_min_div_negative_one() {
 }
 
 #[test]
-#[ignore = "known divergence, issue #280: evaluator MOD is Euclidean (MIN%-1 = 0, \
-            no flag); typed MOD is truncated remainder and sets OVERFLOW"]
 fn overflow_flag_parity_on_min_mod_negative_one() {
-    // Issue #228/#268 gave the typed MOD an OVERFLOW flag on MIN%-1 on the
-    // assumption the tree-walker flags it — the tree-walker's MOD does not
-    // (its REMAINDER path is the flagged one). Un-ignore with the #280 fix.
+    // MOD is Euclidean in both worlds (#280): MIN % -1 is exactly 0 and
+    // sets NO flag — the OVERFLOW flag #228/#268 gave the typed MOD had
+    // assumed the truncated-remainder semantics of REMAINDER.
     let (ev_val, ev_flag) = run_evaluator(&format!("(mod {MIN} -1)"));
     let (ty_val, ty_flag) = run_typed(
         &["(defun-typed (tmod int64) ((x int64) (y int64)) (mod x y))"],
         &format!("(tmod {MIN} -1)"),
     );
     assert_eq!(ev_flag, ty_flag, "OVERFLOW flag parity on MIN%-1");
-    assert!(ev_flag, "evaluator must set OVERFLOW on MIN%-1");
+    assert!(
+        !ev_flag,
+        "MIN%-1 is exactly 0 under Euclidean MOD — no flag"
+    );
     assert_eq!(ev_val, ty_val, "value parity on MIN%-1");
+    assert_eq!(ev_val, "0");
 }
 
 #[test]
-#[ignore = "known divergence, issue #280: (mod -7 3) = 2 in the evaluator \
-            (Euclidean) but -1 in every typed tier (truncated remainder)"]
 fn mod_value_parity_on_negative_operands() {
     let (ev_val, ev_flag) = run_evaluator("(mod -7 3)");
     let (ty_val, ty_flag) = run_typed(

@@ -279,14 +279,17 @@ pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
             if y == 0 {
                 ctx.div_by_zero.set(true);
                 0
-            } else if x == i64::MIN && y == -1 {
-                // MIN % -1 is mathematically 0 but overflows signed remainder
-                // (checked_rem returns None); the tree-walker and the native
-                // codegen both flag it, so the reference path must too (#228).
-                ctx.overflow.set(true);
-                0
             } else {
-                x % y
+                // Euclidean modulo, matching the evaluator's MOD — a
+                // deliberate PR #112 design (REMAINDER is the truncated op):
+                // (mod -7 3) = 2, and the result sign follows the divisor's
+                // magnitude space, never the dividend. checked_rem_euclid
+                // handles MIN % -1 (mathematically 0; the intermediate
+                // overflows, so it returns None): the evaluator answers 0
+                // with NO flag, so the typed tiers must too — this
+                // supersedes the OVERFLOW flag #228/#268 set here on the
+                // mistaken assumption that MOD was the truncated op (#280).
+                x.checked_rem_euclid(y).unwrap_or(0)
             }
         }
     }
