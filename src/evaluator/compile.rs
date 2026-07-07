@@ -628,11 +628,16 @@ pub(super) fn exec_step(
 
             // TCO for compiled lambdas (fixed-arity or `&rest`): skip the Rust
             // frame entirely by setting up the child env and looping.
-            // Skip the fast path when any param is dynamic — fall through to
-            // `apply` which installs DynamicBinding guards correctly.
+            // Skip the fast path when one of THIS lambda's params is dynamic —
+            // fall through to `apply` which installs DynamicBinding guards
+            // correctly. (This used to gate on the world-global
+            // has_any_dynamic() flag alone, which silently disabled compiled
+            // TCO everywhere the moment the stdlib defined its first dynamic
+            // variable — *RESTARTS* exposed it. The global flag remains as
+            // the cheap first check.)
             if let LispVal::Lambda(ref lambda) = func
                 && let Some(ref compiled_body) = lambda.compiled
-                && !env.has_any_dynamic()
+                && !lambda_params_dynamic(lambda, env)
             {
                 match lambda.rest_param_id {
                     None if lambda.params.len() == eval_args.len() => {
@@ -662,4 +667,20 @@ pub(super) fn exec_step(
             Ok(TcoStep::Done(apply(&func, &eval_args, env)))
         }
     }
+}
+
+/// True when any of `lambda`'s parameters (fixed or `&rest`) is a dynamic
+/// symbol — the case the compiled TCO fast path must leave to `apply`'s
+/// DynamicBinding guards. The world-global `has_any_dynamic()` flag is the
+/// cheap first check; only when some dynamic variable exists anywhere do we
+/// pay the per-param flag lookups.
+fn lambda_params_dynamic(lambda: &crate::Lambda, env: &Shared<Environment>) -> bool {
+    if !env.has_any_dynamic() {
+        return false;
+    }
+    lambda
+        .param_ids
+        .iter()
+        .chain(lambda.rest_param_id.iter())
+        .any(|id| env.symbol_id_is_dynamic(*id))
 }
