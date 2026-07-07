@@ -84,5 +84,8 @@ use self::special_forms::*;
 #[cfg(feature = "concurrency")]
 use self::builtins_concurrency::*;
 
-pub use self::core::{DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, set_eval_depth_limit};
+pub use self::core::{
+    DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, kernel_fuel_remaining, set_eval_depth_limit,
+    set_kernel_fuel,
+};
 pub use self::functions::eval;

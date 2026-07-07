@@ -326,6 +326,10 @@ fn run_trampoline(
     let mut guards = DynamicGuardStack(Vec::new());
 
     loop {
+        // Kernel fuel (issue #284 Phase 2): one step per trampoline
+        // iteration — covering every eval/exec entry and every TCO tail
+        // step. Unarmed cost is a thread-local load + predictable branch.
+        crate::evaluator::core::charge_kernel_fuel()?;
         // Each iteration computes a TcoStep, then either returns or loops.
         // All borrows of `current`/`current_env` are scoped inside this block
         // so they are released before we potentially assign to them.

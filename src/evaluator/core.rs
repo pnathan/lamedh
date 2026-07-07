@@ -14,6 +14,65 @@ thread_local! {
     static EVAL_DEPTH_LIMIT: Cell<usize> = const { Cell::new(DEFAULT_EVAL_DEPTH_LIMIT) };
 }
 
+thread_local! {
+    /// Kernel fuel (issue #284 Phase 2): a per-thread step budget charged
+    /// once per trampoline iteration in `run_trampoline` — i.e. once per
+    /// `eval`/`exec` entry *and* once per TCO tail step, in both the
+    /// tree-walking and compiled-code worlds. `-1` means unarmed (the
+    /// default; one predictable load+branch on the hot path). This is the
+    /// step-granular backstop under `lib/22-guard.lisp`'s WITH-FUEL, closing
+    /// the Phase-1 leaks (closures defined outside the fence, user macros
+    /// expanding to loops, quasiquote bodies): the Lisp fence arms it at
+    /// `budget * $guard-kernel-step-multiplier` and restores it on exit.
+    static KERNEL_FUEL: Cell<i64> = const { Cell::new(-1) };
+}
+
+/// Arm (Some) or disarm (None) the current thread's kernel fuel budget,
+/// returning the previous state so callers can restore it on scope exit.
+pub fn set_kernel_fuel(fuel: Option<u64>) -> Option<u64> {
+    KERNEL_FUEL.with(|f| {
+        let prev = f.get();
+        f.set(match fuel {
+            Some(n) => n.min(i64::MAX as u64) as i64,
+            None => -1,
+        });
+        if prev < 0 { None } else { Some(prev as u64) }
+    })
+}
+
+/// The current thread's remaining kernel fuel, or `None` when unarmed.
+pub fn kernel_fuel_remaining() -> Option<u64> {
+    KERNEL_FUEL.with(|f| {
+        let v = f.get();
+        if v < 0 { None } else { Some(v as u64) }
+    })
+}
+
+/// Charge one kernel fuel step; error when the armed budget is spent.
+/// Exhaustion **disarms** as it signals: the error itself must be
+/// catchable, and HANDLER-CASE handlers and UNWIND-PROTECT cleanups (the
+/// fence's own budget-restore among them) run through this same trampoline
+/// — with the counter stuck at zero they would re-signal forever and the
+/// error could never be handled. The WITH-FUEL fence that armed the budget
+/// restores/re-arms the enclosing state on exit.
+#[inline]
+pub(super) fn charge_kernel_fuel() -> Result<(), LispError> {
+    KERNEL_FUEL.with(|f| {
+        let v = f.get();
+        if v < 0 {
+            Ok(())
+        } else if v == 0 {
+            f.set(-1);
+            Err(LispError::Generic(
+                "fuel exhausted (kernel step budget)".to_string(),
+            ))
+        } else {
+            f.set(v - 1);
+            Ok(())
+        }
+    })
+}
+
 /// Set the maximum `eval` recursion depth for the current thread.
 pub fn set_eval_depth_limit(limit: usize) {
     EVAL_DEPTH_LIMIT.with(|l| l.set(limit));

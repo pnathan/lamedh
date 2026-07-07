@@ -538,6 +538,9 @@ pub enum BuiltinFunc {
     ClearFlag,
     FlagSetP,
     ClearAllFlags,
+    // Kernel fuel (issue #284 Phase 2): per-thread step budget backstop.
+    KernelFuelSet,
+    KernelFuelRemaining,
     // Capabilities / features (read-only from Lisp; grant/revoke only from the host)
     FeatureEnabledP,
     Features,
