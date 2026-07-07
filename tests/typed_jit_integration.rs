@@ -591,10 +591,12 @@ fn jit_min_div_neg1_wraps_and_sets_overflow() {
     assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "T");
 }
 
-/// Issue #228 follow-up: `i64::MIN % -1` returns 0 but overflows, so it must
-/// set OVERFLOW too — matching the tree-walker's Remainder handling.
+/// Issue #280 (supersedes the #228 follow-up expectation): MOD is Euclidean,
+/// matching the evaluator — `i64::MIN mod -1` is exactly 0, so NO flag. (The
+/// old assertion had assumed MOD was the truncated REMAINDER, whose MIN%-1
+/// genuinely overflows.)
 #[test]
-fn jit_min_mod_neg1_sets_overflow() {
+fn jit_min_mod_neg1_is_exact_zero_no_flag() {
     let env = Environment::with_stdlib();
     eval_line(
         "(defun-typed (m int64) ((x int64) (y int64)) (mod x y))",
@@ -602,5 +604,8 @@ fn jit_min_mod_neg1_sets_overflow() {
     );
     let out = eval_line("(m -9223372036854775808 -1)", &env);
     assert_eq!(out, "0");
-    assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "T");
+    assert_eq!(eval_line("(flag-set-p 'OVERFLOW)", &env), "()");
+    // And the Euclidean signature on ordinary negatives, through the
+    // membrane: parity with the tree-walker's (mod -7 3) = 2.
+    assert_eq!(eval_line("(m -7 3)", &env), "2");
 }

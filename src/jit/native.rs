@@ -715,18 +715,37 @@ impl Emitter<'_, '_, '_> {
                 let y_is_neg1 = self.b.ins().icmp(IntCC::Equal, y, neg_one);
                 let is_overflow = self.b.ins().band(x_is_min, y_is_neg1);
                 let is_unsafe = self.b.ins().bor(is_zero, is_overflow);
-                // Set flags on Ctx
+                // Set flags on Ctx. MOD does NOT flag MIN%-1: its Euclidean
+                // value is exactly 0, matching the evaluator's MOD (#280) —
+                // only DIV's MIN/-1 is a genuine wrapped result.
                 self.set_ctx_flag(Ctx::DIV_BY_ZERO_OFFSET, is_zero);
-                self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, is_overflow);
+                if matches!(op, BinOp::Div) {
+                    self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, is_overflow);
+                }
                 // Use safe_y=1 to avoid hardware trap
                 let safe_y = self.b.ins().select(is_unsafe, one, y);
-                let q = if matches!(op, BinOp::Div) {
+                let result = if matches!(op, BinOp::Div) {
                     self.b.ins().sdiv(x, safe_y)
                 } else {
-                    self.b.ins().srem(x, safe_y)
+                    // Euclidean modulo (#280), matching Rust's rem_euclid
+                    // (and therefore the evaluator's MOD): the result is
+                    // always non-negative — when the truncated remainder is
+                    // negative, add |y|. Computed as r + y for positive y
+                    // and r - y for negative y, which stays in range even
+                    // for y == i64::MIN (r ∈ (MIN, 0) there, so r - MIN ≤
+                    // MAX). In the unsafe cases (y == 0 or MIN % -1) srem
+                    // runs against safe_y = 1, so r = 0 and no adjustment
+                    // fires.
+                    let r = self.b.ins().srem(x, safe_y);
+                    let r_neg = self.b.ins().icmp(IntCC::SignedLessThan, r, zero);
+                    let y_neg = self.b.ins().icmp(IntCC::SignedLessThan, y, zero);
+                    let r_plus_y = self.b.ins().iadd(r, y);
+                    let r_minus_y = self.b.ins().isub(r, y);
+                    let adjusted = self.b.ins().select(y_neg, r_minus_y, r_plus_y);
+                    self.b.ins().select(r_neg, adjusted, r)
                 };
-                // div-by-zero → 0; overflow (MIN/-1) → wrapping result (MIN/1=MIN for div, 0 for mod)
-                self.b.ins().select(is_zero, zero, q)
+                // div-by-zero → 0; MIN/-1 → wrapping MIN for div, exact 0 for mod
+                self.b.ins().select(is_zero, zero, result)
             }
         }
     }

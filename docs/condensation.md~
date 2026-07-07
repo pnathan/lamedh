@@ -1,0 +1,70 @@
+The interface is a lossy channel: intent in, a short program out, a deterministic substrate underneath. Formalize it as a decoder, a semantics, and a lifetime cost that the language is designed to minimize.
+
+```
+Objects
+  I            intent space; i in I is the latent human goal
+  p = enc(i)   prompt: lossy human encoding of i
+  L            language; a program s in L is a finite string
+  B            behavior space (effects, results)
+  sem: L -> B  interpreter. DESIGN CONSTRAINT: sem total and
+               deterministic. Otherwise sem: L -> Dist(B).
+  D(.|p)       the LLM as a stochastic decoder; s ~ D(.|p)
+  d: IxB -> R+ distortion, tolerance eps; s is sufficient iff
+               d(i, sem(s)) <= eps
+
+Costs (nats)
+  C_gen(s|p) = -log P_D(s|p) ~ |s|_D       generation; paid once
+  C_ver(s)                                 cost to decide d <= eps
+  s = c_1 ; ... ; c_n                       program as command seq
+  C_rep(s) ~ q(s) * (edit + C_ver(s))       repair on failure
+  q(s) in [log n, n]                        localization span,
+                                            set by coupling of L
+
+Lifetime objective (horizon: r expected repair episodes)
+  J(s) = C_gen(s|p) + C_ver(s) + r * E_fail[ C_rep(s) ]
+
+Inner problem (select program, given i and L)
+  s* = argmin   J(s)
+       s in L,  d(i, sem(s)) <= eps
+
+Outer problem (design language, over the intent distribution)
+  L* = argmin   E_{i ~ P(I)} [  min            J(s)  ]
+        L                     s in L: d <= eps
+```
+
+The hinge is the cost asymmetry you named. Generation is one-shot; repair recurs across the maintenance horizon, so r times C_rep dominates J. Therefore s* is not the generation-cheapest program. The shortest, highest-prior output minimizes C_gen alone; the lifetime minimizer is slightly longer and far flatter. Your instinct is exactly this: design the language so the dominant term, repair, is small.
+
+What L* must satisfy, each a consequence of that objective:
+
+Shared-prior primitives. The primitives of L* sit in the intersection of the model prior and the reader prior, chosen to minimize -log P_D(prim) and human description length simultaneously. C_gen is residual over the model's codebook; the human-borne part of C_rep is residual over the reader's. A primitive in both priors is near-free on both axes. Compression against two codebooks at once.
+
+Deterministic, total primitives. With sem total and deterministic, behavior is a point, not a distribution, and d is everywhere defined. Verification collapses from estimation to decision, bounding C_ver. Determinism lives in the substrate, never in the decoder.
+
+Compositional semantics. Require sem(c_1 ; c_2) = sem(c_2) . sem(c_1) over a state monoid with bounded, localized write-sets. This pulls q(s) toward log n: a behavioral fault bisects to a single command. Flatness alone does not localize faults; flatness plus compositional locality does. This is the precise condition under which "a short command sequence is cheap to fix" is true rather than merely plausible.
+
+Verifiability floor. Each c_i carries a contract t_i that makes conformance locally checkable, with d bounded by a sum of local residuals. Contracts are error-correcting redundancy on intent: the minimum bits added so a deviation is attributable to a site. Strip them and repair cannot localize, because failure cannot be assigned.
+
+Closure. Primitives total, no undefined-behavior escape hatch: the failure support stays bounded and C_rep grows no heavy tail. The formal statement of refusing software that holds only along the maintainer's happy path.
+
+Now your "enough to hang on," which is the payoff and the answer to whether the Kolmogorov seed is the ideal outcome. It is not. The seed is the floor, and the floor is unstable.
+
+```
+Kolmogorov floor and the handle
+  s_K = argmin |s|  s.t. sem(s) = b_target      incompressible seed
+  sigma(s) = sup           d(sem(s), sem(s XOR delta))
+             |delta|=1                            edit-sensitivity
+  at s_K: sigma is maximal
+          (no slack; every symbol load-bearing;
+           any repair edit maximally perturbs behavior)
+  target:
+    s* = argmin |s|
+         s.t. d(i, sem(s)) <= eps  AND  sigma(s) <= kappa
+  margin |s*| - |s_K| = bits spent on:
+    (a) reader-codebook entries absent from P_D
+    (b) verifier contracts t_i
+    (c) edit-locality, sigma <= kappa
+```
+
+s_K is uncomputable and maximally fragile: zero redundancy means zero error tolerance, so a single edit, which is what every repair is, maximally perturbs behavior. Repair on the seed is ill-conditioned. The handle is the slack above the floor, and that slack is not waste; it is precisely the three redundancies in (a), (b), (c). That triad is the operational meaning of "enough to hang on": the minimum margin over Kolmogorov that renders the artifact verifiable and repairable instead of merely short.
+
+The optimum is not maximum compression. It is maximum compression conditioned on bounded repair. s_K minimizes the one-shot cost; s* minimizes the lifetime cost; the gap between them is the entire engineering surface, and it is where the language design earns its keep.

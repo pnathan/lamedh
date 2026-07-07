@@ -11,7 +11,10 @@
       "Bash(do echo \"Testing $f\")",
       "Bash(done)",
       "Bash(git checkout:*)",
-      "Bash(xargs perl -pi -e ' *)"
+      "Bash(xargs perl -pi -e ' *)",
+      "Bash(git worktree *)",
+      "Bash(git -C /home/pnathan/src/lamedh log --oneline -15)",
+      "Bash(git -C /home/pnathan/src/lamedh status --short)"
     ],
     "deny": [],
     "ask": []
