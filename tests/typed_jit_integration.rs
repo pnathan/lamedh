@@ -402,8 +402,16 @@ fn check_type_reports_polymorphic_identity() {
 #[test]
 fn check_type_reports_concrete_numeric() {
     let env = Environment::with_stdlib();
+    // One-door defun auto-compiles this, so check-type reports the live
+    // typed signature; a pinned definition reports the checker scheme.
     eval_line("(defun inc (n) (+ n 1))", &env);
     let out = eval_line("(check-type inc)", &env);
+    assert!(
+        out.contains("int64") && out.contains("compiled"),
+        "got: {out}"
+    );
+    eval_line("(defun inc-p (n) (declare (no-compile)) (+ n 1))", &env);
+    let out = eval_line("(check-type inc-p)", &env);
     assert!(out.contains("(-> (int64) int64)"), "got: {out}");
 }
 

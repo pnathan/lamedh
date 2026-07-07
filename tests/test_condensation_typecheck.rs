@@ -110,9 +110,20 @@ fn condense_check_type_can_check_a_single_symbol() {
 #[test]
 fn see_type_reports_structured_verdicts() {
     let env = env_with_stdlib();
+    // One-door defun: an inferable function now auto-compiles, so the
+    // structured verdict is TYPED+COMPILED rather than the pre-one-door
+    // CHECKED. A pinned function still reports the checker-only verdict.
     eval_line("(defun inc (x) (+ x 1))", &env);
     assert_eq!(
         eval_line("(see-type 'inc)", &env),
+        "(TYPED (-> (INT64) INT64) COMPILED)"
+    );
+    eval_line(
+        "(defun inc-pinned (x) (declare (no-compile)) (+ x 1))",
+        &env,
+    );
+    assert_eq!(
+        eval_line("(see-type 'inc-pinned)", &env),
         "(CHECKED (-> (INT64) INT64))"
     );
     eval_line("(defun bad (x) (+ 1 \"s\"))", &env);
