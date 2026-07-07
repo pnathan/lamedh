@@ -827,6 +827,18 @@ pub enum Code {
     Const(LispVal),
     /// A variable reference: resolve the symbol in the current environment.
     Var(Shared<SharedCell<Symbol>>),
+    /// A compile-time-resolved lexical parameter read (issue #200 M3):
+    /// `depth` frames up the parent chain, then `slots[slot]` — no symbol
+    /// resolution, no hashing. `sym` is the soundness fallback: when the
+    /// frame at `depth` carries no routing (a binding path not yet
+    /// slot-converted, e.g. a tree-walker `apply`), or the symbol has been
+    /// made dynamic mid-flight, execution falls back to full resolution —
+    /// coverage affects speed, never correctness.
+    LocalGet {
+        depth: u16,
+        slot: u16,
+        sym: Shared<SharedCell<Symbol>>,
+    },
     /// `(if cond then else)`.  The else branch is `Const(Nil)` when absent.
     If(Shared<Code>, Shared<Code>, Shared<Code>),
     /// `(progn f1 … fn)` — evaluate all, return the last.
@@ -926,6 +938,11 @@ pub struct Lambda {
     pub param_ids: Vec<u32>,
     /// Symbol id for the `&REST` parameter, if any.
     pub rest_param_id: Option<u32>,
+    /// Shared slot-routing table for call frames (issue #200 M3): the
+    /// fixed parameter ids, one `Rc` reused by every call so frame
+    /// creation does not allocate a table. Derived artefact like
+    /// `compiled` — excluded from `PartialEq`.
+    pub param_routing: Shared<Vec<u32>>,
     /// Pre-compiled body for the fast execute path (Milestone 1).
     ///
     /// Set by `make_lambda` at definition time.  `None` for lambdas

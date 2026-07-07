@@ -138,6 +138,7 @@ fn test_print_lambda() {
         rest_param: None,
         body: Box::new(LispVal::Number(1)),
         env: env.clone(),
+        param_routing: lamedh::Shared::new(vec![0]),
         param_ids: vec![0],
         rest_param_id: None,
         compiled: None,

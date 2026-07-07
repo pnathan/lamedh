@@ -7,7 +7,7 @@ pub(super) fn make_lambda(
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     // Compile the body once at definition time for the fast execute path.
-    let compiled_body = super::compile::compile(body);
+    let compiled_body = super::compile::compile_lambda_body(params, body);
     build_lambda(params, body, compiled_body, env)
 }
 
@@ -73,6 +73,7 @@ pub(super) fn build_lambda(
         rest_param,
         body: Box::new(body.clone()),
         env: env.clone(),
+        param_routing: crate::Shared::new(param_ids.clone()),
         param_ids,
         rest_param_id,
         compiled: Some(compiled_body),
