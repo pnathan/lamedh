@@ -674,6 +674,12 @@ impl Environment {
             "KERNEL-FUEL-REMAINING".to_string(),
             LispVal::Builtin(BuiltinFunc::KernelFuelRemaining),
         );
+        // Positioned reading (issue #171 phase 2a). Pure parsing — takes a
+        // string, no capability; file access stays behind READ-FS.
+        env.set(
+            "READ-ALL-POSITIONED".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadAllPositioned),
+        );
 
         // Capabilities / features — read-only from Lisp.
         // Grant/revoke capabilities only from the host API (env.enable_feature)

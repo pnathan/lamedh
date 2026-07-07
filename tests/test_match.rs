@@ -250,3 +250,66 @@ fn rewrite_as_code_transform_end_to_end() {
     );
     assert_eq!(out, "42");
 }
+
+// -------------------------------------------- positioned sgrep (#171) ----
+
+#[test]
+fn sgrep_source_reports_line_and_column() {
+    let e = env();
+    let out = eval_line(
+        "(sgrep-source '(setq ?v ?e)
+           \"(defun a () (setq x 1))\n(defun b ()\n  (when t (setq y 2)))\")",
+        &e,
+    );
+    assert_eq!(
+        out,
+        "((1 1 (SETQ X 1) ((?E . 1) (?V . X))) (2 1 (SETQ Y 2) ((?E . 2) (?V . Y))))"
+    );
+}
+
+#[test]
+fn sgrep_hits_destructure_with_match_itself() {
+    let e = env();
+    // The pattern language consuming its own output.
+    let out = eval_line(
+        "(match (car (sgrep-source '(setq ?v ?e) \"(setq z 9)\"))
+           ((?line ?col ?form ?bs) (list ?line ?col (cdr (assoc '?v ?bs)))))",
+        &e,
+    );
+    assert_eq!(out, "(1 1 Z)");
+}
+
+#[test]
+fn read_all_positioned_skips_comments_and_positions_forms() {
+    let e = env();
+    let out = eval_line("(read-all-positioned \";; header\n(a)\n\n  (b c)\")", &e);
+    assert_eq!(out, "(((A) 2 1) ((B C) 4 3))");
+    // Parse errors surface positioned, as ordinary catchable errors.
+    let out = eval_line(
+        "(handler-case (read-all-positioned \"(fine) (broken\") (error (er) 'caught))",
+        &e,
+    );
+    assert_eq!(out, "CAUGHT");
+}
+
+#[test]
+fn sgrep_file_greps_real_source_with_capability() {
+    let e = env();
+    e.enable_feature("READ-FS");
+    // Every hit anchors a (defun name ...) with its line number.
+    let out = eval_line(
+        "(let ((hits (sgrep-file '(defun ?name ??rest) \"lib/01-list.lisp\")))
+           (list (> (length hits) 5)
+                 (match (car hits) ((?line ?col ?form ?bs) (> ?line 0)))))",
+        &e,
+    );
+    assert_eq!(out, "(T T)");
+    // And without the capability, a clean gated error.
+    let e2 = env();
+    let out = eval_line(
+        "(handler-case (sgrep-file '(defun ?n ??r) \"lib/01-list.lisp\")
+           (error (er) 'gated))",
+        &e2,
+    );
+    assert_eq!(out, "GATED");
+}

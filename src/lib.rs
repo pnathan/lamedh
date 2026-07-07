@@ -541,6 +541,9 @@ pub enum BuiltinFunc {
     // Kernel fuel (issue #284 Phase 2): per-thread step budget backstop.
     KernelFuelSet,
     KernelFuelRemaining,
+    // Positioned reading (issue #171 phase 2a): parse a whole source string
+    // into (form line col) triples for file:line tooling like SGREP-FILE.
+    ReadAllPositioned,
     // Capabilities / features (read-only from Lisp; grant/revoke only from the host)
     FeatureEnabledP,
     Features,
