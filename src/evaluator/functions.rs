@@ -546,6 +546,19 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
 /// leaves the dynamic definition in place.
 pub(super) fn optimize_function(name: &str, env: &Shared<Environment>) -> String {
     let Some(LispVal::Lambda(lam)) = env.get(name) else {
+        // One-door defun may already have compiled the name: report the
+        // live typed signature instead of a useless "not a lambda".
+        if let Some((params, ret)) = env.jit_named_signature(name) {
+            let args = params
+                .iter()
+                .map(|(_, t)| crate::jit::ty_name(t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return format!(
+                "{name} : (-> ({args}) {})  [native, already compiled]",
+                crate::jit::ty_name(&ret)
+            );
+        }
         return format!("{name} is not optimizable (not a lambda)");
     };
     // `&REST` functions are outside the monomorphic typed core.
@@ -566,9 +579,31 @@ pub(super) fn optimize_function(name: &str, env: &Shared<Environment>) -> String
     // compile if compileable.
     match env.jit_analyze_untyped(name, &lam.params, &body_forms) {
         crate::jit::Analysis::Native(scheme) => {
-            // Keep the original closure as the fallback for non-matching calls.
-            env.set(
-                name.to_string(),
+            // Keep the original closure as the fallback for non-matching
+            // calls. Bind GLOBALLY: jit-optimize semantically rebinds the
+            // function's definition — when invoked from inside a call frame
+            // (one-door defun's $defun-auto-compile), a frame-local env.set
+            // would bind the membrane into the transient frame and evaporate.
+            // Preserve introspection (the historical objection to
+            // auto-compiling defuns): record the original lambda source on
+            // the plist, where see-source looks first.
+            let source_form = {
+                let mut parts = vec![LispVal::Symbol(env.intern_symbol("LAMBDA"))];
+                let param_syms: Vec<LispVal> = lam
+                    .params
+                    .iter()
+                    .map(|p| LispVal::Symbol(env.intern_symbol(p)))
+                    .collect();
+                parts.push(vec_to_list(param_syms));
+                parts.push((*lam.body).clone());
+                vec_to_list(parts)
+            };
+            env.intern_symbol(name)
+                .borrow_mut()
+                .plist
+                .insert("source-form".to_string(), source_form);
+            env.global_set(
+                name,
                 make_auto_typed_native(name.to_string(), LispVal::Lambda(lam)),
             );
             format!("{name} : {scheme}  [native]")

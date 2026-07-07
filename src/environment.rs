@@ -1179,7 +1179,7 @@ impl Environment {
     }
 
     /// Write a global binding into the symbol value cell, by name.
-    fn global_set(&self, name: &str, val: LispVal) {
+    pub(crate) fn global_set(&self, name: &str, val: LispVal) {
         let sym = self.shared.symbols.borrow_mut().intern(name);
         sym.borrow_mut().value = Some(val);
     }

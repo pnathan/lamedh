@@ -1244,6 +1244,18 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         match sym {
                             Some(s) => {
                                 let name = s.borrow().name.clone();
+                                // Hard compile policy (issue #168): a
+                                // no-compile declaration pins the function
+                                // to the tree-walker — report, don't compile.
+                                let no_compile = matches!(
+                                    s.borrow().plist.get("no-compile"),
+                                    Some(v) if !matches!(v, LispVal::Nil)
+                                );
+                                if no_compile {
+                                    return Ok(TcoStep::Done(Ok(LispVal::String(format!(
+                                        "{name}: compile disabled by declaration"
+                                    )))));
+                                }
                                 let status = optimize_function(&name, env);
                                 s.borrow_mut().plist.remove("pure-checked");
                                 invalidate_call_graph(&name, env);
