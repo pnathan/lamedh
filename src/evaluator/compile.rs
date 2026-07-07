@@ -26,6 +26,95 @@ fn safe_list_to_vec(list: &LispVal) -> Option<Vec<LispVal>> {
 ///
 /// Conservative: any form or pattern that isn't explicitly recognised falls
 /// through to [`crate::Code::Interp`].
+/// Compile-time lexical scope stack (issue #200 M3). One level per frame
+/// the compiled code will create at run time, innermost last:
+/// - `Slot(ids)` — a lambda call frame with slot storage; a variable
+///   resolving here becomes `Code::LocalGet`.
+/// - `Opaque(ids)` — a frame without slots (compiled LET in v1); a
+///   variable resolving here stays `Code::Var`, but the level still
+///   counts toward the depth of outer LocalGets.
+///
+/// Thread-local because `compile` is a pure single-threaded recursion; the
+/// guard restores the stack on every exit path.
+enum ScopeLevel {
+    Slot(Vec<u32>),
+    Opaque(Vec<u32>),
+}
+
+thread_local! {
+    static COMPILE_SCOPE: std::cell::RefCell<Vec<ScopeLevel>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct ScopeGuard;
+
+impl ScopeGuard {
+    fn push(level: ScopeLevel) -> ScopeGuard {
+        COMPILE_SCOPE.with(|s| s.borrow_mut().push(level));
+        ScopeGuard
+    }
+}
+
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        COMPILE_SCOPE.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+/// Resolve a variable use against the compile-time scope stack: `Some`
+/// with (depth, slot) when the nearest binder is a slot frame, `None` when
+/// it is opaque, unbound (global/free), or out of u16 range.
+fn scope_lookup(id: u32) -> Option<(u16, u16)> {
+    COMPILE_SCOPE.with(|s| {
+        let stack = s.borrow();
+        for (depth, level) in stack.iter().rev().enumerate() {
+            let (ids, is_slot) = match level {
+                ScopeLevel::Slot(ids) => (ids, true),
+                ScopeLevel::Opaque(ids) => (ids, false),
+            };
+            if let Some(pos) = ids.iter().position(|p| *p == id) {
+                if is_slot && depth <= u16::MAX as usize && pos <= u16::MAX as usize {
+                    return Some((depth as u16, pos as u16));
+                }
+                return None; // nearest binder shadows; opaque stays Var
+            }
+        }
+        None
+    })
+}
+
+/// Raw symbol ids of a lambda parameter list, for scope tracking. `None`
+/// when the list contains `&REST` or non-symbols — such lambdas keep plain
+/// `Code::Var` resolution for their body (the call path may bind through
+/// the map), which is always sound.
+fn param_scope_ids(params: &LispVal) -> Option<Vec<u32>> {
+    let list = safe_list_to_vec(params)?;
+    let mut ids = Vec::with_capacity(list.len());
+    for p in &list {
+        let LispVal::Symbol(s) = p else { return None };
+        if s.borrow().name == "&REST" {
+            return None;
+        }
+        ids.push(s.borrow().id);
+    }
+    Some(ids)
+}
+
+/// Compile a lambda body under its parameter scope (issue #200 M3): the
+/// raw-`(lambda …)` path in `make_lambda` enters here so its body gets the
+/// same lexical addressing as bodies compiled via `MakeLambda`.
+pub(super) fn compile_lambda_body(params: &LispVal, body: &LispVal) -> Shared<crate::Code> {
+    match param_scope_ids(params) {
+        Some(ids) => {
+            let _g = ScopeGuard::push(ScopeLevel::Slot(ids));
+            compile(body)
+        }
+        None => compile(body),
+    }
+}
+
 pub(super) fn compile(form: &LispVal) -> Shared<crate::Code> {
     Shared::new(compile_inner(form))
 }
@@ -51,6 +140,13 @@ fn compile_inner(form: &LispVal) -> crate::Code {
             } else if has_special {
                 // A bare special-form name used as a value — very rare, fall back.
                 Code::Interp(form.clone())
+            } else if let Some((depth, slot)) = scope_lookup(s.borrow().id) {
+                // Compile-time-resolved lexical parameter (issue #200 M3).
+                Code::LocalGet {
+                    depth,
+                    slot,
+                    sym: s.clone(),
+                }
             } else {
                 // Ordinary symbol → variable reference.
                 Code::Var(s.clone())
@@ -235,11 +331,19 @@ fn compile_let(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     }
 
     // Body: single form is compiled directly; multiple forms become a Seq so
-    // the last is in tail position.
-    let body = if args.len() == 2 {
-        compile(&args[1])
-    } else {
-        Shared::new(Code::Seq(args[1..].iter().map(compile).collect()))
+    // the last is in tail position. The body sees one new run-time frame,
+    // tracked as an Opaque scope level (issue #200 M3): LET binders stay on
+    // the map path in v1, but the level must count toward the depth of any
+    // LocalGet reaching past it to an enclosing lambda's parameters.
+    let body = {
+        let _g = ScopeGuard::push(ScopeLevel::Opaque(
+            bindings.iter().map(|(id, _)| *id).collect(),
+        ));
+        if args.len() == 2 {
+            compile(&args[1])
+        } else {
+            Shared::new(Code::Seq(args[1..].iter().map(compile).collect()))
+        }
     };
 
     Code::Let { bindings, body }
@@ -363,10 +467,19 @@ fn compile_lambda(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         Some(v) if !v.is_empty() => v,
         _ => return Code::Interp(form.clone()),
     };
-    let compiled_body = if body_forms.len() == 1 {
-        compile(&body_forms[0])
-    } else {
-        Shared::new(Code::Seq(body_forms.iter().map(compile).collect()))
+    // The inner body compiles under the lambda's own parameter scope,
+    // stacked over the enclosing scope — a reference from the inner body to
+    // an enclosing lambda's parameter becomes a LocalGet whose depth counts
+    // through this level (issue #200 M3). Non-simple parameter lists
+    // (&REST, non-symbols) compile scopeless: their call frames may bind
+    // through the map, and plain Var is always sound.
+    let compiled_body = {
+        let _g = param_scope_ids(params).map(|ids| ScopeGuard::push(ScopeLevel::Slot(ids)));
+        if body_forms.len() == 1 {
+            compile(&body_forms[0])
+        } else {
+            Shared::new(Code::Seq(body_forms.iter().map(compile).collect()))
+        }
     };
     Code::MakeLambda {
         params: params.as_ref().clone(),
@@ -426,6 +539,34 @@ pub(super) fn exec_step(
     use crate::Code;
     match code {
         Code::Const(v) => Ok(TcoStep::Done(Ok(v.clone()))),
+
+        Code::LocalGet { depth, slot, sym } => {
+            // Fast path: direct slot read, no symbol resolution, no hashing.
+            // Fallbacks (each rare, each preserving exact tree-walker
+            // semantics): the symbol was made dynamic after compilation
+            // (shallow cell wins over lexical storage), or some binding
+            // path bound this frame through the map instead of slots.
+            let dynamic_now = env.has_any_dynamic() && sym.borrow().is_dynamic;
+            let value = if dynamic_now {
+                None
+            } else {
+                env.local_get(*depth, *slot)
+            };
+            let value = match value {
+                Some(v) => v,
+                None => env.resolve(sym).ok_or_else(|| {
+                    LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
+                })?,
+            };
+            // LABEL compat: same check as Code::Var.
+            if let LispVal::Cons { car, .. } = &value
+                && let LispVal::Symbol(s) = &**car
+                && s.borrow().name == "LABEL"
+            {
+                return Ok(TcoStep::Done(eval(&value, env)));
+            }
+            Ok(TcoStep::Done(Ok(value)))
+        }
 
         Code::Var(sym) => {
             let value = env.resolve(sym).ok_or_else(|| {
@@ -641,20 +782,27 @@ pub(super) fn exec_step(
             {
                 match lambda.rest_param_id {
                     None if lambda.params.len() == eval_args.len() => {
-                        let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
-                        for (id, val) in lambda.param_ids.iter().zip(eval_args) {
-                            new_env.set_id(*id, val);
-                        }
+                        // Slot frame (issue #200 M3): parameter values land
+                        // directly in slots, ready for LocalGet.
+                        let new_env = Environment::new_child_with_slots(
+                            &lambda.env,
+                            lambda.param_routing.clone(),
+                            eval_args,
+                        );
                         return Ok(TcoStep::ExecTail(compiled_body.clone(), new_env));
                     }
                     Some(rest_param_id) if eval_args.len() >= lambda.params.len() => {
-                        let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
+                        // Fixed params in slots; the &REST list binds through
+                        // the map (its id is not in the routing table).
                         let n_fixed = lambda.params.len();
                         let mut eval_args = eval_args;
-                        for (id, val) in lambda.param_ids.iter().zip(eval_args.drain(..n_fixed)) {
-                            new_env.set_id(*id, val);
-                        }
-                        new_env.set_id(rest_param_id, vec_to_list(eval_args));
+                        let rest = eval_args.split_off(n_fixed);
+                        let new_env = Environment::new_child_with_slots(
+                            &lambda.env,
+                            lambda.param_routing.clone(),
+                            eval_args,
+                        );
+                        new_env.set_id(rest_param_id, vec_to_list(rest));
                         return Ok(TcoStep::ExecTail(compiled_body.clone(), new_env));
                     }
                     // Arity mismatch — fall through to `apply` for the error.

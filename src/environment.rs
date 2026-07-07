@@ -351,6 +351,17 @@ pub struct Environment {
     // overhead on the hot path. Identity in `PartialEq` is recovered from the
     // field's address (unique per `Environment`).
     bindings: SharedCell<BindingMap>,
+    /// Slot routing for compiled binder frames (issue #200 M3): when
+    /// present, `routing[i]` is the symbol id that owns `slots[i]`. Every
+    /// id-based access on this frame (`set_id`, `resolve`, the update
+    /// walks) consults the table first, so a dynamic shadow-write (e.g. a
+    /// macro expansion's `def` of a parameter name) hits the *same*
+    /// storage a compiled `Code::LocalGet` reads — writes cannot bypass
+    /// reads, which is what makes lexical addressing sound here where the
+    /// reverted GlobalGet was not. `None` on ordinary map-only frames.
+    routing: Option<Shared<Vec<u32>>>,
+    /// Slot values for `routing` (parallel array). Empty when unrouted.
+    slots: SharedCell<Vec<LispVal>>,
     /// Globally-shared interpreter state (symbols, flags, dynamic vars,
     /// features). Shared across the whole environment chain via a single
     /// [`Shared`] pointer.
@@ -387,6 +398,8 @@ impl Environment {
         Environment {
             parent: None,
             bindings: SharedCell::new(BindingMap::default()),
+            routing: None,
+            slots: SharedCell::new(Vec::new()),
             shared: Shared::new(SharedState::new()),
         }
     }
@@ -396,6 +409,27 @@ impl Environment {
         Shared::new(Environment {
             parent: Some(parent.clone()),
             bindings: SharedCell::new(BindingMap::default()),
+            routing: None,
+            slots: SharedCell::new(Vec::new()),
+            shared: parent.shared.clone(),
+        })
+    }
+
+    /// Create a child call frame with slot storage (issue #200 M3): the
+    /// parameter values land directly in `slots`, owned per `routing`'s
+    /// symbol ids. Later bindings of *other* ids on this frame go to the
+    /// ordinary map; bindings of routed ids are redirected into their slot.
+    pub fn new_child_with_slots(
+        parent: &Shared<Environment>,
+        routing: Shared<Vec<u32>>,
+        slots: Vec<LispVal>,
+    ) -> Shared<Environment> {
+        debug_assert_eq!(routing.len(), slots.len());
+        Shared::new(Environment {
+            parent: Some(parent.clone()),
+            bindings: SharedCell::new(BindingMap::default()),
+            routing: Some(routing),
+            slots: SharedCell::new(slots),
             shared: parent.shared.clone(),
         })
     }
@@ -1146,7 +1180,56 @@ impl Environment {
     #[inline]
     pub fn set_id(&self, id: u32, val: LispVal) {
         debug_assert!(!self.is_root(), "set_id called on root frame");
+        if let Some(rt) = &self.routing
+            && let Some(pos) = rt.iter().position(|r| *r == id)
+        {
+            self.slots.borrow_mut()[pos] = val;
+            return;
+        }
         self.bindings.borrow_mut().insert(id, val);
+    }
+
+    /// Update an existing binding of `id` on THIS frame (slot or map),
+    /// returning whether one was found. Shared by the SETQ walks so slot
+    /// frames and map frames update through one code path.
+    fn frame_update_existing(&self, id: u32, val: &LispVal) -> bool {
+        if let Some(rt) = &self.routing
+            && let Some(pos) = rt.iter().position(|r| *r == id)
+        {
+            self.slots.borrow_mut()[pos] = val.clone();
+            return true;
+        }
+        if self.bindings.borrow().contains_key(&id) {
+            self.bindings.borrow_mut().insert(id, val.clone());
+            return true;
+        }
+        false
+    }
+
+    /// Direct lexical-address read for `Code::LocalGet` (issue #200 M3):
+    /// `depth` frames up the parent chain, then `slots[slot]`. `None` when
+    /// the chain is shorter than `depth` or the target frame carries no
+    /// routing / no such slot — the executor then falls back to full
+    /// resolution.
+    #[inline]
+    pub(crate) fn local_get(&self, depth: u16, slot: u16) -> Option<LispVal> {
+        let mut frame = self;
+        for _ in 0..depth {
+            frame = frame.parent.as_deref()?;
+        }
+        frame.routing.as_ref()?;
+        frame.slots.borrow().get(slot as usize).cloned()
+    }
+
+    /// Read `id` from THIS frame only (slot or map), cloning the value.
+    #[inline]
+    pub(crate) fn frame_get(&self, id: u32) -> Option<LispVal> {
+        if let Some(rt) = &self.routing
+            && let Some(pos) = rt.iter().position(|r| *r == id)
+        {
+            return Some(self.slots.borrow()[pos].clone());
+        }
+        self.bindings.borrow().get(&id).cloned()
     }
 
     /// Hot-path variable resolution from the interned symbol the AST holds.
@@ -1200,8 +1283,8 @@ impl Environment {
                     }
                 }
             }
-            if let Some(val) = frame.bindings.borrow().get(&id) {
-                return Some(val.clone());
+            if let Some(val) = frame.frame_get(id) {
+                return Some(val);
             }
             frame = frame.parent.as_deref().unwrap();
         }
@@ -1447,8 +1530,7 @@ impl Environment {
                 }
                 break;
             }
-            if current_env.bindings.borrow().contains_key(&id) {
-                current_env.bindings.borrow_mut().insert(id, val);
+            if current_env.frame_update_existing(id, &val) {
                 return;
             }
             maybe_env = current_env.parent.clone();
@@ -1495,8 +1577,7 @@ impl Environment {
                 }
                 break;
             }
-            if current_env.bindings.borrow().contains_key(&id) {
-                current_env.bindings.borrow_mut().insert(id, val);
+            if current_env.frame_update_existing(id, &val) {
                 return;
             }
             maybe_env = current_env.parent.clone();
@@ -1528,6 +1609,14 @@ impl Environment {
         }
         // Convert id → name via the reverse map.
         let table = self.shared.symbols.borrow();
+        if let Some(rt) = &self.routing {
+            let slots = self.slots.borrow();
+            for (pos, id) in rt.iter().enumerate() {
+                if let Some(sym) = table.symbol_by_id(*id) {
+                    all.insert(sym.borrow().name.clone(), slots[pos].clone());
+                }
+            }
+        }
         for (id, val) in self.bindings.borrow().iter() {
             if let Some(sym) = table.symbol_by_id(*id) {
                 all.insert(sym.borrow().name.clone(), val.clone());
