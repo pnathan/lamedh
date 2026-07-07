@@ -1077,6 +1077,19 @@ impl Environment {
         self.shared.has_dynamic.get()
     }
 
+    /// Whether the symbol with id `id` is a dynamic (special) variable.
+    /// Used by the compiled TCO fast path to check a lambda's own params
+    /// rather than bailing on the world-global
+    /// [`Environment::has_any_dynamic`] flag alone (which is permanently
+    /// true once the stdlib defines its first dynamic variable).
+    pub fn symbol_id_is_dynamic(&self, id: u32) -> bool {
+        self.shared
+            .symbols
+            .borrow()
+            .symbol_by_id(id)
+            .is_some_and(|s| s.borrow().is_dynamic)
+    }
+
     /// Generate a fresh uninterned symbol.  Equivalent to `(gensym)` in Lisp.
     pub fn gensym(&self) -> Shared<SharedCell<Symbol>> {
         self.shared.symbols.borrow_mut().gensym()
