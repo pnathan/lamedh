@@ -190,6 +190,7 @@
 //! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
 //! | `21-cl-compat.lisp` | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
 //! | `22-guard.lisp` | Guard fences (issue #284): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `FUEL-REMAINING`, `CAPABILITIES-EFFECTIVE` |
+//! | `23-match.lisp` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1628,6 +1629,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/21-cl-compat.lisp"),
     ),
     ("22-guard.lisp", include_str!("../lib/22-guard.lisp")),
+    ("23-match.lisp", include_str!("../lib/23-match.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),

@@ -330,6 +330,10 @@ fn parse_keyword_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResul
                         tag("="),
                         tag("<"),
                         tag(">"),
+                        // `_` as a constituent supports the `?_` match
+                        // wildcard (lib/23-match.lisp); previously a parse
+                        // error here, so no existing program changes meaning.
+                        tag("_"),
                     ))),
                 ),
             )),
@@ -354,7 +358,10 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
             parse_keyword_symbol(env.clone()),
             map(
                 recognize(pair(
-                    alt((alpha1, tag("&"), tag("$"))),
+                    // `?` as a symbol-start supports pattern variables (`?x`,
+                    // `??xs` — lib/23-match.lisp). Previously a parse error in
+                    // this position, so no existing program changes meaning.
+                    alt((alpha1, tag("&"), tag("$"), tag("?"))),
                     many0(alt((
                         alphanumeric1,
                         tag("-"),
@@ -365,6 +372,10 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
                         tag("="),
                         tag("<"),
                         tag(">"),
+                        // `_` as a constituent supports the `?_` match
+                        // wildcard (lib/23-match.lisp); previously a parse
+                        // error here, so no existing program changes meaning.
+                        tag("_"),
                     ))),
                 )),
                 |s: &str| {
