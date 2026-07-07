@@ -23,7 +23,7 @@ cranelift-codegen = { version = "0.133", optional = true }
 cranelift-frontend = { version = "0.133", optional = true }
 
 [features]
-default = ["jit"]
+default = ["jit", "concurrency"]
 jit = [
     "dep:cranelift-jit",
     "dep:cranelift-module",
