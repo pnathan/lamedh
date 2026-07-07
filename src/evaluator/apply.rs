@@ -1135,6 +1135,62 @@ pub(super) fn apply(
                 }
             }
 
+            BuiltinFunc::ReadAllPositioned => {
+                // (read-all-positioned "src") — parse every top-level form in
+                // the string, returning a list of (form line col) triples
+                // with 1-based reader positions (issue #171 phase 2a: the
+                // substrate for SGREP-FILE's file:line hits). Pure parsing:
+                // no capability required; pair with READ-FILE (READ-FS) to
+                // read source from disk. Honors the environment's reader
+                // depth limit like the other evaluator-facing entry points.
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "read-all-positioned takes exactly one argument (a string)".to_string(),
+                    ));
+                }
+                let LispVal::String(src) = &args[0] else {
+                    return Err(LispError::Generic(format!(
+                        "READ-ALL-POSITIONED: expected a string, got {}",
+                        err_val(&args[0])
+                    )));
+                };
+                let src = crate::reader::strip_shebang(src);
+                let limit = env.reader_depth_limit();
+                let mut triples: Vec<LispVal> = Vec::new();
+                let mut rest = src;
+                loop {
+                    rest = crate::reader::skip_ws(rest);
+                    let offset = src.len() - rest.len();
+                    match crate::reader::read_next_with_depth_limit(rest, env, limit) {
+                        Ok(None) => break,
+                        Ok(Some((form, rem))) => {
+                            let (line, col) = crate::reader::position_of(src, offset);
+                            triples.push(vec_to_list(vec![
+                                form,
+                                LispVal::Number(line as i64),
+                                LispVal::Number(col as i64),
+                            ]));
+                            rest = rem;
+                        }
+                        Err((err_offset, detail)) => {
+                            return Err(LispError::Generic(crate::reader::format_parse_error(
+                                src,
+                                offset + err_offset,
+                                &detail,
+                            )));
+                        }
+                    }
+                }
+                let mut out = LispVal::Nil;
+                for t in triples.into_iter().rev() {
+                    out = LispVal::Cons {
+                        car: Shared::new(t),
+                        cdr: Shared::new(out),
+                    };
+                }
+                Ok(out)
+            }
+
             // Capabilities / features (read-only from Lisp)
             BuiltinFunc::FeatureEnabledP => {
                 let name = feature_name_arg(args, "feature-enabled-p")?;

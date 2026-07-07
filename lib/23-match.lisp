@@ -309,3 +309,36 @@ shape without looping."
          (cons (rewrite pattern template (car tail))
                ($rewrite-cdr pattern template (cdr tail))))
         (t (rewrite pattern template tail))))
+
+;;; ------------------------------------------------------------------
+;;; Positioned structural search (issue #171 phase 2a): SGREP over whole
+;;; source texts and files, each hit carrying the 1-based line/column of
+;;; its top-level form. (Sub-form positions await reader spans on values —
+;;; phase 2b; the top-level anchor is the jump-to-definition 80%.)
+;;;
+;;; Hit shape: (LINE COL SUBFORM BINDINGS) — destructures nicely with the
+;;; pattern language itself:
+;;;   (match hit ((?line ?col ?form ?bs) ...))
+
+(defun sgrep-source (pattern src)
+  "All PATTERN matches in the source text SRC, as (line col subform
+bindings) hits in file order. Line/column anchor the enclosing top-level
+form (1-based)."
+  ($sgrep-positioned pattern (read-all-positioned src)))
+
+(defun $sgrep-positioned (pattern triples)
+  (cond ((null triples) nil)
+        (t (let* ((triple (car triples))
+                  (form (car triple))
+                  (line (car (cdr triple)))
+                  (col (car (cdr (cdr triple)))))
+             (append
+              (mapcar (lambda (hit)
+                        (list line col (car hit) (cdr hit)))
+                      (sgrep pattern form))
+              ($sgrep-positioned pattern (cdr triples)))))))
+
+(defun sgrep-file (pattern path)
+  "SGREP-SOURCE over the file at PATH (requires the READ-FS capability),
+returning (line col subform bindings) hits."
+  (sgrep-source pattern (read-file path)))
