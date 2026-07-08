@@ -63,9 +63,12 @@ pub struct Ctx<'a> {
 
 impl Ctx<'_> {
     /// Byte offset of the `overflow` field from the start of `Ctx`.
-    /// Used by native codegen to store the flag without branches.
+    /// Used by native codegen to store the flag without branches — hence
+    /// dead (and cfg-gated) when the Cranelift `jit` feature is off.
+    #[cfg(feature = "jit")]
     pub(super) const OVERFLOW_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, overflow);
     /// Byte offset of the `div_by_zero` field from the start of `Ctx`.
+    #[cfg(feature = "jit")]
     pub(super) const DIV_BY_ZERO_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, div_by_zero);
 
     /// Maximum non-tail call depth before a typed call is refused with a
