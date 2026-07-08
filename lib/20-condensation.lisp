@@ -476,8 +476,20 @@ schemes; others keep the direct positional read."
 ;; wrong concept to an accessor is a static type error.
 (def *condense-row-types* '(int64 float64 bool char string symbol))
 
+;; Compound field types that also map into the checker's type language — the
+;; declared-scheme parser already accepts these inside a record, so a field
+;; carrying one gets a row scheme too. This lifts the former "every field must
+;; be a flat scalar or the concept gets no rows at all" limitation: a record
+;; with a (list string) or (array int64) field is now fully row-typed.
+(def *condense-row-compounds* '(list array pair record))
+
+(defun condense-row-type-p (ty)
+  "T when field type TY maps into the checker's row type language."
+  (or (member ty *condense-row-types*)
+      (and (consp ty) (member (car ty) *condense-row-compounds*))))
+
 (defun condense-row-field (spec)
-  (if (member (cadr spec) *condense-row-types*)
+  (if (condense-row-type-p (cadr spec))
       (list (car spec) (cadr spec))
       nil))
 
@@ -537,6 +549,70 @@ schemes; others keep the direct positional read."
                                        (-> ((record ,fields r)) bool)))))
                   (t nil)))
               derivations))))
+
+;;; ---- defrecord: the one-door gradual-typed record --------------------------
+;;;
+;;; (defrecord Name (field type)...) is the recommended way to define a
+;;; record. It unifies the two older forms into one gradual surface:
+;;;
+;;;   - DEFSTRUCT gives an untyped, mutable, array-backed struct — fast to
+;;;     reach for, invisible to the checker.
+;;;   - DEFSTRUCT-TYPED gives a native, nominal, COMPILED struct, but only for
+;;;     scalar/array fields and with nominal-only typing.
+;;;   - DEFCONCEPT gives a row-typed record with condensation machinery
+;;;     (invariant, derive, trace) — powerful but heavier surface.
+;;;
+;;; DEFRECORD is the middle path taken by default: a ROW-typed record (so its
+;;; values flow through any row-polymorphic function naming a subset of its
+;;; fields — duck typing the checker proves), over the single positional
+;;; representation (so the checker's row promise is KEPT at runtime — see
+;;; issue #305 for why a native struct cannot back a generic row accessor
+;;; yet), for ANY checkable field type including compound ones like
+;;; (list string) or (array int64).
+;;;
+;;; "Gradual" is the point: it is richly row-typed now, and marked
+;;; COMPILE-ELIGIBLE when its fields are all natively compilable, so a later
+;;; pass (issue #297 stage 3) can give it native storage WITHOUT changing the
+;;; surface — the data analogue of one-door DEFUN. DEFCONCEPT remains as the
+;;; richer sibling (invariant + derive) built on the same core; DEFSTRUCT and
+;;; DEFSTRUCT-TYPED remain as explicit escape hatches.
+
+(defun condense-native-field-p (spec)
+  "T when field SPEC's type is one the native compiled tier (defstruct-typed)
+can store today: a scalar, or a (array scalar). Used only to MARK a record
+compile-eligible for a future native pass (#297 stage 3); it changes no
+behavior now."
+  (let ((ty (cadr spec)))
+    (or (member ty '(int64 float64 bool char))
+        (and (consp ty) (eq (car ty) 'array)
+             (member (cadr ty) '(int64 float64 bool char))))))
+
+(defun condense-compile-eligible-p (field-specs)
+  (not (member nil (mapcar #'condense-native-field-p field-specs))))
+
+(defvau defrecord (x e)
+  "(DEFRECORD Name (field type)...) — define a gradual-typed row record.
+Generates make-Name, Name-p, and the field accessors, each carrying a
+declared row scheme, so the record participates in row polymorphism for
+every field (including compound types). Marked compile-eligible when all
+fields are natively storable, for a future native pass (#297 stage 3)."
+  (let* ((name (car x))
+         (field-specs (cdr x)))
+    (if (null field-specs)
+        (error "defrecord requires at least one field")
+        (progn
+          ;; Reuse defconcept's row-record core (one representation, full row
+          ;; schemes via the broadened field mapping above).
+          (eval (list 'defconcept name (list ':fields field-specs)) e)
+          (condense-put name "condense.kind" 'record)
+          (condense-put name "condense.compile-eligible"
+                        (condense-compile-eligible-p field-specs))
+          name))))
+
+(defun record-compile-eligible-p (name)
+  "T when the DEFRECORD named NAME could be given native storage by a future
+compile pass (all fields natively storable). Introspection, not a promise."
+  (condense-get name "condense.compile-eligible"))
 
 (defvau defconcept (x e)
   "Define a compact concept: fields, invariant, generated operations, trace.
