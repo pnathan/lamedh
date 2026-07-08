@@ -145,6 +145,7 @@ pub fn compile_native(
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
+    jb.symbol("jit_bad_char", super::jit_bad_char as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     let mut module = JITModule::new(jb);
@@ -200,6 +201,17 @@ pub fn compile_native(
         .declare_function("jit_array_oob", Linkage::Import, &oobsig)
         .map_err(|e| e.to_string())?;
 
+    // Imported CODE-CHAR range reporter (issue #281): (ctx, n) -> (). Called
+    // from the out-of-range arm of a CODE-CHAR narrowing to record the
+    // evaluator's range error on `Ctx`; the native code still masks the value
+    // to a byte itself.
+    let mut bcsig = module.make_signature();
+    bcsig.params.push(AbiParam::new(ptr));
+    bcsig.params.push(AbiParam::new(types::I64));
+    let bad_char_id = module
+        .declare_function("jit_bad_char", Linkage::Import, &bcsig)
+        .map_err(|e| e.to_string())?;
+
     // Imported non-tail-call depth guard (issue #271): `jit_enter_call`
     // (ctx) -> bool-as-i64 (nonzero = ok, depth bumped; zero = at the cap, a
     // recursion-limit error is now pending) and `jit_exit_call` (ctx) -> (),
@@ -237,6 +249,7 @@ pub fn compile_native(
         let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
+        let bad_char_ref = module.declare_func_in_func(bad_char_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
@@ -282,6 +295,7 @@ pub fn compile_native(
             pending_tail_ref,
             alloc_ref,
             array_oob_ref,
+            bad_char_ref,
             enter_call_ref,
             exit_call_ref,
             callee_sig,
@@ -337,6 +351,9 @@ struct Emitter<'a, 'b, 'c> {
     /// index error on `Ctx` from the out-of-bounds arm of a guarded
     /// `FETCH`/`STORE`.
     array_oob_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_bad_char`] (issue #281): records the CODE-CHAR
+    /// range error on `Ctx` from the out-of-range arm of a CODE-CHAR narrowing.
+    bad_char_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
@@ -465,9 +482,28 @@ impl Emitter<'_, '_, '_> {
             Core::Call(id, args) if tail => Emitted::Value(self.emit_cross_tail_call(*id, args)),
             Core::Call(id, args) => Emitted::Value(self.emit_call(*id, args)),
             Core::ToChar(a) => {
-                // Narrow int64 -> char by masking to a byte (issue #136).
+                // Narrow int64 -> char by masking to a byte (issue #136). An
+                // argument outside 0..=255 is not representable as the typed
+                // island's byte-`char`: record the evaluator's CODE-CHAR range
+                // error (issue #281) via the host trampoline, then still yield
+                // the masked byte as the memory-safe substitute. Only the
+                // out-of-range arm calls the trampoline; the in-range hot path
+                // is the same single `band` as before.
                 let v = self.emit_value(a);
-                Emitted::Value(self.b.ins().band_imm(v, 0xff))
+                let masked = self.b.ins().band_imm(v, 0xff);
+                let zero = self.iconst(0);
+                let max = self.iconst(255);
+                let ge0 = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, v, zero);
+                let le255 = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, v, max);
+                let in_range = self.b.ins().band(ge0, le255);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |_s| masked,
+                    |s| {
+                        s.b.ins().call(s.bad_char_ref, &[s.ctx_ptr, v]);
+                        masked
+                    },
+                ))
             }
             Core::ArrayNew(n) => {
                 let n = self.emit_value(n);
