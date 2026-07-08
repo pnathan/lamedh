@@ -103,6 +103,8 @@ impl Cx<'_> {
                     "CDR" | "REST" if self.checking => self.elab_cdr(args, scope, max),
                     "LIST" if self.checking => self.elab_list(args, scope, max),
                     "NULL" | "NULL?" | "ENDP" if self.checking => self.elab_null(args, scope, max),
+                    "RECORD-REF" if self.checking => self.elab_record_ref(args, scope, max),
+                    "RECORD-WITH" if self.checking => self.elab_record_with(args, scope, max),
                     "LET" if self.checking => self.elab_let(args, scope, max),
                     "PROGN" if self.checking => self.elab_body(args, scope, max),
                     "QUOTE" if self.checking => self.elab_quote(args),
@@ -838,6 +840,76 @@ impl Cx<'_> {
             return Err(format!("`null` expects a list, got {:?}", self.walk(&txs)));
         }
         Ok((Core::LitI(0), Ty::Bool))
+    }
+
+    /// Extract the quoted field symbol from a `record-ref`/`record-with`
+    /// field position: `(quote f)`. A computed field expression falls back
+    /// to the dynamic path (return None -> caller degrades to `Any`).
+    fn quoted_field(arg: &LispVal) -> Option<String> {
+        let items = list_to_vec(arg);
+        match items.as_slice() {
+            [LispVal::Symbol(q), LispVal::Symbol(f)] if q.borrow().name == "QUOTE" => {
+                Some(f.borrow().name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// `(record-ref x 'f)` : (record ((f α)) ρ) → α — the checker-native row
+    /// rule (issue #308). This is what makes row types DERIVED end-to-end:
+    /// any function reading a field through the primitive infers an open
+    /// record requirement with no declare-type! axioms. A struct argument
+    /// satisfies it via subsumption (#299); a computed (non-quoted) field
+    /// name degrades to `Any` like other dynamic frontiers.
+    fn elab_record_ref(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!("`record-ref` expects 2 args, got {}", args.len()));
+        }
+        let (_, tx) = self.elab(&args[0], scope, max)?;
+        let Some(field) = Self::quoted_field(&args[1]) else {
+            return Ok((Core::LitI(0), Ty::Any));
+        };
+        let alpha = self.fresh();
+        let rho = self.fresh();
+        self.unify(
+            &tx,
+            &Ty::Record(vec![(field, alpha.clone())], Some(Box::new(rho))),
+        )
+        .map_err(|e| format!("`record-ref`: {e}"))?;
+        Ok((Core::LitI(0), self.walk(&alpha)))
+    }
+
+    /// `(record-with x 'f v)` : (record ((f α)) ρ) α → same record type —
+    /// typed functional update (issue #308).
+    fn elab_record_with(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 3 {
+            return Err(format!("`record-with` expects 3 args, got {}", args.len()));
+        }
+        let (_, tx) = self.elab(&args[0], scope, max)?;
+        let (_, tv) = self.elab(&args[2], scope, max)?;
+        let Some(field) = Self::quoted_field(&args[1]) else {
+            return Ok((Core::LitI(0), Ty::Any));
+        };
+        let alpha = self.fresh();
+        let rho = self.fresh();
+        self.unify(
+            &tx,
+            &Ty::Record(vec![(field, alpha.clone())], Some(Box::new(rho))),
+        )
+        .map_err(|e| format!("`record-with`: {e}"))?;
+        self.unify(&tv, &alpha)
+            .map_err(|e| format!("`record-with`: replacement value: {e}"))?;
+        Ok((Core::LitI(0), self.walk(&tx)))
     }
 
     /// `(cond (test body…) …)` : every clause body unifies to one result type;

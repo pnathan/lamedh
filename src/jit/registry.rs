@@ -263,6 +263,14 @@ impl Jit {
         Ok(rendered)
     }
 
+    /// Ordered field names of the registered struct/record `name`, if any
+    /// (issue #308: the field table behind the `record-ref` primitive).
+    pub fn struct_field_names(&self, name: &str) -> Option<Vec<String>> {
+        self.structs
+            .get(name)
+            .map(|def| def.fields.iter().map(|(n, _)| n.clone()).collect())
+    }
+
     /// The rendered declared scheme for `name`, if one was registered.
     pub fn declared_scheme_name(&self, name: &str) -> Option<String> {
         self.declared.get(name).map(infer::scheme_name)
