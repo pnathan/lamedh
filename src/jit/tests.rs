@@ -540,17 +540,52 @@ fn array_new_store_fetch_length_roundtrip() {
 
 #[test]
 fn array_out_of_bounds_is_panic_free() {
-    // OOB fetch yields 0, OOB store is a no-op — agreeing across all editions.
+    // An out-of-range access stays memory-safe (no panic, no UB) — the runtime
+    // still bounds-checks and substitutes a fetch → 0 / store → no-op *inside*
+    // the call — but it now records the evaluator's index error and the
+    // membrane raises it once the call returns (issue #282), instead of
+    // silently returning the substitute value. In-bounds access is unchanged.
     let j = build(&[
         "(defun-typed (oobget int64) ((idx int64)) \
            (let-typed ((a (array 2))) (store a 0 7) (store a 1 9) (fetch a idx)))",
         "(defun-typed (oobset int64) ((idx int64)) \
            (let-typed ((a (array 2))) (store a idx 42) (+ (fetch a 0) (fetch a 1))))",
     ]);
+    // In-bounds: still works, and both editions agree.
     assert_eq!(agree(&j, "oobget", &[i(0)]), i(7));
-    assert_eq!(agree(&j, "oobget", &[i(5)]), i(0)); // OOB -> 0
-    assert_eq!(agree(&j, "oobget", &[i(-1)]), i(0)); // OOB -> 0
-    assert_eq!(agree(&j, "oobset", &[i(9)]), i(0)); // no-op store, both 0
+
+    // Out-of-range: every edition errors with the evaluator's exact message.
+    for (name, args, expected) in [
+        (
+            "oobget",
+            i(5),
+            "fetch: index 5 out of bounds (length 2)",
+        ),
+        (
+            "oobget",
+            i(-1),
+            "FETCH: index must be a non-negative integer, got -1",
+        ),
+        (
+            "oobset",
+            i(9),
+            "store: index 9 out of bounds (length 2)",
+        ),
+    ] {
+        j.compile_all();
+        assert_eq!(
+            j.call(name, &[args.clone()]).unwrap_err(),
+            expected,
+            "compiled {name} OOB message"
+        );
+        j.deoptimize_all();
+        assert_eq!(
+            j.call(name, &[args]).unwrap_err(),
+            expected,
+            "interpreted {name} OOB message"
+        );
+    }
+    j.compile_all();
 }
 
 /// Issue #216: `Jit::call`'s plain path (used by `agree`/`build` throughout
