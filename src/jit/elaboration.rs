@@ -575,6 +575,31 @@ impl Cx<'_> {
             return Err(format!("`char-code` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
+        // The evaluator's CHAR-CODE (`src/evaluator/builtins_core.rs`) accepts
+        // a char *or* any non-empty string (the first char's code point). In
+        // checker mode (`check-type`) that generosity must be preserved so the
+        // checker never rejects a program the interpreter would run (#202,
+        // #281): also accept a string / `(array char)` operand. In codegen
+        // mode only a scalar `char` lowers to an unboxed word (a boxed
+        // `LispVal::String`/array is not a scalar char), so the strict
+        // char-only requirement stays there.
+        if self.checking {
+            let w = self.walk(&ta);
+            let accepts = match &w {
+                Ty::Char | Ty::Str | Ty::Any => true,
+                Ty::Array(e) => matches!(**e, Ty::Char | Ty::Any | Ty::Var(_)),
+                // An unconstrained variable defaults to char, as before.
+                Ty::Var(_) => self.unify(&ta, &Ty::Char).is_ok(),
+                _ => false,
+            };
+            if !accepts {
+                return Err(format!(
+                    "`char-code` expects char or string, got {:?}",
+                    self.walk(&ta)
+                ));
+            }
+            return Ok((a, Ty::Int64));
+        }
         if self.unify(&ta, &Ty::Char).is_err() {
             return Err(format!(
                 "`char-code` expects char, got {:?}",

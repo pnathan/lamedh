@@ -477,7 +477,20 @@ fn let_inferred_binding_flows_into_typed_context() {
     let j = build(&["(defun-typed (f int64) ((n int64)) \
            (let-typed ((c (code-char n))) (char-code c)))"]);
     assert_eq!(agree(&j, "f", &[i(65)]), i(65));
-    assert_eq!(agree(&j, "f", &[i(321)]), i(65)); // 321 & 0xff = 65
+    assert_eq!(agree(&j, "f", &[i(200)]), i(200));
+    // A code point outside the typed byte-`char` range now errors rather than
+    // silently masking (issue #281), in every edition.
+    j.compile_all();
+    assert_eq!(
+        j.call("f", &[i(321)]).unwrap_err(),
+        "CODE-CHAR: code point 321 is outside the typed char range 0-255"
+    );
+    j.deoptimize_all();
+    assert_eq!(
+        j.call("f", &[i(321)]).unwrap_err(),
+        "CODE-CHAR: code point 321 is outside the typed char range 0-255"
+    );
+    j.compile_all();
 }
 
 #[test]
@@ -556,25 +569,17 @@ fn array_out_of_bounds_is_panic_free() {
 
     // Out-of-range: every edition errors with the evaluator's exact message.
     for (name, args, expected) in [
-        (
-            "oobget",
-            i(5),
-            "fetch: index 5 out of bounds (length 2)",
-        ),
+        ("oobget", i(5), "fetch: index 5 out of bounds (length 2)"),
         (
             "oobget",
             i(-1),
             "FETCH: index must be a non-negative integer, got -1",
         ),
-        (
-            "oobset",
-            i(9),
-            "store: index 9 out of bounds (length 2)",
-        ),
+        ("oobset", i(9), "store: index 9 out of bounds (length 2)"),
     ] {
         j.compile_all();
         assert_eq!(
-            j.call(name, &[args.clone()]).unwrap_err(),
+            j.call(name, std::slice::from_ref(&args)).unwrap_err(),
             expected,
             "compiled {name} OOB message"
         );
@@ -1592,11 +1597,44 @@ fn char_code_widens_to_int() {
 }
 
 #[test]
-fn code_char_narrows_and_masks() {
+fn code_char_in_range_narrows_out_of_range_errors() {
+    // The typed island's `char` is a byte, so CODE-CHAR is only defined for
+    // code points 0..=255. In range it narrows to the byte; out of range it
+    // used to silently mask (`321 & 0xff == 65`, a #209-direction silent wrong
+    // value) and now records the evaluator's range error instead (issue #281),
+    // agreeing across every edition. The access stays memory-safe (the masked
+    // byte is still produced inside the call) — only the membrane result flips
+    // from a wrong char to an error.
     let j = build(&["(defun-typed (mk char) ((n int64)) (code-char n))"]);
     assert_eq!(agree(&j, "mk", &[i(66)]), ch(66));
-    // narrowing masks to a byte: 321 & 0xff == 65
-    assert_eq!(agree(&j, "mk", &[i(321)]), ch(65));
+    assert_eq!(agree(&j, "mk", &[i(0)]), ch(0));
+    assert_eq!(agree(&j, "mk", &[i(255)]), ch(255));
+
+    for (n, expected) in [
+        (
+            321,
+            "CODE-CHAR: code point 321 is outside the typed char range 0-255",
+        ),
+        (
+            256,
+            "CODE-CHAR: code point 256 is outside the typed char range 0-255",
+        ),
+        (-1, "CODE-CHAR: expected a non-negative integer, got -1"),
+    ] {
+        j.compile_all();
+        assert_eq!(
+            j.call("mk", &[i(n)]).unwrap_err(),
+            expected,
+            "compiled code-char({n}) range error"
+        );
+        j.deoptimize_all();
+        assert_eq!(
+            j.call("mk", &[i(n)]).unwrap_err(),
+            expected,
+            "interpreted code-char({n}) range error"
+        );
+    }
+    j.compile_all();
 }
 
 #[test]

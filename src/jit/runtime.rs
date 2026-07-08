@@ -206,6 +206,44 @@ impl Ctx<'_> {
         }
     }
 
+    /// Record the CODE-CHAR out-of-range error (issue #281). The typed
+    /// island's `char` is deliberately a byte (`(array char)` == string, #137),
+    /// so `CODE-CHAR` can only represent code points `0..=255`. Rather than
+    /// silently masking an out-of-range argument to a byte (a #209-direction
+    /// silent wrong value: `(code-char 321)` used to yield `#\A`), it records
+    /// an error, matching the evaluator's error-on-invalid contract where
+    /// representable. A negative argument reuses the evaluator's own
+    /// "non-negative integer" wording (`src/evaluator/builtins_core.rs`,
+    /// `CodeChar`); an argument above 255 — which the evaluator *does* accept,
+    /// returning a multi-byte string the typed island cannot represent — gets a
+    /// typed-island-specific range message (the residual, documented deviation:
+    /// the typed island narrows CODE-CHAR's domain to a byte).
+    pub(super) fn record_bad_char(&self, n: i64) {
+        if n < 0 {
+            self.set_pending_error(format!(
+                "CODE-CHAR: expected a non-negative integer, got {n}"
+            ));
+        } else {
+            self.set_pending_error(format!(
+                "CODE-CHAR: code point {n} is outside the typed char range 0-255"
+            ));
+        }
+    }
+
+    /// Narrow an integer word to a `char` byte for `CODE-CHAR` (issue #281):
+    /// an out-of-range argument records [`Ctx::record_bad_char`] and the value
+    /// is still masked to a byte as the memory-safe substitute (a valid `char`)
+    /// so the rest of the call runs; the membrane raises the recorded error
+    /// once the call returns. Used by the interpreter and closure tiers; the
+    /// native tier does the range check inline and calls the
+    /// [`jit_bad_char`] trampoline on the out-of-range arm.
+    pub(super) fn to_char(&self, n: i64) -> u64 {
+        if !(0..=255).contains(&n) {
+            self.record_bad_char(n);
+        }
+        (n as u64) & 0xff
+    }
+
     /// Record a pending cross-function tail call for `TypedFn::invoke`'s
     /// dispatch loop to pick up, instead of performing it here. `args` is
     /// copied immediately, so the caller's argument buffer (a Cranelift
@@ -254,6 +292,21 @@ pub(crate) unsafe extern "C" fn jit_array_oob(
 ) {
     let ctx = unsafe { &*(ctx as *const Ctx) };
     ctx.record_index_error(idx, len, is_store != 0);
+}
+
+/// Host trampoline the native edition calls from the out-of-range arm of a
+/// `CODE-CHAR` narrowing (issue #281): records the CODE-CHAR range error on
+/// `Ctx` so the membrane raises it after the call returns, mirroring the
+/// interpreter tiers' [`Ctx::to_char`]. The native code still masks the value
+/// to a byte itself; only the error is recorded here.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_bad_char(ctx: *const core::ffi::c_void, n: i64) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.record_bad_char(n);
 }
 
 /// Host trampoline a native edition calls immediately before making a
@@ -564,7 +617,7 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
                 .collect();
             ctx.call(*id, &vals)
         }
-        Core::ToChar(a) => eval_core_nontail(a, env, ctx) & 0xff,
+        Core::ToChar(a) => ctx.to_char(as_i(eval_core_nontail(a, env, ctx))),
         Core::ArrayNew(n) => {
             let len = as_i(eval_core_nontail(n, env, ctx));
             ctx.alloc_buffer_signed(len) as u64
@@ -734,7 +787,7 @@ pub(super) fn eval_core_traced(
         }
         Core::ToChar(a) => {
             let v = eval_core_traced(a, env, ctx, depth + 1, log);
-            step!("tochar", v & 0xff, NO_SLOT, NO_CALLEE)
+            step!("tochar", ctx.to_char(as_i(v)), NO_SLOT, NO_CALLEE)
         }
         Core::ArrayNew(n) => {
             let len = as_i(eval_core_traced(n, env, ctx, depth + 1, log));
@@ -990,7 +1043,7 @@ pub fn compile(core: &Core) -> Compiled {
         }
         Core::ToChar(a) => {
             let ca = compile(a);
-            Rc::new(move |e, c| ca(e, c) & 0xff)
+            Rc::new(move |e, c| c.to_char(as_i(ca(e, c))))
         }
         Core::ArrayNew(n) => {
             let cn = compile(n);
