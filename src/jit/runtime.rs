@@ -183,6 +183,29 @@ impl Ctx<'_> {
         self.alloc_buffer(n as usize)
     }
 
+    /// Record the evaluator's own out-of-range array-index error for a
+    /// bounds-check that failed on `FETCH`/`STORE` (issue #282). The typed
+    /// tiers used to bounds-check and then silently substitute (fetch → 0,
+    /// store → no-op); the tree-walker (`src/evaluator/apply.rs`, `ArrayFetch`/
+    /// `ArrayStore`) instead errors, distinguishing a negative index from an
+    /// in-range-sign-but-past-the-end index. This records the matching message
+    /// (`is_store` picks the `STORE`/`store` vs `FETCH`/`fetch` wording exactly
+    /// as the evaluator spells it) as a [`pending_error`](Ctx::pending_error);
+    /// the caller still returns the memory-safe substitute so the rest of the
+    /// call stays panic-free, and the membrane raises the recorded error once
+    /// the call returns.
+    pub(super) fn record_index_error(&self, idx: i64, len: i64, is_store: bool) {
+        if idx < 0 {
+            let who = if is_store { "STORE" } else { "FETCH" };
+            self.set_pending_error(format!(
+                "{who}: index must be a non-negative integer, got {idx}"
+            ));
+        } else {
+            let who = if is_store { "store" } else { "fetch" };
+            self.set_pending_error(format!("{who}: index {idx} out of bounds (length {len})"));
+        }
+    }
+
     /// Record a pending cross-function tail call for `TypedFn::invoke`'s
     /// dispatch loop to pick up, instead of performing it here. `args` is
     /// copied immediately, so the caller's argument buffer (a Cranelift
@@ -210,6 +233,27 @@ pub(crate) unsafe extern "C" fn jit_alloc(ctx: *const core::ffi::c_void, n: u64)
     // word; reinterpret it back so a negative size gets the evaluator's
     // "non-negative integer" error instead of becoming a huge unsigned size.
     ctx.alloc_buffer_signed(n as i64)
+}
+
+/// Host trampoline the native edition calls from the out-of-bounds arm of a
+/// guarded `FETCH`/`STORE` (issue #282): records the evaluator's own index
+/// error on `Ctx` so the membrane raises it after the call returns, mirroring
+/// the interpreter tiers' `buf_get`/`buf_set`. The native code still produces
+/// its memory-safe substitute (fetch → 0, store → no-op); only the else-arm
+/// grew this call. `is_store` is a word carrying a bool (0 = fetch, 1 = store).
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_array_oob(
+    ctx: *const core::ffi::c_void,
+    idx: i64,
+    len: i64,
+    is_store: u64,
+) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.record_index_error(idx, len, is_store != 0);
 }
 
 /// Host trampoline a native edition calls immediately before making a
@@ -329,15 +373,19 @@ pub(super) fn float_cmp(op: CmpOp, x: f64, y: f64) -> bool {
 
 // --- flat-buffer access shared by the interpreter and closure backends ------
 // All compound values are a pointer to a `[len, e0, e1, …]` buffer. Access is
-// bounds-checked (out-of-range load → 0, store → no-op) to stay panic-free and
-// to agree with the native edition's guarded loads/stores.
+// bounds-checked to stay panic-free and to agree with the native edition's
+// guarded loads/stores. An out-of-range index records the evaluator's own
+// index error (issue #282) and still returns a memory-safe substitute (fetch →
+// 0, store → no-op) so the rest of the call runs; the membrane raises the
+// recorded error once the call returns.
 
 /// # Safety: `base` must be a live buffer pointer from [`Ctx::alloc_buffer`].
 #[inline]
-unsafe fn buf_get(base: u64, idx: i64) -> u64 {
+unsafe fn buf_get(base: u64, idx: i64, ctx: &Ctx) -> u64 {
     let p = base as *const u64;
     let len = unsafe { *p } as i64;
     if idx < 0 || idx >= len {
+        ctx.record_index_error(idx, len, false);
         0
     } else {
         unsafe { *p.add(idx as usize + 1) }
@@ -345,11 +393,13 @@ unsafe fn buf_get(base: u64, idx: i64) -> u64 {
 }
 /// # Safety: as [`buf_get`].
 #[inline]
-unsafe fn buf_set(base: u64, idx: i64, val: u64) {
+unsafe fn buf_set(base: u64, idx: i64, val: u64, ctx: &Ctx) {
     let p = base as *mut u64;
     let len = unsafe { *p } as i64;
     if idx >= 0 && idx < len {
         unsafe { *p.add(idx as usize + 1) = val }
+    } else {
+        ctx.record_index_error(idx, len, true);
     }
 }
 /// # Safety: as [`buf_get`].
@@ -522,13 +572,13 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         Core::ArrayGet(a, i) => {
             let base = eval_core_nontail(a, env, ctx);
             let idx = as_i(eval_core_nontail(i, env, ctx));
-            unsafe { buf_get(base, idx) }
+            unsafe { buf_get(base, idx, ctx) }
         }
         Core::ArraySet(a, i, v) => {
             let base = eval_core_nontail(a, env, ctx);
             let idx = as_i(eval_core_nontail(i, env, ctx));
             let val = eval_core_nontail(v, env, ctx);
-            unsafe { buf_set(base, idx, val) };
+            unsafe { buf_set(base, idx, val, ctx) };
             val
         }
         Core::ArrayLen(a) => {
@@ -700,7 +750,7 @@ pub(super) fn eval_core_traced(
             let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
             step!(
                 "arrayget",
-                unsafe { buf_get(base, idx) },
+                unsafe { buf_get(base, idx, ctx) },
                 NO_SLOT,
                 NO_CALLEE
             )
@@ -709,7 +759,7 @@ pub(super) fn eval_core_traced(
             let base = eval_core_traced(a, env, ctx, depth + 1, log);
             let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
             let val = eval_core_traced(v, env, ctx, depth + 1, log);
-            unsafe { buf_set(base, idx, val) };
+            unsafe { buf_set(base, idx, val, ctx) };
             step!("arrayset", val, NO_SLOT, NO_CALLEE)
         }
         Core::ArrayLen(a) => {
@@ -954,7 +1004,7 @@ pub fn compile(core: &Core) -> Compiled {
             Rc::new(move |e, c| {
                 let base = ca(e, c);
                 let idx = as_i(ci(e, c));
-                unsafe { buf_get(base, idx) }
+                unsafe { buf_get(base, idx, c) }
             })
         }
         Core::ArraySet(a, i, v) => {
@@ -963,7 +1013,7 @@ pub fn compile(core: &Core) -> Compiled {
                 let base = ca(e, c);
                 let idx = as_i(ci(e, c));
                 let val = cv(e, c);
-                unsafe { buf_set(base, idx, val) };
+                unsafe { buf_set(base, idx, val, c) };
                 val
             })
         }

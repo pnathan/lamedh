@@ -144,6 +144,7 @@ pub fn compile_native(
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
+    jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     let mut module = JITModule::new(jb);
@@ -186,6 +187,19 @@ pub fn compile_native(
         .declare_function("jit_alloc", Linkage::Import, &asig)
         .map_err(|e| e.to_string())?;
 
+    // Imported out-of-bounds index reporter (issue #282): (ctx, idx, len,
+    // is_store) -> (). Called from the else-arm of a guarded FETCH/STORE to
+    // record the evaluator's index error on `Ctx`; the native code still
+    // yields its memory-safe substitute (fetch → 0, store → no-op).
+    let mut oobsig = module.make_signature();
+    oobsig.params.push(AbiParam::new(ptr));
+    oobsig.params.push(AbiParam::new(types::I64));
+    oobsig.params.push(AbiParam::new(types::I64));
+    oobsig.params.push(AbiParam::new(types::I64));
+    let array_oob_id = module
+        .declare_function("jit_array_oob", Linkage::Import, &oobsig)
+        .map_err(|e| e.to_string())?;
+
     // Imported non-tail-call depth guard (issue #271): `jit_enter_call`
     // (ctx) -> bool-as-i64 (nonzero = ok, depth bumped; zero = at the cap, a
     // recursion-limit error is now pending) and `jit_exit_call` (ctx) -> (),
@@ -222,6 +236,7 @@ pub fn compile_native(
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
         let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
+        let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
@@ -266,6 +281,7 @@ pub fn compile_native(
             tramp_ref,
             pending_tail_ref,
             alloc_ref,
+            array_oob_ref,
             enter_call_ref,
             exit_call_ref,
             callee_sig,
@@ -317,6 +333,10 @@ struct Emitter<'a, 'b, 'c> {
     /// cross-function tail call on `Ctx` instead of performing it natively.
     pending_tail_ref: cranelift_codegen::ir::FuncRef,
     alloc_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_array_oob`] (issue #282): records the evaluator's
+    /// index error on `Ctx` from the out-of-bounds arm of a guarded
+    /// `FETCH`/`STORE`.
+    array_oob_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
@@ -467,7 +487,12 @@ impl Emitter<'_, '_, '_> {
                         let addr = s.elem_addr(base, idx);
                         s.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0)
                     },
-                    |s| s.iconst(0),
+                    |s| {
+                        // Out of bounds: record the evaluator's index error
+                        // (issue #282), then substitute 0 as before.
+                        s.record_oob(base, idx, false);
+                        s.iconst(0)
+                    },
                 ))
             }
             Core::ArraySet(a, i, v) => {
@@ -482,7 +507,13 @@ impl Emitter<'_, '_, '_> {
                         s.b.ins().store(MemFlagsData::trusted(), val, addr, 0);
                         val
                     },
-                    |_s| val,
+                    |s| {
+                        // Out of bounds: record the evaluator's index error
+                        // (issue #282); the store is a no-op, return `val` as
+                        // before (the recorded error supersedes the result).
+                        s.record_oob(base, idx, true);
+                        val
+                    },
                 ))
             }
             Core::ArrayLen(a) => {
@@ -658,6 +689,21 @@ impl Emitter<'_, '_, '_> {
         let off = self.b.ins().iadd_imm(idx, 1);
         let byte_off = self.b.ins().imul_imm(off, 8);
         self.b.ins().iadd(base, byte_off)
+    }
+
+    /// Record the evaluator's out-of-range index error (issue #282) from the
+    /// out-of-bounds arm of a guarded `FETCH`/`STORE` by calling the
+    /// [`super::jit_array_oob`] host trampoline with `idx` and the buffer's
+    /// length. The caller still emits the memory-safe substitute value.
+    fn record_oob(&mut self, base: Value, idx: Value, is_store: bool) {
+        let len = self
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), base, 0);
+        let is_store = self.iconst(is_store as i64);
+        self.b
+            .ins()
+            .call(self.array_oob_ref, &[self.ctx_ptr, idx, len, is_store]);
     }
 
     /// Predicate `0 <= idx < len(base)` for bounds-checked access.
