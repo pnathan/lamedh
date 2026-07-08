@@ -698,6 +698,14 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ClearAllFlags),
         );
         env.set(
+            "RECORD-REF".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordRef),
+        );
+        env.set(
+            "RECORD-WITH".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordWith),
+        );
+        env.set(
             "SEE-TYPE".to_string(),
             LispVal::Builtin(BuiltinFunc::SeeType),
         );
@@ -1404,6 +1412,12 @@ impl Environment {
     /// for `name` from its surface form. Returns the rendered scheme.
     pub fn jit_declare_scheme(&self, name: &str, form: &LispVal) -> Result<String, String> {
         self.shared.jit.borrow_mut().declare_scheme(name, form)
+    }
+
+    /// Ordered field names of the registered typed struct `name` (issue
+    /// #308: consulted by the `record-ref`/`record-with` primitives).
+    pub fn jit_struct_field_names(&self, name: &str) -> Option<Vec<String>> {
+        self.shared.jit.borrow().struct_field_names(name)
     }
 
     /// The rendered declared scheme for `name`, if any.

@@ -541,6 +541,10 @@ pub enum BuiltinFunc {
     ClearFlag,
     FlagSetP,
     ClearAllFlags,
+    // Branded-rows field primitives (issue #308): representation-generic
+    // record field access — the runtime half of the row type language.
+    RecordRef,
+    RecordWith,
     // Introspective typing surface (rows port, #297 step 0): structured
     // checker verdicts, pure string->forms parsing, and declared schemes.
     SeeType,
