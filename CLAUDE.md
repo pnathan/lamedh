@@ -104,7 +104,7 @@ Notable modules:
 - `11-optimizer-vau.lisp`: source optimizer passes.
 - `12-control.lisp` through `18-format.lisp`: control, functional, strings, sets/hash, conditions, arrays, and format helpers.
 - `19-call-graph.lisp`: call graph analysis.
-- `20-condensation.lisp`: condensation layer — `defconcept`/`derive`, row concepts with branded field access, the sexpr change plane.
+- `20-condensation.lisp`: condensation layer — **`defrecord`** (the recommended one-door gradual-typed record: row-typed for every field incl. compound types, one positional representation so runtime keeps the checker's row promise, marked compile-eligible for a future native pass), `defconcept`/`derive` (the richer sibling with invariant + derivations), the sexpr change plane. `defrecord`/`defconcept` values flow through any row-polymorphic function naming a subset of their fields; `defstruct` (untyped, mutable) and `defstruct-typed` (native, nominal, compiled) remain as explicit escape hatches.
 - `21-cl-compat.lisp`: Common Lisp compatibility forms such as `setf`, `push`, `pop`, `incf`, `decf`, `subseq`, and `elt`.
 - `21-interfaces.lisp`: Go-style method sets with checker-verified conformance and a row-aware unifier (`definterface`, `implements?`/`implements!`).
 - `22-guard.lisp`: guard fences — `with-fuel`, `with-capabilities`, `sandboxed`, capability manifests (`capabilities-needed`).
