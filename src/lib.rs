@@ -196,6 +196,7 @@
 //! | `24-rules.lisp` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
 //! | `25-variants.lisp` | Sum types: `DEFVARIANT`, exhaustive `VARIANT-CASE`, Option, Result |
 //! | `26-instrument.lisp` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
+//! | `27-modules.lisp` | Modules: `DEFMODULE`/`WITH-MODULE`/`IMPORT`, `MODULE:SYMBOL` names, custom capabilities |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1696,6 +1697,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         "26-instrument.lisp",
         include_str!("../lib/26-instrument.lisp"),
     ),
+    ("27-modules.lisp", include_str!("../lib/27-modules.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),

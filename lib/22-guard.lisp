@@ -85,13 +85,32 @@ Values ride in under QUOTE so closures survive the trip through EVAL."
 fence, or NIL when no fence is active."
   (kernel-fuel-remaining))
 
+;; Custom capabilities (0.3 modules): names REGISTERED by a module's
+;; (:provides CAP) clause. They extend the capability VOCABULARY, never the
+;; kernel's grants: a custom capability gates only Lisp-level checks
+;; (REQUIRE-CAPABILITY), is held by registration at the outermost level,
+;; and attenuates through WITH-CAPABILITIES exactly like a built-in.
+(def $custom-capabilities ())
+
 (defun $guard-host-capabilities ()
-  "The capability set granted by the host process (the outermost authority)."
+  "The capability set granted by the host process (the outermost
+authority), plus registered custom capabilities (module-provided names,
+held by registration, attenuable like any other)."
   (let ((all '(READ-FS CREATE-FS TEMP-FS SHELL IO))
         (held nil))
-    (dolist (c all (reverse held))
+    (dolist (c all (append (reverse held) $custom-capabilities))
       (when (feature-enabled-p (princ-to-string c))
         (setq held (cons c held))))))
+
+(defun require-capability (c)
+  "Signal a catchable 'capability denied' error unless C is in the
+effective set. The gate module code places in front of operations guarded
+by a custom capability."
+  (if (member c (capabilities-effective))
+      t
+      (error (concat "capability denied: " (princ-to-string c)
+                     " (effective: "
+                     (princ-to-string (capabilities-effective)) ")"))))
 
 (defun capabilities-effective ()
   "The currently effective capability set: host grants intersected with
@@ -247,6 +266,16 @@ effective set. (CAPABILITIES-EFFECTIVE) reports the live set."
           (append
            (list
             (cons 'capabilities-effective (lambda () effective))
+            ;; The Lisp-level gate attenuates with the fence too (custom
+            ;; capabilities, 0.3 modules).
+            (cons 'require-capability
+                  (lambda (c)
+                    (if (member c effective)
+                        t
+                        (error (concat "capability denied: "
+                                       (princ-to-string c)
+                                       " (effective: "
+                                       (princ-to-string effective) ")")))))
             ;; EVAL re-seals so evaluated data inherits the fence.
             (cons 'eval
                   (lambda (form &rest renv)
