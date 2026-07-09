@@ -853,32 +853,52 @@ pub(super) fn apply_numeric_primitives(
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
     match op {
+        // REGULARITY (0.3): comparisons are variadic monotone chains like
+        // `+`/`*` — (< a b c) means a < b AND b < c.
         BuiltinFunc::Lessp => {
-            if args.len() != 2 {
-                return Err(LispError::Generic("lessp requires 2 args".to_string()));
+            if args.len() < 2 {
+                return Err(LispError::Generic(
+                    "lessp requires at least 2 args".to_string(),
+                ));
             }
-            // Integer fast path; fall back to f64 for any int/float mix.
-            let less = match (&args[0], &args[1]) {
-                (LispVal::Number(x), LispVal::Number(y)) => x < y,
-                (LispVal::Char(x), LispVal::Char(y)) => x < y,
-                _ => as_f64(&args[0], "lessp")? < as_f64(&args[1], "lessp")?,
-            };
-            Ok(if less {
+            let mut ok = true;
+            for w in args.windows(2) {
+                // Integer fast path; fall back to f64 for any int/float mix.
+                let less = match (&w[0], &w[1]) {
+                    (LispVal::Number(x), LispVal::Number(y)) => x < y,
+                    (LispVal::Char(x), LispVal::Char(y)) => x < y,
+                    _ => as_f64(&w[0], "lessp")? < as_f64(&w[1], "lessp")?,
+                };
+                if !less {
+                    ok = false;
+                    break;
+                }
+            }
+            Ok(if ok {
                 LispVal::Symbol(env.intern_symbol("T"))
             } else {
                 LispVal::Nil
             })
         }
         BuiltinFunc::Greaterp => {
-            if args.len() != 2 {
-                return Err(LispError::Generic("greaterp requires 2 args".to_string()));
+            if args.len() < 2 {
+                return Err(LispError::Generic(
+                    "greaterp requires at least 2 args".to_string(),
+                ));
             }
-            let greater = match (&args[0], &args[1]) {
-                (LispVal::Number(x), LispVal::Number(y)) => x > y,
-                (LispVal::Char(x), LispVal::Char(y)) => x > y,
-                _ => as_f64(&args[0], "greaterp")? > as_f64(&args[1], "greaterp")?,
-            };
-            Ok(if greater {
+            let mut ok = true;
+            for w in args.windows(2) {
+                let greater = match (&w[0], &w[1]) {
+                    (LispVal::Number(x), LispVal::Number(y)) => x > y,
+                    (LispVal::Char(x), LispVal::Char(y)) => x > y,
+                    _ => as_f64(&w[0], "greaterp")? > as_f64(&w[1], "greaterp")?,
+                };
+                if !greater {
+                    ok = false;
+                    break;
+                }
+            }
+            Ok(if ok {
                 LispVal::Symbol(env.intern_symbol("T"))
             } else {
                 LispVal::Nil
@@ -996,10 +1016,32 @@ pub(super) fn apply_logical_op(
             }
         }
         BuiltinFunc::NumericEquals => {
-            if args.len() != 2 {
+            if args.len() < 2 {
                 return Err(LispError::Generic(
-                    "= requires exactly two arguments".to_string(),
+                    "= requires at least two arguments".to_string(),
                 ));
+            }
+            // REGULARITY (0.3): variadic — all arguments numerically equal.
+            if args.len() > 2 {
+                let eq_pair = |a: &LispVal, b: &LispVal| -> Result<bool, LispError> {
+                    let coerce = |v: &LispVal| -> Option<i64> {
+                        match v {
+                            LispVal::Number(n) => Some(*n),
+                            LispVal::Char(c) => Some(*c as i64),
+                            _ => None,
+                        }
+                    };
+                    match (coerce(a), coerce(b)) {
+                        (Some(x), Some(y)) => Ok(x == y),
+                        _ => Ok(as_f64(a, "=")? == as_f64(b, "=")?),
+                    }
+                };
+                for w in args.windows(2) {
+                    if !eq_pair(&w[0], &w[1])? {
+                        return Ok(LispVal::Nil);
+                    }
+                }
+                return Ok(LispVal::Symbol(env.intern_symbol("T")));
             }
             let coerce = |v: &LispVal| -> Option<i64> {
                 match v {
@@ -1079,22 +1121,21 @@ pub(super) fn apply_hashtable_op(
             }
         }
         BuiltinFunc::Get => {
-            // Accepts (gethash table key) — the historical Lamedh order — or
-            // CL's (gethash key table); a hash table is unambiguous in either
-            // position (issue #246).
+            // REGULARITY (0.3): COLLECTION FIRST, one order — (gethash
+            // table key), matching sethash/fetch/store/getp. The either-
+            // order dispatch (#246) silently guessed; a hash-table key that
+            // is itself a table made it ambiguous.
             if args.len() != 2 {
                 return Err(LispError::Generic(
-                    "gethash takes exactly two arguments".to_string(),
+                    "gethash takes exactly two arguments: table key".to_string(),
                 ));
             }
             let (h, key) = match (&args[0], &args[1]) {
                 (LispVal::HashTable(h), key) => (h, key),
-                (key, LispVal::HashTable(h)) => (h, key),
                 (other, _) => {
                     return Err(LispError::Generic(format!(
-                        "GETHASH: expected a hash table argument, got {} and {}",
-                        err_val(other),
-                        err_val(&args[1])
+                        "GETHASH: first argument must be the hash table (collection first), got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -1105,21 +1146,18 @@ pub(super) fn apply_hashtable_op(
             }
         }
         BuiltinFunc::DeleteKey => {
-            // Accepts (delete-key! table key) or CL-style (remhash key table)
-            // order, like GETHASH above (issue #246).
+            // REGULARITY (0.3): collection first — (remhash table key).
             if args.len() != 2 {
                 return Err(LispError::Generic(
-                    "delete-key/delete-key-bang takes exactly two arguments".to_string(),
+                    "delete-key/remhash takes exactly two arguments: table key".to_string(),
                 ));
             }
             let (h, key) = match (&args[0], &args[1]) {
                 (LispVal::HashTable(h), key) => (h, key),
-                (key, LispVal::HashTable(h)) => (h, key),
                 (other, _) => {
                     return Err(LispError::Generic(format!(
-                        "DELETE-KEY/DELETE-KEY-BANG: expected a hash table argument, got {} and {}",
-                        err_val(other),
-                        err_val(&args[1])
+                        "REMHASH: first argument must be the hash table (collection first), got {}",
+                        err_val(other)
                     )));
                 }
             };

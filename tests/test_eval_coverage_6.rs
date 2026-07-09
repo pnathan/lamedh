@@ -45,14 +45,14 @@ fn test_numeric_equal_one_arg_error() {
 }
 
 #[test]
-fn test_numeric_equal_three_args_error() {
+fn test_numeric_equal_is_variadic() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(= 1 2 3)", &env);
-        assert!(
-            result.contains("Error"),
-            "= with three args should error; got: {result}"
-        );
+        // REGULARITY (0.3): comparisons chain like +/*.
+        assert_eq!(eval_line("(= 2 2 2)", &env), "T");
+        assert_eq!(eval_line("(= 1 2 3)", &env), "()");
+        let result = eval_line("(= 1)", &env);
+        assert!(result.contains("Error"), "got: {result}");
     });
 }
 

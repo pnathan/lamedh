@@ -14,7 +14,8 @@ symbols, keywords, and `nil`/`()`.
 
 Plain decimal integers are 64-bit signed values. Lamedh also reads several
 non-decimal notations: `#x`/`#b`/`#o` are modern radix prefixes, `177Q` is
-Lisp 1.5's own octal suffix, and `FFh` is an assembly-style hex suffix:
+Lisp 1.5's own octal suffix, and `0FFh` is an assembly-style hex suffix
+(digit-leading, so names like `ch` stay symbols):
 
 ```lisp
 123        ; => 123
@@ -23,7 +24,7 @@ Lisp 1.5's own octal suffix, and `FFh` is an assembly-style hex suffix:
 #b101      ; => 5
 #o17       ; => 15
 177Q       ; => 127
-FFh        ; => 255
+0FFh       ; => 255
 ```
 
 ### Floats, strings, characters
@@ -397,14 +398,15 @@ convention rather than the dividend's):
 (1- 5)   ; => 4
 ```
 
-Comparisons `<`, `>`, `=` (and the derived `<=`/`>=`/`/=` from
-`lib/05-math.lisp`) take exactly two arguments, not a variadic chain. `max`
-and `min` are variadic:
+Comparisons `<`, `>`, `=`, `<=`, `>=` are variadic monotone chains, like
+`+` and `*` (0.3 regularity) — `(< a b c)` means a < b and b < c. `max`
+and `min` are variadic too:
 
 ```lisp
-(< 1 2)          ; => T
-(> 3 2)          ; => T
-(<= 1 2)         ; => T
+(< 1 2 3)        ; => T
+(< 1 3 2)        ; => ()
+(= 4 4 4)        ; => T
+(<= 1 1 2)       ; => T
 (max 1 5 3)      ; => 5
 (min 1 5 3)      ; => 1
 ```

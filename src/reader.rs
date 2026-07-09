@@ -13,7 +13,7 @@
 //! | `123`, `-456` | `LispVal::Number(i64)` |
 //! | `3.14`, `-1e5` | `LispVal::Float(f64)` |
 //! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
-//! | `FFh` | Hex literal (`FF₁₆ = 255₁₀`) — assembly-style `H` suffix |
+//! | `0FFh` | Hex literal (digit-leading, assembly-style `H` suffix) |
 //! | `'c'` | Character literal → `LispVal::Char` (byte 0–255; escapes `\n \t \r \\ \' \0`) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
@@ -200,11 +200,18 @@ fn parse_octal_integer(input: &str) -> ParseResult<'_> {
 }
 
 fn parse_hex_integer(input: &str) -> ParseResult<'_> {
-    // Assembly-style hex: hex digits followed by H, e.g. FFh = 255, 0Ah = 10,
-    // 1Ah = 26. Mirrors the Lisp 1.5 octal `Q` suffix. Case-insensitive in both
-    // the digits and the marker (`ffh` and `FFH` both work).
+    // Assembly-style hex: hex digits followed by H, e.g. 0FFh = 255, 0Ah = 10,
+    // 1Ah = 26. Mirrors the Lisp 1.5 octal `Q` suffix. Case-insensitive in
+    // both the digits and the marker. REGULARITY (0.3): the literal must
+    // START WITH A DECIMAL DIGIT (the assembly convention) — so short
+    // letters-then-h names like `ch`, `each`, `fh` are ordinary symbols.
+    // Write 0FFh (or #xFF) where you meant FFh.
     let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
     let (rest, s) = recognize(pair(opt(tag("-")), hex_digit1))(input)?;
+    let digits_start = s.trim_start_matches('-');
+    if !digits_start.starts_with(|c: char| c.is_ascii_digit()) {
+        return Err(err());
+    }
     let (rest, _) = one_of("hH")(rest)?;
     // Boundary guard: a following identifier char means this was a symbol, not a
     // hex literal (so `ffhello` stays a symbol rather than 255 + "ello").
@@ -957,14 +964,19 @@ mod tests {
     #[test]
     fn test_parse_hex() {
         // Assembly-style H suffix; case-insensitive digits and marker.
-        assert_eq!(parse_number("ffh"), Ok(("", number(255))));
-        assert_eq!(parse_number("FFH"), Ok(("", number(255))));
+        // REGULARITY (0.3): must start with a decimal digit, so short
+        // letters-then-h names (ch, each, ffh) are ordinary symbols.
+        assert!(parse_number("ffh").is_err());
+        assert!(parse_number("FFH").is_err());
+        assert!(parse_number("deadh").is_err());
+        assert!(parse_number("-ffh").is_err());
         assert_eq!(parse_number("0ffh"), Ok(("", number(255))));
+        assert_eq!(parse_number("0FFH"), Ok(("", number(255))));
         assert_eq!(parse_number("1Ah"), Ok(("", number(26))));
         assert_eq!(parse_number("10h"), Ok(("", number(16))));
         assert_eq!(parse_number("0ah"), Ok(("", number(10))));
-        assert_eq!(parse_number("-ffh"), Ok(("", number(-255))));
-        assert_eq!(parse_number("deadh"), Ok(("", number(0xDEAD))));
+        assert_eq!(parse_number("-0ffh"), Ok(("", number(-255))));
+        assert_eq!(parse_number("0deadh"), Ok(("", number(0xDEAD))));
         // Boundary: a following identifier char means it was a symbol, so the
         // hex parser must reject and leave the input for the symbol parser.
         assert!(parse_hex_integer("ffhello").is_err());

@@ -610,13 +610,6 @@ pub(super) fn exec_step(
                     LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
                 })?,
             };
-            // LABEL compat: same check as Code::Var.
-            if let LispVal::Cons { car, .. } = &value
-                && let LispVal::Symbol(s) = &**car
-                && s.borrow().name == "LABEL"
-            {
-                return Ok(TcoStep::Done(eval(&value, env)));
-            }
             Ok(TcoStep::Done(Ok(value)))
         }
 
@@ -624,13 +617,6 @@ pub(super) fn exec_step(
             let value = env.resolve(sym).ok_or_else(|| {
                 LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
             })?;
-            // LABEL compat: same check the tree-walker does in eval_step.
-            if let LispVal::Cons { car, .. } = &value
-                && let LispVal::Symbol(s) = &**car
-                && s.borrow().name == "LABEL"
-            {
-                return Ok(TcoStep::Done(eval(&value, env)));
-            }
             Ok(TcoStep::Done(Ok(value)))
         }
 

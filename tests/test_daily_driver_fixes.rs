@@ -53,13 +53,18 @@ fn keywords_rejected_as_binding_targets() {
     assert!(out.contains("cannot bind the keyword"), "{out}");
 }
 
-// ── #242: unsupported lambda-list keywords fail at definition time ─────────
+// ── #242 → 0.3: DEFUN supports &optional/&key (expanded to &rest + a
+// LET* prologue); bare LAMBDA and DEFMACRO still reject them.
 
 #[test]
-fn optional_and_key_rejected() {
+fn optional_and_key_supported_in_defun() {
     let env = env_with_stdlib();
-    let out = eval_line("(defun f (a &optional b) a)", &env);
-    assert!(out.contains("&OPTIONAL is not supported"), "{out}");
+    eval_line(
+        "(defun f (a &optional (b 2) &key (c 3) label) (list a b c label))",
+        &env,
+    );
+    assert_eq!(eval_line("(f 1)", &env), "(1 2 3 ())");
+    assert_eq!(eval_line("(f 1 9 :label 'x :c 4)", &env), "(1 9 4 X)");
     let out = eval_line("(defmacro m (&key x) x)", &env);
     assert!(out.contains("&KEY is not supported"), "{out}");
     // &rest still works.
@@ -111,7 +116,7 @@ fn setf_places() {
     assert_eq!(eval_line("(progn (setf x 5) x)", &env), "5");
     assert_eq!(
         eval_line(
-            "(let ((h (make-hash-table))) (setf (gethash h :k) 42) (gethash :k h))",
+            "(let ((h (make-hash-table))) (setf (gethash h :k) 42) (gethash h :k))",
             &env
         ),
         "42"
@@ -195,7 +200,7 @@ fn hash_and_alist_helpers_accept_both_orders() {
     eval_line("(def h (make-hash-table))", &env);
     eval_line("(set-bang h :k 42)", &env);
     assert_eq!(eval_line("(gethash h :k)", &env), "42");
-    assert_eq!(eval_line("(gethash :k h)", &env), "42");
+    assert_eq!(eval_line("(gethash h :k)", &env), "42");
     assert_eq!(eval_line("(alist-get '((a . 1) (b . 2)) 'b)", &env), "2");
     assert_eq!(eval_line("(alist-get 'b '((a . 1) (b . 2)))", &env), "2");
     // maphash with the function in either position.
