@@ -37,7 +37,7 @@ fn condense_diff_reports_shape_changes_as_a_whole_node() {
 fn fresh_concept_has_no_stale_definitions() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))))",
         &env,
     );
     assert_eq!(eval_line("(condense-stale 'invoice)", &env), "()");
@@ -47,7 +47,7 @@ fn fresh_concept_has_no_stale_definitions() {
 fn hand_edited_generated_function_is_flagged_stale() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))))",
         &env,
     );
     eval_line("(defun invoice-p (self) t)", &env);
@@ -62,7 +62,7 @@ fn hand_edited_generated_function_is_flagged_stale() {
 fn concept_redefinition_records_a_structural_diff() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 0)))",
         &env,
     );
     assert_eq!(
@@ -70,7 +70,7 @@ fn concept_redefinition_records_a_structural_diff() {
         "()"
     );
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 1)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 1)))",
         &env,
     );
     let diff = eval_line("(condense-get 'invoice \"condense.last-diff\")", &env);
@@ -89,7 +89,7 @@ fn concept_redefinition_records_a_structural_diff() {
 fn recheck_reports_staleness_examples_and_checker_status() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))) (:invariant (>= amount 0)))",
         &env,
     );
     eval_line(

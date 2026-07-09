@@ -5,7 +5,7 @@ use test_helpers::env_with_stdlib;
 
 fn install_invoice(env: &lamedh::Shared<lamedh::environment::Environment>) {
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
         env,
     );
 }
@@ -90,12 +90,12 @@ fn laws_and_examples_require_concepts() {
     let env = env_with_stdlib();
     let law = eval_line("(deflaw nope (:for missing) (:assert t))", &env);
     assert!(law.contains("Error"), "got: {law}");
-    assert!(law.contains("concept"), "got: {law}");
+    assert!(law.contains("record"), "got: {law}");
 
     let ex = eval_line(
         "(example nope-example (:for missing) (:given 1) (:expect t))",
         &env,
     );
     assert!(ex.contains("Error"), "got: {ex}");
-    assert!(ex.contains("concept"), "got: {ex}");
+    assert!(ex.contains("record"), "got: {ex}");
 }

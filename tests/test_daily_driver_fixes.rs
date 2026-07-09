@@ -90,37 +90,17 @@ fn deftest_replaces_same_name() {
     assert_eq!(eval_line("*test-pass*", &env), "1");
 }
 
-// ── #243: defstruct keyword constructor ────────────────────────────────────
+// ── #243 (historical): the untyped DEFSTRUCT and its keyword constructor
+// were removed in 0.3 — DEFRECORD is the one record definition form.
 
 #[test]
-fn defstruct_keyword_and_positional_constructors() {
+fn untyped_defstruct_is_gone() {
     let env = env_with_stdlib();
-    eval_line("(defstruct point x y)", &env);
-    assert_eq!(
-        eval_line(
-            "(let ((p (make-point :x 1 :y 2))) (list (point-x p) (point-y p)))",
-            &env
-        ),
-        "(1 2)"
+    let out = eval_line("(defstruct point x y)", &env);
+    assert!(
+        out.contains("Error"),
+        "expected defstruct removed, got: {out}"
     );
-    assert_eq!(
-        eval_line(
-            "(let ((p (make-point :y 9))) (list (point-x p) (point-y p)))",
-            &env
-        ),
-        "(() 9)"
-    );
-    assert_eq!(
-        eval_line(
-            "(let ((p (make-point 1 2))) (list (point-x p) (point-y p)))",
-            &env
-        ),
-        "(1 2)"
-    );
-    let out = eval_line("(make-point :z 1)", &env);
-    assert!(out.contains("unknown field :Z"), "{out}");
-    let out = eval_line("(make-point 1)", &env);
-    assert!(out.contains("takes 2 positional argument(s)"), "{out}");
 }
 
 // ── #245: CL compatibility layer ────────────────────────────────────────────
@@ -143,12 +123,13 @@ fn setf_places() {
         ),
         "9"
     );
-    eval_line("(defstruct cell v)", &env);
+    // The accessor-place convention still routes to SET-<accessor>! — the
+    // mutator is user-defined now that records are functional (0.3).
+    eval_line("(def *cell* (array 1))", &env);
+    eval_line("(defun cell-v (c) (fetch c 0))", &env);
+    eval_line("(defun set-cell-v! (c v) (store c 0 v))", &env);
     assert_eq!(
-        eval_line(
-            "(let ((c (make-cell 1))) (setf (cell-v c) 7) (cell-v c))",
-            &env
-        ),
+        eval_line("(let ((c (array 1))) (setf (cell-v c) 7) (cell-v c))", &env),
         "7"
     );
 }

@@ -4,11 +4,11 @@ use lamedh::eval_line;
 use test_helpers::env_with_stdlib;
 
 #[test]
-fn defconcept_generates_basic_operations() {
+fn defrecord_generates_basic_operations() {
     let env = env_with_stdlib();
     assert_eq!(
         eval_line(
-            "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))))",
+            "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))))",
             &env
         ),
         "INVOICE"
@@ -35,10 +35,10 @@ fn defconcept_generates_basic_operations() {
 }
 
 #[test]
-fn defconcept_validator_checks_invariant() {
+fn defrecord_validator_checks_invariant() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
         &env,
     );
 
@@ -53,17 +53,17 @@ fn defconcept_validator_checks_invariant() {
 }
 
 #[test]
-fn defconcept_records_trace_metadata() {
+fn defrecord_records_trace_metadata() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
         &env,
     );
 
-    assert_eq!(eval_line("(condense-kind 'invoice)", &env), "CONCEPT");
+    assert_eq!(eval_line("(condense-kind 'invoice)", &env), "RECORD");
     assert_eq!(
         eval_line("(cdr (assoc 'kind (condense-trace 'invoice)))", &env),
-        "CONCEPT"
+        "RECORD"
     );
     assert_eq!(
         eval_line("(condense-generated 'invoice)", &env),
@@ -72,9 +72,9 @@ fn defconcept_records_trace_metadata() {
 }
 
 #[test]
-fn defconcept_requires_fields() {
+fn defrecord_requires_fields() {
     let env = env_with_stdlib();
-    let out = eval_line("(defconcept empty)", &env);
+    let out = eval_line("(defrecord empty)", &env);
     assert!(out.contains("Error"), "got: {out}");
-    assert!(out.contains(":fields"), "got: {out}");
+    assert!(out.contains("at least one field"), "got: {out}");
 }

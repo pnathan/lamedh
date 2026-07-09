@@ -11,7 +11,7 @@
 ;;; Conformance is graded with the same honesty vocabulary as condensation:
 ;;;   CONFORMS  the verdict (TYPED, informative CHECKED, or DECLARED row scheme)
 ;;;             unifies with the declared signature at self := the type's
-;;;             structural identity (its closed record for a row concept) -- a
+;;;             structural identity (its closed record row) -- a
 ;;;             real guarantee
 ;;;   UNPROVEN  the function exists but its verdict is VACUOUS or DYNAMIC --
 ;;;             nothing confirmed, nothing denied
@@ -34,7 +34,7 @@
 SELF in a signature stands for the implementing type. A method of TYPE for
 operation OP is the ordinary function TYPE-OP. The interface is recorded as a
 condensation citizen (kind INTERFACE), so CONDENSE-KIND and CONDENSE-TRACE see
-it and it shares the same metadata conventions as concepts."
+it and it shares the same metadata conventions as records."
   (let* ((name (car x))
          (ops-section (assoc :ops (cdr x))))
     (if (null ops-section)
@@ -69,15 +69,10 @@ it and it shares the same metadata conventions as concepts."
 
 (defun condense-type-of (value)
   "Dispatch type of VALUE: its record brand, or a ground builtin type.
-Concept and defrecord values are branded records (#308), so the brand IS
-the dispatch type; legacy positional concept values still answer via the
-cons branch."
+Every defrecord value is a branded record (#308), so the brand IS the
+dispatch type."
   (cond
     ((not (null (record-brand value))) (record-brand value))
-    ((and (consp value)
-          (symbolp (car value))
-          (eq (condense-kind (car value)) 'concept))
-     (car value))
     ((consp value) 'list)
     ((null value) 'list)
     ((charp value) 'char)
@@ -102,12 +97,12 @@ like any other definition."
 ;;; variables, which bind consistently or the unification fails.
 
 (defun iface-self-type (type)
-  "The type SELF stands for: a concept's closed record row. Every concept
-field maps into the row (unmappable types degrade to ANY, per #308), so the
-record form is always available; non-concepts stand for themselves."
-  (if (eq (condense-kind type) 'concept)
+  "The type SELF stands for: a record's closed row. Every defrecord field
+maps into the row (unmappable types degrade to ANY, per #308), so the
+record form is always available; non-records stand for themselves."
+  (if (eq (condense-kind type) 'record)
       (list 'record
-            (condense-concept-record-specs
+            (condense-record-specs
              (condense-get type "condense.fields")))
       type))
 
@@ -132,7 +127,7 @@ record form is always available; non-concepts stand for themselves."
   (and (consp form) (eq (car form) 'record)))
 
 (defun iface-brand-p (form)
-  "T when FORM names a registered record/concept brand."
+  "T when FORM names a registered record brand."
   (and (symbolp form)
        (not (null form))
        (not (null (condense-get form "condense.fields")))))
@@ -140,7 +135,7 @@ record form is always available; non-concepts stand for themselves."
 (defun iface-expand-brand (brand)
   "BRAND's closed record row (unmappable field types as ANY)."
   (list 'record
-        (condense-concept-record-specs (condense-get brand "condense.fields"))))
+        (condense-record-specs (condense-get brand "condense.fields"))))
 
 (defun iface-unify (want got vars bindings)
   "Unify ground WANT against GOT whose variables are VARS.

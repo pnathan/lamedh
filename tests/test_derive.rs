@@ -7,7 +7,7 @@ use test_helpers::env_with_stdlib;
 fn derive_generates_printer_from_concept_metadata() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))))",
         &env,
     );
     assert_eq!(eval_line("(derive invoice printer)", &env), "INVOICE");
@@ -21,7 +21,7 @@ fn derive_generates_printer_from_concept_metadata() {
 fn derive_generates_equality_from_concept_metadata() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))))",
         &env,
     );
     assert_eq!(eval_line("(derive invoice equality)", &env), "INVOICE");
@@ -45,7 +45,7 @@ fn derive_generates_equality_from_concept_metadata() {
 fn derive_updates_trace_metadata() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))))",
         &env,
     );
     eval_line("(derive invoice printer equality)", &env);
@@ -64,7 +64,7 @@ fn derive_updates_trace_metadata() {
 fn derive_rerun_does_not_duplicate_generated_metadata() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))))",
         &env,
     );
     eval_line("(derive invoice printer)", &env);
@@ -81,9 +81,9 @@ fn derive_rerun_does_not_duplicate_generated_metadata() {
 }
 
 #[test]
-fn derive_requires_concept_metadata() {
+fn derive_requires_record_metadata() {
     let env = env_with_stdlib();
     let out = eval_line("(derive missing printer)", &env);
     assert!(out.contains("Error"), "got: {out}");
-    assert!(out.contains("concept"), "got: {out}");
+    assert!(out.contains("record"), "got: {out}");
 }

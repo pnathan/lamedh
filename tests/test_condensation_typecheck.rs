@@ -7,7 +7,7 @@ use test_helpers::env_with_stdlib;
 fn condense_check_type_records_generated_function_results() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
         &env,
     );
     eval_line("(derive invoice equality)", &env);
@@ -51,7 +51,7 @@ fn unmappable_field_types_degrade_to_any_not_vacuous() {
     // gradual frontier is per-FIELD, not per-concept): the concept is still
     // a branded record, its accessor carries a declared branded scheme, and
     // nothing is vacuous.
-    eval_line("(defconcept bag (:fields ((items list))))", &env);
+    eval_line("(defrecord bag (:fields ((items list))))", &env);
     eval_line("(condense-check-type 'bag)", &env);
     let frontier = eval_line(
         "(cdr (assoc 'dynamic-frontier (condense-trace 'bag)))",
@@ -73,7 +73,7 @@ fn unmappable_field_types_degrade_to_any_not_vacuous() {
 fn fully_derived_row_concept_has_an_empty_frontier() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))) (:derive equality lens))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))) (:derive equality lens))",
         &env,
     );
     assert_eq!(
@@ -89,7 +89,7 @@ fn fully_derived_row_concept_has_an_empty_frontier() {
 fn condense_check_type_marks_unchecked_or_dynamic_frontier() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
+        "(defrecord invoice (:fields ((id int64) (amount int64) (status symbol))) (:invariant (>= amount 0)))",
         &env,
     );
     eval_line(

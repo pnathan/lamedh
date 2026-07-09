@@ -2,7 +2,7 @@
 ;;;
 ;;; This example exercises the whole condensation stack at once:
 ;;;
-;;;   - DEFCONCEPT seeds with row-typed fields (one form generates the
+;;;   - DEFRECORD seeds with row-typed fields (one form generates the
 ;;;     constructor, predicate, accessors, validator, equality, and lens --
 ;;;     each carrying a DECLARED row scheme the checker enforces at call
 ;;;     sites);
@@ -18,23 +18,23 @@
 
 ;;; ---- the kinds --------------------------------------------------------
 ;; All NPC kinds share two fields, (name string) (hp int64) -- the shared
-;; vocabulary. Each DEFCONCEPT defines a BRANDED record type (#308): nominal
+;; vocabulary. Each DEFRECORD defines a BRANDED record type (#308): nominal
 ;; in the checker (a goblin is never a merchant), row-subsumable at any
 ;; function asking only for some of its fields, accessed by NAME (not
 ;; position) through RECORD-REF.
 
-(defconcept goblin
-  (:fields ((name string) (hp int64) (mischief int64)))
+(defrecord goblin
+  (name string) (hp int64) (mischief int64)
   (:invariant (>= hp 0))
   (:derive equality lens))
 
-(defconcept merchant
-  (:fields ((name string) (hp int64) (gold int64)))
+(defrecord merchant
+  (name string) (hp int64) (gold int64)
   (:invariant (and (>= hp 0) (>= gold 0)))
   (:derive equality lens))
 
-(defconcept wisp
-  (:fields ((name string) (hp int64) (glow float64)))
+(defrecord wisp
+  (name string) (hp int64) (glow float64)
   (:invariant (>= hp 0))
   (:derive equality lens))
 

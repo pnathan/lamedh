@@ -118,7 +118,7 @@
 //! | Hash tables | `(let ((h (make-hash-table))) (set-bang h 'x 1) (gethash h 'x))` |
 //! | Arrays | `(let ((a (array 5))) (store a 0 99) (fetch a 0))` |
 //! | Property lists | `(putp 'foo "doc" "A foo.") (getp 'foo "doc")` |
-//! | Structs | `(defstruct point x y) (make-point :x 1 :y 2)` |
+//! | Records | `(defrecord point (x int64) (y int64)) (make-point 1 2)` |
 //!
 //! ## Cargo manifest
 //!
@@ -717,8 +717,6 @@ pub enum SpecialForm {
     Defexpr,
     /// `DEFMACRO`
     Defmacro,
-    /// `DEFSTRUCT`
-    Defstruct,
     /// `DEFUN-TYPED`
     DefunTyped,
     /// `DEFUN*`
