@@ -129,10 +129,6 @@ $ target/debug/lamedh --capability SHELL -s '(sh "exit 3")'
 Error: shell command failed: exit 3
 ```
 
-Because `sh` raises on failure, it composes well with `handler-case` in
-scripts that treat a non-zero exit as an exceptional condition rather than
-a value to inspect every time.
-
 ## 7.3 Guard Fences
 
 Host-granted capabilities are coarse: once the process has `READ-FS`,
@@ -181,18 +177,15 @@ $ target/debug/lamedh --capability READ-FS --capability CREATE-FS \
 Error: capability denied: WRITE-FILE requires (CREATE-FS); effective (READ-FS)
 ```
 
-And the attenuation-only law holds even when a fence asks for more than
-the host ever granted — you cannot request your way to authority nobody
-gave you:
+The attenuation-only law holds even when a fence asks for more than the
+host ever granted — you cannot request your way to authority nobody gave
+you, and a narrower fence nested inside a wider one cannot be undone by a
+later, wider `with-capabilities` inside it:
 
 ```console
 $ target/debug/lamedh -s "(with-capabilities '(SHELL) (capabilities-effective))"
 ; => ()
 ```
-
-Nested fences intersect again, and narrowing is permanent for the rest of
-that dynamic extent — a later, wider `with-capabilities` inside a
-narrower one cannot restore what the outer fence dropped.
 
 ### `with-fuel`
 
@@ -463,9 +456,9 @@ $ target/debug/lamedh -s "(let ((chan (make-channel))) (channel-send chan 42) (c
 ; => 42
 ```
 
-> Naming note: avoid `ch` as a variable name in examples like this — the
-> reader parses a bare `ch` as the Lisp-1.5-style assembly hex literal `Ch`
-> (hex digit `C` = 12), not as a symbol. `chan` (used above) is safe.
+(Note: avoid `ch` as a variable name — the reader parses a bare `ch` as
+the Lisp-1.5 assembly hex literal `Ch` (hex `C` = 12), not a symbol;
+`chan` is safe.)
 
 `channel-recv-timeout` bounds the wait; it returns `nil` if nothing
 arrives in time, or the value if one does:
@@ -489,11 +482,9 @@ $ target/debug/lamedh -s "(progn (setq x 5) (let ((e2 (clone-interpreter))) (eva
 ```
 
 Closures copied into the clone still reference their original definition
-environment (they share the immutable parts of the chain); the clone gets
-its own copy of the *visible bindings*, not a fully independent heap the
-way a `spawn`ed child is. If you need the full share-nothing isolation
-guarantee, reach for `spawn`/`spawn*` rather than hand-rolling a clone plus
-a channel.
+environment; the clone gets its own copy of the *visible bindings*, not a
+fully independent heap the way a `spawn`ed child is. For full share-nothing
+isolation, reach for `spawn`/`spawn*` instead.
 
 ## 7.6 Summary
 

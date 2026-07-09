@@ -574,15 +574,9 @@ lamedh -s "(progn (definterface renderable (:ops ((render (-> (self) string)))))
 ```
 
 A derived operation (§4.7) is itself interface-eligible, since it carries a
-declared branded scheme just like a hand-written accessor:
-
-```lisp
-lamedh -s "(progn
-  (definterface eq-able (:ops ((equal (-> (self self) bool)))))
-  (defrecord invoice (id int64) (amount int64) (:derive equality))
-  (implements? 'invoice 'eq-able))"
-; => (T (EQUAL CONFORMS INVOICE-EQUAL (-> (INVOICE INVOICE) BOOL)))
-```
+declared branded scheme just like a hand-written accessor — `(:derive
+equality)` on a record is enough to make it `CONFORMS` against an
+`eq-able` interface with no method written by hand.
 
 `examples/npcs.lisp` and `examples/oo-patterns.lisp` in the repository work
 through this whole stack together — shared row-polymorphic behavior for

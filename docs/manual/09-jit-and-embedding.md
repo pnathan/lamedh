@@ -124,11 +124,10 @@ compilation note on success:
 ; => (TYPED (-> (INT64 INT64) INT64) COMPILED)
 ```
 
-Note that `(defun* sq (x) (* x x))` with no annotations stays `CHECKED`:
-`(* x x)` alone doesn't pin `x` to a numeric kind (it's consistent with
-both `int64` and `float64`), so inference correctly refuses to guess. Adding
-a literal, as in `od-sq` above (`(* x (* x 1))`), or an explicit type
-annotation, resolves the ambiguity.
+`(defun* sq (x) (* x x))` with no annotations stays `CHECKED`: `(* x x)`
+alone doesn't pin `x` to a numeric kind (consistent with both `int64` and
+`float64`), so inference correctly refuses to guess. A literal, as in
+`od-sq` above, or an explicit type annotation resolves the ambiguity.
 
 You can trigger a compilation attempt on an already-defined function
 explicitly with `jit-optimize`, which is the mechanism `defun` uses
@@ -195,10 +194,10 @@ one function:
 ; => (CHECKED (-> (INT64) INT64))
 ```
 
-The `declare` form is stripped from the body before the function runs, and
-`see-type` shows `CHECKED` — it still type-checks fine, it's just never
-compiled. An explicit `jit-optimize` on a pinned function is refused rather
-than silently compiling anyway:
+The `declare` form is stripped from the body before the function runs;
+`see-type` shows `CHECKED` — it still type-checks, it's just never
+compiled — and an explicit `jit-optimize` on it is refused rather than
+silently compiling anyway:
 
 ```lisp
 (jit-optimize od-pin)
