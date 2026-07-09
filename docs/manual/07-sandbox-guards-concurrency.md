@@ -88,17 +88,11 @@ $ target/debug/lamedh -s '(read)'
 Error: IO capability is not enabled (grant it via --capability IO or the host API)
 ```
 
-Two properties matter for the threat model:
-
-1. **Lisp code cannot self-escalate.** There is no `enable-feature`
-   builtin exposed to Lisp; only the host (Rust code calling
-   `env.enable_feature(...)`, or the CLI's `--capability` flag parsing)
-   can grant a capability. Once an interpreter starts without a
-   capability, no amount of Lisp-level cleverness gets it back.
-2. **Denial is a catchable error, not a panic.** A denied operation
-   signals an ordinary Lisp condition your code can catch with
-   `handler-case`, so a script can probe for authority and degrade
-   gracefully instead of crashing.
+Two properties matter for the threat model: Lisp code cannot self-escalate
+(there is no `enable-feature` builtin exposed to Lisp — only the host,
+via `env.enable_feature(...)` or `--capability`, grants), and denial is a
+catchable Lisp condition, not a panic, so a script can probe for authority
+with `handler-case` and degrade gracefully.
 
 Embedding Rust code grants capabilities the same way, on an
 `Environment`:
@@ -241,21 +235,16 @@ $ target/debug/lamedh -s "(with-fuel 100 (with-fuel 1000 (fuel-remaining)))"
 ; => 100
 ```
 
-Two safety properties worth knowing about `with-fuel`:
-
-- **A kernel-level backstop closes the obvious escape hatches.** The
-  Lisp-level walker only instruments code written *inside* the fence.
-  Functions defined *outside* a fence and merely called from inside it
-  aren't re-walked, so in principle they could loop forever unmetered.
-  The kernel arms a second, coarser step counter (roughly 256× the Lisp
-  budget) for the same dynamic extent that catches exactly this case,
-  so even a pre-existing, uninstrumented infinite loop is bounded and
-  the error is still catchable.
-- **No-compile.** Inside a fence, `jit-optimize` becomes a no-op
-  returning `COMPILE-DISABLED-BY-GUARD`, `defun-typed` signals an error,
-  and `defun*` is silently downgraded to a plain `defun` — a compiled
-  edition would run at native speed and bypass the tick instrumentation
-  entirely.
+Two safety properties worth knowing about `with-fuel`: a **kernel-level
+backstop** closes the obvious escape hatch — the Lisp-level walker only
+instruments code written *inside* the fence, so a function defined outside
+and merely called from inside would otherwise loop unmetered; the kernel
+arms a second, coarser step counter (roughly 256× the Lisp budget) for the
+same extent that catches exactly this case, catchably. And **no-compile**:
+inside a fence, `jit-optimize` becomes a no-op returning
+`COMPILE-DISABLED-BY-GUARD`, `defun-typed` signals an error, and `defun*`
+is silently downgraded to a plain `defun` — a compiled edition would run
+at native speed and bypass the tick instrumentation entirely.
 
 The threat model here is accidental runaway code (an agent's generated
 loop, an off-by-one), not a determined adversary studying the fence

@@ -123,7 +123,7 @@ lamedh -s '(progn (defrecord point (x int64) (y int64))
 ```
 
 The interesting part is what the checker infers for `worth` with zero
-annotations. Define a second, differently-shaped record and ask:
+annotations:
 
 ```lisp
 lamedh -s '(progn (defrecord point (x int64) (y int64))
@@ -138,8 +138,9 @@ record with at least an `X` field of type `A` — plus whatever else, that's
 what `B` is — and returns an `A`." `worth` runs on `point`, `box`, and any
 record you define next month with an `x` field, and it type-checks all of
 them without a single axiom. This is the money property of the design: one
-function, written once, works — at the checker *and* at runtime — on every
-record that has the field it asks for:
+function, written once, works — at the checker *and* at runtime — on
+every record that has the field it asks for, differently shaped records
+included:
 
 ```lisp
 lamedh -s '(progn (defrecord coin (value int64))
@@ -206,11 +207,11 @@ lamedh -s '(progn (defrecord inner (v int64)) (defrecord outer (i inner))
 ; => #S(INNER 5)
 ```
 
-The field is still stored and accessed identically either way — `any`
-just means the checker has stopped vouching for that one field. This is
-the gradual frontier: you get static guarantees where the type language
-reaches, and honest, uncomplaining dynamism everywhere else, without a
-migration step and without the record definition changing shape.
+The field is stored and accessed identically either way — `any` just means
+the checker has stopped vouching for that one field. This is the gradual
+frontier: static guarantees where the type language reaches, honest
+dynamism everywhere else, with no migration step and no change to the
+record's shape.
 
 ## 4.5 Tiers: compiled or dynamic, same surface
 
@@ -239,11 +240,11 @@ lamedh -s '(progn (defrecord grid (cells (array int64)) (n int64))
 ```
 
 `(array int64)` is natively storable, so `grid` compiles; `(list string)`
-is not, so `chest` stays dynamic. You can see the difference show up in the
-checker's own bookkeeping — a compiled-tier accessor is `TYPED`/`COMPILED`,
-a dynamic-tier one is `DECLARED` (an axiom generated in lockstep with its
-definition, since `record-ref` itself is a checker-native primitive rather
-than a body the checker can re-derive a scheme from):
+is not, so `chest` stays dynamic. The difference shows in the checker's
+bookkeeping — a compiled-tier accessor is `TYPED`/`COMPILED`; a
+dynamic-tier one is `DECLARED` (an axiom generated in lockstep with its
+definition, since `record-ref` is a checker-native primitive rather than a
+body the checker can re-derive a scheme from):
 
 ```lisp
 lamedh -s '(progn (defrecord point (x int64) (y int64))
@@ -257,10 +258,9 @@ lamedh -s '(progn (defrecord point (x int64) (y int64))
 
 None of this changes how you write code against the record. `make-Name`,
 `Name-p`, and `Name-field` behave the same from the call site regardless of
-tier — you can write `chest` and `grid` in the same function and never
-notice the difference except in raw throughput. `record-compiled-p` exists
-for when you want to check, e.g. before relying on a hot loop's
-performance.
+tier — mix `chest` and `grid` in one function and never notice the
+difference except in raw throughput. `record-compiled-p` is there to check,
+e.g. before relying on a hot loop's performance.
 
 ## 4.6 Printing, reading, and structural equality
 
@@ -281,25 +281,18 @@ lamedh -s '(progn (defrecord point (x int64) (y int64)) (point-x #S(POINT 7 8)))
 ; => 7
 ```
 
-Print and read round-trip through `equal`, which is the contract that
-makes records safe to serialize across a `spawn` boundary or into a
-channel:
-
-```lisp
-lamedh -s '(progn (defrecord point (x int64) (y int64))
-                   (equal (make-point 3 4) (read-from-string (prin1-to-string (make-point 3 4)))))'
-; => T
-```
-
-`equal` on two records of the same brand and equal fields is `T` by
+Print and read round-trip through `equal`, the contract that makes records
+safe to serialize across a `spawn` boundary or into a channel, and `equal`
+on two records of the same brand and equal fields is already `T` by
 structural comparison — you do not need `:derive equality` just to compare
-two records for equality; that derivation exists for when you want a
-*named*, checker-declared function (see below):
+two records; that derivation exists for when you want a *named*,
+checker-declared function (§4.7):
 
 ```lisp
 lamedh -s '(progn (defrecord point (x int64) (y int64))
-                   (equal (make-point 1 2) (make-point 1 2)))'
-; => T
+                   (list (equal (make-point 3 4) (read-from-string (prin1-to-string (make-point 3 4))))
+                         (equal (make-point 1 2) (make-point 1 2))))'
+; => (T T)
 ```
 
 ## 4.7 Invariants and derivations
@@ -314,9 +307,9 @@ lamedh -s '(progn (defrecord acct (bal int64) (:invariant (>= bal 0)))
 ```
 
 Multiple expressions in `:invariant` are implicitly `and`ed together. The
-invariant is arbitrary Lisp, so it is checked dynamically (the validator's
-own signature is `(-> (Name) bool)`, declared in lockstep) — `defrecord`
-does not try to prove your invariant, only to run it.
+invariant is arbitrary Lisp, checked dynamically (the validator's own
+signature, `(-> (Name) bool)`, is declared in lockstep) — `defrecord` does
+not try to prove your invariant, only to run it.
 
 `:derive` generates deterministic support code from the same field list.
 Three targets exist:

@@ -179,21 +179,19 @@ The one case that looks like it should overflow but doesn't:
 truncated `rem`, which would overflow), and neither tier sets `OVERFLOW`
 for it. Division by zero errors identically in both tiers rather than
 returning a flag — `(/ 1 0)` and a compiled equivalent both signal
-`Division by zero`, they don't silently produce `0`.
-
-If you ever observe a compiled function's result, flags, or error type
-diverge from what `(declare (no-compile))` on the same body would produce,
-that is a bug in the compiler, not an acceptable optimization artifact.
+`Division by zero` rather than silently producing `0`. If a compiled
+function's result, flags, or error type ever diverge from what
+`(declare (no-compile))` on the same body produces, that is a compiler
+bug, not an acceptable optimization artifact.
 
 ## 9.5 Opting Out of Compilation
 
 Sometimes you want a function pinned to the tree-walker — for debugging,
 for benchmarking the interpreter itself, or because a fence around it
-needs every call instrumented (see 9.6). Two ways to declare that, both
-verified against `tests/test_one_door.rs`:
+needs every call instrumented (§9.6). Two ways to declare that:
 
-`(declare (no-compile))` as the first form in a function body pins that one
-function:
+`(declare (no-compile))` as the first form in a function body pins that
+one function:
 
 ```lisp
 (defun od-pin (x) (declare (no-compile)) (* x 2))
@@ -435,14 +433,13 @@ of control over exactly what's on disk versus embedded.
 ## 9.13 Where to Go From Here
 
 That closes the manual. Between the nine chapters you have the full
-surface: syntax and control flow (2), the mutable data types (3), gradual
-records and the row-polymorphic checker (4), the evaluation model — closures,
-macros, fexprs, `vau` (5), conditions and restarts (6), the sandbox and
-concurrency primitives (7), the pattern/rewrite/rulebook layer (8), and now
-the execution tiers underneath all of it plus how to host the interpreter
-yourself. For the internals below the Lisp-visible API — how the evaluator,
-environment, and JIT are actually implemented in Rust — see
-`docs/architecture.md` and `docs/typed-jit-design.md` in the repo. For
+surface: syntax and control flow, data structures, records and the
+row-polymorphic checker, closures/macros/fexprs/`vau`, conditions and
+restarts, the sandbox and concurrency primitives, the pattern/rewrite
+layer, and now the execution tiers underneath all of it plus how to host
+the interpreter yourself. For the internals below the Lisp-visible API —
+how the evaluator, environment, and JIT are actually implemented in Rust —
+see `docs/architecture.md` and `docs/typed-jit-design.md` in the repo. For
 what's in flight, the issue tracker and `CHANGELOG.md` are the sources of
 truth; behavior documented here was verified against the interpreter it
 describes, at version 0.3.0.
