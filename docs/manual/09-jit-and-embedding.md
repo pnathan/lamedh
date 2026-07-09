@@ -12,17 +12,17 @@ Lisp source, granting it capabilities, and getting typed values back out.
 Every `defun` in Lamedh ends up running in one of three ways:
 
 1. **Tree-walked.** The evaluator recurses over the s-expression directly.
-   This is the universal fallback — anything is tree-walkable, including
-   macros, fexprs, `vau`, and code touching `eval` or `the-environment`.
+   The universal fallback — anything is tree-walkable, including macros,
+   fexprs, `vau`, and code touching `eval` or `the-environment`.
 2. **Typed, closure-compiled.** The body type-checks under Hindley-Milner
-   inference to a monomorphic scalar/array signature, and gets lowered to a
+   inference to a monomorphic scalar/array signature and gets lowered to a
    tree of boxed Rust closures (`jit/runtime.rs`) that skip the tag
-   dispatch and environment-chain walk of the evaluator, but still run as
-   ordinary Rust function calls — no machine code is emitted. This is what
-   you get from a `--no-default-features` build.
-3. **Typed, natively compiled.** Same type-checked core, but lowered
-   through Cranelift to actual machine code. This is what the default
-   build (the `jit` Cargo feature) gives you when a function qualifies.
+   dispatch and environment-chain walk of the evaluator but still run as
+   ordinary Rust calls — no machine code emitted. What you get from a
+   `--no-default-features` build.
+3. **Typed, natively compiled.** Same type-checked core, lowered through
+   Cranelift to actual machine code. What the default build (the `jit`
+   Cargo feature) gives you when a function qualifies.
 
 Tiers 2 and 3 are both reached through the same mechanism: a **one-door**
 policy. You never ask for compilation explicitly for a plain `defun` — every
@@ -236,22 +236,22 @@ inferred — see chapter 7 for the rest of the fuel/capability guard story.
 
 ## 9.7 Building Without the Native Backend
 
-The default `cargo build` enables the `jit` Cargo feature, which pulls in
+The default `cargo build` enables the `jit` Cargo feature, pulling in
 `cranelift-jit`/`cranelift-module`/`cranelift-codegen`/`cranelift-frontend`
-and gives you tier 3 (`COMPILED`). If you don't want that dependency —
-smaller build, no JIT'd machine code in your process, a platform Cranelift
-doesn't target — build without default features:
+and giving you tier 3 (`COMPILED`). For a smaller build, no JIT'd machine
+code in your process, or a platform Cranelift doesn't target, build
+without default features:
 
 ```bash
 cargo build --no-default-features
 ```
 
-You keep the full typed checker and tier 2 (the closure interpreter): every
-`see-type` verdict that would have read `COMPILED` now reads `INTERPRETED`
-instead, and the function still runs, just without native codegen. Nothing
-about the Lisp-level API changes — `defun`, `defun*`, `defun-typed`,
-`see-type`, and `jit-optimize` all behave the same; only the tag on a
-`TYPED` verdict shifts.
+You keep the full typed checker and tier 2 (the closure interpreter):
+every `see-type` verdict that would have read `COMPILED` now reads
+`INTERPRETED`, and the function still runs, just without native codegen.
+Nothing about the Lisp-level API changes — `defun`, `defun*`,
+`defun-typed`, `see-type`, `jit-optimize` all behave the same; only the
+tag on a `TYPED` verdict shifts.
 
 ## 9.8 Embedding Lamedh in a Rust Host
 

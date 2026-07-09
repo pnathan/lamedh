@@ -424,9 +424,8 @@ lamedh -s "(progn (declare-type! 'my-len '(-> ((list any)) int64)) (see-type 'my
 ; => (DECLARED (-> ((LIST ANY)) INT64))
 ```
 
-Reach for `declare-type!` yourself only when you are wrapping something the
-checker genuinely cannot analyze — an FFI-style builtin, a hand-written
-native accessor. For ordinary Lisp code, prefer to let the checker infer.
+Reach for it yourself only when wrapping something the checker genuinely
+cannot analyze; for ordinary Lisp code, prefer to let it infer.
 
 ## 4.9 Derived schemes: rows through helper chains
 
@@ -457,12 +456,12 @@ lamedh -s "(progn (defrecord disc (r int64))
 ```
 
 `disc` was never told about `the-cost` — the row demand ("a record with a
-`cost` field") is generated purely from `the-cost`'s own body, and it fails
-against `disc`'s actual row the moment you try to apply it. A broken helper
-degrades gracefully rather than infecting its callers with a confusing
-secondhand error: a callee with a genuine `TYPE-ERROR` reports that error at
-its own definition, while a caller of it stays gradual (its own call site
-degrades to `any` instead of inheriting the error text).
+`cost` field") comes purely from `the-cost`'s own body, and fails against
+`disc`'s actual row the moment you apply it. A broken helper degrades
+gracefully rather than infecting its callers: a callee with a genuine
+`TYPE-ERROR` reports it at its own definition, while a caller of it stays
+gradual — that one call site degrades to `any` instead of inheriting a
+confusing secondhand error.
 
 ## 4.10 `defun-typed` and `defun*`
 

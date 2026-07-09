@@ -349,19 +349,18 @@ $ target/debug/lamedh -s "(spawn-value (spawn () (car 5)))"
 ### Capability intersection
 
 A child can never end up with more authority than its parent's *effective*
-set — requesting a capability the parent doesn't hold just yields an empty
-grant for that capability, not an error:
+set — requesting a capability the parent doesn't hold yields an empty
+grant for it, not an error:
 
 ```console
 $ target/debug/lamedh -s "(spawn-value (spawn (:capabilities (SHELL)) (capabilities-effective)))"
 ; => (:OK ())
 ```
 
-And a `with-capabilities` fence around the `spawn` call is a hard ceiling
-on what the child can request, even if the host process holds more. Here
-the host has both `READ-FS` and `SHELL`, but the fence narrows to
-`READ-FS` before the child ever spawns, so the child's request for `SHELL`
-is denied too:
+A `with-capabilities` fence around the `spawn` call is a hard ceiling on
+what the child can request, even if the host process holds more. Here the
+host has both `READ-FS` and `SHELL`, but the fence narrows to `READ-FS`
+first, so the child's request for `SHELL` is denied too:
 
 ```console
 $ target/debug/lamedh --capability READ-FS --capability SHELL \
