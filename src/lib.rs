@@ -545,6 +545,10 @@ pub enum BuiltinFunc {
     // record field access — the runtime half of the row type language.
     RecordRef,
     RecordWith,
+    RecordDeclare,
+    RecordNew,
+    RecordBrand,
+    RecordCompiledP,
     // Introspective typing surface (rows port, #297 step 0): structured
     // checker verdicts, pure string->forms parsing, and declared schemes.
     SeeType,

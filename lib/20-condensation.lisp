@@ -396,42 +396,20 @@ artifact. Returns a report alist."
 (defun condense-field-names (field-specs)
   (mapcar #'car field-specs))
 
-;; Name-directed field access (soundness for row concepts). A declared row
-;; scheme is by *name* ("any record with an int64 hp"), but a positional
-;; accessor -- (nth 2 self) -- is by *offset*. When two concepts share a field
-;; name at different offsets, a cross-concept accessor call type-checks (the
-;; declared scheme subsumes) yet reads the wrong slot. CONDENSE-FIELD-REF closes
-;; that gap: it resolves the field's offset from the value's *own* brand, so the
-;; accessor reads the named field of whatever branded record it is given, making
-;; the runtime honor the by-name promise the declared axiom makes.
-(defun condense-field-position (field specs index)
-  "1-based slot of FIELD among the field-spec names in SPECS, or NIL. Slot 0 is
-the concept brand, so the first field lives at slot 1."
-  (cond
-    ((null specs) nil)
-    ((eq (car (car specs)) field) index)
-    (t (condense-field-position field (cdr specs) (+ index 1)))))
+;; Concept fields become defrecord fields. A field type outside the checker's
+;; language (a symbol naming no record) degrades to ANY -- gradual, not an
+;; error: the field is stored and accessed identically, just unchecked.
+(defun condense-concept-field-ty (ty)
+  (if (or (eq ty 'any)
+          (condense-row-type-p ty)
+          (and (atom ty) (condense-get ty "condense.kind")))
+      ty
+      'any))
 
-(defun condense-field-ref (self field)
-  "Read FIELD from concept value SELF by name, via SELF's own brand."
-  (let ((idx (condense-field-position
-               field (condense-get (car self) "condense.fields") 1)))
-    (if (null idx)
-        (error (concat (princ-to-string (car self))
-                       " has no field " (princ-to-string field)))
-        (nth idx self))))
-
-(defun condense-accessor-forms (concept fields index row-p)
-  "Generate the field accessors for CONCEPT. Row concepts (ROW-P) read by name
-via CONDENSE-FIELD-REF -- the sound path that matches their declared row
-schemes; others keep the direct positional read."
-  (if (null fields)
-      nil
-      (cons `(defun ,(condense-accessor-symbol concept (car fields)) (self)
-               ,(if row-p
-                    `(condense-field-ref self ',(car fields))
-                    `(nth ,index self)))
-            (condense-accessor-forms concept (cdr fields) (+ index 1) row-p))))
+(defun condense-concept-record-specs (field-specs)
+  (mapcar (lambda (spec)
+            (list (car spec) (condense-concept-field-ty (cadr spec))))
+          field-specs))
 
 (defun condense-validator-bindings (concept fields)
   (mapcar (lambda (field)
@@ -452,20 +430,23 @@ schemes; others keep the direct positional read."
           (condense-validator-symbol concept))
     (mapcar (lambda (field) (condense-accessor-symbol concept field)) fields)))
 
-(defun condense-concept-expansion (concept fields invariant-section row-p)
-  (let ((constructor (condense-constructor-symbol concept))
-        (predicate (condense-predicate-symbol concept))
+(defun condense-concept-expansion (concept field-specs invariant-section)
+  "Concept = DEFRECORD (branded, gradual-typed, tier-dispatched -- issue
+#308) + a validator closing over the invariant. Constructor, predicate, and
+accessors all come from the record core; the concept layer adds meaning."
+  (let ((predicate (condense-predicate-symbol concept))
         (validator (condense-validator-symbol concept))
+        (fields (condense-field-names field-specs))
         (invariant (condense-invariant-expression invariant-section)))
     `(progn
-       (defun ,constructor ,fields (list ',concept ,@fields))
-       (defun ,predicate (self)
-         (and (consp self) (eq (car self) ',concept)))
-       ,@(condense-accessor-forms concept fields 1 row-p)
+       (defrecord ,concept ,@(condense-concept-record-specs field-specs))
        (defun ,validator (self)
          (and (,predicate self)
               (let ,(condense-validator-bindings concept fields)
                 ,invariant)))
+       ;; Brand-in/bool-out, declared in lockstep (the invariant is
+       ;; arbitrary user code the checker can't always see through).
+       (declare-type! ',validator '(-> (,concept) bool))
        ',concept)))
 
 ;; Row declarations (experimental): when every field type maps into the
@@ -517,102 +498,122 @@ schemes; others keep the direct positional read."
           t))))
 
 (defun condense-declare-derive-rows! (concept derivations)
-  (let ((fields (condense-row-fields (condense-get concept "condense.fields"))))
-    (if (null fields)
-        nil
-        (mapc (lambda (d)
-                (cond
-                  ((eq d 'equality)
-                   (declare-type! (condense-equality-symbol concept)
-                                  `(forall (r s)
-                                     (-> ((record ,fields r) (record ,fields s))
-                                         bool))))
-                  ;; The printer builds dotted pairs from typed components,
-                  ;; which the checker's list-biased CONS rule rejects; its
-                  ;; scheme is declared (generated in lockstep) instead.
-                  ((eq d 'printer)
-                   (declare-type! (condense-printer-symbol concept)
-                                  `(forall (r)
-                                     (-> ((record ,fields r))
-                                         (list (pair symbol any))))))
-                  ((eq d 'lens)
-                   (progn
-                     (declare-type! (condense-printer-symbol concept)
-                                    `(forall (r)
-                                       (-> ((record ,fields r))
-                                           (list (pair symbol any)))))
-                     (declare-type! (condense-builder-symbol concept)
-                                    `(forall (a)
-                                       (-> ((list a)) (record ,fields))))
-                     (declare-type! (condense-lens-law-symbol concept)
-                                    `(forall (r)
-                                       (-> ((record ,fields r)) bool)))))
-                  (t nil)))
-              derivations))))
+  "Declare BRANDED schemes for derived operations: since every concept is a
+registered record type (#308), the derived equality/printer/lens signatures
+name the concept itself -- nominal in, row-subsumption still applies out."
+  (mapc (lambda (d)
+          (cond
+            ((eq d 'equality)
+             (declare-type! (condense-equality-symbol concept)
+                            `(-> (,concept ,concept) bool)))
+            ;; The printer builds dotted pairs from typed components, which
+            ;; the checker's list-biased CONS rule rejects; its scheme is
+            ;; declared (generated in lockstep) instead.
+            ((eq d 'printer)
+             (declare-type! (condense-printer-symbol concept)
+                            `(-> (,concept) (list (pair symbol any)))))
+            ((eq d 'lens)
+             (progn
+               (declare-type! (condense-printer-symbol concept)
+                              `(-> (,concept) (list (pair symbol any))))
+               (declare-type! (condense-builder-symbol concept)
+                              `(forall (a) (-> ((list a)) ,concept)))
+               (declare-type! (condense-lens-law-symbol concept)
+                              `(-> (,concept) bool))))
+            (t nil)))
+        derivations))
 
 ;;; ---- defrecord: the one-door gradual-typed record --------------------------
 ;;;
 ;;; (defrecord Name (field type)...) is the recommended way to define a
-;;; record. It unifies the two older forms into one gradual surface:
+;;; record — ONE BODY across both tiers (issue #308):
 ;;;
-;;;   - DEFSTRUCT gives an untyped, mutable, array-backed struct — fast to
-;;;     reach for, invisible to the checker.
-;;;   - DEFSTRUCT-TYPED gives a native, nominal, COMPILED struct, but only for
-;;;     scalar/array fields and with nominal-only typing.
-;;;   - DEFCONCEPT gives a row-typed record with condensation machinery
-;;;     (invariant, derive, trace) — powerful but heavier surface.
+;;;   - every defrecord registers a branded StructDef: the name is a real,
+;;;     DENOTABLE type, nominal in the checker (chest /= crate even with the
+;;;     same fields), and row-subsumable (#299) — one row-polymorphic
+;;;     function accepts every record naming a subset of its fields;
+;;;   - every defrecord value is a StructObj — one runtime representation,
+;;;     read and functionally updated through RECORD-REF / RECORD-WITH,
+;;;     whose checker rules DERIVE the row types (no axioms);
+;;;   - the tier is chosen by the compiler: all-native fields (scalars,
+;;;     (array scalar)) compile via the defstruct-typed machinery (native
+;;;     constructor and accessors); any other checkable field type (list,
+;;;     pair, nested record, string, symbol) gets dynamic constructor and
+;;;     accessors over RECORD-NEW/RECORD-REF with DECLARED branded
+;;;     signatures. Same surface either way. (record-compiled-p 'Name)
+;;;     reports the tier.
 ;;;
-;;; DEFRECORD is the middle path taken by default: a ROW-typed record (so its
-;;; values flow through any row-polymorphic function naming a subset of its
-;;; fields — duck typing the checker proves), over the single positional
-;;; representation (so the checker's row promise is KEPT at runtime — see
-;;; issue #305 for why a native struct cannot back a generic row accessor
-;;; yet), for ANY checkable field type including compound ones like
-;;; (list string) or (array int64).
-;;;
-;;; "Gradual" is the point: it is richly row-typed now, and marked
-;;; COMPILE-ELIGIBLE when its fields are all natively compilable, so a later
-;;; pass (issue #297 stage 3) can give it native storage WITHOUT changing the
-;;; surface — the data analogue of one-door DEFUN. DEFCONCEPT remains as the
-;;; richer sibling (invariant + derive) built on the same core; DEFSTRUCT and
-;;; DEFSTRUCT-TYPED remain as explicit escape hatches.
+;;; DEFCONCEPT layers invariants, derivations, and the condensation trace on
+;;; this same core. DEFSTRUCT (untyped, mutable) and DEFSTRUCT-TYPED
+;;; (native-only, with mutating setters) remain explicit escape hatches.
 
-(defun condense-native-field-p (spec)
-  "T when field SPEC's type is one the native compiled tier (defstruct-typed)
-can store today: a scalar, or a (array scalar). Used only to MARK a record
-compile-eligible for a future native pass (#297 stage 3); it changes no
-behavior now."
+(defun record-native-field-p (spec)
+  "T when field SPEC's type is natively storable (compiled tier)."
   (let ((ty (cadr spec)))
     (or (member ty '(int64 float64 bool char))
         (and (consp ty) (eq (car ty) 'array)
              (member (cadr ty) '(int64 float64 bool char))))))
 
-(defun condense-compile-eligible-p (field-specs)
-  (not (member nil (mapcar #'condense-native-field-p field-specs))))
+(defun record-fields-native-p (field-specs)
+  (not (member nil (mapcar #'record-native-field-p field-specs))))
+
+(defun $record-getter-forms (name field-specs)
+  "Dynamic-tier getters: NAME-FIELD over RECORD-REF, each with a DECLARED
+branded signature (-> (NAME) field-type) — derived from the def in
+lockstep, so axiom/implementation drift is impossible."
+  (mapcar
+   (lambda (spec)
+     (let ((getter (condense-accessor-symbol name (car spec))))
+       `(progn
+          (defun ,getter (self) (record-ref self ',(car spec)))
+          (declare-type! ',getter '(-> (,name) ,(cadr spec))))))
+   field-specs))
 
 (defvau defrecord (x e)
-  "(DEFRECORD Name (field type)...) — define a gradual-typed row record.
-Generates make-Name, Name-p, and the field accessors, each carrying a
-declared row scheme, so the record participates in row polymorphism for
-every field (including compound types). Marked compile-eligible when all
-fields are natively storable, for a future native pass (#297 stage 3)."
+  "(DEFRECORD Name (field type)...) — define a gradual-typed record: a
+branded, denotable, row-subsumable type whose tier (compiled or dynamic)
+is chosen by the compiler from the field types. Generates make-Name,
+Name-p, and Name-field accessors; values are read with the accessors or
+generically with RECORD-REF and updated with RECORD-WITH."
   (let* ((name (car x))
          (field-specs (cdr x)))
     (if (null field-specs)
         (error "defrecord requires at least one field")
         (progn
-          ;; Reuse defconcept's row-record core (one representation, full row
-          ;; schemes via the broadened field mapping above).
-          (eval (list 'defconcept name (list ':fields field-specs)) e)
+          (if (record-fields-native-p field-specs)
+              ;; Compiled tier: native branded type, constructor, accessors.
+              (eval (cons 'defstruct-typed (cons name field-specs)) e)
+              ;; Dynamic tier: branded type + StructObj values.
+              (progn
+                (eval (list 'record-declare (list 'quote name)
+                            (list 'quote field-specs)) e)
+                (let ((argnames (mapcar #'car field-specs))
+                      (argtys (mapcar #'cadr field-specs))
+                      (ctor (condense-constructor-symbol name)))
+                  (eval `(progn
+                           (defun ,ctor ,argnames (record-new ',name ,@argnames))
+                           (declare-type! ',ctor '(-> ,argtys ,name)))
+                        e))
+                (mapc (lambda (form) (eval form e))
+                      ($record-getter-forms name field-specs))))
+          ;; Both tiers: a predicate (defstruct-typed generates none) and
+          ;; condensation metadata.
+          ;; record-brand is a dynamic primitive (works on anything), so the
+          ;; predicate's scheme is declared in lockstep with its definition.
+          (eval `(progn
+                   (defun ,(condense-predicate-symbol name) (v)
+                     (eq (record-brand v) ',name))
+                   (declare-type! ',(condense-predicate-symbol name)
+                                  '(forall (a) (-> (a) bool))))
+                e)
           (condense-put name "condense.kind" 'record)
-          (condense-put name "condense.compile-eligible"
-                        (condense-compile-eligible-p field-specs))
+          (condense-put name "condense.fields" field-specs)
           name))))
 
 (defun record-compile-eligible-p (name)
-  "T when the DEFRECORD named NAME could be given native storage by a future
-compile pass (all fields natively storable). Introspection, not a promise."
-  (condense-get name "condense.compile-eligible"))
+  "Whether record NAME's fields are all natively storable — i.e. which tier
+DEFRECORD chose. Alias over the kernel's RECORD-COMPILED-P."
+  (ignore-errors (record-compiled-p name)))
 
 (defvau defconcept (x e)
   "Define a compact concept: fields, invariant, generated operations, trace.
@@ -627,11 +628,7 @@ form, so the whole artifact has a single seed to edit."
         (error "defconcept requires a :fields section")
         (let* ((field-specs (cadr fields-section))
                (fields (condense-field-names field-specs))
-               ;; A row concept (every field maps into the checker's type
-               ;; language) gets DECLARED by-name schemes, so its accessors must
-               ;; read by name to stay sound; others keep positional access.
-               (row-p (not (null (condense-row-fields field-specs))))
-               (expansion (condense-concept-expansion concept fields invariant-section row-p))
+               (expansion (condense-concept-expansion concept field-specs invariant-section))
                (generated (condense-concept-generated concept fields))
                (source (cons 'defconcept x))
                (previous (condense-expansion concept)))
@@ -641,7 +638,6 @@ form, so the whole artifact has a single seed to edit."
           (condense-put concept "condense.invariant" invariant-section)
           (condense-put concept "condense.last-diff"
                         (if previous (condense-diff previous expansion) nil))
-          (condense-declare-rows! concept field-specs)
           (condense-fingerprint! concept)
           (if derive-section
               (eval (cons 'derive (cons concept (cdr derive-section))) e)

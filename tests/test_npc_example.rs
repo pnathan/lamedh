@@ -101,8 +101,10 @@ fn cross_kind_misuse_is_a_static_type_error() {
     );
     let verdict = eval_line("(see-type 'oops)", &env);
     assert!(verdict.starts_with("(TYPE-ERROR"), "got: {verdict}");
+    // Nominal rejection (#308): the accessor demands the GOBLIN brand, not
+    // merely a mischief-shaped row.
     assert!(
-        verdict.contains("lacks field(s) mischief"),
+        verdict.contains("cannot unify MERCHANT with GOBLIN"),
         "got: {verdict}"
     );
     // And the edit barrier refuses to introduce the same misuse.

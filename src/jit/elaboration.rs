@@ -5,6 +5,10 @@ use super::*;
 
 pub(super) type Scope = Vec<(String, Ty)>;
 
+/// Source of a plain lambda's (params, body) for on-demand call-site
+/// checking (#308) — backed by the environment in checker entry points.
+pub(super) type LambdaSource<'a> = &'a dyn Fn(&str) -> Option<(Vec<String>, Vec<LispVal>)>;
+
 /// Elaboration context: read-only access to the signatures of all registered
 /// functions, so call sites can be type-checked (and self/forward references
 /// resolved) while a body is being elaborated.
@@ -26,6 +30,24 @@ pub(super) struct Cx<'a> {
     /// When unset (the codegen path), behavior is unchanged: every type must be
     /// compileable and unknown calls are errors.
     pub(super) checking: bool,
+    /// Call-site consultation of INFERRED schemes (#308): resolves an unknown
+    /// callee that is a plain lambda to its (params, body) so its scheme can
+    /// be derived on demand instead of degrading the call to `Any`. `None` in
+    /// codegen mode and in contexts with no environment access.
+    pub(super) resolver: Option<LambdaSource<'a>>,
+    /// Per-run memo of schemes derived through `resolver`. `None` records a
+    /// callee that could not be derived (variadic, failed its own check, not
+    /// a lambda) so it is not re-attempted; such calls stay gradual — the
+    /// callee's own error is reported at its own definition, not here.
+    pub(super) derived: RefCell<HashMap<String, Option<infer::Scheme>>>,
+    /// Monotype arrow assumptions for callees currently being checked
+    /// up-stack (self/mutual recursion), consulted before re-entering the
+    /// resolver so cycles terminate.
+    pub(super) assumptions: RefCell<HashMap<String, Ty>>,
+    /// Type-variable ids of enclosing in-flight checks. A nested callee's
+    /// scheme is generalized *avoiding* these — see
+    /// [`Infer::generalize_avoiding`].
+    pub(super) avoid_gen: RefCell<Vec<u32>>,
 }
 
 impl Cx<'_> {
@@ -104,6 +126,7 @@ impl Cx<'_> {
                     "LIST" if self.checking => self.elab_list(args, scope, max),
                     "NULL" | "NULL?" | "ENDP" if self.checking => self.elab_null(args, scope, max),
                     "RECORD-REF" if self.checking => self.elab_record_ref(args, scope, max),
+                    "RECORD-NEW" if self.checking => self.elab_record_new(args, scope, max),
                     "RECORD-WITH" if self.checking => self.elab_record_with(args, scope, max),
                     "LET" if self.checking => self.elab_let(args, scope, max),
                     "PROGN" if self.checking => self.elab_body(args, scope, max),
@@ -473,6 +496,116 @@ impl Cx<'_> {
         Ok((acc, body_ty))
     }
 
+    /// The derived-scheme path for an unknown callee (#308). Returns
+    /// `Ok(None)` when nothing can be derived (the caller stays gradual).
+    fn derived_call(
+        &self,
+        name: &str,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<Option<(Core, Ty)>, String> {
+        // A callee currently being checked up-stack: use its in-flight
+        // monotype arrow (standard monomorphic-recursion assumption).
+        let assumed = self.assumptions.borrow().get(name).cloned();
+        if let Some(Ty::Fn(ps, ret)) = assumed {
+            if ps.len() != args.len() {
+                return Ok(None);
+            }
+            for (a, p) in args.iter().zip(ps.iter()) {
+                let (_, at) = self.elab(a, scope, max)?;
+                self.unify(&at, p)
+                    .map_err(|e| format!("in call to `{name}`: {e}"))?;
+            }
+            return Ok(Some((Core::LitI(0), self.walk(&ret))));
+        }
+        let memo = self.derived.borrow().get(name).cloned();
+        let scheme = match memo {
+            Some(cached) => cached,
+            None => {
+                let Some(resolver) = self.resolver else {
+                    return Ok(None);
+                };
+                let derived = match resolver(name) {
+                    Some((params, body)) => self.check_callee(name, &params, &body).ok(),
+                    None => None,
+                };
+                self.derived
+                    .borrow_mut()
+                    .insert(name.to_string(), derived.clone());
+                derived
+            }
+        };
+        let Some(scheme) = scheme else {
+            return Ok(None);
+        };
+        let inst = self.infer.borrow_mut().instantiate(&scheme);
+        match inst {
+            Ty::Fn(ps, ret) => {
+                if ps.len() != args.len() {
+                    return Err(format!(
+                        "`{name}` expects {} args, got {} (inferred type)",
+                        ps.len(),
+                        args.len()
+                    ));
+                }
+                for (a, p) in args.iter().zip(ps.iter()) {
+                    let (_, at) = self.elab(a, scope, max)?;
+                    self.unify(&at, p)
+                        .map_err(|e| format!("in call to `{name}`: {e}"))?;
+                }
+                Ok(Some((Core::LitI(0), *ret)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Check a callee's own body inside this run and return its generalized
+    /// scheme. The callee's fresh variables join `avoid_gen` for the duration
+    /// (so deeper callees don't quantify them), and its arrow is generalized
+    /// avoiding every *enclosing* in-flight variable.
+    fn check_callee(
+        &self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+    ) -> Result<infer::Scheme, String> {
+        if body.is_empty() {
+            return Err("empty body".to_string());
+        }
+        let ptys: Vec<Ty> = params.iter().map(|_| self.fresh()).collect();
+        let ret = self.fresh();
+        let own_vars: Vec<u32> = ptys
+            .iter()
+            .chain(std::iter::once(&ret))
+            .filter_map(|t| match t {
+                Ty::Var(v) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        let arrow = Ty::Fn(ptys.clone(), Box::new(ret.clone()));
+        self.assumptions
+            .borrow_mut()
+            .insert(name.to_string(), arrow.clone());
+        self.avoid_gen.borrow_mut().extend(own_vars.iter().copied());
+        let mut scope: Scope = params.iter().cloned().zip(ptys).collect();
+        let mut max = scope.len();
+        let outcome = self
+            .elab_body(body, &mut scope, &mut max)
+            .and_then(|(_, bt)| {
+                self.unify(&bt, &ret)
+                    .map_err(|_| "return type mismatch across branches".to_string())
+            });
+        self.assumptions.borrow_mut().remove(name);
+        {
+            let mut avoid = self.avoid_gen.borrow_mut();
+            avoid.retain(|v| !own_vars.contains(v));
+        }
+        outcome?;
+        let inf = self.infer.borrow();
+        Ok(inf.generalize_avoiding(&arrow, &self.avoid_gen.borrow()))
+    }
+
     fn elab_call(
         &self,
         name: &str,
@@ -517,11 +650,20 @@ impl Cx<'_> {
                     }
                 }
             }
-            // Gradual frontier (#162): an unknown/untyped callee yields `Any`. We
-            // still elaborate the arguments so type errors *inside* them surface,
-            // but leave them unconstrained (the callee makes no demand). The
-            // codegen path keeps rejecting unknown calls.
+            // Derived schemes (#308): before conceding the gradual frontier,
+            // try to derive the callee's own scheme — a recursion assumption,
+            // a memoized result, or an on-demand check of its lambda body via
+            // the resolver. This is what lets row types flow through helper
+            // functions with no declare-type! axioms.
             None if self.checking => {
+                if let Some(res) = self.derived_call(name, args, scope, max)? {
+                    return Ok(res);
+                }
+                // Gradual frontier (#162): an unknown/untyped callee yields
+                // `Any`. We still elaborate the arguments so type errors
+                // *inside* them surface, but leave them unconstrained (the
+                // callee makes no demand). The codegen path keeps rejecting
+                // unknown calls.
                 for a in args {
                     self.elab(a, scope, max)?;
                 }
@@ -853,6 +995,51 @@ impl Cx<'_> {
             }
             _ => None,
         }
+    }
+
+    /// `(record-new 'brand v1 … vn)` : the branded constructor rule (issue
+    /// #308) — looks the brand up in the registry, unifies each argument
+    /// with its field type, and returns the NOMINAL Ty::Struct. This is
+    /// what makes `record-new` values carry their brand in checked code:
+    /// passing a same-shaped-but-differently-branded record where a
+    /// specific brand is demanded is a static error. An unquoted/unknown
+    /// brand degrades to `Any` (the dynamic frontier).
+    fn elab_record_new(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.is_empty() {
+            return Err("`record-new` expects a brand and field values".to_string());
+        }
+        let Some(brand) = Self::quoted_field(&args[0]) else {
+            for a in &args[1..] {
+                self.elab(a, scope, max)?;
+            }
+            return Ok((Core::LitI(0), Ty::Any));
+        };
+        let Some(def) = self.structs.get(&brand).cloned() else {
+            // Unregistered at check time (e.g. forward use): dynamic frontier.
+            for a in &args[1..] {
+                self.elab(a, scope, max)?;
+            }
+            return Ok((Core::LitI(0), Ty::Any));
+        };
+        if args.len() - 1 != def.fields.len() {
+            return Err(format!(
+                "`record-new`: {} has {} field(s), got {} value(s)",
+                brand,
+                def.fields.len(),
+                args.len() - 1
+            ));
+        }
+        for (arg, (fname, fty)) in args[1..].iter().zip(def.fields.iter()) {
+            let (_, ta) = self.elab(arg, scope, max)?;
+            self.unify(&ta, fty)
+                .map_err(|e| format!("`record-new`: field {}: {e}", fname.to_lowercase()))?;
+        }
+        Ok((Core::LitI(0), Ty::Struct(def)))
     }
 
     /// `(record-ref x 'f)` : (record ((f α)) ρ) → α — the checker-native row

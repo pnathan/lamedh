@@ -420,6 +420,23 @@ impl Infer {
         Scheme { vars, ty: z }
     }
 
+    /// Like [`generalize`], but never quantifies a variable reachable from
+    /// AVOID (each avoid entry is expanded through the current substitution).
+    /// Used when generalizing a callee checked *inside* another check (#308):
+    /// variables entangled with the enclosing in-flight function must stay
+    /// free monotypes, or instantiation would sever the link.
+    pub(crate) fn generalize_avoiding(&self, t: &Ty, avoid: &[u32]) -> Scheme {
+        let z = self.zonk(t);
+        let mut vars = Vec::new();
+        Self::free_vars(&z, &mut vars);
+        let mut blocked = Vec::new();
+        for v in avoid {
+            Self::free_vars(&self.zonk(&Ty::Var(*v)), &mut blocked);
+        }
+        vars.retain(|v| !blocked.contains(v));
+        Scheme { vars, ty: z }
+    }
+
     /// Instantiate a scheme with fresh variables for each bound variable.
     #[allow(dead_code)] // used by tests; call sites instantiate generalized callees (#162)
     pub(crate) fn instantiate(&mut self, s: &Scheme) -> Ty {
