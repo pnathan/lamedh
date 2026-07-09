@@ -687,6 +687,67 @@ impl Jit {
         }
     }
 
+    /// The CODEGEN-path verdict for an un-annotated function WITHOUT
+    /// installing anything: `Ok(())` when it would compile natively,
+    /// `Err(reason)` with the concrete blocker otherwise. The dry-run twin
+    /// of [`Self::infer_untyped`], powering `explain-compile`.
+    pub fn compile_reason(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+    ) -> Result<(), String> {
+        if body.is_empty() {
+            return Err("empty body".to_string());
+        }
+        let mut infer = Infer::new().with_structs(std::rc::Rc::new(self.structs.clone()));
+        let param_tys: Vec<(String, Ty)> =
+            params.iter().map(|p| (p.clone(), infer.fresh())).collect();
+        let ret_var = infer.fresh();
+        let new_id = self.funcs.len();
+        self.funcs.push(Rc::new(TypedFn::placeholder(
+            new_id,
+            name.to_string(),
+            param_tys.clone(),
+            ret_var.clone(),
+        )));
+        let prev = self.by_name.insert(name.to_string(), new_id);
+        let mut scope: Scope = param_tys.clone();
+        let mut max_slots = scope.len();
+        let outcome: Result<(), String> = (|| {
+            let cx = Cx {
+                declared: &self.declared,
+                funcs: &self.funcs,
+                by_name: &self.by_name,
+                structs: &self.structs,
+                infer: RefCell::new(infer),
+                checking: false,
+                resolver: None,
+                derived: RefCell::new(HashMap::new()),
+                assumptions: RefCell::new(HashMap::new()),
+                avoid_gen: RefCell::new(Vec::new()),
+            };
+            let (_core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
+            cx.unify(&body_ty, &ret_var)
+                .map_err(|_| "return type mismatch".to_string())?;
+            cx.resolve(&ret_var)?;
+            for (_, pt) in &param_tys {
+                cx.resolve(pt)?;
+            }
+            Ok(())
+        })();
+        // ALWAYS roll back — explanation is side-effect-free.
+        match prev {
+            Some(p) => {
+                self.by_name.insert(name.to_string(), p);
+            }
+            None => {
+                self.by_name.remove(name);
+            }
+        }
+        outcome
+    }
+
     /// Like [`Self::infer_untyped`] but accepts **partial type hints** per param and
     /// for the return type. `Some(ty)` pins the slot to that type; `None` inserts
     /// a fresh inference variable. This is the compilation back-end for `defun*`.

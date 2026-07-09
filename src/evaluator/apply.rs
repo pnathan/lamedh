@@ -402,6 +402,7 @@ pub(super) fn apply(
             BuiltinFunc::Describe
             | BuiltinFunc::SeeSource
             | BuiltinFunc::SeeType
+            | BuiltinFunc::ExplainCompile
             | BuiltinFunc::ReadString
             | BuiltinFunc::DeclareType
             | BuiltinFunc::Disassemble => apply_introspection(builtin, args, env),

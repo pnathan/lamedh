@@ -832,6 +832,95 @@ pub(super) fn typed_to_lispval(
 /// The classification burden (e.g. distinguishing informative from vacuous
 /// schemes) lives in the Lisp layer; this only reports what the checker knows,
 /// structurally, so no consumer has to parse the human-readable string.
+/// Structured tier explanation for `name` (the `explain-compile` builtin):
+/// an alist of (TIER . symbol) plus, when relevant, (SIGNATURE . form) /
+/// (SCHEME . form) / (BLOCKER . string). The BLOCKER is the concrete,
+/// actionable reason the definition is not natively compiled — e.g. the
+/// exact type the codegen path rejected — so "why is this slow" is a
+/// dialogue instead of a mystery.
+pub(super) fn explain_compile_form(name: &str, env: &Shared<Environment>) -> LispVal {
+    let sym = |s: &str| LispVal::Symbol(env.intern_symbol(s));
+    let pair = |k: &str, v: LispVal| LispVal::Cons {
+        car: Shared::new(sym(k)),
+        cdr: Shared::new(v),
+    };
+    let report = |items: Vec<LispVal>| vec_to_list(items);
+
+    // Already registered in the typed island?
+    let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
+    if !live_is_plain_lambda && let Some((params, ret)) = env.jit_named_signature(name) {
+        let args = params
+            .iter()
+            .map(|(_, t)| crate::jit::ty_name(t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let sig = format!("(-> ({args}) {})", crate::jit::ty_name(&ret));
+        let sig_form = crate::reader::read(&sig, env).unwrap_or(LispVal::Nil);
+        let compiled = matches!(env.jit_is_compiled(name), Some(true));
+        return report(vec![
+            pair(
+                "TIER",
+                sym(if compiled {
+                    "COMPILED"
+                } else {
+                    "TYPED-INTERPRETED"
+                }),
+            ),
+            pair("SIGNATURE", sig_form),
+        ]);
+    }
+
+    // Pinned away from the compiler?
+    let pinned = env
+        .intern_symbol(name)
+        .borrow()
+        .plist
+        .contains_key("no-compile");
+
+    match lambda_params_body(name, env) {
+        Some((params, body)) => {
+            let checked = match env.jit_check_untyped(name, &params, &body) {
+                Ok(scheme) => scheme,
+                Err(e) => {
+                    return report(vec![
+                        pair("TIER", sym("TYPE-ERROR")),
+                        pair("BLOCKER", LispVal::String(e)),
+                    ]);
+                }
+            };
+            let scheme_form =
+                crate::reader::read(&checked, env).unwrap_or(LispVal::String(checked.clone()));
+            let mut items = vec![pair("TIER", sym("CHECKED")), pair("SCHEME", scheme_form)];
+            if pinned {
+                items.push(pair(
+                    "BLOCKER",
+                    LispVal::String(
+                        "pinned to the interpreter by (declare (no-compile)) / declaim".to_string(),
+                    ),
+                ));
+                return report(items);
+            }
+            match env.jit_compile_reason(name, &params, &body) {
+                Ok(()) => items.push(pair(
+                    "BLOCKER",
+                    LispVal::String(
+                        "none — natively compileable; (jit-optimize name) installs it".to_string(),
+                    ),
+                )),
+                Err(reason) => items.push(pair("BLOCKER", LispVal::String(reason))),
+            }
+            report(items)
+        }
+        None => report(vec![
+            pair("TIER", sym("DYNAMIC")),
+            pair(
+                "BLOCKER",
+                LispVal::String("variadic or not a plain lambda".to_string()),
+            ),
+        ]),
+    }
+}
+
 pub(super) fn see_type_form(name: &str, env: &Shared<Environment>) -> LispVal {
     let sym = |s: &str| LispVal::Symbol(env.intern_symbol(s));
     let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
