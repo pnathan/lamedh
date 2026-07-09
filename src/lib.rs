@@ -195,6 +195,7 @@
 //! | `23-match.lisp` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
 //! | `24-rules.lisp` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
 //! | `25-variants.lisp` | Sum types: `DEFVARIANT`, exhaustive `VARIANT-CASE`, Option, Result |
+//! | `26-instrument.lisp` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -553,6 +554,7 @@ pub enum BuiltinFunc {
     RecordFields,
     VariantDeclare,
     LastBacktrace,
+    MonotonicMicros,
     // Introspective typing surface (rows port, #297 step 0): structured
     // checker verdicts, pure string->forms parsing, and declared schemes.
     SeeType,
@@ -1688,6 +1690,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("23-match.lisp", include_str!("../lib/23-match.lisp")),
     ("24-rules.lisp", include_str!("../lib/24-rules.lisp")),
     ("25-variants.lisp", include_str!("../lib/25-variants.lisp")),
+    (
+        "26-instrument.lisp",
+        include_str!("../lib/26-instrument.lisp"),
+    ),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),

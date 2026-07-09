@@ -729,6 +729,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::LastBacktrace),
         );
         env.set(
+            "MONOTONIC-MICROS".to_string(),
+            LispVal::Builtin(BuiltinFunc::MonotonicMicros),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );

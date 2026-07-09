@@ -102,17 +102,38 @@ fn param_scope_ids(params: &LispVal) -> Option<Vec<u32>> {
     Some(ids)
 }
 
+/// The scope level a lambda's call frame contributes. Simple parameter
+/// lists get a `Slot` level (direct slot addressing). `&REST` (and other
+/// non-simple) lists still create ONE runtime frame per call — apply binds
+/// through the map — so the body must compile under an `Opaque` level:
+/// its own params resolve as plain `Var`, while references to ENCLOSING
+/// slot frames count this frame in their `LocalGet` depth. Compiling such
+/// a body scopeless made every outer `LocalGet` one frame short — a
+/// closure with `&rest` under an intervening `LET` read the let's slots
+/// instead of the outer variable (found by TRACE's wrapper, 0.3).
+fn param_scope_level(params: &LispVal) -> ScopeLevel {
+    if let Some(ids) = param_scope_ids(params) {
+        return ScopeLevel::Slot(ids);
+    }
+    let mut ids = Vec::new();
+    if let Some(list) = safe_list_to_vec(params) {
+        for p in &list {
+            if let LispVal::Symbol(s) = p
+                && s.borrow().name != "&REST"
+            {
+                ids.push(s.borrow().id);
+            }
+        }
+    }
+    ScopeLevel::Opaque(ids)
+}
+
 /// Compile a lambda body under its parameter scope (issue #200 M3): the
 /// raw-`(lambda …)` path in `make_lambda` enters here so its body gets the
 /// same lexical addressing as bodies compiled via `MakeLambda`.
 pub(super) fn compile_lambda_body(params: &LispVal, body: &LispVal) -> Shared<crate::Code> {
-    match param_scope_ids(params) {
-        Some(ids) => {
-            let _g = ScopeGuard::push(ScopeLevel::Slot(ids));
-            compile(body)
-        }
-        None => compile(body),
-    }
+    let _g = ScopeGuard::push(param_scope_level(params));
+    compile(body)
 }
 
 pub(super) fn compile(form: &LispVal) -> Shared<crate::Code> {
@@ -505,7 +526,7 @@ fn compile_lambda(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     // (&REST, non-symbols) compile scopeless: their call frames may bind
     // through the map, and plain Var is always sound.
     let compiled_body = {
-        let _g = param_scope_ids(params).map(|ids| ScopeGuard::push(ScopeLevel::Slot(ids)));
+        let _g = ScopeGuard::push(param_scope_level(params.as_ref()));
         if body_forms.len() == 1 {
             compile(&body_forms[0])
         } else {

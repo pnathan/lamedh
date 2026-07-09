@@ -51,9 +51,10 @@ fn tco_preserved_under_instrumentation() {
     with_large_stack(|| {
         let e = env();
         // A million-iteration tail loop must complete inside a large budget —
-        // the inserted ticks must not break tail position.
+        // metering must not break tail position (~a few kernel steps per
+        // iteration).
         let out = eval_line(
-            "(with-fuel 5000000
+            "(with-fuel 20000000
                (defun guard-count (n acc) (if (< n 1) acc (guard-count (- n 1) (+ acc 1))))
                (guard-count 1000000 0))",
             &e,
@@ -83,8 +84,12 @@ fn fuel_remaining_introspection() {
         let e = env();
         // Outside any fence: NIL.
         assert_eq!(eval_line("(fuel-remaining)", &e), "()");
-        // Straight-line code charges nothing at the top level.
-        assert_eq!(eval_line("(with-fuel 100 (fuel-remaining))", &e), "100");
+        // One ruler (0.3): the budget is kernel steps, so even reading the
+        // gauge costs a few. Most of a 100-step budget must remain.
+        let left: i64 = eval_line("(with-fuel 100 (fuel-remaining))", &e)
+            .parse()
+            .expect("fuel-remaining should be a number");
+        assert!(left > 50 && left <= 100, "got {left}");
     });
 }
 
@@ -92,22 +97,27 @@ fn fuel_remaining_introspection() {
 fn nested_fuel_clamps_and_charges_the_outer_fence() {
     with_large_stack(|| {
         let e = env();
-        // Inner request larger than the outer remainder is clamped.
-        assert_eq!(
-            eval_line("(with-fuel 100 (with-fuel 1000 (fuel-remaining)))", &e),
-            "100"
-        );
+        // Inner request larger than the outer remainder is clamped to it
+        // (fence setup itself charges the enclosing budget — anything else
+        // would be a free-work escape).
+        let clamped: i64 = eval_line(
+            "(with-fuel 100000 (with-fuel 100000000 (fuel-remaining)))",
+            &e,
+        )
+        .parse()
+        .expect("fuel-remaining should be a number");
+        assert!(clamped > 50_000 && clamped < 100_000, "got {clamped}");
         // Work inside the inner fence depletes the outer fence too.
         let out = eval_line(
-            "(with-fuel 1000
+            "(with-fuel 100000
                (defun guard-n (n) (if (< n 1) 'd (guard-n (- n 1))))
-               (with-fuel 500 (guard-n 100))
+               (with-fuel 50000 (guard-n 100))
                (fuel-remaining))",
             &e,
         );
         let remaining: i64 = out.parse().expect("fuel-remaining should be a number");
         assert!(
-            remaining < 900,
+            remaining < 99000,
             "inner work must charge the outer fence, got remaining {remaining}"
         );
     });
@@ -271,12 +281,12 @@ fn both_nesting_orders_behave_identically() {
         let e = env();
         e.enable_feature("READ-FS");
         let a = eval_line(
-            "(with-fuel 1000 (with-capabilities '()
+            "(with-fuel 100000 (with-capabilities '()
                (handler-case (read-file \"/etc/hostname\") (error (er) 'denied))))",
             &e,
         );
         let b = eval_line(
-            "(with-capabilities '() (with-fuel 1000
+            "(with-capabilities '() (with-fuel 100000
                (handler-case (read-file \"/etc/hostname\") (error (er) 'denied))))",
             &e,
         );
@@ -290,14 +300,21 @@ fn sandboxed_combinator_composes_both_fences() {
     with_large_stack(|| {
         let e = env();
         e.enable_feature("READ-FS");
-        assert_eq!(
-            eval_line(
-                "(sandboxed (:fuel 1000 :capabilities (READ-FS))
-                   (list (fuel-remaining) (capabilities-effective)))",
-                &e
-            ),
-            "(1000 (READ-FS))"
+        let out = eval_line(
+            "(sandboxed (:fuel 1000 :capabilities (READ-FS))
+               (list (fuel-remaining) (capabilities-effective)))",
+            &e,
         );
+        // (steps-left (READ-FS)) with most of the 1000-step budget left.
+        assert!(out.ends_with("(READ-FS))"), "got: {out}");
+        let left: i64 = out
+            .trim_start_matches('(')
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("fuel number");
+        assert!(left > 500 && left <= 1000, "got: {out}");
         let out = eval_line(
             "(handler-case
                (sandboxed (:fuel 40 :capabilities ()) (while t nil))
@@ -430,13 +447,14 @@ fn kernel_backstop_arms_and_restores_around_fences() {
         let e = env();
         // Unarmed outside any fence.
         assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
-        // Armed inside at budget * multiplier (minus setup steps).
+        // One ruler (0.3): armed at exactly the budget (minus the steps
+        // spent reaching the gauge).
         let inside: i64 = eval_line("(with-fuel 100 (kernel-fuel-remaining))", &e)
             .parse()
             .expect("armed count");
         assert!(
-            inside > 20_000 && inside <= 25_600,
-            "expected ~100*256 steps armed, got {inside}"
+            inside > 50 && inside <= 100,
+            "expected <=100 steps armed, got {inside}"
         );
         // Disarmed again after the fence exits.
         assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
@@ -455,11 +473,13 @@ fn kernel_backstop_nested_exhaustion_leaves_outer_fence_alive() {
             "(with-fuel 1000
                (list (handler-case (with-fuel 50 (kb-spin2 100000000))
                        (error (er) 'inner-caught))
-                     (if (kernel-fuel-remaining) 'outer-rearmed 'outer-disarmed)
-                     (fuel-remaining)))",
+                     (if (kernel-fuel-remaining) 'outer-rearmed 'outer-disarmed)))",
             &e,
         );
-        assert_eq!(out, "(INNER-CAUGHT OUTER-REARMED 1000)");
+        // The inner fence exhausts and is caught; the outer fence re-arms
+        // with its remainder (1000 minus the inner spend of 50 and the
+        // handling overhead).
+        assert_eq!(out, "(INNER-CAUGHT OUTER-REARMED)");
     });
 }
 

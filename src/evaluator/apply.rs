@@ -370,6 +370,18 @@ pub(super) fn apply(
             | BuiltinFunc::RecordCompiledP
             | BuiltinFunc::RecordFields
             | BuiltinFunc::VariantDeclare => apply_record_type_op(builtin, args, env),
+            // (monotonic-micros) — microseconds since an arbitrary process
+            // epoch; the timing primitive under (time ...) in lib/26.
+            BuiltinFunc::MonotonicMicros => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "monotonic-micros takes no arguments".to_string(),
+                    ));
+                }
+                static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                let epoch = EPOCH.get_or_init(std::time::Instant::now);
+                Ok(LispVal::Number(epoch.elapsed().as_micros() as i64))
+            }
             // (last-backtrace) — the frames of the most recently CAUGHT
             // error (innermost first), as a list of symbols.
             BuiltinFunc::LastBacktrace => {
