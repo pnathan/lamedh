@@ -2,16 +2,15 @@
 
 Every other Lisp makes you choose a record system when the project gets
 serious enough: `defstruct` for speed, an alist or plist for flexibility, a
-hand-rolled vector-with-tag for a homegrown object system, and eventually a
-type checker bolted on from outside because none of the above were checked
-in the first place. Lamedh gives you one form, `defrecord`, and it does not
-make you choose. It defines a branded, nominal record type; it participates
-in a structural (row-polymorphic) type system that infers itself with no
-annotations; it degrades gracefully to dynamic, unchecked storage on any
-field the checker cannot express; and the compiler silently promotes it to
-native code when every field is a scalar. You get all of that from one
-seed form, and the checker is honest about exactly how much of it it can
-prove.
+hand-rolled vector-with-tag for a homegrown object system, and a type
+checker bolted on from outside because none of the above were checked in
+the first place. Lamedh gives you one form, `defrecord`, and it does not
+make you choose. It defines a branded, nominal record type; it
+participates in a structural (row-polymorphic) type system that infers
+itself with no annotations; it degrades gracefully to dynamic, unchecked
+storage on any field the checker cannot express; and the compiler silently
+promotes it to native code when every field is a scalar. One seed form,
+and the checker stays honest about exactly how much of it it can prove.
 
 This chapter covers `defrecord` end to end, the row-polymorphic type system
 underneath it, the `defun*`/`defun-typed` function-definition forms that
@@ -150,14 +149,9 @@ record, same brand, with one field replaced.
 
 ```lisp
 lamedh -s '(progn (defrecord point (x int64) (y int64))
-                   (record-with (make-point 3 4) (quote x) 99))'
-; => #S(POINT 99 4)
-```
-
-```lisp
-lamedh -s '(progn (defrecord point (x int64) (y int64))
-                   (point-p (record-with (make-point 1 2) (quote x) 9)))'
-; => T
+                   (list (record-with (make-point 3 4) (quote x) 99)
+                         (point-p (record-with (make-point 1 2) (quote x) 9))))'
+; => (#S(POINT 99 4) T)
 ```
 
 Both `record-ref` and `record-with` reject a field name the value's brand
@@ -304,16 +298,12 @@ Three targets exist:
 | `lens` | `Name->plist`, `plist->Name`, and a law `Name-lens-roundtrip` |
 
 ```lisp
-lamedh -s '(progn (defrecord point (x int64) (y int64)) (derive point equality)
+lamedh -s '(progn (defrecord point (x int64) (y int64))
+                   (derive point equality) (derive point printer)
                    (list (point-equal (make-point 1 2) (make-point 1 2))
-                         (point-equal (make-point 1 2) (make-point 3 4))))'
-; => (T ())
-```
-
-```lisp
-lamedh -s '(progn (defrecord point (x int64) (y int64)) (derive point printer)
-                   (point->plist (make-point 1 2)))'
-; => ((X . 1) (Y . 2))
+                         (point-equal (make-point 1 2) (make-point 3 4))
+                         (point->plist (make-point 1 2))))'
+; => (T () ((X . 1) (Y . 2)))
 ```
 
 ```lisp
