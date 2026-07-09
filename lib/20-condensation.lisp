@@ -400,11 +400,18 @@ artifact. Returns a report alist."
 ;; language (a symbol naming no record) degrades to ANY -- gradual, not an
 ;; error: the field is stored and accessed identically, just unchecked.
 (defun condense-record-field-ty (ty)
-  (if (or (eq ty 'any)
-          (condense-row-type-p ty)
-          (and (atom ty) (condense-get ty "condense.kind")))
-      ty
-      'any))
+  "Map a field type into the checker's language. Row types and ANY pass
+through; a bare structural word (list/array/pair/record) says nothing
+checkable alone and degrades to ANY; any other symbol is a NOMINAL record
+or variant reference — registered, forward, or the record's own name — and
+passes through (the kernel forward-declares unknown names, so recursion
+works and a typo surfaces as a phantom brand at the first unification)."
+  (cond
+    ((eq ty 'any) ty)
+    ((condense-row-type-p ty) ty)
+    ((member ty '(list array pair record)) 'any)
+    ((symbolp ty) ty)
+    (t 'any)))
 
 (defun condense-record-specs (field-specs)
   (mapcar (lambda (spec)

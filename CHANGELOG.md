@@ -41,6 +41,43 @@ processes, patterns, and the checker meeting in one story.
   literals: print/read round-trip (spawn and channel serialization), usable
   as source syntax.
 
+## Sum types
+
+```lisp
+(defvariant shape
+  (circle (r int64))
+  (rect   (w int64) (h int64)))
+```
+
+- **`defvariant`**: a closed set of branded record constructors (bare
+  constructor names — `(circle 3)`) plus a checker-level union type. A
+  `CIRCLE` unifies where a `SHAPE` is demanded; a constructor of another
+  variant is rejected by name ("HEADS is not a constructor of variant
+  SHAPE").
+- **`variant-case` is exhaustive**: missing a constructor without an
+  `else` clause errors, naming the missing brands.
+- **`match` destructures records/constructors with `#S` patterns**:
+  `(match v (#S(CIRCLE ?r) ...) ...)`, nesting and all.
+- **Option and Result** are ordinary variants in the stdlib
+  (`some`/`none`, `ok`/`err`) with `unwrap`/`unwrap-or`/`option-map`/
+  `option-then`/`result-or`/`result-map`/`result-then`/`option-of`, and
+  `try-call` bridging the condition system into Result.
+- Breaking: the `some` list quantifier in `lib/13` is renamed **`exists`**
+  (`(exists #'evenp xs)`); `some` is Option's constructor now.
+- `record-new` accepts zero field values (nullary constructors like
+  `(none)`).
+
+## Recursive records
+
+- Self- and mutually-referential `defrecord` field types are NOMINAL now,
+  not a silent `any`: `(defrecord node (val int64) (next node))` gives
+  `node-next : (-> (NODE) NODE)`. Struct unification is by brand name;
+  struct-into-row expansion re-resolves the definition through the
+  registry; forward references get provisional definitions (a misspelled
+  field type surfaces as a phantom brand at first unification instead of
+  degrading silently). The blessed terminator idiom is Option:
+  `(next option)` with `(none)`.
+
 ## Checker and rows
 
 - Row types (Rémy-style, with a gradual `Any` frontier) ported into the

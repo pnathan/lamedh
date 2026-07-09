@@ -69,6 +69,15 @@
               ((equal (cdr existing) datum) bindings)
               (t '$match-fail)))))
 
+(defun $match-record-fields (pats vals bindings)
+  "Fold PAT-MATCH over record field patterns and values pairwise."
+  (cond
+    ((match-fail-p bindings) '$match-fail)
+    ((and (null pats) (null vals)) bindings)
+    ((or (null pats) (null vals)) '$match-fail)
+    (t ($match-record-fields (cdr pats) (cdr vals)
+                             ($match-run (car pats) (car vals) bindings)))))
+
 (defun $match-apply-pred (pred datum)
   "Apply predicate designator PRED (global function name or LAMBDA form)."
   (ignore-errors (funcall (eval pred) datum)))
@@ -89,6 +98,13 @@ optional third argument supplies initial bindings."
     (($match-segment-var-p pattern)
      (if (listp datum)
          ($match-extend pattern datum bindings)
+         '$match-fail))
+    ;; Record pattern: #S(BRAND pat...) matches a record of the same brand,
+    ;; each field pattern against the corresponding field value (#312 sums —
+    ;; this is how MATCH destructures variant constructors).
+    ((not (null (record-brand pattern)))
+     (if (eq (record-brand pattern) (record-brand datum))
+         ($match-record-fields (record-fields pattern) (record-fields datum) bindings)
          '$match-fail))
     ;; Atomic literal.
     ((not (consp pattern))

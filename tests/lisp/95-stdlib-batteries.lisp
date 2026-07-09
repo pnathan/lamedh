@@ -56,8 +56,8 @@
 (deftest fn-quantifiers-count
   (assert-true  (every #'evenp '(2 4 6)))
   (assert-false (every #'evenp '(2 3 6)))
-  (assert-true  (some #'evenp '(1 3 4)))
-  (assert-false (some #'evenp '(1 3 5)))
+  (assert-true  (exists #'evenp '(1 3 4)))
+  (assert-false (exists #'evenp '(1 3 5)))
   (assert-equal (count-if #'evenp '(1 2 3 4 5 6)) 3))
 
 (deftest fn-slicing
