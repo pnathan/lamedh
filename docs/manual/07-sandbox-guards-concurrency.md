@@ -254,8 +254,7 @@ documented Phase-1 leaks the kernel backstop closes.
 ### Composing fences
 
 `with-fuel` and `with-capabilities` nest in either order with identical
-results — a denied filesystem read under a fuel budget behaves the same
-whether the fuel or the capability fence is outermost:
+results:
 
 ```console
 $ target/debug/lamedh --capability READ-FS \
@@ -263,9 +262,8 @@ $ target/debug/lamedh --capability READ-FS \
 ; => DENIED
 ```
 
-`sandboxed` is a one-shot combinator for the common case of wanting both
-at once: `(sandboxed (:fuel n :capabilities (cap...)) form...)`. Either
-key can be omitted.
+`sandboxed` combines both in one call: `(sandboxed (:fuel n :capabilities
+(cap...)) form...)`, either key optional.
 
 ```console
 $ target/debug/lamedh --capability READ-FS \
@@ -407,17 +405,12 @@ number it captured does.
 
 Since nothing but serialized text crosses the thread boundary, a
 `defrecord` value doesn't survive as a live object — it round-trips
-through the printer's `#S(...)` syntax and the reader, so the *child*
-needs its own `defrecord` definition for the same shape before it can read
-a spliced-in value back into a proper record:
-
-```console
-$ target/debug/lamedh -s "(progn (defrecord point (x int64) (y int64)) (prin1-to-string (make-point 1 2)))"
-; => "#S(POINT 1 2)"
-```
-
-Splice a live record's printed form into a child body that redefines the
-same record and reads it back:
+through the printer's `#S(...)` syntax (`(make-point 1 2)` prints as
+`"#S(POINT 1 2)"`) and the reader, so the *child* needs its own
+`defrecord` definition for the same shape before it can read a
+spliced-in value back into a proper record. Splice a live record's
+printed form into a child body that redefines the same record and reads
+it back:
 
 ```console
 $ target/debug/lamedh -s "(progn
@@ -432,13 +425,11 @@ $ target/debug/lamedh -s "(progn
 ```
 
 The parent's `p` prints as `#S(POINT 3 4)`, gets quoted into the child's
-spliced form, and the child — which has its own, independently-registered
-`point` record type — reads it back and calls its own `point-x` accessor
-on it. Two interpreters, two independent type registrations, one value
-shape agreed on by convention.
-
-`spawn-error-p` tests an outcome datum without unwrapping it:
-`(spawn-error-p (spawn-value (spawn () (car 5))))` returns `T`.
+spliced form, and the child — with its own, independently-registered
+`point` record type — reads it back and calls its own `point-x` accessor.
+Two interpreters, two type registrations, one value shape agreed on by
+convention. `spawn-error-p` tests an outcome datum the same way, without
+unwrapping it: `(spawn-error-p (spawn-value (spawn () (car 5))))` is `T`.
 
 ### Share-nothing, concretely
 
@@ -512,16 +503,14 @@ a channel.
 - `with-capabilities` and `with-fuel` let *guarded* Lisp code narrow its
   own authority and step budget for a dynamic extent, monotonically —
   nesting order never matters, and narrowing can't be undone from inside.
-- `capabilities-needed`/`capabilities-needed-form` give you a static,
-  conservative manifest to drive a minimal fence before you run unfamiliar
+- `capabilities-needed`/`capabilities-needed-form` give a static,
+  conservative manifest to drive a minimal fence before running unfamiliar
   code.
 - `spawn`/`spawn*`/`await`/`spawn-value` run code on isolated,
   share-nothing interpreter threads whose authority is the requested set
   intersected with the caller's effective set — real Rust threads, no
-  shared mutable Lisp heap, so there's nothing to race. `spawn*` is how
-  you parameterize a spawned body with a runtime value, since the body
-  itself carries no closures across the boundary.
+  shared mutable Lisp heap, nothing to race. `spawn*` splices runtime
+  values into a spawned body, since the body itself carries no closures.
 - Channels (`make-channel`, `channel-send`, `channel-recv`,
   `channel-recv-timeout`) are the primitive `spawn` is built from, and are
-  available directly when you want to hand-roll a producer/consumer
-  pattern.
+  available directly for hand-rolled producer/consumer patterns.

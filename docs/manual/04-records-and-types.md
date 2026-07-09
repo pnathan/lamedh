@@ -341,15 +341,13 @@ lamedh -s '(progn (defrecord point (x int64) (y int64)) (derive point lens)
 ```
 
 `point-lens-roundtrip` is a generated *law*: it asserts `(equal (plist->point
-(point->plist self)) self)` for any point, and it is itself a runnable
-predicate you can call on any value of the type. `(:derive equality lens)`
-inside the `defrecord` form does exactly the same thing as calling `derive`
-afterward — `derive` is idempotent and can be called again later if you add
-a target you didn't ask for up front.
-
-Every derived operation gets a declared, branded scheme the same way the
-constructor and accessors do, so it participates in `see-type` and in
-interface conformance checking (§4.11) without any extra work.
+(point->plist self)) self)` for any point, and is itself a runnable
+predicate. `(:derive equality lens)` inside the `defrecord` form does
+exactly what calling `derive` afterward does — `derive` is idempotent and
+can be called again if you add a target later. Every derived operation gets
+a declared, branded scheme the same way the constructor and accessors do,
+so it participates in `see-type` and interface conformance (§4.11) for
+free.
 
 ## 4.8 The checker: verdicts, the type language, `declare-type!`
 
@@ -362,13 +360,8 @@ are two builtins:
   defined function), as data.
 
 ```lisp
-lamedh -s '(check-type (+ 1 2))'
-; => "int64"
-```
-
-```lisp
-lamedh -s '(check-type (+ 1 "a"))'
-; => "type error: `+` operands disagree: Int64 vs Str"
+lamedh -s '(list (check-type (+ 1 2)) (check-type (+ 1 "a")))'
+; => ("int64" "type error: `+` operands disagree: Int64 vs Str")
 ```
 
 `see-type` reports one of five verdict shapes:
@@ -383,13 +376,8 @@ TYPE-ERROR (TYPE-ERROR msg)                    ; the checker rejects the definit
 ```
 
 ```lisp
-lamedh -s '(progn (defun inc (x) (+ x 1)) (see-type (quote inc)))'
-; => (TYPED (-> (INT64) INT64) COMPILED)
-```
-
-```lisp
-lamedh -s "(see-type 'car)"
-; => (DYNAMIC "variadic or not a plain lambda")
+lamedh -s "(progn (defun inc (x) (+ x 1)) (list (see-type 'inc) (see-type 'car)))"
+; => ((TYPED (-> (INT64) INT64) COMPILED) (DYNAMIC "variadic or not a plain lambda"))
 ```
 
 `condense-classify` (from the condensation library, `lib/20-condensation.lisp`)

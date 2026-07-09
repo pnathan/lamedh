@@ -1,12 +1,11 @@
 # 9. The Typed JIT and Embedding
 
-This chapter has two parts. Sections 9.1–9.6 cover how Lamedh runs your
-code faster without you asking it to: the tiers between "tree-walked" and
+This chapter has two parts. §§9.1–9.6 cover how Lamedh runs your code
+faster without you asking it to: the tiers between "tree-walked" and
 "native machine code," how to read the checker's verdict on a function,
-and the guarantees that hold across every tier. Sections 9.7–9.11 cover the
-other side of "embeddable": linking `lamedh` into a Rust program, handing
-it Lisp source, granting it capabilities, and getting typed Rust values
-back out.
+and the guarantees that hold across every tier. §§9.7–9.13 cover the other
+side of "embeddable": linking `lamedh` into a Rust program, handing it
+Lisp source, granting it capabilities, and getting typed values back out.
 
 ## 9.1 Three Tiers, One Semantics
 
@@ -59,18 +58,13 @@ tier 1, reported as `CHECKED`:
 ```
 
 `od-first` still type-checks — the checker proves a polymorphic scheme for
-it — but a polymorphic `LIST A -> A` has no single unboxed representation to
-compile to, so it runs through the ordinary tree-walking evaluator. It
-still *works*, identically to any other function:
+it — but a polymorphic `LIST A -> A` has no single unboxed representation
+to compile to, so it runs through the ordinary evaluator and still
+*works*, identically to any other function: `(od-first '(7 8))` => `7`.
 
-```lisp
-(od-first '(7 8))
-; => 7
-```
-
-The full verdict vocabulary, all structured as data so you can pattern-match
+The full verdict vocabulary is structured as data so you can pattern-match
 on it programmatically (`lib/20-condensation.lisp` builds a classifier on
-top of exactly this shape):
+exactly this shape):
 
 | Verdict | Meaning |
 |---|---|
@@ -316,22 +310,15 @@ and `Environment` are `!Send`, construct the environment *inside* the
 closure — not outside it and captured — which is why `run_script` builds
 `env` inside the closure rather than taking it as a parameter.
 
-For multiple top-level forms, use `eval_all` instead of `eval_str`
-(`eval_str` requires the input to be exactly one form):
+Two siblings of `eval_str` round out the entry points: `eval_all(src, &env)
+-> Result<Vec<LispVal>, LispError>` evaluates every top-level form in
+`src` in order (`eval_str` errors if given more than one form), and
+`eval_line(line, &env) -> String` — what the REPL and `-s` batch mode
+actually call — evaluates one line and formats the result *or* the error
+as a printable string, never returning `Err`:
 
 ```rust,ignore
-let results: Vec<LispVal> = lamedh::eval_all(
-    "(defun sq (x) (* x x)) (sq 9)",
-    &env,
-)?;
-```
-
-For REPL-style display formatting (evaluate, then print the result or
-error as a string — this is what the interactive REPL and `-s` batch mode
-both call), use `eval_line`, which never returns `Err` — errors are folded
-into the returned string:
-
-```rust,ignore
+let results = lamedh::eval_all("(defun sq (x) (* x x)) (sq 9)", &env)?;
 let text: String = lamedh::eval_line("(+ 1 2 3)", &env);
 assert_eq!(text, "6");
 ```
@@ -350,12 +337,14 @@ env.enable_feature("READ-FS");  // (read-file ...), (file-exists-p ...), ...
 ```
 
 Names are case-normalized to uppercase, so `"shell"` and `"SHELL"` are
-equivalent. `disable_feature`/`feature_enabled` are the matching
+equivalent; `disable_feature`/`feature_enabled` are the matching
 remove/query calls.
 
 To expose a Rust function as a Lisp callable, use `register_fn`. The
-closure receives already-evaluated arguments and the calling environment,
-and returns a `Result<LispVal, LispError>`:
+closure receives already-evaluated arguments and the calling environment
+and returns a `Result<LispVal, LispError>`; the name is uppercased on
+registration, same as every other binding, and a subsequent
+`(defun greet ...)` in Lisp would shadow it like any redefinition:
 
 ```rust,ignore
 env.register_fn("greet", |args, _env| {
@@ -368,11 +357,6 @@ env.register_fn("greet", |args, _env| {
 (greet "world")
 ; => "Hello, world!"
 ```
-
-The name is uppercased on registration to match Lisp reader conventions,
-same as every other binding. A registered function lives as an ordinary
-global binding — a subsequent `(defun greet ...)` in Lisp shadows it like
-any redefinition would.
 
 ## 9.11 Reading Results Back
 
@@ -405,30 +389,17 @@ assert_eq!(lamedh::printer::print(&val), "(1 2.5 \"str\")");
 
 ## 9.12 Minimal Kernels for Tests
 
-`Environment::with_stdlib()` is the right default for real embeddings, but
-it panics if the embedded stdlib source fails to parse or evaluate — right
-for a compile-time invariant, overkill for a test that needs only a
-couple of builtins. `Environment::new_with_builtins()` gives you a root
-environment with all 100+ Rust-level primitives registered but *no* Lisp
-standard library loaded — no `defun`, no `append`, none of `lib/`.
-Lamedh's own test suite uses this (`tests/test_helpers.rs`) to load a
-`lib/` snapshot from disk instead of the embedded one, so tests exercise
-source changes without a rebuild:
-
-```rust,ignore
-use lamedh::{self, Shared, environment::Environment};
-
-pub fn env_with_stdlib() -> Shared<Environment> {
-    let env = Environment::new_with_builtins();
-    lamedh::load_file("prologue.lisp", &env).unwrap();
-    lamedh::load_directory("lib", &env).unwrap();
-    env
-}
-```
-
-Ordinary host code should reach for `with_stdlib()`; reach for
-`new_with_builtins()` plus explicit loading only when you need that kind
-of control over exactly what's on disk versus embedded.
+`Environment::with_stdlib()` panics if the embedded stdlib source fails to
+parse or evaluate — right for a compile-time invariant, overkill for a
+test needing only a couple of builtins. `Environment::new_with_builtins()`
+gives a root environment with all 100+ Rust-level primitives but *no*
+Lisp standard library — no `defun`, no `append`, none of `lib/`. Lamedh's
+own suite uses exactly this (`tests/test_helpers.rs`) to `load_file` and
+`load_directory` a `lib/` snapshot from disk instead of the embedded copy,
+so tests exercise source edits without a rebuild. Ordinary host code
+should reach for `with_stdlib()`; reach for `new_with_builtins()` plus
+explicit loading only when you need that level of control over what's on
+disk versus embedded.
 
 ## 9.13 Where to Go From Here
 
