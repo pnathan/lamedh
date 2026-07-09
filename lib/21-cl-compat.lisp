@@ -18,12 +18,10 @@
 
 ;; --- setf and places --------------------------------------------------------
 
-(defun setf-hash-store (a b value)
-  "Write VALUE under the key for a (gethash a b) place; A/B may be in
-either order (table key) or (key table)."
-  (if (hash-table-p a)
-      (set-bang a b value)
-      (set-bang b a value))
+(defun setf-hash-store (table key value)
+  "Write VALUE under KEY for a (gethash table key) place — collection
+first, one order (0.3 regularity)."
+  (set-bang table key value)
   value)
 
 (defun setf-expand-1 (place value)

@@ -102,6 +102,33 @@ processes, patterns, and the checker meeting in one story.
   toplevel errors format exactly as before. Host API:
   `lamedh::format_error_with_backtrace`.
 
+## Regularity (breaking, deliberately)
+
+One convention where there were several; the breaks are the point.
+
+- **Hash operations are COLLECTION FIRST, one order**: `(gethash table
+  key)`, `(remhash table key)` — matching `sethash`/`fetch`/`store`/
+  `getp`. The either-order type-guessing (#246) is removed.
+- **Comparisons are variadic monotone chains** like `+`/`*`: `(< a b c)`,
+  `(= x y z)`, `(<= ...)`, `(>= ...)`.
+- **`defun` supports `&optional` and `&key`** (with defaults; later
+  defaults see earlier parameters; composes with `&rest`). Expanded at the
+  defun layer to a variadic lambda + `LET*` prologue, so such functions
+  stay on the dynamic tier. Bare `lambda`/`defmacro` still take only
+  `&rest`.
+- **`(set sym val)`**: the value-level global setter (both arguments
+  evaluated) — the computed-symbol twin of the quoting `cset` macro.
+- **H-suffix hex literals must start with a decimal digit** (`0FFh`, not
+  `FFh`) — the assembly convention — so `ch`, `each`, `deadh` are ordinary
+  symbols again.
+- **The LABEL variable-read hack is gone**: a list VALUE headed by the
+  symbol `label` no longer auto-evaluates when read from a variable (it
+  made `(list 'label ...)` data explode and reserved `label` as a field/
+  parameter name everywhere). The `label` special form in operator
+  position is unchanged.
+- **`-s` is repeatable** on the CLI; each string evaluates in order in one
+  shared environment.
+
 ## explain-compile
 
 - `(explain-compile 'f)` reports the execution tier as data —

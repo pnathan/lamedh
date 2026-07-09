@@ -736,6 +736,7 @@ impl Environment {
             "EXPLAIN-COMPILE".to_string(),
             LispVal::Builtin(BuiltinFunc::ExplainCompile),
         );
+        env.set("SET".to_string(), LispVal::Builtin(BuiltinFunc::SetValue));
         env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),

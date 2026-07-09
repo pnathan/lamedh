@@ -393,13 +393,11 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
             // surfaces it as a `LispError` (issue #153). Legitimate LABEL
             // recursion carries its loop via lambda application, not this
             // head-resolution step, so its tail-call behavior is unaffected.
-            if let LispVal::Cons { car, cdr: _ } = &value
-                && let LispVal::Symbol(sym) = &**car
-                && sym.borrow().name == "LABEL"
-            {
-                return Ok(TcoStep::Done(eval(&value, env)));
-            }
-
+            // REGULARITY (0.3): the old "LABEL compat" hack — auto-evaluating
+            // any LIST VALUE whose head is the symbol LABEL on variable read —
+            // is gone. It made (list 'label ...) data explode and reserved
+            // LABEL as a name everywhere. The LABEL special form itself (in
+            // operator position) is untouched.
             Ok(TcoStep::Done(Ok(value)))
         }
         LispVal::Number(_)

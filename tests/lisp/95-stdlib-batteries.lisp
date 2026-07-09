@@ -121,12 +121,10 @@
   (assert-true (consp '(1 2 3))))
 
 (deftest hex-literals
-  (assert-equal ffh 255)
   (assert-equal 0ffh 255)
-  (assert-equal FFH 255)
   (assert-equal 1ah 26)
   (assert-equal 10h 16)
-  (assert-equal (+ ffh 1) 256)
+  (assert-equal (+ 0ffh 1) 256)
   (assert-true (charp 'A'))    ; 'A' is now a Char value, distinct from Number
   (assert-equal (char-code 'A') 65)  ; char-code extracts the integer
   (assert-equal 0ah 10))

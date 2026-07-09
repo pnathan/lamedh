@@ -370,6 +370,26 @@ pub(super) fn apply(
             | BuiltinFunc::RecordCompiledP
             | BuiltinFunc::RecordFields
             | BuiltinFunc::VariantDeclare => apply_record_type_op(builtin, args, env),
+            // (set sym val) — set SYM's GLOBAL value; both arguments
+            // evaluated (Lisp 1.5 / CL SET). The value-level twin of the
+            // quoting CSET macro, for computed symbols.
+            BuiltinFunc::SetValue => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "set requires exactly two arguments: symbol value".to_string(),
+                    ));
+                }
+                let LispVal::Symbol(s) = &args[0] else {
+                    return Err(LispError::Generic(format!(
+                        "SET: first argument must be a symbol, got {}",
+                        err_val(&args[0])
+                    )));
+                };
+                let name = s.borrow().name.clone();
+                crate::evaluator::core::check_bindable(&name, "SET")?;
+                env.global_set(&name, args[1].clone());
+                Ok(args[1].clone())
+            }
             // (monotonic-micros) — microseconds since an arbitrary process
             // epoch; the timing primitive under (time ...) in lib/26.
             BuiltinFunc::MonotonicMicros => {

@@ -70,7 +70,7 @@ is installed on the global binding, so direct recursive calls through the
 name are traced too; already-inlined tail loops inside compiled bodies
 count as one call."
   (let ((original (eval name)))
-    (if (gethash name $trace-originals)
+    (if (gethash $trace-originals name)
         name
         (progn
           (sethash $trace-originals name original)
@@ -87,16 +87,16 @@ count as one call."
           name))))
 
 (defun $trace-install (name fn)
-  "Set NAME's global binding to FN (NAME is a computed symbol, so the
-quoting CSET macro does not apply)."
-  (eval (list 'setq name (list 'quote fn))))
+  "Set NAME's global binding to FN (NAME is a computed symbol: value-level
+SET, not the quoting CSET macro)."
+  (set name fn))
 
 (defun untrace (name)
   "Remove (TRACE name) instrumentation, restoring the original function."
-  (let ((original (gethash name $trace-originals)))
+  (let ((original (gethash $trace-originals name)))
     (if (null original)
         name
         (progn
-          (remhash name $trace-originals)
+          (remhash $trace-originals name)
           ($trace-install name original)
           name))))

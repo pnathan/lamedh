@@ -91,20 +91,15 @@ with `make-hash-table`:
 ; => <hash-table>
 ```
 
-Write with `sethash` (an alias for the primitive `set-bang`) or read with
-`gethash`. Both accept the hash table and key in either order — `(gethash
-table key)` is the historical Lamedh order, `(gethash key table)` is CL
-style, and the hash table is recognized by type either way:
+Write with `sethash` (an alias for the primitive `set-bang`) and read with
+`gethash`. One argument order everywhere (0.3 regularity): **collection
+first**, like `fetch`, `store`, and `getp` — `(gethash table key)`,
+`(remhash table key)`:
 
 ```
 (let ((h (make-hash-table)))
   (sethash h 'a 1)
   (gethash h 'a))
-; => 1
-
-(let ((h (make-hash-table)))
-  (set-bang h 'a 1)
-  (gethash 'a h))
 ; => 1
 ```
 

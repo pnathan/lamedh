@@ -71,7 +71,7 @@ fn trace_wraps_and_untrace_restores() {
     eval_line("(untrace 'sq)", &e);
     assert_eq!(eval_line("(sq 7)", &e), "49");
     // Untraced binding is the original (no wrapper indirection left).
-    assert_eq!(eval_line("(gethash 'sq $trace-originals)", &e), "()");
+    assert_eq!(eval_line("(gethash $trace-originals 'sq)", &e), "()");
     // Double-trace is idempotent; untrace of untraced is a no-op.
     eval_line("(trace 'sq)", &e);
     eval_line("(trace 'sq)", &e);

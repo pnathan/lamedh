@@ -172,8 +172,10 @@ struct Args {
     /// Evaluate one or more s-expressions and print the results, then exit.
     /// Mutually exclusive with the interactive REPL: if `-s` is present the
     /// REPL is not started.
-    #[arg(short, long)]
-    s: Option<String>,
+    /// Repeatable: each -s string is evaluated in order, in one shared
+    /// environment.
+    #[arg(short, long, action = clap::ArgAction::Append)]
+    s: Vec<String>,
 
     /// Grant a sandbox capability to the interpreter.  May be specified
     /// multiple times.  Known capabilities: READ-FS, CREATE-FS, TEMP-FS,
@@ -259,7 +261,7 @@ fn run(args: Args) {
     // Batch mode (a script path or -s): a failed -i load is fatal (issue
     // #239) so CI and agent pipelines can trust the exit code.  In REPL mode
     // a failed load is reported but the session still starts.
-    let batch = script.is_some() || args.s.is_some();
+    let batch = script.is_some() || !args.s.is_empty();
 
     // Load files from -i flag
     for path in &args.i {
@@ -279,19 +281,21 @@ fn run(args: Args) {
         return;
     }
 
-    // Execute s-expression(s) from -s flag
-    if let Some(sexp) = args.s {
-        let had_overflow = env.flag_set("OVERFLOW");
-        match eval_all(&sexp, &env) {
-            Ok(results) => {
-                for r in results {
-                    println!("{}", printer::print(&r));
+    // Execute s-expression(s) from -s flags (repeatable, shared env).
+    if !args.s.is_empty() {
+        for sexp in &args.s {
+            let had_overflow = env.flag_set("OVERFLOW");
+            match eval_all(sexp, &env) {
+                Ok(results) => {
+                    for r in results {
+                        println!("{}", printer::print(&r));
+                    }
+                    warn_on_overflow(&env, had_overflow);
                 }
-                warn_on_overflow(&env, had_overflow);
-            }
-            Err(e) => {
-                eprintln!("{}", lamedh::format_error_with_backtrace(&e, &env));
-                std::process::exit(1);
+                Err(e) => {
+                    eprintln!("{}", lamedh::format_error_with_backtrace(&e, &env));
+                    std::process::exit(1);
+                }
             }
         }
         return;
