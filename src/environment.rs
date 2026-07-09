@@ -733,6 +733,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::MonotonicMicros),
         );
         env.set(
+            "EXPLAIN-COMPILE".to_string(),
+            LispVal::Builtin(BuiltinFunc::ExplainCompile),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );
@@ -1422,6 +1426,20 @@ impl Environment {
     /// Type-check an un-annotated function without compiling it (the non-compiled
     /// checker, #162). Returns its generalized type as a printable scheme, or a
     /// type error.
+    /// Dry-run codegen verdict: Ok(()) = would compile natively; Err(msg) =
+    /// the concrete blocker. Installs nothing (explain-compile).
+    pub fn jit_compile_reason(
+        &self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+    ) -> Result<(), String> {
+        self.shared
+            .jit
+            .borrow_mut()
+            .compile_reason(name, params, body)
+    }
+
     pub fn jit_check_untyped(
         &self,
         name: &str,

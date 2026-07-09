@@ -52,6 +52,22 @@ pub(super) fn apply_introspection(
             };
             Ok(see_type_form(&name, env))
         }
+        BuiltinFunc::ExplainCompile => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "explain-compile requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "explain-compile requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(explain_compile_form(&name, env))
+        }
         BuiltinFunc::ReadString => {
             // (read-string "text") — parse TEXT and return the list of forms it
             // contains. Pure (no I/O): the inverse of PRINC-TO-STRING for code.

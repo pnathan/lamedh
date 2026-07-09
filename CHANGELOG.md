@@ -102,6 +102,15 @@ processes, patterns, and the checker meeting in one story.
   toplevel errors format exactly as before. Host API:
   `lamedh::format_error_with_backtrace`.
 
+## explain-compile
+
+- `(explain-compile 'f)` reports the execution tier as data —
+  `((TIER . COMPILED) (SIGNATURE ...))`, or `CHECKED` with the SCHEME and
+  the CONCRETE blocker keeping it off the native tier (ambiguous operand
+  types, non-storable list/record schemes, a `(declare (no-compile))`
+  pin), or `DYNAMIC`/`TYPE-ERROR`. Side-effect-free (a dry-run twin of the
+  codegen path — explaining never installs anything).
+
 ## Instrumentation: trace / time / step-count — and ONE fuel ruler
 
 - `(trace 'f)` / `(untrace 'f)`: real call tracing (args in, value out,
