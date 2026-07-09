@@ -382,6 +382,11 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
                         tag("="),
                         tag("<"),
                         tag(">"),
+                        // `:` as a NON-INITIAL constituent supports module-
+                        // qualified names, MODULE:SYMBOL (0.3 modules).
+                        // Keywords (leading `:`) parse before plain symbols
+                        // and are unaffected.
+                        tag(":"),
                         // `_` as a constituent supports the `?_` match
                         // wildcard (lib/23-match.lisp); previously a parse
                         // error here, so no existing program changes meaning.

@@ -102,6 +102,33 @@ processes, patterns, and the checker meeting in one story.
   toplevel errors format exactly as before. Host API:
   `lamedh::format_error_with_backtrace`.
 
+## Modules
+
+```lisp
+(defmodule geometry (:export area) (:provides FAST-MATH))
+(with-module geometry
+  (defun helper (x) (* x 3))
+  (defun area (r) (helper (* r r))))
+(geometry:area 2)   ; => 12
+(import geometry)   ; binds AREA
+```
+
+- A module is a NAMING DISCIPLINE plus metadata over the flat global
+  namespace: `with-module` stores definitions as `MODULE:SYMBOL` (the
+  reader now accepts `:` as a non-initial symbol constituent) and
+  qualifies module-local references; `import` binds a module's exports
+  globally (snapshot semantics); `module-of`/`module-functions`/
+  `module-exports`/`module-requires`/`module-provides` introspect.
+- **Modules can provide capabilities** — conservatively: a `(:provides
+  CAP)` clause registers a NEW capability name into the attenuable
+  vocabulary. It is held by registration at the outermost level, gates
+  only explicit `(require-capability 'CAP)` checks, attenuates through
+  `with-capabilities`/`sandboxed`/`spawn` like a built-in, and can never
+  grant kernel abilities (READ-FS and friends stay host-granted). The
+  fence now shadows `require-capability` so the gate attenuates with it.
+- `(:requires CAP...)` records a module's needs for introspection and
+  manifests.
+
 ## Regularity (breaking, deliberately)
 
 One convention where there were several; the breaks are the point.
