@@ -102,6 +102,30 @@ processes, patterns, and the checker meeting in one story.
   toplevel errors format exactly as before. Host API:
   `lamedh::format_error_with_backtrace`.
 
+## Instrumentation: trace / time / step-count — and ONE fuel ruler
+
+- `(trace 'f)` / `(untrace 'f)`: real call tracing (args in, value out,
+  indented by depth) — replacing the Lisp 1.5 flag-only stubs. Natively
+  compiled internals count as one call.
+- `(time form)` prints wall milliseconds + kernel steps and returns the
+  value; `(step-count form)` returns `(steps . value)`.
+- **Breaking — one ruler**: `with-fuel N` is now denominated in KERNEL
+  STEPS (one trampoline iteration each), the exact unit `step-count`
+  measures: `(car (step-count form))` sizes the budget, tight to a handful
+  of steps. The old unit (function entries, ×256 kernel backstop) is gone,
+  along with the tick-instrumentation walker — the kernel counter is the
+  single meter (the no-compile rewrites remain: in-fence definitions stay
+  interpreted so native loops can't escape metering). `fuel-remaining`
+  reads the kernel counter. Nested fences clamp to and spend from the
+  enclosing remainder; fence setup charges the enclosing budget.
+- `spawn`'s `:fuel` was already kernel steps; it now agrees with
+  `with-fuel` instead of being 256× finer.
+- New builtin: `(monotonic-micros)`.
+- Soundness fix (found by TRACE's wrapper): a `&rest` closure created
+  under an intervening `LET` read the let's slots instead of enclosing
+  variables — `&rest` call frames now contribute an Opaque scope level so
+  outer `LocalGet` depths count them.
+
 ## Guards, fuel, and processes
 
 - Composable guard fences, pure Lisp: `with-fuel`, `with-capabilities`,

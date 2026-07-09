@@ -80,13 +80,5 @@
                  (setq rest (cdr rest))
                  (go loop))))))
 
-;;; TRACE and UNTRACE
-;;; Minimal implementation: stores traced function names on their plist.
-;;; The evaluator does not hook into them; these are stubs for compatibility.
-(defun trace (fns)
-  "Mark each function name in FNS as traced (sets TRACE flag on plist)."
-  (flag fns 'trace))
-
-(defun untrace (fns)
-  "Remove trace flag from each function name in FNS."
-  (remflag fns 'trace))
+;;; TRACE and UNTRACE moved to lib/26-instrument.lisp as a REAL
+;;; instrumentation facility (0.3: the Lisp 1.5 flag-only stubs are gone).

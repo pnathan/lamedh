@@ -81,9 +81,9 @@ Values ride in under QUOTE so closures survive the trip through EVAL."
 ;;; names are lexically shadowed by the fence's own closures.
 
 (defun fuel-remaining ()
-  "Remaining fuel in the innermost enclosing WITH-FUEL fence, or NIL when no
-fence is active."
-  nil)
+  "Remaining fuel (kernel steps) in the innermost enclosing WITH-FUEL
+fence, or NIL when no fence is active."
+  (kernel-fuel-remaining))
 
 (defun $guard-host-capabilities ()
   "The capability set granted by the host process (the outermost authority)."
@@ -108,44 +108,10 @@ every enclosing WITH-CAPABILITIES fence."
   "DEFUN* param list with type annotations removed: (X INT64) -> X."
   (mapcar (lambda (p) (if (consp p) (car p) p)) params))
 
-;; The symbol the walker emits tick calls under. Each WITH-FUEL fence mints
-;; a fresh GENSYM before walking, so guarded code has no nameable path to
-;; the tick and cannot rebind its way out of being charged (gensyms as
-;; binders work since the issue #285 fix). $GUARD-TICK stays bound in each
-;; fence too, as the chaining channel nested fences probe for.
-(setq $guard-walk-tick-name '$guard-tick)
-
-(defun $guard-fresh-tick-name ()
-  (gensym))
-
-;; Kernel-fuel backstop (issue #284 Phase 2). The Lisp-level budget is
-;; charged at function entries and loop back-edges; the kernel counter is
-;; charged once per evaluator trampoline step, closing the Phase-1 leaks
-;; (closures defined outside the fence, user macros expanding to loops,
-;; quasiquote bodies). One back-edge tick spans many trampoline steps, so
-;; the kernel budget is the Lisp budget times this multiplier — generous
-;; enough that ordinary fenced work exhausts the Lisp budget first, small
-;; enough that leaked unmetered loops still terminate.
-(setq $guard-kernel-step-multiplier 256)
-
-(defun $guard-tick-call ()
-  (list $guard-walk-tick-name))
-
 (defun $guard-walk-list (forms)
   (if (consp forms)
       (cons ($guard-walk (car forms)) ($guard-walk-list (cdr forms)))
       forms))
-
-(defun $guard-walk-prog-body (body)
-  "PROG bodies: a bare symbol is a GO label — meter the back-edge by
-ticking immediately after each label."
-  (cond ((null body) nil)
-        ((not (consp body)) body)
-        ((symbolp (car body))
-         (cons (car body)
-               (cons ($guard-tick-call) ($guard-walk-prog-body (cdr body)))))
-        (t (cons ($guard-walk (car body))
-                 ($guard-walk-prog-body (cdr body))))))
 
 (defun $guard-walk (form)
   (cond
@@ -164,34 +130,15 @@ ticking immediately after each label."
                         (cons (car (cdr form))
                               (cons ($guard-strip-params (car (cdr (cdr form))))
                                     (cdr (cdr (cdr form))))))))
-    ((eq (car form) 'lambda)
-     (cons 'lambda
-           (cons (car (cdr form))
-                 (cons ($guard-tick-call) ($guard-walk-list (cdr (cdr form)))))))
+    ;; In-fence DEFUN pins to the interpreted tier: the kernel step counter
+    ;; meters trampoline iterations, and a NATIVE edition's internal loops
+    ;; never return to the trampoline — compiling would open a fuel escape.
     ((eq (car form) 'defun)
      (cons 'defun
            (cons (car (cdr form))
                  (cons (car (cdr (cdr form)))
-                       (cons ($guard-tick-call)
+                       (cons '(declare (no-compile))
                              ($guard-walk-list (cdr (cdr (cdr form)))))))))
-    ((eq (car form) 'while)
-     (cons 'while
-           (cons ($guard-walk (car (cdr form)))
-                 (cons ($guard-tick-call) ($guard-walk-list (cdr (cdr form)))))))
-    ((eq (car form) 'for)
-     (cons 'for
-           (cons (car (cdr form))
-                 (cons ($guard-tick-call) ($guard-walk-list (cdr (cdr form)))))))
-    ((eq (car form) 'prog)
-     (cons 'prog
-           (cons (car (cdr form)) ($guard-walk-prog-body (cdr (cdr form))))))
-    ;; DOLIST/DOTIMES are stdlib macros whose expansion (MAPC / FOR) happens
-    ;; after the walk, so meter their bodies here — the tick lands inside the
-    ;; per-iteration lambda/body the expansion builds.
-    ((or (eq (car form) 'dolist) (eq (car form) 'dotimes))
-     (cons (car form)
-           (cons (car (cdr form))
-                 (cons ($guard-tick-call) ($guard-walk-list (cdr (cdr form)))))))
     (t ($guard-walk-list form))))
 
 ;;; ------------------------------------------------------------------
@@ -199,87 +146,48 @@ ticking immediately after each label."
 
 (defvau with-fuel (x e)
   "(WITH-FUEL N FORM...) — evaluate FORMs under an execution budget of N
-steps (charged at function entries and loop back-edges). Exhaustion signals
+KERNEL STEPS (one trampoline iteration each — the exact unit STEP-COUNT
+measures, so (car (step-count form)) sizes the budget). Exhaustion signals
 a catchable 'fuel exhausted' error. Nested budgets clamp to the enclosing
-remainder and every step charges all enclosing fences. Inside the fence,
-(FUEL-REMAINING) reports the live budget; JIT compilation is disabled
-(no-compile, issue #284)."
+remainder and spend from it. Inside the fence, (FUEL-REMAINING) reports
+the live budget; native JIT compilation is disabled for in-fence
+definitions (no-compile, issue #284 — a native edition's internal loops
+would never return to the metered trampoline)."
   (let* ((budget (eval (car x) e))
-         (outer-tick ($guard-probe '$guard-tick e))
-         (outer-reader ($guard-probe '$guard-fuel-reader e))
-         (effective (if outer-reader (min budget (funcall outer-reader)) budget))
-         (tick-name ($guard-fresh-tick-name))
-         (cell (array 1))
-         (bcell (array 1)))
-    (store cell 0 effective)
-    (let* ((tick (lambda ()
-                   (when outer-tick (funcall outer-tick))
-                   (store cell 0 (- (fetch cell 0) 1))
-                   (when (< (fetch cell 0) 0)
-                     (error (concat "fuel exhausted (budget "
-                                    (princ-to-string effective) ")")))))
-           (reader (lambda () (fetch cell 0)))
-           (bindings
-            (list
-             ;; Instrumented code charges through the unguessable TICK-NAME;
-             ;; $GUARD-TICK is the chaining channel nested fences probe for.
-             (cons tick-name tick)
-             (cons '$guard-tick tick)
-             (cons '$guard-fuel-reader reader)
-             (cons 'fuel-remaining reader)
-             ;; The kernel backstop's setter is fence-internal state: deny
-             ;; it to guarded code (reading via KERNEL-FUEL-REMAINING stays
-             ;; allowed, per the introspection-visible policy).
-             (cons 'kernel-fuel-set!
-                   (lambda (n)
-                     (error "kernel-fuel-set! is disabled inside a guard fence (#284)")))
-             ;; Escape hatches: EVAL re-instruments and re-seals with this
-             ;; fence's own bindings (shared cell — eval'd work charges us);
-             ;; the higher-order functions charge per callback so external,
-             ;; uninstrumented functions still cost per element.
-             (cons 'eval
-                   (lambda (form &rest renv)
-                     (setq $guard-walk-tick-name tick-name)
-                     (eval ($guard-seal (list ($guard-walk form)) (fetch bcell 0))
-                           (if renv (car renv) e))))
-             (cons 'apply
-                   (lambda (f args) (funcall tick) (apply f args)))
-             (cons 'funcall
-                   (lambda (f &rest args) (funcall tick) (apply f args)))
-             (cons 'mapcar
-                   (lambda (f lst)
-                     (mapcar (lambda (i) (funcall tick) (funcall f i)) lst)))
-             (cons 'mapc
-                   (lambda (f lst)
-                     (mapc (lambda (i) (funcall tick) (funcall f i)) lst)))
-             (cons 'maplist
-                   (lambda (f lst)
-                     (maplist (lambda (i) (funcall tick) (funcall f i)) lst)))
-             (cons 'sort
-                   (lambda (lst pred)
-                     (funcall tick)
-                     (sort lst (lambda (a b) (funcall tick) (funcall pred a b))))))))
-      (store bcell 0 bindings)
-      (setq $guard-walk-tick-name tick-name)
-      ;; Arm the kernel step backstop (issue #284 Phase 2), clamped to any
-      ;; enclosing fence's remaining kernel budget.
-      (let* ((kprev (kernel-fuel-remaining))
-             (kbudget (* effective $guard-kernel-step-multiplier))
-             (karmed (if kprev (min kprev kbudget) kbudget)))
-        (kernel-fuel-set! karmed)
-        (unwind-protect
-            (eval ($guard-seal ($guard-walk-list (cdr x)) bindings) e)
-          (progn
-            ;; Retire the fence: closures that escaped this extent keep
-            ;; their captured tick, but against an effectively infinite
-            ;; budget (they still chain to any still-active enclosing
-            ;; fences).
-            (store cell 0 1000000000000)
-            ;; Restore the enclosing kernel budget without refunding what
-            ;; this fence spent: the smaller of the snapshot and what is
-            ;; left now. NIL snapshot disarms.
-            (let ((know (kernel-fuel-remaining)))
-              (kernel-fuel-set! (if (and kprev know) (min kprev know) kprev)))))))))
+         (bcell (array 1))
+         (bindings
+          (list
+           ;; One ruler: introspection reads the kernel step counter.
+           (cons 'fuel-remaining (lambda () (kernel-fuel-remaining)))
+           ;; The budget cell is fence-internal state: deny the setter to
+           ;; guarded code (reading via KERNEL-FUEL-REMAINING stays allowed,
+           ;; per the introspection-visible policy).
+           (cons 'kernel-fuel-set!
+                 (lambda (n)
+                   (error "kernel-fuel-set! is disabled inside a guard fence (#284)")))
+           ;; EVAL re-applies the no-compile rewrites and re-seals, so
+           ;; eval'd definitions cannot mint native editions either.
+           (cons 'eval
+                 (lambda (form &rest renv)
+                   (eval ($guard-seal (list ($guard-walk form)) (fetch bcell 0))
+                         (if renv (car renv) e))))))
+         ;; Fence setup (walk + seal) happens BEFORE arming: the budget pays
+         ;; for the guarded work, not for the fence's own bookkeeping.
+         (sealed ($guard-seal ($guard-walk-list (cdr x)) bindings))
+         (kprev (kernel-fuel-remaining))
+         (karmed (if kprev (min kprev budget) budget)))
+    (store bcell 0 bindings)
+    (kernel-fuel-set! karmed)
+    (unwind-protect
+        (eval sealed e)
+      ;; Restore the enclosing budget MINUS what this fence spent (a nil
+      ;; KNOW means exhaustion disarmed the counter: everything spent).
+      (let* ((know (kernel-fuel-remaining))
+             (spent (- karmed (if know know 0))))
+        (kernel-fuel-set!
+         (if kprev
+             (let ((left (- kprev spent))) (if (< left 0) 0 left))
+             ()))))))
 
 ;;; ------------------------------------------------------------------
 ;;; WITH-CAPABILITIES.
