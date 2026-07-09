@@ -17,10 +17,11 @@
 ;;; Check it: cargo run -- --capability READ-FS -s '(check-file! "examples/npcs.lisp")'
 
 ;;; ---- the kinds --------------------------------------------------------
-;; All NPC kinds lead with the same two fields, (name string) (hp int64) --
-;; the shared vocabulary. The row types make that sharing a checkable
-;; contract; the leading layout makes the shared accessors below work at
-;; runtime (concepts are positional under the hood).
+;; All NPC kinds share two fields, (name string) (hp int64) -- the shared
+;; vocabulary. Each DEFCONCEPT defines a BRANDED record type (#308): nominal
+;; in the checker (a goblin is never a merchant), row-subsumable at any
+;; function asking only for some of its fields, accessed by NAME (not
+;; position) through RECORD-REF.
 
 (defconcept goblin
   (:fields ((name string) (hp int64) (mischief int64)))
@@ -38,17 +39,15 @@
   (:derive equality lens))
 
 ;;; ---- the shared vocabulary, as rows ------------------------------------
-;; One accessor pair serves every kind. The DECLARE-TYPE! row schemes are the
-;; contract: "any record with a string name / an int64 hp, whatever else it
-;; carries." The checker holds every caller to it.
+;; One accessor pair serves every kind. No axioms: RECORD-REF is a checker-
+;; native primitive, so the row schemes below are INFERRED and PROVED --
+;; "any record with a name / an hp, whatever else it carries."
+;;
+;;   (see-type 'npc-name)
+;;   ; => (CHECKED (FORALL (A B) (-> ((RECORD ((NAME A)) B)) A)))
 
-(defun npc-name (self) (nth 1 self))
-(declare-type! 'npc-name
-               '(forall (r) (-> ((record ((name string)) r)) string)))
-
-(defun npc-hp (self) (nth 2 self))
-(declare-type! 'npc-hp
-               '(forall (r) (-> ((record ((hp int64)) r)) int64)))
+(defun npc-name (self) (record-ref self 'name))
+(defun npc-hp (self) (record-ref self 'hp))
 
 ;;; ---- shared behavior: written once, typed for every kind ----------------
 ;; No annotations below -- the row schemes are INFERRED:
@@ -69,10 +68,11 @@
     (if (> left 0) left 0)))
 
 ;;; ---- the method set ------------------------------------------------------
-;; GREET is specialized per kind (each has a voice); DAMAGE is specialized
-;; only in its rebuild step (each kind's lens), delegating the shared logic
-;; to HIT-POINTS-AFTER. A method is an ordinary TYPE-OP function -- it
-;; type-checks, edits, and traces like any other definition.
+;; GREET is specialized per kind (each has a voice); DAMAGE was once
+;; specialized in its rebuild step (each kind's lens), but RECORD-WITH is
+;; brand-preserving typed update, so the per-kind bodies collapsed into one
+;; shared shape. A method is an ordinary TYPE-OP function -- it type-checks,
+;; edits, and traces like any other definition.
 
 (definterface npc
   (:ops ((greet (-> (self) string))
@@ -88,16 +88,13 @@
   (concat (npc-name self) " flickers softly in the gloom."))
 
 (defun goblin-damage (self amount)
-  (plist->goblin
-    (alist-put (goblin->plist self) 'hp (hit-points-after self amount))))
+  (record-with self 'hp (hit-points-after self amount)))
 
 (defun merchant-damage (self amount)
-  (plist->merchant
-    (alist-put (merchant->plist self) 'hp (hit-points-after self amount))))
+  (record-with self 'hp (hit-points-after self amount)))
 
 (defun wisp-damage (self amount)
-  (plist->wisp
-    (alist-put (wisp->plist self) 'hp (hit-points-after self amount))))
+  (record-with self 'hp (hit-points-after self amount)))
 
 ;; Verify the claims: each op's declared signature is unified against the
 ;; checker's verdict for each kind's method (rows and all). MISSING or
@@ -131,8 +128,9 @@
 ;;     -- fine: anything with hp can be weakened by its own hp.
 ;;
 ;;   (goblin-mischief (make-merchant "Oleander" 12 240))
-;;     ; => TYPE-ERROR: closed record lacks field(s) mischief
-;;     -- cross-kind misuse is caught statically, and EDIT! refuses (and
-;;        rolls back) any edit that would introduce it.
+;;     ; => TYPE-ERROR: cannot unify MERCHANT with GOBLIN
+;;     -- cross-kind misuse is caught statically and NOMINALLY (brands,
+;;        not just shapes), and EDIT! refuses (and rolls back) any edit
+;;        that would introduce it.
 
 'npcs-loaded

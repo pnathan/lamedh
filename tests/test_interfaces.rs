@@ -64,15 +64,22 @@ fn missing_method_fails_but_unproven_passes() {
         "(defconcept bag (:fields ((items list))) (:derive equality))",
         &env,
     );
-    // bag-equal exists but its scheme is vacuous (unmappable field type):
-    // structurally satisfied, honestly unproven, overall PASS.
+    // Derived equality carries a branded declared scheme (#308) — even the
+    // bare-`list` field degrades to ANY per-field instead of erasing the
+    // concept's schemes — so the op is fully CONFORMS now, not UNPROVEN.
     let eq = eval_line("(implements? 'bag 'eq-able)", &env);
     assert!(eq.starts_with("(T"), "got: {eq}");
-    assert!(eq.contains("(EQUAL UNPROVEN"), "got: {eq}");
+    assert!(eq.contains("(EQUAL CONFORMS"), "got: {eq}");
     // No bag-render exists: MISSING fails the check.
     let render = eval_line("(implements? 'bag 'renderable)", &env);
     assert!(render.contains("(RENDER MISSING"), "got: {render}");
     assert!(render.starts_with("(()"), "got: {render}");
+    // A method whose scheme is genuinely vacuous (here: pure self-recursion)
+    // is structurally satisfied, honestly unproven, overall PASS.
+    eval_line("(defun bag-render (self) (bag-render self))", &env);
+    let render = eval_line("(implements? 'bag 'renderable)", &env);
+    assert!(render.starts_with("(T"), "got: {render}");
+    assert!(render.contains("(RENDER UNPROVEN"), "got: {render}");
 }
 
 #[test]

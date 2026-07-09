@@ -122,7 +122,7 @@ fn char_code_checker_accepts_string_operand() {
 
     let s_form = read("(char-code \"abc\")", &env).unwrap();
     assert_eq!(
-        j.check_expr(&s_form).unwrap(),
+        j.check_expr(&s_form, None).unwrap(),
         "int64",
         "char-code of a string must check in checker mode (#281)"
     );
@@ -136,7 +136,7 @@ fn char_code_checker_accepts_string_operand() {
 
     let n_form = read("(char-code 5)", &env).unwrap();
     assert!(
-        j.check_expr(&n_form).is_err(),
+        j.check_expr(&n_form, None).is_err(),
         "char-code of a plain int64 is still a type error"
     );
 }

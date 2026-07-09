@@ -68,8 +68,12 @@ it and it shares the same metadata conventions as concepts."
   (intern (concat (princ-to-string type) "-" (princ-to-string op))))
 
 (defun condense-type-of (value)
-  "Dispatch type of VALUE: its concept tag, or a ground builtin type."
+  "Dispatch type of VALUE: its record brand, or a ground builtin type.
+Concept and defrecord values are branded records (#308), so the brand IS
+the dispatch type; legacy positional concept values still answer via the
+cons branch."
   (cond
+    ((not (null (record-brand value))) (record-brand value))
     ((and (consp value)
           (symbolp (car value))
           (eq (condense-kind (car value)) 'concept))
@@ -98,12 +102,14 @@ like any other definition."
 ;;; variables, which bind consistently or the unification fails.
 
 (defun iface-self-type (type)
-  "The type SELF stands for: a concept's closed record when its fields map
-into the checker's row language, otherwise TYPE itself."
-  (let ((fields (if (eq (condense-kind type) 'concept)
-                    (condense-row-fields (condense-get type "condense.fields"))
-                    nil)))
-    (if fields (list 'record fields) type)))
+  "The type SELF stands for: a concept's closed record row. Every concept
+field maps into the row (unmappable types degrade to ANY, per #308), so the
+record form is always available; non-concepts stand for themselves."
+  (if (eq (condense-kind type) 'concept)
+      (list 'record
+            (condense-concept-record-specs
+             (condense-get type "condense.fields")))
+      type))
 
 (defun iface-substitute-self (form type)
   (let ((self-type (iface-self-type type)))
@@ -125,6 +131,17 @@ into the checker's row language, otherwise TYPE itself."
 (defun iface-record-p (form)
   (and (consp form) (eq (car form) 'record)))
 
+(defun iface-brand-p (form)
+  "T when FORM names a registered record/concept brand."
+  (and (symbolp form)
+       (not (null form))
+       (not (null (condense-get form "condense.fields")))))
+
+(defun iface-expand-brand (brand)
+  "BRAND's closed record row (unmappable field types as ANY)."
+  (list 'record
+        (condense-concept-record-specs (condense-get brand "condense.fields"))))
+
 (defun iface-unify (want got vars bindings)
   "Unify ground WANT against GOT whose variables are VARS.
 Returns the updated bindings alist, or the symbol FAIL. ANY is absorbing
@@ -141,6 +158,13 @@ Returns the updated bindings alist, or the symbol FAIL. ANY is absorbing
     ((equal want got) bindings)
     ((and (iface-record-p want) (iface-record-p got))
      (iface-unify-records want got vars bindings))
+    ;; Struct-row subsumption, mirroring the checker (#299/#308): a BRAND
+    ;; meeting a record form expands to its closed row. Brand-vs-brand never
+    ;; expands -- that case is nominal and already decided by EQUAL above.
+    ((and (iface-record-p want) (iface-brand-p got))
+     (iface-unify want (iface-expand-brand got) vars bindings))
+    ((and (iface-brand-p want) (iface-record-p got))
+     (iface-unify (iface-expand-brand want) got vars bindings))
     ((and (consp want)
           (consp got)
           (condense-proper-list-p want)

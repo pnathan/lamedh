@@ -14,9 +14,11 @@ fn defconcept_generates_basic_operations() {
         "INVOICE"
     );
 
+    // One body (#308): concept values are branded records, printed in the
+    // readable #S form that round-trips through the reader.
     assert_eq!(
         eval_line("(make-invoice 7 125 'draft)", &env),
-        "(INVOICE 7 125 DRAFT)"
+        "#S(INVOICE 7 125 DRAFT)"
     );
     assert_eq!(
         eval_line("(invoice-p (make-invoice 7 125 'draft))", &env),

@@ -1,9 +1,10 @@
-//! DEFRECORD — the one-door gradual-typed record (lib/20-condensation.lisp).
-//! One form, one positional representation, full row typing for every field
-//! type (including compound), and compile-eligibility metadata for a future
-//! native pass (#297 stage 3). The property that binds it together: any
-//! defrecord value flows through any row-polymorphic function naming a
-//! subset of its fields — at the checker AND at runtime (#305).
+//! DEFRECORD — the one-door gradual-typed record (lib/20-condensation.lisp,
+//! issue #308). One form defines a BRANDED type (nominal in the checker,
+//! denotable in signatures, row-subsumable per #299) over ONE runtime
+//! representation (StructObj), with the tier — compiled or dynamic — chosen
+//! from the field types. The property that binds it together: any defrecord
+//! value flows through any row-polymorphic function naming a subset of its
+//! fields — at the checker AND at runtime.
 
 mod test_helpers;
 
@@ -14,11 +15,9 @@ fn env() -> lamedh::Shared<lamedh::environment::Environment> {
     let e = env_with_stdlib();
     eval_line("(defrecord coin (value int64))", &e);
     eval_line("(defrecord chest (value int64) (items (list string)))", &e);
-    eval_line("(defun the-value (self) (nth 1 self))", &e);
-    eval_line(
-        "(declare-type! 'the-value '(forall (r) (-> ((record ((value int64)) r)) int64)))",
-        &e,
-    );
+    // No axioms anywhere: record-ref's checker rule derives the row, and the
+    // derived-scheme path (#308) carries it through the helper into worth.
+    eval_line("(defun the-value (self) (record-ref self 'value))", &e);
     eval_line("(defun worth (x) (the-value x))", &e);
     e
 }
@@ -36,20 +35,23 @@ fn one_row_function_accepts_every_record_at_runtime() {
 #[test]
 fn the_row_is_inferred_across_records() {
     let e = env();
+    // Derived end-to-end through the helper — and MORE general than the old
+    // hand-declared axiom (the field type is polymorphic too).
     assert_eq!(
         eval_line("(see-type 'worth)", &e),
-        "(CHECKED (FORALL (A) (-> ((RECORD ((VALUE INT64)) A)) INT64)))"
+        "(CHECKED (FORALL (A B) (-> ((RECORD ((VALUE A)) B)) A)))"
     );
 }
 
 #[test]
 fn compound_fields_get_row_schemes_automatically() {
     let e = env();
-    // The broadening: a (list string) field is row-typed without any hand-
-    // written accessor. Previously a compound field disabled rows entirely.
+    // A (list string) field keeps chest off the compiled tier but its
+    // accessor still carries a BRANDED declared scheme (generated in
+    // lockstep with the definition). Row-generic access is record-ref.
     assert_eq!(
         eval_line("(see-type 'chest-items)", &e),
-        "(DECLARED (FORALL (A) (-> ((RECORD ((ITEMS (LIST STRING))) A)) (LIST STRING))))"
+        "(DECLARED (-> (CHEST) (LIST STRING)))"
     );
     // And it reads at runtime.
     assert_eq!(
@@ -81,12 +83,19 @@ fn compile_eligibility_is_computed_from_field_types() {
 #[test]
 fn cross_kind_misuse_is_a_static_row_error() {
     let e = env();
-    // A coin {value} has no items field; asking for it is caught by the
-    // checker, and (unlike #305's struct case) also correctly at runtime.
+    // The named accessor is NOMINAL (#308): a coin is not a chest, whatever
+    // its shape. (Shape-generic access via record-ref stays available.)
     let out = eval_line("(check-type (chest-items (make-coin 5)))", &e);
     assert!(
+        out.contains("type error") && out.contains("COIN") && out.contains("CHEST"),
+        "expected a nominal brand error, got: {out}"
+    );
+    // And the row error still exists where a row is demanded: a coin has no
+    // items field for record-ref.
+    let out = eval_line("(check-type (record-ref (make-coin 5) 'items))", &e);
+    assert!(
         out.contains("type error") && out.contains("items"),
-        "expected a closed-record row error naming items, got: {out}"
+        "expected a row error naming items, got: {out}"
     );
 }
 
@@ -100,4 +109,46 @@ fn records_are_distinguishable_by_brand() {
     assert_eq!(eval_line("(alpha-p (make-beta 1))", &e), "()");
     assert_eq!(eval_line("(worth (make-alpha 3))", &e), "3");
     assert_eq!(eval_line("(worth (make-beta 4))", &e), "4");
+}
+
+#[test]
+fn records_print_readably_and_round_trip() {
+    let e = env();
+    // #308 stage D: one readable form for every record, both tiers.
+    assert_eq!(
+        eval_line("(make-chest 9 (list \"gold\" \"gem\"))", &e),
+        "#S(CHEST 9 (\"gold\" \"gem\"))"
+    );
+    assert_eq!(eval_line("(make-coin 5)", &e), "#S(COIN 5)");
+    // The printed form reads back to an EQUAL value (print/read round-trip —
+    // the spawn/channel serialization contract).
+    assert_eq!(
+        eval_line(
+            "(let ((c (make-chest 9 (list \"gold\")))) (equal c (read-from-string (prin1-to-string c))))",
+            &e
+        ),
+        "T"
+    );
+    // And a #S literal is directly usable source syntax.
+    assert_eq!(eval_line("(chest-value #S(CHEST 7 (\"x\")))", &e), "7");
+}
+
+#[test]
+#[cfg(feature = "concurrency")]
+fn records_cross_the_spawn_boundary() {
+    let e = env();
+    // A live record value spliced into a spawned body serializes as #S(...),
+    // reads back in the share-nothing child, and is accessed through the
+    // child's own declaration (brands are declarations: ship the schema).
+    assert_eq!(
+        eval_line(
+            "(let ((c (make-chest 42 (list \"gold\"))))
+               (await (spawn* ()
+                 (list 'progn
+                   '(defrecord chest (value int64) (items (list string)))
+                   (list 'chest-value c)))))",
+            &e
+        ),
+        "42"
+    );
 }

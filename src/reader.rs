@@ -103,6 +103,9 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
             alt((
                 parse_atom(env.clone()),
                 parse_string,
+                // #S(...) before plain lists so the dispatch never treats
+                // the payload list as a form.
+                parse_struct_literal(env.clone(), remaining),
                 parse_list(env.clone(), remaining),
                 // Char literal 'c' before the quote reader macro: 'a' is a char,
                 // 'a (no closing quote) stays (quote a).
@@ -490,6 +493,52 @@ fn parse_list(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
             parse_list_contents(env.clone(), remaining - 1),
             preceded(ws, cut(char(')'))),
         )(input)
+    }
+}
+
+// Readable record literal (issue #308 stage D): `#S(BRAND v1 ... vn)` reads
+// as a native record value (`LispVal::Struct`) with the printed field values
+// in declaration order -- the exact inverse of the printer, so records
+// round-trip through print/read (spawn and channel serialization). The
+// reader is purely structural: it does not consult the record registry, so
+// a literal for a not-yet-declared brand still reads (like any symbol).
+fn parse_struct_literal(
+    env: Shared<Environment>,
+    remaining: usize,
+) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, _) = alt((tag("#S"), tag("#s")))(input)?;
+        let (rest, body) = parse_list(env.clone(), remaining - 1)(rest)?;
+        let err = || nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Tag));
+        let LispVal::Cons {
+            car: head,
+            cdr: mut cur,
+        } = body
+        else {
+            return Err(err());
+        };
+        let LispVal::Symbol(brand) = head.as_ref() else {
+            return Err(err());
+        };
+        let mut fields = Vec::new();
+        loop {
+            match cur.as_ref() {
+                LispVal::Nil => break,
+                LispVal::Cons { car, cdr } => {
+                    fields.push(car.as_ref().clone());
+                    cur = cdr.clone();
+                }
+                // A dotted tail is not a field list.
+                _ => return Err(err()),
+            }
+        }
+        Ok((
+            rest,
+            LispVal::Struct(std::rc::Rc::new(crate::StructObj {
+                type_name: brand.borrow().name.clone(),
+                fields,
+            })),
+        ))
     }
 }
 

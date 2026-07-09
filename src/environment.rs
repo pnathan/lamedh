@@ -702,6 +702,22 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::RecordRef),
         );
         env.set(
+            "RECORD-DECLARE".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordDeclare),
+        );
+        env.set(
+            "RECORD-NEW".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordNew),
+        );
+        env.set(
+            "RECORD-BRAND".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordBrand),
+        );
+        env.set(
+            "RECORD-COMPILED-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordCompiledP),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );
@@ -1397,21 +1413,39 @@ impl Environment {
         params: &[String],
         body: &[LispVal],
     ) -> Result<String, String> {
+        let resolver = |n: &str| self.checker_lambda_source(n);
         self.shared
             .jit
             .borrow_mut()
-            .check_untyped(name, params, body)
+            .check_untyped(name, params, body, Some(&resolver))
     }
 
     /// Type-check a single expression and return its inferred type as a string.
     pub fn jit_check_expr(&self, expr: &LispVal) -> Result<String, String> {
-        self.shared.jit.borrow_mut().check_expr(expr)
+        let resolver = |n: &str| self.checker_lambda_source(n);
+        self.shared
+            .jit
+            .borrow_mut()
+            .check_expr(expr, Some(&resolver))
     }
 
     /// Register a **declared** type scheme (experimental rows, `declare-type!`)
     /// for `name` from its surface form. Returns the rendered scheme.
     pub fn jit_declare_scheme(&self, name: &str, form: &LispVal) -> Result<String, String> {
         self.shared.jit.borrow_mut().declare_scheme(name, form)
+    }
+
+    /// Register a record type without typed functions (issue #308 stage B).
+    pub fn jit_declare_record(&self, name: &str, field_specs: &LispVal) -> Result<(), String> {
+        self.shared
+            .jit
+            .borrow_mut()
+            .declare_record(name, field_specs)
+    }
+
+    /// Whether record `name`'s fields are all natively storable.
+    pub fn jit_record_compileable(&self, name: &str) -> Option<bool> {
+        self.shared.jit.borrow().record_compileable(name)
     }
 
     /// Ordered field names of the registered typed struct `name` (issue
@@ -1425,6 +1459,35 @@ impl Environment {
         self.shared.jit.borrow().declared_scheme_name(name)
     }
 
+    /// (params, body forms) of `name` when it is bound to a plain fixed-arity
+    /// lambda — the checker's lambda source for on-demand call-site checking
+    /// (#308). Variadic lambdas and non-lambdas yield `None`.
+    fn checker_lambda_source(&self, name: &str) -> Option<(Vec<String>, Vec<LispVal>)> {
+        let LispVal::Lambda(lam) = self.get(name)? else {
+            return None;
+        };
+        if lam.rest_param.is_some() {
+            return None;
+        }
+        let body_forms: Vec<LispVal> = match lam.body.as_ref() {
+            LispVal::Cons { car, cdr } if matches!(car.as_ref(), LispVal::Symbol(s) if s.borrow().name == "PROGN") =>
+            {
+                let mut out = Vec::new();
+                let mut cur = cdr.as_ref();
+                while let LispVal::Cons { car, cdr } = cur {
+                    out.push(car.as_ref().clone());
+                    cur = cdr.as_ref();
+                }
+                out
+            }
+            other => vec![other.clone()],
+        };
+        if body_forms.is_empty() {
+            return None;
+        }
+        Some((lam.params.clone(), body_forms))
+    }
+
     /// One-pass analyze: check, then compile if compileable (#162 stage 4).
     pub fn jit_analyze_untyped(
         &self,
@@ -1432,10 +1495,11 @@ impl Environment {
         params: &[String],
         body: &[LispVal],
     ) -> crate::jit::Analysis {
+        let resolver = |n: &str| self.checker_lambda_source(n);
         self.shared
             .jit
             .borrow_mut()
-            .analyze_untyped(name, params, body)
+            .analyze_untyped(name, params, body, Some(&resolver))
     }
 
     /// `(param types, return type)` of a registered typed function, if any.

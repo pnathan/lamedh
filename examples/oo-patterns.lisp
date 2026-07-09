@@ -7,13 +7,12 @@
 ;;;
 ;;; The one mechanism behind everything below:
 ;;;
-;;;   (defun field-of (self) (nth 1 self))
-;;;   (declare-type! 'field-of
-;;;     '(forall (r) (-> ((record ((field T)) r)) T)))
+;;;   (defun field-of (self) (record-ref self 'field))
 ;;;
-;;; A generic accessor plus a DECLARED row scheme reads "field, of any record
-;;; that has it, and whatever else." Any function built on it gets its own
-;;; row type INFERRED — no annotations, structural contract enforced.
+;;; RECORD-REF is a checker-native primitive, so the row scheme
+;;; (forall (a r) (-> ((record ((field a)) r)) a)) is INFERRED and PROVED —
+;;; "field, of any record that has it, and whatever else." No axioms
+;;; anywhere in this file: every contract below is derived from the code.
 ;;;
 ;;;   Run:   cargo run -- -i examples/oo-patterns.lisp
 ;;;   Check: each section prints its own (check-type ...) verdicts.
@@ -38,21 +37,12 @@
   (:invariant (>= hp 0))
   (:derive equality lens))
 
-;; Generic row accessors: one (nth k self) each, plus a DECLARED scheme.
-;; Position 0 is the brand; fields start at 1.
-(defun the-name (self) (nth 1 self))
-(declare-type! 'the-name '(forall (r) (-> ((record ((name string)) r)) string)))
-
-(defun the-hp (self) (nth 2 self))
-(declare-type! 'the-hp '(forall (r) (-> ((record ((hp int64)) r)) int64)))
-
-(defun the-affiliation (self) (nth 3 self))
-(declare-type! 'the-affiliation
-               '(forall (r) (-> ((record ((affiliation string)) r)) string)))
-
-(defun the-loot (self) (nth 4 self))
-(declare-type! 'the-loot
-               '(forall (r) (-> ((record ((loot (list string))) r)) (list string))))
+;; Generic row accessors: one RECORD-REF each. Access is by NAME on the
+;; value's own brand — no positions, no axioms, schemes inferred.
+(defun the-name (self) (record-ref self 'name))
+(defun the-hp (self) (record-ref self 'hp))
+(defun the-affiliation (self) (record-ref self 'affiliation))
+(defun the-loot (self) (record-ref self 'loot))
 
 ;; Behavior over the shared vocabulary — every row below is INFERRED, and
 ;; each is one implementation shared by npcs and any future kind with the
@@ -85,8 +75,7 @@
 ;;; row angle is that the CONTEXT it operates on is duck-typed. One PRICE
 ;;; function, any pricing strategy, any record that carries a base amount.
 
-(defun the-amount (self) (nth 1 self))
-(declare-type! 'the-amount '(forall (r) (-> ((record ((amount int64)) r)) int64)))
+(defun the-amount (self) (record-ref self 'amount))
 
 (defconcept order (:fields ((amount int64) (qty int64))))
 
@@ -120,7 +109,8 @@ STRATEGY is any function from an amount-bearing record to an int."
 (defconcept group  (:fields ((kids int64))))   ; kids held out-of-band below
 
 ;; A leaf computes directly.
-(defun disc-area (self) (* 3 (* (nth 1 self) (nth 1 self))))  ; ~pi r^2
+(defun disc-area (self)
+  (let ((r (record-ref self 'r))) (* 3 (* r r))))  ; ~pi r^2
 
 ;; A composite sums its children — the SAME (method 'area ...) call works on
 ;; a disc or a nested group, so the recursion is uniform.
@@ -150,8 +140,7 @@ STRATEGY is any function from an amount-bearing record to an int."
 ;;; interface, by wrapping. A beverage has a COST and a TAG; each decorator
 ;;; wraps a beverage and still IS a beverage (same row), so decorators stack.
 
-(defun the-cost (self) (nth 1 self))
-(declare-type! 'the-cost '(forall (r) (-> ((record ((cost int64)) r)) int64)))
+(defun the-cost (self) (record-ref self 'cost))
 
 (defconcept espresso (:fields ((cost int64) (tag string))))
 (defconcept milk     (:fields ((cost int64) (tag string))))
@@ -186,7 +175,7 @@ STRATEGY is any function from an amount-bearing record to an int."
 (defconcept counter (:fields ((seen int64))))
 
 (defun logger-notify (self code)
-  (concat "[" (nth 1 self) "] saw event " (number->string code)))
+  (concat "[" (record-ref self 'tag) "] saw event " (number->string code)))
 (defun counter-notify (self code)
   (concat "count+1 on event " (number->string code)))
 
@@ -213,8 +202,7 @@ STRATEGY is any function from an amount-bearing record to an int."
 (def *green*  (make-light "green" 1))
 (def *yellow* (make-light "yellow" 1))
 
-(defun the-color (self) (nth 1 self))
-(declare-type! 'the-color '(forall (r) (-> ((record ((color string)) r)) string)))
+(defun the-color (self) (record-ref self 'color))
 
 (defun next-light (s)
   "Transition delegated to state — no giant conditional on a status flag."
@@ -239,12 +227,13 @@ STRATEGY is any function from an amount-bearing record to an int."
 
 (print (list 'cross-kind-guard
              (check-type (the-cost (make-disc 2)))))
-;; => "type error: in call to THE-COST: closed record lacks field(s) cost"
+;; => "type error: in call to `THE-COST`: struct DISC has no field cost"
 ;;
-;; A disc is a closed record {r}. THE-COST demands a record with a cost
-;; field. The checker rejects the call — the same safety a class-based
-;; language gets from nominal typing, here from structure alone. In a
-;; dynamically-typed OO language this would be an AttributeError at runtime;
-;; here it never runs.
+;; A disc is a BRANDED record with one field, r. THE-COST demands a record
+;; with a cost field — and the demand travels through the helper's INFERRED
+;; row scheme, no axiom anywhere. The checker rejects the call: the same
+;; safety a class-based language gets from nominal typing, here from
+;; structure plus brands. In a dynamically-typed OO language this would be
+;; an AttributeError at runtime; here it never runs.
 
 'oo-patterns-loaded

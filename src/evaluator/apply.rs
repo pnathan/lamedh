@@ -364,6 +364,10 @@ pub(super) fn apply(
             BuiltinFunc::RecordRef | BuiltinFunc::RecordWith => {
                 apply_record_field_op(builtin, args, env)
             }
+            BuiltinFunc::RecordDeclare
+            | BuiltinFunc::RecordNew
+            | BuiltinFunc::RecordBrand
+            | BuiltinFunc::RecordCompiledP => apply_record_type_op(builtin, args, env),
 
             // Introspection
             BuiltinFunc::Describe
@@ -1679,5 +1683,108 @@ fn apply_record_field_op(
             op.to_uppercase(),
             err_val(other)
         ))),
+    }
+}
+
+/// Record type operations (issue #308 stage B): the kernel quartet behind
+/// the one-door `defrecord`. `record-declare` registers a branded record
+/// type whose fields may be ANY checkable type (the name becomes denotable
+/// and nominal in the checker, row-subsumable via #299) without installing
+/// typed functions; `record-new` constructs a StructObj value with arity
+/// checking; `record-brand` reports a value's brand (both representations);
+/// `record-compiled-p` reports whether a registered record's fields are all
+/// natively storable (the tier introspection).
+fn apply_record_type_op(
+    builtin: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    match builtin {
+        BuiltinFunc::RecordDeclare => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "record-declare requires exactly two arguments: brand field-specs".to_string(),
+                ));
+            }
+            let LispVal::Symbol(brand) = &args[0] else {
+                return Err(LispError::Generic(format!(
+                    "RECORD-DECLARE: brand must be a symbol, got {}",
+                    err_val(&args[0])
+                )));
+            };
+            let name = brand.borrow().name.clone();
+            env.jit_declare_record(&name, &args[1])
+                .map_err(LispError::Generic)?;
+            Ok(LispVal::Symbol(brand.clone()))
+        }
+        BuiltinFunc::RecordNew => {
+            if args.len() < 2 {
+                return Err(LispError::Generic(
+                    "record-new requires a brand and at least one field value".to_string(),
+                ));
+            }
+            let LispVal::Symbol(brand) = &args[0] else {
+                return Err(LispError::Generic(format!(
+                    "RECORD-NEW: brand must be a symbol, got {}",
+                    err_val(&args[0])
+                )));
+            };
+            let name = brand.borrow().name.clone();
+            let field_names = env.jit_struct_field_names(&name).ok_or_else(|| {
+                LispError::Generic(format!("record-new: unknown record type {name}"))
+            })?;
+            if args.len() - 1 != field_names.len() {
+                return Err(LispError::Generic(format!(
+                    "record-new: {name} has {} field(s), got {} value(s)",
+                    field_names.len(),
+                    args.len() - 1
+                )));
+            }
+            Ok(LispVal::Struct(Shared::new(crate::StructObj {
+                type_name: name,
+                fields: args[1..].to_vec(),
+            })))
+        }
+        BuiltinFunc::RecordBrand => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "record-brand requires exactly one argument".to_string(),
+                ));
+            }
+            match &args[0] {
+                LispVal::Struct(obj) => Ok(LispVal::Symbol(env.intern_symbol(&obj.type_name))),
+                // Positional concept/defrecord-v1 bridge: a brand-headed list
+                // whose head symbol carries condensation field metadata.
+                LispVal::Cons { car, .. } => match car.as_ref() {
+                    LispVal::Symbol(s) if s.borrow().plist.contains_key("condense.fields") => {
+                        Ok(LispVal::Symbol(s.clone()))
+                    }
+                    _ => Ok(LispVal::Nil),
+                },
+                _ => Ok(LispVal::Nil),
+            }
+        }
+        BuiltinFunc::RecordCompiledP => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "record-compiled-p requires exactly one argument".to_string(),
+                ));
+            }
+            let LispVal::Symbol(brand) = &args[0] else {
+                return Err(LispError::Generic(format!(
+                    "RECORD-COMPILED-P: brand must be a symbol, got {}",
+                    err_val(&args[0])
+                )));
+            };
+            let name = brand.borrow().name.clone();
+            match env.jit_record_compileable(&name) {
+                Some(true) => Ok(LispVal::Symbol(env.intern_symbol("T"))),
+                Some(false) => Ok(LispVal::Nil),
+                None => Err(LispError::Generic(format!(
+                    "record-compiled-p: unknown record type {name}"
+                ))),
+            }
+        }
+        _ => unreachable!("routed only for record type ops"),
     }
 }

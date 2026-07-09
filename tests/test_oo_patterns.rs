@@ -34,10 +34,11 @@ fn duck_typing_row_is_inferred_not_annotated() {
 #[test]
 fn compound_list_field_flows_into_the_row() {
     let env = env_with_patterns();
-    // loot is (list string); the whole type rides into the inferred row.
+    // loot is a list field; the compound type rides into the inferred row —
+    // and with record-ref (#308) even the element type stays polymorphic.
     assert_eq!(
         eval_line("(see-type 'carrying-p)", &env),
-        "(CHECKED (FORALL (A) (-> ((RECORD ((LOOT (LIST STRING))) A)) BOOL)))"
+        "(CHECKED (FORALL (A B) (-> ((RECORD ((LOOT (LIST A))) B)) BOOL)))"
     );
 }
 
@@ -48,8 +49,8 @@ fn row_polymorphism_gives_independent_argument_rows() {
     // the same kind, only both affiliation-bearing.
     assert_eq!(
         eval_line("(see-type 'allied-p)", &env),
-        "(CHECKED (FORALL (A B C) (-> ((RECORD ((AFFILIATION STRING)) A) \
-         (RECORD ((AFFILIATION STRING)) B)) C)))"
+        "(CHECKED (FORALL (A B C D E) (-> ((RECORD ((AFFILIATION A)) B) \
+         (RECORD ((AFFILIATION C)) D)) E)))"
     );
 }
 
@@ -96,10 +97,11 @@ fn composite_dispatches_uniformly_over_a_recursive_tree() {
 #[test]
 fn decorator_preserves_the_row_and_stacks() {
     let env = env_with_patterns();
-    // The "beverage" contract is the inferred cost row.
+    // The "beverage" contract is the inferred cost row (field type
+    // polymorphic under record-ref, #308).
     assert_eq!(
         eval_line("(see-type 'total-cost)", &env),
-        "(CHECKED (FORALL (A) (-> ((RECORD ((COST INT64)) A)) INT64)))"
+        "(CHECKED (FORALL (A B) (-> ((RECORD ((COST A)) B)) A)))"
     );
     // Stacked decorators: espresso 10 + milk 2 + sugar 1.
     assert_eq!(

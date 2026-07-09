@@ -263,6 +263,50 @@ impl Jit {
         Ok(rendered)
     }
 
+    /// Register a record type WITHOUT installing typed functions (issue
+    /// #308 stage B): the branded StructDef enters the type language — the
+    /// name becomes denotable, nominal in the checker, and row-subsumable
+    /// (#299) — while field types may be ANY checkable type (list, pair,
+    /// nested record, ...), not just the natively-storable set. Records
+    /// whose fields all happen to be storable should use `define_struct`
+    /// (the compiled tier) instead; `is_compileable` reports which tier a
+    /// registered def actually supports.
+    pub fn declare_record(&mut self, name: &str, field_specs: &LispVal) -> Result<(), String> {
+        let mut fields: Vec<(String, Ty)> = Vec::new();
+        let vars = HashMap::new();
+        for f in list_to_vec(field_specs) {
+            let parts = list_to_vec(&f);
+            match parts.as_slice() {
+                [LispVal::Symbol(fname), fty] => {
+                    let ty = parse_declared_ty(fty, &vars, &self.structs)
+                        .map_err(|e| format!("record `{name}`: {e}"))?;
+                    fields.push((fname.borrow().name.clone(), ty));
+                }
+                _ => return Err(format!("record `{name}`: each field must be (name type)")),
+            }
+        }
+        if fields.is_empty() {
+            return Err(format!("record `{name}` must have at least one field"));
+        }
+        self.structs.insert(
+            name.to_string(),
+            Rc::new(StructDef {
+                name: name.to_string(),
+                fields,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Whether the registered record/struct `name` is natively compileable
+    /// (every field storable in the typed island) — the tier introspection
+    /// behind `record-compiled-p`.
+    pub fn record_compileable(&self, name: &str) -> Option<bool> {
+        self.structs
+            .get(name)
+            .map(|d| is_compileable(&Ty::Struct(d.clone())))
+    }
+
     /// Ordered field names of the registered struct/record `name`, if any
     /// (issue #308: the field table behind the `record-ref` primitive).
     pub fn struct_field_names(&self, name: &str) -> Option<Vec<String>> {
@@ -409,6 +453,10 @@ impl Jit {
                 structs: &self.structs,
                 infer: RefCell::new(infer),
                 checking: false,
+                resolver: None,
+                derived: RefCell::new(HashMap::new()),
+                assumptions: RefCell::new(HashMap::new()),
+                avoid_gen: RefCell::new(Vec::new()),
             };
             let (core, body_ty) = cx.elab_body(&items[3..], &mut scope, &mut max_slots)?;
             // The declared return type is a principal-type pin: the body's
@@ -525,6 +573,10 @@ impl Jit {
                 structs: &self.structs,
                 infer: RefCell::new(infer),
                 checking: false,
+                resolver: None,
+                derived: RefCell::new(HashMap::new()),
+                assumptions: RefCell::new(HashMap::new()),
+                avoid_gen: RefCell::new(Vec::new()),
             };
             let (core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
             cx.unify(&body_ty, &ret_var)
@@ -607,6 +659,10 @@ impl Jit {
                 structs: &self.structs,
                 infer: RefCell::new(infer),
                 checking: false,
+                resolver: None,
+                derived: RefCell::new(HashMap::new()),
+                assumptions: RefCell::new(HashMap::new()),
+                avoid_gen: RefCell::new(Vec::new()),
             };
             let (core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
             cx.unify(&body_ty, &ret_var)
@@ -661,6 +717,7 @@ impl Jit {
         name: &str,
         params: &[String],
         body: &[LispVal],
+        resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Result<String, String> {
         if body.is_empty() {
             return Err("empty body".to_string());
@@ -684,6 +741,17 @@ impl Jit {
         let mut scope: Scope = param_tys.clone();
         let mut max_slots = scope.len();
         let outcome: Result<String, String> = (|| {
+            // This function's own in-flight variables seed `avoid_gen` so a
+            // callee checked on demand (via `resolver`) never quantifies them.
+            let own_vars: Vec<u32> = param_tys
+                .iter()
+                .map(|(_, t)| t)
+                .chain(std::iter::once(&ret_var))
+                .filter_map(|t| match t {
+                    Ty::Var(v) => Some(*v),
+                    _ => None,
+                })
+                .collect();
             let cx = Cx {
                 declared: &self.declared,
                 funcs: &self.funcs,
@@ -691,6 +759,10 @@ impl Jit {
                 structs: &self.structs,
                 infer: RefCell::new(infer),
                 checking: true,
+                resolver,
+                derived: RefCell::new(HashMap::new()),
+                assumptions: RefCell::new(HashMap::new()),
+                avoid_gen: RefCell::new(own_vars),
             };
             let (_core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
             cx.unify(&body_ty, &ret_var)
@@ -721,8 +793,14 @@ impl Jit {
     /// are intentionally separate — the checker is permissive (gradual `Any`,
     /// lists), the compiler is strict (compileable monomorphic types only) — so a
     /// function can be *checked* without being *compiled*.
-    pub fn analyze_untyped(&mut self, name: &str, params: &[String], body: &[LispVal]) -> Analysis {
-        match self.check_untyped(name, params, body) {
+    pub fn analyze_untyped(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+        resolver: Option<super::elaboration::LambdaSource<'_>>,
+    ) -> Analysis {
+        match self.check_untyped(name, params, body, resolver) {
             Err(e) => Analysis::TypeError(e),
             Ok(scheme) => {
                 if self.infer_untyped(name, params, body).is_ok() {
@@ -738,7 +816,11 @@ impl Jit {
     /// Elaborates `expr` in checker mode with an empty scope and returns its
     /// inferred type as a human-readable string (e.g. `"int64"`, `"float64"`,
     /// `"(forall (a) (list a))"`) or an error. Used by `(check-type <expr>)`.
-    pub fn check_expr(&mut self, expr: &LispVal) -> Result<String, String> {
+    pub fn check_expr(
+        &mut self,
+        expr: &LispVal,
+        resolver: Option<super::elaboration::LambdaSource<'_>>,
+    ) -> Result<String, String> {
         let infer = Infer::new();
         let mut scope = Scope::new();
         let mut max_slots = 0;
@@ -749,6 +831,10 @@ impl Jit {
             structs: &self.structs,
             infer: RefCell::new(infer),
             checking: true,
+            resolver,
+            derived: RefCell::new(HashMap::new()),
+            assumptions: RefCell::new(HashMap::new()),
+            avoid_gen: RefCell::new(Vec::new()),
         };
         let (_, ty) = cx.elab_body(std::slice::from_ref(expr), &mut scope, &mut max_slots)?;
         let resolved = cx.infer.borrow().zonk(&ty);

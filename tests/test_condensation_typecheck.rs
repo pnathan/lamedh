@@ -43,18 +43,30 @@ fn condense_check_type_records_generated_function_results() {
 }
 
 #[test]
-fn vacuous_schemes_join_the_unproven_frontier() {
+fn unmappable_field_types_degrade_to_any_not_vacuous() {
     let env = env_with_stdlib();
-    // `list` is not a row-mappable field type, so this concept gets NO
-    // declared schemes: its accessors infer vacuous schemes and must sit on
-    // the frontier rather than count as verified.
+    // Bare `list` is outside the checker's type language. Pre-#308 this made
+    // the whole concept unmappable: no schemes, accessors inferred VACUOUS,
+    // everything sat on the frontier. Now the field degrades to ANY (the
+    // gradual frontier is per-FIELD, not per-concept): the concept is still
+    // a branded record, its accessor carries a declared branded scheme, and
+    // nothing is vacuous.
     eval_line("(defconcept bag (:fields ((items list))))", &env);
     eval_line("(condense-check-type 'bag)", &env);
     let frontier = eval_line(
         "(cdr (assoc 'dynamic-frontier (condense-trace 'bag)))",
         &env,
     );
-    assert!(frontier.contains("BAG-ITEMS VACUOUS"), "got: {frontier}");
+    assert_eq!(frontier, "()", "got: {frontier}");
+    assert_eq!(
+        eval_line("(see-type 'bag-items)", &env),
+        "(DECLARED (-> (BAG) ANY))"
+    );
+    // And the ANY-typed field is fully usable at runtime.
+    assert_eq!(
+        eval_line("(bag-items (make-bag (list 1 2)))", &env),
+        "(1 2)"
+    );
 }
 
 #[test]
