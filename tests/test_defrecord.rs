@@ -152,3 +152,17 @@ fn records_cross_the_spawn_boundary() {
         "42"
     );
 }
+
+#[test]
+fn untyped_field_spellings_are_equivalent() {
+    let e = env();
+    // Bare symbol and one-element list both mean (field any).
+    eval_line("(defrecord parcel contents)", &e);
+    eval_line("(defrecord crate2 (contents))", &e);
+    assert_eq!(eval_line("(parcel-contents (make-parcel 'x))", &e), "X");
+    assert_eq!(eval_line("(crate2-contents (make-crate2 'y))", &e), "Y");
+    assert_eq!(
+        eval_line("(see-type 'crate2-contents)", &e),
+        "(DECLARED (-> (CRATE2) ANY))"
+    );
+}
