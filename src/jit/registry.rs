@@ -238,6 +238,10 @@ pub struct Jit {
     /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
     /// ordinary typed functions over the [`Core`] struct ops.
     pub(super) structs: HashMap<String, Rc<StructDef>>,
+    /// Declared sum types (variants): name -> closed constructor-brand set.
+    /// A variant name is denotable in declared schemes; its constructors are
+    /// ordinary registered records that absorb into the variant on unify.
+    pub(super) variants: HashMap<String, Rc<VariantDef>>,
     /// **Declared** type schemes (experimental rows, `declare-type!`): axioms
     /// asserted by the Lisp layer for dynamically-implemented functions (e.g.
     /// concept accessors declared row-polymorphic). Consulted by the *checker*
@@ -257,7 +261,7 @@ impl Jit {
     /// caller (the condensation layer) is responsible for generating the
     /// implementation in lockstep.
     pub fn declare_scheme(&mut self, name: &str, form: &LispVal) -> Result<String, String> {
-        let scheme = parse_scheme_form(form, &self.structs)?;
+        let scheme = parse_scheme_form(form, &self.structs, &self.variants)?;
         let rendered = infer::scheme_name(&scheme);
         self.declared.insert(name.to_string(), scheme);
         Ok(rendered)
@@ -272,21 +276,65 @@ impl Jit {
     /// (the compiled tier) instead; `is_compileable` reports which tier a
     /// registered def actually supports.
     pub fn declare_record(&mut self, name: &str, field_specs: &LispVal) -> Result<(), String> {
+        // Two-phase registration (recursive records): first register a
+        // provisional def for the record itself and a forward stub for any
+        // bare-symbol field type that is neither a builtin type word nor a
+        // known type, so self- and mutual references resolve NOMINALLY
+        // instead of degrading. Unification is by name and struct-into-row
+        // expansion re-resolves through the registry snapshot, so the
+        // provisional defs embedded in recursive field types stay honest.
+        let specs = list_to_vec(field_specs);
+        self.structs.entry(name.to_string()).or_insert_with(|| {
+            Rc::new(StructDef {
+                name: name.to_string(),
+                fields: Vec::new(),
+            })
+        });
+        for f in &specs {
+            if let [_, LispVal::Symbol(t)] = list_to_vec(f).as_slice() {
+                let tn = t.borrow().name.clone();
+                // Words parse_declared_ty resolves itself (scalars, string,
+                // symbol, any) and structural heads must never become stubs.
+                let reserved = matches!(
+                    tn.as_str(),
+                    "INT64"
+                        | "FLOAT64"
+                        | "BOOL"
+                        | "CHAR"
+                        | "U8"
+                        | "BYTE"
+                        | "SYMBOL"
+                        | "STRING"
+                        | "ANY"
+                        | "LIST"
+                        | "ARRAY"
+                        | "PAIR"
+                        | "RECORD"
+                );
+                if !reserved && !self.structs.contains_key(&tn) && !self.variants.contains_key(&tn)
+                {
+                    self.structs.insert(
+                        tn.clone(),
+                        Rc::new(StructDef {
+                            name: tn,
+                            fields: Vec::new(),
+                        }),
+                    );
+                }
+            }
+        }
         let mut fields: Vec<(String, Ty)> = Vec::new();
         let vars = HashMap::new();
-        for f in list_to_vec(field_specs) {
-            let parts = list_to_vec(&f);
+        for f in &specs {
+            let parts = list_to_vec(f);
             match parts.as_slice() {
                 [LispVal::Symbol(fname), fty] => {
-                    let ty = parse_declared_ty(fty, &vars, &self.structs)
+                    let ty = parse_declared_ty(fty, &vars, &self.structs, &self.variants)
                         .map_err(|e| format!("record `{name}`: {e}"))?;
                     fields.push((fname.borrow().name.clone(), ty));
                 }
                 _ => return Err(format!("record `{name}`: each field must be (name type)")),
             }
-        }
-        if fields.is_empty() {
-            return Err(format!("record `{name}` must have at least one field"));
         }
         self.structs.insert(
             name.to_string(),
@@ -296,6 +344,31 @@ impl Jit {
             }),
         );
         Ok(())
+    }
+
+    /// Declare a sum type: `name` becomes the checker-level union of the
+    /// constructor brands `ctors`. Constructors are registered separately as
+    /// records (before or after — membership is by name). The variant name
+    /// must not collide with a record name.
+    pub fn declare_variant(&mut self, name: &str, ctors: Vec<String>) -> Result<(), String> {
+        if self.structs.contains_key(name) {
+            return Err(format!(
+                "variant `{name}` collides with an existing record type"
+            ));
+        }
+        self.variants.insert(
+            name.to_string(),
+            Rc::new(VariantDef {
+                name: name.to_string(),
+                ctors,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Constructor brand names of the registered variant `name`, if any.
+    pub fn variant_ctors(&self, name: &str) -> Option<Vec<String>> {
+        self.variants.get(name).map(|v| v.ctors.clone())
     }
 
     /// Whether the registered record/struct `name` is natively compileable
@@ -544,7 +617,7 @@ impl Jit {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
-        let mut infer = Infer::new();
+        let mut infer = Infer::new().with_structs(std::rc::Rc::new(self.structs.clone()));
         let param_tys: Vec<(String, Ty)> =
             params.iter().map(|p| (p.clone(), infer.fresh())).collect();
         let ret_var = infer.fresh();
@@ -821,7 +894,7 @@ impl Jit {
         expr: &LispVal,
         resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Result<String, String> {
-        let infer = Infer::new();
+        let infer = Infer::new().with_structs(std::rc::Rc::new(self.structs.clone()));
         let mut scope = Scope::new();
         let mut max_slots = 0;
         let cx = Cx {
@@ -1358,6 +1431,7 @@ impl Jit {
 fn parse_scheme_form(
     form: &LispVal,
     structs: &HashMap<String, Rc<StructDef>>,
+    variants: &HashMap<String, Rc<VariantDef>>,
 ) -> Result<infer::Scheme, String> {
     let parts = list_to_vec(form);
     let (var_names, body) = match parts.as_slice() {
@@ -1381,7 +1455,7 @@ fn parse_scheme_form(
             return Err(format!("declare-type!: duplicate type variable {n}"));
         }
     }
-    let ty = parse_declared_ty(&body, &vars, structs)?;
+    let ty = parse_declared_ty(&body, &vars, structs, variants)?;
     Ok(infer::Scheme {
         vars: (0..var_names.len() as u32).collect(),
         ty,
@@ -1392,6 +1466,7 @@ fn parse_declared_ty(
     form: &LispVal,
     vars: &HashMap<String, u32>,
     structs: &HashMap<String, Rc<StructDef>>,
+    variants: &HashMap<String, Rc<VariantDef>>,
 ) -> Result<Ty, String> {
     match form {
         LispVal::Symbol(s) => {
@@ -1410,6 +1485,7 @@ fn parse_declared_ty(
                 other => structs
                     .get(other)
                     .map(|d| Ty::Struct(d.clone()))
+                    .or_else(|| variants.get(other).map(|v| Ty::Variant(v.clone())))
                     .ok_or_else(|| format!("declare-type!: unknown type `{other}`")),
             }
         }
@@ -1419,7 +1495,7 @@ fn parse_declared_ty(
                 Some(LispVal::Symbol(s)) => s.borrow().name.clone(),
                 _ => return Err("declare-type!: malformed compound type".to_string()),
             };
-            let sub = |f: &LispVal| parse_declared_ty(f, vars, structs);
+            let sub = |f: &LispVal| parse_declared_ty(f, vars, structs, variants);
             match head.as_str() {
                 "LIST" if parts.len() == 2 => Ok(Ty::List(Box::new(sub(&parts[1])?))),
                 "ARRAY" if parts.len() == 2 => Ok(Ty::Array(Box::new(sub(&parts[1])?))),

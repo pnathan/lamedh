@@ -367,7 +367,9 @@ pub(super) fn apply(
             BuiltinFunc::RecordDeclare
             | BuiltinFunc::RecordNew
             | BuiltinFunc::RecordBrand
-            | BuiltinFunc::RecordCompiledP => apply_record_type_op(builtin, args, env),
+            | BuiltinFunc::RecordCompiledP
+            | BuiltinFunc::RecordFields
+            | BuiltinFunc::VariantDeclare => apply_record_type_op(builtin, args, env),
 
             // Introspection
             BuiltinFunc::Describe
@@ -1668,9 +1670,11 @@ fn apply_record_type_op(
             Ok(LispVal::Symbol(brand.clone()))
         }
         BuiltinFunc::RecordNew => {
-            if args.len() < 2 {
+            // Zero field values are legal: a nullary variant constructor
+            // like (none) builds an empty branded record.
+            if args.is_empty() {
                 return Err(LispError::Generic(
-                    "record-new requires a brand and at least one field value".to_string(),
+                    "record-new requires a brand".to_string(),
                 ));
             }
             let LispVal::Symbol(brand) = &args[0] else {
@@ -1726,6 +1730,63 @@ fn apply_record_type_op(
                     "record-compiled-p: unknown record type {name}"
                 ))),
             }
+        }
+        BuiltinFunc::RecordFields => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "record-fields requires exactly one argument".to_string(),
+                ));
+            }
+            match &args[0] {
+                LispVal::Struct(obj) => Ok(vec_to_list(obj.fields.clone())),
+                other => Err(LispError::Generic(format!(
+                    "RECORD-FIELDS: not a record value, got {}",
+                    err_val(other)
+                ))),
+            }
+        }
+        // (variant-declare 'name '(ctor ...)) — register the checker-level
+        // union of constructor brands (#312 sums).
+        BuiltinFunc::VariantDeclare => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "variant-declare requires exactly two arguments: name ctors".to_string(),
+                ));
+            }
+            let LispVal::Symbol(name) = &args[0] else {
+                return Err(LispError::Generic(
+                    "VARIANT-DECLARE: name must be a symbol".to_string(),
+                ));
+            };
+            let mut ctors = Vec::new();
+            let mut cur = args[1].clone();
+            loop {
+                match cur {
+                    LispVal::Nil => break,
+                    LispVal::Cons { car, cdr } => {
+                        let LispVal::Symbol(c) = car.as_ref() else {
+                            return Err(LispError::Generic(
+                                "VARIANT-DECLARE: ctors must be symbols".to_string(),
+                            ));
+                        };
+                        ctors.push(c.borrow().name.clone());
+                        cur = cdr.as_ref().clone();
+                    }
+                    _ => {
+                        return Err(LispError::Generic(
+                            "VARIANT-DECLARE: ctors must be a proper list".to_string(),
+                        ));
+                    }
+                }
+            }
+            if ctors.is_empty() {
+                return Err(LispError::Generic(
+                    "VARIANT-DECLARE: a variant needs at least one constructor".to_string(),
+                ));
+            }
+            env.jit_declare_variant(&name.borrow().name.clone(), ctors)
+                .map_err(LispError::Generic)?;
+            Ok(LispVal::Symbol(name.clone()))
         }
         _ => unreachable!("routed only for record type ops"),
     }

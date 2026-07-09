@@ -30,6 +30,9 @@ pub enum Ty {
     /// `u64` buffer (one word per field) rooted in the call arena, like a
     /// fixed-shape array with named offsets.
     Struct(Rc<StructDef>),
+    /// A declared sum type (#312 follow-up): the checker-level union of a
+    /// closed set of constructor brands. Never compiled; checker-only.
+    Variant(Rc<VariantDef>),
     /// A type variable (issue #135): an as-yet-undetermined type, identified by
     /// a fresh id. Variables exist only *during* elaboration; `Infer::resolve`
     /// must drive every one to a concrete type before a definition is accepted,
@@ -90,6 +93,8 @@ pub fn is_compileable(t: &Ty) -> bool {
         Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char => true,
         Ty::Array(e) => is_compileable(e),
         Ty::Struct(d) => d.fields.iter().all(|(_, ft)| is_compileable(ft)),
+        // A sum's representation varies by constructor: checker-only.
+        Ty::Variant(_) => false,
         // A variable is not (yet) compileable until resolved; the rest are
         // checkable only.
         Ty::Var(_)
@@ -132,6 +137,17 @@ pub(super) fn is_flat_scalar_array(t: &Ty) -> bool {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<(String, Ty)>,
+}
+
+/// A declared sum type: a closed set of constructor brands. Each constructor
+/// is itself a registered record (a [`StructDef`]); the variant is the
+/// checker-level union of those brands — a `CIRCLE` value unifies where a
+/// `SHAPE` is demanded, two variants unify only by name, and nothing else
+/// is a member.
+#[derive(PartialEq, Eq, Debug)]
+pub struct VariantDef {
+    pub name: String,
+    pub ctors: Vec<String>,
 }
 
 impl Ty {
@@ -178,6 +194,7 @@ pub fn ty_name(t: &Ty) -> String {
         Ty::Char => "char".to_string(),
         Ty::Array(e) => format!("(array {})", ty_name(e)),
         Ty::Struct(s) => s.name.clone(),
+        Ty::Variant(v) => v.name.clone(),
         // A variable should never survive to a signature/introspection site.
         Ty::Var(v) => format!("?{v}"),
         Ty::List(e) => format!("(list {})", ty_name(e)),
@@ -318,6 +335,7 @@ impl Value {
             // before storage, and the checkable-only types (#162) never back a
             // native edition (`is_compileable` is false for them).
             Ty::Var(_)
+            | Ty::Variant(_)
             | Ty::List(_)
             | Ty::Pair(_, _)
             | Ty::Symbol

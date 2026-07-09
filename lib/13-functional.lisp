@@ -87,16 +87,16 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
         ((funcall pred (car lst)) (every pred (cdr lst)))
         (t nil)))
 
-(defun some (pred lst)
+(defun exists (pred lst)
   "Return the first non-NIL (PRED element), or NIL."
   (if (null lst)
       nil
       (let ((r (funcall pred (car lst))))
-        (if r r (some pred (cdr lst))))))
+        (if r r (exists pred (cdr lst))))))
 
 (defun notany (pred lst)
   "Non-NIL iff PRED holds for no element of LST."
-  (not (some pred lst)))
+  (not (exists pred lst)))
 
 (defun notevery (pred lst)
   "Non-NIL iff PRED fails for at least one element of LST."

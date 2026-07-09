@@ -42,11 +42,25 @@ pub(crate) struct Scheme {
 pub(crate) struct Infer {
     next: u32,
     subst: HashMap<u32, Ty>,
+    /// Snapshot of the struct registry (#308 recursive records): when set,
+    /// struct-into-row expansion re-resolves a struct by NAME before reading
+    /// its fields, so provisional/stale defs embedded in recursive field
+    /// types always expand to the current definition.
+    structs: Option<std::rc::Rc<HashMap<String, std::rc::Rc<super::StructDef>>>>,
 }
 
 impl Infer {
     pub(crate) fn new() -> Infer {
         Infer::default()
+    }
+
+    /// Attach a struct-registry snapshot (see the `structs` field).
+    pub(crate) fn with_structs(
+        mut self,
+        structs: std::rc::Rc<HashMap<String, std::rc::Rc<super::StructDef>>>,
+    ) -> Infer {
+        self.structs = Some(structs);
+        self
     }
 
     /// A fresh, currently-unbound type variable.
@@ -77,6 +91,8 @@ impl Infer {
     pub(crate) fn occurs(&self, v: u32, t: &Ty) -> bool {
         match self.walk(t) {
             Ty::Var(w) => v == w,
+            // A variant is a set of brand names — no component types.
+            Ty::Variant(_) => false,
             // Compound types recurse into their components.
             Ty::Array(elem) | Ty::List(elem) => self.occurs(v, &elem),
             Ty::Pair(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
@@ -132,7 +148,26 @@ impl Infer {
                 }
                 self.unify(&ra, &rb)
             }
-            (Ty::Struct(sa), Ty::Struct(sb)) if sa == sb => Ok(()),
+            // Sum types: two variants are the same type iff same name; a
+            // constructor brand is a member of its variant, so a CIRCLE
+            // unifies where a SHAPE is demanded (one-way absorption, both
+            // argument orders — mirroring struct-into-row below).
+            (Ty::Variant(va), Ty::Variant(vb)) if va.name == vb.name => Ok(()),
+            (Ty::Struct(sd), Ty::Variant(vd)) | (Ty::Variant(vd), Ty::Struct(sd)) => {
+                if vd.ctors.iter().any(|c| *c == sd.name) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{} is not a constructor of variant {}",
+                        sd.name, vd.name
+                    ))
+                }
+            }
+            // Nominal identity is the NAME (#308): a provisional/stale def and
+            // the current def of the same record are the same type, which is
+            // what makes recursive field types (self- and forward-references
+            // carrying provisional defs) unify with values of the real type.
+            (Ty::Struct(sa), Ty::Struct(sb)) if sa.name == sb.name => Ok(()),
             (Ty::Record(fa, ra), Ty::Record(fb, rb)) => self.unify_rows(fa, ra, fb, rb),
             // A nominal struct meets a row (#297 stage 2): the struct IS its
             // closed row of fields plus identity, so it subsumes into any
@@ -163,6 +198,16 @@ impl Infer {
         fields: &[(String, Ty)],
         rest: &Option<Box<Ty>>,
     ) -> Result<(), String> {
+        // Re-resolve the def by name (#308 recursive records): a recursive
+        // field type embeds the provisional def registered before the record's
+        // own fields were parsed; the registry snapshot has the finished one.
+        let def = self
+            .structs
+            .as_ref()
+            .and_then(|m| m.get(&def.name))
+            .cloned()
+            .unwrap_or_else(|| def.clone());
+        let def = &def;
         let (fields, rest) = self.flatten_row(fields.to_vec(), rest.clone());
         for (label, ty) in &fields {
             match def.fields.iter().find(|(n, _)| n == label) {

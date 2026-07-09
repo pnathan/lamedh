@@ -717,6 +717,14 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::RecordCompiledP),
         );
         env.set(
+            "RECORD-FIELDS".to_string(),
+            LispVal::Builtin(BuiltinFunc::RecordFields),
+        );
+        env.set(
+            "VARIANT-DECLARE".to_string(),
+            LispVal::Builtin(BuiltinFunc::VariantDeclare),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );
@@ -1445,6 +1453,16 @@ impl Environment {
     /// Whether record `name`'s fields are all natively storable.
     pub fn jit_record_compileable(&self, name: &str) -> Option<bool> {
         self.shared.jit.borrow().record_compileable(name)
+    }
+
+    /// Declare a sum type (variant) in the typed registry (#312).
+    pub fn jit_declare_variant(&self, name: &str, ctors: Vec<String>) -> Result<(), String> {
+        self.shared.jit.borrow_mut().declare_variant(name, ctors)
+    }
+
+    /// Constructor brands of the registered variant `name`, if any.
+    pub fn jit_variant_ctors(&self, name: &str) -> Option<Vec<String>> {
+        self.shared.jit.borrow().variant_ctors(name)
     }
 
     /// Ordered field names of the registered typed struct `name` (issue
