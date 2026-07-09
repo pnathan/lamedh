@@ -370,6 +370,21 @@ pub(super) fn apply(
             | BuiltinFunc::RecordCompiledP
             | BuiltinFunc::RecordFields
             | BuiltinFunc::VariantDeclare => apply_record_type_op(builtin, args, env),
+            // (last-backtrace) — the frames of the most recently CAUGHT
+            // error (innermost first), as a list of symbols.
+            BuiltinFunc::LastBacktrace => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "last-backtrace takes no arguments".to_string(),
+                    ));
+                }
+                Ok(vec_to_list(
+                    crate::evaluator::core::bt_last()
+                        .into_iter()
+                        .map(|n| LispVal::Symbol(env.intern_symbol(&n)))
+                        .collect(),
+                ))
+            }
 
             // Introspection
             BuiltinFunc::Describe

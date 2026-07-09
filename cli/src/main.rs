@@ -272,7 +272,7 @@ fn run(args: Args) {
     if let Some(script_path) = script {
         let had_overflow = env.flag_set("OVERFLOW");
         if let Err(e) = load_file(&script_path, &env) {
-            eprintln!("{e}");
+            eprintln!("{}", lamedh::format_error_with_backtrace(&e, &env));
             std::process::exit(1);
         }
         warn_on_overflow(&env, had_overflow);
@@ -290,7 +290,7 @@ fn run(args: Args) {
                 warn_on_overflow(&env, had_overflow);
             }
             Err(e) => {
-                eprintln!("{e}");
+                eprintln!("{}", lamedh::format_error_with_backtrace(&e, &env));
                 std::process::exit(1);
             }
         }
@@ -364,7 +364,7 @@ fn run(args: Args) {
                             println!("{}", printer::print(&r));
                         }
                     }
-                    Err(e) => println!("{e}"),
+                    Err(e) => println!("{}", lamedh::format_error_with_backtrace(&e, &env)),
                 }
                 warn_on_overflow(&env, had_overflow);
             }

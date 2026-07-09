@@ -73,6 +73,132 @@ pub(super) fn charge_kernel_fuel() -> Result<(), LispError> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Backtraces (pay-mostly-on-error). A thread-local stack of NAMED call
+// frames: each `run_trampoline` entry is one potential frame slot (its base
+// recorded in BT_BASES); a named application in tail position writes the
+// callee's name into the current trampoline's slot (`bt_note_tail` — a tail
+// call REPLACES the frame, exactly the TCO semantics). On success the
+// trampoline truncates back to its base; on error the frames are left in
+// place for the catcher (ERRORSET / HANDLER-CASE / the CLI toplevel) to
+// snapshot into LAST_BACKTRACE and then truncate. Control-flow unwinds
+// (THROW/RETURN/GO) that skip truncation self-heal at the next enclosing
+// successful frame, because every exit truncates to its own saved base.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Named frames as symbol IDS (resolved to names only at capture).
+    static BT_STACK: std::cell::RefCell<Vec<u32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Packed control word: high 32 bits = mirror of BT_STACK.len(), low 32
+    /// bits = the CURRENT trampoline's frame base. One thread-local access
+    /// per operation on the hot path; the RefCell is touched only when a
+    /// named frame actually exists.
+    static BT_CTL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static BT_LAST: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[inline]
+fn ctl_len(v: u64) -> usize {
+    (v >> 32) as usize
+}
+#[inline]
+fn ctl_base(v: u64) -> usize {
+    (v & 0xffff_ffff) as usize
+}
+#[inline]
+fn ctl_pack(len: usize, base: usize) -> u64 {
+    ((len as u64) << 32) | (base as u64 & 0xffff_ffff)
+}
+
+/// Current frame-stack depth (a catcher records this at entry).
+pub(crate) fn bt_depth() -> usize {
+    BT_CTL.with(|c| ctl_len(c.get()))
+}
+
+/// Trampoline entry: open a frame slot. Returns the token to pass to
+/// [`bt_exit`] (the enclosing trampoline's base).
+#[inline]
+pub(super) fn bt_enter() -> usize {
+    BT_CTL.with(|c| {
+        let v = c.get();
+        let len = ctl_len(v);
+        c.set(ctl_pack(len, len));
+        ctl_base(v)
+    })
+}
+
+/// Trampoline exit with the token from [`bt_enter`]. On success the slot
+/// (and anything a control-flow unwind left behind) is discarded; on error
+/// the frames stay for the catcher.
+#[inline]
+pub(super) fn bt_exit(prev_base: usize, ok: bool) {
+    BT_CTL.with(|c| {
+        let v = c.get();
+        let here = ctl_base(v);
+        let len = ctl_len(v);
+        if ok && len > here {
+            BT_STACK.with(|s| s.borrow_mut().truncate(here));
+            c.set(ctl_pack(here, prev_base));
+        } else {
+            c.set(ctl_pack(len, prev_base));
+        }
+    });
+}
+
+/// A named call in tail position: write the callee's symbol id into the
+/// current trampoline's frame slot (replacing a previous tail callee — TCO
+/// frames collapse, like Scheme traces).
+#[inline]
+pub(super) fn bt_note_tail(id: u32) {
+    BT_CTL.with(|c| {
+        let v = c.get();
+        let len = ctl_len(v);
+        let base = ctl_base(v);
+        BT_STACK.with(|s| {
+            let mut s = s.borrow_mut();
+            if len > base {
+                s[len - 1] = id;
+            } else {
+                s.push(id);
+                c.set(ctl_pack(len + 1, base));
+            }
+        });
+    });
+}
+
+/// Snapshot the frames above `base` (innermost first) into LAST_BACKTRACE
+/// and truncate the stack back to `base`. Called by catchers; `env`
+/// resolves the symbol ids back to names.
+pub(crate) fn bt_capture(
+    base: usize,
+    env: &crate::Shared<crate::environment::Environment>,
+) -> Vec<String> {
+    let names = BT_STACK.with(|s| {
+        let mut s = s.borrow_mut();
+        let names: Vec<String> = s[base.min(s.len())..]
+            .iter()
+            .rev()
+            .take(64)
+            .filter_map(|id| env.symbol_by_id(*id).map(|sym| sym.borrow().name.clone()))
+            .collect();
+        s.truncate(base);
+        names
+    });
+    BT_CTL.with(|c| {
+        let v = c.get();
+        c.set(ctl_pack(base.min(ctl_len(v)), ctl_base(v)));
+    });
+    BT_LAST.with(|l| *l.borrow_mut() = names.clone());
+    names
+}
+
+/// The most recently captured backtrace (innermost frame first).
+pub(crate) fn bt_last() -> Vec<String> {
+    BT_LAST.with(|l| l.borrow().clone())
+}
+
 /// Set the maximum `eval` recursion depth for the current thread.
 pub fn set_eval_depth_limit(limit: usize) {
     EVAL_DEPTH_LIMIT.with(|l| l.set(limit));

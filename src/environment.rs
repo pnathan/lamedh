@@ -725,6 +725,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::VariantDeclare),
         );
         env.set(
+            "LAST-BACKTRACE".to_string(),
+            LispVal::Builtin(BuiltinFunc::LastBacktrace),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );

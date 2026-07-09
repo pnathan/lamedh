@@ -828,6 +828,13 @@ pub(super) fn exec_step(
                 && let Some(ref compiled_body) = lambda.compiled
                 && !lambda_params_dynamic(lambda, env)
             {
+                // Backtrace frame for the compiled fast path (see
+                // eval_application for the tree-walker twin).
+                if let LispVal::Cons { car, .. } = original
+                    && let LispVal::Symbol(name) = car.as_ref()
+                {
+                    crate::evaluator::core::bt_note_tail(name.borrow().id);
+                }
                 match lambda.rest_param_id {
                     None if lambda.params.len() == eval_args.len() => {
                         // Slot frame (issue #200 M3): parameter values land

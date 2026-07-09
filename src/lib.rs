@@ -552,6 +552,7 @@ pub enum BuiltinFunc {
     RecordCompiledP,
     RecordFields,
     VariantDeclare,
+    LastBacktrace,
     // Introspective typing surface (rows port, #297 step 0): structured
     // checker verdicts, pure string->forms parsing, and declared schemes.
     SeeType,
@@ -1752,7 +1753,21 @@ pub fn eval_all(src: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, Li
 pub fn eval_line(line: &str, env: &Shared<Environment>) -> String {
     match eval_str(line, env) {
         Ok(result) => printer::print(&result),
-        Err(e) => format!("{e}"),
+        Err(e) => format_error_with_backtrace(&e, env),
+    }
+}
+
+/// Format an evaluation error for a TOPLEVEL report: the error message plus
+/// the backtrace of named frames the unwind left behind (innermost first),
+/// consuming those frames. Errors with no named frames (a direct toplevel
+/// mistake) format exactly as before.
+pub fn format_error_with_backtrace(e: &LispError, env: &Shared<Environment>) -> String {
+    let trace = evaluator::core::bt_capture(0, env);
+    let msg = format!("{e}");
+    if trace.is_empty() {
+        msg
+    } else {
+        format!("{msg}\n  in: {}", trace.join(" \u{2190} "))
     }
 }
 
