@@ -28,14 +28,9 @@ This single form generates a constructor, a predicate, and one accessor per
 field:
 
 ```lisp
-lamedh -s '(progn (defrecord point (x int64) (y int64)) (make-point 3 4))'
-; => #S(POINT 3 4)
-```
-
-```lisp
 lamedh -s '(progn (defrecord point (x int64) (y int64))
-                   (list (point-p (make-point 3 4)) (point-x (make-point 3 4))))'
-; => (T 3)
+                   (list (make-point 3 4) (point-p (make-point 3 4)) (point-x (make-point 3 4))))'
+; => (#S(POINT 3 4) T 3)
 ```
 
 The general shape is:
@@ -184,13 +179,9 @@ only* to `any`. This is per-field, not all-or-nothing: the rest of the
 record keeps its checked types.
 
 ```lisp
-lamedh -s '(progn (defrecord widget (x bogus-type)) (see-type (quote widget-x)))'
-; => (DECLARED (-> (WIDGET) ANY))
-```
-
-```lisp
-lamedh -s '(progn (defrecord thing (x (mystery-compound int64))) (see-type (quote thing-x)))'
-; => (DECLARED (-> (THING) ANY))
+lamedh -s '(progn (defrecord widget (x bogus-type) (y (mystery-compound int64)))
+                   (list (see-type (quote widget-x)) (see-type (quote widget-y))))'
+; => ((DECLARED (-> (WIDGET) ANY)) (DECLARED (-> (WIDGET) ANY)))
 ```
 
 Compound types the checker *does* understand ride through unchanged —
@@ -223,20 +214,12 @@ array of scalars for the compiled tier; anything else — a `list`, a
 
 ```lisp
 lamedh -s '(progn (defrecord point (x int64) (y int64))
-                   (record-compiled-p (quote point)))'
-; => T
-```
-
-```lisp
-lamedh -s '(progn (defrecord chest (items (list string)))
-                   (record-compiled-p (quote chest)))'
-; => ()
-```
-
-```lisp
-lamedh -s '(progn (defrecord grid (cells (array int64)) (n int64))
-                   (record-compiled-p (quote grid)))'
-; => T
+                   (defrecord chest (items (list string)))
+                   (defrecord grid (cells (array int64)) (n int64))
+                   (list (record-compiled-p (quote point))
+                         (record-compiled-p (quote chest))
+                         (record-compiled-p (quote grid))))'
+; => (T () T)
 ```
 
 `(array int64)` is natively storable, so `grid` compiles; `(list string)`

@@ -205,7 +205,7 @@ silently compiling anyway:
 ```
 
 `(declaim (no-compile name1 name2 ...))` pins one or more names *before*
-they're defined, which is the form to reach for at the top of a file:
+they're defined — the form to reach for at the top of a file:
 
 ```lisp
 (declaim (no-compile od-later))
@@ -378,13 +378,10 @@ values, and `Error` for first-class condition objects
 for you: `as_number() -> Result<i64, _>`, `as_float()`, `as_str_val()`,
 `as_list_vec() -> Result<Vec<LispVal>, _>`, `is_truthy()`.
 
-To turn any `LispVal` back into readable Lisp syntax (what the REPL prints,
-what `eval_line` returns as text), use `lamedh::printer::print`:
-
-```rust,ignore
-let val = eval_str("(list 1 2.5 \"str\")", &env)?;
-assert_eq!(lamedh::printer::print(&val), "(1 2.5 \"str\")");
-```
+To turn any `LispVal` back into readable Lisp syntax — what the REPL
+prints, what `eval_line` returns as text — use `lamedh::printer::print`:
+`printer::print(&eval_str("(list 1 2.5 \"str\")", &env)?)` yields the
+string `(1 2.5 "str")`.
 
 ## 9.12 Minimal Kernels for Tests
 
