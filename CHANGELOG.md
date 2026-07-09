@@ -2,9 +2,11 @@
 
 condensation
 
-One record definition form. The `defconcept` / `defstruct` / `defrecord`
-split is closed: **`defrecord` is the only way to define a record**, and it
-does everything the three forms did together.
+Everything from the v0.2.0 tag to here (83 commits). The headline: **one
+record definition form**, and a language that condenses — records, guards,
+processes, patterns, and the checker meeting in one story.
+
+## Records — one definition form (breaking)
 
 ```lisp
 (defrecord npc
@@ -13,54 +15,112 @@ does everything the three forms did together.
   (:derive equality lens))
 ```
 
-## Added
-
-- `defrecord` absorbs `defconcept`'s sections: optional `(:invariant ...)`
-  and `(:derive equality|printer|lens ...)` after the field specs. Every
-  record now also generates `validate-NAME` (invariant defaults to `T`) and
-  records the condensation trace (`condense-trace`, fingerprints, `edit!`,
-  `deflaw`, `example` all work on records).
-- Bare field names: `(defrecord bag stuff)` means `(stuff any)` — the
-  gradual frontier is per-field.
+- **`defrecord` is the only way to define a record**, and it does
+  everything `defconcept`/`defstruct`/`defrecord` did together: branded,
+  checker-denotable, NOMINAL, row-subsumable types over one runtime
+  representation (StructObj), tier-dispatched — all-native fields compile,
+  anything else runs dynamic with the same surface
+  (`(record-compiled-p 'name)` reports the tier). Generates `make-Name`,
+  `Name-p`, `Name-field`, `validate-Name`; optional `(:invariant ...)` and
+  `(:derive equality|printer|lens ...)` sections; bare field names mean
+  `(field any)`; the condensation trace (`condense-trace`, `edit!`,
+  `deflaw`, `example`, fingerprints) works on every record.
+- **Removed: `defconcept`** — use `defrecord`; a legacy
+  `(:fields ((f ty)...))` section is still accepted to ease migration.
+- **Removed: untyped `defstruct`** — with its keyword constructor protocol
+  and `set-NAME-FIELD!` mutators. Records are values: update with
+  `record-with`. `setf` accessor places still expand to
+  `(set-<accessor>! obj v)` against user-defined mutators.
+- **Removed: the positional record representation** (`(BRAND f1 ...)`
+  lists). `defstruct-typed` remains only as internal machinery behind the
+  compiled tier.
+- `record-ref` / `record-with`: by-name field read and functional update
+  with checker-native row rules — `(defun worth (x) (record-ref x 'value))`
+  derives `(forall (a b) (-> ((record ((value a)) b)) a))` with no axioms.
 - Records print as `#S(BRAND v ...)` and the reader accepts `#S(...)`
-  literals: values round-trip through print/read (spawn and channel
-  serialization) and are usable as source syntax.
-- Every record is a branded, checker-denotable, nominal, row-subsumable
-  type over one runtime representation, compiled when all fields are
-  natively storable (`(record-compiled-p 'name)` reports the tier).
-- The checker derives schemes for unknown lambda callees on demand, so row
-  types flow through helper functions with no `declare-type!` axioms.
+  literals: print/read round-trip (spawn and channel serialization), usable
+  as source syntax.
 
-## Removed (breaking)
+## Checker and rows
 
-- **`defconcept`** — use `defrecord` with the same sections inline. A
-  legacy `(:fields ((f ty) ...))` section is still accepted to ease
-  migration; the canonical form is inline field specs.
-- **`defstruct`** (the untyped, mutable, array-backed form) — use
-  `defrecord`. With it go its keyword constructor protocol
-  (`(make-point :x 1)`) and its generated `set-NAME-FIELD!` mutators;
-  records are values — update with `record-with` or `NAME-field` reads
-  around construction. `setf`'s accessor-place convention still expands to
-  `(set-<accessor>! obj v)`, now resolved against user-defined mutators.
-- The positional record representation (`(BRAND f1 f2 ...)` lists) and its
-  `record-ref`/`record-brand` bridges. All record values are native
-  `StructObj`s.
-- `condense-kind` for records is now `record` (was `concept`); `derive`,
-  `deflaw`, and `example` say "record" in their error messages.
+- Row types (Rémy-style, with a gradual `Any` frontier) ported into the
+  checker; typed structs subsume into record rows; `declare-type!` declared
+  schemes consulted at call sites; `see-type` reports
+  TYPED/CHECKED/DECLARED/TYPE-ERROR/DYNAMIC verdicts as data.
+- **Derived schemes at call sites**: the checker checks unknown lambda
+  callees on demand (memoized, recursion-safe), so row types flow through
+  helper functions with zero annotations.
+- **One door**: plain `defun` quietly attempts typed compilation; opt out
+  with `(declare (no-compile))` or `declaim`. `defun-typed`/`defun*` remain
+  for explicit signatures/inference.
 
-## Internal
+## Guards, fuel, and processes
 
-- `defstruct-typed` remains as the kernel machinery behind `defrecord`'s
-  compiled tier; it is no longer a documented user-facing form.
+- Composable guard fences, pure Lisp: `with-fuel`, `with-capabilities`,
+  `sandboxed`; guarded code is introspective; static capability manifests
+  (`capabilities-needed`) computed from the call graph; a kernel
+  step-budget backstop makes fuel exhaustion un-catchable-by-accident.
+- `spawn` / `spawn*` / `await`: share-nothing interpreter threads whose
+  capabilities are the requested set intersected with the caller's
+  effective set — attenuation all the way down (#140). Channels and
+  `clone-interpreter` behind the `concurrency` feature.
+
+## Conditions
+
+- Restarts: `restart-case`, `invoke-restart`, `find-restart`,
+  `compute-restarts`, `handler-bind`, plus `use-value`/`store-value`/
+  `retry`/`abort-to-restart`/`with-retry-restart`. (Documented deviation:
+  handler-bind handlers run post-unwind.)
+
+## Patterns and the rulebook
+
+- Structural pattern language: `pat-match` (`?x`, `??segments`, guards),
+  `match`, `destructuring-bind`, `sgrep`/`sgrep-source`/`sgrep-file`
+  (positioned hits via `read-all-positioned`), bottom-up `rewrite`.
+- The rulebook optimizer: `defrule`/`list-rules`/`apply-rules` — optimizer
+  passes as pattern data feeding `optimize-form`.
+- Go-style interfaces: `definterface`, `implements?`/`implements!` verify
+  method sets against checker verdicts with a row-aware unifier.
+
+## Performance
+
+- Slot frames with routing tables: sound compile-time lexical addressing
+  for lambda params and LET binders (#200 M3); unified compile/tree-walker
+  trampolines; typed-JIT tail calls (self, mutual, and general); lambda
+  bodies pre-compiled at definition time; per-call allocation cuts
+  (SmallVec operands, symbol-id frames, precomputed special-form dispatch,
+  cached symbol flags, lazy defun analysis hooks); shallow binding for
+  dynamic variables; optional `arc-val` atomic refcounting feature;
+  COLLAPSE-FRAMES and purity-checker optimizer passes over a DEFUN call
+  graph.
+
+## Correctness and parity (the #210 audit and friends)
+
+- Typed tiers now match the evaluator exactly on: Euclidean `MOD`,
+  `OVERFLOW`/div-by-zero flag propagation through the membrane (including
+  `MIN%-1` and flag-before-error ordering), `FETCH`/`STORE` out-of-bounds
+  errors, `CODE-CHAR`/`CHAR-CODE`, variadic `AND`/`OR`, strict binary
+  `/`/`MOD` arity, mutated array parameters written back.
+- Soundness: gensym symbols bind by their own id in lambda params and
+  `SETQ`; dynamic bindings preserved across tail calls; cross-namespace
+  symbol-id remapping in local frames; checked `gcd`/`lcm`; reachable JIT
+  panics converted to Lisp errors; reader recursion bounded;
+  `RENAME-FILE` requires `READ-FS` in addition to `CREATE-FS`.
+
+## Reader, CLI, and docs
+
+- Reader: 1-based positions in parse errors, nesting block comments
+  `#| |#`, CL-style radix literals (`#x`/`#b`/`#o`), shebang support.
+- REPL: persistent history (saved on `(exit)` too) and symbol tab
+  completion.
+- Self-evaluating keyword symbols; runtime error messages include the
+  offending value; `cargo doc` warning-free; docs refreshed to match
+  behavior; classic OO patterns example on row types (`examples/`).
 
 # v0.2.0
 
 efficiency.
 
-- Typed Cranelift JIT with a gradual HM checker (rows, structs, declared
-  schemes), slot-frame locals, pre-compiled lambda bodies, TCO through the
-  typed membrane.
-- Guard fences (`with-fuel`, `with-capabilities`, `sandboxed`), `spawn`
-  with capability attenuation, restarts, the pattern language
-  (`match`/`sgrep`/`rewrite`), the rulebook optimizer, persistent REPL
-  history and tab completion.
+The typed JIT release: HM-lite type inference (#135), the typed membrane
+with a native Cranelift backend (#124), `defun-typed`/`defstruct-typed`,
+typed regions, and the `jit` feature on by default.
