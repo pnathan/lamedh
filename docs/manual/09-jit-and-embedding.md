@@ -227,12 +227,12 @@ they're defined, which is the form to reach for at the top of a file:
 
 `lib/22-guard.lisp`'s `with-fuel` meters execution by code-walking the
 fenced body and inserting a tick at every function entry and loop
-back-edge, then charging a one-element counter. Compiled code — closure or
-native — has no ticks in it, so running compiled code inside a fuel fence
-would silently bypass the budget. Rather than let that happen, entering a
-`with-fuel` fence downgrades compilation for code defined inside it:
-`jit-optimize` becomes a no-op, `defun-typed` signals an error, and `defun*`
-is downgraded to a plain `defun` with type annotations stripped.
+back-edge. Compiled code — closure or native — has no ticks in it, so
+running compiled code inside a fuel fence would silently bypass the
+budget. Rather than let that happen, entering a `with-fuel` fence
+downgrades compilation for code defined inside it: `jit-optimize` becomes
+a no-op, `defun-typed` signals an error, and `defun*` is downgraded to a
+plain `defun` with type annotations stripped.
 
 ```lisp
 (with-fuel 100 (+ 1 2))
@@ -272,9 +272,7 @@ lamedh = "0.3"
 ```
 
 That pulls in the default features (`jit` — Cranelift — and `concurrency` —
-channels, `spawn`). To match the CLI's own dependency (which disables the
-default features and re-enables only what it needs), or to skip Cranelift
-in your host:
+channels, `spawn`). To skip Cranelift in your host, same as §9.7:
 
 ```toml
 [dependencies]
@@ -311,15 +309,14 @@ built-in primitives *and* the embedded Lisp standard library (`defun`,
 `append`, `defrecord`, `match`, everything under `lib/`) — no `.lisp` files
 need to exist on disk at runtime, the stdlib is compiled into the binary.
 
-`lamedh::with_large_stack` is not optional in practice: the tree-walking
-evaluator uses large Rust stack frames for non-tail calls, and the default
-system thread stack (2–8 MiB) overflows before the interpreter's own
-recursion-depth guard fires. `with_large_stack` spawns a dedicated 512 MiB
-thread (`INTERPRETER_STACK_SIZE`) and runs your closure on it. Because
-`LispVal` and `Environment` are `!Send`, you must construct the environment
-*inside* the closure passed to `with_large_stack`, not outside it and
-capture it — that's why `run_script` builds `env` inside the closure rather
-than taking it as a parameter.
+`with_large_stack` is not optional in practice: the tree-walking evaluator
+uses large Rust stack frames for non-tail calls, and the default system
+thread stack (2–8 MiB) overflows before the interpreter's own
+recursion-depth guard fires. It spawns a dedicated 512 MiB thread
+(`INTERPRETER_STACK_SIZE`) and runs your closure there. Because `LispVal`
+and `Environment` are `!Send`, construct the environment *inside* the
+closure — not outside it and captured — which is why `run_script` builds
+`env` inside the closure rather than taking it as a parameter.
 
 For multiple top-level forms, use `eval_all` instead of `eval_str`
 (`eval_str` requires the input to be exactly one form):
@@ -391,15 +388,14 @@ match eval_str("(+ 1 2 3)", &env)? {
 }
 ```
 
-The variants you'll match on most from host code: `Symbol` (interned,
-case-normalized), `Number(i64)`, `Float(f64)`, `String(String)`,
-`Char(u8)`, `Cons { car, cdr }` and `Nil` for lists, `Array` and
-`HashTable` for the mutable collection types, `Struct` for `defrecord`/
-`defstruct-typed` values, and `Error` for first-class condition objects
-(`ErrorObj { message, data }`). `LispVal` also has convenience extractors
-that do the tag check for you — `as_number() -> Result<i64, _>`,
-`as_float()`, `as_str_val()`, `as_list_vec() -> Result<Vec<LispVal>, _>`,
-and `is_truthy()`.
+The variants you'll match on most: `Symbol` (interned, case-normalized),
+`Number(i64)`, `Float(f64)`, `String(String)`, `Char(u8)`,
+`Cons { car, cdr }` and `Nil` for lists, `Array` and `HashTable` for the
+mutable collection types, `Struct` for `defrecord`/`defstruct-typed`
+values, and `Error` for first-class condition objects
+(`ErrorObj { message, data }`). Convenience extractors do the tag check
+for you: `as_number() -> Result<i64, _>`, `as_float()`, `as_str_val()`,
+`as_list_vec() -> Result<Vec<LispVal>, _>`, `is_truthy()`.
 
 To turn any `LispVal` back into readable Lisp syntax (what the REPL prints,
 what `eval_line` returns as text), use `lamedh::printer::print`:
@@ -412,15 +408,14 @@ assert_eq!(lamedh::printer::print(&val), "(1 2.5 \"str\")");
 ## 9.12 Minimal Kernels for Tests
 
 `Environment::with_stdlib()` is the right default for real embeddings, but
-it panics if the embedded stdlib source fails to parse or evaluate — an
-appropriate behavior for a compile-time invariant, not a runtime one, but
-overkill for a test that only needs a couple of builtins. For that,
-`Environment::new_with_builtins()` gives you a root environment with all
-100+ Rust-level primitives registered but *no* Lisp standard library
-loaded — no `defun`, no `append`, none of `lib/`. Lamedh's own test suite
-uses this pattern (`tests/test_helpers.rs`) to load a specific `lib/`
-snapshot from disk instead of the embedded one, so tests exercise source
-changes without a rebuild:
+it panics if the embedded stdlib source fails to parse or evaluate — right
+for a compile-time invariant, overkill for a test that needs only a
+couple of builtins. `Environment::new_with_builtins()` gives you a root
+environment with all 100+ Rust-level primitives registered but *no* Lisp
+standard library loaded — no `defun`, no `append`, none of `lib/`.
+Lamedh's own test suite uses this (`tests/test_helpers.rs`) to load a
+`lib/` snapshot from disk instead of the embedded one, so tests exercise
+source changes without a rebuild:
 
 ```rust,ignore
 use lamedh::{self, Shared, environment::Environment};

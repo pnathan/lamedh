@@ -356,7 +356,7 @@ $ target/debug/lamedh -s "(spawn-value (spawn () (+ 1 1)))"
 ; => (:OK 2)
 
 $ target/debug/lamedh -s "(spawn-value (spawn () (car 5)))"
-; => (:ERROR "Generic(\"...cannot take CAR of...\")")
+; => (:ERROR "Generic(\"CAR: expected a list, got 5\")")
 ```
 
 ### Capability intersection
@@ -448,23 +448,24 @@ spliced form, and the child — which has its own, independently-registered
 on it. Two interpreters, two independent type registrations, one value
 shape agreed on by convention.
 
-### `spawn-error-p` and error data
-
-```console
-$ target/debug/lamedh -s "(spawn-error-p (spawn-value (spawn () (car 5))))"
-; => T
-```
+`spawn-error-p` tests an outcome datum without unwrapping it:
+`(spawn-error-p (spawn-value (spawn () (car 5))))` returns `T`.
 
 ### Share-nothing, concretely
 
-A binding set in the parent is invisible to a child; a binding set in a
-child never leaks back to the parent. There's no way to observe this
-directly with `-s` in one process, but the shape is: `(boundp 'x)` for a
-parent-only symbol evaluates to `nil` inside `(spawn () ...)`, and setting
-a symbol inside a spawned child leaves the parent's `(boundp ...)` for
-that symbol `nil` afterward too. This is the whole point of the design —
-a data race requires shared mutable state, and spawned children simply
-don't have any.
+A binding set in the parent is invisible to a child, and a binding set in
+a child never leaks back to the parent:
+
+```console
+$ target/debug/lamedh -s "(progn (setq parent-only 99) (spawn-value (spawn () (boundp 'parent-only))))"
+; => (:OK ())
+
+$ target/debug/lamedh -s "(progn (await (spawn () (setq child-only 7))) (boundp 'child-only))"
+; => ()
+```
+
+This is the whole point of the design — a data race requires shared
+mutable state, and spawned children simply don't have any.
 
 ## 7.5 Channels
 

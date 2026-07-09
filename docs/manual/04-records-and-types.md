@@ -56,12 +56,10 @@ lamedh -s '(progn (defrecord parcel contents)
 ; => ANYTHING
 ```
 
-Note the syntax carefully: the bare form is a symbol standing on its own
-among the field specs, not a one-element list. `(defrecord parcel
-(contents))` is a *different* thing — a field spec with no explicit type —
-and currently mishandles that case, so stick to the bare-symbol form
-(`(defrecord parcel contents)`) or an explicit `(contents any)` when you
-want an untyped field.
+Note the syntax: the bare form is a symbol standing on its own among the
+field specs, not a one-element list — `(defrecord parcel (contents))` is a
+different (and currently broken) thing, a field spec with no type element.
+Stick to `(defrecord parcel contents)` or the explicit `(contents any)`.
 
 `defrecord` always generates:
 
@@ -72,21 +70,18 @@ want an untyped field.
 | `Name-field` | one accessor per field |
 | `validate-Name` | runs the `:invariant` (default: always true) |
 
-`(:derive equality lens)` adds more, covered in §4.7. Because `defrecord`
-is built on the condensation substrate (see the chapter on macros and
-condensation), every generated symbol is provenance-tracked:
-`condense-kind`, `condense-generated`, and `condense-trace` all see it, and
-the checker's verdict on every generated symbol is computed and stored
-automatically — nothing here is asserted, it is all checked at definition
-time.
+`(:derive equality lens)` adds more, covered in §4.7. `defrecord` is built
+on the condensation substrate, so every generated symbol is
+provenance-tracked (`condense-kind`, `condense-generated`, `condense-trace`)
+and the checker's verdict on it is computed and stored automatically —
+nothing here is asserted, it is all checked at definition time.
 
 There is exactly one record-defining form. Earlier releases had
-`defconcept`, `defstruct`, and `defrecord` as three overlapping choices;
-as of 0.3 they are unified into this one form, with `defstruct-typed`
-remaining only as the internal machinery behind the compiled tier (see
-§4.5), and untyped mutable `defstruct` removed outright. Records are
-values — you don't mutate a field in place, you build an updated copy with
-`record-with` (§4.3).
+`defconcept`, `defstruct`, and `defrecord` as three overlapping choices; as
+of 0.3 they are unified into this one, with `defstruct-typed` remaining
+only as internal machinery behind the compiled tier (§4.5) and untyped
+mutable `defstruct` removed outright. Records are values — you don't mutate
+a field in place, you build an updated copy with `record-with` (§4.3).
 
 ## 4.2 Records are nominal
 
