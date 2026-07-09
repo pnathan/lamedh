@@ -29,40 +29,28 @@ kind of condition.
 ; => Error: boom
 ```
 
-`error` actually has three forms:
+`error` actually has three forms: `(error)` signals a generic condition
+with message `"Error"`; `(error an-error-value)` re-signals an existing
+error value unchanged (how a declining handler re-raises a condition, see
+§6.5); `(error message data)` signals a new condition with `message` and
+one attached `data` value (extra arguments beyond `data` are accepted but
+ignored).
 
-- `(error)` — signal a generic condition with message `"Error"`.
-- `(error an-error-value)` — re-signal an existing error value unchanged
-  (this is how a declining handler re-raises the same condition; see
-  below).
-- `(error message data)` — signal a new condition with `message` and one
-  attached `data` value (extra arguments beyond `data` are accepted but
-  ignored).
+A condition is a first-class value — `LispVal::Error` — with four
+accessors: `make-error` builds one without signaling it, `error-p` tests
+for one, `error-message`/`error-data` read its parts:
 
 ```lisp
 (handler-case (error "bad input" (list :code 42))
   (error (e) (list (error-message e) (error-data e))))
 ; => ("bad input" (:CODE 42))
-```
 
-A condition is a first-class value — `LispVal::Error` — with four accessors:
-
-| Function | Result |
-|---|---|
-| `(make-error message data)` | builds an error value without signaling it |
-| `(error-p x)` | `T` if `x` is an error value |
-| `(error-message e)` | the message string |
-| `(error-data e)` | the attached data, or `()` if none |
-
-```lisp
 (make-error "oops" (list 1 2 3))
 ; => #<error "oops" (1 2 3)>
 
 (error-p (make-error "x" 1))   ; => T
-(error-p 5)                    ; => ()
+(error-p 5)                    ; => () (NIL prints as "()")
 ```
-
-(`()` is how NIL prints; Lamedh has no separate `NIL` token in output.)
 
 ## 6.2 Catching, Lisp 1.5 style: `errorset`
 
@@ -103,31 +91,23 @@ variable to the actual first-class condition value, which a macro over
 ```
 
 `expr` is evaluated. If it signals, `var` is bound to the condition (an
-error value, wrapping any Rust-level error too — division by zero, unbound
-variable, etc. all arrive as ordinary error values) and `handler-body` runs
-in place of `expr`'s value:
+error value — division by zero, unbound variable, etc. all arrive as
+ordinary error values too) and `handler-body` runs in place of `expr`'s
+value; otherwise `expr`'s own value passes through untouched:
 
 ```lisp
-(handler-case (/ 1 0)
-  (error (e) (list 'caught (error-message e))))
+(handler-case (/ 1 0) (error (e) (list 'caught (error-message e))))
 ; => (CAUGHT "Division by zero")
 
-(handler-case (+ 1 2)
-  (error (e) 'never))
+(handler-case (+ 1 2) (error (e) 'never))
 ; => 3
 ```
 
 `handler-case` supports exactly one clause and does **no class-based
 dispatch** — there is only one condition type, so the clause head is not
-even checked against a type name:
-
-```lisp
-(handler-case (/ 1 0) (whatever-symbol (e) (list 'caught (error-message e))))
-; => (CAUGHT "Division by zero")
-```
-
-Write `error` as the clause head anyway; it documents intent and matches
-every other example in this manual and the standard library.
+even checked against a type name (`(handler-case (/ 1 0) (whatever (e) ...))`
+works identically). Write `error` as the head anyway; it documents intent
+and matches every other example here and in the standard library.
 
 ## 6.4 `catch`/`throw` and `unwind-protect`
 
@@ -238,7 +218,9 @@ running the clause's body with `args` bound to `params`, and *that* becomes
 ; => 42
 ```
 
-Introspection functions see every restart currently live, innermost first:
+`(compute-restarts)` lists every restart currently live, innermost first;
+`(find-restart 'name)` finds one or returns `()`; `(restart-name r)` reads
+a record's name:
 
 ```lisp
 (restart-case
@@ -249,18 +231,11 @@ Introspection functions see every restart currently live, innermost first:
 
 (restart-case (restart-name (find-restart 'use-value)) (use-value (v) v))
 ; => USE-VALUE
-
-(restart-case (find-restart 'nope) (use-value (v) v))
-; => ()
 ```
 
 `invoke-restart` on a name with no live restart signals its own catchable
-error:
-
-```lisp
-(handler-case (invoke-restart 'nope) (error (e) (error-message e)))
-; => "invoke-restart: no live restart named NOPE"
-```
+error: `(handler-case (invoke-restart 'nope) (error (e) (error-message e)))`
+`=> "invoke-restart: no live restart named NOPE"`.
 
 Restarts nest and shadow by name, innermost wins; a name reachable only
 from an outer establisher still reaches it through the inner one. And since
@@ -332,13 +307,12 @@ the parse is retried; anything else falls back to 0."
 ; => (42 42 0 0)
 ```
 
-Note the shape: `restart-case` is the outermost form in `parse-line`,
-wrapping the `handler-bind` that wraps the actual call to `parse-strict` —
-the canonical shape from §6.5. `parse-strict` itself knows nothing about
-recovery; it just signals. The `retry` clause is a custom restart (defined
-right here, taking one argument) — it is unrelated to the zero-argument
-`retry`/`with-retry-restart` helpers in §6.6, which happen to share the
-conventional name `retry` for the common "just run the body again" case.
+Note the shape: `restart-case` is outermost, wrapping the `handler-bind`
+that wraps the call to `parse-strict` — the canonical shape from §6.5.
+`parse-strict` itself knows nothing about recovery; it just signals. The
+`retry` clause here is a custom restart taking one argument, unrelated to
+the zero-argument `retry`/`with-retry-restart` helpers in §6.6, which just
+happen to share the conventional name.
 
 ## 6.8 Conditions and guard fences
 

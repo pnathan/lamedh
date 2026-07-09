@@ -148,16 +148,15 @@ fixed leading arguments to a function; `complement` negates a predicate;
 
 ## 5.6 `defun`, `defun*`, and `defun-typed`: One-Door Compilation
 
-Lamedh has three function-defining forms that sit on one spectrum of
-typing effort, and all three are inspectable with `see-type`.
+Lamedh has three function-defining forms on one spectrum of typing
+effort, all inspectable with `see-type`.
 
 **`defun`** defines an ordinary function and then, quietly, tries to
-compile it: Hindley-Milner inference runs in the background via
-`jit-optimize`, and if the whole body turns out to be a fully-inferable
-typed island, the name is rebound to a native membrane that fast-paths
-typed calls and falls back to the original closure for anything the
-membrane can't type. If inference fails, `defun` leaves the plain
-closure in place — silently, with no error:
+compile it: HM inference runs in the background via `jit-optimize`, and
+if the body is a fully-inferable typed island, the name is rebound to a
+native membrane that fast-paths typed calls and falls back to the
+original closure otherwise. If inference fails, `defun` silently keeps
+the plain closure — no error:
 
 ```lisp
 (defun sq (x) (* x x))
@@ -166,9 +165,8 @@ closure in place — silently, with no error:
 ```
 
 **`defun*`** is the form to reach for when you *want* typed compilation
-attempted and want the syntax to make that intent explicit. It accepts
-bare parameters, `(param type)` pairs, and an optional return type before
-the body:
+attempted and want the syntax to say so. It accepts bare parameters,
+`(param type)` pairs, and an optional return type before the body:
 
 ```lisp
 (defun* scale (x int64) (y int64) (* x y))
@@ -196,11 +194,9 @@ just doesn't compile:
 
 **`defun-typed`** is the explicit, no-inference form: you give every
 parameter and the return type up front, and the compiler either compiles
-it to a native typed function or reports an error — there is no silent
-fallback. `see-type` reports three tiers you'll see across all of this:
-`CHECKED` (type-checked but running on the tree-walker), `TYPED ...
-COMPILED` (native typed code), and outright type errors if a
-`defun*`/`defun-typed` body's inferred types conflict with each other.
+it natively or reports an error — no silent fallback. `see-type` reports
+the three tiers seen above: `CHECKED` (type-checked, tree-walker),
+`TYPED ... COMPILED` (native code), or an outright type error.
 
 To opt a single `defun` out of the quiet compile attempt, put
 `(declare (no-compile))` as the first form of the body (after an optional
@@ -225,9 +221,9 @@ To opt out globally for names defined after the declaration, use
 ```
 
 Both mechanisms also suppress a later explicit `(jit-optimize name)`
-call. `defun-typed` itself is disallowed inside a guard fence
-(`with-capabilities`/`sandboxed`, Chapter 8's territory) — sandboxed code
-can't request native compilation.
+call. `defun-typed` is disallowed inside a guard fence
+(`with-capabilities`/`sandboxed`) — sandboxed code can't request native
+compilation.
 
 ## 5.7 `defmacro`: Templates and Hygiene
 
@@ -344,11 +340,10 @@ both just parameters:
 ; => YES
 ```
 
-Because the environment is explicit, `vau` can express `lambda` (wrap in
-an evaluating shell), `defmacro` (evaluate the operands, build code,
-evaluate the result back in the caller's environment), and fexprs, all as
-special cases — it's the reflective kernel underneath the higher-level
-forms. `defvau` is the named-definition sugar, parallel to `defun`:
+Because the environment is explicit, `vau` can express `lambda`,
+`defmacro`, and fexprs as special cases — it's the reflective kernel
+underneath the higher-level forms. `defvau` is the named-definition
+sugar, parallel to `defun`:
 
 ```lisp
 (defvau unless (x e)
@@ -360,12 +355,12 @@ forms. `defvau` is the named-definition sugar, parallel to `defun`:
 ```
 
 The four `vau`-built operatives in `lib/08-vau.lisp` — `$if`, `$and`,
-`$or`, `$sequence` — are worth reading as the canonical small examples;
-each recurses on `eval (... e)` over the caller's environment rather than
+`$or`, `$sequence` — are worth reading as canonical small examples; each
+recurses on `eval (... e)` over the caller's environment rather than
 relying on the evaluator's own special-form dispatch. `(the-environment)`
-captures the current environment as a value (handy at a REPL or top
-level), and `make-environment` builds a fresh one, optionally with a
-given parent — both are the raw material `vau` operatives manipulate.
+captures the current environment as a value, and `make-environment`
+builds a fresh one (optionally with a parent) — the raw material `vau`
+operatives manipulate.
 
 ## 5.10 Dynamic Variables
 
@@ -389,11 +384,10 @@ Declare a dynamic variable with `defdynamic` (or its alias `defvar`):
 ```
 
 `get-x` refers to `*x*` free — it has no lexical binding for it — yet it
-sees whatever dynamic binding is active at the point it's *called*, not
-at the point it was *defined*. That's the contrast with lexical closures
-from 5.4: a closure's free variables are fixed at creation time; a
-dynamic variable's value depends on the live call stack. Rebinding nests
-and unwinds correctly:
+sees whatever dynamic binding is active when it's *called*, not when it
+was *defined*. Contrast with 5.4: a closure's free variables are fixed at
+creation time; a dynamic variable's value follows the live call stack.
+Rebinding nests and unwinds correctly:
 
 ```lisp
 (defdynamic *level* 0)
@@ -420,8 +414,8 @@ with `defdynamic`.
 ## 5.11 The Evaluation Model
 
 Lamedh's evaluator recognizes a few categories of "things in operator
-position," and they differ in exactly one crucial way: what happens to
-the operand forms before the body runs.
+position." They differ in one crucial way: what happens to the operand
+forms before the body runs.
 
 | Kind | Defined with | Operands evaluated? | Sees caller's env? |
 |---|---|---|---|
@@ -432,10 +426,9 @@ the operand forms before the body runs.
 | Vau operative | `vau`/`$vau`, `defvau` | no — operands arrive as literal source | yes — caller's env is passed explicitly |
 
 Ordinary function application is applicative order: every argument is
-evaluated exactly once, before the call, regardless of whether the
-function's body ends up using it. Everything else on this table exists
-precisely to escape that rule in a controlled way — a macro escapes it at
-expansion time (compile-time, effectively), while fexprs and `vau`
+evaluated exactly once, before the call, whether or not the body uses
+it. Everything else on this table exists to escape that rule in a
+controlled way — a macro escapes it at expansion time, fexprs and `vau`
 escape it at call time.
 
 ## 5.12 `eval`, `read`, and Code as Data
@@ -467,10 +460,10 @@ consumption (no quotes on strings):
 ```
 
 Round-tripping code through `prin1-to-string` and `read-from-string`
-recovers the original structure, which is the basis for anything that
-generates, serializes, or introspects Lisp forms at runtime — including
-`macroexpand` (5.7) and `see-source`, which reconstructs the source form
-the evaluator registered for a lambda, fexpr, macro, or vau operative.
+recovers the original structure — the basis for anything that generates,
+serializes, or introspects Lisp forms at runtime, including `macroexpand`
+(5.7) and `see-source`, which reconstructs the source form the evaluator
+registered for a lambda, fexpr, macro, or vau operative.
 
 ## 5.13 `label`: Lisp 1.5 Self-Reference
 
