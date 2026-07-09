@@ -61,7 +61,7 @@ fn missing_method_fails_but_unproven_passes() {
         &env,
     );
     eval_line(
-        "(defconcept bag (:fields ((items list))) (:derive equality))",
+        "(defrecord bag (:fields ((items list))) (:derive equality))",
         &env,
     );
     // Derived equality carries a branded declared scheme (#308) — even the
@@ -86,7 +86,7 @@ fn missing_method_fails_but_unproven_passes() {
 fn method_dispatches_on_concept_values() {
     let env = env_with_stdlib();
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))) (:derive equality))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))) (:derive equality))",
         &env,
     );
     assert_eq!(
@@ -108,7 +108,7 @@ fn declared_row_schemes_count_as_conformance_evidence() {
         &env,
     );
     eval_line(
-        "(defconcept invoice (:fields ((id int64) (amount int64))) (:derive equality))",
+        "(defrecord invoice (:fields ((id int64) (amount int64))) (:derive equality))",
         &env,
     );
     let report = eval_line("(implements? 'invoice 'eq-able)", &env);
@@ -147,7 +147,7 @@ fn implements_claims_are_fingerprinted_and_detect_drift() {
         "(definterface greeter (:ops ((greet (-> (self) string)))))",
         &env,
     );
-    eval_line("(defconcept goblin (:fields ((name string))))", &env);
+    eval_line("(defrecord goblin (:fields ((name string))))", &env);
     eval_line("(defun goblin-greet (self) (goblin-name self))", &env);
     eval_line("(implements! 'goblin 'greeter)", &env);
     // Fresh claim: it holds and nothing has drifted.

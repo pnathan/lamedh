@@ -12,14 +12,14 @@ things first-class data on ordinary symbol plists:
    the checker as the barrier.
 
 The surface reuses conventions the reader (human or model) already knows:
-plists, `defstruct`-style generated names, `deftest`-shaped laws and
+plists, conventional generated names, `deftest`-shaped laws and
 examples. Nothing here is a new evaluation semantics.
 
-## Concepts And Derivations
+## Records And Derivations
 
 ```lisp
-(defconcept invoice
-  (:fields ((id int64) (amount int64) (status symbol)))
+(defrecord invoice
+  (id int64) (amount int64) (status symbol)
   (:invariant (>= amount 0))
   (:derive equality lens))
 ```
@@ -76,7 +76,7 @@ TYPE-ERROR the checker rejects it
 `condense-check-type` runs this over every generated symbol and stores the
 results; everything not `TYPED`/`CHECKED`/`DECLARED` joins
 `"condense.dynamic-frontier"` — the unproven remainder, visible in the
-trace, never silently blended into "verified". `defconcept` and `derive` run
+trace, never silently blended into "verified". `defrecord` and `derive` run
 it automatically, so a fresh trace is honest from birth.
 
 ## Change Is Data: Diff, Patch, Edit
@@ -119,7 +119,7 @@ none is **rolled back and rejected**. An edit may still *repair* a broken
 definition (`TYPE-ERROR` → anything is allowed). Every applied edit is
 recorded under `"condense.edits"` — the change history is part of the trace.
 
-Editing a **concept** edits the seed: the patched `defconcept` source is
+Editing a **record** edits the seed: the patched `defrecord` source is
 re-evaluated, recorded derivations re-derived, attached examples re-run, and
 checker statuses refreshed. One minimal edit regenerates and re-verifies the
 whole artifact:
@@ -133,7 +133,7 @@ whole artifact:
 ## Experimental: Row-Typed Concepts
 
 When every field type of a concept maps into the checker's type language
-(`int64`, `float64`, `bool`, `char`, `string`, `symbol`), `defconcept` and
+(`int64`, `float64`, `bool`, `char`, `string`, `symbol`), `defrecord` and
 `derive` install **declared row schemes** for the generated operations via
 the `declare-type!` builtin:
 
@@ -173,7 +173,7 @@ concept has an **empty dynamic frontier**.
 Condensation is a one-way lens — the seed cannot be recovered from an edited
 expansion — so the discipline is regenerate-only, and it is enforced by
 detection rather than prohibition. Every generated definition is
-fingerprinted (via `see-source`) at `defconcept`/`derive` time:
+fingerprinted (via `see-source`) at `defrecord`/`derive` time:
 
 ```lisp
 (condense-stale 'invoice)   ; generated symbols whose definitions drifted

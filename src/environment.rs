@@ -248,7 +248,6 @@ impl SymbolTable {
             "DEFINE" => Some(SpecialForm::Define),
             "DEFEXPR" => Some(SpecialForm::Defexpr),
             "DEFMACRO" => Some(SpecialForm::Defmacro),
-            "DEFSTRUCT" => Some(SpecialForm::Defstruct),
             "DEFUN-TYPED" => Some(SpecialForm::DefunTyped),
             "DEFUN*" => Some(SpecialForm::DefunStar),
             "JIT-OPTIMIZE" => Some(SpecialForm::JitOptimize),

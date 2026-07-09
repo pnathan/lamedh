@@ -21,14 +21,14 @@ fn condense_put_and_get_metadata() {
 fn condense_record_sets_core_trace_fields() {
     let env = env_with_stdlib();
     eval_line(
-        "(condense-record! 'invoice 'concept '(defconcept invoice) '(progn) '(make-invoice invoice-p))",
+        "(condense-record! 'invoice 'concept '(defrecord invoice) '(progn) '(make-invoice invoice-p))",
         &env,
     );
 
     assert_eq!(eval_line("(condense-kind 'invoice)", &env), "CONCEPT");
     assert_eq!(
         eval_line("(condense-source 'invoice)", &env),
-        "(DEFCONCEPT INVOICE)"
+        "(DEFRECORD INVOICE)"
     );
     assert_eq!(eval_line("(condense-expansion 'invoice)", &env), "(PROGN)");
     assert_eq!(
@@ -41,7 +41,7 @@ fn condense_record_sets_core_trace_fields() {
 fn condense_trace_returns_inspectable_alist() {
     let env = env_with_stdlib();
     eval_line(
-        "(condense-record! 'invoice 'concept '(defconcept invoice) '(progn) '(make-invoice invoice-p))",
+        "(condense-record! 'invoice 'concept '(defrecord invoice) '(progn) '(make-invoice invoice-p))",
         &env,
     );
 

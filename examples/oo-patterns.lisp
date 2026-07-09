@@ -24,16 +24,16 @@
 ;;; declaration — just name the field you need. Every concept below leads
 ;;; with a shared vocabulary so one accessor serves all of them.
 ;;;
-;;; Our worked object, one seed form. DEFCONCEPT generates make-npc, npc-p,
+;;; Our worked object, one seed form. DEFRECORD generates make-npc, npc-p,
 ;;; the four accessors, a validator for the :invariant, and (from :derive)
 ;;; equality + a lens. Note LOOT is a compound field, (list string) — a
 ;;; whole type flows into the row language unchanged.
 
-(defconcept npc
-  (:fields ((name string)
-            (hp int64)
-            (affiliation string)
-            (loot (list string))))
+(defrecord npc
+  (name string)
+  (hp int64)
+  (affiliation string)
+  (loot (list string))
   (:invariant (>= hp 0))
   (:derive equality lens))
 
@@ -77,7 +77,7 @@
 
 (defun the-amount (self) (record-ref self 'amount))
 
-(defconcept order (:fields ((amount int64) (qty int64))))
+(defrecord order (amount int64) (qty int64))
 
 (defun full-price (o) (the-amount o))
 (defun half-price (o) (/ (the-amount o) 2))
@@ -105,8 +105,8 @@ STRATEGY is any function from an amount-bearing record to an int."
 (definterface shape
   (:ops ((area (-> (self) int64)))))
 
-(defconcept disc   (:fields ((r int64))))
-(defconcept group  (:fields ((kids int64))))   ; kids held out-of-band below
+(defrecord disc   (r int64))
+(defrecord group  (kids int64))   ; kids held out-of-band below
 
 ;; A leaf computes directly.
 (defun disc-area (self)
@@ -142,9 +142,9 @@ STRATEGY is any function from an amount-bearing record to an int."
 
 (defun the-cost (self) (record-ref self 'cost))
 
-(defconcept espresso (:fields ((cost int64) (tag string))))
-(defconcept milk     (:fields ((cost int64) (tag string))))
-(defconcept sugar    (:fields ((cost int64) (tag string))))
+(defrecord espresso (cost int64) (tag string))
+(defrecord milk     (cost int64) (tag string))
+(defrecord sugar    (cost int64) (tag string))
 
 ;; Decorators keep their wrapped beverage out-of-band and add to the cost.
 (def *wrapped* (make-hash-table))
@@ -171,8 +171,8 @@ STRATEGY is any function from an amount-bearing record to an int."
 (definterface observer
   (:ops ((notify (-> (self int64) string))))) ; receives an event code
 
-(defconcept logger  (:fields ((tag string))))
-(defconcept counter (:fields ((seen int64))))
+(defrecord logger  (tag string))
+(defrecord counter (seen int64))
 
 (defun logger-notify (self code)
   (concat "[" (record-ref self 'tag) "] saw event " (number->string code)))
@@ -196,7 +196,7 @@ STRATEGY is any function from an amount-bearing record to an int."
 ;;; delegating to state objects. Here each STATE is a value; NEXT is the
 ;;; transition. A traffic light is data + a pure transition function.
 
-(defconcept light (:fields ((color string) (go-p int64))))
+(defrecord light (color string) (go-p int64))
 
 (def *red*    (make-light "red" 0))
 (def *green*  (make-light "green" 1))

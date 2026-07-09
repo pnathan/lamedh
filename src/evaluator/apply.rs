@@ -1569,15 +1569,11 @@ pub(super) fn apply_owned(
     }
 }
 
-/// `record-ref` / `record-with` (issue #308): representation-generic record
-/// field access — the runtime half of the branded-row story. Works on both
-/// record representations:
-///
-/// - a typed-struct value (`LispVal::Struct`), via the registry's field
-///   table for its brand — this is the primitive whose absence was issue
-///   #305 (native structs were reachable only through nominal accessors);
-/// - a positional concept/defrecord value (`(BRAND f1 f2 …)`), via the
-///   brand symbol's `condense.fields` plist entry.
+/// `record-ref` / `record-with` (issue #308): by-name record field access
+/// over the one record representation (`LispVal::Struct`), via the
+/// registry's field table for the value's brand — this is the primitive
+/// whose absence was issue #305 (native structs were reachable only through
+/// nominal accessors).
 ///
 /// `(record-ref v 'field)` reads; `(record-with v 'field x)` returns a new
 /// record with the field replaced (functional update — records are values).
@@ -1630,52 +1626,6 @@ fn apply_record_field_op(
                     type_name: obj.type_name.clone(),
                     fields,
                 })))
-            }
-        }
-        LispVal::Cons { car, .. } => {
-            let LispVal::Symbol(brand) = car.as_ref() else {
-                return Err(LispError::Generic(format!(
-                    "{op}: not a record value (list head is not a brand symbol)"
-                )));
-            };
-            let specs = brand
-                .borrow()
-                .plist
-                .get("condense.fields")
-                .cloned()
-                .ok_or_else(|| {
-                    LispError::Generic(format!(
-                        "{op}: {} is not a record brand",
-                        brand.borrow().name
-                    ))
-                })?;
-            let specs = list_to_vec(&specs)?;
-            let idx = specs
-                .iter()
-                .position(|sp| {
-                    matches!(list_to_vec(sp).as_deref(),
-                        Ok([LispVal::Symbol(n), ..]) if n.borrow().name == field)
-                })
-                .ok_or_else(|| {
-                    LispError::Generic(format!(
-                        "{op}: record {} has no field {}",
-                        brand.borrow().name,
-                        field.to_lowercase()
-                    ))
-                })?;
-            let items = list_to_vec(&args[0])?;
-            if is_ref {
-                items
-                    .get(idx + 1)
-                    .cloned()
-                    .ok_or_else(|| LispError::Generic(format!("{op}: malformed record value")))
-            } else {
-                let mut items = items;
-                if idx + 1 >= items.len() {
-                    return Err(LispError::Generic(format!("{op}: malformed record value")));
-                }
-                items[idx + 1] = args[2].clone();
-                Ok(vec_to_list(items))
             }
         }
         other => Err(LispError::Generic(format!(
@@ -1753,14 +1703,6 @@ fn apply_record_type_op(
             }
             match &args[0] {
                 LispVal::Struct(obj) => Ok(LispVal::Symbol(env.intern_symbol(&obj.type_name))),
-                // Positional concept/defrecord-v1 bridge: a brand-headed list
-                // whose head symbol carries condensation field metadata.
-                LispVal::Cons { car, .. } => match car.as_ref() {
-                    LispVal::Symbol(s) if s.borrow().plist.contains_key("condense.fields") => {
-                        Ok(LispVal::Symbol(s.clone()))
-                    }
-                    _ => Ok(LispVal::Nil),
-                },
                 _ => Ok(LispVal::Nil),
             }
         }
