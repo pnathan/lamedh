@@ -311,6 +311,17 @@ fn run_trampoline(
     initial: Current,
     initial_env: Shared<Environment>,
 ) -> Result<LispVal, LispError> {
+    // Backtrace frame slot for this (non-tail) evaluation boundary.
+    let bt_prev = crate::evaluator::core::bt_enter();
+    let r = run_trampoline_inner(initial, initial_env);
+    crate::evaluator::core::bt_exit(bt_prev, r.is_ok());
+    r
+}
+
+fn run_trampoline_inner(
+    initial: Current,
+    initial_env: Shared<Environment>,
+) -> Result<LispVal, LispError> {
     let mut current: Current = initial;
     let mut current_env: Shared<Environment> = initial_env;
     // Dynamic-binding guards accumulated across tail calls (e.g. a tail-

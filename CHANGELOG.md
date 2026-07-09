@@ -91,6 +91,17 @@ processes, patterns, and the checker meeting in one story.
   with `(declare (no-compile))` or `declaim`. `defun-typed`/`defun*` remain
   for explicit signatures/inference.
 
+## Stack traces
+
+- Runtime errors carry a **backtrace of named frames**: the toplevel prints
+  `Error: boom` followed by `in: INNER ← MIDDLE ← OUTER` (innermost first),
+  and handlers read the frames of the error they caught via
+  `(last-backtrace)`. Tail calls collapse into one frame (Scheme-style TCO
+  traces — a 100k-deep tail loop is a single entry). Recording is
+  pay-mostly-on-error: overhead on hot benchmarks is within noise. Direct
+  toplevel errors format exactly as before. Host API:
+  `lamedh::format_error_with_backtrace`.
+
 ## Guards, fuel, and processes
 
 - Composable guard fences, pure Lisp: `with-fuel`, `with-capabilities`,

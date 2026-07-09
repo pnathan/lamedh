@@ -195,12 +195,17 @@ pub(super) fn apply_error_op(
                 ));
             }
             let form = &args[0];
+            let bt_base = crate::evaluator::core::bt_depth();
             match eval(form, env) {
                 Ok(result) => Ok(vec_to_list(vec![result])),
                 // Trap ordinary errors and signalled conditions only; let
                 // non-local control flow (RETURN/GO/THROW/RETURN-FROM) pass
-                // through unchanged.
-                Err(LispError::Generic(_)) | Err(LispError::Signaled(_)) => Ok(LispVal::Nil),
+                // through unchanged. Catching consumes the error's frames
+                // into LAST-BACKTRACE.
+                Err(LispError::Generic(_)) | Err(LispError::Signaled(_)) => {
+                    crate::evaluator::core::bt_capture(bt_base, env);
+                    Ok(LispVal::Nil)
+                }
                 Err(other) => Err(other),
             }
         }

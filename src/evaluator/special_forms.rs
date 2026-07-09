@@ -276,6 +276,11 @@ fn eval_application(
 
     // Lambda application: TCO — set up new env and continue with body.
     if let LispVal::Lambda(lambda) = &func {
+        // Backtrace: a named call in tail position claims this trampoline's
+        // frame slot (pay-on-error tracing; success truncates it away).
+        if let LispVal::Symbol(name) = first {
+            crate::evaluator::core::bt_note_tail(name.borrow().id);
+        }
         let new_env = Environment::new_child_with_dynamic(&lambda.env, env);
         let has_dyn = new_env.has_any_dynamic();
         let mut guards: Vec<DynamicBinding> = Vec::new();
@@ -724,10 +729,17 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                     .to_string(),
                             ))));
                         }
+                        let bt_base = crate::evaluator::core::bt_depth();
                         let condition = match eval(&forms[0], env) {
                             Ok(v) => return Ok(TcoStep::Done(Ok(v))),
-                            Err(LispError::Signaled(c)) => *c,
+                            Err(LispError::Signaled(c)) => {
+                                // Catching consumes the error's frames into
+                                // LAST-BACKTRACE (readable in the handler).
+                                crate::evaluator::core::bt_capture(bt_base, env);
+                                *c
+                            }
                             Err(LispError::Generic(msg)) => {
+                                crate::evaluator::core::bt_capture(bt_base, env);
                                 LispVal::Error(Shared::new(crate::ErrorObj {
                                     message: msg,
                                     data: LispVal::Nil,

@@ -58,7 +58,7 @@ mod builtins_core;
 mod builtins_extra;
 mod builtins_tail;
 mod compile;
-mod core;
+pub(crate) mod core;
 mod functions;
 mod introspection;
 mod quasiquote;
