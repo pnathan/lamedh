@@ -1403,7 +1403,7 @@ fn reject_call_wrong_arg_type() {
     let err = j
         .define(&read("(defun-typed (bad int64) ((x float64)) (sq x))", &env).unwrap())
         .unwrap_err();
-    assert!(err.contains("expects Int64"), "got: {err}");
+    assert!(err.contains("expects int64"), "got: {err}");
 }
 
 #[test]

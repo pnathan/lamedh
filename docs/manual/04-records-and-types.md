@@ -50,10 +50,8 @@ lamedh -s '(progn (defrecord parcel contents)
 ; => ANYTHING
 ```
 
-Note the syntax: the bare form is a symbol standing on its own among the
-field specs, not a one-element list — `(defrecord parcel (contents))` is a
-different (and currently broken) thing, a field spec with no type element.
-Stick to `(defrecord parcel contents)` or the explicit `(contents any)`.
+The one-element list `(defrecord parcel (contents))` means the same thing
+as the bare symbol — a field with no type is an `any` field either way.
 
 `defrecord` always generates:
 
@@ -87,8 +85,7 @@ part of the value, checked at the accessor:
 lamedh -s '(progn (defrecord point (x int64) (y int64))
                    (defrecord vec2 (x int64) (y int64))
                    (check-type (point-x (make-vec2 1 2))))'
-; => "type error: `POINT-X` arg 0 expects Struct(StructDef { name: \"POINT\", ... }),
-;     got Struct(StructDef { name: \"VEC2\", ... })"
+; => "type error: `POINT-X` arg 0 expects POINT, got VEC2"
 ```
 
 ```lisp

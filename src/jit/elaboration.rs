@@ -697,9 +697,9 @@ impl Cx<'_> {
             let (ac, at) = self.elab(a, scope, max)?;
             if self.unify(&at, &params[i].1).is_err() {
                 return Err(format!(
-                    "`{name}` arg {i} expects {:?}, got {:?}",
-                    params[i].1,
-                    self.walk(&at)
+                    "`{name}` arg {i} expects {}, got {}",
+                    ty_name(&params[i].1),
+                    ty_name(&self.walk(&at))
                 ));
             }
             arg_cores.push(ac);

@@ -428,10 +428,13 @@ artifact. Returns a report alist."
   (and (consp part) (member (car part) '(:invariant :derive :fields))))
 
 (defun record-normalize-field-spec (spec)
-  "Normalize a field spec: bare NAME means (NAME any); a type outside the
-checker's language degrades to ANY (gradual, per-field)."
+  "Normalize a field spec: bare NAME and one-element (NAME) both mean
+(NAME any); a type outside the checker's language degrades to ANY
+(gradual, per-field)."
   (if (consp spec)
-      (list (car spec) (condense-record-field-ty (cadr spec)))
+      (if (null (cdr spec))
+          (list (car spec) 'any)
+          (list (car spec) (condense-record-field-ty (cadr spec))))
       (list spec 'any)))
 
 (defun record-field-specs (parts)
