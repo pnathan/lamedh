@@ -178,6 +178,8 @@ DEFINSTANCE for your own types).")
   (mapcar f xs))
 (definstance map ((arr (array any)) (f any)) (array any)
   (array-map arr f))
+(definstance map ((s string) (f (-> (string) string))) string
+  (list->string (mapcar f (string->list s))))
 
 (defprotocol for-each
   "Visit each element for effect: (for-each coll fn) => (). The hash
@@ -189,3 +191,5 @@ instance calls (fn key value).")
   (progn (array-map arr f) ()))
 (definstance for-each ((h hash) (f any)) any
   (progn (maphash h f) ()))
+(definstance for-each ((s string) (f (-> (string) b))) any
+  (progn (mapc f (string->list s)) ()))

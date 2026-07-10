@@ -57,6 +57,21 @@ maphash) — one sequence story: results follow the input's kind
 (list→list, array→array, string→string; hash iterates (key . value)
 pairs).
 
+✔ Shipped as the `length`/`map`/`for-each` typed protocols
+(lib/29-protocols.lisp): `length` covers hash; `map` is kind-preserving
+over list/array/string; `for-each` visits list/array/string/hash (hash
+gets `(fn key value)`).
+
+**Ruling — `filter`/`reduce` stay list-specific, fn-first.** They belong
+to the fn-first heritage class (`mapcar`/`mapc`/`every`/`exists`), and
+protocols dispatch on the FIRST argument, so protocolizing them would
+either flip their argument order out from under every existing caller or
+bless two argument orders permanently. The generic sequence story is the
+collection-first protocols; when you need a generic filter/reduce today,
+go through `map`/`for-each` or convert at the edge (`array->list`,
+`string->list`). Revisit only if 0.4's dispatch can key on a non-first
+argument.
+
 ## Findings: checker knowledge (→ batch 3, "typing with vigor")
 
 The checker natively understands: arithmetic, comparisons, cons/car/cdr/

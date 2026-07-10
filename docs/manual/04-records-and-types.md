@@ -1074,7 +1074,8 @@ lamedh -s '(map (list 1 2 3) (lambda (x) (* x x)))'
 ; => (1 4 9)
 ```
 
-`map` is kind-preserving (a list maps to a list, an array to an array);
+`map` is kind-preserving (a list maps to a list, an array to an array, a
+string to a string — `(map "abc" #'string-upcase)` is `"ABC"`);
 `for-each` visits for effect, and its hash instance receives
 `(fn key value)`. The Lisp 1.5 appendix's tails-visiting `map` lives on as
 `map-tails`.
