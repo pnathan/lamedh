@@ -19,9 +19,9 @@
   (assert-equal (logand 15 15) 15))
 
 (deftest bw-logor
-  (assert-equal (logor 12 10) 14)
-  (assert-equal (logor  0  0)  0)
-  (assert-equal (logor  8  4) 12))
+  (assert-equal (logior 12 10) 14)
+  (assert-equal (logior  0  0)  0)
+  (assert-equal (logior  8  4) 12))
 
 (deftest bw-logxor
   (assert-equal (logxor 12 10) 6)

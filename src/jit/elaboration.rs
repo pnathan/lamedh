@@ -148,6 +148,16 @@ impl Cx<'_> {
                     "RECORD-REF" if self.checking => self.elab_record_ref(args, scope, max),
                     "RECORD-NEW" if self.checking => self.elab_record_new(args, scope, max),
                     "RECORD-WITH" if self.checking => self.elab_record_with(args, scope, max),
+                    // Variadic-operator rules (0.3 census): declared schemes
+                    // are fixed-arity, so these get native rules like `+`.
+                    "APPEND" if self.checking => self.elab_append(args, scope, max),
+                    "CONCAT" if self.checking => {
+                        self.elab_mono_variadic(args, scope, max, Ty::Str, "concat")
+                    }
+                    "LOGAND" | "LOGIOR" | "LOGXOR" | "GCD" | "LCM" if self.checking => {
+                        self.elab_mono_variadic(args, scope, max, Ty::Int64, "bitwise/gcd")
+                    }
+                    "MIN" | "MAX" if self.checking => self.elab_min_max(args, scope, max),
                     "LET" if self.checking => self.elab_let(args, scope, max),
                     "PROGN" if self.checking => self.elab_body(args, scope, max),
                     "QUOTE" if self.checking => self.elab_quote(args),
@@ -531,6 +541,69 @@ impl Cx<'_> {
             acc = Core::Let(slot, Box::new(init_core), Box::new(acc));
         }
         Ok((acc, body_ty))
+    }
+
+    /// `(append l1 ... ln)` : every argument `(list a)`, result `(list a)`.
+    /// (Dotted-tail append is dynamically legal but rejected in checked
+    /// code — checked code keeps lists regular.)
+    fn elab_append(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let elem = self.fresh();
+        let want = Ty::List(Box::new(elem));
+        for a in args {
+            let (_, ta) = self.elab(a, scope, max)?;
+            self.unify(&ta, &want)
+                .map_err(|e| format!("`append`: {e}"))?;
+        }
+        Ok((Core::LitI(0), self.walk(&want)))
+    }
+
+    /// A variadic operator whose arguments and result share one known
+    /// monomorphic type (concat over strings; bitwise/gcd over int64).
+    fn elab_mono_variadic(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+        ty: Ty,
+        what: &str,
+    ) -> Result<(Core, Ty), String> {
+        for a in args {
+            let (_, ta) = self.elab(a, scope, max)?;
+            self.unify(&ta, &ty).map_err(|e| format!("`{what}`: {e}"))?;
+        }
+        Ok((Core::LitI(0), ty))
+    }
+
+    /// `(min a b ...)` / `(max ...)`: a numeric chain like `+`.
+    fn elab_min_max(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.is_empty() {
+            return Err("`min`/`max` require at least one argument".to_string());
+        }
+        let (_, mut ty) = self.elab(&args[0], scope, max)?;
+        for a in &args[1..] {
+            let (_, tb) = self.elab(a, scope, max)?;
+            self.unify(&ty, &tb)
+                .map_err(|e| format!("`min`/`max`: {e}"))?;
+            ty = self.walk(&ty);
+        }
+        let w = self.walk(&ty);
+        if Self::known_non_numeric(&w) {
+            return Err(format!(
+                "`min`/`max` expect numeric operands, got {}",
+                super::ty_name(&w)
+            ));
+        }
+        Ok((Core::LitI(0), w))
     }
 
     /// The derived-scheme path for an unknown callee (#308). Returns

@@ -559,6 +559,7 @@ pub enum BuiltinFunc {
     ExplainCompile,
     SetValue,
     CapMaskAllowsP,
+    Append,
     // Introspective typing surface (rows port, #297 step 0): structured
     // checker verdicts, pure string->forms parsing, and declared schemes.
     SeeType,

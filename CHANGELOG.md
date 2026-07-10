@@ -42,6 +42,28 @@ language. Sections below, roughly newest first.
   literals: print/read round-trip (spawn and channel serialization), usable
   as source syntax.
 
+## The census, batch 1: variadicity (breaking)
+
+The full special-form/builtin/stdlib census lives in docs/audit-0-3.md;
+this batch fixes the variadicity findings.
+
+- `append` is a variadic kernel builtin — `(append)`, `(append xs)`,
+  `(append a b c ...)`, dotted final tail preserved — replacing the 2-ary
+  stdlib recursion (it is also faster and checker-known now).
+- `gcd`/`lcm` are variadic folds with the CL identities (`(gcd)` = 0,
+  `(lcm)` = 1).
+- **`logor` is renamed `logior`** — the name every Lisp reader (and
+  model) expects; `logand`/`logxor` were already variadic and now the
+  trio is uniform.
+- `mapcar` takes N lists Common-Lisp style, zipping and stopping at the
+  shortest.
+- Checker-native rules for the variadic family: `append` (all `(list a)`
+  → `(list a)`; dotted-tail append stays dynamic-only), `concat`
+  (strings → string), `min`/`max` (numeric chain), `logand`/`logior`/
+  `logxor`/`gcd`/`lcm` (int64). Side effect of the `concat` rule: the NPC
+  example's greet methods left the dynamic frontier — their row schemes
+  now derive fully.
+
 ## HM generics — parametric records and variants
 
 ```lisp

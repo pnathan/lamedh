@@ -583,7 +583,8 @@ impl Environment {
         env.set("RPLACD".to_string(), LispVal::Builtin(BuiltinFunc::Rplacd));
 
         // Bitwise operations
-        env.set("LOGOR".to_string(), LispVal::Builtin(BuiltinFunc::Logor));
+        // REGULARITY (0.3): the name every Lisp reader expects is CL's LOGIOR.
+        env.set("LOGIOR".to_string(), LispVal::Builtin(BuiltinFunc::Logor));
         env.set("LOGAND".to_string(), LispVal::Builtin(BuiltinFunc::Logand));
         env.set("LOGXOR".to_string(), LispVal::Builtin(BuiltinFunc::Logxor));
         env.set(
@@ -743,6 +744,7 @@ impl Environment {
             "CAPABILITY-MASK-ALLOWS-P".to_string(),
             LispVal::Builtin(BuiltinFunc::CapMaskAllowsP),
         );
+        env.set("APPEND".to_string(), LispVal::Builtin(BuiltinFunc::Append));
         env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),

@@ -115,10 +115,10 @@ fn test_logand_no_args() {
 #[test]
 fn test_logor_no_args() {
     // LOGOR with no arguments returns 0
-    let result = eval_str("(LOGOR)");
+    let result = eval_str("(LOGIOR)");
     assert!(result.is_ok());
     if let Ok(LispVal::Number(n)) = result {
-        assert_eq!(n, 0, "Empty LOGOR should return 0");
+        assert_eq!(n, 0, "Empty LOGIOR should return 0");
     }
 }
 

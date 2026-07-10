@@ -82,9 +82,9 @@ fn conformance_is_verified_and_honestly_graded() {
     assert!(report.starts_with("(T"), "got: {report}");
     // DAMAGE is proved by row unification against the declared signature...
     assert!(report.contains("(DAMAGE CONFORMS"), "got: {report}");
-    // ...while GREET's result flows through CONCAT, which the checker cannot
-    // type today — so the grade says exactly that: unproven, not verified.
-    assert!(report.contains("(GREET UNPROVEN"), "got: {report}");
+    // ...and GREET too, as of the 0.3 census: CONCAT has a checker-native
+    // rule (variadic strings -> string), so the whole method row derives.
+    assert!(report.contains("(GREET CONFORMS"), "got: {report}");
     // The load-time IMPLEMENTS! assertions recorded the claims.
     assert_eq!(
         eval_line("(getp 'wisp \"interface.implements\")", &env),

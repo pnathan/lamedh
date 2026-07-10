@@ -374,30 +374,34 @@ pub(super) fn apply_list_processing(
             // Arg order: (mapcar fn list) — function first, matching Common Lisp
             // (and the rest of the functional toolkit). Note this differs from
             // the Lisp 1.5 manual's mapcar[x;fn]; the alignment is intentional.
-            if args.len() != 2 {
+            if args.len() < 2 {
                 return Err(LispError::Generic(
-                    "mapcar requires exactly two arguments".to_string(),
+                    "mapcar requires a function and at least one list".to_string(),
                 ));
             }
             let func = &args[0];
-            let list = &args[1];
+            // REGULARITY (0.3): N lists zip Common-Lisp style — FN is applied
+            // to one element from each list, stopping at the shortest.
+            let mut currents: Vec<&LispVal> = args[1..].iter().collect();
             let mut result = Vec::new();
-            let mut current = list;
-            loop {
-                match current {
-                    LispVal::Nil => break,
-                    LispVal::Cons { car, cdr } => {
-                        let applied = apply(func, &[car.as_ref().clone()], env)?;
-                        result.push(applied);
-                        current = cdr;
-                    }
-                    other => {
-                        return Err(LispError::Generic(format!(
-                            "MAPCAR: expected a proper list, got tail {}",
-                            err_val(other)
-                        )));
+            'outer: loop {
+                let mut row = Vec::with_capacity(currents.len());
+                for cur in currents.iter_mut() {
+                    match cur {
+                        LispVal::Nil => break 'outer,
+                        LispVal::Cons { car, cdr } => {
+                            row.push(car.as_ref().clone());
+                            *cur = cdr.as_ref();
+                        }
+                        other => {
+                            return Err(LispError::Generic(format!(
+                                "MAPCAR: expected a proper list, got tail {}",
+                                err_val(other)
+                            )));
+                        }
                     }
                 }
+                result.push(apply(func, &row, env)?);
             }
             Ok(vec_to_list(result))
         }

@@ -8,10 +8,7 @@
   (eq x nil))
 
 
-;; Essential list functions
-(defun append (x y)
-  (cond ((null x) y)
-        (t (cons (car x) (append (cdr x) y)))))
+;; APPEND is a variadic kernel builtin as of 0.3 (regularity + hot path).
 
 (defun member (item list)
   (cond ((null list) nil)

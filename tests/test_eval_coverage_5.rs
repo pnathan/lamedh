@@ -205,10 +205,10 @@ fn test_defdynamic_one_arg_error() {
 #[test]
 fn test_logor_non_integer_error() {
     let env = env_with_stdlib();
-    let result = eval_line(r#"(logor "a" 1)"#, &env);
+    let result = eval_line(r#"(logior "a" 1)"#, &env);
     assert!(
         result.contains("Error"),
-        "expected error for (logor \"a\" 1), got: {result}"
+        "expected error for (logior \"a\" 1), got: {result}"
     );
 }
 
