@@ -27,6 +27,59 @@ thread_local! {
     static KERNEL_FUEL: Cell<i64> = const { Cell::new(-1) };
 }
 
+// ---------------------------------------------------------------------------
+// Capability mask (#320): DYNAMIC-EXTENT attenuation. `None` = unmasked
+// (host grants only). WITH-CAPABILITIES (a kernel special form) arms the
+// mask around its body with RAII restore, and every kernel capability check
+// consults it — so attenuation follows the call, not the lexical fence
+// body: helpers called from inside a fence are fenced too, and there is no
+// Lisp-callable way to widen it.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static CAP_MASK: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
+    /// Nesting depth of active WITH-FUEL fences: KERNEL-FUEL-SET! is
+    /// narrow-only while inside one (widening from Lisp would be a fence
+    /// escape) but unrestricted at the host/top level.
+    static FUEL_FENCE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Enter/leave a WITH-FUEL fence extent (special-form RAII only).
+pub(crate) fn fuel_fence_enter() {
+    FUEL_FENCE_DEPTH.with(|d| d.set(d.get() + 1));
+}
+pub(crate) fn fuel_fence_leave() {
+    FUEL_FENCE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+}
+/// Are we inside an active WITH-FUEL fence?
+pub(crate) fn fuel_fenced() -> bool {
+    FUEL_FENCE_DEPTH.with(|d| d.get() > 0)
+}
+
+/// Does the current mask allow capability `name`? Unmasked = yes.
+pub fn cap_mask_allows(name: &str) -> bool {
+    CAP_MASK.with(|m| match &*m.borrow() {
+        None => true,
+        Some(mask) => mask.iter().any(|c| c == name),
+    })
+}
+
+/// Replace the mask, returning the previous state. `pub(crate)`: only the
+/// WITH-CAPABILITIES special form (RAII) may call this — deliberately no
+/// Lisp-facing setter exists.
+pub(crate) fn cap_mask_set(mask: Option<Vec<String>>) -> Option<Vec<String>> {
+    CAP_MASK.with(|m| std::mem::replace(&mut *m.borrow_mut(), mask))
+}
+
+/// The current mask (for `capabilities-effective` introspection).
+pub(crate) fn cap_mask_get() -> Option<Vec<String>> {
+    CAP_MASK.with(|m| m.borrow().clone())
+}
+
 /// Arm (Some) or disarm (None) the current thread's kernel fuel budget,
 /// returning the previous state so callers can restore it on scope exit.
 pub fn set_kernel_fuel(fuel: Option<u64>) -> Option<u64> {

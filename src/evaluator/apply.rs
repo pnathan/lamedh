@@ -390,6 +390,28 @@ pub(super) fn apply(
                 env.global_set(&name, args[1].clone());
                 Ok(args[1].clone())
             }
+            // (capability-mask-allows-p 'name) — read-only introspection of
+            // the dynamic capability mask (#320): T when no fence is active
+            // or the active mask includes NAME. Used by the Lisp layer to
+            // attenuate CUSTOM capabilities (which are not env features).
+            BuiltinFunc::CapMaskAllowsP => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "capability-mask-allows-p takes exactly one argument".to_string(),
+                    ));
+                }
+                let LispVal::Symbol(sym) = &args[0] else {
+                    return Err(LispError::Generic(
+                        "CAPABILITY-MASK-ALLOWS-P: argument must be a symbol".to_string(),
+                    ));
+                };
+                let name = sym.borrow().name.clone();
+                if crate::evaluator::core::cap_mask_allows(&name) {
+                    Ok(LispVal::Symbol(env.intern_symbol("T")))
+                } else {
+                    Ok(LispVal::Nil)
+                }
+            }
             // (monotonic-micros) — microseconds since an arbitrary process
             // epoch; the timing primitive under (time ...) in lib/26.
             BuiltinFunc::MonotonicMicros => {
@@ -1178,6 +1200,23 @@ pub(super) fn apply(
                         )));
                     }
                 };
+                // NARROW-ONLY when armed (#320): inside an active fuel
+                // fence a program may lower its own budget but never raise
+                // or disarm it — the only widening path is the WITH-FUEL
+                // special form's own Rust-side restore.
+                if crate::evaluator::core::fuel_fenced()
+                    && let Some(current) = crate::evaluator::kernel_fuel_remaining()
+                {
+                    match requested {
+                        Some(n) if n <= current => {}
+                        _ => {
+                            return Err(LispError::Generic(
+                                "kernel-fuel-set!: cannot widen or disarm inside a fuel fence"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
                 match crate::evaluator::set_kernel_fuel(requested) {
                     Some(prev) => Ok(LispVal::Number(prev.min(i64::MAX as u64) as i64)),
                     None => Ok(LispVal::Nil),
@@ -1254,8 +1293,11 @@ pub(super) fn apply(
 
             // Capabilities / features (read-only from Lisp)
             BuiltinFunc::FeatureEnabledP => {
+                // Mask-aware (#320): inside a WITH-CAPABILITIES extent an
+                // attenuated capability reads as disabled, so the Lisp-level
+                // capability introspection follows the dynamic fence.
                 let name = feature_name_arg(args, "feature-enabled-p")?;
-                if env.feature_enabled(&name) {
+                if env.feature_enabled(&name) && crate::evaluator::core::cap_mask_allows(&name) {
                     Ok(LispVal::Symbol(env.intern_symbol("T")))
                 } else {
                     Ok(LispVal::Nil)

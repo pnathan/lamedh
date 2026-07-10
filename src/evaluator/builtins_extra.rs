@@ -81,6 +81,11 @@ pub(super) fn apply_io_op(
                         .to_string(),
                 ));
             }
+            if !crate::evaluator::core::cap_mask_allows("IO") {
+                return Err(LispError::Generic(
+                    "capability denied: IO (attenuated by an enclosing fence)".to_string(),
+                ));
+            }
             if !args.is_empty() {
                 return Err(LispError::Generic("read takes no arguments".to_string()));
             }

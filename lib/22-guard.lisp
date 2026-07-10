@@ -1,45 +1,27 @@
-;;; Guard fences: composable dynamic-extent attenuation of execution budget
-;;; (WITH-FUEL) and capability authority (WITH-CAPABILITIES). Issue #284.
+;;; Guard fences: composable DYNAMIC-EXTENT attenuation of execution budget
+;;; (WITH-FUEL) and capability authority (WITH-CAPABILITIES). Issue #284,
+;;; hardened to dynamic extent in 0.3 (#320).
 ;;;
-;;; Both constructs are monotone attenuators: WITH-FUEL clamps its budget to
-;;; the remaining enclosing budget, WITH-CAPABILITIES intersects with the
-;;; currently effective capability set. Nesting order never matters for
-;;; soundness, so the two compose freely.
+;;; Both fences are KERNEL SPECIAL FORMS with RAII save/restore: WITH-FUEL
+;;; arms the kernel step counter (clamped to the enclosing remainder) and
+;;; WITH-CAPABILITIES arms a thread-local capability mask (intersected with
+;;; the enclosing mask — attenuation only). Every kernel capability check
+;;; and the step counter consult that state on every operation, so
+;;; attenuation follows the CALL, not the fence's lexical body: helpers
+;;; called from inside a fence are fenced too, eval'd code is fenced, and
+;;; there is no Lisp-callable way to widen either state (KERNEL-FUEL-SET!
+;;; is narrow-only while armed; no capability-mask setter exists at all).
 ;;;
-;;; Mechanism (pure Lisp, "Phase 1" of #284): each fence is a vau operative
-;;; that (1) for fuel, code-walks its body inserting ($GUARD-TICK) at lambda
-;;; entries and loop back-edges — the Erlang-reductions/Wasm-fuel discipline;
-;;; (2) seals the body in an immediately-applied lambda whose parameters
-;;; lexically shadow the tick, the introspection functions, and the escape
-;;; hatches (EVAL, APPLY, FUNCALL, the map family, SORT, and the
-;;; capability-gated builtins). Operator dispatch resolves heads through the
-;;; lexical chain (the FLET mechanism), so the shadows govern the fenced
-;;; body. The fuel counter lives in a one-element array reachable only
-;;; through the tick/reader closures — no nameable path from guarded code
-;;; can refill it.
+;;; Escaped closures follow the same rule in reverse: a closure created
+;;; under a fence but CALLED outside runs with the caller's authority —
+;;; ambient authority belongs to the execution, not the definition site
+;;; (the same law SPAWN applies at thread boundaries).
 ;;;
-;;; Threat model: safety against ACCIDENT (runaway generated loops,
-;;; unintended writes), not against an adversary studying the fence.
-;;; Documented Phase-1 leaks:
-;;;   - Closures defined OUTSIDE a fence and called inside are charged only
-;;;     at the call (via the shadowed higher-order functions), not per
-;;;     internal step, and see their own definition environment's builtins
-;;;     rather than the capability shadows. The kernel's host-level
-;;;     capability grants still apply to them.
-;;;   - Builtin-internal work is atomic (one tick per shadowed call, plus
-;;;     one per element for the map family).
-;;;   - (EVAL form EXPLICIT-ENV) with a foreign environment escapes the
-;;;     shadows (kernel grants still apply).
-;;;   - User macros that expand to loops are metered only at the function
-;;;     calls inside them, not at their back-edges.
-;;;   - Bodies inside QUASIQUOTE unquotes are not instrumented.
-;;; "Phase 2" (#284) closes the interpreter-side leaks with two small kernel
-;;; hooks that inherit these semantics and this test suite.
-;;;
-;;; No-compile (#284 + #168): inside a fence, JIT-OPTIMIZE is rewritten to a
-;;; no-op returning COMPILE-DISABLED-BY-GUARD, DEFUN-TYPED signals an error,
-;;; and DEFUN* is downgraded to plain DEFUN (type annotations stripped) —
-;;; compiled editions would bypass the tick instrumentation.
+;;; No-compile (#284 + #168): while a fuel budget is armed, JIT-OPTIMIZE
+;;; returns COMPILE-DISABLED-BY-GUARD, DEFUN-TYPED errors, and one-door
+;;; membranes take their interpreted fallback — a native edition's internal
+;;; loops never return to the metered trampoline. (Pre-existing DEFUN-TYPED
+;;; natives lack an interpreted fallback and remain a documented hole.)
 
 ;;; ------------------------------------------------------------------
 ;;; Small helpers (kept dependency-light on purpose).
@@ -93,12 +75,14 @@ fence, or NIL when no fence is active."
 (def $custom-capabilities ())
 
 (defun $guard-host-capabilities ()
-  "The capability set granted by the host process (the outermost
-authority), plus registered custom capabilities (module-provided names,
-held by registration, attenuable like any other)."
+  "The capability set effective RIGHT NOW: host-granted builtins (already
+mask-aware — FEATURE-ENABLED-P consults the dynamic fence) plus registered
+custom capabilities filtered through the same mask."
   (let ((all '(READ-FS CREATE-FS TEMP-FS SHELL IO))
         (held nil))
-    (dolist (c all (append (reverse held) $custom-capabilities))
+    (dolist (c all (append (reverse held)
+                           (filter #'capability-mask-allows-p
+                                   $custom-capabilities)))
       (when (feature-enabled-p (princ-to-string c))
         (setq held (cons c held))))))
 
@@ -117,103 +101,10 @@ by a custom capability."
 every enclosing WITH-CAPABILITIES fence."
   ($guard-host-capabilities))
 
-;;; ------------------------------------------------------------------
-;;; The instrumentation walker (fuel). Inserts ($GUARD-TICK) at lambda/defun
-;;; entries and at loop back-edges (WHILE/FOR bodies, PROG labels), and
-;;; applies the no-compile rewrites. Descends generically elsewhere; QUOTE
-;;; and QUASIQUOTE subtrees are left untouched.
-
-(defun $guard-strip-params (params)
-  "DEFUN* param list with type annotations removed: (X INT64) -> X."
-  (mapcar (lambda (p) (if (consp p) (car p) p)) params))
-
-(defun $guard-walk-list (forms)
-  (if (consp forms)
-      (cons ($guard-walk (car forms)) ($guard-walk-list (cdr forms)))
-      forms))
-
-(defun $guard-walk (form)
-  (cond
-    ((not (consp form)) form)
-    ((not (symbolp (car form))) ($guard-walk-list form))
-    ((eq (car form) 'quote) form)
-    ((eq (car form) 'quasiquote) form)
-    ;; No-compile rewrites (#284, #168): compiled editions would bypass the
-    ;; tick instrumentation entirely.
-    ((eq (car form) 'jit-optimize) (list 'quote 'compile-disabled-by-guard))
-    ((eq (car form) 'defun-typed)
-     (list 'error "defun-typed is disabled inside a guard fence (no-compile, issue #284)"))
-    ((eq (car form) 'defun*)
-     ;; Downgrade to an ordinary defun: same behavior, no inference/compile.
-     ($guard-walk (cons 'defun
-                        (cons (car (cdr form))
-                              (cons ($guard-strip-params (car (cdr (cdr form))))
-                                    (cdr (cdr (cdr form))))))))
-    ;; In-fence DEFUN pins to the interpreted tier: the kernel step counter
-    ;; meters trampoline iterations, and a NATIVE edition's internal loops
-    ;; never return to the trampoline — compiling would open a fuel escape.
-    ((eq (car form) 'defun)
-     (cons 'defun
-           (cons (car (cdr form))
-                 (cons (car (cdr (cdr form)))
-                       (cons '(declare (no-compile))
-                             ($guard-walk-list (cdr (cdr (cdr form)))))))))
-    (t ($guard-walk-list form))))
-
-;;; ------------------------------------------------------------------
-;;; WITH-FUEL.
-
-(defvau with-fuel (x e)
-  "(WITH-FUEL N FORM...) — evaluate FORMs under an execution budget of N
-KERNEL STEPS (one trampoline iteration each — the exact unit STEP-COUNT
-measures, so (car (step-count form)) sizes the budget). Exhaustion signals
-a catchable 'fuel exhausted' error. Nested budgets clamp to the enclosing
-remainder and spend from it. Inside the fence, (FUEL-REMAINING) reports
-the live budget; native JIT compilation is disabled for in-fence
-definitions (no-compile, issue #284 — a native edition's internal loops
-would never return to the metered trampoline)."
-  (let* ((budget (eval (car x) e))
-         (bcell (array 1))
-         (bindings
-          (list
-           ;; One ruler: introspection reads the kernel step counter.
-           (cons 'fuel-remaining (lambda () (kernel-fuel-remaining)))
-           ;; The budget cell is fence-internal state: deny the setter to
-           ;; guarded code (reading via KERNEL-FUEL-REMAINING stays allowed,
-           ;; per the introspection-visible policy).
-           (cons 'kernel-fuel-set!
-                 (lambda (n)
-                   (error "kernel-fuel-set! is disabled inside a guard fence (#284)")))
-           ;; EVAL re-applies the no-compile rewrites and re-seals, so
-           ;; eval'd definitions cannot mint native editions either.
-           (cons 'eval
-                 (lambda (form &rest renv)
-                   (eval ($guard-seal (list ($guard-walk form)) (fetch bcell 0))
-                         (if renv (car renv) e))))))
-         ;; Fence setup (walk + seal) happens BEFORE arming: the budget pays
-         ;; for the guarded work, not for the fence's own bookkeeping.
-         (sealed ($guard-seal ($guard-walk-list (cdr x)) bindings))
-         (kprev (kernel-fuel-remaining))
-         (karmed (if kprev (min kprev budget) budget)))
-    (store bcell 0 bindings)
-    (kernel-fuel-set! karmed)
-    (unwind-protect
-        (eval sealed e)
-      ;; Restore the enclosing budget MINUS what this fence spent (a nil
-      ;; KNOW means exhaustion disarmed the counter: everything spent).
-      (let* ((know (kernel-fuel-remaining))
-             (spent (- karmed (if know know 0))))
-        (kernel-fuel-set!
-         (if kprev
-             (let ((left (- kprev spent))) (if (< left 0) 0 left))
-             ()))))))
-
-;;; ------------------------------------------------------------------
-;;; WITH-CAPABILITIES.
-
 ;; Capability requirements of the gated builtins, mirroring the kernel's
-;; require_* checks in src/evaluator/apply.rs (and SHELL/READ in
-;; builtins_extra.rs). RENAME-FILE needs both sets per issue #273.
+;; require_* checks. Enforcement is IN the kernel (dynamic mask, #320);
+;; this table remains as the STATIC-analysis half — capabilities-needed
+;; manifests join it with the call graph.
 (setq $guard-gated-builtins
       '((load-file READ-FS) (read-file READ-FS) (read-file-byte READ-FS)
         (read-file-section READ-FS) (file-exists-p READ-FS)
@@ -227,63 +118,12 @@ would never return to the metered trampoline)."
         (shell SHELL)
         (read IO)))
 
-(defun $guard-cap-shadow (name required original effective)
-  "A wrapper for gated builtin NAME requiring the REQUIRED capabilities:
-denies with a catchable error unless REQUIRED is a subset of EFFECTIVE,
-else delegates to ORIGINAL (which may itself be an outer fence's wrapper)."
-  (lambda (&rest args)
-    (if ($guard-subset-p required effective)
-        (apply original args)
-        (error (concat "capability denied: " (princ-to-string name)
-                       " requires " (princ-to-string required)
-                       "; effective " (princ-to-string effective))))))
-
-(defun $guard-cap-shadows (table effective env)
-  "Fence bindings for every gated builtin in TABLE that is bound in ENV."
-  (cond ((null table) nil)
-        (t (let* ((entry (car table))
-                  (name (car entry))
-                  (required (cdr entry))
-                  (original ($guard-probe name env))
-                  (rest ($guard-cap-shadows (cdr table) effective env)))
-             (if original
-                 (cons (cons name ($guard-cap-shadow name required original effective))
-                       rest)
-                 rest)))))
-
-(defvau with-capabilities (x e)
-  "(WITH-CAPABILITIES '(CAP...) FORM...) — evaluate FORMs with the effective
-capability set narrowed to the intersection of the listed capabilities and
-the currently effective set (attenuation only: a fence can never add a
-capability). Gated operations outside the set signal a catchable
-'capability denied' error naming the operation, the requirement, and the
-effective set. (CAPABILITIES-EFFECTIVE) reports the live set."
-  (let* ((requested (eval (car x) e))
-         (outer (funcall ($guard-probe 'capabilities-effective e)))
-         (effective ($guard-intersect requested outer))
-         (bcell (array 1))
-         (bindings
-          (append
-           (list
-            (cons 'capabilities-effective (lambda () effective))
-            ;; The Lisp-level gate attenuates with the fence too (custom
-            ;; capabilities, 0.3 modules).
-            (cons 'require-capability
-                  (lambda (c)
-                    (if (member c effective)
-                        t
-                        (error (concat "capability denied: "
-                                       (princ-to-string c)
-                                       " (effective: "
-                                       (princ-to-string effective) ")")))))
-            ;; EVAL re-seals so evaluated data inherits the fence.
-            (cons 'eval
-                  (lambda (form &rest renv)
-                    (eval ($guard-seal (list form) (fetch bcell 0))
-                          (if renv (car renv) e)))))
-           ($guard-cap-shadows $guard-gated-builtins effective e))))
-    (store bcell 0 bindings)
-    (eval ($guard-seal (cdr x) bindings) e)))
+;;; ------------------------------------------------------------------
+;;; WITH-FUEL and WITH-CAPABILITIES are KERNEL SPECIAL FORMS (0.3, #320):
+;;; dynamic-extent state armed and restored in Rust, with narrow-only Lisp
+;;; access. Nothing to define here — this file provides the introspection
+;;; layer (fuel-remaining, capabilities-effective, require-capability),
+;;; custom capabilities, manifests, SANDBOXED, and SPAWN.
 
 ;;; ------------------------------------------------------------------
 ;;; Convenience combinator.
@@ -385,7 +225,9 @@ closures); refer to spawned workers by the values they return."
          ;; Resolve CAPABILITIES-EFFECTIVE in the CALLER's environment so an
          ;; enclosing WITH-CAPABILITIES fence's attenuation is honored (the
          ;; operative's own lexical scope would see only the global).
-         (outer-caps (funcall ($guard-probe 'capabilities-effective e)))
+         ;; Dynamic extent (#320): the effective set is thread state now,
+         ;; no lexical probe needed.
+         (outer-caps (capabilities-effective))
          (effective ($guard-intersect requested outer-caps))
          (body-form (if (null (cdr body)) (car body) (cons 'progn body)))
          (body-src (prin1-to-string body-form)))

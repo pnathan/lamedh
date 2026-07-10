@@ -513,6 +513,13 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
 pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal {
     LispVal::Native(Shared::new(
         move |args: &[LispVal], env: &Shared<Environment>| -> Result<LispVal, LispError> {
+            // Under an active fuel fence the native fast path is skipped
+            // (#320): compiled internal loops never return to the metered
+            // trampoline, so fenced calls take the interpreted fallback,
+            // which charges per step like everything else.
+            if crate::evaluator::core::kernel_fuel_remaining().is_some() {
+                return apply(&fallback, args, env);
+            }
             if let Some((ptys, ret)) = env.jit_signature(&name)
                 && args.len() == ptys.len()
             {

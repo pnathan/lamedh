@@ -249,6 +249,8 @@ impl SymbolTable {
             "DEFEXPR" => Some(SpecialForm::Defexpr),
             "DEFMACRO" => Some(SpecialForm::Defmacro),
             "DEFUN-TYPED" => Some(SpecialForm::DefunTyped),
+            "WITH-FUEL" => Some(SpecialForm::WithFuel),
+            "WITH-CAPABILITIES" => Some(SpecialForm::WithCapabilities),
             "DEFUN*" => Some(SpecialForm::DefunStar),
             "JIT-OPTIMIZE" => Some(SpecialForm::JitOptimize),
             "CHECK-TYPE" => Some(SpecialForm::CheckType),
@@ -737,6 +739,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ExplainCompile),
         );
         env.set("SET".to_string(), LispVal::Builtin(BuiltinFunc::SetValue));
+        env.set(
+            "CAPABILITY-MASK-ALLOWS-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::CapMaskAllowsP),
+        );
         env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),

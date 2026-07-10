@@ -558,6 +558,7 @@ pub enum BuiltinFunc {
     MonotonicMicros,
     ExplainCompile,
     SetValue,
+    CapMaskAllowsP,
     // Introspective typing surface (rows port, #297 step 0): structured
     // checker verdicts, pure string->forms parsing, and declared schemes.
     SeeType,
@@ -728,6 +729,10 @@ pub enum SpecialForm {
     Defmacro,
     /// `DEFUN-TYPED`
     DefunTyped,
+    /// `WITH-FUEL` — kernel-armed step budget with RAII restore (#320/#284)
+    WithFuel,
+    /// `WITH-CAPABILITIES` — dynamic-extent capability mask (#320)
+    WithCapabilities,
     /// `DEFUN*`
     DefunStar,
     /// `JIT-OPTIMIZE`

@@ -102,6 +102,28 @@ processes, patterns, and the checker meeting in one story.
   toplevel errors format exactly as before. Host API:
   `lamedh::format_error_with_backtrace`.
 
+## Dynamic-extent guard fences (breaking)
+
+- `with-fuel` and `with-capabilities` are KERNEL SPECIAL FORMS now, with a
+  thread-local capability mask and RAII save/restore. Attenuation follows
+  the CALL, not the fence's lexical body: **helpers called from inside a
+  fence are fenced**, eval'd code is fenced, and kernel capability checks
+  consult the mask on every gated operation. There is no Lisp-callable way
+  to widen either state (`kernel-fuel-set!` is narrow-only inside a
+  fence; no capability-mask setter exists).
+- Escaped closures follow the same law in reverse: a closure created
+  under a fence but called outside runs with the caller's authority —
+  the semantics `spawn` always had, now uniform.
+- Under an armed fuel budget, one-door native membranes take their
+  interpreted fallback (compiled internal loops never returned to the
+  metered trampoline — the fuel escape is closed); `jit-optimize` returns
+  `COMPILE-DISABLED-BY-GUARD` and `defun-typed` errors while armed.
+- The tick-instrumentation walker, lexical seal shadows, and eval
+  re-sealing hatches are deleted from `lib/22` (~150 lines); the
+  gated-builtin table remains for static `capabilities-needed` manifests.
+- New read-only introspection: `(capability-mask-allows-p 'CAP)` — how
+  custom (module-provided) capabilities attenuate through the same mask.
+
 ## Checker honesty
 
 - Arithmetic and comparisons reject KNOWN non-numeric operands statically
