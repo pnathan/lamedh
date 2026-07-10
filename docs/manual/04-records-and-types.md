@@ -1030,3 +1030,51 @@ type system says "any record with this field" directly instead of forcing
 a class hierarchy to say it indirectly. Run either with `cargo run -- -i
 examples/npcs.lisp`, or check the whole file's checker verdicts at once
 with `(check-file! "examples/npcs.lisp")` under the `READ-FS` capability.
+
+## 4.17 Typed protocols: one name, many typed instances
+
+`length` works on lists, strings, arrays, and hash tables — and on *your*
+types, because it is a **protocol**: a name with many typed instances,
+selected by inference at check time and by the value's kind at runtime.
+
+```lisp
+lamedh -s '(progn (defrecord playlist (songs (list string)))
+                   (definstance length ((p playlist)) int64
+                     (length (playlist-songs p)))
+                   (list (length (make-playlist (list "a" "b")))
+                         (check-type (length (make-playlist (list "a"))))))'
+; => (2 "int64")
+```
+
+Three resolutions from one definition:
+
+- **Checker**: a call site whose first argument's type is known selects
+  the matching instance and gets its precise scheme. A known type with
+  *no* instance is a static error — `(check-type (length 3.5))` says
+  `no `LENGTH` instance for float64`. And when every instance agrees on
+  one ground result type, even a gradual call site derives it:
+  `(defun n-items (x) (length x))` checks as
+  `(forall (a) (-> (a) int64))`.
+- **Runtime**: the protocol name is a dispatcher keyed on the value's
+  kind — record brands (and their variants), then list/string/array/hash/
+  scalars.
+- **Compiler**: each instance body is an ordinary function under a hidden
+  name, so eligible instances compile natively through the one-door
+  pipeline.
+
+Define your own with `defprotocol` + `definstance`; `defprotocol` captures
+any prior binding of the name as the fallback instance, which is how the
+kernel's `length` kept everything it already handled. The shipped
+protocols are `length`, `map`, and `for-each` — the sequence pair take the
+collection FIRST (`(map coll fn)`), because protocols dispatch on their
+first argument:
+
+```lisp
+lamedh -s '(map (list 1 2 3) (lambda (x) (* x x)))'
+; => (1 4 9)
+```
+
+`map` is kind-preserving (a list maps to a list, an array to an array);
+`for-each` visits for effect, and its hash instance receives
+`(fn key value)`. The Lisp 1.5 appendix's tails-visiting `map` lives on as
+`map-tails`.

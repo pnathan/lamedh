@@ -115,15 +115,16 @@ or `gethash-or` (from `lib/15-sets-hash.lisp`) when that distinction matters:
 ; => DEFAULT
 ```
 
-Remove a key with `delete-key-bang` or its CL alias `remhash` (also
-either-order):
+Remove a key with `remhash` — the one removal name as of 0.3
+(`delete-key`/`delete-key-bang` were removed), collection first like every
+container operation. `length` counts hash entries too:
 
 ```
 (let ((h (make-hash-table)))
   (set-bang h 'a 1)
-  (remhash 'a h)
-  (keys h))
-; => ()
+  (remhash h 'a)
+  (list (keys h) (length h)))
+; => (() 0)
 ```
 
 Other primitives and helpers:

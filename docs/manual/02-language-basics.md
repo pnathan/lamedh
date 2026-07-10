@@ -319,13 +319,18 @@ Core list operations (`lib/01-list.lisp`), plus `nth` and `assoc` which are
 Rust builtins:
 
 ```lisp
-(append '(1 2) '(3 4))                    ; => (1 2 3 4)
+(append '(1 2) '(3) '(4))                 ; => (1 2 3 4)  (variadic, 0.3)
 (reverse '(1 2 3))                        ; => (3 2 1)
 (length '(1 2 3))                         ; => 3
 (member 2 '(1 2 3))                       ; => (2 3)
 (nth 1 '(a b c))                          ; => B
 (assoc 'b '((a . 1) (b . 2)))             ; => (B . 2)
 ```
+
+`mapcar` zips any number of lists (0.3), stopping at the shortest:
+`(mapcar #'+ '(1 2 3) '(10 20 30))` is `(11 22 33)`. `gcd`/`lcm` and the
+bitwise trio `logand`/`logior`/`logxor` are variadic folds too (`logior`
+is 0.3's name for the old `logor`).
 
 The functional toolkit (`lib/13-functional.lisp`) follows a consistent
 function-first argument order — `(mapcar function list)`, not the reverse —
