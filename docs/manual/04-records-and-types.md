@@ -1069,9 +1069,9 @@ Three resolutions from one definition:
 Define your own with `defprotocol` + `definstance`; `defprotocol` captures
 any prior binding of the name as the fallback instance, which is how the
 kernel's `length` kept everything it already handled. The shipped
-protocols are `length`, `map`, and `for-each` — the sequence pair take the
-collection FIRST (`(map coll fn)`), because protocols dispatch on their
-first argument:
+protocols are `length`, `map`, `for-each`, `ref`, `put!`, and `copy` —
+all take the collection FIRST (`(map coll fn)`, `(ref coll k)`), because
+protocols dispatch on their first argument:
 
 ```lisp
 lamedh -s '(map (list 1 2 3) (lambda (x) (* x x)))'
@@ -1083,3 +1083,15 @@ string to a string — `(map "abc" #'string-upcase)` is `"ABC"`);
 `for-each` visits for effect, and its hash instance receives
 `(fn key value)`. The Lisp 1.5 appendix's tails-visiting `map` lives on as
 `map-tails`.
+
+The access protocols round out the vocabulary: `(ref coll k)` reads at
+an index, key, or record field — strictly, so an absent index is an
+*error* and every instance carries an honest result type (the lenient
+nil-on-miss reads keep their old names: `gethash`, `nth`, `elt`);
+`(put! coll k v)` writes the mutable containers (arrays, hash tables)
+and returns `v`; `(copy x)` produces a fresh list, array, or hash
+table. Underneath, the type-prefixed functions (`fetch`, `store`,
+`string-length`, `array-copy`, ...) remain as the monomorphic substrate
+the instances dispatch to and compile through — write against the bare
+names; reach for a prefixed one when you've already committed to the
+type and want the direct call.

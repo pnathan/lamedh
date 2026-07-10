@@ -153,3 +153,92 @@ fn map_and_for_each_are_sequence_protocols() {
         "\"xyz\""
     );
 }
+
+#[test]
+fn ref_is_the_strict_read_protocol() {
+    let e = env_with_stdlib();
+    // One name over fetch/gethash/nth/elt/record-ref, collection first.
+    assert_eq!(eval_line("(ref (list 'a 'b 'c) 1)", &e), "B");
+    assert_eq!(eval_line("(ref (list->array (list 1 2)) 0)", &e), "1");
+    assert_eq!(eval_line("(ref \"hello\" 1)", &e), "\"e\"");
+    assert_eq!(
+        eval_line(
+            "(let ((h (make-hash-table))) (sethash h 'k 9) (ref h 'k))",
+            &e
+        ),
+        "9"
+    );
+    // Records read by field name (the pre-protocol fallback, by brand).
+    eval_line("(defrecord pt2 (x int64) (y int64))", &e);
+    assert_eq!(eval_line("(ref (make-pt2 3 4) 'y)", &e), "4");
+    // STRICT: absence errors (the lenient reads keep their old names).
+    let out = eval_line("(ref (list 'a) 5)", &e);
+    assert!(out.contains("out of bounds"), "got: {out}");
+    let out = eval_line("(ref (make-hash-table) 'missing)", &e);
+    assert!(out.contains("missing key"), "got: {out}");
+    // Strictness is what buys honest result types.
+    assert_eq!(
+        eval_line("(check-type (ref (list 1 2) 0))", &e),
+        "\"int64\""
+    );
+    assert_eq!(eval_line("(check-type (ref \"ab\" 0))", &e), "\"string\"");
+    let out = eval_line("(check-type (ref 3.5 0))", &e);
+    assert!(out.contains("no `REF` instance for float64"), "got: {out}");
+}
+
+#[test]
+fn put_bang_writes_mutable_containers() {
+    let e = env_with_stdlib();
+    assert_eq!(
+        eval_line("(let ((a (array 2))) (put! a 0 'v) (fetch a 0))", &e),
+        "V"
+    );
+    assert_eq!(
+        eval_line(
+            "(let ((h (make-hash-table))) (put! h 'k 7) (gethash h 'k))",
+            &e
+        ),
+        "7"
+    );
+    // Returns the written value, typed.
+    assert_eq!(
+        eval_line("(check-type (put! (list->array (list 1)) 0 5))", &e),
+        "\"int64\""
+    );
+    // Immutable kinds have no instance.
+    let out = eval_line("(check-type (put! (list 1) 0 5))", &e);
+    assert!(out.contains("no `PUT!` instance"), "got: {out}");
+}
+
+#[test]
+fn copy_protocol_covers_every_kind() {
+    let e = env_with_stdlib();
+    // Hash copy is fresh (the previously-missing case).
+    assert_eq!(
+        eval_line(
+            "(let* ((h (make-hash-table))
+                    (c (progn (sethash h 'a 1) (copy h))))
+               (sethash c 'a 99)
+               (list (gethash h 'a) (gethash c 'a)))",
+            &e
+        ),
+        "(1 99)"
+    );
+    assert_eq!(
+        eval_line(
+            "(let* ((a (list->array (list 1 2))) (c (copy a)))
+               (store c 0 9)
+               (list (fetch a 0) (fetch c 0)))",
+            &e
+        ),
+        "(1 9)"
+    );
+    assert_eq!(eval_line("(copy (list 1 2))", &e), "(1 2)");
+    assert_eq!(
+        eval_line("(check-type (copy (list 1 2)))", &e),
+        "\"(list int64)\""
+    );
+    // Immutable kinds: identity; atoms via the Lisp 1.5 fallback.
+    assert_eq!(eval_line("(copy \"s\")", &e), "\"s\"");
+    assert_eq!(eval_line("(copy 'atom)", &e), "ATOM");
+}

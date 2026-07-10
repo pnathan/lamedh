@@ -92,3 +92,9 @@ table is recognised by type in either position (issue #246)."
   "Remove every entry from TABLE; return TABLE."
   (mapc (lambda (k) (remhash table k)) (keys table))
   table)
+
+(defun copy-hash (table)
+  "A fresh hash table with TABLE's entries (shallow)."
+  (let ((new (make-hash-table)))
+    (mapc (lambda (k) (set-bang new k (gethash table k))) (keys table))
+    new))
