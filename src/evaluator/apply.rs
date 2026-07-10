@@ -426,6 +426,25 @@ pub(super) fn apply(
                 env.global_set(&name, args[1].clone());
                 Ok(args[1].clone())
             }
+            // (declare-instance! 'name '(-> (shape ...) ret)) — register one
+            // protocol instance scheme (0.3 typed protocols).
+            BuiltinFunc::DeclareInstance => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "declare-instance! requires exactly two arguments: name scheme".to_string(),
+                    ));
+                }
+                let LispVal::Symbol(s) = &args[0] else {
+                    return Err(LispError::Generic(
+                        "DECLARE-INSTANCE!: name must be a symbol".to_string(),
+                    ));
+                };
+                let name = s.borrow().name.clone();
+                let rendered = env
+                    .jit_declare_instance(&name, &args[1])
+                    .map_err(LispError::Generic)?;
+                Ok(LispVal::String(rendered))
+            }
             // (capability-mask-allows-p 'name) — read-only introspection of
             // the dynamic capability mask (#320): T when no fence is active
             // or the active mask includes NAME. Used by the Lisp layer to

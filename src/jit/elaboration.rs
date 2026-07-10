@@ -21,6 +21,9 @@ pub(super) struct Cx<'a> {
     /// Declared schemes (experimental rows): axioms from `declare-type!`,
     /// consulted by the checker for callees the typed registry doesn't know.
     pub(super) declared: &'a HashMap<String, infer::Scheme>,
+    /// Protocol instance schemes (0.3): multiple per name, selected by the
+    /// first argument's inferred shape.
+    pub(super) protocols: &'a HashMap<String, Vec<infer::Scheme>>,
     /// The inference state for this definition: fresh variables + substitution
     /// (issue #135). Held behind a `RefCell` so the elaboration methods keep
     /// their `&self` signatures while still threading one shared substitution.
@@ -606,6 +609,97 @@ impl Cx<'_> {
         Ok((Core::LitI(0), w))
     }
 
+    /// Does an argument's WALKED type structurally match an instance
+    /// scheme's first-parameter shape? (Selection only — real unification
+    /// follows once an instance is chosen.)
+    fn instance_shape_matches(param: &Ty, arg: &Ty) -> bool {
+        match (param, arg) {
+            (Ty::List(_), Ty::List(_))
+            | (Ty::Str, Ty::Str)
+            | (Ty::Array(_), Ty::Array(_))
+            | (Ty::Pair(_, _), Ty::Pair(_, _))
+            | (Ty::Int64, Ty::Int64)
+            | (Ty::Float64, Ty::Float64)
+            | (Ty::Bool, Ty::Bool)
+            | (Ty::Char, Ty::Char)
+            | (Ty::Symbol, Ty::Symbol)
+            | (Ty::Record(_, _), Ty::Record(_, _)) => true,
+            (Ty::Struct(p), Ty::Struct(a)) => p.name == a.name,
+            (Ty::App(p, _), Ty::App(a, _)) => {
+                p.name == a.name || a.variant.as_deref() == Some(p.name.as_str())
+            }
+            (Ty::Variant(p), Ty::Variant(a)) => p.name == a.name,
+            (Ty::Variant(p), Ty::Struct(a)) => p.ctors.iter().any(|c| *c == a.name),
+            _ => false,
+        }
+    }
+
+    /// Elaborate a call to a protocol name: select the instance whose
+    /// first-parameter shape matches the first argument, then unify all
+    /// arguments against the instantiated instance scheme.
+    fn elab_protocol_call(
+        &self,
+        name: &str,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let instances = &self.protocols[name];
+        if args.is_empty() {
+            return Err(format!("`{name}`: protocol calls need arguments"));
+        }
+        let (_, ta) = self.elab(&args[0], scope, max)?;
+        let w = self.walk(&ta);
+        // Unresolved first argument: gradual — but when every instance
+        // agrees on one GROUND result type, the result is still known.
+        if matches!(w, Ty::Var(_) | Ty::Any) {
+            for a in &args[1..] {
+                self.elab(a, scope, max)?;
+            }
+            let mut shared: Option<Ty> = None;
+            for inst in instances {
+                if let Ty::Fn(_, ret) = &inst.ty {
+                    let r = ret.as_ref();
+                    let ground = !matches!(r, Ty::Var(_));
+                    match (&shared, ground) {
+                        (None, true) => shared = Some(r.clone()),
+                        (Some(prev), true) if prev == r => {}
+                        _ => return Ok((Core::LitI(0), Ty::Any)),
+                    }
+                }
+            }
+            return Ok((Core::LitI(0), shared.unwrap_or(Ty::Any)));
+        }
+        // Resolved: select by shape, then unify against the instance.
+        for inst in instances {
+            let shape_ok = match &inst.ty {
+                Ty::Fn(ps, _) if !ps.is_empty() => Self::instance_shape_matches(&ps[0], &w),
+                _ => false,
+            };
+            if !shape_ok {
+                continue;
+            }
+            let ty = self.infer.borrow_mut().instantiate(inst);
+            let Ty::Fn(ps, ret) = ty else { continue };
+            if ps.len() != args.len() {
+                return Err(format!(
+                    "`{name}`: this instance expects {} args, got {}",
+                    ps.len(),
+                    args.len()
+                ));
+            }
+            self.unify(&ta, &ps[0])
+                .map_err(|e| format!("in call to `{name}`: {e}"))?;
+            for (a, p) in args[1..].iter().zip(ps[1..].iter()) {
+                let (_, at) = self.elab(a, scope, max)?;
+                self.unify(&at, p)
+                    .map_err(|e| format!("in call to `{name}`: {e}"))?;
+            }
+            return Ok((Core::LitI(0), *ret));
+        }
+        Err(format!("no `{name}` instance for {}", super::ty_name(&w)))
+    }
+
     /// The derived-scheme path for an unknown callee (#308). Returns
     /// `Ok(None)` when nothing can be derived (the caller stays gradual).
     fn derived_call(
@@ -725,6 +819,14 @@ impl Cx<'_> {
     ) -> Result<(Core, Ty), String> {
         let id = match self.by_name.get(name) {
             Some(id) => *id,
+            // A typed PROTOCOL (0.3): several instance schemes, selected by
+            // the first argument's inferred shape. A resolved argument with
+            // no matching instance is the census's promised misuse error;
+            // an unresolved argument falls back to the shared result type
+            // when the instances agree on one, else Any.
+            None if self.checking && self.protocols.contains_key(name) => {
+                return self.elab_protocol_call(name, args, scope, max);
+            }
             // A **declared** scheme (experimental rows): the Lisp layer asserted
             // this callee's type (e.g. a row-polymorphic concept accessor), so
             // instantiate it, demand it of the arguments, and yield its result
