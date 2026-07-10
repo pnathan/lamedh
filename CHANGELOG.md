@@ -42,6 +42,17 @@ language. Sections below, roughly newest first.
   literals: print/read round-trip (spawn and channel serialization), usable
   as source syntax.
 
+## Sequence protocols: map and for-each
+
+- `(map coll fn)` — kind-preserving map as a protocol (list → list,
+  array → array); `(for-each coll fn)` visits for effect, with the hash
+  instance receiving `(fn key value)`. Collection FIRST (protocols
+  dispatch on their first argument — and it matches the container
+  convention). Extend either with `definstance`.
+- **Breaking**: the Lisp 1.5 appendix's `map` (apply f to successive
+  TAILS, return nil) is renamed **`map-tails`** — the bare name now means
+  what every modern reader expects. Documented appendix deviation.
+
 ## Typed protocols
 
 ```lisp

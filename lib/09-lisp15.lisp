@@ -40,13 +40,15 @@
            (remflag (cdr l) ind)
            nil)))
 
-;;; MAP[x;f] - apply f to each successive tail of x; return NIL
-;;; Like MAPLIST but for side effects only.
-(defun map (x f)
+;;; MAP[x;f] from the Lisp 1.5 appendix -- apply f to each successive TAIL
+;;; of x for side effects, returning NIL. Renamed MAP-TAILS in 0.3: the
+;;; bare name MAP is the modern kind-preserving sequence protocol
+;;; (lib/29-protocols.lisp). Documented deviation from the appendix.
+(defun map-tails (x f)
   "Apply F to each successive tail of X for side effects; return NIL."
   (cond ((null x) nil)
         (t (funcall f x)
-           (map (cdr x) f))))
+           (map-tails (cdr x) f))))
 
 ;;; SEARCH[x;p;f;u] - search list x for element where p[element] is true
 ;;; If found, return f[element]; else return u[x] where x is the remainder.
