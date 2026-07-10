@@ -77,6 +77,25 @@ impl Cx<'_> {
                 | Ty::Variant(_)
         )
     }
+    /// Ground types that can never be a list: a `cons` onto one of these
+    /// is a dotted pair, not a list extension.
+    fn known_non_list(w: &Ty) -> bool {
+        matches!(
+            w,
+            Ty::Int64
+                | Ty::Float64
+                | Ty::Bool
+                | Ty::Char
+                | Ty::Str
+                | Ty::Symbol
+                | Ty::Array(_)
+                | Ty::Struct(_)
+                | Ty::Variant(_)
+                | Ty::Fn(_, _)
+                | Ty::Record(_, _)
+                | Ty::Pair(_, _)
+        )
+    }
     /// Unify two types, extending the substitution (or report the clash).
     pub(super) fn unify(&self, a: &Ty, b: &Ty) -> Result<(), String> {
         self.infer.borrow_mut().unify(a, b)
@@ -1112,6 +1131,13 @@ impl Cx<'_> {
         }
         let (_, tx) = self.elab(&args[0], scope, max)?;
         let (_, txs) = self.elab(&args[1], scope, max)?;
+        // Dotted-pair view: a tail already known to be a non-list ground
+        // type makes an improper pair, `(cons 'k 2)` : (pair symbol int64)
+        // — the alist-cell case. An unknown tail keeps the list-cons view
+        // (the useful default for inference through recursion).
+        if Self::known_non_list(&self.walk(&txs)) {
+            return Ok((Core::LitI(0), Ty::Pair(Box::new(tx), Box::new(txs))));
+        }
         let lst = Ty::List(Box::new(tx));
         if self.unify(&txs, &lst).is_err() {
             return Err(format!(
@@ -1133,6 +1159,10 @@ impl Cx<'_> {
             return Err(format!("`car` expects 1 arg, got {}", args.len()));
         }
         let (_, txs) = self.elab(&args[0], scope, max)?;
+        // Pair view: `(car cell)` on a known (pair a b) is a.
+        if let Ty::Pair(a, _) = self.walk(&txs) {
+            return Ok((Core::LitI(0), *a));
+        }
         let elem = self.fresh();
         if self.unify(&txs, &Ty::List(Box::new(elem.clone()))).is_err() {
             return Err(format!("`car` expects a list, got {:?}", self.walk(&txs)));
@@ -1151,6 +1181,10 @@ impl Cx<'_> {
             return Err(format!("`cdr` expects 1 arg, got {}", args.len()));
         }
         let (_, txs) = self.elab(&args[0], scope, max)?;
+        // Pair view: `(cdr cell)` on a known (pair a b) is b.
+        if let Ty::Pair(_, b) = self.walk(&txs) {
+            return Ok((Core::LitI(0), *b));
+        }
         let lst = Ty::List(Box::new(self.fresh()));
         if self.unify(&txs, &lst).is_err() {
             return Err(format!("`cdr` expects a list, got {:?}", self.walk(&txs)));

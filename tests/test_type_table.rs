@@ -76,3 +76,36 @@ fn census_batch2_hash_surface() {
     let out = eval_line("(delete-key (make-hash-table) 'x)", &e);
     assert!(out.contains("Unbound"), "got: {out}");
 }
+
+#[test]
+fn dotted_pairs_type_as_pairs() {
+    let e = env_with_stdlib();
+    // A cons onto a known non-list ground type is a dotted pair, and
+    // car/cdr project it — the alist-cell idiom types end to end.
+    assert_eq!(
+        eval_line("(check-type (cons 'k 2))", &e),
+        "\"(pair symbol int64)\""
+    );
+    assert_eq!(
+        eval_line("(check-type (car (cons 'k 2)))", &e),
+        "\"symbol\""
+    );
+    assert_eq!(
+        eval_line("(check-type (+ 1 (cdr (cons 'k 2))))", &e),
+        "\"int64\""
+    );
+    // The list-cons view is untouched: known list tails extend the list,
+    // and an UNKNOWN tail still infers as a list (the recursion default).
+    assert_eq!(
+        eval_line("(check-type (cons 1 (list 2 3)))", &e),
+        "\"(list int64)\""
+    );
+    eval_line("(defun kv (k v) (cons k v))", &e);
+    assert_eq!(
+        eval_line("(see-type 'kv)", &e),
+        "(CHECKED (FORALL (A) (-> (A (LIST A)) (LIST A))))"
+    );
+    // Mismatched-element list extension still errors.
+    let out = eval_line("(check-type (cons 1 (list \"s\")))", &e);
+    assert!(out.contains("type error"), "got: {out}");
+}
