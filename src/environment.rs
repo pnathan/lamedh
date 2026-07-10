@@ -510,12 +510,10 @@ impl Environment {
         );
         env.set("SET-BANG".to_string(), LispVal::Builtin(BuiltinFunc::Set));
         env.set("SETHASH".to_string(), LispVal::Builtin(BuiltinFunc::Set));
+        // REGULARITY (0.3 census): one name — REMHASH (collection first);
+        // delete-key / delete-key-bang removed.
         env.set(
-            "DELETE-KEY".to_string(),
-            LispVal::Builtin(BuiltinFunc::DeleteKey),
-        );
-        env.set(
-            "DELETE-KEY-BANG".to_string(),
+            "REMHASH".to_string(),
             LispVal::Builtin(BuiltinFunc::DeleteKey),
         );
         env.set(

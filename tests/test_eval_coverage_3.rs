@@ -44,12 +44,12 @@ fn test_get_non_hashtable_error() {
 }
 
 #[test]
-fn test_delete_key_bang_non_hashtable_error() {
+fn test_remhash_non_hashtable_error() {
     let env = env_with_stdlib();
-    let result = eval_line("(delete-key-bang 42 \"k\")", &env);
+    let result = eval_line("(remhash 42 \"k\")", &env);
     assert!(
         result.contains("Error") || result.contains("error"),
-        "expected error for (delete-key-bang 42 \"k\"), got: {result}"
+        "expected error for (remhash 42 \"k\"), got: {result}"
     );
 }
 
@@ -282,16 +282,16 @@ fn test_make_hash_table_keys() {
 }
 
 #[test]
-fn test_delete_key_bang_removes_entry() {
+fn test_remhash_removes_entry() {
     let env = env_with_stdlib();
     let result = eval_line(
-        "(progn (def h (make-hash-table)) (set-bang h 'x 99) (delete-key-bang h 'x) (gethash h 'x))",
+        "(progn (def h (make-hash-table)) (set-bang h 'x 99) (remhash h 'x) (gethash h 'x))",
         &env,
     );
     // After deletion, get returns NIL
     assert!(
         !result.contains("Error"),
-        "expected non-error for delete-key-bang flow, got: {result}"
+        "expected non-error for remhash flow, got: {result}"
     );
     assert_eq!(result, "()");
 }

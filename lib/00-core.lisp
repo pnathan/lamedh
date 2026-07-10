@@ -168,7 +168,7 @@
              (setq $cg-pending (cons ',name $cg-pending))
              nil)
          (if (boundp '$call-graph)
-             (delete-key $call-graph ',name)
+             (remhash $call-graph ',name)
              nil)
          ,auto
          ',name)
@@ -180,7 +180,7 @@
              (setq $cg-pending (cons ',name $cg-pending))
              nil)
          (if (boundp '$call-graph)
-             (delete-key $call-graph ',name)
+             (remhash $call-graph ',name)
              nil)
          ,auto
          ',name))))

@@ -22,7 +22,7 @@
   (let ((h (make-hash-table)))
     (progn
       (set-bang h 'hdel-key 7)
-      (delete-key-bang h 'hdel-key)
+      (remhash h 'hdel-key)
       (assert-nil (gethash h 'hdel-key)))))
 
 (deftest plist-putp-getp

@@ -197,6 +197,7 @@
 //! | `25-variants.lisp` | Sum types: `DEFVARIANT`, exhaustive `VARIANT-CASE`, Option, Result |
 //! | `26-instrument.lisp` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
 //! | `27-modules.lisp` | Modules: `DEFMODULE`/`WITH-MODULE`/`IMPORT`, `MODULE:SYMBOL` names, custom capabilities |
+//! | `28-types.lisp` | The type table: verified declared schemes for builtins and stdlib functions |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1704,6 +1705,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/26-instrument.lisp"),
     ),
     ("27-modules.lisp", include_str!("../lib/27-modules.lisp")),
+    ("28-types.lisp", include_str!("../lib/28-types.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),

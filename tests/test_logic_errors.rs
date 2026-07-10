@@ -235,7 +235,7 @@ fn test_hash_table_advertised_aliases_work() {
           (DEF h (MAKE-HASH-TABLE))
           (SETHASH h 'x 7)
           (DEF before (GETHASH h 'x))
-          (DELETE-KEY h 'x)
+          (REMHASH h 'x)
           (LIST before (GETHASH h 'x)))
         "#,
     );

@@ -1504,6 +1504,9 @@ pub(super) fn apply(
                 match &args[0] {
                     LispVal::String(s) => Ok(LispVal::Number(s.chars().count() as i64)),
                     LispVal::Array(a) => Ok(LispVal::Number(a.borrow().len() as i64)),
+                    // 0.3 census: hash tables too — one LENGTH for every
+                    // sized collection.
+                    LispVal::HashTable(h) => Ok(LispVal::Number(h.borrow().len() as i64)),
                     other => Ok(LispVal::Number(proper_list_len(other)? as i64)),
                 }
             }

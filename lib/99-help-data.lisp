@@ -1047,7 +1047,7 @@
     (cons 'SYNTAX "(set-bang hash-table key value)")
     (cons 'CATEGORY 'hash-tables)
     (cons 'DESCRIPTION "Sets the value for key in hash-table. SETHASH is accepted as a compatibility alias.")
-    (cons 'SEE-ALSO '(gethash sethash delete-key make-hash-table))))
+    (cons 'SEE-ALSO '(gethash sethash remhash make-hash-table))))
 
 (register-doc 'sethash
   (list
