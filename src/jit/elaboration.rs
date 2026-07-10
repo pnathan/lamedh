@@ -159,7 +159,7 @@ impl Cx<'_> {
                     "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
                     "FETCH" | "AREF" => self.elab_fetch(args, scope, max),
                     "STORE" | "ASET" => self.elab_store(args, scope, max),
-                    "ARRAY-LENGTH" => self.elab_array_len(args, scope, max),
+                    "ARRAY-LENGTH*" => self.elab_array_len(args, scope, max),
                     // Checker-only forms (#162): list/pair processing + the
                     // untyped `let`/`progn`/`quote` that real `defun` bodies use.
                     "CONS" if self.checking => self.elab_cons(args, scope, max),
@@ -1093,7 +1093,7 @@ impl Cx<'_> {
         Ok((Core::ArraySet(Box::new(a), Box::new(i), Box::new(v)), rt))
     }
 
-    /// `(array-length a)` : (array α) -> int64.
+    /// `(array-length* a)` : (array α) -> int64.
     fn elab_array_len(
         &self,
         args: &[LispVal],
@@ -1101,13 +1101,13 @@ impl Cx<'_> {
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
         if args.len() != 1 {
-            return Err(format!("`array-length` expects 1 arg, got {}", args.len()));
+            return Err(format!("`array-length*` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let elem = self.fresh();
         if self.unify(&ta, &Ty::Array(Box::new(elem))).is_err() {
             return Err(format!(
-                "`array-length` expects an array, got {:?}",
+                "`array-length*` expects an array, got {:?}",
                 self.walk(&ta)
             ));
         }

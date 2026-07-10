@@ -360,7 +360,7 @@ The same file supplies the everyday list toolkit: `take`/`drop`, `zip`/
 
 `sort-by` is collection-first like `sort` and takes an optional third
 argument to compare the extracted keys with something other than `#'<` —
-`(sort-by strings #'string-length #'>)` sorts longest-first.
+`(sort-by strings #'string-length* #'>)` sorts longest-first.
 
 `#'` reads as `(function f)`, and `funcall`/`apply` invoke a function value
 directly:

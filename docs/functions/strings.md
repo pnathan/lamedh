@@ -177,15 +177,15 @@ Returns T if x is a string.
 
 ## Additional String Primitives
 
-### STRING-LENGTH
+### STRING-LENGTH*
 
-**Syntax:** `(string-length string)`
+**Syntax:** `(string-length* string)`
 
 Returns the number of Unicode scalar values in `string`.
 
 ```lisp
-(string-length "hello")  ; => 5
-(string-length "")       ; => 0
+(string-length* "hello")  ; => 5
+(string-length* "")       ; => 0
 ```
 
 ### SUBSTRING
@@ -245,7 +245,7 @@ Common Lisp include:
 ### String Length
 
 ```lisp
-(string-length "Lamedh")  ; => 6
+(string-length* "Lamedh")  ; => 6
 ```
 
 ### Reversing a Symbol
@@ -278,7 +278,7 @@ Common Lisp include:
 | Char access | `(char s n)` | `(index s n)` |
 | Substring | `(subseq s start end)` | `(substring s start end)` |
 | String= | `(string= a b)` | Use `(eq (intern a) (intern b))` |
-| Length | `(length s)` | `(string-length s)` |
+| Length | `(length s)` | `(string-length* s)` |
 | Format | `(format nil "~A" x)` | `(format nil "~A" x)` |
 
 ---

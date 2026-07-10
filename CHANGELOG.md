@@ -70,6 +70,21 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## The substrate star (breaking)
+
+The monomorphic per-type implementations behind the protocols now carry
+a trailing `*`, in the old Lisp tradition of marking a name as visibly
+outside the normative vocabulary: `string-length*`, `array-length*`,
+`hash-table-count*`, `list-length*`, `array-map*`, `copy-list*`,
+`array-copy*`, `copy-hash*`, `array-fetch*`, `array-store*`. The
+unstarred names are REMOVED. Write against the protocol names
+(`length`, `map`, `copy`, `ref`, `put!`); call a starred form when
+you've committed to the type and want the direct monomorphic call
+(until 0.4 splices instances at call sites, that's the hot path).
+Unstarred survivors are not substrate: converters (`array->list`,
+`char->code`, ...), true type-specifics (`string-split`, `array-fill`,
+...), and the separately-ruled lenient reads (`gethash`, `nth`, `elt`).
+
 ## Access protocols: ref, put!, copy
 
 One vocabulary over the per-type access zoo, all collection first:

@@ -545,7 +545,7 @@ fn array_new_store_fetch_length_roundtrip() {
            (let-typed ((a (array 3))) \
              (store a 0 x) (store a 1 (* x 2)) (store a 2 (* x 3)) \
              (+ (fetch a 0) (+ (fetch a 1) (fetch a 2)))))",
-        "(defun-typed (len3 int64) () (let-typed ((a (array 3))) (array-length a)))",
+        "(defun-typed (len3 int64) () (let-typed ((a (array 3))) (array-length* a)))",
     ]);
     assert_eq!(agree(&j, "build", &[i(5)]), i(5 + 10 + 15));
     assert_eq!(agree(&j, "len3", &[]), i(3));
@@ -690,7 +690,7 @@ fn array_int_sum_recursive_kernel() {
     // sum-array via recursion over a pinned (array int64).
     let j = build(&[
         "(defun-typed (suml int64) ((a (array int64)) (i int64)) \
-           (if (= i (array-length a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
+           (if (= i (array-length* a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
         "(defun-typed (sum int64) ((a (array int64))) (suml a 0))",
     ]);
     assert_eq!(agree(&j, "sum", &[ints(&[1, 2, 3, 4, 5])]), i(15));
@@ -701,7 +701,7 @@ fn array_int_sum_recursive_kernel() {
 fn array_float_dot_product_kernel() {
     let j = build(&[
         "(defun-typed (dotl float64) ((a (array float64)) (b (array float64)) (i int64)) \
-           (if (= i (array-length a)) 0.0 \
+           (if (= i (array-length* a)) 0.0 \
              (+ (* (fetch a i) (fetch b i)) (dotl a b (+ i 1)))))",
         "(defun-typed (dot float64) ((a (array float64)) (b (array float64))) (dotl a b 0))",
     ]);
@@ -734,8 +734,8 @@ fn string_is_array_of_char_levenshtein() {
         "(defun-typed (min3 int64) ((a int64) (b int64) (c int64)) \
            (if (<= a b) (if (<= a c) a c) (if (<= b c) b c)))",
         "(defun-typed (lev int64) ((a (array char)) (b (array char)) (i int64) (j int64)) \
-           (if (= i (array-length a)) (- (array-length b) j) \
-             (if (= j (array-length b)) (- (array-length a) i) \
+           (if (= i (array-length* a)) (- (array-length* b) j) \
+             (if (= j (array-length* b)) (- (array-length* a) i) \
                (if (= (fetch a i) (fetch b j)) \
                    (lev a b (+ i 1) (+ j 1)) \
                    (+ 1 (min3 (lev a b (+ i 1) j) \
@@ -794,7 +794,7 @@ fn string_membrane_roundtrip_via_call_lisp() {
     let mut j = Jit::new();
     // length of a string (array char) through the LispVal membrane.
     let f = read(
-        "(defun-typed (slen int64) ((s (array char))) (array-length s))",
+        "(defun-typed (slen int64) ((s (array char))) (array-length* s))",
         &env,
     )
     .unwrap();

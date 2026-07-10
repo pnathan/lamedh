@@ -11,7 +11,7 @@ Baseline health is genuinely good: the workspace builds warning-free, clippy is
 completely clean, and every test binary in the suite passes. TCO is real
 (1,000,000-deep tail recursion works), the recursion guard produces a clear
 actionable message, strings are Unicode-correct (char-indexed `substring`/
-`string-length`/`string->list`), dynamic variables interact correctly with
+`string-length*`/`string->list`), dynamic variables interact correctly with
 `let` rebinding, `handler-case`/`errorset`/`unwind-protect` behave, `#'`
 syntax / keywords / quasiquote with splicing / `&rest` macros all work, and the
 typed JIT delivers (interpreted `fib 25` ≈ 0.9 s vs near-instant via
@@ -159,7 +159,7 @@ warning when the flag transitions.
 ### 9. Missing CL staples (each small, collectively the biggest friction)
 
 Verified absent: `setf`, `push`/`pop`, `incf`/`decf`, `remove`, `count`,
-`copy-list`, `list-length`, `nreverse`, `subseq`, `elt`, `rem`,
+`copy-list*`, `list-length*`, `nreverse`, `subseq`, `elt`, `rem`,
 `defparameter`, `read-from-string`, two-argument `floor`/`truncate`,
 `apply` with spread args (`(apply #'+ 1 2 '(3))` — apply is strictly 2-ary),
 `length` on strings, `reverse` on strings, `(/ 1.0 0.0)` errors instead of

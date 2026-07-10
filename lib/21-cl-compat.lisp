@@ -93,13 +93,13 @@ first, one order (0.3 regularity)."
   "Number of elements of LST satisfying PRED."
   (length (filter pred lst)))
 
-(defun copy-list (lst)
+(defun copy-list* (lst)
   "Return a fresh copy of the spine of LST."
   (if (consp lst)
-      (cons (car lst) (copy-list (cdr lst)))
+      (cons (car lst) (copy-list* (cdr lst)))
       lst))
 
-(defun list-length (lst)
+(defun list-length* (lst)
   "CL alias for LENGTH on lists."
   (length lst))
 
@@ -122,7 +122,7 @@ destructive — the reversed sequence is returned and must be used."
 default: end of SEQ)."
   (if (stringp seq)
       (substring seq start
-                 (if maybe-end (car maybe-end) (string-length seq)))
+                 (if maybe-end (car maybe-end) (string-length* seq)))
       (let ((end (if maybe-end (car maybe-end) (length seq))))
         (take (drop seq start) (- end start)))))
 

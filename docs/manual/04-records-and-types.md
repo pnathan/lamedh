@@ -1090,8 +1090,13 @@ an index, key, or record field — strictly, so an absent index is an
 nil-on-miss reads keep their old names: `gethash`, `nth`, `elt`);
 `(put! coll k v)` writes the mutable containers (arrays, hash tables)
 and returns `v`; `(copy x)` produces a fresh list, array, or hash
-table. Underneath, the type-prefixed functions (`fetch`, `store`,
-`string-length`, `array-copy`, ...) remain as the monomorphic substrate
-the instances dispatch to and compile through — write against the bare
-names; reach for a prefixed one when you've already committed to the
-type and want the direct call.
+table. Underneath, the monomorphic per-type implementations remain as
+the substrate the instances dispatch to and compile through, and each
+carries a trailing `*` marking it visibly outside the normative
+vocabulary: `string-length*`, `array-length*`, `array-copy*`,
+`copy-hash*`, and so on. Write against the protocol names; call a
+starred form when you've already committed to the type and want the
+direct monomorphic call (the hot path, until the compiler splices
+instances at call sites). `fetch`/`store` and the lenient reads
+(`gethash`, `nth`, `elt`) are unstarred — not substrate duplicates but
+distinct contracts that kept their names.

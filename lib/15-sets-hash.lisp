@@ -65,7 +65,7 @@ order applies."
   "Return the value for KEY in TABLE, or DEFAULT if KEY is absent."
   (if (has-key-p table key) (gethash table key) default))
 
-(defun hash-table-count (table)
+(defun hash-table-count* (table)
   "Number of entries in hash TABLE."
   (length (keys table)))
 
@@ -93,7 +93,7 @@ table is recognised by type in either position (issue #246)."
   (mapc (lambda (k) (remhash table k)) (keys table))
   table)
 
-(defun copy-hash (table)
+(defun copy-hash* (table)
   "A fresh hash table with TABLE's entries (shallow)."
   (let ((new (make-hash-table)))
     (mapc (lambda (k) (set-bang new k (gethash table k))) (keys table))

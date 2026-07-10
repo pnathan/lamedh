@@ -3,7 +3,7 @@
 ;;;
 ;;;   (defprotocol measure "docstring")
 ;;;   (definstance measure ((xs (list a))) int64 (length xs))
-;;;   (definstance measure ((s string)) int64 (string-length s))
+;;;   (definstance measure ((s string)) int64 (string-length* s))
 ;;;
 ;;; One name, three resolutions:
 ;;;   - CHECKER: a call site whose first argument's type is known selects
@@ -160,8 +160,8 @@ DEFINSTANCE for your own types).")
 
 (definstance length ((xs (list a))) int64
   (funcall (gethash $protocol-fallbacks 'length) xs))
-(definstance length ((s string)) int64 (string-length s))
-(definstance length ((a (array any))) int64 (array-length a))
+(definstance length ((s string)) int64 (string-length* s))
+(definstance length ((a (array any))) int64 (array-length* a))
 
 ;;; ---- map and for-each: the sequence protocols -------------------------------
 ;;;
@@ -177,7 +177,7 @@ DEFINSTANCE for your own types).")
 (definstance map ((xs (list a)) (f (-> (a) b))) (list b)
   (mapcar f xs))
 (definstance map ((arr (array any)) (f any)) (array any)
-  (array-map arr f))
+  (array-map* arr f))
 (definstance map ((s string) (f (-> (string) string))) string
   (list->string (mapcar f (string->list s))))
 
@@ -188,7 +188,7 @@ instance calls (fn key value).")
 (definstance for-each ((xs (list a)) (f (-> (a) b))) (list b)
   (mapc f xs))
 (definstance for-each ((arr (array any)) (f any)) any
-  (progn (array-map arr f) ()))
+  (progn (array-map* arr f) ()))
 (definstance for-each ((h hash) (f any)) any
   (progn (maphash h f) ()))
 (definstance for-each ((s string) (f (-> (string) b))) any
@@ -197,7 +197,7 @@ instance calls (fn key value).")
 ;;; ---- ref, put!, copy: the access protocols ----------------------------------
 ;;;
 ;;; One vocabulary over the per-type access zoo (fetch/gethash/nth/elt/
-;;; record-ref; store/sethash; copy-list/array-copy). All collection
+;;; record-ref; store/sethash; copy-list*/array-copy*). All collection
 ;;; FIRST. REF is STRICT -- an absent index or key is an ERROR, which is
 ;;; what lets every instance carry an honest result type (the lenient
 ;;; nil-on-miss reads keep their old names: gethash, nth, elt).
@@ -224,7 +224,7 @@ name. Extend with DEFINSTANCE.")
 (definstance ref ((arr (array a)) (i int64)) a
   (fetch arr i))
 (definstance ref ((s string) (i int64)) string
-  (if (and (>= i 0) (< i (string-length s)))
+  (if (and (>= i 0) (< i (string-length* s)))
       (substring s i (+ i 1))
       (error "REF: string index out of bounds")))
 (definstance ref ((h hash) (k any)) any
@@ -250,7 +250,7 @@ name. Extend with DEFINSTANCE.")
   "A copy of a collection: (copy x). Fresh array/hash/list; identity on
 immutable strings and atoms. Extend with DEFINSTANCE.")
 
-(definstance copy ((xs (list a))) (list a) (copy-list xs))
-(definstance copy ((arr (array a))) (array a) (array-copy arr))
+(definstance copy ((xs (list a))) (list a) (copy-list* xs))
+(definstance copy ((arr (array a))) (array a) (array-copy* arr))
 (definstance copy ((s string)) string s)
-(definstance copy ((h hash)) any (copy-hash h))
+(definstance copy ((h hash)) any (copy-hash* h))

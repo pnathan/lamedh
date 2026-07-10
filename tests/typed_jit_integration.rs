@@ -145,7 +145,7 @@ fn typed_string_processing_lands_at_repl() {
     );
     assert_eq!(eval_line("(first-code \"ABC\")", &env), "65");
     eval_line(
-        "(defun-typed (slen int64) ((s (array char))) (array-length s))",
+        "(defun-typed (slen int64) ((s (array char))) (array-length* s))",
         &env,
     );
     assert_eq!(eval_line("(slen \"hello\")", &env), "5");
@@ -174,7 +174,7 @@ fn typed_int_array_kernel_lands_at_repl() {
     let env = Environment::with_stdlib();
     eval_line(
         "(defun-typed (suml int64) ((a (array int64)) (i int64)) \
-           (if (= i (array-length a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
+           (if (= i (array-length* a)) 0 (+ (fetch a i) (suml a (+ i 1)))))",
         &env,
     );
     eval_line(
@@ -534,7 +534,7 @@ fn jit_optimize_reports_native_checked_and_type_error() {
     assert_eq!(eval_line("(lsum (list 1 2 3))", &env), "6"); // still runs dynamically
     // Genuine type error -> reported, function still defined dynamically.
     let e = eval_line(
-        "(jit-optimize (defun clash (x) (+ (car x) (array-length x))))",
+        "(jit-optimize (defun clash (x) (+ (car x) (array-length* x))))",
         &env,
     );
     assert!(e.to_lowercase().contains("type error"), "got: {e}");

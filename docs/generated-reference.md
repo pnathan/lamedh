@@ -602,14 +602,14 @@ Mutable random-access arrays (Lisp 1.5 Appendix A)
 
 **Syntax:** `(array n)`
 
-Creates and returns a new mutable array of n elements, all initialised to NIL. Lisp 1.5 Appendix A name; MAKE-ARRAY is the longer alias. Arrays are random-access containers with O(1) indexed get/set. Use FETCH/STORE to access elements, ARRAY-LENGTH to query the size.
+Creates and returns a new mutable array of n elements, all initialised to NIL. Lisp 1.5 Appendix A name; MAKE-ARRAY is the longer alias. Arrays are random-access containers with O(1) indexed get/set. Use FETCH/STORE to access elements, ARRAY-LENGTH* to query the size.
 
 **Examples:**
 ```lisp
 (LET ((A (ARRAY 3))) (STORE A 0 (QUOTE X)) (FETCH A 0))  ; => X
 ```
 
-**See also:** MAKE-ARRAY, FETCH, STORE, ARRAY-LENGTH, ARRAYP
+**See also:** MAKE-ARRAY, FETCH, STORE, ARRAY-LENGTH*, ARRAYP
 
 ---
 
@@ -626,7 +626,7 @@ Alias for ARRAY. Creates a mutable array of n NIL-initialised elements. See ARRA
 (MAKE-ARRAY 5)  ; => "an array of 5 NILs"
 ```
 
-**See also:** ARRAY, FETCH, STORE, ARRAY-LENGTH, ARRAYP
+**See also:** ARRAY, FETCH, STORE, ARRAY-LENGTH*, ARRAYP
 
 ---
 
@@ -636,26 +636,26 @@ Alias for ARRAY. Creates a mutable array of n NIL-initialised elements. See ARRA
 
 **Syntax:** `(fetch array index)`
 
-Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias, AREF the Common-Lisp-style one.
+Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH* is the longer alias, AREF the Common-Lisp-style one.
 
 **Examples:**
 ```lisp
 (LET ((A (ARRAY 3))) (STORE A 1 (QUOTE HELLO)) (FETCH A 1))  ; => HELLO
 ```
 
-**See also:** ARRAY-FETCH, AREF, STORE, ARRAY, ARRAY-LENGTH
+**See also:** ARRAY-FETCH*, AREF, STORE, ARRAY, ARRAY-LENGTH*
 
 ---
 
-### ARRAY-FETCH
+### ARRAY-FETCH*
 
 **Type:** `FUNCTION`
 
-**Syntax:** `(array-fetch array index)`
+**Syntax:** `(array-fetch* array index)`
 
 Alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.
 
-**See also:** FETCH, STORE, ARRAY-STORE, ARRAY-LENGTH
+**See also:** FETCH, STORE, ARRAY-STORE*, ARRAY-LENGTH*
 
 ---
 
@@ -665,41 +665,41 @@ Alias for FETCH. Returns the element of array at 0-based index. See FETCH for fu
 
 **Syntax:** `(store array index value)`
 
-Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change, including inside a defun-typed body (issue #216). Two scoped exceptions: an array nested inside another array or a struct does not write back through the outer object (only top-level flat arrays of scalars do); and passing the same array as two distinct arguments to one defun-typed call is last-writer-wins in argument order, not simultaneous true aliasing.
+Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE* is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change, including inside a defun-typed body (issue #216). Two scoped exceptions: an array nested inside another array or a struct does not write back through the outer object (only top-level flat arrays of scalars do); and passing the same array as two distinct arguments to one defun-typed call is last-writer-wins in argument order, not simultaneous true aliasing.
 
 **Examples:**
 ```lisp
 (LET ((A (ARRAY 3))) (STORE A 0 99) (FETCH A 0))  ; => 99
 ```
 
-**See also:** ARRAY-STORE, ASET, FETCH, ARRAY, ARRAY-LENGTH
+**See also:** ARRAY-STORE*, ASET, FETCH, ARRAY, ARRAY-LENGTH*
 
 ---
 
-### ARRAY-STORE
+### ARRAY-STORE*
 
 **Type:** `FUNCTION`
 
-**Syntax:** `(array-store array index value)`
+**Syntax:** `(array-store* array index value)`
 
 Alias for STORE. Destructively sets the element at index. See STORE for full documentation.
 
-**See also:** STORE, FETCH, ARRAY-FETCH, ARRAY-LENGTH
+**See also:** STORE, FETCH, ARRAY-FETCH*, ARRAY-LENGTH*
 
 ---
 
-### ARRAY-LENGTH
+### ARRAY-LENGTH*
 
 **Type:** `FUNCTION`
 
-**Syntax:** `(array-length array)`
+**Syntax:** `(array-length* array)`
 
-Returns the number of elements in array as an integer. The valid index range is 0 to (array-length array) - 1.
+Returns the number of elements in array as an integer. The valid index range is 0 to (array-length* array) - 1.
 
 **Examples:**
 ```lisp
-(ARRAY-LENGTH (ARRAY 5))  ; => 5
-(ARRAY-LENGTH (ARRAY 0))  ; => 0
+(ARRAY-LENGTH* (ARRAY 5))  ; => 5
+(ARRAY-LENGTH* (ARRAY 0))  ; => 0
 ```
 
 **See also:** ARRAY, FETCH, STORE, ARRAYP
@@ -720,7 +720,7 @@ Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL other
 (ARRAYP (QUOTE (1 2 3)))  ; => ()
 ```
 
-**See also:** ARRAY, ARRAY-LENGTH, EXTENSION-P
+**See also:** ARRAY, ARRAY-LENGTH*, EXTENSION-P
 
 ---
 
@@ -1977,18 +1977,18 @@ Identical to IMPLODE. Lisp 1.5 name for the same operation.
 
 ---
 
-### STRING-LENGTH
+### STRING-LENGTH*
 
 **Type:** `FUNCTION`
 
-**Syntax:** `(string-length s)`
+**Syntax:** `(string-length* s)`
 
 Returns the number of Unicode characters in string s (not bytes). This is the kernel primitive; the Lisp layer builds higher-level string operations on top of it.
 
 **Examples:**
 ```lisp
-(STRING-LENGTH "hello")  ; => 5
-(STRING-LENGTH "")  ; => 0
+(STRING-LENGTH* "hello")  ; => 5
+(STRING-LENGTH* "")  ; => 0
 ```
 
 **See also:** SUBSTRING, INDEX, CONCAT
@@ -2009,7 +2009,7 @@ Returns a substring of s from character index start (inclusive, 0-based) to end 
 (SUBSTRING "hello" 2)  ; => "llo"
 ```
 
-**See also:** STRING-LENGTH, INDEX, CONCAT
+**See also:** STRING-LENGTH*, INDEX, CONCAT
 
 ---
 
@@ -2028,7 +2028,7 @@ Returns the integer code point of c, where c is a Char value (from a literal lik
 (CHAR-CODE " ")  ; => 32
 ```
 
-**See also:** CODE-CHAR, MAKE-CHAR, CHARP, STRING-LENGTH
+**See also:** CODE-CHAR, MAKE-CHAR, CHARP, STRING-LENGTH*
 
 ---
 
@@ -2046,7 +2046,7 @@ Returns a one-character string containing the character at code point n. The inv
 (CODE-CHAR 97)  ; => "a"
 ```
 
-**See also:** CHAR-CODE, MAKE-CHAR, STRING-LENGTH
+**See also:** CHAR-CODE, MAKE-CHAR, STRING-LENGTH*
 
 ---
 
@@ -2968,7 +2968,7 @@ Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL other
 (ARRAYP (QUOTE (1 2 3)))  ; => ()
 ```
 
-**See also:** ARRAY, ARRAY-LENGTH, EXTENSION-P
+**See also:** ARRAY, ARRAY-LENGTH*, EXTENSION-P
 
 ---
 

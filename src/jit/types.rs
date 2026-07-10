@@ -442,7 +442,7 @@ pub enum Core {
     /// `(store a i v)`: bounds-checked element store (out-of-range is a no-op);
     /// evaluates to the stored value word.
     ArraySet(Box<Core>, Box<Core>, Box<Core>),
-    /// `(array-length a)`: the element count (the buffer header), as `int64`.
+    /// `(array-length* a)`: the element count (the buffer header), as `int64`.
     ArrayLen(Box<Core>),
     /// `(make-NAME f0 f1 …)`: allocate a struct buffer (one word per field) in
     /// the call arena and initialize each field in declaration order; evaluates

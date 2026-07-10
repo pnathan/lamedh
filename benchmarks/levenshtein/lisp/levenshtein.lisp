@@ -1,7 +1,7 @@
 ;;; Levenshtein distance benchmark for lamedh
 ;;; Calculates edit distance between strings
 
-(defun string-length (str)
+(defun string-length* (str)
   "Calculate length of a string"
   (cond
     ((null str) 0)
@@ -59,8 +59,8 @@
 (defun levenshtein-distance (str1 str2)
   "Calculate Levenshtein distance between two strings"
   (prog (m n prev curr i j cost c1 c2)
-    (setq m (string-length str1))
-    (setq n (string-length str2))
+    (setq m (string-length* str1))
+    (setq n (string-length* str2))
 
     ;; Swap if str2 is shorter
     (cond ((< n m)

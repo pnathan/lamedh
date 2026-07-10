@@ -1,6 +1,6 @@
 ;;; String operations — Lisp layer (issue #147, epic #141).
 ;;;
-;;; Built on the Rust string primitives: STRING-LENGTH, SUBSTRING, CHAR-CODE,
+;;; Built on the Rust string primitives: STRING-LENGTH*, SUBSTRING, CHAR-CODE,
 ;;; CODE-CHAR, STRING->NUMBER, NUMBER->STRING, plus CONCAT/INDEX.
 ;;;
 ;;; NAMING: predicates use the `-p` suffix (STARTS-WITH-P, WHITESPACE-P, ...).
@@ -20,7 +20,7 @@
 
 (defun string->list (s)
   "Return the characters of S as a list of one-character strings."
-  (string->list-aux s 0 (string-length s)))
+  (string->list-aux s 0 (string-length* s)))
 
 (defun list->string (chars)
   "Concatenate a list of strings into one string."
@@ -111,7 +111,7 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
 
 (defun string-lessp (a b)
   "True if string A is lexicographically (by code point) before string B."
-  (string-lessp-aux a b 0 (string-length a) (string-length b)))
+  (string-lessp-aux a b 0 (string-length* a) (string-length* b)))
 
 ;;; ---- search --------------------------------------------------------------
 
@@ -122,7 +122,7 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
 
 (defun string-index-of (s sub)
   "Return the index of the first occurrence of SUB in S, or NIL."
-  (string-index-of-aux s sub 0 (string-length s) (string-length sub)))
+  (string-index-of-aux s sub 0 (string-length* s) (string-length* sub)))
 
 (defun contains-p (s sub)
   "True if SUB occurs anywhere in S."
@@ -130,14 +130,14 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
 
 (defun starts-with-p (s prefix)
   "True if S begins with PREFIX."
-  (let ((lp (string-length prefix)))
-    (and (<= lp (string-length s))
+  (let ((lp (string-length* prefix)))
+    (and (<= lp (string-length* s))
          (equal (substring s 0 lp) prefix))))
 
 (defun ends-with-p (s suffix)
   "True if S ends with SUFFIX."
-  (let ((ls (string-length suffix))
-        (n (string-length s)))
+  (let ((ls (string-length* suffix))
+        (n (string-length* s)))
     (and (<= ls n)
          (equal (substring s (- n ls) n) suffix))))
 
@@ -146,22 +146,22 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
 (defun string-replace (s old new)
   "Replace every (non-empty) occurrence of OLD in S with NEW."
   (let ((idx (string-index-of s old)))
-    (if (or (null idx) (= (string-length old) 0))
+    (if (or (null idx) (= (string-length* old) 0))
         s
         (concat (substring s 0 idx)
                 new
                 (string-replace
-                 (substring s (+ idx (string-length old)) (string-length s))
+                 (substring s (+ idx (string-length* old)) (string-length* s))
                  old new)))))
 
 (defun string-split (s delim)
   "Split S on (non-empty) string DELIM into a list of substrings."
   (let ((idx (string-index-of s delim)))
-    (if (or (null idx) (= (string-length delim) 0))
+    (if (or (null idx) (= (string-length* delim) 0))
         (list s)
         (cons (substring s 0 idx)
               (string-split
-               (substring s (+ idx (string-length delim)) (string-length s))
+               (substring s (+ idx (string-length* delim)) (string-length* s))
                delim)))))
 
 (defun string-join (lst sep)
@@ -182,7 +182,7 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
 
 (defun string-trim (s)
   "Remove leading and trailing whitespace from S."
-  (let* ((n (string-length s))
+  (let* ((n (string-length* s))
          (start (string-trim-left s 0 n))
          (end (string-trim-right s n)))
     (if (< start end) (substring s start end) "")))
@@ -196,11 +196,11 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
 (defun string-pad-left (s width &optional pad)
   "Pad S on the LEFT to WIDTH using PAD (default \" \"): right-aligns.
 S is returned unchanged when it is already WIDTH or longer."
-  (let ((fill (- width (string-length s))))
+  (let ((fill (- width (string-length* s))))
     (if (< fill 1) s (concat (string-repeat (if pad pad " ") fill) s))))
 
 (defun string-pad-right (s width &optional pad)
   "Pad S on the RIGHT to WIDTH using PAD (default \" \"): left-aligns.
 S is returned unchanged when it is already WIDTH or longer."
-  (let ((fill (- width (string-length s))))
+  (let ((fill (- width (string-length* s))))
     (if (< fill 1) s (concat s (string-repeat (if pad pad " ") fill)))))

@@ -584,11 +584,11 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
         BuiltinFunc::StringLength => {
             if args.len() != 1 {
                 return Err(LispError::Generic(
-                    "string-length requires exactly one argument".to_string(),
+                    "string-length* requires exactly one argument".to_string(),
                 ));
             }
             Ok(LispVal::Number(
-                get_str(0, "string-length")?.chars().count() as i64,
+                get_str(0, "string-length*")?.chars().count() as i64,
             ))
         }
         BuiltinFunc::Substring => {

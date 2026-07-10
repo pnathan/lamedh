@@ -1522,15 +1522,15 @@ The classic Lisp 1.5 spelling.")
 ;;; STRING PRIMITIVES
 ;;; ============================================================
 
-(register-doc 'string-length
+(register-doc 'string-length*
   (list
-    (cons 'NAME 'string-length)
+    (cons 'NAME 'string-length*)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(string-length s)")
+    (cons 'SYNTAX "(string-length* s)")
     (cons 'CATEGORY 'strings)
     (cons 'DESCRIPTION "Returns the number of Unicode characters in string s (not bytes). This is the kernel primitive; the Lisp layer builds higher-level string operations on top of it.")
-    (cons 'EXAMPLES '(((string-length "hello") 5)
-                       ((string-length "") 0)))
+    (cons 'EXAMPLES '(((string-length* "hello") 5)
+                       ((string-length* "") 0)))
     (cons 'SEE-ALSO '(substring index concat))))
 
 (register-doc 'substring
@@ -1542,7 +1542,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'DESCRIPTION "Returns a substring of s from character index start (inclusive, 0-based) to end (exclusive). End defaults to the length of s. Indices are clamped to valid bounds. Characters are counted by Unicode code point, not bytes.")
     (cons 'EXAMPLES '(((substring "hello" 1 3) "el")
                        ((substring "hello" 2) "llo")))
-    (cons 'SEE-ALSO '(string-length index concat))))
+    (cons 'SEE-ALSO '(string-length* index concat))))
 
 (register-doc 'char-code
   (list
@@ -1554,7 +1554,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'EXAMPLES '(((char-code "A") 65)
                        ((char-code 'a') 97)
                        ((char-code " ") 32)))
-    (cons 'SEE-ALSO '(code-char make-char charp string-length))))
+    (cons 'SEE-ALSO '(code-char make-char charp string-length*))))
 
 (register-doc 'code-char
   (list
@@ -1565,7 +1565,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'DESCRIPTION "Returns a one-character string containing the character at code point n. The inverse of CHAR-CODE. Signals an error if n is not a valid code point. (Use MAKE-CHAR to build a Char value instead of a string.)")
     (cons 'EXAMPLES '(((code-char 65) "A")
                        ((code-char 97) "a")))
-    (cons 'SEE-ALSO '(char-code make-char string-length))))
+    (cons 'SEE-ALSO '(char-code make-char string-length*))))
 
 (register-doc 'charp
   (list
@@ -1774,9 +1774,9 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(array n)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Creates and returns a new mutable array of n elements, all initialised to NIL. Lisp 1.5 Appendix A name; MAKE-ARRAY is the longer alias. Arrays are random-access containers with O(1) indexed get/set. Use FETCH/STORE to access elements, ARRAY-LENGTH to query the size.")
+    (cons 'DESCRIPTION "Creates and returns a new mutable array of n elements, all initialised to NIL. Lisp 1.5 Appendix A name; MAKE-ARRAY is the longer alias. Arrays are random-access containers with O(1) indexed get/set. Use FETCH/STORE to access elements, ARRAY-LENGTH* to query the size.")
     (cons 'EXAMPLES '(((let ((a (array 3))) (store a 0 'x) (fetch a 0)) x)))
-    (cons 'SEE-ALSO '(make-array fetch store array-length arrayp))))
+    (cons 'SEE-ALSO '(make-array fetch store array-length* arrayp))))
 
 (register-doc 'make-array
   (list
@@ -1786,7 +1786,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'CATEGORY 'arrays)
     (cons 'DESCRIPTION "Alias for ARRAY. Creates a mutable array of n NIL-initialised elements. See ARRAY for full documentation.")
     (cons 'EXAMPLES '(((make-array 5) "an array of 5 NILs")))
-    (cons 'SEE-ALSO '(array fetch store array-length arrayp))))
+    (cons 'SEE-ALSO '(array fetch store array-length* arrayp))))
 
 (register-doc 'fetch
   (list
@@ -1794,18 +1794,18 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(fetch array index)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH is the longer alias, AREF the Common-Lisp-style one.")
+    (cons 'DESCRIPTION "Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-FETCH* is the longer alias, AREF the Common-Lisp-style one.")
     (cons 'EXAMPLES '(((let ((a (array 3))) (store a 1 'hello) (fetch a 1)) hello)))
-    (cons 'SEE-ALSO '(array-fetch aref store array array-length))))
+    (cons 'SEE-ALSO '(array-fetch* aref store array array-length*))))
 
-(register-doc 'array-fetch
+(register-doc 'array-fetch*
   (list
-    (cons 'NAME 'array-fetch)
+    (cons 'NAME 'array-fetch*)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(array-fetch array index)")
+    (cons 'SYNTAX "(array-fetch* array index)")
     (cons 'CATEGORY 'arrays)
     (cons 'DESCRIPTION "Alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.")
-    (cons 'SEE-ALSO '(fetch store array-store array-length))))
+    (cons 'SEE-ALSO '(fetch store array-store* array-length*))))
 
 (register-doc 'aref
   (list
@@ -1814,7 +1814,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'SYNTAX "(aref array index)")
     (cons 'CATEGORY 'arrays)
     (cons 'DESCRIPTION "Common-Lisp-style alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.")
-    (cons 'SEE-ALSO '(fetch array-fetch aset store array-length))))
+    (cons 'SEE-ALSO '(fetch array-fetch* aset store array-length*))))
 
 (register-doc 'store
   (list
@@ -1822,18 +1822,18 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(store array index value)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change, including inside a defun-typed body (issue #216). Two scoped exceptions: an array nested inside another array or a struct does not write back through the outer object (only top-level flat arrays of scalars do); and passing the same array as two distinct arguments to one defun-typed call is last-writer-wins in argument order, not simultaneous true aliasing.")
+    (cons 'DESCRIPTION "Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an error if index is out of bounds. Lisp 1.5 Appendix A name; ARRAY-STORE* is the longer alias, ASET the Common-Lisp-style one. Mutation is in-place: all references to the same array see the change, including inside a defun-typed body (issue #216). Two scoped exceptions: an array nested inside another array or a struct does not write back through the outer object (only top-level flat arrays of scalars do); and passing the same array as two distinct arguments to one defun-typed call is last-writer-wins in argument order, not simultaneous true aliasing.")
     (cons 'EXAMPLES '(((let ((a (array 3))) (store a 0 99) (fetch a 0)) 99)))
-    (cons 'SEE-ALSO '(array-store aset fetch array array-length))))
+    (cons 'SEE-ALSO '(array-store* aset fetch array array-length*))))
 
-(register-doc 'array-store
+(register-doc 'array-store*
   (list
-    (cons 'NAME 'array-store)
+    (cons 'NAME 'array-store*)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(array-store array index value)")
+    (cons 'SYNTAX "(array-store* array index value)")
     (cons 'CATEGORY 'arrays)
     (cons 'DESCRIPTION "Alias for STORE. Destructively sets the element at index. See STORE for full documentation.")
-    (cons 'SEE-ALSO '(store fetch array-fetch array-length))))
+    (cons 'SEE-ALSO '(store fetch array-fetch* array-length*))))
 
 (register-doc 'aset
   (list
@@ -1842,17 +1842,17 @@ The classic Lisp 1.5 spelling.")
     (cons 'SYNTAX "(aset array index value)")
     (cons 'CATEGORY 'arrays)
     (cons 'DESCRIPTION "Common-Lisp-style alias for STORE. Destructively sets the element at index. See STORE for full documentation.")
-    (cons 'SEE-ALSO '(store array-store aref fetch array-length))))
+    (cons 'SEE-ALSO '(store array-store* aref fetch array-length*))))
 
-(register-doc 'array-length
+(register-doc 'array-length*
   (list
-    (cons 'NAME 'array-length)
+    (cons 'NAME 'array-length*)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(array-length array)")
+    (cons 'SYNTAX "(array-length* array)")
     (cons 'CATEGORY 'arrays)
-    (cons 'DESCRIPTION "Returns the number of elements in array as an integer. The valid index range is 0 to (array-length array) - 1.")
-    (cons 'EXAMPLES '(((array-length (array 5)) 5)
-                       ((array-length (array 0)) 0)))
+    (cons 'DESCRIPTION "Returns the number of elements in array as an integer. The valid index range is 0 to (array-length* array) - 1.")
+    (cons 'EXAMPLES '(((array-length* (array 5)) 5)
+                       ((array-length* (array 0)) 0)))
     (cons 'SEE-ALSO '(array fetch store arrayp))))
 
 (register-doc 'arrayp
@@ -1864,7 +1864,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'DESCRIPTION "Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL otherwise. DEFSTRUCT instances are also arrays internally.")
     (cons 'EXAMPLES '(((arrayp (array 3)) t)
                        ((arrayp '(1 2 3)) nil)))
-    (cons 'SEE-ALSO '(array array-length extension-p))))
+    (cons 'SEE-ALSO '(array array-length* extension-p))))
 
 ;;; ============================================================
 ;;; TYPE PREDICATES (EXTENDED)
@@ -2414,7 +2414,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 (register-category 'strings
   "String operations"
   '(concat index explode implode gensym intern maknam
-    string-length substring char-code code-char make-char
+    string-length* substring char-code code-char make-char
     string->number number->string prin1-to-string princ-to-string))
 
 (register-category 'special-forms
@@ -2450,7 +2450,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'arrays
   "Mutable random-access arrays (Lisp 1.5 Appendix A)"
-  '(array make-array fetch array-fetch store array-store array-length arrayp))
+  '(array make-array fetch array-fetch* store array-store* array-length* arrayp))
 
 (register-category 'filesystem
   "File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)"

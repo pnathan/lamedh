@@ -17,7 +17,7 @@
 
 (defun tokenize (text)
   "Lowercased words of TEXT: split on whitespace, strip empties."
-  (filter (lambda (w) (> (string-length w) 0))
+  (filter (lambda (w) (> (string-length* w) 0))
           (flatten
            (mapcar (lambda (line) (string-split (string-downcase line) " "))
                    (string-split text "\n")))))
