@@ -6,9 +6,10 @@ three mechanisms that make that safe:
 
 - **Capabilities** — host-granted permission bits that gate filesystem,
   shell, and stdin access. Off by default.
-- **Guard fences** — Lisp-level, dynamic-extent attenuation of capabilities
-  (`with-capabilities`) and execution budget (`with-fuel`), composable and
-  monotone (they can only narrow, never widen).
+- **Guard fences** — kernel special forms giving dynamic-extent
+  attenuation of capabilities (`with-capabilities`) and execution budget
+  (`with-fuel`), composable and monotone (they can only narrow, never
+  widen, and narrowing follows the call, not the lexical body).
 - **Concurrency** — share-nothing interpreter threads (`spawn`) and
   channels, so parallel work can't corrupt shared state because there is
   no shared state.
@@ -133,10 +134,20 @@ Error: shell command failed: exit 3
 
 Host-granted capabilities are coarse: once the process has `READ-FS`,
 every piece of Lisp code running in that interpreter has it too. Guard
-fences (`lib/22-guard.lisp`) let *Lisp code* narrow its own authority and
-execution budget for a dynamic extent — useful when you're about to run
-code you didn't write (an agent's generated plan, a plugin, a rule body)
-and want to bound what it can do without spinning up a whole new process.
+fences — `with-fuel` and `with-capabilities`, backed by `lib/22-guard.lisp`
+— let *Lisp code* narrow its own authority and execution budget for a
+dynamic extent, useful when you're about to run code you didn't write (an
+agent's generated plan, a plugin, a rule body) and want to bound what it
+can do without spinning up a whole new process.
+
+As of 0.3 (#320) `with-fuel` and `with-capabilities` are **kernel special
+forms**, not Lisp-layer machinery: each arms a thread-local counter or mask
+in Rust, with RAII save/restore around the fence's own evaluation. Every
+capability check and every evaluator step consults that state directly, so
+attenuation follows the **call**, not the fence's lexical body. Concretely:
+a helper function *defined outside* a fence and merely *called* from inside
+it is still fenced; code reached through `eval` is still fenced. There is
+no lexical loophole — only the dynamic extent of the call matters.
 
 Two fences, one law: **both are monotone attenuators.** `with-fuel`
 clamps its budget to whatever budget is already in force; `with-capabilities`
@@ -168,14 +179,19 @@ $ target/debug/lamedh --capability READ-FS --capability CREATE-FS \
 ; => (READ-FS)
 ```
 
-A gated operation outside the fence's set is denied, with an error naming
-the operation, what it requires, and what's actually effective:
+A gated operation outside the fence's set is denied, with a kernel-level
+error naming the capability that was attenuated away:
 
 ```console
 $ target/debug/lamedh --capability READ-FS --capability CREATE-FS \
     -s "(with-capabilities '(READ-FS) (write-file \"/tmp/x\" \"y\"))"
-Error: capability denied: WRITE-FILE requires (CREATE-FS); effective (READ-FS)
+Error: capability denied: CREATE-FS (attenuated by an enclosing fence)
 ```
+
+That's a different error than the "capability is not enabled" message from
+§7.1 — this one fires specifically when the *host* granted the capability
+but a fence narrowed it away for the current dynamic extent; the host-level
+message fires when the capability was never granted at all.
 
 The attenuation-only law holds even when a fence asks for more than the
 host ever granted — you cannot request your way to authority nobody gave
@@ -187,17 +203,86 @@ $ target/debug/lamedh -s "(with-capabilities '(SHELL) (capabilities-effective))"
 ; => ()
 ```
 
-### `with-fuel`
+### Dynamic extent, not lexical scope
 
-`(with-fuel n form...)` evaluates `form...` under a step budget of `n`,
-charged at function entries and loop back-edges (`while`/`for`/`dolist`/
-`dotimes` bodies, `prog` `go` labels). Exhaustion signals a catchable
-"fuel exhausted" error instead of hanging the interpreter on a runaway
-loop:
+Because the mask is thread-local kernel state rather than a rewrite of the
+fence's body, a helper function defined *outside* a fence and called from
+*inside* it is still fenced — the mask doesn't care where a function was
+defined, only where it's executing:
 
 ```console
-$ target/debug/lamedh -s "(with-fuel 50 (defun spin (n) (if (< n 1) 'done (spin (- n 1)))) (spin 1000000))"
-Error: fuel exhausted (budget 50)
+$ target/debug/lamedh --capability READ-FS \
+    -s "(progn (defun outer-read (p) (read-file p))
+               (with-capabilities '() (handler-case (outer-read \"/etc/hostname\") (error (er) 'denied))))"
+; => DENIED
+```
+
+`outer-read` never mentions the fence — it's an ordinary function that
+happens to get called while one is armed, and that's enough. `(read-file
+...)` is denied the same as if it had been written directly inside the
+`with-capabilities` body.
+
+`capabilities-effective`, `require-capability`, and `feature-enabled-p` all
+consult the same live mask, so any of them gives a consistent answer from
+inside or outside a fence:
+
+```console
+$ target/debug/lamedh --capability READ-FS -s '(feature-enabled-p "READ-FS")'
+; => T
+
+$ target/debug/lamedh --capability READ-FS -s "(with-capabilities '() (feature-enabled-p \"READ-FS\"))"
+; => ()
+```
+
+Custom capabilities — names a module registers via `(:provides CAP)`,
+covered in Chapter 10 — join this same vocabulary and attenuate through
+`with-capabilities`/`sandboxed`/`spawn` exactly like a built-in; they are
+gated only by explicit `require-capability` checks in Lisp code and never
+grant kernel abilities like `READ-FS`.
+
+### Escaped closures run with the caller's authority
+
+The dynamic-extent law cuts both ways. A closure *created* under a fence
+but *called* after the fence has already exited runs with whatever
+authority is ambient at the call site — not the authority in force when it
+was made. Defining a lambda doesn't evaluate its body, so a lambda built
+inside `(with-capabilities '() ...)` and returned carries no memory of that
+fence once `with-capabilities` has returned:
+
+```console
+$ target/debug/lamedh --capability READ-FS \
+    -s "(let ((f (with-capabilities '() (lambda () (read-file \"/etc/hostname\")))))
+          (funcall f))"
+; => "elrond\n"
+```
+
+The closure's body — a `read-file` call — would have been denied had it
+run *inside* the fence; called afterward, outside any fence, it sees the
+host's full `READ-FS` grant. Ambient authority belongs to the execution,
+not the definition site — the same law `spawn` applies at its thread
+boundary (§7.4): a spawned child's authority is whatever the *call to
+`spawn`* is attenuated to, not whatever the closure that built its body
+form once had.
+
+### `with-fuel`
+
+`(with-fuel n form...)` evaluates `form...` under a budget of `n` **kernel
+steps** — the same step-count unit `with-fuel` was already introduced in
+Chapter 6, now charged directly by the kernel trampoline rather than by a
+Lisp-level walker: once per `eval`/`exec` entry and once per tail-call step,
+in both the tree-walking and compiled-code paths. That is much finer
+grained than counting only function entries and loop back-edges, so a
+budget that "feels small" burns through faster than intuition from other
+step-counted systems suggests — realistic budgets read in the hundreds to
+thousands, not tens, for anything beyond "fail almost immediately."
+Exhaustion signals a catchable "fuel exhausted" error, with a backtrace
+frame naming where it ran out, instead of hanging the interpreter on a
+runaway loop:
+
+```console
+$ target/debug/lamedh -s "(with-fuel 200 (defun spin (n) (if (< n 1) 'done (spin (- n 1)))) (spin 1000000))"
+Error: fuel exhausted (kernel step budget)
+  in: SPIN
 ```
 
 Work that fits the budget completes normally and returns the same result
@@ -209,40 +294,118 @@ $ target/debug/lamedh -s "(with-fuel 100000 (mapcar (lambda (v) (* v v)) (list 1
 ```
 
 `(fuel-remaining)` reports the live budget from inside a fence, and `nil`
-outside any fence:
+outside any fence. Note it isn't exactly `n` right after entry: arming the
+fence and evaluating the call to `fuel-remaining` itself are kernel steps,
+charged against the very budget being armed:
 
 ```console
 $ target/debug/lamedh -s "(fuel-remaining)"
 ; => ()
 
-$ target/debug/lamedh -s "(with-fuel 100 (fuel-remaining))"
-; => 100
+$ target/debug/lamedh -s "(with-fuel 1000 (fuel-remaining))"
+; => 996
 ```
 
-Nested budgets clamp to the enclosing remainder — asking for more than
-what's left just gets you what's left, and every step still charges every
-enclosing fence:
+Nested budgets clamp to, and **spend from**, the enclosing remainder —
+asking for more than what's left just gets you what's left, every step
+still charges every enclosing fence, and the inner fence's own setup is
+itself a charge against the outer budget:
 
 ```console
-$ target/debug/lamedh -s "(with-fuel 100 (with-fuel 1000 (fuel-remaining)))"
-; => 100
+$ target/debug/lamedh -s "(with-fuel 1000 (with-fuel 5000 (fuel-remaining)))"
+; => 994
 ```
 
-Two safety properties worth knowing about `with-fuel`: a **kernel-level
-backstop** closes the obvious escape hatch — the Lisp-level walker only
-instruments code written *inside* the fence, so a function defined outside
-and merely called from inside would otherwise loop unmetered; the kernel
-arms a second, coarser step counter (roughly 256× the Lisp budget) for the
-same extent that catches exactly this case, catchably. And **no-compile**:
-inside a fence, `jit-optimize` becomes a no-op returning
-`COMPILE-DISABLED-BY-GUARD`, `defun-typed` signals an error, and `defun*`
-is silently downgraded to a plain `defun` — a compiled edition would run
-at native speed and bypass the tick instrumentation entirely.
+(1000 remaining drops to 996 on entry as above; the inner `with-fuel`
+clamps its requested 5000 down to that 996, then spends a few more steps
+on its own setup and the `fuel-remaining` call, landing at 994.)
+
+**No widening from Lisp.** `kernel-fuel-set!` lets code arm or disarm the
+budget directly, but while a fence is already active it is narrow-only —
+lowering the remaining count is allowed, raising it or disarming it is
+refused. There is no Lisp-callable capability-mask setter at all (§7.3's
+mask only ever moves through `with-capabilities` itself):
+
+```console
+$ target/debug/lamedh -s "(with-fuel 100 (kernel-fuel-set! 10))"
+; => 97
+
+$ target/debug/lamedh -s "(with-fuel 100 (kernel-fuel-set! 500))"
+Error: kernel-fuel-set!: cannot widen or disarm inside a fuel fence
+
+$ target/debug/lamedh -s "(with-fuel 100 (kernel-fuel-set! nil))"
+Error: kernel-fuel-set!: cannot widen or disarm inside a fuel fence
+```
+
+(`kernel-fuel-set!` returns the *previous* remaining count, which is why
+narrowing to 10 above reports 97 — the count already spent entering the
+fence and evaluating the call.)
+
+**No-compile.** While a fuel budget is armed, native code generation is
+off, so nothing running under the fence can outrun the step counter by
+dropping into unmetered compiled code:
+
+- `jit-optimize` becomes a no-op returning the symbol
+  `COMPILE-DISABLED-BY-GUARD` instead of compiling.
+- `defun-typed` signals an error rather than compiling a typed native.
+- `defun*` silently downgrades to a plain (interpreted) `defun` — it still
+  defines the function, just without attempting native compilation.
+- An ordinary `defun` that would normally auto-compile to a native
+  "one-door" edition (§4.5, §4.10) takes its **interpreted fallback**
+  instead of its compiled fast path for the fence's whole dynamic extent,
+  so its own internal loops run back through the metered trampoline rather
+  than at native speed.
+
+```console
+$ target/debug/lamedh -s "(with-fuel 1000 (progn (defun sq (x) (* x x)) (jit-optimize 'sq)))"
+; => COMPILE-DISABLED-BY-GUARD
+
+$ target/debug/lamedh -s "(with-fuel 1000 (defun-typed sq2 ((x int64)) int64 (* x x)))"
+Error: defun-typed is disabled under an active fuel fence (no-compile, issue #284)
+
+$ target/debug/lamedh -s "(with-fuel 1000 (defun* sq3 (x) (* x x)) (sq3 5))"
+; => 25
+```
+
+The one-door fallback is what makes fuel accounting airtight for ordinary
+code: define and warm up a plain `defun` outside any fence (letting it
+auto-compile), then call it from inside a small fence — it still runs
+metered and still exhausts on a runaway loop, exactly as if it had never
+compiled at all:
+
+```console
+$ target/debug/lamedh -s "(progn (defun nspin (n acc) (if (< n 1) acc (nspin (- n 1) (+ acc 1))))
+      (nspin 10 0)
+      (with-fuel 50 (handler-case (nspin 1000000 0) (error (er) 'exhausted))))"
+; => EXHAUSTED
+
+$ target/debug/lamedh -s "(progn (defun nspin (n acc) (if (< n 1) acc (nspin (- n 1) (+ acc 1))))
+      (nspin 10 0)
+      (nspin 1000000 0))"
+; => 1000000
+```
+
+Unfenced, `nspin`'s million-deep loop finishes instantly on its compiled
+fast path; fenced, the same loop is metered and a 50-step budget cannot
+possibly finish it.
+
+The one documented exception: a `defrecord` accessor or constructor
+compiled through the older `defstruct-typed` native path (pre-existing,
+not a one-door `defun`) has no interpreted fallback to fall back to, and
+keeps running unmetered even under an armed fence:
+
+```console
+$ target/debug/lamedh -s "(progn (defrecord coin (value int64)) (with-fuel 5 (coin-value (make-coin 7))))"
+; => 7
+```
+
+That succeeds under a 5-step budget specifically because `coin-value`
+never re-enters the metered trampoline — a known, documented hole (see the
+header comment in `lib/22-guard.lisp`), not something to rely on.
 
 The threat model here is accidental runaway code (an agent's generated
 loop, an off-by-one), not a determined adversary studying the fence
-mechanism — see the doc comment at the top of `lib/22-guard.lisp` for the
-documented Phase-1 leaks the kernel backstop closes.
+mechanism.
 
 ### Composing fences
 
@@ -261,9 +424,9 @@ $ target/debug/lamedh --capability READ-FS \
 ```console
 $ target/debug/lamedh --capability READ-FS \
     -s "(sandboxed (:fuel 1000 :capabilities (READ-FS)) (list (fuel-remaining) (capabilities-effective)))"
-; => (1000 (READ-FS))
+; => (994 (READ-FS))
 
-$ target/debug/lamedh -s "(handler-case (sandboxed (:fuel 40 :capabilities ()) (while t nil)) (error (er) 'caught))"
+$ target/debug/lamedh -s "(handler-case (sandboxed (:fuel 200 :capabilities ()) (while t nil)) (error (er) 'caught))"
 ; => CAUGHT
 ```
 
@@ -369,7 +532,7 @@ catchable in the parent via `await`:
 
 ```console
 $ target/debug/lamedh -s "(handler-case
-      (await (spawn (:fuel 40)
+      (await (spawn (:fuel 400)
                (progn (defun sp (n) (if (< n 1) 'd (sp (- n 1)))) (sp 100000000))))
       (error (er) 'child-fuel-caught))"
 ; => CHILD-FUEL-CAUGHT
@@ -490,9 +653,13 @@ isolation, reach for `spawn`/`spawn*` instead.
 
 - Nothing dangerous is available until the host grants it: `READ-FS`,
   `CREATE-FS`, `TEMP-FS`, `SHELL`, `IO`. Lisp code cannot self-escalate.
-- `with-capabilities` and `with-fuel` let *guarded* Lisp code narrow its
-  own authority and step budget for a dynamic extent, monotonically —
-  nesting order never matters, and narrowing can't be undone from inside.
+- `with-capabilities` and `with-fuel` are kernel special forms that let
+  *guarded* Lisp code narrow its own authority and step budget for a
+  dynamic extent, monotonically — nesting order never matters, narrowing
+  can't be undone from inside (`kernel-fuel-set!` is narrow-only, and no
+  capability-mask setter exists), it follows the call rather than the
+  lexical body, and it stops applying the moment a closure made under a
+  fence is called from outside it.
 - `capabilities-needed`/`capabilities-needed-form` give a static,
   conservative manifest to drive a minimal fence before running unfamiliar
   code.

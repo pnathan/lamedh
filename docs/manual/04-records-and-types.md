@@ -14,8 +14,11 @@ and the checker stays honest about exactly how much of it it can prove.
 
 This chapter covers `defrecord` end to end, the row-polymorphic type system
 underneath it, the `defun*`/`defun-typed` function-definition forms that
-feed the same checker, and `definterface`, the Go-style method-set layer on
-top of everything.
+feed the same checker, `defvariant` and the closed sum types it builds
+(including the stdlib's `Option`/`Result`), the HM-style generics that make
+records and variants parametric, self- and mutually-recursive record
+types, and `definterface`, the Go-style method-set layer on top of
+everything.
 
 ## 4.1 `defrecord`: the one door
 
@@ -163,16 +166,41 @@ lamedh -s '(progn (defrecord point (x int64) (y int64))
 
 ## 4.4 The gradual frontier
 
-Not every field type maps into the checker's type language. When a field's
-declared type is a symbol or compound form the checker does not recognize —
-naming no record and no known compound — `defrecord` degrades *that field
-only* to `any`. This is per-field, not all-or-nothing: the rest of the
-record keeps its checked types.
+Not every field type maps into the checker's type language, and the two
+ways a field type can fail to map are treated differently on purpose. A
+*bare structural word* used without its required arguments — `list`,
+`array`, `pair`, or `record` written alone, not applied to anything — says
+nothing checkable by itself and degrades *that field only* to `any`. A
+*compound form* whose head the checker does not recognize as `list`,
+`array`, `pair`, `record`, `->`, or a registered generic also degrades to
+`any`. This is per-field, not all-or-nothing: the rest of the record keeps
+its checked types.
+
+```lisp
+lamedh -s '(progn (defrecord widget (x list) (y (mystery-compound int64)))
+                   (list (see-type (quote widget-x)) (see-type (quote widget-y))))'
+; => ((DECLARED (-> (WIDGET) ANY)) (DECLARED (-> (WIDGET) ANY)))
+```
+
+A bare *symbol* that is not one of those structural words, though, is
+never degraded — it is a **nominal record or variant reference**, resolved
+by name, whether or not that name has been defined yet. This is what makes
+self- and mutually-recursive records (§4.14) work with no forward-`declare`
+step: an unknown bare symbol becomes a forward-declared phantom brand
+instead of a silent `any`, and a genuine typo surfaces as a type error at
+the first place the field is actually used, rather than as quietly-dropped
+checking:
 
 ```lisp
 lamedh -s '(progn (defrecord widget (x bogus-type) (y (mystery-compound int64)))
                    (list (see-type (quote widget-x)) (see-type (quote widget-y))))'
-; => ((DECLARED (-> (WIDGET) ANY)) (DECLARED (-> (WIDGET) ANY)))
+; => ((DECLARED (-> (WIDGET) BOGUS-TYPE)) (DECLARED (-> (WIDGET) ANY)))
+```
+
+```lisp
+lamedh -s '(progn (defrecord widget (x bogus-type) (y (mystery-compound int64)))
+                   (check-type (+ 1 (widget-x (make-widget 1 2)))))'
+; => "type error: in call to `MAKE-WIDGET`: cannot unify int64 with BOGUS-TYPE"
 ```
 
 Compound types the checker *does* understand ride through unchanged —
@@ -316,7 +344,7 @@ predicate. `(:derive equality lens)` inside the `defrecord` form does
 exactly what calling `derive` afterward does — `derive` is idempotent and
 can be called again if you add a target later. Every derived operation gets
 a declared, branded scheme the same way the constructor and accessors do,
-so it participates in `see-type` and interface conformance (§4.11) for
+so it participates in `see-type` and interface conformance (§4.15) for
 free.
 
 ## 4.8 The checker: verdicts, the type language, `declare-type!`
@@ -476,7 +504,452 @@ without ever blocking on ambiguity. Use plain `defun` when you deliberately
 do not want typed compilation attempted (or opt out explicitly with
 `(declare (no-compile))`).
 
-## 4.11 Interfaces: `definterface`, `implements?`, `implements!`
+## 4.11 Sum types: `defvariant` and `variant-case`
+
+`defrecord` gives you a single, open-ended shape. Sometimes what you want
+is the opposite: a *closed*, exhaustively-enumerable set of shapes — a
+value that is a circle or a rectangle and nothing else, ever. That is
+`defvariant`:
+
+```lisp
+(defvariant shape
+  (circle (r int64))
+  (rect   (w int64) (h int64)))
+```
+
+Each constructor — `circle`, `rect` — is an ordinary branded record under
+the hood (one `#S`-printable `StructObj`, same representation `defrecord`
+uses), but the constructor *function* is the bare name itself: `(circle
+3)`, not `(make-circle 3)`. `shape` itself becomes a second, denotable name
+in the type language — the checker-level union of every constructor brand.
+The union predicate, `shape-p`, is true for a value built by any
+constructor of the variant and false for everything else:
+
+```lisp
+lamedh -s '(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (list (circle 3) (shape-p (circle 3)) (shape-p (rect 1 1)) (shape-p 5)))'
+; => (#S(CIRCLE 3) T T ())
+```
+
+Fields normalize exactly like `defrecord`'s, and a constructor with no
+fields at all is legal and is called the same way it is defined, with zero
+arguments — `(none)`, shown later in this section, is one.
+
+`variant-case` dispatches on a value's constructor brand and binds its
+fields positionally, clause by clause:
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (defun area (s) (variant-case s (circle (r) (* 3 (* r r))) (rect (w h) (* w h))))
+                   (list (area (circle 3)) (area (rect 2 4))))"
+; => (27 8)
+```
+
+The distinguishing feature is exhaustiveness: unless the case has an
+`else` clause, every constructor of the variant must be covered, or
+`variant-case` errors and names exactly what is missing:
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (variant-case (circle 3) (circle (r) r)))"
+; => Error: variant-case over SHAPE is not exhaustive; missing: (RECT)
+```
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (variant-case (rect 1 2) (circle (r) r) (else 'other)))"
+; => OTHER
+```
+
+This is a real safety property, not just a style nicety: add a new
+constructor to a variant next month, and every unmarked `variant-case` over
+it that lacks an `else` starts failing loudly at the call site instead of
+silently falling through.
+
+Absorption into the union is a checker fact, not just a runtime one. Give a
+function that uses `variant-case` a declared signature over the variant
+name (`variant-case` is Lisp-layer syntax defined with `defvau`, not a form
+the checker's own static walker parses, so an explicit `declare-type!` —
+rather than relying on `see-type` to infer one — is the reliable way to
+give such a function a scheme), and a value built by *any* of that
+variant's constructors — but only that variant's constructors — type-checks
+against it:
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (defun area (s) (variant-case s (circle (r) (* 3 (* r r))) (rect (w h) (* w h))))
+                   (declare-type! 'area '(-> (shape) int64))
+                   (list (check-type (area (circle 3))) (check-type (area 5))))"
+; => ("int64" "type error: in call to `AREA`: cannot unify int64 with SHAPE")
+```
+
+A constructor from a *different* variant is not a shape, however many
+fields it happens to line up with, and the checker names it by brand:
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (defun area (s) (variant-case s (circle (r) (* 3 (* r r))) (rect (w h) (* w h))))
+                   (declare-type! 'area '(-> (shape) int64))
+                   (defvariant coin-flip (heads) (tails))
+                   (check-type (area (heads))))"
+; => "type error: in call to `AREA`: HEADS is not a constructor of variant SHAPE"
+```
+
+Nullary constructors are ordinary values, print and round-trip like any
+other record, and compare `equal` the same way:
+
+```lisp
+lamedh -s '(list (none) (equal (none) (none)))'
+; => (#S(NONE) T)
+```
+
+`none` is `Option`'s empty case — `Option` and `Result` are covered next.
+
+`match` (§8, `lib/23-match.lisp`) also destructures constructors directly,
+with a record pattern alongside its existing pattern language: `#S(BRAND
+pat...)` matches any value whose brand is `BRAND`, binding each field
+pattern against the corresponding field value. This is often nicer than
+`variant-case` when you are matching one shape among several other
+conditions rather than dispatching a whole function on the brand:
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (match (rect 2 4) (#S(CIRCLE ?r) (list 'circ ?r)) (#S(RECT ?w ?h) (list 'rect ?w ?h))))"
+; => (RECT 2 4)
+```
+
+`#S` patterns nest like any other pattern, so matching inside a matched
+record's field works the same as matching inside a list:
+
+```lisp
+lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+                   (defvariant wrap (boxed (inner any)))
+                   (match (boxed (circle 9)) (#S(BOXED #S(CIRCLE ?r)) ?r)))"
+; => 9
+```
+
+## 4.12 `Option` and `Result`
+
+The stdlib (`lib/25-variants.lisp`) defines `Option` and `Result` as
+ordinary variants, built with nothing `defvariant` doesn't already give
+you:
+
+```lisp
+(defvariant (option a)
+  (some (value a))
+  (none))
+
+(defvariant (result a e)
+  (ok (value a))
+  (err (message e)))
+```
+
+(The `(option a)` head is the parametric form covered fully in §4.13; read
+it here as "a variant with one type parameter.") `some`, `none`, `ok`, and
+`err` are the ordinary bare-name constructors from §4.11, and the usual
+inspection/combinator helpers come with them:
+
+| Function | Behavior |
+|---|---|
+| `option-of` | `()` becomes `(none)`; anything else becomes `(some x)` |
+| `unwrap` | the value inside `(some v)`; errors on `(none)` |
+| `unwrap-or` | the value inside `(some v)`, or a supplied default |
+| `option-map` | apply a function inside `(some v)`; `(none)` passes through |
+| `option-then` | monadic bind: `(some v)` -> `(funcall f v)` (itself an option) |
+| `unwrap-result` | the value inside `(ok v)`; errors with the message on `(err m)` |
+| `result-or` | the value inside `(ok v)`, or a supplied default |
+| `result-map` | apply a function inside `(ok v)`; `(err m)` passes through |
+| `result-then` | monadic bind over `Result` |
+| `try-call` | call a function, capturing a signaled condition as `(err message)` |
+
+```lisp
+lamedh -s '(list (unwrap-or (some 5) 0) (unwrap-or (none) 0))'
+; => (5 0)
+```
+
+```lisp
+lamedh -s "(list (option-map #'1+ (some 4)) (option-of ()) (option-of 3))"
+; => (#S(SOME 5) #S(NONE) #S(SOME 3))
+```
+
+```lisp
+lamedh -s '(list (result-or (ok 1) 99) (result-or (err "bad") 99))'
+; => (1 99)
+```
+
+```lisp
+lamedh -s '(unwrap-result (result-then (ok 2) (lambda (v) (ok (* v 10)))))'
+; => 20
+```
+
+`try-call` is the bridge from the condition system (§6) into `Result`: call
+`car` on a non-list and the condition it signals becomes an `(err ...)`
+value instead of unwinding the stack; call it on something that actually
+works and you get `(ok result)`.
+
+```lisp
+lamedh -s "(list (err-p (try-call #'car 5)) (try-call #'car (list 1 2)))"
+; => (T #S(OK 1))
+```
+
+Typing is precise through every one of these helpers — payload and default
+have to agree, the same way any other row-typed helper chain does (§4.9):
+
+```lisp
+lamedh -s '(check-type (+ 1 (unwrap-or (some 5) 0)))'
+; => "int64"
+```
+
+```lisp
+lamedh -s '(check-type (unwrap-or (some "s") 0))'
+; => "type error: in call to `UNWRAP-OR`: cannot unify int64 with string"
+```
+
+`(some "s")` carries a `string` payload; `0` is an `int64` default;
+`unwrap-or`'s declared scheme, `(forall (a) (-> ((option a) a) a))`,
+demands they be the *same* `a` — mixing them is a genuine static error, not
+a runtime surprise waiting to happen.
+
+## 4.13 HM generics: parametric records and variants
+
+`defrecord` and `defvariant` both accept a *parametric* head — a list
+instead of a bare name, with type-parameter symbols after it — for a
+record or variant whose field types mention type variables:
+
+```lisp
+lamedh -s "(progn (defrecord (duo a b) (first a) (second b))
+                   (list (see-type 'make-duo) (see-type 'duo-first) (make-duo 1 \"s\") (duo-first (make-duo 1 \"s\"))))"
+; => ((DECLARED (FORALL (A B) (-> (A B) (DUO A B)))) (DECLARED (FORALL (A B) (-> ((DUO A B)) A))) #S(DUO 1 "s") 1)
+```
+
+This is real type application in the Hindley-Milner sense, not row
+polymorphism wearing a different hat (§4.3's `record-ref` already gave you
+"any record with this field"; this is "a `duo` of exactly these two
+types"). `make-duo`'s scheme quantifies over `a` and `b` and instantiates
+them *fresh, per call site* — two calls to `make-duo` in the same program
+can specialize to entirely different types without interfering:
+
+```lisp
+lamedh -s "(progn (defrecord (duo a b) (first a) (second b))
+                   (list (check-type (+ 1 (duo-first (make-duo 1 \"x\"))))
+                         (check-type (+ 1 (duo-first (make-duo \"x\" 2))))))"
+; => ("int64" "type error: `+` operands disagree: Int64 vs Str")
+```
+
+Argument unification is nominal by *name*: `(duo int64 string)` and `(duo
+string int64)` are different applications of the same generic, and a value
+built as one does not flow where the other is demanded. `Option` and
+`Result` (§4.12) are declared exactly this way — `some`'s real scheme is:
+
+```lisp
+lamedh -s "(see-type 'some)"
+; => (DECLARED (FORALL (A) (-> (A) (SOME A))))
+```
+
+which is why the typing shown in §4.12 is exact rather than approximate: a
+`(some 5)` really is a `(some int64)`, distinct from a `(some string)`, and
+`unwrap-or`'s own `(forall (a) (-> ((option a) a) a))` scheme is what forces
+its two arguments into agreement. Two different generics never unify with
+each other, even when one happens to be a record and the other a variant
+constructor:
+
+```lisp
+lamedh -s "(progn (defrecord (duo a b) (first a) (second b))
+                   (check-type (unwrap-or (make-duo 1 2) 0)))"
+; => "type error: in call to `UNWRAP-OR`: cannot unify (duo ?1 ?2) with (option ?0)"
+```
+
+A **bare** generic name, with no type arguments applied at all, means the
+all-`any` application — the gradual reading, and exactly what pre-0.3 code
+that used `option` before it was parametric still means today:
+
+```lisp
+lamedh -s "(progn (defrecord cell (v int64) (link option))
+                   (list (see-type 'cell-link) (cell-v (make-cell 1 (some (make-cell 2 (none)))))))"
+; => ((DECLARED (-> (CELL) (OPTION ANY))) 1)
+```
+
+Generic applications are also row-subsumable: a row-polymorphic function
+that only names a subset of an instantiated generic's fields (§4.3) sees
+the instantiated field type at the call site, not `any`:
+
+```lisp
+lamedh -s "(progn (defrecord (duo a b) (first a) (second b))
+                   (defun the-first (x) (record-ref x 'first))
+                   (check-type (+ 1 (the-first (make-duo 4 \"s\")))))"
+; => "int64"
+```
+
+Sibling constructors of the same variant meet at the variant's own
+instantiated application, the same way an `if`'s two branches meet at a
+common type anywhere else in the checker:
+
+```lisp
+lamedh -s "(list (check-type (if t (some 5) (none)))
+                 (check-type (+ 1 (unwrap-or (if nil (some 5) (none)) 0))))"
+; => ("(some int64)" "int64")
+```
+
+Runtime is completely erased: a generic record or variant constructor is
+the same `#S`-printed `StructObj` you would get from a non-generic
+`defrecord`, with no type tag or dictionary passed at runtime. This has a
+direct consequence for the compiled tier (§4.5): generics are checker-only
+and are **never** native-compiled, regardless of how scalar their fields
+turn out to be at any one instantiation — a `(duo int64 int64)` still runs
+on the dynamic `StructObj` path.
+
+One more restriction, and it exists precisely because generics are proper
+type application: the names the checker already uses for its own type
+constructors — `pair`, `list`, `array`, `record`, `->`, `forall`, and the
+scalar names — cannot name a *parametric* record or variant:
+
+```lisp
+lamedh -s '(defrecord (pair a b) (first a) (second b))'
+; => Error: `pair` is a built-in type name and cannot name a record or variant
+```
+
+```lisp
+lamedh -s '(defvariant (list a) (lnil) (lcons (h a)))'
+; => Error: `list` is a built-in type name and cannot name a record or variant
+```
+
+This check currently only fires on the *parametric* spelling — a
+non-generic `(defrecord pair (x int64))` is accepted, since it never
+reaches the type-constructor namespace that generic applications occupy —
+but shadowing a built-in type name is exactly as confusing at the call
+site either way, so avoid it regardless of which form you use.
+
+## 4.14 Recursive records
+
+A field's declared type can name its own record, or another record that
+eventually names it back. Both self- and mutual recursion resolve
+*nominally* — by brand name — rather than degrading to `any`, which is what
+makes §4.4's "bare symbol = nominal reference" rule matter:
+
+```lisp
+lamedh -s "(progn (defrecord node (val int64) (next node))
+                   (list (see-type 'node-next) (see-type 'make-node)))"
+; => ((DECLARED (-> (NODE) NODE)) (DECLARED (-> (INT64 NODE) NODE)))
+```
+
+Access through the recursive field stays fully checked at every depth, and
+so does a row read through it via `record-ref`:
+
+```lisp
+lamedh -s "(progn (defrecord node (val int64) (next node))
+                   (def chain (make-node 1 (make-node 2 (make-node 3 'end))))
+                   (list (node-val (node-next (node-next chain)))
+                         (check-type (node-val (node-next chain)))
+                         (check-type (record-ref (node-next chain) 'val))))"
+; => (3 "int64" "int64")
+```
+
+(`chain`'s final `next` is the bare symbol `'end`, not another `node` —
+`defrecord`'s constructor does not itself enforce the field's declared type
+at construction time; that is what the checker's static verdicts above are
+for, and what `check-type` at a real call site would catch.)
+
+Mutual recursion works the same way through a forward reference — `tree`
+names `branch` before `branch` is defined, via the two-phase registration
+described in §4.4, and the later `defrecord branch` completes it:
+
+```lisp
+lamedh -s "(progn (defrecord tree (left branch) (v int64))
+                   (defrecord branch (t1 tree))
+                   (list (see-type 'tree-left) (see-type 'branch-t1)))"
+; => ((DECLARED (-> (TREE) BRANCH)) (DECLARED (-> (BRANCH) TREE)))
+```
+
+An unconditionally self-referential field (`next node`, always another
+`node`) has no way to terminate — you can describe an infinite type but
+never build a finite value with a base case at that field. The blessed
+idiom is to terminate with `Option` (§4.12), whether by the pre-0.3 gradual
+bare name:
+
+```lisp
+lamedh -s "(progn (defrecord node (val int64) (next option))
+                   (defun sum-nodes (n)
+                     (+ (node-val n)
+                        (variant-case (node-next n)
+                          (some (rest) (sum-nodes rest))
+                          (none () 0))))
+                   (sum-nodes (make-node 1 (some (make-node 2 (some (make-node 3 (none))))))))"
+; => 6
+```
+
+```lisp
+lamedh -s "(progn (defrecord node (val int64) (next option))
+                   (check-type (make-node 1 (none))))"
+; => "NODE"
+```
+
+or, fully checked end to end, with a parametric `node` and `Option`
+instantiated to `(node a)` itself:
+
+```lisp
+lamedh -s "(progn (defrecord (node a) (val a) (next (option (node a))))
+                   (see-type 'node-next))"
+; => (DECLARED (FORALL (A) (-> ((NODE A)) (OPTION (NODE A)))))
+```
+
+```lisp
+lamedh -s "(progn (defrecord (node a) (val a) (next (option (node a))))
+                   (defun sum-nodes (n)
+                     (+ (node-val n)
+                        (variant-case (node-next n)
+                          (some (r) (sum-nodes r))
+                          (none () 0))))
+                   (sum-nodes (make-node 1 (some (make-node 2 (none))))))"
+; => 3
+```
+
+A well-formed chain checks precisely, `a` instantiated to `int64` the whole
+way down:
+
+```lisp
+lamedh -s "(progn (defrecord (node a) (val a) (next (option (node a))))
+                   (check-type (make-node 1 (some (make-node 2 (none))))))"
+; => "(node int64)"
+```
+
+and a wrong payload anywhere in the chain — here, a `duo` where a `node`
+was expected — is a genuine static error, not a value the checker waves
+through because the field is "just a link":
+
+```lisp
+lamedh -s "(progn (defrecord (node a) (val a) (next (option (node a))))
+                   (defrecord (duo a b) (first a) (second b))
+                   (check-type (make-node 1 (some (make-duo 1 2)))))"
+; => "type error: in call to `MAKE-NODE`: cannot unify (duo ?2 ?3) with (node ?0)"
+```
+
+Foreign brands are rejected the gradual, bare-`option` way too — a
+different variant's constructor does not unify with `(option any)`:
+
+```lisp
+lamedh -s "(progn (defrecord node (val int64) (next option))
+                   (defvariant color (red) (blue))
+                   (check-type (make-node 1 (red))))"
+; => "type error: in call to `MAKE-NODE`: cannot unify RED with (option any)"
+```
+
+Because a bare, unrecognized field-type symbol is nominal rather than
+gradual (§4.4), a misspelled type name — `intt64` where `int64` was meant —
+does not silently become `any`. It becomes a phantom brand named after the
+typo, and the mistake surfaces the first time the field is actually used
+somewhere the real type is demanded:
+
+```lisp
+lamedh -s "(progn (defrecord pt (x intt64) (y int64))
+                   (list (see-type 'pt-x) (check-type (+ 1 (pt-x (make-pt 1 2))))))"
+; => ((DECLARED (-> (PT) INTT64)) "type error: in call to `MAKE-PT`: cannot unify int64 with INTT64")
+```
+
+`pt-x`'s own declared scheme is not wrong — `pt` really does have an
+`INTT64`-typed field, exactly as written. The error appears where it
+belongs: at the point that tries to use a `pt-x` result as an `int64`.
+
+## 4.15 Interfaces: `definterface`, `implements?`, `implements!`
 
 `definterface` declares a named method set — a Go-style, structurally
 satisfied interface, not a CLOS-style dispatch table:

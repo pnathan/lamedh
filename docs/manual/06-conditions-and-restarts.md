@@ -328,7 +328,7 @@ fallback, not an unrecoverable crash.
       (defun spin (n) (if (< n 1) 'done (spin (- n 1))))
       (spin 1000000))
   (error (e) (error-message e)))
-; => "fuel exhausted (budget 50)"
+; => "fuel exhausted (kernel step budget)"
 ```
 
 Because it is an ordinary condition, it composes with the restart protocol
@@ -346,13 +346,213 @@ instead of letting the whole computation die:
 ```
 
 `(fuel-remaining)` reports the live budget inside a fence and `()` outside
-any fence:
+any fence. The budget is denominated in **kernel steps** — one trampoline
+iteration each, the same unit §6.10 measures with `step-count` — and
+`with-fuel` itself charges a handful of steps for its own setup before your
+body runs, so what `fuel-remaining` reports is a few less than what you
+asked for:
 
 ```lisp
-(with-fuel 1000 (fuel-remaining))    ; => 1000
+(with-fuel 1000 (fuel-remaining))    ; => 996
 (fuel-remaining)                      ; => ()
 ```
 
 The fence attenuates *authority and budget*, not *catchability* — a fuel
 exhaustion is exactly as catchable, and exactly as capable of driving a
-restart, as an `(error ...)` you wrote by hand.
+restart, as an `(error ...)` you wrote by hand. §6.10 shows how to size a
+budget precisely instead of guessing, using the exact same step counter.
+
+## 6.9 Stack traces
+
+An uncaught error no longer dies with a single bare line if there is
+anything useful to say about *how it got there*: the toplevel prints
+`Error: message`, and — only when the unwind crossed at least one named
+function — a second line, `in: ` followed by the chain of frame names,
+**innermost first**, joined by `←`:
+
+```lisp
+(defun inner (x) (error "boom"))
+(defun middle (x) (+ 1 (inner x)))
+(defun outer () (* 2 (middle 41)))
+(outer)
+```
+```
+Error: boom
+  in: INNER ← MIDDLE ← OUTER
+```
+
+A frame is recorded for a named function's **non-tail** call — the call is
+still on the Rust stack, still waiting on its caller, when the error
+passes through it. A **tail** call is not: it reuses its caller's frame
+(that is what makes tail-call optimization safe for unbounded recursion in
+the first place), so the trace collapses every tail step into the single
+frame that is actually still live. A hundred-thousand-deep tail loop is one
+trace entry, not a hundred thousand:
+
+```lisp
+(defun f (n) (if (< n 1) (car 5) (f (- n 1))))
+(f 100000)
+```
+```
+Error: CAR: expected a list, got 5
+  in: F
+```
+
+Direct toplevel errors — nothing named on the way down — print exactly as
+they always have, with no second line at all:
+
+```lisp
+(car 5)      ; => Error: CAR: expected a list, got 5
+nosuchvar    ; => Error: Unbound variable: NOSUCHVAR
+```
+
+A handler can read the frames of the error it just caught with
+`(last-backtrace)`: a list of the same frame-name symbols, innermost
+first, no arrows. It works after `handler-case`:
+
+```lisp
+(defun deep () (car 5))
+(defun wrap () (+ 1 (deep)))
+(handler-case (wrap) (error (er) (last-backtrace)))
+; => (DEEP WRAP)
+```
+
+and after `errorset`, which is otherwise mute about *why* it failed
+(§6.2) — `last-backtrace` is how you find out without switching to
+`handler-case`:
+
+```lisp
+(defun deep () (car 5))
+(defun wrap () (+ 1 (deep)))
+(errorset '(wrap))      ; => ()
+(last-backtrace)         ; => (DEEP WRAP)
+```
+
+`(last-backtrace)` reflects the most recently *caught* error; a caught
+error that carried no named frames leaves it `()`, and it does not leak
+frames from an error caught earlier once a new one has been caught (or a
+direct toplevel error has printed) since.
+
+Recording is pay-mostly-on-error: a named call pushes a lightweight frame
+on entry and a normal return truncates it back off, so the cost on code
+that doesn't error is bookkeeping noise, not a rendered trace — the
+`in: A ← B ← C` string is only built when an error actually escapes
+uncaught, or when `last-backtrace` is asked to render the frames a handler
+caught. Host code embedding the library gets the same formatting through
+`lamedh::format_error_with_backtrace`.
+
+## 6.10 Instrumentation: `trace`, `time`, `step-count`
+
+`lib/26-instrument.lisp` adds three small, pure-Lisp tools for watching a
+computation from the outside, all built on the same kernel counter
+`with-fuel` budgets (§6.8; Chapter 7 covers the fence itself).
+
+### `trace` / `untrace`
+
+`(trace 'name)` replaces `name`'s global binding with a wrapper that
+prints the call and its result, indented by call depth, then restores the
+original with `(untrace 'name)`:
+
+```lisp
+(defun add1 (n) (+ n 1))
+(trace 'add1)
+(add1 5)
+```
+```
+(ADD1 5)
+ADD1 => 6
+; => 6
+```
+```lisp
+(untrace 'add1)
+(add1 5)
+; => 6
+```
+
+Because the wrapper lives on the *global binding*, it only sees calls that
+actually go through that binding. A plain `defun` is, since the 0.3
+"one door" compiler (Chapter 9), quietly compiled at definition time —
+and a compiled function's internal self-recursion calls itself directly,
+never revisiting the symbol `trace` rebound:
+
+```lisp
+(defun fact (n) (if (< n 2) 1 (* n (fact (- n 1)))))
+(trace 'fact)
+(fact 3)
+```
+```
+(FACT 3)
+FACT => 6
+; => 6
+```
+
+One call in, one call out — the three recursive steps happened natively
+inside the compiled body and never touched the traced symbol. Opt out of
+compilation with `(declare (no-compile))` to see every step of the
+recursion instead:
+
+```lisp
+(defun fact2 (n)
+  (declare (no-compile))
+  (if (< n 2) 1 (* n (fact2 (- n 1)))))
+(trace 'fact2)
+(fact2 3)
+```
+```
+(FACT2 3)
+  (FACT2 2)
+    (FACT2 1)
+    FACT2 => 1
+  FACT2 => 2
+FACT2 => 6
+; => 6
+```
+
+### `time` and `step-count`
+
+The unit underneath both is the **kernel step**: one trampoline iteration
+— every `eval`/`exec` entry, and every tail step a loop or tail call
+takes. `(step-count form...)` evaluates `form...` and returns `(steps
+. value)`:
+
+```lisp
+(step-count (+ 1 2))
+; => (11 . 3)
+```
+
+`(time form...)` does the same, but prints `(TIME-MS ms STEPS n)` and
+returns just `value`. The millisecond figure is wall-clock and will vary
+run to run and machine to machine; the step count will not:
+
+```lisp
+(defun spin (n) (if (< n 1) 'done (spin (- n 1))))
+(time (spin 1000))
+```
+```
+(TIME-MS 6 STEPS 11016)
+; => DONE
+```
+
+### The fuel identity
+
+`step-count` and `with-fuel` are not merely measuring "the same kind of
+thing" — they read the identical kernel counter, so a form's measured
+step count is not an estimate of a fuel budget, it *is* one. `(car
+(step-count form))` sizes a `with-fuel` budget tight to a handful of
+steps (the fence's own setup cost — the same handful §6.8 showed
+`fuel-remaining` coming up short by). Measure `(spin 1000)` at 11016
+steps, then run it under a budget ten steps over and ten steps under that
+exact number:
+
+```lisp
+(defun spin (n) (if (< n 1) 'done (spin (- n 1))))
+(let ((s (car (step-count (spin 1000)))))
+  (list s
+        (with-fuel (+ s 10) (spin 1000))
+        (handler-case (with-fuel (- s 10) (spin 1000))
+          (error (e) (error-message e)))))
+; => (11016 DONE "fuel exhausted (kernel step budget)")
+```
+
+Ten steps of headroom finishes; ten steps short dies — `step-count` and
+`with-fuel` are one ruler, not two.

@@ -1,11 +1,12 @@
 # 9. The Typed JIT and Embedding
 
-This chapter has two parts. §§9.1–9.6 cover how Lamedh runs your code
+This chapter has two parts. §§9.1–9.7 cover how Lamedh runs your code
 faster without you asking it to: the tiers between "tree-walked" and
-"native machine code," how to read the checker's verdict on a function,
-and the guarantees that hold across every tier. §§9.7–9.13 cover the other
-side of "embeddable": linking `lamedh` into a Rust program, handing it
-Lisp source, granting it capabilities, and getting typed values back out.
+"native machine code," how to read the checker's verdict on a function and
+ask it why a function landed where it did, and the guarantees that hold
+across every tier. §§9.8–9.14 cover the other side of "embeddable":
+linking `lamedh` into a Rust program, handing it Lisp source, granting it
+capabilities, and getting typed values back out.
 
 ## 9.1 Three Tiers, One Semantics
 
@@ -84,7 +85,91 @@ tier — compilation never destroys the source form used for introspection:
 ; => (LAMBDA (X) (* X 2))
 ```
 
-## 9.3 What Compiles and What Doesn't
+## 9.3 Asking Why: `explain-compile`
+
+`see-type` tells you which tier a function landed on. `(explain-compile
+'name)` answers the follow-up question — *why not a higher tier* — as the
+same kind of structured data, but with a concrete, actionable `BLOCKER`
+string instead of a shrug. Asking is always side-effect-free: explaining
+never installs a compiled edition, even when the answer is "it would
+compile fine."
+
+A function that already compiled reports its tier and signature:
+
+```lisp
+(defun inc (x) (+ x 1))
+(explain-compile 'inc)
+; => ((TIER . COMPILED) (SIGNATURE -> (INT64) INT64))
+```
+
+An ambiguous body — `(* x x)` alone doesn't pin `x` to a numeric kind —
+reports `CHECKED` plus the inferred scheme plus a blocker naming the
+operator the codegen path actually choked on:
+
+```lisp
+(defun sq (x) (* x x))
+(explain-compile 'sq)
+; => ((TIER . CHECKED) (SCHEME FORALL (A) (-> (A) A)) (BLOCKER . "`*`: cannot infer operand type"))
+```
+
+List-typed code is `CHECKED` for a structural reason instead — there's a
+sound polymorphic scheme, it's just not compileable to a fixed unboxed
+layout:
+
+```lisp
+(defun hd (xs) (car xs))
+(explain-compile 'hd)
+; => ((TIER . CHECKED) (SCHEME FORALL (A) (-> ((LIST A)) A)) (BLOCKER . "call to unknown function `CAR`"))
+```
+
+A `(declare (no-compile))` pin shows up as its own blocker text, so
+"can't compile" and "chose not to" are never confused for each other:
+
+```lisp
+(defun pinned (x) (declare (no-compile)) (+ x 1))
+(explain-compile 'pinned)
+; => ((TIER . CHECKED) (SCHEME -> (INT64) INT64) (BLOCKER . "pinned to the interpreter by (declare (no-compile)) / declaim"))
+```
+
+Variadic functions, macros, fexprs, and anything else that isn't a plain
+lambda are `DYNAMIC` — they never entered the typed island to begin with:
+
+```lisp
+(defun vary (&rest xs) xs)
+(explain-compile 'vary)
+; => ((TIER . DYNAMIC) (BLOCKER . "variadic or not a plain lambda"))
+```
+
+And a body that doesn't type-check at all reports `TYPE-ERROR` with the
+checker's own message as the blocker. The checker got stricter in 0.3 —
+`(+ "a" "b")` is a type error now, not silently tolerated — so this
+verdict is easier to hit by accident than it used to be:
+
+```lisp
+(defun broken (x) (car (+ x 1)))
+(explain-compile 'broken)
+; => ((TIER . TYPE-ERROR) (BLOCKER . "`car` expects a list, got Int64"))
+```
+
+The side-effect-free guarantee matters most for the eligible-but-uncompiled
+case. A `lambda` bound with `def` never passes through the `defun` one-door
+hook, so nothing has attempted to compile it yet — but `explain-compile`
+still runs the checker and codegen path far enough to answer, without
+installing a typed edition or touching the binding:
+
+```lisp
+(def plain (lambda (x) (+ x 1)))
+(explain-compile 'plain)
+; => ((TIER . CHECKED) (SCHEME -> (INT64) INT64) (BLOCKER . "none — natively compileable; (jit-optimize name) installs it"))
+(plain 4)
+; => 5
+```
+
+Calling `(explain-compile 'plain)` again returns the identical alist, and
+`plain` is still the plain, uncompiled lambda it started as — `explain-compile`
+reports eligibility, `jit-optimize` (§9.4) is what installs it.
+
+## 9.4 What Compiles and What Doesn't
 
 The typed island covers **monomorphic scalar and array code**: integers,
 floats, chars, and arrays of those, with arithmetic, comparisons, `if`,
@@ -140,7 +225,7 @@ reports what happened:
 ; => "OD-FIRST : (forall (a) (-> ((list a)) a))  [checked, dynamic]"
 ```
 
-## 9.4 Semantics Are Identical Across Tiers
+## 9.5 Semantics Are Identical Across Tiers
 
 Compilation is a performance decision, never a semantic one: a compiled
 function must produce exactly the results, errors, and condition-flag side
@@ -177,11 +262,11 @@ function's result, flags, or error type ever diverge from what
 `(declare (no-compile))` on the same body produces, that is a compiler
 bug, not an acceptable optimization artifact.
 
-## 9.5 Opting Out of Compilation
+## 9.6 Opting Out of Compilation
 
 Sometimes you want a function pinned to the tree-walker — for debugging,
 for benchmarking the interpreter itself, or because a fence around it
-needs every call instrumented (§9.6). Two ways to declare that:
+needs every call instrumented (§9.7). Two ways to declare that:
 
 `(declare (no-compile))` as the first form in a function body pins that
 one function:
@@ -214,16 +299,66 @@ they're defined — the form to reach for at the top of a file:
 ; => (CHECKED (-> (INT64) INT64))
 ```
 
-## 9.6 Fuel Fences Disable Compilation Automatically
+## 9.7 Fuel Fences Disable Compilation Automatically
 
-`lib/22-guard.lisp`'s `with-fuel` meters execution by code-walking the
-fenced body and inserting a tick at every function entry and loop
-back-edge. Compiled code — closure or native — has no ticks in it, so
-running compiled code inside a fuel fence would silently bypass the
-budget. Rather than let that happen, entering a `with-fuel` fence
-downgrades compilation for code defined inside it: `jit-optimize` becomes
-a no-op, `defun-typed` signals an error, and `defun*` is downgraded to a
-plain `defun` with type annotations stripped.
+`with-fuel` is a **kernel special form** (chapter 7 has the full
+guard-fence story): entering it arms a step counter for its *dynamic
+extent* — charged at every function entry and loop back-edge — and
+restores the enclosing budget on exit. That's dynamic extent, not a
+lexical property of the fenced source text: a helper defined outside the
+fence but *called* from inside it is metered too, the same rule
+`with-capabilities` uses for attenuation. Compiled code — closure or
+native — has no ticks in it, so letting it run unmetered inside a fuel
+fence would silently bypass the budget. Three consequences follow while a
+budget is armed:
+
+`jit-optimize` is refused — instead of compiling, it hands back the
+symbol `COMPILE-DISABLED-BY-GUARD`:
+
+```lisp
+(defun od-first (l) (car l))
+(with-fuel 1000 (jit-optimize od-first))
+; => COMPILE-DISABLED-BY-GUARD
+```
+
+`defun-typed` signals a catchable error rather than installing a native
+definition:
+
+```lisp
+(with-fuel 1000 (defun-typed (dtsq int64) ((x int64)) (* x x)))
+; Error: defun-typed is disabled under an active fuel fence (no-compile, issue #284)
+```
+
+And a **one-door membrane** — a plain `defun` that already compiled —
+takes its interpreted fallback for the duration of the fence instead of
+jumping into native code, so the call still ticks like everything else:
+
+```lisp
+(defun cnt (n) (if (< n 1) 0 (cnt (- n 1))))
+(see-type 'cnt)
+; => (TYPED (-> (INT64) INT64) COMPILED)
+(with-fuel 100 (cnt 5000000))
+; Error: fuel exhausted (kernel step budget)
+```
+
+The same call outside any fence runs the compiled loop straight through —
+no budget to protect, no ticks charged:
+
+```lisp
+(cnt 5000000)
+; => 0
+```
+
+Two forms build natives with **no interpreted fallback at all**:
+`defun-typed`'s explicit signature and `defun*`'s successful inference
+both compile straight to a native call, with no separate tree-walked
+edition sitting behind the binding to fall back to. `defun-typed` closes
+the fence gap the blunt way, by refusing to compile while a fuel budget is
+armed (above). A `defun*` native has no such refusal to lean on — defined
+inside a fence or out, calling it while a budget is armed runs the native
+loop unmetered. That's a documented hole, not a bug (see the doc comment
+at the top of `lib/22-guard.lisp`); don't rely on `with-fuel` to bound a
+`defun*` function you expect to compile.
 
 ```lisp
 (with-fuel 100 (+ 1 2))
@@ -233,7 +368,7 @@ plain `defun` with type annotations stripped.
 This is one of the few places tier selection is *forced* rather than
 inferred — see chapter 7 for the rest of the fuel/capability guard story.
 
-## 9.7 Building Without the Native Backend
+## 9.8 Building Without the Native Backend
 
 The default `cargo build` enables the `jit` Cargo feature, pulling in
 `cranelift-jit`/`cranelift-module`/`cranelift-codegen`/`cranelift-frontend`
@@ -249,10 +384,11 @@ You keep the full typed checker and tier 2 (the closure interpreter):
 every `see-type` verdict that would have read `COMPILED` now reads
 `INTERPRETED`, and the function still runs, just without native codegen.
 Nothing about the Lisp-level API changes — `defun`, `defun*`,
-`defun-typed`, `see-type`, `jit-optimize` all behave the same; only the
-tag on a `TYPED` verdict shifts.
+`defun-typed`, `see-type`, `jit-optimize`, `explain-compile` all behave
+the same; only the tag on a `TYPED` verdict shifts (`explain-compile`
+reports `TYPED-INTERPRETED` in place of `COMPILED` for the same reason).
 
-## 9.8 Embedding Lamedh in a Rust Host
+## 9.9 Embedding Lamedh in a Rust Host
 
 The `lamedh` crate is designed to be linked into another Rust binary as a
 scripting or extension layer. The minimal `Cargo.toml`:
@@ -263,7 +399,7 @@ lamedh = "0.3"
 ```
 
 That pulls in the default features (`jit` — Cranelift — and `concurrency` —
-channels, `spawn`). To skip Cranelift in your host, same as §9.7:
+channels, `spawn`). To skip Cranelift in your host, same as §9.8:
 
 ```toml
 [dependencies]
@@ -276,7 +412,7 @@ stepping stone toward thread safety, not a complete one (`SharedState`
 still holds a plain `Cell<bool>`, so `LispVal` isn't automatically
 `Send + Sync` even with it on).
 
-## 9.9 A Minimal Host
+## 9.10 A Minimal Host
 
 Every embedding follows the same shape: spawn the large stack, build an
 environment, evaluate. This is `lamedh-cli`'s own startup sequence, reduced
@@ -322,7 +458,7 @@ let text: String = lamedh::eval_line("(+ 1 2 3)", &env);
 assert_eq!(text, "6");
 ```
 
-## 9.10 Granting Capabilities and Registering Host Functions
+## 9.11 Granting Capabilities and Registering Host Functions
 
 Filesystem access, shell execution, and stdin reads are off by default in
 every environment, embedded or not — see chapter 7 for the full capability
@@ -357,7 +493,7 @@ env.register_fn("greet", |args, _env| {
 ; => "Hello, world!"
 ```
 
-## 9.11 Reading Results Back
+## 9.12 Reading Results Back
 
 `eval_str`/`eval_all` hand you a typed `LispVal`, not a string — match on
 the variant you expect:
@@ -383,7 +519,7 @@ prints, what `eval_line` returns as text — use `lamedh::printer::print`:
 `printer::print(&eval_str("(list 1 2.5 \"str\")", &env)?)` yields the
 string `(1 2.5 "str")`.
 
-## 9.12 Minimal Kernels for Tests
+## 9.13 Minimal Kernels for Tests
 
 `Environment::with_stdlib()` panics if the embedded stdlib source fails to
 parse or evaluate — right for a compile-time invariant, overkill for a
@@ -397,7 +533,7 @@ should reach for `with_stdlib()`; reach for `new_with_builtins()` plus
 explicit loading only when you need that level of control over what's on
 disk versus embedded.
 
-## 9.13 Where to Go From Here
+## 9.14 Where to Go From Here
 
 That closes the manual. Between the nine chapters you have the full
 surface: syntax and control flow, data structures, records and the
@@ -410,3 +546,4 @@ see `docs/architecture.md` and `docs/typed-jit-design.md` in the repo. For
 what's in flight, the issue tracker and `CHANGELOG.md` are the sources of
 truth; behavior documented here was verified against the interpreter it
 describes, at version 0.3.0.
+</content>
