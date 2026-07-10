@@ -95,8 +95,8 @@ fn test_remflag_removes_indicator() {
 fn test_map_returns_nil() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        // map returns NIL
-        let r = eval_line("(map '(1 2 3) (lambda (x) x))", &env);
+        // map-tails (the appendix's MAP, renamed in 0.3) returns NIL
+        let r = eval_line("(map-tails '(1 2 3) (lambda (x) x))", &env);
         assert_eq!(r, "()");
     });
 }
@@ -108,7 +108,7 @@ fn test_map_side_effects() {
         // use map to collect cars of sublists via setq
         eval_line("(setq acc '())", &env);
         eval_line(
-            "(map '(1 2 3) (lambda (x) (setq acc (cons (car x) acc))))",
+            "(map-tails '(1 2 3) (lambda (x) (setq acc (cons (car x) acc))))",
             &env,
         );
         // acc should be (3 2 1) - reversed because cons prepends

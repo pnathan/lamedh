@@ -162,3 +162,30 @@ DEFINSTANCE for your own types).")
   (funcall (gethash $protocol-fallbacks 'length) xs))
 (definstance length ((s string)) int64 (string-length s))
 (definstance length ((a (array any))) int64 (array-length a))
+
+;;; ---- map and for-each: the sequence protocols -------------------------------
+;;;
+;;; Collection FIRST (protocols dispatch on their first argument, and it
+;;; matches the container convention): (map coll fn), (for-each coll fn).
+;;; MAP is kind-preserving — a list maps to a list, an array to an array.
+;;; FOR-EACH visits for effect and returns (); the hash instance visits
+;;; (key value) pairs.
+
+(defprotocol map
+  "Kind-preserving map: (map coll fn). Extend with DEFINSTANCE.")
+
+(definstance map ((xs (list a)) (f (-> (a) b))) (list b)
+  (mapcar f xs))
+(definstance map ((arr (array any)) (f any)) (array any)
+  (array-map arr f))
+
+(defprotocol for-each
+  "Visit each element for effect: (for-each coll fn) => (). The hash
+instance calls (fn key value).")
+
+(definstance for-each ((xs (list a)) (f (-> (a) b))) (list b)
+  (mapc f xs))
+(definstance for-each ((arr (array any)) (f any)) any
+  (progn (array-map arr f) ()))
+(definstance for-each ((h hash) (f any)) any
+  (progn (maphash h f) ()))

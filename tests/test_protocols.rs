@@ -101,3 +101,38 @@ fn variant_values_dispatch_through_their_variant() {
     assert_eq!(eval_line("(length (empty))", &e), "0");
     assert_eq!(eval_line("(check-type (length (full 1)))", &e), "\"int64\"");
 }
+
+#[test]
+fn map_and_for_each_are_sequence_protocols() {
+    let e = env_with_stdlib();
+    // Kind-preserving map, collection first (protocols dispatch on arg 1).
+    assert_eq!(eval_line("(map (list 1 2 3) #'1+)", &e), "(2 3 4)");
+    assert_eq!(
+        eval_line("(array->list (map (list->array (list 1 2)) #'1+))", &e),
+        "(2 3)"
+    );
+    let out = eval_line("(check-type (map 5 #'1+))", &e);
+    assert!(out.contains("no `MAP` instance for int64"), "got: {out}");
+    // for-each over lists and hash tables (key value pairs), for effect.
+    assert_eq!(
+        eval_line(
+            "(let ((n (array 1)))
+               (store n 0 0)
+               (for-each (list 1 2 3) (lambda (x) (store n 0 (+ (fetch n 0) x))))
+               (fetch n 0))",
+            &e
+        ),
+        "6"
+    );
+    assert_eq!(
+        eval_line(
+            "(let ((h (make-hash-table)) (acc (array 1)))
+               (store acc 0 0)
+               (sethash h 'a 2) (sethash h 'b 3)
+               (for-each h (lambda (k v) (store acc 0 (+ (fetch acc 0) v))))
+               (fetch acc 0))",
+            &e
+        ),
+        "5"
+    );
+}
