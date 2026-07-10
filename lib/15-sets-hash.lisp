@@ -90,5 +90,5 @@ table is recognised by type in either position (issue #246)."
 
 (defun clrhash (table)
   "Remove every entry from TABLE; return TABLE."
-  (mapc (lambda (k) (delete-key-bang table k)) (keys table))
+  (mapc (lambda (k) (remhash table k)) (keys table))
   table)

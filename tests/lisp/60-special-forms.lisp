@@ -49,7 +49,7 @@
            (SETQ $CG-PENDING (CONS (QUOTE FOO) $CG-PENDING))
            ())
        (IF (BOUNDP (QUOTE $CALL-GRAPH))
-           (DELETE-KEY $CALL-GRAPH (QUOTE FOO))
+           (REMHASH $CALL-GRAPH (QUOTE FOO))
            ())
        ($DEFUN-AUTO-COMPILE (QUOTE FOO))
        (QUOTE FOO))))

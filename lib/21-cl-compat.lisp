@@ -148,6 +148,4 @@ Contrast MOD, which is always non-negative."
 
 ;; --- hash tables ----------------------------------------------------------------
 
-(defun remhash (key table)
-  "CL REMHASH: remove KEY from TABLE (either argument order accepted)."
-  (delete-key-bang key table))
+;; REMHASH is the kernel builtin as of 0.3 (collection first).

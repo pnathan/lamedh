@@ -109,13 +109,13 @@ fn test_get_three_args_error() {
 }
 
 #[test]
-fn test_delete_key_bang_one_arg_error() {
+fn test_remhash_one_arg_error() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let result = eval_line("(delete-key-bang (make-hash-table))", &env);
+        let result = eval_line("(remhash (make-hash-table))", &env);
         assert!(
             result.contains("Error"),
-            "delete-key-bang with 1 arg should error; got: {result}"
+            "remhash with 1 arg should error; got: {result}"
         );
     });
 }

@@ -42,6 +42,26 @@ language. Sections below, roughly newest first.
   literals: print/read round-trip (spawn and channel serialization), usable
   as source syntax.
 
+## The census, batches 2–3: one name, and the type table
+
+- **`delete-key`/`delete-key-bang` removed; `remhash` is the one hash
+  removal name** (collection first, kernel-direct).
+- **`length` covers every sized collection**: lists, strings, arrays, and
+  now hash tables.
+- **The type table** (`lib/28-types.lisp`): verified declared schemes for
+  ~45 builtins and stdlib functions — predicates
+  `(forall (a) (-> (a) bool))`, integer-only predicates strict both ways,
+  list functions (`member`/`filter`/`mapc`/`every`/`exists`/`notany`),
+  strings and conversions (`string-upcase`, `princ-to-string : a →
+  string`, `intern`, `implode`...), math with known results (`sqrt → 
+  float64`, `floor → int64`). Two honesty rules exclude entries: NIL-ON-
+  MISS functions never claim a result type (`nth`, `assoc`,
+  `string->number` stay gradual — a declared "hit" type would let checked
+  code consume a legal ()), and variadic/multi-arity functions can't carry
+  fixed-arity schemes (they get kernel checker rules instead). Net effect:
+  string/list/math pipelines derive full schemes with zero annotations,
+  and misuse errors at the call site.
+
 ## The census, batch 1: variadicity (breaking)
 
 The full special-form/builtin/stdlib census lives in docs/audit-0-3.md;
