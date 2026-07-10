@@ -744,6 +744,10 @@ impl Environment {
         );
         env.set("APPEND".to_string(), LispVal::Builtin(BuiltinFunc::Append));
         env.set(
+            "DECLARE-INSTANCE!".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeclareInstance),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );
@@ -1512,6 +1516,11 @@ impl Environment {
             .jit
             .borrow_mut()
             .declare_generic_variant(name, arity, ctors)
+    }
+
+    /// Register a protocol INSTANCE scheme (0.3 typed protocols).
+    pub fn jit_declare_instance(&self, name: &str, form: &LispVal) -> Result<String, String> {
+        self.shared.jit.borrow_mut().declare_instance(name, form)
     }
 
     /// Declare a sum type (variant) in the typed registry (#312).

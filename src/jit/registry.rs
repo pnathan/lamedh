@@ -238,6 +238,11 @@ pub struct Jit {
     /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
     /// ordinary typed functions over the [`Core`] struct ops.
     pub(super) structs: HashMap<String, Rc<StructDef>>,
+    /// Typed PROTOCOLS (0.3 census): a name with MULTIPLE declared
+    /// instance schemes, selected at call sites by the shape of the first
+    /// argument's inferred type. The runtime half (dispatch by value kind)
+    /// lives in lib/29-protocols.lisp; this is the checker half.
+    pub(super) protocol_instances: HashMap<String, Vec<infer::Scheme>>,
     /// Parametric nominals (0.3 HM generics): records and variant
     /// constructors with type parameters, plus parametric variants
     /// themselves. Uses appear as [`Ty::App`].
@@ -268,6 +273,19 @@ impl Jit {
         let scheme = parse_scheme_form(form, &self.structs, &self.variants, &self.generics)?;
         let rendered = infer::scheme_name(&scheme);
         self.declared.insert(name.to_string(), scheme);
+        Ok(rendered)
+    }
+
+    /// Register one INSTANCE scheme for protocol `name` (additive — a
+    /// protocol accumulates instances). The scheme's first parameter type
+    /// is the instance's selection shape.
+    pub fn declare_instance(&mut self, name: &str, form: &LispVal) -> Result<String, String> {
+        let scheme = parse_scheme_form(form, &self.structs, &self.variants, &self.generics)?;
+        let rendered = infer::scheme_name(&scheme);
+        self.protocol_instances
+            .entry(name.to_string())
+            .or_default()
+            .push(scheme);
         Ok(rendered)
     }
 
@@ -647,6 +665,7 @@ impl Jit {
                 by_name: &self.by_name,
                 structs: &self.structs,
                 generics: &self.generics,
+                protocols: &self.protocol_instances,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -770,6 +789,7 @@ impl Jit {
                 by_name: &self.by_name,
                 structs: &self.structs,
                 generics: &self.generics,
+                protocols: &self.protocol_instances,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -849,6 +869,7 @@ impl Jit {
                 by_name: &self.by_name,
                 structs: &self.structs,
                 generics: &self.generics,
+                protocols: &self.protocol_instances,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -921,6 +942,7 @@ impl Jit {
                 by_name: &self.by_name,
                 structs: &self.structs,
                 generics: &self.generics,
+                protocols: &self.protocol_instances,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -1022,6 +1044,7 @@ impl Jit {
                 by_name: &self.by_name,
                 structs: &self.structs,
                 generics: &self.generics,
+                protocols: &self.protocol_instances,
                 infer: RefCell::new(infer),
                 checking: true,
                 resolver,
@@ -1097,6 +1120,7 @@ impl Jit {
             by_name: &self.by_name,
             structs: &self.structs,
             generics: &self.generics,
+            protocols: &self.protocol_instances,
             infer: RefCell::new(infer),
             checking: true,
             resolver,

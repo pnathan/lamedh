@@ -42,6 +42,31 @@ language. Sections below, roughly newest first.
   literals: print/read round-trip (spawn and channel serialization), usable
   as source syntax.
 
+## Typed protocols
+
+```lisp
+(defprotocol volume "loudness of a thing")
+(definstance volume ((n int64)) int64 (* n 2))
+(definstance volume ((s string)) int64 (string-length s))
+```
+
+- One name, many typed instances, three resolutions: the CHECKER selects
+  the instance whose shape matches the first argument's inferred type and
+  gives its precise scheme (a known type with no instance is a static
+  error — "no `volume` instance for (list int64)"); the RUNTIME
+  dispatches on the value's kind (list/string/array/hash/scalars, record
+  brands, variants); the COMPILER treats each instance body as an
+  ordinary defun, so eligible instances go native through the one-door
+  pipeline. When every instance agrees on one ground result type, even a
+  gradual call site derives it: `(defun n-items (x) (length x))` checks
+  as `(forall (a) (-> (a) int64))`.
+- `defprotocol` captures any prior binding as the fallback instance, so
+  protocolizing a builtin is seamless. **`length` is the shipped pilot**:
+  lists/strings/arrays/hash tables out of the box, and your own types
+  join with one `definstance`.
+- Instance implementations live under reader-unnameable hidden names —
+  they cannot be shadowed or called around the dispatcher from source.
+
 ## The census, batches 2–3: one name, and the type table
 
 - **`delete-key`/`delete-key-bang` removed; `remhash` is the one hash
