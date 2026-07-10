@@ -1219,8 +1219,12 @@ pub(super) fn feature_name_arg(args: &[LispVal], who: &str) -> Result<String, Li
 ///
 /// Each returns `Ok(())` if the feature is enabled, or a descriptive error otherwise.
 pub(super) fn require_read_fs(env: &Shared<Environment>) -> Result<(), LispError> {
-    if env.feature_enabled("READ-FS") {
+    if env.feature_enabled("READ-FS") && crate::evaluator::core::cap_mask_allows("READ-FS") {
         Ok(())
+    } else if env.feature_enabled("READ-FS") {
+        Err(LispError::Generic(
+            "capability denied: READ-FS (attenuated by an enclosing fence)".to_string(),
+        ))
     } else {
         Err(LispError::Generic(
             "READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)"
@@ -1230,8 +1234,12 @@ pub(super) fn require_read_fs(env: &Shared<Environment>) -> Result<(), LispError
 }
 
 pub(super) fn require_create_fs(env: &Shared<Environment>) -> Result<(), LispError> {
-    if env.feature_enabled("CREATE-FS") {
+    if env.feature_enabled("CREATE-FS") && crate::evaluator::core::cap_mask_allows("CREATE-FS") {
         Ok(())
+    } else if env.feature_enabled("CREATE-FS") {
+        Err(LispError::Generic(
+            "capability denied: CREATE-FS (attenuated by an enclosing fence)".to_string(),
+        ))
     } else {
         Err(LispError::Generic(
             "CREATE-FS capability is not enabled (grant it via --capability CREATE-FS or the host API)"
@@ -1241,8 +1249,12 @@ pub(super) fn require_create_fs(env: &Shared<Environment>) -> Result<(), LispErr
 }
 
 pub(super) fn require_temp_fs(env: &Shared<Environment>) -> Result<(), LispError> {
-    if env.feature_enabled("TEMP-FS") {
+    if env.feature_enabled("TEMP-FS") && crate::evaluator::core::cap_mask_allows("TEMP-FS") {
         Ok(())
+    } else if env.feature_enabled("TEMP-FS") {
+        Err(LispError::Generic(
+            "capability denied: TEMP-FS (attenuated by an enclosing fence)".to_string(),
+        ))
     } else {
         Err(LispError::Generic(
             "TEMP-FS capability is not enabled (grant it via --capability TEMP-FS or the host API)"
@@ -1283,6 +1295,11 @@ pub(super) fn apply_shell(
         return Err(LispError::Generic(
             "SHELL capability is not enabled (grant it via --capability SHELL or the host API)"
                 .to_string(),
+        ));
+    }
+    if !crate::evaluator::core::cap_mask_allows("SHELL") {
+        return Err(LispError::Generic(
+            "capability denied: SHELL (attenuated by an enclosing fence)".to_string(),
         ));
     }
     if args.is_empty() {

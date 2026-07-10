@@ -1074,7 +1074,114 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             )))))
                         }
                     }
+                    // Dynamic-extent guard fences (#320): kernel special
+                    // forms with RAII restore. There is deliberately NO
+                    // Lisp-callable way to widen either state — the save/
+                    // restore happens in this Rust frame only.
+                    SpecialForm::WithFuel => {
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "with-fuel requires a budget and body".to_string(),
+                            ))));
+                        }
+                        let budget = match eval(&forms[0], env) {
+                            Ok(LispVal::Number(n)) if n >= 0 => n as u64,
+                            Ok(other) => {
+                                return Ok(TcoStep::Done(Err(LispError::Generic(format!(
+                                    "with-fuel: budget must be a non-negative integer, got {}",
+                                    crate::printer::print(&other)
+                                )))));
+                            }
+                            Err(e) => return Ok(TcoStep::Done(Err(e))),
+                        };
+                        let prev = crate::evaluator::core::kernel_fuel_remaining();
+                        let karmed = prev.map_or(budget, |p| p.min(budget));
+                        crate::evaluator::core::set_kernel_fuel(Some(karmed));
+                        crate::evaluator::core::fuel_fence_enter();
+                        let mut result = Ok(LispVal::Nil);
+                        for f in &forms[1..] {
+                            result = eval(f, env);
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                        // Restore the enclosing budget MINUS what this fence
+                        // spent (None remaining = exhaustion disarmed the
+                        // counter: everything spent). Runs on error paths too.
+                        crate::evaluator::core::fuel_fence_leave();
+                        let know = crate::evaluator::core::kernel_fuel_remaining();
+                        let spent = karmed.saturating_sub(know.unwrap_or(0));
+                        crate::evaluator::core::set_kernel_fuel(
+                            prev.map(|p| p.saturating_sub(spent)),
+                        );
+                        Ok(TcoStep::Done(result))
+                    }
+                    SpecialForm::WithCapabilities => {
+                        let forms = list_to_vec(rest)?;
+                        if forms.is_empty() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "with-capabilities requires a capability list and body".to_string(),
+                            ))));
+                        }
+                        let requested = match eval(&forms[0], env) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(TcoStep::Done(Err(e))),
+                        };
+                        let mut names: Vec<String> = Vec::new();
+                        let mut cur = requested;
+                        loop {
+                            match cur {
+                                LispVal::Nil => break,
+                                LispVal::Cons { car, cdr } => {
+                                    match car.as_ref() {
+                                        LispVal::Symbol(sym) => {
+                                            names.push(sym.borrow().name.clone())
+                                        }
+                                        other => {
+                                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                                format!(
+                                                    "with-capabilities: capabilities must be symbols, got {}",
+                                                    crate::printer::print(other)
+                                                ),
+                                            ))));
+                                        }
+                                    }
+                                    cur = cdr.as_ref().clone();
+                                }
+                                _ => {
+                                    return Ok(TcoStep::Done(Err(LispError::Generic(
+                                        "with-capabilities: capability list must be a proper list"
+                                            .to_string(),
+                                    ))));
+                                }
+                            }
+                        }
+                        // Attenuation only: intersect with any enclosing mask.
+                        let prev = crate::evaluator::core::cap_mask_get();
+                        let new_mask = match &prev {
+                            None => names,
+                            Some(p) => names.into_iter().filter(|n| p.contains(n)).collect(),
+                        };
+                        let saved = crate::evaluator::core::cap_mask_set(Some(new_mask));
+                        let mut result = Ok(LispVal::Nil);
+                        for f in &forms[1..] {
+                            result = eval(f, env);
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                        crate::evaluator::core::cap_mask_set(saved);
+                        Ok(TcoStep::Done(result))
+                    }
                     SpecialForm::DefunTyped => {
+                        // No-compile under an active fuel fence (#284/#320).
+                        if crate::evaluator::core::kernel_fuel_remaining().is_some() {
+                            return Ok(TcoStep::Done(Err(LispError::Generic(
+                                "defun-typed is disabled under an active fuel fence (no-compile, issue #284)"
+                                    .to_string(),
+                            ))));
+                        }
                         // Type-check + compile into the shared typed registry,
                         // then install a Native entry so the typed function is
                         // callable from ordinary (untyped) Lisp code through the
@@ -1101,6 +1208,15 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     }
                     SpecialForm::DefunStar => eval_defun_star(rest, env),
                     SpecialForm::JitOptimize => {
+                        // No-compile under an active fuel fence (#284/#320):
+                        // a native edition's internal loops never return to
+                        // the metered trampoline, so compilation is refused
+                        // while a budget is armed (dynamic extent).
+                        if crate::evaluator::core::kernel_fuel_remaining().is_some() {
+                            return Ok(TcoStep::Done(Ok(LispVal::Symbol(
+                                env.intern_symbol("COMPILE-DISABLED-BY-GUARD"),
+                            ))));
+                        }
                         // Best-effort, transparent typed compilation of an
                         // already-defined (un-annotated) function: try HM
                         // inference over its lambda body; on success, rebind the

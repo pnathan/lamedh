@@ -506,3 +506,66 @@ fn kernel_fuel_setter_denied_inside_fence_usable_outside() {
         assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
     });
 }
+
+// ── #320: dynamic-extent attenuation ─────────────────────────────────────
+
+#[test]
+fn attenuation_reaches_helpers_and_eval() {
+    with_large_stack(|| {
+        let e = env();
+        e.enable_feature("READ-FS");
+        eval_line(
+            "(defun guard-helper-reads () (read-file \"/etc/hostname\"))",
+            &e,
+        );
+        // The old lexical fence only shadowed names IN the body; the dynamic
+        // mask fences the whole extent — helpers and eval'd code included.
+        assert_eq!(
+            eval_line(
+                "(handler-case (with-capabilities '() (guard-helper-reads)) (error (er) 'denied))",
+                &e
+            ),
+            "DENIED"
+        );
+        assert_eq!(
+            eval_line(
+                "(handler-case (with-capabilities '() (eval '(read-file \"/etc/hostname\"))) (error (er) 'denied))",
+                &e
+            ),
+            "DENIED"
+        );
+        // Escaped closures run with the CALLER's authority (ambient authority
+        // belongs to the execution, not the definition site).
+        eval_line(
+            "(setq guard-esc (with-capabilities '() (lambda () (guard-helper-reads))))",
+            &e,
+        );
+        assert_eq!(eval_line("(stringp (funcall guard-esc))", &e), "T");
+    });
+}
+
+#[test]
+fn fuel_metering_reaches_helpers_and_natives_fall_back() {
+    with_large_stack(|| {
+        let e = env();
+        // A pre-compiled one-door native: under an armed fence it takes the
+        // interpreted fallback, so its internal work charges steps.
+        eval_line(
+            "(defun guard-native-spin (n acc) (if (< n 1) acc (guard-native-spin (- n 1) (+ acc 1))))",
+            &e,
+        );
+        assert_eq!(eval_line("(guard-native-spin 10 0)", &e), "10"); // warm/compile
+        let out = eval_line(
+            "(handler-case (with-fuel 50 (guard-native-spin 1000000 0)) (error (er) 'exhausted))",
+            &e,
+        );
+        assert_eq!(out, "EXHAUSTED");
+        // Widening from inside is denied; the fence restores on exit.
+        let out = eval_line(
+            "(handler-case (with-fuel 100 (kernel-fuel-set! 100000)) (error (er) 'widen-denied))",
+            &e,
+        );
+        assert_eq!(out, "WIDEN-DENIED");
+        assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+    });
+}
