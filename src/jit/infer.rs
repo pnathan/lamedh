@@ -47,6 +47,9 @@ pub(crate) struct Infer {
     /// its fields, so provisional/stale defs embedded in recursive field
     /// types always expand to the current definition.
     structs: Option<std::rc::Rc<HashMap<String, std::rc::Rc<super::StructDef>>>>,
+    /// Snapshot of the generic-nominal registry (0.3 HM generics): same
+    /// re-resolution role for parametric records/variants.
+    generics: Option<std::rc::Rc<HashMap<String, std::rc::Rc<super::GenericDef>>>>,
 }
 
 impl Infer {
@@ -61,6 +64,28 @@ impl Infer {
     ) -> Infer {
         self.structs = Some(structs);
         self
+    }
+
+    /// Attach a generic-registry snapshot (see the `generics` field).
+    pub(crate) fn with_generics(
+        mut self,
+        generics: std::rc::Rc<HashMap<String, std::rc::Rc<super::GenericDef>>>,
+    ) -> Infer {
+        self.generics = Some(generics);
+        self
+    }
+
+    /// The CURRENT def for a generic name (snapshot re-resolution for
+    /// recursion), falling back to the embedded def.
+    fn resolve_generic(
+        &self,
+        d: &std::rc::Rc<super::GenericDef>,
+    ) -> std::rc::Rc<super::GenericDef> {
+        self.generics
+            .as_ref()
+            .and_then(|m| m.get(&d.name))
+            .cloned()
+            .unwrap_or_else(|| d.clone())
     }
 
     /// A fresh, currently-unbound type variable.
@@ -93,6 +118,8 @@ impl Infer {
             Ty::Var(w) => v == w,
             // A variant is a set of brand names — no component types.
             Ty::Variant(_) => false,
+            // A parametric application recurses into its arguments.
+            Ty::App(_, args) => args.iter().any(|a| self.occurs(v, a)),
             // Compound types recurse into their components.
             Ty::Array(elem) | Ty::List(elem) => self.occurs(v, &elem),
             Ty::Pair(a, b) => self.occurs(v, &a) || self.occurs(v, &b),
@@ -163,6 +190,59 @@ impl Infer {
                     ))
                 }
             }
+            // Parametric nominals (0.3 HM generics): same name — arguments
+            // unify pairwise; a constructor application absorbs into its
+            // owning variant's application (both orders), arguments pairwise.
+            (Ty::App(da, aa), Ty::App(db, ab)) if da.name == db.name => {
+                for (x, y) in aa.iter().zip(ab.iter()) {
+                    self.unify(x, y)?;
+                }
+                Ok(())
+            }
+            (Ty::App(da, aa), Ty::App(db, ab)) => {
+                let (ctor, cargs, var, vargs) = if da.variant.as_deref() == Some(db.name.as_str()) {
+                    (da, aa, db, ab)
+                } else if db.variant.as_deref() == Some(da.name.as_str()) {
+                    (db, ab, da, aa)
+                } else if da.variant.is_some() && da.variant == db.variant {
+                    // SIBLING constructors of one variant (e.g. an IF whose
+                    // branches build (some x) and (none)): they meet at their
+                    // variant — arguments unify pairwise, and the result
+                    // absorbs wherever the variant is demanded.
+                    (da, aa, db, ab)
+                } else {
+                    return Err(format!(
+                        "cannot unify {} with {}",
+                        super::ty_name(&Ty::App(da.clone(), aa.clone())),
+                        super::ty_name(&Ty::App(db.clone(), ab.clone()))
+                    ));
+                };
+                let _ = (ctor, var);
+                for (x, y) in cargs.iter().zip(vargs.iter()) {
+                    self.unify(x, y)?;
+                }
+                Ok(())
+            }
+            // A parametric record application meets a row: expand its fields
+            // with the arguments substituted (re-resolved through the
+            // snapshot for recursion). Variants do not row-subsume.
+            (Ty::App(d, args), Ty::Record(fields, rest))
+            | (Ty::Record(fields, rest), Ty::App(d, args)) => {
+                let def = self.resolve_generic(&d);
+                if !def.ctors.is_empty() {
+                    return Err(format!(
+                        "variant {} does not subsume into a record row",
+                        def.name
+                    ));
+                }
+                let m: HashMap<u32, Ty> = (0..def.arity as u32).zip(args.iter().cloned()).collect();
+                let sfields: Vec<(String, Ty)> = def
+                    .fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), Self::subst_vars(t, &m)))
+                    .collect();
+                self.unify_fields_row(&def.name, &sfields, &fields, &rest)
+            }
             // Nominal identity is the NAME (#308): a provisional/stale def and
             // the current def of the same record are the same type, which is
             // what makes recursive field types (self- and forward-references
@@ -208,21 +288,34 @@ impl Infer {
             .cloned()
             .unwrap_or_else(|| def.clone());
         let def = &def;
+        let name = def.name.clone();
+        let sfields = def.fields.clone();
+        self.unify_fields_row(&name, &sfields, fields, rest)
+    }
+
+    /// The shared half of nominal-into-row subsumption: `sfields` (a struct's
+    /// or an instantiated generic's fields) against a record row.
+    fn unify_fields_row(
+        &mut self,
+        name: &str,
+        sfields: &[(String, Ty)],
+        fields: &[(String, Ty)],
+        rest: &Option<Box<Ty>>,
+    ) -> Result<(), String> {
         let (fields, rest) = self.flatten_row(fields.to_vec(), rest.clone());
         for (label, ty) in &fields {
-            match def.fields.iter().find(|(n, _)| n == label) {
+            match sfields.iter().find(|(n, _)| n == label) {
                 Some((_, sty)) => self.unify(sty, ty)?,
                 None => {
                     return Err(format!(
                         "struct {} has no field {}",
-                        def.name,
+                        name,
                         label.to_lowercase()
                     ));
                 }
             }
         }
-        let mut remainder: Vec<(String, Ty)> = def
-            .fields
+        let mut remainder: Vec<(String, Ty)> = sfields
             .iter()
             .filter(|(n, _)| !fields.iter().any(|(l, _)| l == n))
             .map(|(n, t)| (n.clone(), t.clone()))
@@ -235,7 +328,7 @@ impl Infer {
                 } else {
                     Err(format!(
                         "closed record does not mention struct {}'s field {}",
-                        def.name,
+                        name,
                         remainder[0].0.to_lowercase()
                     ))
                 }
@@ -420,6 +513,7 @@ impl Infer {
                     tail.map(Box::new),
                 )
             }
+            Ty::App(d, args) => Ty::App(d, args.iter().map(|a| self.zonk(a)).collect()),
             other => other, // scalars, Struct, Symbol, Str, Any, free Var
         }
     }
@@ -449,6 +543,11 @@ impl Infer {
                 }
                 if let Some(r) = rest {
                     Self::free_vars(r, out);
+                }
+            }
+            Ty::App(_, args) => {
+                for a in args {
+                    Self::free_vars(a, out);
                 }
             }
             _ => {}
@@ -489,7 +588,7 @@ impl Infer {
         Self::subst_vars(&s.ty, &mapping)
     }
 
-    fn subst_vars(t: &Ty, m: &HashMap<u32, Ty>) -> Ty {
+    pub(crate) fn subst_vars(t: &Ty, m: &HashMap<u32, Ty>) -> Ty {
         match t {
             Ty::Var(v) => m.get(v).cloned().unwrap_or(Ty::Var(*v)),
             Ty::Array(e) => Ty::Array(Box::new(Self::subst_vars(e, m))),
@@ -501,6 +600,10 @@ impl Infer {
             Ty::Fn(ps, r) => Ty::Fn(
                 ps.iter().map(|p| Self::subst_vars(p, m)).collect(),
                 Box::new(Self::subst_vars(r, m)),
+            ),
+            Ty::App(d, args) => Ty::App(
+                d.clone(),
+                args.iter().map(|a| Self::subst_vars(a, m)).collect(),
             ),
             Ty::Record(fields, rest) => Ty::Record(
                 fields
@@ -577,6 +680,14 @@ fn ty_name_vars(t: &Ty, names: &HashMap<u32, String>) -> String {
                 None => format!("(record ({fs}))"),
             }
         }
+        Ty::App(d, args) => format!(
+            "({} {})",
+            d.name.to_lowercase(),
+            args.iter()
+                .map(|a| ty_name_vars(a, names))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
         other => super::ty_name(other),
     }
 }

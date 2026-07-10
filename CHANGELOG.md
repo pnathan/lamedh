@@ -41,6 +41,37 @@ processes, patterns, and the checker meeting in one story.
   literals: print/read round-trip (spawn and channel serialization), usable
   as source syntax.
 
+## HM generics — parametric records and variants
+
+```lisp
+(defrecord (duo a b) (first a) (second b))
+(defvariant (option a) (some (value a)) (none))
+(defrecord (node a) (val a) (next (option (node a))))
+```
+
+- Records and variants take TYPE PARAMETERS, as proper HM type
+  application: `make-duo : (forall (a b) (-> (a b) (duo a b)))`,
+  instantiated freshly at every use — `(duo-first (make-duo 1 "s"))` is
+  `int64`, `(unwrap-or (some "s") 0)` is a static error, `(none)`
+  instantiates freely like nil. Nominal by name with pairwise argument
+  unification; constructor applications absorb into their variant's
+  application; SIBLING constructors of one variant unify (an `if`
+  building `(some x)` / `(none)` types cleanly); parametric record
+  applications subsume into rows with instantiated field types.
+- **Recursion composes**: `(node a)` referencing `(option (node a))`
+  gives `node-next : (forall (a) (-> ((node a)) (option (node a))))`.
+- **Option and Result are parametric now** with precise helper schemes
+  (`unwrap-or : (forall (a) (-> ((option a) a) a))`, monadic
+  `option-then`/`result-then`, `result : (result a e)`).
+- A BARE generic name in a type is sugar for the all-`any` application
+  (`option` ≡ `(option any)`) — the gradual reading, and what
+  pre-parametric code already meant.
+- Erased at runtime: every value is the same branded StructObj; generics
+  never compile (checker-only), monomorphic records keep their tiers.
+- Built-in type-constructor names (`pair`, `list`, `array`, `record`,
+  scalars) are REJECTED as record/variant names — they'd silently shadow
+  the built-in meaning in type surfaces.
+
 ## Sum types
 
 ```lisp

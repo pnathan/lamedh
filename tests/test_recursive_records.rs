@@ -90,8 +90,10 @@ fn option_terminated_recursion_is_fully_checked() {
     );
     eval_line("(defvariant color (red) (blue))", &e);
     let out = eval_line("(check-type (make-node 1 (red)))", &e);
+    // Option is PARAMETRIC now: the foreign brand fails to unify with the
+    // all-any application the bare `option` field type denotes.
     assert!(
-        out.contains("RED is not a constructor of variant OPTION"),
+        out.contains("cannot unify RED with (option any)"),
         "got: {out}"
     );
 }

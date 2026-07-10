@@ -1748,6 +1748,27 @@ fn apply_record_type_op(
                     "record-declare requires exactly two arguments: brand field-specs".to_string(),
                 ));
             }
+            // Parametric form (0.3 HM generics): (record-declare '(name p...)
+            // '((field ty)...)) declares a generic record/ctor.
+            if let LispVal::Cons { .. } = &args[0] {
+                let parts = list_to_vec(&args[0])?;
+                let mut names = Vec::with_capacity(parts.len());
+                for p in &parts {
+                    let LispVal::Symbol(s) = p else {
+                        return Err(LispError::Generic(
+                            "RECORD-DECLARE: generic head must be (name param...) of symbols"
+                                .to_string(),
+                        ));
+                    };
+                    names.push(s.borrow().name.clone());
+                }
+                let (name, params) = names.split_first().ok_or_else(|| {
+                    LispError::Generic("RECORD-DECLARE: empty generic head".to_string())
+                })?;
+                env.jit_declare_generic_record(name, params, &args[1])
+                    .map_err(LispError::Generic)?;
+                return Ok(LispVal::Symbol(env.intern_symbol(name)));
+            }
             let LispVal::Symbol(brand) = &args[0] else {
                 return Err(LispError::Generic(format!(
                     "RECORD-DECLARE: brand must be a symbol, got {}",
@@ -1842,6 +1863,35 @@ fn apply_record_type_op(
                 return Err(LispError::Generic(
                     "variant-declare requires exactly two arguments: name ctors".to_string(),
                 ));
+            }
+            // Parametric form: (variant-declare '(name p...) '(ctor...)).
+            if let LispVal::Cons { .. } = &args[0] {
+                let parts = list_to_vec(&args[0])?;
+                let mut names = Vec::with_capacity(parts.len());
+                for p in &parts {
+                    let LispVal::Symbol(s) = p else {
+                        return Err(LispError::Generic(
+                            "VARIANT-DECLARE: generic head must be (name param...) of symbols"
+                                .to_string(),
+                        ));
+                    };
+                    names.push(s.borrow().name.clone());
+                }
+                let (name, params) = names.split_first().ok_or_else(|| {
+                    LispError::Generic("VARIANT-DECLARE: empty generic head".to_string())
+                })?;
+                let ctors = list_to_vec(&args[1])?
+                    .into_iter()
+                    .map(|c| match c {
+                        LispVal::Symbol(s) => Ok(s.borrow().name.clone()),
+                        _ => Err(LispError::Generic(
+                            "VARIANT-DECLARE: ctors must be symbols".to_string(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                env.jit_declare_generic_variant(name, params.len(), ctors)
+                    .map_err(LispError::Generic)?;
+                return Ok(LispVal::Symbol(env.intern_symbol(name)));
             }
             let LispVal::Symbol(name) = &args[0] else {
                 return Err(LispError::Generic(
