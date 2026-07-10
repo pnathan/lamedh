@@ -1488,6 +1488,32 @@ impl Environment {
         self.shared.jit.borrow().record_compileable(name)
     }
 
+    /// Declare a parametric record/ctor (0.3 HM generics).
+    pub fn jit_declare_generic_record(
+        &self,
+        name: &str,
+        params: &[String],
+        field_specs: &LispVal,
+    ) -> Result<(), String> {
+        self.shared
+            .jit
+            .borrow_mut()
+            .declare_generic_record(name, params, field_specs)
+    }
+
+    /// Declare a parametric variant (0.3 HM generics).
+    pub fn jit_declare_generic_variant(
+        &self,
+        name: &str,
+        arity: usize,
+        ctors: Vec<String>,
+    ) -> Result<(), String> {
+        self.shared
+            .jit
+            .borrow_mut()
+            .declare_generic_variant(name, arity, ctors)
+    }
+
     /// Declare a sum type (variant) in the typed registry (#312).
     pub fn jit_declare_variant(&self, name: &str, ctors: Vec<String>) -> Result<(), String> {
         self.shared.jit.borrow_mut().declare_variant(name, ctors)

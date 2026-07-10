@@ -411,6 +411,12 @@ works and a typo surfaces as a phantom brand at the first unification)."
     ((condense-row-type-p ty) ty)
     ((member ty '(list array pair record)) 'any)
     ((symbolp ty) ty)
+    ;; A compound whose head is a REGISTERED parametric nominal (its arity
+    ;; recorded at definition) is a generic application: pass it through.
+    ((and (consp ty)
+          (symbolp (car ty))
+          (condense-get (car ty) "condense.arity"))
+     ty)
     (t 'any)))
 
 (defun condense-record-specs (field-specs)
@@ -565,20 +571,49 @@ generated in lockstep, so axiom/implementation drift is impossible."
            `(declare-type! ',ctor '(-> ,argtys ,name)))
      ($record-getter-forms name field-specs))))
 
-(defun record-expansion (name field-specs invariant-section)
+(defun $record-generic-getter-forms (name params field-specs)
+  "Parametric getters: NAME-FIELD with a DECLARED polymorphic scheme —
+pair-first : (forall (a b) (-> ((pair a b)) a))."
+  (mapcar
+   (lambda (spec)
+     (let ((getter (condense-accessor-symbol name (car spec))))
+       `(progn
+          (defun ,getter (self) (record-ref self ',(car spec)))
+          (declare-type! ',getter
+                         '(forall ,params
+                            (-> ((,name ,@params)) ,(cadr spec)))))))
+   field-specs))
+
+(defun record-generic-tier-forms (name params field-specs)
+  "Definitions for a PARAMETRIC record (0.3 HM generics): generic branded
+declaration, constructor and getters with polymorphic DECLARED schemes.
+Always the dynamic tier (generics are erased at runtime)."
+  (let ((argnames (mapcar #'car field-specs))
+        (argtys (mapcar #'cadr field-specs))
+        (ctor (condense-constructor-symbol name)))
+    (append
+     (list `(record-declare '(,name ,@params) ',field-specs)
+           `(defun ,ctor ,argnames (record-new ',name ,@argnames))
+           `(declare-type! ',ctor
+                           '(forall ,params (-> ,argtys (,name ,@params)))))
+     ($record-generic-getter-forms name params field-specs))))
+
+(defun record-expansion (name params field-specs invariant-section)
   "The single generated form behind (DEFRECORD name ...): tier-dispatched
 constructor and accessors, predicate, validator. One diffable seed for the
-condensation change plane."
+condensation change plane. PARAMS non-nil = a parametric record."
   (let ((predicate (condense-predicate-symbol name))
         (validator (condense-validator-symbol name))
         (fields (condense-field-names field-specs))
         (invariant (condense-invariant-expression invariant-section)))
     `(progn
-       ,@(if (record-fields-native-p field-specs)
-             ;; Compiled tier: native branded type, constructor, accessors.
-             (list (cons 'defstruct-typed (cons name field-specs)))
-             ;; Dynamic tier: branded type + StructObj values.
-             (record-dynamic-tier-forms name field-specs))
+       ,@(cond
+           (params (record-generic-tier-forms name params field-specs))
+           ((record-fields-native-p field-specs)
+            ;; Compiled tier: native branded type, constructor, accessors.
+            (list (cons 'defstruct-typed (cons name field-specs))))
+           ;; Dynamic tier: branded type + StructObj values.
+           (t (record-dynamic-tier-forms name field-specs)))
        ;; record-brand is a dynamic primitive (works on anything), so the
        ;; predicate's scheme is declared in lockstep with its definition.
        (defun ,predicate (v) (eq (record-brand v) ',name))
@@ -589,7 +624,10 @@ condensation change plane."
          (and (,predicate self)
               (let ,(condense-validator-bindings name fields)
                 ,invariant)))
-       (declare-type! ',validator '(-> (,name) bool))
+       (declare-type! ',validator
+                      ',(if params
+                            `(forall ,params (-> ((,name ,@params)) bool))
+                            `(-> (,name) bool)))
        ',name)))
 
 (defvau defrecord (x e)
@@ -602,16 +640,22 @@ Name-field accessors, and validate-Name (checking the :invariant, default
 T); values are read with the accessors or generically with RECORD-REF and
 updated with RECORD-WITH. Records the condensation trace; :derive targets
 (equality, printer, lens) generate support code from the same seed."
-  (let* ((name (car x))
+  (let* ((head (car x))
+         ;; Parametric head (0.3 HM generics): (defrecord (pair a b) ...).
+         (name (if (consp head) (car head) head))
+         (params (if (consp head) (cdr head) ()))
          (parts (cdr x))
          (sections (filter #'consp parts))
          (invariant-section (assoc ':invariant sections))
-         (derive-section (assoc ':derive sections))
-         (field-specs (record-field-specs parts)))
+         (derive-section (assoc ':derive sections)))
+    ;; Register the arity BEFORE normalizing fields, so self-referential
+    ;; generic applications ((next (option (node a)))) pass through.
+    (if params (condense-put name "condense.arity" (length params)) ())
+    (let ((field-specs (record-field-specs parts)))
     (if (null field-specs)
         (error "defrecord requires at least one field")
         (let* ((fields (condense-field-names field-specs))
-               (expansion (record-expansion name field-specs invariant-section))
+               (expansion (record-expansion name params field-specs invariant-section))
                (generated (record-generated name fields))
                (source (cons 'defrecord x))
                (previous (condense-expansion name)))
@@ -625,7 +669,7 @@ updated with RECORD-WITH. Records the condensation trace; :derive targets
           (if derive-section
               (eval (cons 'derive (cons name (cdr derive-section))) e)
               nil)
-          name))))
+          name)))))
 
 (defun record-compile-eligible-p (name)
   "Whether record NAME's fields are all natively storable — i.e. which tier

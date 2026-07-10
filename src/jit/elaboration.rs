@@ -16,6 +16,8 @@ pub(super) struct Cx<'a> {
     pub(super) funcs: &'a [Rc<TypedFn>],
     pub(super) by_name: &'a HashMap<String, usize>,
     pub(super) structs: &'a HashMap<String, Rc<StructDef>>,
+    /// Parametric nominals (0.3 HM generics), for construction rules.
+    pub(super) generics: &'a HashMap<String, Rc<GenericDef>>,
     /// Declared schemes (experimental rows): axioms from `declare-type!`,
     /// consulted by the checker for callees the typed registry doesn't know.
     pub(super) declared: &'a HashMap<String, infer::Scheme>,
@@ -1055,6 +1057,31 @@ impl Cx<'_> {
             return Ok((Core::LitI(0), Ty::Any));
         };
         let Some(def) = self.structs.get(&brand).cloned() else {
+            // Parametric brand (0.3 HM generics): instantiate fresh type
+            // arguments, demand the substituted field types, return the
+            // application — `(record-new 'some v)` : (some α) with α = v's
+            // type, absorbing into (option α) where demanded.
+            if let Some(gdef) = self.generics.get(&brand).cloned() {
+                if args.len() - 1 != gdef.fields.len() {
+                    return Err(format!(
+                        "`record-new`: {} has {} field(s), got {} value(s)",
+                        brand,
+                        gdef.fields.len(),
+                        args.len() - 1
+                    ));
+                }
+                let fresh: Vec<Ty> = (0..gdef.arity).map(|_| self.fresh()).collect();
+                let m: HashMap<u32, Ty> =
+                    (0..gdef.arity as u32).zip(fresh.iter().cloned()).collect();
+                for (arg, (fname, fty)) in args[1..].iter().zip(gdef.fields.iter()) {
+                    let (_, ta) = self.elab(arg, scope, max)?;
+                    let want = Infer::subst_vars(fty, &m);
+                    self.unify(&ta, &want).map_err(|e| {
+                        format!("`record-new`: field {}: {e}", fname.to_lowercase())
+                    })?;
+                }
+                return Ok((Core::LitI(0), Ty::App(gdef, fresh)));
+            }
             // Unregistered at check time (e.g. forward use): dynamic frontier.
             for a in &args[1..] {
                 self.elab(a, scope, max)?;

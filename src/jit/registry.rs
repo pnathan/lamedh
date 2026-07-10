@@ -238,6 +238,10 @@ pub struct Jit {
     /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
     /// ordinary typed functions over the [`Core`] struct ops.
     pub(super) structs: HashMap<String, Rc<StructDef>>,
+    /// Parametric nominals (0.3 HM generics): records and variant
+    /// constructors with type parameters, plus parametric variants
+    /// themselves. Uses appear as [`Ty::App`].
+    pub(super) generics: HashMap<String, Rc<GenericDef>>,
     /// Declared sum types (variants): name -> closed constructor-brand set.
     /// A variant name is denotable in declared schemes; its constructors are
     /// ordinary registered records that absorb into the variant on unify.
@@ -261,7 +265,7 @@ impl Jit {
     /// caller (the condensation layer) is responsible for generating the
     /// implementation in lockstep.
     pub fn declare_scheme(&mut self, name: &str, form: &LispVal) -> Result<String, String> {
-        let scheme = parse_scheme_form(form, &self.structs, &self.variants)?;
+        let scheme = parse_scheme_form(form, &self.structs, &self.variants, &self.generics)?;
         let rendered = infer::scheme_name(&scheme);
         self.declared.insert(name.to_string(), scheme);
         Ok(rendered)
@@ -311,7 +315,10 @@ impl Jit {
                         | "PAIR"
                         | "RECORD"
                 );
-                if !reserved && !self.structs.contains_key(&tn) && !self.variants.contains_key(&tn)
+                if !reserved
+                    && !self.structs.contains_key(&tn)
+                    && !self.variants.contains_key(&tn)
+                    && !self.generics.contains_key(&tn)
                 {
                     self.structs.insert(
                         tn.clone(),
@@ -329,8 +336,14 @@ impl Jit {
             let parts = list_to_vec(f);
             match parts.as_slice() {
                 [LispVal::Symbol(fname), fty] => {
-                    let ty = parse_declared_ty(fty, &vars, &self.structs, &self.variants)
-                        .map_err(|e| format!("record `{name}`: {e}"))?;
+                    let ty = parse_declared_ty(
+                        fty,
+                        &vars,
+                        &self.structs,
+                        &self.variants,
+                        &self.generics,
+                    )
+                    .map_err(|e| format!("record `{name}`: {e}"))?;
                     fields.push((fname.borrow().name.clone(), ty));
                 }
                 _ => return Err(format!("record `{name}`: each field must be (name type)")),
@@ -344,6 +357,109 @@ impl Jit {
             }),
         );
         Ok(())
+    }
+
+    /// Declare a PARAMETRIC record or variant constructor (0.3 HM
+    /// generics): `params` are the type-parameter names (canonical ids in
+    /// field types by position). Two-phase like `declare_record`, so
+    /// self-referential fields ((defrecord (node a) ... (next (node a))))
+    /// resolve. If `name` is a constructor of an already-declared
+    /// parametric variant, the back-reference is recorded (App-into-App
+    /// absorption).
+    pub fn declare_generic_record(
+        &mut self,
+        name: &str,
+        params: &[String],
+        field_specs: &LispVal,
+    ) -> Result<(), String> {
+        reject_reserved_type_name(name)?;
+        let arity = params.len();
+        let variant = self
+            .generics
+            .values()
+            .find(|g| !g.ctors.is_empty() && g.ctors.iter().any(|c| c == name))
+            .map(|g| g.name.clone());
+        // Provisional def: self-references resolve by name.
+        self.generics.entry(name.to_string()).or_insert_with(|| {
+            Rc::new(GenericDef {
+                name: name.to_string(),
+                arity,
+                fields: Vec::new(),
+                ctors: Vec::new(),
+                variant: variant.clone(),
+            })
+        });
+        let mut vars: HashMap<String, u32> = HashMap::new();
+        for (i, p) in params.iter().enumerate() {
+            if vars.insert(p.clone(), i as u32).is_some() {
+                return Err(format!("record `{name}`: duplicate type parameter {p}"));
+            }
+        }
+        let mut fields: Vec<(String, Ty)> = Vec::new();
+        for f in list_to_vec(field_specs) {
+            let parts = list_to_vec(&f);
+            match parts.as_slice() {
+                [LispVal::Symbol(fname), fty] => {
+                    let ty = self
+                        .parse_ty_with_generics(fty, &vars)
+                        .map_err(|e| format!("record `{name}`: {e}"))?;
+                    fields.push((fname.borrow().name.clone(), ty));
+                }
+                _ => return Err(format!("record `{name}`: each field must be (name type)")),
+            }
+        }
+        self.generics.insert(
+            name.to_string(),
+            Rc::new(GenericDef {
+                name: name.to_string(),
+                arity,
+                fields,
+                ctors: Vec::new(),
+                variant,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Declare a PARAMETRIC variant: the union name with its arity and
+    /// constructor brands. Constructors are declared separately (with the
+    /// same parameter list) via [`Self::declare_generic_record`].
+    pub fn declare_generic_variant(
+        &mut self,
+        name: &str,
+        arity: usize,
+        ctors: Vec<String>,
+    ) -> Result<(), String> {
+        reject_reserved_type_name(name)?;
+        for c in &ctors {
+            reject_reserved_type_name(c)?;
+        }
+        if self.structs.contains_key(name) || self.variants.contains_key(name) {
+            return Err(format!(
+                "generic variant `{name}` collides with an existing type"
+            ));
+        }
+        self.generics.insert(
+            name.to_string(),
+            Rc::new(GenericDef {
+                name: name.to_string(),
+                arity,
+                fields: Vec::new(),
+                ctors,
+                variant: None,
+            }),
+        );
+        Ok(())
+    }
+
+    /// `parse_declared_ty` with this registry's maps (helper for the
+    /// generic-declaration path).
+    fn parse_ty_with_generics(
+        &self,
+        form: &LispVal,
+        vars: &HashMap<String, u32>,
+    ) -> Result<Ty, String> {
+        parse_declared_ty(form, vars, &self.structs, &self.variants, &self.generics)
     }
 
     /// Declare a sum type: `name` becomes the checker-level union of the
@@ -378,6 +494,7 @@ impl Jit {
         self.structs
             .get(name)
             .map(|d| is_compileable(&Ty::Struct(d.clone())))
+            .or_else(|| self.generics.get(name).map(|_| false))
     }
 
     /// Ordered field names of the registered struct/record `name`, if any
@@ -386,6 +503,11 @@ impl Jit {
         self.structs
             .get(name)
             .map(|def| def.fields.iter().map(|(n, _)| n.clone()).collect())
+            .or_else(|| {
+                self.generics
+                    .get(name)
+                    .map(|def| def.fields.iter().map(|(n, _)| n.clone()).collect())
+            })
     }
 
     /// The rendered declared scheme for `name`, if one was registered.
@@ -524,6 +646,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
+                generics: &self.generics,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -617,7 +740,9 @@ impl Jit {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
-        let mut infer = Infer::new().with_structs(std::rc::Rc::new(self.structs.clone()));
+        let mut infer = Infer::new()
+            .with_structs(std::rc::Rc::new(self.structs.clone()))
+            .with_generics(std::rc::Rc::new(self.generics.clone()));
         let param_tys: Vec<(String, Ty)> =
             params.iter().map(|p| (p.clone(), infer.fresh())).collect();
         let ret_var = infer.fresh();
@@ -644,6 +769,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
+                generics: &self.generics,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -700,7 +826,9 @@ impl Jit {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
-        let mut infer = Infer::new().with_structs(std::rc::Rc::new(self.structs.clone()));
+        let mut infer = Infer::new()
+            .with_structs(std::rc::Rc::new(self.structs.clone()))
+            .with_generics(std::rc::Rc::new(self.generics.clone()));
         let param_tys: Vec<(String, Ty)> =
             params.iter().map(|p| (p.clone(), infer.fresh())).collect();
         let ret_var = infer.fresh();
@@ -720,6 +848,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
+                generics: &self.generics,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -791,6 +920,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
+                generics: &self.generics,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -891,6 +1021,7 @@ impl Jit {
                 funcs: &self.funcs,
                 by_name: &self.by_name,
                 structs: &self.structs,
+                generics: &self.generics,
                 infer: RefCell::new(infer),
                 checking: true,
                 resolver,
@@ -955,7 +1086,9 @@ impl Jit {
         expr: &LispVal,
         resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Result<String, String> {
-        let infer = Infer::new().with_structs(std::rc::Rc::new(self.structs.clone()));
+        let infer = Infer::new()
+            .with_structs(std::rc::Rc::new(self.structs.clone()))
+            .with_generics(std::rc::Rc::new(self.generics.clone()));
         let mut scope = Scope::new();
         let mut max_slots = 0;
         let cx = Cx {
@@ -963,6 +1096,7 @@ impl Jit {
             funcs: &self.funcs,
             by_name: &self.by_name,
             structs: &self.structs,
+            generics: &self.generics,
             infer: RefCell::new(infer),
             checking: true,
             resolver,
@@ -1493,6 +1627,7 @@ fn parse_scheme_form(
     form: &LispVal,
     structs: &HashMap<String, Rc<StructDef>>,
     variants: &HashMap<String, Rc<VariantDef>>,
+    generics: &HashMap<String, Rc<GenericDef>>,
 ) -> Result<infer::Scheme, String> {
     let parts = list_to_vec(form);
     let (var_names, body) = match parts.as_slice() {
@@ -1516,11 +1651,25 @@ fn parse_scheme_form(
             return Err(format!("declare-type!: duplicate type variable {n}"));
         }
     }
-    let ty = parse_declared_ty(&body, &vars, structs, variants)?;
+    let ty = parse_declared_ty(&body, &vars, structs, variants, generics)?;
     Ok(infer::Scheme {
         vars: (0..var_names.len() as u32).collect(),
         ty,
     })
+}
+
+/// Names that are built-in type constructors or type words: a user nominal
+/// with one of these names would silently shadow (or be shadowed by) the
+/// built-in meaning in type surfaces — reject at declaration.
+fn reject_reserved_type_name(name: &str) -> Result<(), String> {
+    match name {
+        "LIST" | "ARRAY" | "PAIR" | "RECORD" | "->" | "FORALL" | "INT64" | "FLOAT64" | "BOOL"
+        | "CHAR" | "U8" | "BYTE" | "SYMBOL" | "STRING" | "ANY" => Err(format!(
+            "`{}` is a built-in type name and cannot name a record or variant",
+            name.to_lowercase()
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn parse_declared_ty(
@@ -1528,6 +1677,7 @@ fn parse_declared_ty(
     vars: &HashMap<String, u32>,
     structs: &HashMap<String, Rc<StructDef>>,
     variants: &HashMap<String, Rc<VariantDef>>,
+    generics: &HashMap<String, Rc<GenericDef>>,
 ) -> Result<Ty, String> {
     match form {
         LispVal::Symbol(s) => {
@@ -1547,6 +1697,14 @@ fn parse_declared_ty(
                     .get(other)
                     .map(|d| Ty::Struct(d.clone()))
                     .or_else(|| variants.get(other).map(|v| Ty::Variant(v.clone())))
+                    // A BARE generic name is sugar for the all-ANY
+                    // application: `option` means `(option any)` — the
+                    // gradual reading, and what pre-parametric code wrote.
+                    .or_else(|| {
+                        generics
+                            .get(other)
+                            .map(|g| Ty::App(g.clone(), vec![Ty::Any; g.arity]))
+                    })
                     .ok_or_else(|| format!("declare-type!: unknown type `{other}`")),
             }
         }
@@ -1556,7 +1714,7 @@ fn parse_declared_ty(
                 Some(LispVal::Symbol(s)) => s.borrow().name.clone(),
                 _ => return Err("declare-type!: malformed compound type".to_string()),
             };
-            let sub = |f: &LispVal| parse_declared_ty(f, vars, structs, variants);
+            let sub = |f: &LispVal| parse_declared_ty(f, vars, structs, variants, generics);
             match head.as_str() {
                 "LIST" if parts.len() == 2 => Ok(Ty::List(Box::new(sub(&parts[1])?))),
                 "ARRAY" if parts.len() == 2 => Ok(Ty::Array(Box::new(sub(&parts[1])?))),
@@ -1607,7 +1765,23 @@ fn parse_declared_ty(
                     };
                     Ok(Ty::Record(fields, rest))
                 }
-                other => Err(format!("declare-type!: unknown type constructor `{other}`")),
+                // A registered parametric nominal applied to arguments
+                // (0.3 HM generics): (option a), (pair int64 string).
+                other => match generics.get(other) {
+                    Some(def) if parts.len() - 1 == def.arity => {
+                        let mut args = Vec::with_capacity(def.arity);
+                        for a in &parts[1..] {
+                            args.push(sub(a)?);
+                        }
+                        Ok(Ty::App(def.clone(), args))
+                    }
+                    Some(def) => Err(format!(
+                        "declare-type!: `{other}` takes {} type argument(s), got {}",
+                        def.arity,
+                        parts.len() - 1
+                    )),
+                    None => Err(format!("declare-type!: unknown type constructor `{other}`")),
+                },
             }
         }
         other => Err(format!("declare-type!: malformed type {other:?}")),

@@ -33,6 +33,11 @@ pub enum Ty {
     /// A declared sum type (#312 follow-up): the checker-level union of a
     /// closed set of constructor brands. Never compiled; checker-only.
     Variant(Rc<VariantDef>),
+    /// An APPLIED parametric nominal (0.3 HM generics): `(option int64)`,
+    /// `(pair a b)`. Nominal by definition name; arguments unify pairwise;
+    /// a constructor application absorbs into its variant's application.
+    /// Never compiled; checker-only.
+    App(Rc<GenericDef>, Vec<Ty>),
     /// A type variable (issue #135): an as-yet-undetermined type, identified by
     /// a fresh id. Variables exist only *during* elaboration; `Infer::resolve`
     /// must drive every one to a concrete type before a definition is accepted,
@@ -95,6 +100,8 @@ pub fn is_compileable(t: &Ty) -> bool {
         Ty::Struct(d) => d.fields.iter().all(|(_, ft)| is_compileable(ft)),
         // A sum's representation varies by constructor: checker-only.
         Ty::Variant(_) => false,
+        // Parametric nominals are checker-only (erased at runtime).
+        Ty::App(_, _) => false,
         // A variable is not (yet) compileable until resolved; the rest are
         // checkable only.
         Ty::Var(_)
@@ -150,6 +157,22 @@ pub struct VariantDef {
     pub ctors: Vec<String>,
 }
 
+/// A PARAMETRIC nominal (0.3 HM generics): a record or variant taking type
+/// parameters. `fields` (records and variant constructors) may reference
+/// the parameters as `Ty::Var(0..arity)` — canonical ids, substituted with
+/// fresh variables or concrete arguments at every use. `ctors` non-empty
+/// marks a variant; `variant` on a constructor names its owning sum. Uses
+/// appear in the type language as applications: `(pair int64 string)`,
+/// `(option a)` — represented as [`Ty::App`].
+#[derive(PartialEq, Eq, Debug)]
+pub struct GenericDef {
+    pub name: String,
+    pub arity: usize,
+    pub fields: Vec<(String, Ty)>,
+    pub ctors: Vec<String>,
+    pub variant: Option<String>,
+}
+
 impl Ty {
     pub fn parse(name: &str) -> Option<Ty> {
         match name {
@@ -195,6 +218,11 @@ pub fn ty_name(t: &Ty) -> String {
         Ty::Array(e) => format!("(array {})", ty_name(e)),
         Ty::Struct(s) => s.name.clone(),
         Ty::Variant(v) => v.name.clone(),
+        Ty::App(d, args) => format!(
+            "({} {})",
+            d.name.to_lowercase(),
+            args.iter().map(ty_name).collect::<Vec<_>>().join(" ")
+        ),
         // A variable should never survive to a signature/introspection site.
         Ty::Var(v) => format!("?{v}"),
         Ty::List(e) => format!("(list {})", ty_name(e)),
@@ -336,6 +364,7 @@ impl Value {
             // native edition (`is_compileable` is false for them).
             Ty::Var(_)
             | Ty::Variant(_)
+            | Ty::App(_, _)
             | Ty::List(_)
             | Ty::Pair(_, _)
             | Ty::Symbol

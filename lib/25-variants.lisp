@@ -22,32 +22,45 @@
 
 ;;; ---- defvariant --------------------------------------------------------
 
-(defun $variant-ctor-forms (ctor field-specs variant)
+(defun $variant-ctor-forms (ctor field-specs variant params)
   "Definitions for one constructor: branded record, bare-name constructor,
-getters, and predicate -- every scheme declared in lockstep."
+getters, and predicate -- every scheme declared in lockstep. PARAMS non-nil
+= a parametric variant (0.3 HM generics): the constructor is declared over
+the variant's parameters and returns the applied constructor type, which
+absorbs into the applied variant."
   (let ((argnames (condense-field-names field-specs))
         (argtys (mapcar #'cadr field-specs))
         (pred (condense-predicate-symbol ctor)))
     (append
-     (list `(record-declare ',ctor ',field-specs)
-           `(defun ,ctor ,argnames (record-new ',ctor ,@argnames))
-           `(declare-type! ',ctor '(-> ,argtys ,ctor))
-           `(defun ,pred (v) (eq (record-brand v) ',ctor))
-           `(declare-type! ',pred '(forall (a) (-> (a) bool))))
-     ($record-getter-forms ctor field-specs))))
+     (if params
+         (list `(record-declare '(,ctor ,@params) ',field-specs)
+               `(defun ,ctor ,argnames (record-new ',ctor ,@argnames))
+               `(declare-type! ',ctor
+                               '(forall ,params (-> ,argtys (,ctor ,@params)))))
+         (list `(record-declare ',ctor ',field-specs)
+               `(defun ,ctor ,argnames (record-new ',ctor ,@argnames))
+               `(declare-type! ',ctor '(-> ,argtys ,ctor))))
+     (append
+      (list `(defun ,pred (v) (eq (record-brand v) ',ctor))
+            `(declare-type! ',pred '(forall (a) (-> (a) bool))))
+      (if params
+          ($record-generic-getter-forms ctor params field-specs)
+          ($record-getter-forms ctor field-specs))))))
 
 (defun $variant-normalize-ctor (spec)
   "Normalize (ctor (field ty)...) -- field specs normalize like defrecord's."
   (cons (car spec) (mapcar #'record-normalize-field-spec (cdr spec))))
 
-(defun $variant-expansion (name ctor-specs)
+(defun $variant-expansion (name params ctor-specs)
   (let ((ctor-names (mapcar #'car ctor-specs))
         (pred (condense-predicate-symbol name)))
     `(progn
-       (variant-declare ',name ',ctor-names)
+       ,(if params
+            `(variant-declare '(,name ,@params) ',ctor-names)
+            `(variant-declare ',name ',ctor-names))
        ,@(reduce #'append
                  (mapcar (lambda (spec)
-                           ($variant-ctor-forms (car spec) (cdr spec) name))
+                           ($variant-ctor-forms (car spec) (cdr spec) name params))
                          ctor-specs)
                  nil)
        (defun ,pred (v) (if (member (record-brand v) ',ctor-names) t nil))
@@ -74,13 +87,26 @@ Name. Constructors are called by their BARE names -- (circle 3) -- and a
 nullary constructor is written (none) and called (none). Generates
 ctor/ctor-p/ctor-field per constructor and Name-p for the union.
 Destructure with VARIANT-CASE (exhaustive) or MATCH #S patterns."
-  (let* ((name (car x))
+  (let* ((head (car x))
+         ;; Parametric head (0.3 HM generics): (defvariant (option a) ...).
+         (name (if (consp head) (car head) head))
+         (params (if (consp head) (cdr head) ()))
          (raw-specs (cdr x)))
+    ;; Register arities BEFORE normalizing ctor fields, so generic
+    ;; applications in payload types pass through.
+    (if params
+        (progn
+          (condense-put name "condense.arity" (length params))
+          (mapc (lambda (spec)
+                  (condense-put (if (consp spec) (car spec) spec)
+                                "condense.arity" (length params)))
+                raw-specs))
+        ())
     (if (null raw-specs)
         (error "defvariant requires at least one constructor")
         (let* ((ctor-specs (mapcar #'$variant-normalize-ctor raw-specs))
                (ctor-names (mapcar #'car ctor-specs))
-               (expansion ($variant-expansion name ctor-specs))
+               (expansion ($variant-expansion name params ctor-specs))
                (source (cons 'defvariant x))
                (previous (condense-expansion name)))
           (eval expansion e)
@@ -164,8 +190,8 @@ missing brands."
 
 ;;; ---- Option ------------------------------------------------------------
 
-(defvariant option
-  (some (value any))
+(defvariant (option a)
+  (some (value a))
   (none))
 
 (defun option-of (x)
@@ -177,50 +203,62 @@ missing brands."
   (variant-case o
     (some (v) v)
     (none () (error "unwrap: (none)"))))
+(declare-type! 'unwrap '(forall (a) (-> ((option a)) a)))
 
 (defun unwrap-or (o default)
   (variant-case o
     (some (v) v)
     (none () default)))
+(declare-type! 'unwrap-or '(forall (a) (-> ((option a) a) a)))
 
 (defun option-map (f o)
   (variant-case o
     (some (v) (some (funcall f v)))
     (none () o)))
+(declare-type! 'option-map
+               '(forall (a b) (-> ((-> (a) b) (option a)) (option b))))
 
 (defun option-then (o f)
   "Monadic bind: (some v) -> (funcall f v) [itself an option]; (none) stays."
   (variant-case o
     (some (v) (funcall f v))
     (none () o)))
+(declare-type! 'option-then
+               '(forall (a b) (-> ((option a) (-> (a) (option b))) (option b))))
 
 ;;; ---- Result ------------------------------------------------------------
 
-(defvariant result
-  (ok (value any))
-  (err (message any)))
+(defvariant (result a e)
+  (ok (value a))
+  (err (message e)))
 
 (defun unwrap-result (r)
   "The value inside (ok v); error with the message on (err m)."
   (variant-case r
     (ok (v) v)
     (err (m) (error (princ-to-string m)))))
+(declare-type! 'unwrap-result '(forall (a e) (-> ((result a e)) a)))
 
 (defun result-or (r default)
   (variant-case r
     (ok (v) v)
     (err (m) default)))
+(declare-type! 'result-or '(forall (a e) (-> ((result a e) a) a)))
 
 (defun result-map (f r)
   (variant-case r
     (ok (v) (ok (funcall f v)))
     (err (m) r)))
+(declare-type! 'result-map
+               '(forall (a b e) (-> ((-> (a) b) (result a e)) (result b e))))
 
 (defun result-then (r f)
   "Monadic bind: (ok v) -> (funcall f v) [itself a result]; (err m) stays."
   (variant-case r
     (ok (v) (funcall f v))
     (err (m) r)))
+(declare-type! 'result-then
+               '(forall (a b e) (-> ((result a e) (-> (a) (result b e))) (result b e))))
 
 (defun try-call (f &rest args)
   "Call F, capturing a signaled error as (err message): the bridge from the
