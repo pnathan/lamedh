@@ -70,6 +70,18 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## Dotted pairs in the checker
+
+- `(cons 'k 2)` now types as `(pair symbol int64)` instead of erroring:
+  a cons whose tail is a known non-list ground type takes the
+  dotted-pair view, and `car`/`cdr` project known pairs. Unknown tails
+  keep the list-cons view (the recursion default), so existing derived
+  schemes are unchanged. The alist-cell idiom types end to end.
+- New example: `examples/wordcount.lisp` — the classic word-frequency
+  report, dogfooding the 0.3 staples (`frequencies`, `sort-by`,
+  `enumerate`, padding, `for-each`, Option, `variant-case`). Found both
+  the missing pair rule and the staples gaps.
+
 ## Typed protocols
 
 ```lisp

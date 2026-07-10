@@ -404,7 +404,11 @@ silently counted as verified when it is merely unrefuted.
 The forms you will see in signatures and `declare-type!` calls:
 
 - Scalars: `int64`, `float64`, `bool`, `char`, `string`, `symbol`, `any`
-- `(list T)`, `(array T)`, `(pair A B)`
+- `(list T)`, `(array T)`, `(pair A B)` — `cons` produces whichever fits:
+  a tail already known to be a non-list ground type makes a dotted pair
+  (`(cons 'k 2)` is `(pair symbol int64)`, the alist-cell idiom, and
+  `car`/`cdr` project it), while unknown or list tails take the
+  list-cons view
 - `(record ((f T)...) [tail])` — a row type; the optional tail (a type
   variable) is what makes it *open* rather than a closed shape
 - A record's own brand name (`point`, `invoice`, ...) as a nominal type
