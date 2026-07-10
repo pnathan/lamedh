@@ -6,35 +6,35 @@ use test_helpers::env_with_stdlib;
 #[test]
 fn test_logor_simple() {
     let env = env_with_stdlib();
-    let output = eval_line("(logor 5 3)", &env);
+    let output = eval_line("(logior 5 3)", &env);
     assert_eq!(output, "7"); // 0101 | 0011 = 0111
 }
 
 #[test]
 fn test_logor_zero() {
     let env = env_with_stdlib();
-    let output = eval_line("(logor 0 0)", &env);
+    let output = eval_line("(logior 0 0)", &env);
     assert_eq!(output, "0");
 }
 
 #[test]
 fn test_logor_multiple_args() {
     let env = env_with_stdlib();
-    let output = eval_line("(logor 1 2 4 8)", &env);
+    let output = eval_line("(logior 1 2 4 8)", &env);
     assert_eq!(output, "15"); // 0001 | 0010 | 0100 | 1000 = 1111
 }
 
 #[test]
 fn test_logor_no_args() {
     let env = env_with_stdlib();
-    let output = eval_line("(logor)", &env);
+    let output = eval_line("(logior)", &env);
     assert_eq!(output, "0");
 }
 
 #[test]
 fn test_logor_single_arg() {
     let env = env_with_stdlib();
-    let output = eval_line("(logor 42)", &env);
+    let output = eval_line("(logior 42)", &env);
     assert_eq!(output, "42");
 }
 
@@ -42,14 +42,14 @@ fn test_logor_single_arg() {
 fn test_logor_negative() {
     let env = env_with_stdlib();
     // -1 in two's complement has all bits set
-    let output = eval_line("(logor -1 5)", &env);
+    let output = eval_line("(logior -1 5)", &env);
     assert_eq!(output, "-1");
 }
 
 #[test]
 fn test_logor_powers_of_two() {
     let env = env_with_stdlib();
-    let output = eval_line("(logor 16 32 64)", &env);
+    let output = eval_line("(logior 16 32 64)", &env);
     assert_eq!(output, "112"); // 16 + 32 + 64
 }
 
@@ -208,7 +208,7 @@ fn test_leftshift_zero_value() {
 fn test_combined_set_bit() {
     let env = env_with_stdlib();
     // Set bit 3 in value 0: value | (1 << 3)
-    let output = eval_line("(logor 0 (leftshift 1 3))", &env);
+    let output = eval_line("(logior 0 (leftshift 1 3))", &env);
     assert_eq!(output, "8");
 }
 
@@ -250,6 +250,6 @@ fn test_bitwise_mask_creation() {
 fn test_all_operations_combined() {
     let env = env_with_stdlib();
     // Complex: ((5 | 3) & 15) ^ 2 << 1
-    let output = eval_line("(leftshift (logxor (logand (logor 5 3) 15) 2) 1)", &env);
+    let output = eval_line("(leftshift (logxor (logand (logior 5 3) 15) 2) 1)", &env);
     assert_eq!(output, "10"); // ((7 & 15) ^ 2) << 1 = (7 ^ 2) << 1 = 5 << 1 = 10
 }

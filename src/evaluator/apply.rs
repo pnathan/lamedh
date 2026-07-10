@@ -18,6 +18,42 @@ pub(super) fn apply(
             | BuiltinFunc::Remainder
             | BuiltinFunc::Expt => apply_numeric_primitives(builtin, args, env),
             BuiltinFunc::Car | BuiltinFunc::Cdr | BuiltinFunc::Cons => apply_list_op(builtin, args),
+            // (append l1 l2 ... tail) — variadic (0.3 regularity), kernel-
+            // fast (append is on stdlib hot paths). All but the last
+            // argument must be proper lists; the last is shared as the tail
+            // (so (append xs) = xs and (append) = ()).
+            BuiltinFunc::Append => {
+                if args.is_empty() {
+                    return Ok(LispVal::Nil);
+                }
+                let mut items: Vec<LispVal> = Vec::new();
+                for a in &args[..args.len() - 1] {
+                    let mut cur = a;
+                    loop {
+                        match cur {
+                            LispVal::Nil => break,
+                            LispVal::Cons { car, cdr } => {
+                                items.push(car.as_ref().clone());
+                                cur = cdr.as_ref();
+                            }
+                            other => {
+                                return Err(LispError::Generic(format!(
+                                    "APPEND: expected a proper list, got tail {}",
+                                    err_val(other)
+                                )));
+                            }
+                        }
+                    }
+                }
+                let mut out = args[args.len() - 1].clone();
+                for v in items.into_iter().rev() {
+                    out = LispVal::Cons {
+                        car: Shared::new(v),
+                        cdr: Shared::new(out),
+                    };
+                }
+                Ok(out)
+            }
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
             BuiltinFunc::Sort => apply_sort(args, env),
             BuiltinFunc::Sqrt

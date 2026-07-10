@@ -1072,11 +1072,11 @@
 ;;; BITWISE FUNCTIONS
 ;;; ============================================================
 
-(register-doc 'logor
+(register-doc 'logior
   (list
-    (cons 'NAME 'logor)
+    (cons 'NAME 'logior)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(logor integer...)")
+    (cons 'SYNTAX "(logior integer...)")
     (cons 'CATEGORY 'bitwise)
     (cons 'DESCRIPTION "Bitwise OR of all arguments.")
     (cons 'EXAMPLES '(((logor 5 3) 7)))

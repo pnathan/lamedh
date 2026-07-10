@@ -124,3 +124,47 @@ fn checker_demands_numeric_arithmetic() {
         "(CHECKED (FORALL (A) (-> (A) A)))"
     );
 }
+
+#[test]
+fn variadic_operators_census_batch() {
+    let e = env_with_stdlib();
+    // append: kernel, variadic, dotted tail preserved dynamically.
+    assert_eq!(eval_line("(append)", &e), "()");
+    assert_eq!(
+        eval_line("(append (list 1) (list 2) (list 3))", &e),
+        "(1 2 3)"
+    );
+    assert_eq!(eval_line("(append (list 1) 'tail)", &e), "(1 . TAIL)");
+    // gcd/lcm fold with CL identities.
+    assert_eq!(eval_line("(gcd 12 18 24)", &e), "6");
+    assert_eq!(eval_line("(gcd)", &e), "0");
+    assert_eq!(eval_line("(lcm 2 3 4)", &e), "12");
+    assert_eq!(eval_line("(lcm)", &e), "1");
+    // logior is the canonical CL name (logor removed).
+    assert_eq!(eval_line("(logior 1 2 4)", &e), "7");
+    let out = eval_line("(logor 1 2)", &e);
+    assert!(out.contains("Unbound"), "got: {out}");
+    // mapcar zips N lists, stopping at the shortest.
+    assert_eq!(
+        eval_line("(mapcar #'+ (list 1 2 3) (list 10 20 30))", &e),
+        "(11 22 33)"
+    );
+    assert_eq!(
+        eval_line("(mapcar #'+ (list 1 2 3) (list 10 20))", &e),
+        "(11 22)"
+    );
+    // Checker rules for the variadic family.
+    assert_eq!(
+        eval_line("(check-type (append (list 1) (list 2)))", &e),
+        "\"(list int64)\""
+    );
+    let out = eval_line("(check-type (append (list 1) (list \"s\")))", &e);
+    assert!(out.contains("type error"), "got: {out}");
+    assert_eq!(
+        eval_line("(check-type (concat \"a\" \"b\"))", &e),
+        "\"string\""
+    );
+    assert_eq!(eval_line("(check-type (min 1 2 3))", &e), "\"int64\"");
+    let out = eval_line("(check-type (min \"a\" \"b\"))", &e);
+    assert!(out.contains("numeric"), "got: {out}");
+}

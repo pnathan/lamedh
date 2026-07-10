@@ -73,14 +73,15 @@ fn test_maplist_three_args() {
 fn test_mapcar_three_args() {
     with_large_stack(|| {
         let env = env_with_stdlib();
+        // 0.3: mapcar is N-list (zip); a non-list argument errors cleanly.
         let result = eval_line("(mapcar 'car '(1 2) 'extra)", &env);
         assert!(
             result.contains("Error"),
-            "mapcar with 3 args should error; got: {result}"
+            "mapcar with a non-list arg should error; got: {result}"
         );
         assert!(
-            result.contains("mapcar requires exactly two arguments"),
-            "expected 'mapcar requires exactly two arguments'; got: {result}"
+            result.contains("expected a proper list"),
+            "expected the proper-list error; got: {result}"
         );
     });
 }

@@ -425,64 +425,64 @@ pub(super) fn apply_math_lib(
             Ok(LispVal::Number(as_f64(&args[0], "truncate")?.trunc() as i64))
         }
         BuiltinFunc::Gcd => {
-            want(2, "gcd")?;
-            match (&args[0], &args[1]) {
-                (LispVal::Number(a), LispVal::Number(b)) => {
-                    Ok(LispVal::Number(gcd_i64(*a, *b, env)))
-                }
-                _ => Err(LispError::Generic(format!(
-                    "GCD: expected integers, got {} and {}",
-                    err_val(&args[0]),
-                    err_val(&args[1])
-                ))),
+            // REGULARITY (0.3): variadic fold with the CL identities —
+            // (gcd) = 0, (gcd a) = |a|.
+            let mut acc: i64 = 0;
+            for a in args {
+                let LispVal::Number(n) = a else {
+                    return Err(LispError::Generic(format!(
+                        "GCD: expected integers, got {}",
+                        err_val(a)
+                    )));
+                };
+                acc = gcd_i64(acc, *n, env);
             }
+            Ok(LispVal::Number(acc.wrapping_abs()))
         }
         BuiltinFunc::Lcm => {
-            want(2, "lcm")?;
-            match (&args[0], &args[1]) {
-                (LispVal::Number(a), LispVal::Number(b)) => {
-                    if *a == 0 || *b == 0 {
-                        Ok(LispVal::Number(0))
-                    } else {
-                        let g = gcd_i64(*a, *b, env);
-                        let quotient = if g == 0 {
-                            // Should not happen for nonzero a/b, but guard
-                            // against a division by zero panic if wrapping
-                            // arithmetic in gcd_i64 ever produces 0.
-                            env.set_flag("OVERFLOW");
-                            0
-                        } else {
-                            match a.checked_div(g) {
-                                Some(v) => v,
-                                None => {
-                                    env.set_flag("OVERFLOW");
-                                    a.wrapping_div(g)
-                                }
-                            }
-                        };
-                        let product = match quotient.checked_mul(*b) {
-                            Some(v) => v,
-                            None => {
-                                env.set_flag("OVERFLOW");
-                                quotient.wrapping_mul(*b)
-                            }
-                        };
-                        let result = match product.checked_abs() {
-                            Some(v) => v,
-                            None => {
-                                env.set_flag("OVERFLOW");
-                                product.wrapping_abs()
-                            }
-                        };
-                        Ok(LispVal::Number(result))
-                    }
+            // REGULARITY (0.3): variadic fold with the CL identities —
+            // (lcm) = 1, (lcm a) = |a|; any zero makes the whole lcm 0.
+            let mut acc: i64 = 1;
+            for a in args {
+                let LispVal::Number(n) = a else {
+                    return Err(LispError::Generic(format!(
+                        "LCM: expected integers, got {}",
+                        err_val(a)
+                    )));
+                };
+                if *n == 0 || acc == 0 {
+                    acc = 0;
+                    continue;
                 }
-                _ => Err(LispError::Generic(format!(
-                    "LCM: expected integers, got {} and {}",
-                    err_val(&args[0]),
-                    err_val(&args[1])
-                ))),
+                let g = gcd_i64(acc, *n, env);
+                let quotient = if g == 0 {
+                    env.set_flag("OVERFLOW");
+                    0
+                } else {
+                    match acc.checked_div(g) {
+                        Some(v) => v,
+                        None => {
+                            env.set_flag("OVERFLOW");
+                            acc.wrapping_div(g)
+                        }
+                    }
+                };
+                let product = match quotient.checked_mul(*n) {
+                    Some(v) => v,
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        quotient.wrapping_mul(*n)
+                    }
+                };
+                acc = match product.checked_abs() {
+                    Some(v) => v,
+                    None => {
+                        env.set_flag("OVERFLOW");
+                        product.wrapping_abs()
+                    }
+                };
             }
+            Ok(LispVal::Number(acc))
         }
         BuiltinFunc::Isqrt => {
             want(1, "isqrt")?;

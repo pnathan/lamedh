@@ -426,17 +426,19 @@ everything it defines, repeating the unproven/broken remainder under
 ```
 $ lamedh --capability READ-FS -s "(mapcar #'car
   (cdr (assoc 'frontier (check-file! \"examples/npcs.lisp\"))))"
-; => (GOBLIN-GREET MERCHANT-GREET WISP-GREET TAUNT-ALL SCUFFLE)
+; => (TAUNT-ALL SCUFFLE)
 ```
 
 `npc-name` and `alive-p` (also defined in that file, over `record-ref`) are
 `CHECKED` with a row scheme whose result type is pinned by an argument —
-`(FORALL (A B) (-> ((RECORD ((NAME A)) B)) A))`. `goblin-greet` is `VACUOUS`
-instead: its scheme is `(FORALL (A B C) (-> ((RECORD ((NAME A)) B)) C))`,
-and nothing pins the free `C` to `string`, so `condense-classify` reports it
-honestly as unproven rather than folding it in with the proven functions.
-That is the frontier report's whole point: it never silently blends an
-unproven definition into "verified."
+`(FORALL (A B) (-> ((RECORD ((NAME A)) B)) A))`. As of the 0.3 census the
+greet methods left the frontier too: `concat` gained a checker-native rule
+(variadic strings → string), so `goblin-greet` now derives a full row
+scheme. `taunt-all` and `scuffle` remain — they dispatch through `method`
+(a runtime name computation nothing static can pin), so `condense-classify`
+reports them honestly as unproven rather than folding them in with the
+proven functions. That is the frontier report's whole point: it never
+silently blends an unproven definition into "verified."
 
 `check-file!` is the workflow for agents that edit files with their own
 tools rather than holding a live REPL image: edit the file, run
