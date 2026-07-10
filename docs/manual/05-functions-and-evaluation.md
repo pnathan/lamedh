@@ -12,7 +12,7 @@ to its arguments:
 
 `defun` is the everyday way to give a lambda a name — it is a macro that
 expands to `(def name (lambda params body...))`, plus some bookkeeping
-covered in 5.6:
+covered in 5.7:
 
 ```lisp
 (defun square (x) (* x x))
@@ -469,7 +469,7 @@ Declare a dynamic variable with `defdynamic` (or its alias `defvar`):
 
 `get-x` refers to `*x*` free — it has no lexical binding for it — yet it
 sees whatever dynamic binding is active when it's *called*, not when it
-was *defined*. Contrast with 5.4: a closure's free variables are fixed at
+was *defined*. Contrast with 5.5: a closure's free variables are fixed at
 creation time; a dynamic variable's value follows the live call stack.
 Rebinding nests and unwinds correctly:
 
