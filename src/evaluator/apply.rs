@@ -1500,14 +1500,14 @@ pub(super) fn apply(
             BuiltinFunc::ArrayLength => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
-                        "array-length takes exactly one argument".to_string(),
+                        "array-length* takes exactly one argument".to_string(),
                     ));
                 }
                 if let LispVal::Array(a) = &args[0] {
                     Ok(LispVal::Number(a.borrow().len() as i64))
                 } else {
                     Err(LispError::Generic(format!(
-                        "ARRAY-LENGTH: argument must be an array, got {}",
+                        "ARRAY-LENGTH*: argument must be an array, got {}",
                         err_val(&args[0])
                     )))
                 }
@@ -1519,7 +1519,7 @@ pub(super) fn apply(
                     ));
                 }
                 // CL-style polymorphic length: proper lists, strings (in
-                // characters, matching STRING-LENGTH), and arrays (issue #245).
+                // characters, matching STRING-LENGTH*), and arrays (issue #245).
                 match &args[0] {
                     LispVal::String(s) => Ok(LispVal::Number(s.chars().count() as i64)),
                     LispVal::Array(a) => Ok(LispVal::Number(a.borrow().len() as i64)),

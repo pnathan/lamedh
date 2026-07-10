@@ -43,7 +43,7 @@
 (defun format (dest ctrl &rest args)
   "Format CTRL with ARGS. DEST NIL returns the string; DEST T prints it.
 Directives: ~a ~s ~d ~% ~~ (see lib/18-format.lisp)."
-  (let ((out (format-build ctrl args 0 (string-length ctrl) "")))
+  (let ((out (format-build ctrl args 0 (string-length* ctrl) "")))
     (if (null dest)
         out
         (progn (princ out) nil))))

@@ -295,7 +295,7 @@ the parse is retried; anything else falls back to 0."
           ((error (lambda (e)
                     (cond ((string= s "") (use-value 0))
                           ((string= (substring s 0 1) "#")
-                           (invoke-restart 'retry (substring s 1 (string-length s))))
+                           (invoke-restart 'retry (substring s 1 (string-length* s))))
                           (t (use-value 0))))))
         (parse-strict s))
     (use-value (v) v)

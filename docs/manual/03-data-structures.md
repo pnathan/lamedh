@@ -59,10 +59,14 @@ Out-of-bounds access is a runtime error rather than `nil` or a crash:
 ; => Error: store: index 5 out of bounds (length 3)
 ```
 
-`array-length` reports the size, and `arrayp` tests the type:
+`array-length*` reports the size, and `arrayp` tests the type. (The
+trailing `*` is the 0.3 substrate convention: a starred name is the
+direct per-type implementation behind a generic protocol — here
+`length` — and the bare protocol name is the one to reach for first.
+Chapter 4 covers protocols.)
 
 ```
-(array-length (array 4))
+(array-length* (array 4))
 ; => 4
 
 (arrayp (array 2))
@@ -70,12 +74,12 @@ Out-of-bounds access is a runtime error rather than `nil` or a crash:
 ```
 
 `lib/17-arrays.lisp` layers convenience functions on top of the four
-primitives (`array` / `fetch` / `store` / `array-length`):
+primitives (`array` / `fetch` / `store` / `array-length*`):
 
 - `array->list` / `list->array` — convert both directions.
-- `array-map` — return a new array with a function applied to every element.
+- `array-map*` — return a new array with a function applied to every element.
 - `array-fill` — set every slot to a value, mutating in place.
-- `array-copy` — a fresh array with the same contents.
+- `array-copy*` — a fresh array with the same contents.
 - `subarray` — a fresh array holding a sub-range.
 
 Growable vectors (push/pop-style resizing) are intentionally out of scope;
@@ -131,7 +135,7 @@ Other primitives and helpers:
 
 - `keys` — a list of a table's keys, in insertion order.
 - `hash-table-p` — type predicate.
-- `hash-table-count` — number of entries.
+- `hash-table-count*` — number of entries.
 - `maphash` — call `(fn key value)` for each entry; accepts `(maphash table
   fn)` or CL-style `(maphash fn table)`.
 - `hash->alist` / `alist->hash` — convert to/from an association list.
@@ -148,7 +152,7 @@ Other primitives and helpers:
 ## Strings
 
 Strings are built-in atoms (not lists of characters). `lib/14-strings.lisp`
-implements string operations on top of the Rust primitives `string-length`,
+implements string operations on top of the Rust primitives `string-length*`,
 `substring`, `char-code`, `code-char`, `string->number`, `number->string`,
 and `concat`.
 
@@ -156,7 +160,7 @@ and `concat`.
 (concat "foo" "bar")
 ; => "foobar"
 
-(string-length "hello")
+(string-length* "hello")
 ; => 5
 
 (substring "hello world" 0 5)
@@ -421,11 +425,10 @@ arrays:
 ```
 
 Also present: `first`/`rest`/`second`/`third` (aliases for `car`/`cdr`/
-`cadr`/`caddr`), `remove`, `count`/`count-if`, `copy-list`, `list-length`,
+`cadr`/`caddr`), `remove`, `count`/`count-if`, `copy-list*` and
+`list-length*` (the trailing `*` marks protocol substrate — the normative
+names are `copy` and `length`; CL's bare spellings are gone),
 `reverse` (extended to strings), `nreverse` (a non-destructive alias — Lamedh
 lists can't be reversed in place), `rem` (truncating remainder, contrast
 `mod`), and `defparameter` (a `defdynamic` alias for defining dynamic
 variables).
-
-`remhash`, already covered above, also lives in this file as the CL-named
-alias for `delete-key-bang`.

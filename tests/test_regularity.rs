@@ -197,7 +197,7 @@ fn stdlib_staples_0_3() {
     );
     assert_eq!(
         eval_line(
-            "(sort-by (list \"bb\" \"a\" \"ccc\") #'string-length #'>)",
+            "(sort-by (list \"bb\" \"a\" \"ccc\") #'string-length* #'>)",
             &e
         ),
         "(\"ccc\" \"bb\" \"a\")"

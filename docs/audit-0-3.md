@@ -18,7 +18,9 @@ stdlib definitions.
   are NEEDLE FIRST (`member/assoc/exists` — Lisp heritage, coherent as a
   class). `alist-get` is a container op (collection first) — both orders
   are correct under the convention; documented.
-- **Naming**: predicates end `-p`; mutators end `!`; conversions use `->`.
+- **Naming**: predicates end `-p`; mutators end `!`; conversions use `->`;
+  the monomorphic substrate behind a protocol carries a trailing `*`
+  (`string-length*`, `array-copy*`) — the bare name is the protocol.
 
 ## Findings: variadicity (→ batch 1)
 
@@ -41,7 +43,7 @@ stdlib definitions.
 | `fetch`/`aref`, `store`/`aset` | intentional aliases; keep |
 | `null` / `not` | same function (Lisp 1.5); keep |
 | `remp` | gone already (remprop canonical) ✔ |
-| `string-length`/`array-length` vs generic `length` | keep as *typed* specifics (length stays gradual-generic) |
+| `string-length*`/`array-length*` vs generic `length` | keep as *typed* specifics (length stays gradual-generic) |
 | `hash-count` | MISSING despite docs; `length` doesn't cover hash | extend `length` to hash tables |
 | `DECLARE-TYPED` vs `declare-type!` | different things, confusable names (forward decl vs axiom). Documented; rename deferred |
 | `DEFINE` vs `DEF` vs `DEFVAR` | DEFINE = Lisp 1.5 batch form; DEFVAR = DEFDYNAMIC alias; distinct, keep |
@@ -52,7 +54,7 @@ stdlib definitions.
 Already generic: `length` (list/string/array — NOT hash), `elt`
 (list/string/array), `reverse` (list/string), `record-ref` (any record).
 Missing: `length` on hash; generic `map`/`filter`/`reduce`/`for-each`
-(list-only today: mapcar/filter/reduce; array has array-map; hash has
+(list-only today: mapcar/filter/reduce; array has array-map*; hash has
 maphash) — one sequence story: results follow the input's kind
 (list→list, array→array, string→string; hash iterates (key . value)
 pairs).
@@ -69,7 +71,7 @@ list/array/string/hash/records; absence ERRORS, which is what lets every
 instance carry an honest result type — the lenient nil-on-miss reads
 keep their old names: `gethash`/`nth`/`elt`), **`put!`**
 (array/hash write, returns the value), **`copy`** (list/array/string/
-hash + the Lisp 1.5 structure copy as atom fallback; `copy-hash` was
+hash + the Lisp 1.5 structure copy as atom fallback; `copy-hash*` was
 MISSING entirely and is new). The type-prefixed names remain as the
 monomorphic substrate that instances dispatch to and compile through;
 the bare protocol names are the taught vocabulary.
@@ -104,7 +106,7 @@ schemes to declare (each verified against evaluator behavior first):
   the declared one? no — reverse is generic, stays gradual), `exists`,
   `every`, `notany`.
 - **String functions**: `substring : (-> (string int64 int64) string)`,
-  `string-length`, `string-upcase/downcase`, `string-index-of`,
+  `string-length*`, `string-upcase/downcase`, `string-index-of`,
   `string-split : (-> (string string) (list string))`, `concat` (native
   variadic rule: strings → string; verified concat rejects non-strings).
 - **Math library**: `sqrt/sin/cos/...` return `float64` (int args coerce —

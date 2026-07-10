@@ -825,7 +825,7 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayStore),
         );
         env.set(
-            "ARRAY-LENGTH".to_string(),
+            "ARRAY-LENGTH*".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
         env.set("$LENGTH".to_string(), LispVal::Builtin(BuiltinFunc::Length));
@@ -937,7 +937,7 @@ impl Environment {
 
         // Arrays (Lisp 1.5 Appendix A). The primitives existed and were
         // dispatched but were never bound to names; the manual documents
-        // ARRAY/FETCH/STORE/ARRAY-LENGTH, with MAKE-ARRAY/ARRAY-FETCH/ARRAY-STORE
+        // ARRAY/FETCH/STORE/ARRAY-LENGTH*, with MAKE-ARRAY/ARRAY-FETCH*/ARRAY-STORE*
         // as longer aliases.
         env.set(
             "ARRAY".to_string(),
@@ -952,7 +952,7 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayFetch),
         );
         env.set(
-            "ARRAY-FETCH".to_string(),
+            "ARRAY-FETCH*".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayFetch),
         );
         // Common-Lisp-style alias (issue #214): the typed JIT's elaborator
@@ -971,7 +971,7 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayStore),
         );
         env.set(
-            "ARRAY-STORE".to_string(),
+            "ARRAY-STORE*".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayStore),
         );
         env.set(
@@ -979,7 +979,7 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayStore),
         );
         env.set(
-            "ARRAY-LENGTH".to_string(),
+            "ARRAY-LENGTH*".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
         env.set("$LENGTH".to_string(), LispVal::Builtin(BuiltinFunc::Length));
@@ -1020,7 +1020,7 @@ impl Environment {
 
         // String operations (kernel primitives; the convenience layer is in Lisp)
         env.set(
-            "STRING-LENGTH".to_string(),
+            "STRING-LENGTH*".to_string(),
             LispVal::Builtin(BuiltinFunc::StringLength),
         );
         env.set(

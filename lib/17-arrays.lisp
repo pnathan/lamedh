@@ -1,7 +1,7 @@
 ;;; Array helpers — Lisp layer (issue #151, epic #141).
 ;;;
-;;; Built on the array primitives ARRAY (= MAKE-ARRAY), FETCH (= ARRAY-FETCH),
-;;; STORE (= ARRAY-STORE), and ARRAY-LENGTH. Growable vectors with push/pop are
+;;; Built on the array primitives ARRAY (= MAKE-ARRAY), FETCH (= ARRAY-FETCH*),
+;;; STORE (= ARRAY-STORE*), and ARRAY-LENGTH*. Growable vectors with push/pop are
 ;;; intentionally out of scope for now (deferred with the mutation decision,
 ;;; #114). STORE on an existing array is an allowed in-place mutation of the
 ;;; array cell (arrays are mutable; only cons aliasing is the concern).
@@ -19,17 +19,17 @@
   "Build a fresh array holding the elements of LST."
   ($list->array lst))
 
-(defun array-map (arr fn)
+(defun array-map* (arr fn)
   "Return a new array with FN applied to each element of ARR."
   (list->array (mapcar fn (array->list arr))))
 
 (defun array-fill (arr val)
   "Set every element of ARR to VAL; return ARR."
-  (let ((n (array-length arr)))
+  (let ((n (array-length* arr)))
     (for (i 0 (- n 1)) (store arr i val))
     arr))
 
-(defun array-copy (arr)
+(defun array-copy* (arr)
   "Return a fresh array with the same elements as ARR."
   (list->array (array->list arr)))
 

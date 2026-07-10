@@ -212,7 +212,7 @@ Stage 1 is built and tested (`src/jit.rs`, `src/jit/tests.rs`, `examples/typed_j
   surface-compatible inferable position today. This is the foundation the
   array/string element types (#137/#138) monomorphize on.
 - **Arrays & strings (#137/#138).** `(array T)` with the element type *inferred*
-  (`(array n)`/`(fetch a i)`/`(store a i v)`/`(array-length a)`); a string is
+  (`(array n)`/`(fetch a i)`/`(store a i v)`/`(array-length* a)`); a string is
   `(array char)`, so native byte indexing/scanning/compare (Levenshtein) emerges
   for free. The flat representation is a pointer to a `[len, e0, e1, …]` `u64`
   buffer rooted in the per-call **arena** on `Ctx` (one uniform buffer for every

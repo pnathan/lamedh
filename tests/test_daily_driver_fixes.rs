@@ -162,7 +162,7 @@ fn sequence_staples() {
     let env = env_with_stdlib();
     assert_eq!(eval_line("(remove 2 '(1 2 3 2))", &env), "(1 3)");
     assert_eq!(eval_line("(count 2 '(1 2 2 3))", &env), "2");
-    assert_eq!(eval_line("(copy-list '(1 2 3))", &env), "(1 2 3)");
+    assert_eq!(eval_line("(copy-list* '(1 2 3))", &env), "(1 2 3)");
     assert_eq!(eval_line("(subseq '(1 2 3 4) 1 3)", &env), "(2 3)");
     assert_eq!(eval_line("(subseq \"hello\" 1 3)", &env), "\"el\"");
     assert_eq!(eval_line("(elt \"abc\" 1)", &env), "\"b\"");

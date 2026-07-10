@@ -16,7 +16,7 @@ use lamedh::{eval_line, with_large_stack};
 fn oversized_typed_allocation_errors_instead_of_panicking() {
     let env = Environment::new_with_builtins();
     eval_line(
-        "(defun-typed (alloc-n int64) ((n int64)) (array-length (array n)))",
+        "(defun-typed (alloc-n int64) ((n int64)) (array-length* (array n)))",
         &env,
     );
     // Sanity: a normal size works.
@@ -35,7 +35,7 @@ fn oversized_typed_allocation_errors_instead_of_panicking() {
 fn negative_typed_allocation_size_errors_instead_of_panicking() {
     let env = Environment::new_with_builtins();
     eval_line(
-        "(defun-typed (alloc-n int64) ((n int64)) (array-length (array n)))",
+        "(defun-typed (alloc-n int64) ((n int64)) (array-length* (array n)))",
         &env,
     );
     let out = eval_line("(alloc-n -5)", &env);

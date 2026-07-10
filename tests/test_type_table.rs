@@ -29,7 +29,7 @@ fn schemes_flow_through_user_code() {
     assert_eq!(eval_line("(check-type (sqrt 4))", &e), "\"float64\"");
     // Conversions.
     assert_eq!(
-        eval_line("(check-type (string-length (princ-to-string 42)))", &e),
+        eval_line("(check-type (string-length* (princ-to-string 42)))", &e),
         "\"int64\""
     );
 }

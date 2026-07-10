@@ -171,7 +171,7 @@
 ;;; ---- #147 strings --------------------------------------------------------
 
 (deftest string-kernel
-  (assert-equal (string-length "hello") 5)
+  (assert-equal (string-length* "hello") 5)
   (assert-equal (substring "hello world" 0 5) "hello")
   (assert-equal (substring "hello" 2) "llo")
   (assert-equal (char-code "A") 65)
@@ -241,13 +241,13 @@
   (let ((h (make-hash-table)))
     (set-bang h 'a 1)
     (set-bang h 'b 2)
-    (assert-equal (hash-table-count h) 2)
+    (assert-equal (hash-table-count* h) 2)
     (assert-true  (has-key-p h 'a))
     (assert-false (has-key-p h 'z))
     (assert-equal (gethash-or h 'a 0) 1)
     (assert-equal (gethash-or h 'z 0) 0)
     (clrhash h)
-    (assert-equal (hash-table-count h) 0)))
+    (assert-equal (hash-table-count* h) 0)))
 
 ;;; ---- #149 conditions -----------------------------------------------------
 
@@ -293,10 +293,10 @@
 
 (deftest array-helpers
   (let ((a (list->array '(10 20 30))))
-    (assert-equal (array-length a) 3)
+    (assert-equal (array-length* a) 3)
     (assert-equal (fetch a 1) 20)
     (assert-equal (array->list a) '(10 20 30))
-    (assert-equal (array->list (array-map a #'add1)) '(11 21 31))
+    (assert-equal (array->list (array-map* a #'add1)) '(11 21 31))
     (assert-equal (array->list (subarray a 1 3)) '(20 30))
     (assert-equal (array->list (array-fill (array 2) 0)) '(0 0))))
 

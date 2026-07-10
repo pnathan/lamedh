@@ -46,7 +46,7 @@
 
 ;;; ---- strings and symbols ---------------------------------------------------
 
-(declare-type! 'string-length '(-> (string) int64))
+(declare-type! 'string-length* '(-> (string) int64))
 (declare-type! 'string-repeat '(-> (string int64) string))
 (declare-type! 'string-upcase '(-> (string) string))
 (declare-type! 'string-downcase '(-> (string) string))

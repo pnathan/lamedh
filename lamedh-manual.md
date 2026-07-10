@@ -1472,7 +1472,7 @@ current environment.
 (fetch a 0)                 ; => "zero"
 (fetch a 1)                 ; => 42
 
-(array-length a)            ; => 5
+(array-length* a)            ; => 5
 (arrayp a)                  ; => T
 ```
 
@@ -2288,7 +2288,7 @@ clone — creating a child frame is one refcount bump, not four.
 (array n)          ; create
 (store a i val)    ; set
 (fetch a i)        ; get
-(array-length a)   ; length
+(array-length* a)   ; length
 ```
 
 ### Property lists

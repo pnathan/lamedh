@@ -13,7 +13,7 @@
   (assert-equal (append nil '(a)) '(a))
   (assert-equal (append '(a) nil) '(a)))
 
-(deftest list-length-reverse
+(deftest list-length*-reverse
   (assert-equal (length '()) 0)
   (assert-equal (length '(a b c)) 3)
   (assert-equal (reverse '(1 2 3)) '(3 2 1))

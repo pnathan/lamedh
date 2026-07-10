@@ -113,7 +113,7 @@ fn test_list_to_array_large_list_under_low_eval_depth() {
     with_large_stack(|| {
         let e = env();
         let _guard = EvalDepthLimitGuard::set(64);
-        let expr = format!("(array-length (list->array {}))", quoted_number_list(128));
+        let expr = format!("(array-length* (list->array {}))", quoted_number_list(128));
         let v = eval_str(&expr, &e).unwrap();
         assert_eq!(v, lamedh::LispVal::Number(128));
     });

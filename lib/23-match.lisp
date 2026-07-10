@@ -36,8 +36,8 @@
 (defun $match-name-prefix-p (sym prefix)
   "T when SYM's print name starts with PREFIX."
   (let* ((s (princ-to-string sym))
-         (n (string-length prefix)))
-    (and (>= (string-length s) n)
+         (n (string-length* prefix)))
+    (and (>= (string-length* s) n)
          (equal (substring s 0 n) prefix))))
 
 (defun $match-var-p (p)

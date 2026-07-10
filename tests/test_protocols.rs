@@ -75,7 +75,7 @@ fn new_protocols_are_first_class() {
     eval_line("(defprotocol volume \"loudness of a thing\")", &e);
     eval_line("(definstance volume ((n int64)) int64 (* n 2))", &e);
     eval_line(
-        "(definstance volume ((s string)) int64 (string-length s))",
+        "(definstance volume ((s string)) int64 (string-length* s))",
         &e,
     );
     assert_eq!(eval_line("(volume 4)", &e), "8");
