@@ -168,3 +168,50 @@ fn variadic_operators_census_batch() {
     let out = eval_line("(check-type (min \"a\" \"b\"))", &e);
     assert!(out.contains("numeric"), "got: {out}");
 }
+
+#[test]
+fn stdlib_staples_0_3() {
+    // The census gap probe: sort-by, enumerate, frequencies, padding.
+    let e = env_with_stdlib();
+    assert_eq!(
+        eval_line("(enumerate (list 'a 'b 'c))", &e),
+        "((0 A) (1 B) (2 C))"
+    );
+    assert_eq!(eval_line("(enumerate (list 'a 'b) 1)", &e), "((1 A) (2 B))");
+    assert_eq!(
+        eval_line("(frequencies (list 'a 'b 'a 'a 'c 'b))", &e),
+        "((A . 3) (B . 2) (C . 1))"
+    );
+    assert_eq!(
+        eval_line("(check-type (frequencies (list 'a)))", &e),
+        "\"(list (pair symbol int64))\""
+    );
+    // sort-by: collection first (like sort); default key comparison #'<,
+    // optional predicate for other orders.
+    assert_eq!(
+        eval_line(
+            "(sort-by (list (list 3 'x) (list 1 'y) (list 2 'z)) #'car)",
+            &e
+        ),
+        "((1 Y) (2 Z) (3 X))"
+    );
+    assert_eq!(
+        eval_line(
+            "(sort-by (list \"bb\" \"a\" \"ccc\") #'string-length #'>)",
+            &e
+        ),
+        "(\"ccc\" \"bb\" \"a\")"
+    );
+    // Padding: never truncates, defaults to spaces.
+    assert_eq!(eval_line("(string-pad-left \"42\" 5)", &e), "\"   42\"");
+    assert_eq!(
+        eval_line("(string-pad-left \"42\" 5 \"0\")", &e),
+        "\"00042\""
+    );
+    assert_eq!(
+        eval_line("(string-pad-right \"ab\" 4 \".\")", &e),
+        "\"ab..\""
+    );
+    assert_eq!(eval_line("(string-pad-left \"hello\" 3)", &e), "\"hello\"");
+    assert_eq!(eval_line("(string-repeat \"ab\" 3)", &e), "\"ababab\"");
+}

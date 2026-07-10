@@ -184,6 +184,12 @@ holding the list of firsts and the list of seconds. (unzip (zip a b)) recovers
   "Return the list ((fn 0) (fn 1) ... (fn N-1))."
   (mapcar fn (iota n)))
 
+(defun enumerate (lst &optional start)
+  "Pair each element with its index: ((0 a) (1 b) ...). START (default 0)
+offsets the indices. Same two-element-list shape as ZIP."
+  (let ((from (if start start 0)))
+    (zip (iota (length lst) from) lst)))
+
 ;;; ---- partitioning / grouping ---------------------------------------------
 
 (defun partition (pred lst)
@@ -214,6 +220,18 @@ holding the list of firsts and the list of seconds. (unzip (zip a b)) recovers
   "Group elements of LST by (FN element); return an alist of (key . elements)
 with keys in first-seen order."
   (group-by-aux fn lst nil))
+
+(defun frequencies (lst)
+  "Count occurrences: an alist of (element . count), keys in first-seen
+order (EQUAL comparison, like GROUP-BY)."
+  (mapcar (lambda (cell) (cons (car cell) (length (cdr cell))))
+          (group-by #'identity lst)))
+
+(defun sort-by (lst keyfn &optional pred)
+  "Sort LST ascending by (KEYFN element); collection first, like SORT.
+PRED (default #'<) compares the extracted keys."
+  (let ((cmp (if pred pred #'<)))
+    (sort lst (lambda (a b) (funcall cmp (funcall keyfn a) (funcall keyfn b))))))
 
 ;;; ---- de-duplication / flattening -----------------------------------------
 

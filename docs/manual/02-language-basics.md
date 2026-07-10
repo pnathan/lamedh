@@ -347,6 +347,21 @@ so calls nest cleanly:
 with no explicit init seeds from the first element; pass an extra argument
 to fold from a given starting value instead.
 
+The same file supplies the everyday list toolkit: `take`/`drop`, `zip`/
+`unzip`, `iota`/`range`, `partition`, `group-by`, `flatten`,
+`remove-duplicates` — and, new in 0.3, `enumerate` (index/element pairs),
+`frequencies` (an `(element . count)` alist), and `sort-by`:
+
+```lisp
+(enumerate '(a b c))                      ; => ((0 A) (1 B) (2 C))
+(frequencies '(a b a a))                  ; => ((A . 3) (B . 1))
+(sort-by '((3 x) (1 y) (2 z)) #'car)      ; => ((1 Y) (2 Z) (3 X))
+```
+
+`sort-by` is collection-first like `sort` and takes an optional third
+argument to compare the extracted keys with something other than `#'<` —
+`(sort-by strings #'string-length #'>)` sorts longest-first.
+
 `#'` reads as `(function f)`, and `funcall`/`apply` invoke a function value
 directly:
 

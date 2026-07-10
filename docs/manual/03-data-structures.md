@@ -203,6 +203,11 @@ Also available: `ends-with-p`, `contains-p`, `string-index-of`,
 `equal`), and `reverse`/`subseq`/`elt` (from the CL-compat layer, below —
 these work on strings as well as lists).
 
+Padding (0.3) never truncates: `(string-pad-left "42" 5 "0")` is
+`"00042"`, `(string-pad-right "ab" 4)` is `"ab  "`, and both return the
+string unchanged when it is already wide enough. `string-repeat` is the
+building block: `(string-repeat "ab" 3)` is `"ababab"`.
+
 Case conversion and character classification accept either a one-character
 string or an integer code point:
 

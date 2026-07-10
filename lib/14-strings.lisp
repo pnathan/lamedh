@@ -186,3 +186,21 @@ value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
          (start (string-trim-left s 0 n))
          (end (string-trim-right s n)))
     (if (< start end) (substring s start end) "")))
+
+;;; ---- padding ---------------------------------------------------------------
+
+(defun string-repeat (s n)
+  "S concatenated with itself N times (\"\" when N <= 0)."
+  (if (< n 1) "" (concat s (string-repeat s (- n 1)))))
+
+(defun string-pad-left (s width &optional pad)
+  "Pad S on the LEFT to WIDTH using PAD (default \" \"): right-aligns.
+S is returned unchanged when it is already WIDTH or longer."
+  (let ((fill (- width (string-length s))))
+    (if (< fill 1) s (concat (string-repeat (if pad pad " ") fill) s))))
+
+(defun string-pad-right (s width &optional pad)
+  "Pad S on the RIGHT to WIDTH using PAD (default \" \"): left-aligns.
+S is returned unchanged when it is already WIDTH or longer."
+  (let ((fill (- width (string-length s))))
+    (if (< fill 1) s (concat s (string-repeat (if pad pad " ") fill)))))

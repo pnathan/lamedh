@@ -58,6 +58,18 @@ language. Sections below, roughly newest first.
   TAILS, return nil) is renamed **`map-tails`** — the bare name now means
   what every modern reader expects. Documented appendix deviation.
 
+## Stdlib staples
+
+Gap-probe additions (each follows its class's argument order):
+
+- `(sort-by lst keyfn [pred])` — sort by extracted key, collection first
+  like `sort`; `pred` (default `#'<`) compares keys.
+- `(enumerate lst [start])` — index/element pairs, `zip` shape.
+- `(frequencies lst)` — `(element . count)` alist, first-seen order;
+  typed `(forall (a) (-> ((list a)) (list (pair a int64))))`.
+- `(string-pad-left s width [pad])` / `string-pad-right` /
+  `(string-repeat s n)` — padding never truncates.
+
 ## Typed protocols
 
 ```lisp

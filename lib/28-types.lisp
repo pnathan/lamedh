@@ -41,10 +41,13 @@
 (declare-type! 'notany '(forall (a) (-> ((-> (a) bool) (list a)) bool)))
 (declare-type! 'list->array '(forall (a) (-> ((list a)) (array a))))
 (declare-type! 'array->list '(forall (a) (-> ((array a)) (list a))))
+(declare-type! 'frequencies '(forall (a) (-> ((list a)) (list (pair a int64)))))
+;; enumerate / sort-by / string-pad-* take &optional args -- honesty rule 2.
 
 ;;; ---- strings and symbols ---------------------------------------------------
 
 (declare-type! 'string-length '(-> (string) int64))
+(declare-type! 'string-repeat '(-> (string int64) string))
 (declare-type! 'string-upcase '(-> (string) string))
 (declare-type! 'string-downcase '(-> (string) string))
 (declare-type! 'string-split '(-> (string string) (list string)))
