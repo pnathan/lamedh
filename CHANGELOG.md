@@ -45,10 +45,15 @@ language. Sections below, roughly newest first.
 ## Sequence protocols: map and for-each
 
 - `(map coll fn)` — kind-preserving map as a protocol (list → list,
-  array → array); `(for-each coll fn)` visits for effect, with the hash
-  instance receiving `(fn key value)`. Collection FIRST (protocols
-  dispatch on their first argument — and it matches the container
-  convention). Extend either with `definstance`.
+  array → array, string → string); `(for-each coll fn)` visits for
+  effect over list/array/string/hash, with the hash instance receiving
+  `(fn key value)`. Collection FIRST (protocols dispatch on their first
+  argument — and it matches the container convention). Extend either
+  with `definstance`.
+- Ruled: `filter`/`reduce` stay list-specific and fn-first (the
+  `mapcar`/`every` heritage class); protocols dispatch on the first
+  argument, so protocolizing them would flip their argument order.
+  Convert at the edge (`array->list`, `string->list`) for other kinds.
 - **Breaking**: the Lisp 1.5 appendix's `map` (apply f to successive
   TAILS, return nil) is renamed **`map-tails`** — the bare name now means
   what every modern reader expects. Documented appendix deviation.

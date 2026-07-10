@@ -113,6 +113,12 @@ fn map_and_for_each_are_sequence_protocols() {
     );
     let out = eval_line("(check-type (map 5 #'1+))", &e);
     assert!(out.contains("no `MAP` instance for int64"), "got: {out}");
+    // Strings map to strings (kind preservation across all three kinds).
+    assert_eq!(eval_line("(map \"abc\" #'string-upcase)", &e), "\"ABC\"");
+    assert_eq!(
+        eval_line("(check-type (map \"ab\" #'string-upcase))", &e),
+        "\"string\""
+    );
     // for-each over lists and hash tables (key value pairs), for effect.
     assert_eq!(
         eval_line(
@@ -134,5 +140,16 @@ fn map_and_for_each_are_sequence_protocols() {
             &e
         ),
         "5"
+    );
+    // Strings visit per character (one-char strings, like string->list).
+    assert_eq!(
+        eval_line(
+            "(let ((acc (array 1)))
+               (store acc 0 \"\")
+               (for-each \"xyz\" (lambda (c) (store acc 0 (concat (fetch acc 0) c))))
+               (fetch acc 0))",
+            &e
+        ),
+        "\"xyz\""
     );
 }
