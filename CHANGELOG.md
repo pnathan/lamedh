@@ -1,10 +1,11 @@
-# v0.3.0
+# v0.3.0 — 2026-07-10
 
 condensation
 
-Everything from the v0.2.0 tag to here (83 commits). The headline: **one
-record definition form**, and a language that condenses — records, guards,
-processes, patterns, and the checker meeting in one story.
+Everything from the v0.2.0 tag to here. The headline: **one record
+definition form** over one type story — records, sums, HM generics,
+guards, processes, patterns, modules, and the checker meeting in one
+language. Sections below, roughly newest first.
 
 ## Records — one definition form (breaking)
 
