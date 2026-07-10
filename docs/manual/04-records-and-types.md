@@ -1031,7 +1031,7 @@ a class hierarchy to say it indirectly. Run either with `cargo run -- -i
 examples/npcs.lisp`, or check the whole file's checker verdicts at once
 with `(check-file! "examples/npcs.lisp")` under the `READ-FS` capability.
 
-## 4.17 Typed protocols: one name, many typed instances
+## 4.16 Typed protocols: one name, many typed instances
 
 `length` works on lists, strings, arrays, and hash tables — and on *your*
 types, because it is a **protocol**: a name with many typed instances,
