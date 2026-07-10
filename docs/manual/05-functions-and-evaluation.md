@@ -83,7 +83,91 @@ Combine `&rest` with `apply` to write variadic wrappers:
 ; => 10
 ```
 
-## 5.4 Closures
+## 5.4 Extended Parameter Lists: `&optional` and `&key`
+
+`defun` parameter lists also accept `&optional` and `&key` markers (0.3).
+This is `defun`-level sugar built on top of the `&rest` primitive from
+5.3, not new evaluator machinery: under the hood, an extended parameter
+list compiles to a variadic lambda plus a `let*` prologue that peels
+arguments off positionally.
+
+`&optional` marks parameters that may be omitted from the call. Each one
+is either a bare name (defaults to `nil` when omitted) or a
+`(name default-expr)` pair:
+
+```lisp
+(defun greet (name &optional (greeting "hi")) (concat greeting ", " name))
+(greet "Sam")
+; => "hi, Sam"
+(greet "Sam" "yo")
+; => "yo, Sam"
+```
+
+Default expressions are evaluated left to right and see earlier
+parameters already bound — the same scoping `let*` gives you, not `let`:
+
+```lisp
+(defun range-desc (lo &optional (hi (+ lo 10))) (list lo hi))
+(range-desc 5)
+; => (5 15)
+(range-desc 5 20)
+; => (5 20)
+```
+
+`&key` marks parameters passed by `:keyword` at the call site rather than
+positionally; they can appear in any order and, like `&optional`
+parameters, are either a bare name (default `nil`) or a
+`(name default-expr)` pair:
+
+```lisp
+(defun mk (w &key (h 10) label) (list w h label))
+(mk 5)
+; => (5 10 ())
+(mk 5 :h 20)
+; => (5 20 ())
+(mk 5 :label 'box)
+; => (5 10 BOX)
+(mk 5 :h 3 :label 'box)
+; => (5 3 BOX)
+```
+
+`label` above is just an ordinary parameter name — `&key` parameters live
+in their own namespace of `:keyword` call syntax, so it doesn't collide
+with the `label` special form from 5.14.
+
+`&rest` composes with both: it binds everything left over after the
+fixed and `&optional` parameters are consumed, including the raw
+`:keyword`/value plist that `&key` parameters read from:
+
+```lisp
+(defun show (a &key (b 1) &rest r) (list a b r))
+(show 1)
+; => (1 1 ())
+(show 1 :b 2)
+; => (1 2 (:B 2))
+(show 1 :b 2 :c 3)
+; => (1 2 (:B 2 :C 3))
+```
+
+Extended parameter lists are `defun`-only sugar: a bare `lambda` and
+`defmacro` still accept only `&rest` for variadic parameters, and reject
+`&optional`/`&key` with an error:
+
+```lisp
+((lambda (x &optional y) x) 1 2)
+; Error: &OPTIONAL is not supported in lambda parameter lists (only &REST is)
+```
+
+And because the expansion is variadic, a `defun` using `&optional` or
+`&key` stays on the dynamic tier from 5.7 — the quiet compile attempt
+doesn't try to type it:
+
+```lisp
+(see-type 'greet)
+; => (DYNAMIC "variadic or not a plain lambda")
+```
+
+## 5.5 Closures
 
 A lambda captures its enclosing lexical environment. Each call to a
 function that returns a lambda produces a fresh, independent closure over
@@ -106,7 +190,7 @@ its own bindings:
 `a` and `b` each close over their own `n`; mutating one (via `setq`, which
 mutates the captured binding, not a copy) never touches the other's.
 
-## 5.5 Higher-Order Style
+## 5.6 Higher-Order Style
 
 `lib/13-functional.lisp` and `lib/01-list.lisp` supply the usual toolkit,
 all function-first (predicate/function argument before the collection),
@@ -146,7 +230,7 @@ fixed leading arguments to a function; `complement` negates a predicate;
 `constantly` ignores its arguments and always returns a fixed value.
 `identity` (returns its argument unchanged) rounds out the set.
 
-## 5.6 `defun`, `defun*`, and `defun-typed`: One-Door Compilation
+## 5.7 `defun`, `defun*`, and `defun-typed`: One-Door Compilation
 
 Lamedh has three function-defining forms on one spectrum of typing
 effort, all inspectable with `see-type`.
@@ -225,7 +309,7 @@ call. `defun-typed` is disallowed inside a guard fence
 (`with-capabilities`/`sandboxed`) — sandboxed code can't request native
 compilation.
 
-## 5.7 `defmacro`: Templates and Hygiene
+## 5.8 `defmacro`: Templates and Hygiene
 
 A macro receives its arguments **unevaluated** and returns a new form
 that gets evaluated in its place. `defmacro` pairs naturally with
@@ -277,7 +361,7 @@ the classic macro hygiene problem:
 here can never collide with a symbol either the macro or the caller wrote
 literally.
 
-## 5.8 Fexprs: `defexpr`
+## 5.9 Fexprs: `defexpr`
 
 A fexpr is the classic Lisp 1.5 mechanism for user-defined special forms:
 when a fexpr is called, the evaluator does **not** evaluate the operands
@@ -321,9 +405,9 @@ into the caller's `let` bindings. Reach for `defmacro` when you're
 generating code at expansion time, `lambda`/`defun` for ordinary runtime
 abstraction, and `defexpr` only when you specifically want raw,
 unevaluated source with no compile-time expansion step. If you also need
-the caller's actual environment, use `vau` (5.9).
+the caller's actual environment, use `vau` (5.10).
 
-## 5.9 Kernel-Style `vau` Operatives
+## 5.10 Kernel-Style `vau` Operatives
 
 `vau` (also spelled `$vau`, following John Shutt's Kernel convention) is
 a fexpr that additionally receives the **caller's environment** as an
@@ -362,7 +446,7 @@ captures the current environment as a value, and `make-environment`
 builds a fresh one (optionally with a parent) — the raw material `vau`
 operatives manipulate.
 
-## 5.10 Dynamic Variables
+## 5.11 Dynamic Variables
 
 Lexical variables (from `let`, `lambda` parameters, `def`) resolve
 through the environment chain captured at closure-creation time. Dynamic
@@ -411,7 +495,7 @@ There's no separate `dynamic-let` form — the same `let` you already use
 for lexical bindings dynamically rebinds any symbol previously declared
 with `defdynamic`.
 
-## 5.11 The Evaluation Model
+## 5.12 The Evaluation Model
 
 Lamedh's evaluator recognizes a few categories of "things in operator
 position." They differ in one crucial way: what happens to the operand
@@ -431,7 +515,7 @@ it. Everything else on this table exists to escape that rule in a
 controlled way — a macro escapes it at expansion time, fexprs and `vau`
 escape it at call time.
 
-## 5.12 `eval`, `read`, and Code as Data
+## 5.13 `eval`, `read`, and Code as Data
 
 Lisp code is data (s-expressions) before it's a program, so you can build
 it, print it, and evaluate it programmatically. `read-from-string` parses
@@ -444,7 +528,7 @@ text into a form; `eval` evaluates a form:
 
 `eval` takes an optional second argument, the environment to evaluate
 in — that's what `vau` operatives use to run operands in the caller's
-scope (5.9); with no second argument, `eval` uses the global environment.
+scope (5.10); with no second argument, `eval` uses the global environment.
 
 `prin1-to-string` prints a form the way the reader could read it back
 (strings get their quotes); `princ-to-string` prints for human
@@ -462,10 +546,10 @@ consumption (no quotes on strings):
 Round-tripping code through `prin1-to-string` and `read-from-string`
 recovers the original structure — the basis for anything that generates,
 serializes, or introspects Lisp forms at runtime, including `macroexpand`
-(5.7) and `see-source`, which reconstructs the source form the evaluator
+(5.8) and `see-source`, which reconstructs the source form the evaluator
 registered for a lambda, fexpr, macro, or vau operative.
 
-## 5.13 `label`: Lisp 1.5 Self-Reference
+## 5.14 `label`: Lisp 1.5 Self-Reference
 
 `label` is the Lisp 1.5 heritage way to give a lambda a name usable
 *inside its own body*, without a separate `def` — useful for an

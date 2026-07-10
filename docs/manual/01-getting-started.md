@@ -117,9 +117,17 @@ SQUARE
 25
 ```
 
-`-s` can only be given once on the command line — it is not a repeatable
-flag. If you need several independent expressions, put them all in one
-`-s` string, or use `-i` (below) to load a file first.
+`-s` is repeatable (0.3): each string is evaluated in order, in one
+shared environment, so later strings see earlier definitions:
+
+```bash
+lamedh -s "(def x 5)" -s "(* x 2)"
+```
+
+```
+X
+10
+```
 
 ## 1.5 Scripts
 
