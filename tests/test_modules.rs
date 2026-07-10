@@ -104,3 +104,34 @@ fn quoted_data_is_not_rewritten() {
     // The quoted list keeps unqualified symbols.
     assert_eq!(eval_line("(geometry:tags)", &e), "(AREA HELPER)");
 }
+
+#[test]
+fn records_and_variants_define_inside_modules() {
+    let e = env();
+    eval_line(
+        "(with-module geometry
+           (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
+           (defrecord scene (items (list shape)))
+           (defun scene-area (sc)
+             (reduce #'+
+               (mapcar (lambda (s) (variant-case s (circle (r) (* 3 (* r r)))
+                                                   (rect (w h) (* w h))))
+                       (scene-items sc))
+               0)))",
+        &e,
+    );
+    // Constructors, predicates, accessors all qualify; the uniform
+    // MODULE:LOCAL spelling works even for prefix-generated names.
+    assert_eq!(
+        eval_line("(geometry:circle-r (geometry:circle 3))", &e),
+        "3"
+    );
+    assert_eq!(eval_line("(geometry:shape-p (geometry:rect 1 2))", &e), "T");
+    assert_eq!(
+        eval_line(
+            "(geometry:scene-area (geometry:make-scene (list (geometry:circle 2) (geometry:rect 3 4))))",
+            &e
+        ),
+        "24"
+    );
+}

@@ -81,30 +81,69 @@ deliberately conservative semantics)."
 (def $module-def-heads '(defun defun* defmacro defexpr defvau def defdynamic
                          defrecord defvariant))
 
-(defun $module-collect-defs (body)
-  "Names defined at the top level of BODY forms."
+(defun $module-zip-renames (from to)
+  (if (null from)
+      ()
+      (cons (cons (car from) (car to))
+            ($module-zip-renames (cdr from) (cdr to)))))
+
+(defun $module-form-defs (module form)
+  "Rename pairs (local . stored) for every name a top-level FORM defines --
+including the names DEFRECORD and DEFVARIANT generate (constructors,
+predicates, accessors, validators). Generated names are derived from the
+QUALIFIED brand (make-scene is stored as MAKE-SHAPES:SCENE), and the pair
+list is what maps the local spelling onto that."
+  (if (not (and (consp form)
+                (member (car form) $module-def-heads)
+                (symbolp (car (cdr form)))))
+      ()
+      (let* ((name (car (cdr form)))
+             (qname ($module-qualify module name)))
+        (cond
+          ((eq (car form) 'defrecord)
+           (let* ((specs (mapcar #'record-normalize-field-spec
+                                 (filter (lambda (p) (not (record-section-p p)))
+                                         (cdr (cdr form)))))
+                  (fields (condense-field-names specs)))
+             (cons (cons name qname)
+                   ($module-zip-renames (record-generated name fields)
+                                        (record-generated qname fields)))))
+          ((eq (car form) 'defvariant)
+           ;; Constructor names are the spec heads; they qualify too, so the
+           ;; stored names derive from the QUALIFIED heads (shapes:circle,
+           ;; shapes:circle-p, shapes:circle-r ...).
+           (let* ((ctor-specs (mapcar #'$variant-normalize-ctor (cdr (cdr form))))
+                  (qspecs (mapcar (lambda (spec)
+                                    (cons ($module-qualify module (car spec))
+                                          (cdr spec)))
+                                  ctor-specs)))
+             (cons (cons name qname)
+                   ($module-zip-renames ($variant-generated name ctor-specs)
+                                        ($variant-generated qname qspecs)))))
+          (t (list (cons name qname)))))))
+
+(defun $module-collect-defs (module body)
+  "Rename alist for the names BODY defines (generated names included)."
   (reduce #'append
-          (mapcar (lambda (form)
-                    (if (and (consp form)
-                             (member (car form) $module-def-heads)
-                             (symbolp (car (cdr form))))
-                        (list (car (cdr form)))
-                        ()))
-                  body)
+          (mapcar (lambda (f) ($module-form-defs module f)) body)
           nil))
 
-(defun $module-rewrite (form module locals)
-  "Qualify references to module-LOCAL names. QUOTE/QUASIQUOTE untouched."
+(defun $module-merge-renames (old new)
+  "Append NEW rename pairs whose local spelling is not already mapped."
+  (append old
+          (filter (lambda (p) (null (assoc (car p) old))) new)))
+
+(defun $module-rewrite (form module renames)
+  "Apply the module RENAMES alist to references. QUOTE/QUASIQUOTE untouched."
   (cond
     ((symbolp form)
-     (if (and (member form locals) (not ($module-qualified-p form)))
-         ($module-qualify module form)
-         form))
+     (let ((hit (assoc form renames)))
+       (if (and hit (not ($module-qualified-p form))) (cdr hit) form)))
     ((not (consp form)) form)
     ((eq (car form) 'quote) form)
     ((eq (car form) 'quasiquote) form)
-    (t (cons ($module-rewrite (car form) module locals)
-             ($module-rewrite (cdr form) module locals)))))
+    (t (cons ($module-rewrite (car form) module renames)
+             ($module-rewrite (cdr form) module renames)))))
 
 (defvau with-module (x e)
   "(WITH-MODULE name form...) -- evaluate FORMs with definitions and
@@ -114,20 +153,27 @@ the same module. Caveat: qualification is name-based, so avoid reusing a
 module function's name as an inner binding inside the module body."
   (let* ((module (car x))
          (body (cdr x))
-         (defined ($module-collect-defs body))
-         (locals (condense-append-new (getp module "module.locals") defined)))
+         (defined ($module-collect-defs module body))
+         (renames ($module-merge-renames (getp module "module.locals") defined)))
     (if (module-p module) () (eval (list 'defmodule module) e))
-    (putp module "module.locals" locals)
+    (putp module "module.locals" renames)
     (let ((result ()))
       (mapc (lambda (form)
-              (setq result (eval ($module-rewrite form module locals) e)))
+              (setq result (eval ($module-rewrite form module renames) e)))
             body)
-      (mapc (lambda (n)
-              (let ((q ($module-qualify module n)))
-                (putp q "module" module)
-                (putp module "module.functions"
-                      (condense-append-new (getp module "module.functions")
-                                           (list q)))))
+      (mapc (lambda (pair)
+              ;; Uniform outside spelling: generated names whose stored form
+              ;; embeds the qualified brand (MAKE-SHAPES:SCENE) also get the
+              ;; MODULE:LOCAL alias (SHAPES:MAKE-SCENE), so callers qualify
+              ;; every module name the same way.
+              (let ((uniform ($module-qualify module (car pair))))
+                (if (eq uniform (cdr pair))
+                    ()
+                    (set uniform (eval (cdr pair) e))))
+              (putp (cdr pair) "module" module)
+              (putp module "module.functions"
+                    (condense-append-new (getp module "module.functions")
+                                         (list (cdr pair)))))
             defined)
       result)))
 
