@@ -55,6 +55,23 @@ impl Cx<'_> {
     fn fresh(&self) -> Ty {
         self.infer.borrow_mut().fresh()
     }
+
+    /// A resolved operand type the EVALUATOR would reject for arithmetic /
+    /// numeric comparison (#322): known non-numerics fail the check early;
+    /// variables and Any stay gradual. Char is numeric (byte arithmetic).
+    fn known_non_numeric(w: &Ty) -> bool {
+        matches!(
+            w,
+            Ty::Str
+                | Ty::Symbol
+                | Ty::Bool
+                | Ty::List(_)
+                | Ty::Pair(_, _)
+                | Ty::Record(_, _)
+                | Ty::Struct(_)
+                | Ty::Variant(_)
+        )
+    }
     /// Unify two types, extending the substitution (or report the clash).
     pub(super) fn unify(&self, a: &Ty, b: &Ty) -> Result<(), String> {
         self.infer.borrow_mut().unify(a, b)
@@ -97,6 +114,7 @@ impl Cx<'_> {
             // Checker-only literals (#162): a boxed string is `string`, `nil`/`()`
             // is an empty list of some element type. The codegen path rejects them.
             LispVal::String(_) if self.checking => Ok((Core::LitI(0), Ty::Str)),
+            LispVal::Char(_) if self.checking => Ok((Core::LitI(0), Ty::Char)),
             LispVal::Nil if self.checking => Ok((Core::LitI(0), Ty::List(Box::new(self.fresh())))),
             LispVal::Cons { .. } => {
                 let items = list_to_vec(form);
@@ -245,7 +263,16 @@ impl Cx<'_> {
             acc = Core::Bin(num.into(), bop, Box::new(acc), Box::new(b));
         }
         if self.checking {
-            return Ok((Core::LitI(0), self.walk(&ty)));
+            let w = self.walk(&ty);
+            // #322: the evaluator rejects non-numeric operands at runtime;
+            // reject the KNOWN cases statically ((+ "a" "b") was `string`).
+            if Self::known_non_numeric(&w) {
+                return Err(format!(
+                    "`{op}` expects numeric operands, got {}",
+                    super::ty_name(&w)
+                ));
+            }
+            return Ok((Core::LitI(0), w));
         }
         Ok((acc, ty))
     }
@@ -269,8 +296,16 @@ impl Cx<'_> {
                 self.walk(&tb)
             ));
         }
-        // Checker mode: comparison is `bool` regardless of the operand kind.
+        // Checker mode: comparison is `bool`; known non-comparable operand
+        // kinds are rejected like the evaluator would at runtime (#322).
         if self.checking {
+            let w = self.walk(&ta);
+            if Self::known_non_numeric(&w) {
+                return Err(format!(
+                    "`{op}` expects comparable (numeric or char) operands, got {}",
+                    super::ty_name(&w)
+                ));
+            }
             return Ok((Core::LitI(0), Ty::Bool));
         }
         let rt = self

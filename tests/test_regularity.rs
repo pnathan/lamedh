@@ -104,3 +104,23 @@ fn defun_supports_optional_and_key_parameters() {
     );
     assert_eq!(eval_line("(h 1 2 :c 9)", &e), "(1 2 (:C 9) 9)");
 }
+
+#[test]
+fn checker_demands_numeric_arithmetic() {
+    let e = env_with_stdlib();
+    // #322: known non-numerics rejected statically, like the evaluator would
+    // at runtime.
+    let out = eval_line("(check-type (+ \"a\" \"b\"))", &e);
+    assert!(out.contains("expects numeric operands"), "got: {out}");
+    let out = eval_line("(check-type (< \"x\" \"y\"))", &e);
+    assert!(out.contains("comparable"), "got: {out}");
+    // Char arithmetic and comparison are evaluator-legal: allowed.
+    assert_eq!(eval_line("(check-type (+ 'a' 'b'))", &e), "\"char\"");
+    assert_eq!(eval_line("(check-type (< 'a' 'b'))", &e), "\"bool\"");
+    // Polymorphic code is untouched — no scheme churn.
+    eval_line("(defun sq (x) (* x x))", &e);
+    assert_eq!(
+        eval_line("(see-type 'sq)", &e),
+        "(CHECKED (FORALL (A) (-> (A) A)))"
+    );
+}

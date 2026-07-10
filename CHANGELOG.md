@@ -102,6 +102,13 @@ processes, patterns, and the checker meeting in one story.
   toplevel errors format exactly as before. Host API:
   `lamedh::format_error_with_backtrace`.
 
+## Checker honesty
+
+- Arithmetic and comparisons reject KNOWN non-numeric operands statically
+  (`(+ "a" "b")` used to check as `string`); char arithmetic and char
+  comparisons stay legal (evaluator parity), variables and `any` stay
+  gradual — no scheme changes. Char literals now check as `char`.
+
 ## Modules
 
 ```lisp
