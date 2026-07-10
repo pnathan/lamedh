@@ -62,6 +62,23 @@ pairs).
 over list/array/string; `for-each` visits list/array/string/hash (hash
 gets `(fn key value)`).
 
+✔ Access protocols (Paul's "functions with type names built in"
+observation, post-census): the remaining cross-type duplicate operations
+are unified as protocols — **`ref`** (strict read at index/key over
+list/array/string/hash/records; absence ERRORS, which is what lets every
+instance carry an honest result type — the lenient nil-on-miss reads
+keep their old names: `gethash`/`nth`/`elt`), **`put!`**
+(array/hash write, returns the value), **`copy`** (list/array/string/
+hash + the Lisp 1.5 structure copy as atom fallback; `copy-hash` was
+MISSING entirely and is new). The type-prefixed names remain as the
+monomorphic substrate that instances dispatch to and compile through;
+the bare protocol names are the taught vocabulary.
+
+**Ruling — `char-code` vs `char->code`: keep both.** Probed: not
+duplicates — `char-code` is the strict kernel primitive (string-only),
+`char->code` the coercing wrapper (char, one-char string, or int
+passthrough). Same relationship as `parse-integer` vs `string->number`.
+
 **Ruling — `filter`/`reduce` stay list-specific, fn-first.** They belong
 to the fn-first heritage class (`mapcar`/`mapc`/`every`/`exists`), and
 protocols dispatch on the FIRST argument, so protocolizing them would

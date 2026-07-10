@@ -193,3 +193,64 @@ instance calls (fn key value).")
   (progn (maphash h f) ()))
 (definstance for-each ((s string) (f (-> (string) b))) any
   (progn (mapc f (string->list s)) ()))
+
+;;; ---- ref, put!, copy: the access protocols ----------------------------------
+;;;
+;;; One vocabulary over the per-type access zoo (fetch/gethash/nth/elt/
+;;; record-ref; store/sethash; copy-list/array-copy). All collection
+;;; FIRST. REF is STRICT -- an absent index or key is an ERROR, which is
+;;; what lets every instance carry an honest result type (the lenient
+;;; nil-on-miss reads keep their old names: gethash, nth, elt).
+
+(defun $ref-nth (xs i)
+  (cond ((null xs) (error "REF: list index out of bounds"))
+        ((= i 0) (car xs))
+        (t ($ref-nth (cdr xs) (- i 1)))))
+
+(defun ref (c k)
+  "Strict read of C at index/key K (this pre-protocol binding handles
+records, by brand, as the fallback instance)."
+  (if (record-brand c)
+      (record-ref c k)
+      (error (concat "no REF instance for " (princ-to-string c)))))
+
+(defprotocol ref
+  "Strict read at an index or key: (ref coll k). Absence is an error;
+use gethash/nth/elt when nil-on-miss is wanted. Records read by field
+name. Extend with DEFINSTANCE.")
+
+(definstance ref ((xs (list a)) (i int64)) a
+  (if (< i 0) (error "REF: list index out of bounds") ($ref-nth xs i)))
+(definstance ref ((arr (array a)) (i int64)) a
+  (fetch arr i))
+(definstance ref ((s string) (i int64)) string
+  (if (and (>= i 0) (< i (string-length s)))
+      (substring s i (+ i 1))
+      (error "REF: string index out of bounds")))
+(definstance ref ((h hash) (k any)) any
+  (if (has-key-p h k)
+      (gethash h k)
+      (error (concat "REF: missing key " (princ-to-string k)))))
+
+(defprotocol put!
+  "Write V at index/key K: (put! coll k v) => V. Arrays and hash tables
+(the mutable containers); records are values -- use record-with.")
+
+(definstance put! ((arr (array a)) (i int64) (v a)) a
+  (store arr i v))
+(definstance put! ((h hash) (k any) (v any)) any
+  (progn (sethash h k v) v))
+
+;;; COPY: the pre-protocol binding (lib/01's Lisp 1.5 structure copy,
+;;; atoms pass through) becomes the fallback; instances give each kind a
+;;; typed scheme. Conses are immutable, so the list copy is shallow with
+;;; no observable difference; strings are immutable, so copy is identity.
+
+(defprotocol copy
+  "A copy of a collection: (copy x). Fresh array/hash/list; identity on
+immutable strings and atoms. Extend with DEFINSTANCE.")
+
+(definstance copy ((xs (list a))) (list a) (copy-list xs))
+(definstance copy ((arr (array a))) (array a) (array-copy arr))
+(definstance copy ((s string)) string s)
+(definstance copy ((h hash)) any (copy-hash h))

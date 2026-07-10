@@ -70,6 +70,26 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## Access protocols: ref, put!, copy
+
+One vocabulary over the per-type access zoo, all collection first:
+
+- `(ref coll k)` — strict read at an index/key/field: lists, arrays,
+  strings, hash tables, and records (by brand, via the fallback).
+  **Absence is an ERROR**, which is what lets every instance carry an
+  honest result type (`(check-type (ref (list 1 2) 0))` is `int64`);
+  the lenient nil-on-miss reads keep their old names (`gethash`, `nth`,
+  `elt`). A known type with no instance is a static error.
+- `(put! coll k v)` — write, returns `v`: arrays and hash tables (the
+  mutable containers; records are values — `record-with`).
+- `(copy x)` — fresh list/array/hash (**`copy-hash` was missing
+  entirely and is new**), identity on immutable strings, Lisp 1.5
+  structure-copy fallback for atoms.
+- The type-prefixed names (`fetch`, `store`, `array-copy`, ...) remain
+  as the monomorphic substrate the instances dispatch to and compile
+  through. Ruled: `char-code` (strict kernel) vs `char->code` (coercing
+  wrapper) are not duplicates; both stay.
+
 ## Dotted pairs in the checker
 
 - `(cons 'k 2)` now types as `(pair symbol int64)` instead of erroring:
