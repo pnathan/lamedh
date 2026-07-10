@@ -16,6 +16,7 @@ is closed by default. This manual covers the language as of version 0.3.0.
 | [7. Sandboxing, Guards, and Concurrency](07-sandbox-guards-concurrency.md) | Capabilities, fuel, fences, `spawn`, channels |
 | [8. Patterns and Metaprogramming](08-patterns-and-metaprogramming.md) | `match`, `sgrep`, `rewrite`, the rulebook, the change plane |
 | [9. The Typed JIT and Embedding](09-jit-and-embedding.md) | Execution tiers, compilation, hosting Lamedh from Rust |
+| [10. Modules](10-modules.md) | `defmodule`, `with-module`, `import`, module introspection, capability provision |
 
 Conventions used throughout: REPL results are shown as `; => result`
 comments; commands that need sandbox capabilities show the full command
