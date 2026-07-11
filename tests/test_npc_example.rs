@@ -13,11 +13,11 @@ fn env_with_npcs() -> lamedh::Shared<lamedh::environment::Environment> {
 fn specialized_greet_dispatches_per_kind_from_one_call_site() {
     let env = env_with_npcs();
     assert_eq!(
-        eval_line("(method 'greet (make-goblin \"Grix\" 7 9))", &env),
+        eval_line("(greet (make-goblin \"Grix\" 7 9))", &env),
         "\"Grix sharpens a rusty dagger and cackles.\""
     );
     assert_eq!(
-        eval_line("(method 'greet (make-wisp \"Sel\" 3 0.8))", &env),
+        eval_line("(greet (make-wisp \"Sel\" 3 0.8))", &env),
         "\"Sel flickers softly in the gloom.\""
     );
 }
@@ -26,40 +26,28 @@ fn specialized_greet_dispatches_per_kind_from_one_call_site() {
 fn shared_damage_logic_is_written_once_and_works_for_every_kind() {
     let env = env_with_npcs();
     assert_eq!(
-        eval_line(
-            "(npc-hp (method 'damage (make-goblin \"Grix\" 7 9) 5))",
-            &env
-        ),
+        eval_line("(npc-hp (damage (make-goblin \"Grix\" 7 9) 5))", &env),
         "2"
     );
     assert_eq!(
         eval_line(
-            "(npc-hp (method 'damage (make-merchant \"Oleander\" 12 240) 5))",
+            "(npc-hp (damage (make-merchant \"Oleander\" 12 240) 5))",
             &env
         ),
         "7"
     );
     // Floors at zero (the shared HIT-POINTS-AFTER), and the invariant holds.
     assert_eq!(
-        eval_line(
-            "(npc-hp (method 'damage (make-wisp \"Sel\" 3 0.8) 5))",
-            &env
-        ),
+        eval_line("(npc-hp (damage (make-wisp \"Sel\" 3 0.8) 5))", &env),
         "0"
     );
     assert_eq!(
-        eval_line(
-            "(validate-wisp (method 'damage (make-wisp \"Sel\" 3 0.8) 5))",
-            &env
-        ),
+        eval_line("(validate-wisp (damage (make-wisp \"Sel\" 3 0.8) 5))", &env),
         "T"
     );
     // Damage preserves the kind: the result still speaks in its own voice.
     assert_eq!(
-        eval_line(
-            "(method 'greet (method 'damage (make-goblin \"Grix\" 7 9) 3))",
-            &env
-        ),
+        eval_line("(greet (damage (make-goblin \"Grix\" 7 9) 3))", &env),
         "\"Grix sharpens a rusty dagger and cackles.\""
     );
 }
@@ -76,20 +64,17 @@ fn shared_methods_carry_inferred_row_schemes() {
 }
 
 #[test]
-fn conformance_is_verified_and_honestly_graded() {
+fn conformance_is_verified_over_protocols() {
     let env = env_with_npcs();
-    let report = eval_line("(implements? 'goblin 'npc)", &env);
-    assert!(report.starts_with("(T"), "got: {report}");
-    // DAMAGE is proved by row unification against the declared signature...
-    assert!(report.contains("(DAMAGE CONFORMS"), "got: {report}");
-    // ...and GREET too, as of the 0.3 census: CONCAT has a checker-native
-    // rule (variadic strings -> string), so the whole method row derives.
-    assert!(report.contains("(GREET CONFORMS"), "got: {report}");
-    // The load-time IMPLEMENTS! assertions recorded the claims.
+    // The load-time IMPLEMENTS! assertions passed; re-assert here.
     assert_eq!(
-        eval_line("(getp 'wisp \"interface.implements\")", &env),
-        "(NPC)"
+        eval_line("(implements! 'goblin 'greet 'damage)", &env),
+        "((GREET . INSTANCE) (DAMAGE . INSTANCE))"
     );
+    assert_eq!(eval_line("(implements-p 'wisp 'greet 'damage)", &env), "T");
+    // A kind with no instances does not conform.
+    eval_line("(defrecord statue (name string) (hp int64))", &env);
+    assert_eq!(eval_line("(implements-p 'statue 'greet)", &env), "()");
 }
 
 #[test]

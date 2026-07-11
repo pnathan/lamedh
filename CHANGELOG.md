@@ -70,6 +70,21 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## One dispatch system (breaking)
+
+- **Removed: `definterface`, `implements?`, `method`, `method-symbol`**
+  and the whole lib/21-interfaces layer (row-aware signature unifier,
+  fingerprinted claims). Two dispatch mechanisms was one too many:
+  `defprotocol`/`definstance` is the survivor.
+- The conformance value lives on, re-seated on protocols:
+  `(implements! type protocol...)` asserts that TYPE carries a clean
+  instance of every named protocol (graded INSTANCE / MISMATCH — the
+  implementation's checker verdict is a type error / MISSING), and
+  `implements-p` is the predicate form. A "contract" is a set of
+  protocol names.
+- `examples/npcs.lisp` and `examples/oo-patterns.lisp` rewritten to
+  protocols; identical output, less machinery.
+
 ## HOF protocols are function-first (breaking)
 
 - Ruled: higher-order functions follow the CL convention — FUNCTION

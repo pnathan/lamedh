@@ -91,7 +91,7 @@ Keep new host-facing side effects capability-gated.
 
 ## Standard Library (`lib/`)
 
-The embedded standard library is loaded by `Environment::with_stdlib()` from the compile-time `STDLIB` list in `src/lib.rs`. Since the rows port (#297 step 0), `20-condensation.lisp` and `21-interfaces.lisp` are embedded like the rest.
+The embedded standard library is loaded by `Environment::with_stdlib()` from the compile-time `STDLIB` list in `src/lib.rs`. Since the rows port (#297 step 0), `20-condensation.lisp` is embedded like the rest (`21-interfaces.lisp` was removed in 0.3 — protocols are the one dispatch system).
 
 Notable modules:
 
@@ -106,10 +106,11 @@ Notable modules:
 - `19-call-graph.lisp`: call graph analysis.
 - `20-condensation.lisp`: condensation layer — **`defrecord`**, THE record definition form (0.3): `(defrecord Name (field type)... [(:invariant ...)] [(:derive equality|printer|lens ...)])` defines a branded, checker-denotable, nominal, row-subsumable type over one runtime representation (StructObj), tier-dispatched (all-native fields compile via the internal `defstruct-typed` machinery; anything else gets dynamic constructor/accessors with lockstep-declared branded schemes). Generates `make-Name`, `Name-p`, `Name-field`, `validate-Name`; values are read generically with `record-ref` and updated with `record-with`; every record flows through row-polymorphic functions naming a subset of its fields. Also the `derive` form and the sexpr change plane (`edit!`, `condense-trace`). `defconcept` and untyped `defstruct` were removed in 0.3 (see CHANGELOG.md); `defstruct-typed` survives only as internal machinery.
 - `21-cl-compat.lisp`: Common Lisp compatibility forms such as `setf`, `push`, `pop`, `incf`, `decf`, `subseq`, and `elt`.
-- `21-interfaces.lisp`: Go-style method sets with checker-verified conformance and a row-aware unifier (`definterface`, `implements?`/`implements!`).
 - `22-guard.lisp`: guard fences — `with-fuel`, `with-capabilities`, `sandboxed`, capability manifests (`capabilities-needed`).
 - `23-match.lisp`: structural pattern language — `pat-match`, `match`, `destructuring-bind`, `sgrep`/`sgrep-file`, `rewrite`.
 - `24-rules.lisp`: the rulebook optimizer — `defrule`/`list-rules`/`apply-rules` feeding `optimize-form`.
+- `25-variants.lisp` through `28-types.lisp`: sums (`defvariant`/`variant-case`, Option/Result), instrumentation (`trace`/`time`/`step-count`), modules (`defmodule`), and the declared type table.
+- `29-protocols.lisp`: THE dispatch system — typed protocols (`defprotocol`/`definstance`, dispatch-position aware, fn-first HOFs like `map`) plus conformance (`implements!`/`implements-p`).
 - `97-doc-renderer.lisp`, `98-help-system.lisp`, `99-help-data.lisp`: REPL help/documentation.
 
 `defun*` is the recommended default function definition form when HM-style type inference should be attempted automatically. It falls back silently to a plain lambda when types are ambiguous. Use `defun` when type inference should not run.

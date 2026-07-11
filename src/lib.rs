@@ -190,7 +190,6 @@
 //! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
 //! | `20-condensation.lisp` | Condensation: `DEFCONCEPT`/`DERIVE`/laws/examples, row concepts with branded field access, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`) |
 //! | `21-cl-compat.lisp` | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
-//! | `21-interfaces.lisp` | Go-style method sets with checker-verified conformance and a row-aware unifier: `DEFINTERFACE`, `IMPLEMENTS?`/`IMPLEMENTS!`, `METHOD` |
 //! | `22-guard.lisp` | Guard fences (#284) + capability processes (#140): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `CAPABILITIES-NEEDED`, `SPAWN`/`SPAWN*`/`AWAIT` |
 //! | `23-match.lisp` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
 //! | `24-rules.lisp` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
@@ -198,7 +197,7 @@
 //! | `26-instrument.lisp` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
 //! | `27-modules.lisp` | Modules: `DEFMODULE`/`WITH-MODULE`/`IMPORT`, `MODULE:SYMBOL` names, custom capabilities |
 //! | `28-types.lisp` | The type table: verified declared schemes for builtins and stdlib functions |
-//! | `29-protocols.lisp` | Typed protocols: `DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances (LENGTH pilot) |
+//! | `29-protocols.lisp` | THE dispatch system: typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances) + conformance (`IMPLEMENTS!`/`IMPLEMENTS-P`) |
 //! | `97-doc-renderer.lisp` | REPL documentation renderer |
 //! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | Structured documentation database for all built-ins |
@@ -1695,10 +1694,6 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     (
         "21-cl-compat.lisp",
         include_str!("../lib/21-cl-compat.lisp"),
-    ),
-    (
-        "21-interfaces.lisp",
-        include_str!("../lib/21-interfaces.lisp"),
     ),
     ("22-guard.lisp", include_str!("../lib/22-guard.lisp")),
     ("23-match.lisp", include_str!("../lib/23-match.lisp")),
