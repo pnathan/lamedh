@@ -88,10 +88,10 @@ fn strategy_selects_algorithm_at_runtime() {
 fn composite_dispatches_uniformly_over_a_recursive_tree() {
     let env = env_with_patterns();
     // A group of {disc 2 -> 12, disc 3 -> 27, group{disc 1 -> 3, disc 1 -> 3}
-    // -> 6} totals 45 through one (method 'area ...) call site.
-    assert_eq!(eval_line("(method 'area *scene*)", &env), "45");
+    // -> 6} totals 45 through one (area ...) call site.
+    assert_eq!(eval_line("(area *scene*)", &env), "45");
     // The leaf and composite are reached uniformly.
-    assert_eq!(eval_line("(method 'area (make-disc 4))", &env), "48");
+    assert_eq!(eval_line("(area (make-disc 4))", &env), "48");
 }
 
 #[test]

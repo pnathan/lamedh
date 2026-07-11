@@ -1,163 +1,77 @@
+//! ONE dispatch system (0.3, Paul's ruling: "only one can live").
+//! `definterface`/`implements?`/`method` are gone; `defprotocol` owns
+//! dispatch, and conformance is `implements!`/`implements-p` over
+//! protocol instances — graded by the checker's verdict on each
+//! instance's implementation.
+
 mod test_helpers;
 
 use lamedh::eval_line;
 use test_helpers::env_with_stdlib;
 
 #[test]
-fn typed_method_conforms_by_unification() {
+fn the_old_interface_system_is_gone() {
     let env = env_with_stdlib();
+    for gone in ["definterface", "implements?", "method", "method-symbol"] {
+        let out = eval_line(&format!("(boundp '{gone})"), &env);
+        assert_eq!(out, "()", "{gone} should be unbound, got: {out}");
+    }
+}
+
+#[test]
+fn implements_asserts_protocol_conformance() {
+    let env = env_with_stdlib();
+    eval_line("(defrecord goblin2 (name string) (hp int64))", &env);
+    eval_line("(defprotocol greet2 \"voice\")", &env);
     eval_line(
-        "(definterface counter (:ops ((bump (-> (self) self)))))",
+        "(definstance greet2 ((self goblin2)) string (goblin2-name self))",
         &env,
     );
-    eval_line(
-        "(defun-typed (int64-bump int64) ((self int64)) (+ self 1))",
-        &env,
-    );
-    let report = eval_line("(implements? 'int64 'counter)", &env);
-    assert!(report.starts_with("(T"), "got: {report}");
-    assert!(
-        report.contains("(BUMP CONFORMS INT64-BUMP"),
-        "got: {report}"
-    );
-    assert_eq!(eval_line("(method 'bump 5)", &env), "6");
-    // The explicit assertion records the claim on both sides.
-    eval_line("(implements! 'int64 'counter)", &env);
+    // Conformance to a contract = clean instances for every named protocol.
+    assert_eq!(eval_line("(implements-p 'goblin2 'greet2)", &env), "T");
     assert_eq!(
-        eval_line("(getp 'int64 \"interface.implements\")", &env),
-        "(COUNTER)"
+        eval_line("(implements! 'goblin2 'greet2)", &env),
+        "((GREET2 . INSTANCE))"
     );
+    // A protocol with no instance for the brand is MISSING and fails.
+    eval_line("(defprotocol render2 \"draw\")", &env);
+    assert_eq!(eval_line("(implements-p 'goblin2 'render2)", &env), "()");
+    let out = eval_line("(implements! 'goblin2 'greet2 'render2)", &env);
+    assert!(out.contains("RENDER2 . MISSING"), "got: {out}");
 }
 
 #[test]
-fn wrong_signature_is_a_mismatch_and_fails_the_assertion() {
+fn type_erroring_instances_are_graded_mismatch() {
+    let env = env_with_stdlib();
+    eval_line("(defrecord thing2 (n int64))", &env);
+    eval_line("(defprotocol bump2 \"b\")", &env);
+    // The implementation misuses its field: the hidden defun's checker
+    // verdict is a type error, so the claim is refused as MISMATCH.
+    eval_line(
+        "(definstance bump2 ((self thing2)) int64 (concat (thing2-n self) \"x\"))",
+        &env,
+    );
+    let out = eval_line("(implements! 'thing2 'bump2)", &env);
+    assert!(out.contains("BUMP2 . MISMATCH"), "got: {out}");
+    assert_eq!(eval_line("(implements-p 'thing2 'bump2)", &env), "()");
+}
+
+#[test]
+fn protocol_dispatch_replaces_method_dispatch() {
     let env = env_with_stdlib();
     eval_line(
-        "(definterface counter (:ops ((bump (-> (self) self)))))",
+        "(defrecord invoice2 (id int64) (amount int64) (:derive equality))",
         &env,
     );
+    eval_line("(defprotocol total2 \"sum\")", &env);
     eval_line(
-        "(defun-typed (int64-bump bool) ((self int64)) (> self 0))",
+        "(definstance total2 ((self invoice2)) int64 (invoice2-amount self))",
         &env,
     );
-    let report = eval_line("(implements? 'int64 'counter)", &env);
-    assert!(report.starts_with("(()"), "got: {report}");
-    assert!(report.contains("(BUMP MISMATCH"), "got: {report}");
+    assert_eq!(eval_line("(total2 (make-invoice2 1 40))", &env), "40");
+    // Instances are checker-selected at typed call sites too.
     assert_eq!(
-        eval_line("(errorset '(implements! 'int64 'counter))", &env),
-        "()"
+        eval_line("(check-type (total2 (make-invoice2 1 2)))", &env),
+        "\"int64\""
     );
-}
-
-#[test]
-fn missing_method_fails_but_unproven_passes() {
-    let env = env_with_stdlib();
-    eval_line(
-        "(definterface eq-able (:ops ((equal (-> (self self) bool)))))",
-        &env,
-    );
-    eval_line(
-        "(definterface renderable (:ops ((render (-> (self) string)))))",
-        &env,
-    );
-    eval_line(
-        "(defrecord bag (:fields ((items list))) (:derive equality))",
-        &env,
-    );
-    // Derived equality carries a branded declared scheme (#308) — even the
-    // bare-`list` field degrades to ANY per-field instead of erasing the
-    // concept's schemes — so the op is fully CONFORMS now, not UNPROVEN.
-    let eq = eval_line("(implements? 'bag 'eq-able)", &env);
-    assert!(eq.starts_with("(T"), "got: {eq}");
-    assert!(eq.contains("(EQUAL CONFORMS"), "got: {eq}");
-    // No bag-render exists: MISSING fails the check.
-    let render = eval_line("(implements? 'bag 'renderable)", &env);
-    assert!(render.contains("(RENDER MISSING"), "got: {render}");
-    assert!(render.starts_with("(()"), "got: {render}");
-    // A method whose scheme is genuinely vacuous (here: pure self-recursion)
-    // is structurally satisfied, honestly unproven, overall PASS.
-    eval_line("(defun bag-render (self) (bag-render self))", &env);
-    let render = eval_line("(implements? 'bag 'renderable)", &env);
-    assert!(render.starts_with("(T"), "got: {render}");
-    assert!(render.contains("(RENDER UNPROVEN"), "got: {render}");
-}
-
-#[test]
-fn method_dispatches_on_concept_values() {
-    let env = env_with_stdlib();
-    eval_line(
-        "(defrecord invoice (:fields ((id int64) (amount int64))) (:derive equality))",
-        &env,
-    );
-    assert_eq!(
-        eval_line(
-            "(method 'equal (make-invoice 1 2) (make-invoice 1 2))",
-            &env
-        ),
-        "T"
-    );
-}
-
-#[test]
-fn declared_row_schemes_count_as_conformance_evidence() {
-    let env = env_with_stdlib();
-    // With rows, a derived equality carries a DECLARED record scheme; the
-    // interface layer unifies the declared signature against it.
-    eval_line(
-        "(definterface eq-able (:ops ((equal (-> (self self) bool)))))",
-        &env,
-    );
-    eval_line(
-        "(defrecord invoice (:fields ((id int64) (amount int64))) (:derive equality))",
-        &env,
-    );
-    let report = eval_line("(implements? 'invoice 'eq-able)", &env);
-    // SELF for a row-typed concept substitutes to its closed record, and the
-    // interface unifier is row-aware: the declared equality scheme over open
-    // records unifies with it — CONFORMS, a real guarantee.
-    assert!(report.contains("(EQUAL CONFORMS"), "got: {report}");
-    assert!(report.starts_with("(T"), "got: {report}");
-}
-
-#[test]
-fn interface_is_a_condensation_citizen() {
-    // Seam B: definterface records through the condensation substrate, so the
-    // interface shares CONDENSE-KIND / CONDENSE-TRACE with concepts instead of
-    // a private key set.
-    let env = env_with_stdlib();
-    eval_line(
-        "(definterface counter (:ops ((bump (-> (self) self)))))",
-        &env,
-    );
-    assert_eq!(eval_line("(condense-kind 'counter)", &env), "INTERFACE");
-    assert_eq!(eval_line("(interface-p 'counter)", &env), "T");
-    assert_eq!(
-        eval_line("(alist-get (condense-trace 'counter) 'kind)", &env),
-        "INTERFACE"
-    );
-}
-
-#[test]
-fn implements_claims_are_fingerprinted_and_detect_drift() {
-    // Seam B: a claim recorded once must not silently outlive the code it
-    // vouched for. IMPLEMENTS! fingerprints the conforming methods, and
-    // IMPLEMENTS-RECHECK! flags a later incompatible redefinition.
-    let env = env_with_stdlib();
-    eval_line(
-        "(definterface greeter (:ops ((greet (-> (self) string)))))",
-        &env,
-    );
-    eval_line("(defrecord goblin (:fields ((name string))))", &env);
-    eval_line("(defun goblin-greet (self) (goblin-name self))", &env);
-    eval_line("(implements! 'goblin 'greeter)", &env);
-    // Fresh claim: it holds and nothing has drifted.
-    let ok = eval_line("(implements-recheck! 'goblin)", &env);
-    assert!(ok.contains("(CONFORMS . T)"), "got: {ok}");
-    assert!(ok.contains("(DRIFT)"), "got: {ok}");
-    // Break the method: now it returns an int, contradicting the signature.
-    eval_line("(defun goblin-greet (self) 42)", &env);
-    let drifted = eval_line("(implements-recheck! 'goblin)", &env);
-    // The claim no longer conforms, and the drifted method is named.
-    assert!(drifted.contains("(CONFORMS)"), "got: {drifted}");
-    assert!(drifted.contains("(DRIFT GOBLIN-GREET)"), "got: {drifted}");
 }

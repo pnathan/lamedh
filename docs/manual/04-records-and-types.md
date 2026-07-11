@@ -963,82 +963,54 @@ lamedh -s "(progn (defrecord pt (x intt64) (y int64))
 `INTT64`-typed field, exactly as written. The error appears where it
 belongs: at the point that tries to use a `pt-x` result as an `int64`.
 
-## 4.15 Interfaces: `definterface`, `implements?`, `implements!`
+## 4.15 Contracts: `implements!`, `implements-p`
 
-`definterface` declares a named method set — a Go-style, structurally
-satisfied interface, not a CLOS-style dispatch table:
-
-```lisp
-(definterface counter
-  (:ops ((bump (-> (self) self)))))
-```
-
-There is no registration step for a type to "become" an implementer. A
-method for type `T` and operation `op` is just the ordinary function
-`T-op` — `int64-bump`, `goblin-greet`, `invoice-equal`. `SELF` in a
-signature stands for the implementing type; for a record, it substitutes
-to that record's own closed row.
-
-```lisp
-lamedh -s "(progn (definterface counter (:ops ((bump (-> (self) self)))))
-                   (defun-typed (int64-bump int64) ((self int64)) (+ self 1))
-                   (list (implements? 'int64 'counter) (method 'bump 5)))"
-; => ((T (BUMP CONFORMS INT64-BUMP (-> (INT64) INT64))) 6)
-```
-
-`implements?` returns a structural conformance report, `(pass . per-op)`.
-Each operation is graded:
-
-- `CONFORMS` — the method exists and its checker verdict unifies with the
-  declared signature: a real guarantee.
-- `UNPROVEN` — the method exists but its verdict is `VACUOUS`/`DYNAMIC`:
-  nothing confirmed, nothing denied. This does not fail the check.
-- `MISMATCH` — the method exists but its verdict conflicts with the
-  signature.
-- `MISSING` — no such function exists at all.
-
-`method` is the call-site counterpart: it computes the same `TYPE-OP` name
-and applies it. There is no dispatch table anywhere — `method` is one
-deterministic name computation, so a method type-checks, edits, and
-traces exactly like any other function.
-
-Two record kinds implementing the same interface, verified:
+There is exactly ONE dispatch system: protocols (§4.16). What people
+reach for interfaces for — "does this type honor the whole contract?" —
+is a conformance question over protocol instances, and it has two
+answers: `implements-p` (a predicate) and `implements!` (assert now,
+error loudly). A contract is nothing more than a set of protocol names.
 
 ```lisp
 lamedh -s "(progn
-  (definterface greeter (:ops ((greet (-> (self) string)))))
+  (defprotocol greet \"voice\")
+  (defprotocol damage \"hp reduction\")
   (defrecord goblin (name string) (hp int64))
-  (defrecord wisp (name string) (glow float64))
-  (defun goblin-greet (self) (concat (goblin-name self) \" snarls.\"))
-  (defun wisp-greet (self) (concat (wisp-name self) \" glimmers.\"))
-  (implements! 'goblin 'greeter)
-  (implements! 'wisp 'greeter)
-  (list (method 'greet (make-goblin \"Grix\" 7))
-        (method 'greet (make-wisp \"Sel\" 0.5))))"
-; => ("Grix snarls." "Sel glimmers.")
+  (definstance greet ((self goblin)) string
+    (concat (goblin-name self) \" snarls.\"))
+  (definstance damage ((self goblin) (n int64)) goblin
+    (record-with self 'hp (- (goblin-hp self) n)))
+  (implements! 'goblin 'greet 'damage))"
+; => ((GREET . INSTANCE) (DAMAGE . INSTANCE))
 ```
 
-`implements!` is the assert-now form: it runs the same structural check as
-`implements?`, records the claim (fingerprinted, so a later incompatible
-redefinition of a method is detectable via `implements-recheck!`), and
-signals an error immediately if conformance fails:
+Each protocol in the report is graded:
+
+- `INSTANCE` — a typed instance is registered for the brand and its
+  implementation carries no checker error: a real guarantee.
+- `MISMATCH` — an instance exists but its implementation's checker
+  verdict is a type error.
+- `MISSING` — no instance for this brand.
+
+A `MISSING` or `MISMATCH` grade fails `implements!` with the offending
+pairs named:
 
 ```lisp
-lamedh -s "(progn (definterface renderable (:ops ((render (-> (self) string)))))
+lamedh -s "(progn (defprotocol render \"draw\")
                    (defrecord bag (item any))
-                   (implements! 'bag 'renderable))"
-; => Error: implements!: BAG does not implement RENDERABLE: ((RENDER MISSING BAG-RENDER))
+                   (implements! 'bag 'render))"
+; => Error: implements!: BAG fails ((RENDER . MISSING))
 ```
 
-A derived operation (§4.7) is itself interface-eligible, since it carries a
-declared branded scheme just like a hand-written accessor — `(:derive
-equality)` on a record is enough to make it `CONFORMS` against an
-`eq-able` interface with no method written by hand.
+(Before 0.3 this niche was served by a second system — `definterface`
+method sets with `TYPE-OP` naming-convention dispatch via `method`. Two
+dispatch mechanisms was one too many; `defprotocol` is the survivor, and
+the old forms are gone.)
 
 `examples/npcs.lisp` and `examples/oo-patterns.lisp` in the repository work
 through this whole stack together — shared row-polymorphic behavior for
-every NPC kind, per-kind specialized methods dispatched through
-`definterface`, and classic Gang-of-Four patterns (Strategy, Composite,
+every NPC kind, per-kind voices as protocol instances verified by
+`implements!`, and classic Gang-of-Four patterns (Strategy, Composite,
 Decorator, Observer, State) reduced to a handful of lines once the row
 type system says "any record with this field" directly instead of forcing
 a class hierarchy to say it indirectly. Run either with `cargo run -- -i

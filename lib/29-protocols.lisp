@@ -291,3 +291,43 @@ immutable strings and atoms. Extend with DEFINSTANCE.")
 (definstance copy ((arr (array a))) (array a) (array-copy* arr))
 (definstance copy ((s string)) string s)
 (definstance copy ((h hash)) any (copy-hash* h))
+
+;;; ---- conformance: implements! over protocols ---------------------------------
+;;;
+;;; The interface half of the old two-system split (definterface, removed
+;;; 0.3), re-seated on THE dispatch system: a "contract" is just a set of
+;;; protocol names, and conformance is instances existing for a brand --
+;;; graded with the checker's verdict on each instance's implementation.
+
+(defun $protocol-instance-for (protocol key)
+  "The registered instance entry for PROTOCOL under KEY, or ()."
+  (assoc key (gethash $protocol-instances protocol)))
+
+(defun $implements-status (type protocol)
+  "(protocol . status): INSTANCE when TYPE has one and its implementation
+carries no type error; MISMATCH when the implementation's verdict is a
+type error; MISSING otherwise."
+  (if ($protocol-instance-for protocol type)
+      (let* ((impl (intern (concat "$" (princ-to-string protocol) "@"
+                                   (princ-to-string type))))
+             (verdict (see-type impl)))
+        (if (eq (car verdict) 'type-error)
+            (cons protocol 'mismatch)
+            (cons protocol 'instance)))
+      (cons protocol 'missing)))
+
+(defun implements-p (type &rest protocols)
+  "T when TYPE (a brand or kind key) has a clean instance for every
+named protocol."
+  (every (lambda (p) (eq (cdr ($implements-status type p)) 'instance))
+         protocols))
+
+(defun implements! (type &rest protocols)
+  "Assert TYPE implements every named protocol: returns the per-protocol
+report ((protocol . status)...) or errors naming the failures."
+  (let* ((report (mapcar (lambda (p) ($implements-status type p)) protocols))
+         (bad (filter (lambda (r) (not (eq (cdr r) 'instance))) report)))
+    (if (null bad)
+        report
+        (error (concat "implements!: " (princ-to-string type)
+                       " fails " (princ-to-string bad))))))

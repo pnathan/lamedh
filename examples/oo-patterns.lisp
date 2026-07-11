@@ -95,42 +95,41 @@ STRATEGY is any function from an amount-bearing record to an int."
 ;; => (STRATEGY 200 100 180)
 
 ;;; ======================================================================
-;;; Pattern 2 — COMPOSITE + interface method dispatch
+;;; Pattern 2 — COMPOSITE + protocol dispatch
 ;;; ======================================================================
 ;;; GoF: treat individual objects and compositions uniformly through a
-;;; shared interface. Here a Shape interface with AREA; a leaf DISC and a
-;;; composite GROUP that holds children. METHOD dispatches on the value's
+;;; shared protocol. Here an AREA protocol; a leaf DISC and a composite
+;;; GROUP that holds children. The protocol dispatches on the value's
 ;;; own brand — one call site, both node kinds, recursively.
-
-(definterface shape
-  (:ops ((area (-> (self) int64)))))
 
 (defrecord disc   (r int64))
 (defrecord group  (kids int64))   ; kids held out-of-band below
 
+(defprotocol area "Surface of a shape node.")
+
 ;; A leaf computes directly.
-(defun disc-area (self)
+(definstance area ((self disc)) int64
   (let ((r (record-ref self 'r))) (* 3 (* r r))))  ; ~pi r^2
 
-;; A composite sums its children — the SAME (method 'area ...) call works on
+;; A composite sums its children — the SAME (area ...) call works on
 ;; a disc or a nested group, so the recursion is uniform.
 (def *group-children* (make-hash-table))
 (defun group-of (children)
   (let ((g (make-group (length children))))
     (sethash *group-children* g children)
     g))
-(defun group-area (self)
-  (apply #'+ (mapcar (lambda (k) (method 'area k)) (gethash *group-children* self))))
+(definstance area ((self group)) int64
+  (apply #'+ (mapcar #'area (gethash *group-children* self))))
 
-(implements! 'disc 'shape)
-(implements! 'group 'shape)
+(implements! 'disc 'area)
+(implements! 'group 'area)
 
 (def *scene*
   (group-of (list (make-disc 2)
                   (make-disc 3)
                   (group-of (list (make-disc 1) (make-disc 1))))))
 
-(print (list 'composite-total-area (method 'area *scene*)))
+(print (list 'composite-total-area (area *scene*)))
 ;; disc 2 -> 12, disc 3 -> 27, inner group (1->3, 1->3) -> 6 ; total 45
 
 ;;; ======================================================================
@@ -168,23 +167,22 @@ STRATEGY is any function from an amount-bearing record to an int."
 ;;; contract is the Observer method set; NOTIFY-ALL is one call site over a
 ;;; heterogeneous list, each observer reacting in its own voice.
 
-(definterface observer
-  (:ops ((notify (-> (self int64) string))))) ; receives an event code
+(defprotocol notify "Receive an event code, answer in your own voice.")
 
 (defrecord logger  (tag string))
 (defrecord counter (seen int64))
 
-(defun logger-notify (self code)
+(definstance notify ((self logger) (code int64)) string
   (concat "[" (record-ref self 'tag) "] saw event " (number->string code)))
-(defun counter-notify (self code)
+(definstance notify ((self counter) (code int64)) string
   (concat "count+1 on event " (number->string code)))
 
-(implements! 'logger 'observer)
-(implements! 'counter 'observer)
+(implements! 'logger 'notify)
+(implements! 'counter 'notify)
 
 (defun notify-all (observers code)
-  "One subject, many observers, each reacting via METHOD dispatch."
-  (mapcar (lambda (o) (method 'notify o code)) observers))
+  "One subject, many observers, each reacting via protocol dispatch."
+  (mapcar (lambda (o) (notify o code)) observers))
 
 (print (list 'observer
              (notify-all (list (make-logger "audit") (make-counter 0)) 7)))

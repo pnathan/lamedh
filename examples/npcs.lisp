@@ -8,10 +8,10 @@
 ;;;     sites);
 ;;;   - a SHARED method, written exactly once, row-polymorphically: DAMAGE
 ;;;     works on "anything with an int64 hp", and the checker proves it;
-;;;   - a SPECIALIZED method: each kind has its own GREET, dispatched by
-;;;     METHOD (one deterministic name computation, no dispatch table);
-;;;   - a DEFINTERFACE method set, with IMPLEMENTS! verifying each kind's
-;;;     methods against the declared signatures by row unification.
+;;;   - a SPECIALIZED method: each kind has its own GREET voice, one
+;;;     protocol name dispatched by brand (DEFPROTOCOL/DEFINSTANCE);
+;;;   - IMPLEMENTS! asserting each kind's conformance to the npc
+;;;     contract (a set of protocols), graded by the checker.
 ;;;
 ;;; Run it:   cargo run -- -i examples/npcs.lisp
 ;;; Check it: cargo run -- --capability READ-FS -s '(check-file! "examples/npcs.lisp")'
@@ -67,41 +67,33 @@
   (let ((left (- (npc-hp npc) amount)))
     (if (> left 0) left 0)))
 
-;;; ---- the method set ------------------------------------------------------
-;; GREET is specialized per kind (each has a voice); DAMAGE was once
-;; specialized in its rebuild step (each kind's lens), but RECORD-WITH is
-;; brand-preserving typed update, so the per-kind bodies collapsed into one
-;; shared shape. A method is an ordinary TYPE-OP function -- it type-checks,
-;; edits, and traces like any other definition.
+;;; ---- the protocols ---------------------------------------------------------
+;; GREET is specialized per kind (each has a voice): ONE protocol name,
+;; dispatched by brand, each instance an ordinary compilable function.
+;; DAMAGE has one shared body -- RECORD-WITH is brand-preserving typed
+;; update -- so every kind's instance delegates to it.
 
-(definterface npc
-  (:ops ((greet (-> (self) string))
-         (damage (-> (self int64) self)))))
-
-(defun goblin-greet (self)
+(defprotocol greet "An NPC's voice.")
+(definstance greet ((self goblin)) string
   (concat (npc-name self) " sharpens a rusty dagger and cackles."))
-
-(defun merchant-greet (self)
+(definstance greet ((self merchant)) string
   (concat (npc-name self) " beams: fine wares, fair prices!"))
-
-(defun wisp-greet (self)
+(definstance greet ((self wisp)) string
   (concat (npc-name self) " flickers softly in the gloom."))
 
-(defun goblin-damage (self amount)
+(defprotocol damage "Brand-preserving hp reduction.")
+(definstance damage ((self goblin) (amount int64)) goblin
+  (record-with self 'hp (hit-points-after self amount)))
+(definstance damage ((self merchant) (amount int64)) merchant
+  (record-with self 'hp (hit-points-after self amount)))
+(definstance damage ((self wisp) (amount int64)) wisp
   (record-with self 'hp (hit-points-after self amount)))
 
-(defun merchant-damage (self amount)
-  (record-with self 'hp (hit-points-after self amount)))
-
-(defun wisp-damage (self amount)
-  (record-with self 'hp (hit-points-after self amount)))
-
-;; Verify the claims: each op's declared signature is unified against the
-;; checker's verdict for each kind's method (rows and all). MISSING or
-;; MISMATCH would error the load, right here.
-(implements! 'goblin 'npc)
-(implements! 'merchant 'npc)
-(implements! 'wisp 'npc)
+;; Verify the contract: every kind carries a clean instance of both
+;; protocols. A missing or type-erroring instance errors the load here.
+(implements! 'goblin 'greet 'damage)
+(implements! 'merchant 'greet 'damage)
+(implements! 'wisp 'greet 'damage)
 
 ;;; ---- a scene --------------------------------------------------------------
 
@@ -112,11 +104,11 @@
 
 (defun taunt-all (npcs)
   "Every NPC greets in its own voice -- one call site, three voices."
-  (mapcar (lambda (n) (method 'greet n)) npcs))
+  (mapcar #'greet npcs))
 
 (defun scuffle (npc amount)
   "Shared damage logic through each kind's own rebuild."
-  (method 'damage npc amount))
+  (damage npc amount))
 
 (print (taunt-all *party*))
 (print (mapcar (lambda (n) (npc-hp (scuffle n 5))) *party*))

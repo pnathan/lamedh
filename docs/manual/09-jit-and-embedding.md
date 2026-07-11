@@ -179,8 +179,8 @@ floats, chars, and arrays of those, with arithmetic, comparisons, `if`,
   and tree-walked — `od-first` above is the example. Lists have no fixed
   unboxed layout the way an `(array int64)` does.
 - **Closures over row types and `any`.** Row-polymorphic code (the kind
-  `defconcept`/`definterface` produce) and anything bottoming out at the
-  gradual-typing top type `any` stays dynamic.
+  `record-ref` derives) and anything bottoming out at the gradual-typing
+  top type `any` stays dynamic.
 - **Fexprs, `vau`, `eval`, `the-environment`, and create-on-assign `setq`.**
   These touch the interpreter's own machinery and can't be typed at all —
   Wand's triviality result says you can't statically type an operative that
