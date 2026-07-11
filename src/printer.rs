@@ -24,6 +24,7 @@
 //! | `Array(n)` | `<array:n>` |
 //! | `Struct` | `#S(TYPE field...)` (round-trips via the reader) |
 //! | `Extension` | via [`crate::LispValExtension::display`] |
+//! | `Port` | `#<port:kind "name" open|closed>` |
 
 use crate::LispVal;
 
@@ -116,6 +117,12 @@ pub fn print(val: &LispVal) -> String {
         }
         LispVal::Native(_) => "<native>".to_string(),
         LispVal::Environment(_) => "<environment>".to_string(),
+        LispVal::Port(p) => format!(
+            "#<port:{} {:?} {}>",
+            p.kind,
+            p.name,
+            if p.is_open() { "open" } else { "closed" }
+        ),
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => "<channel>".to_string(),
         LispVal::Nil => "()".to_string(),

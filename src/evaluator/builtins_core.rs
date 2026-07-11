@@ -558,7 +558,7 @@ fn gcd_i64(mut a: i64, mut b: i64, env: &Shared<Environment>) -> i64 {
 /// writes integers, so a byte is a `Char` OR an integer in 0..=255 —
 /// otherwise numerically-assembled buffers (the normal way to build one)
 /// would be rejected. Errors name the offending element and its index.
-fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, LispError> {
+pub(super) fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, LispError> {
     match v {
         LispVal::Array(a) => {
             let items = a.borrow();
@@ -1337,6 +1337,24 @@ pub(super) fn require_temp_fs(env: &Shared<Environment>) -> Result<(), LispError
     } else {
         Err(LispError::Generic(
             "TEMP-FS capability is not enabled (grant it via --capability TEMP-FS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+/// Capability guard for stdin-consuming reads (mirrors `require_read_fs` and
+/// friends). Used by `(read)` (`apply_io_op`, inline) and by the PORTS
+/// module's `(ports:stdin)` (issue #255).
+pub(super) fn require_io(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("IO") && crate::evaluator::core::cap_mask_allows("IO") {
+        Ok(())
+    } else if env.feature_enabled("IO") {
+        Err(LispError::Generic(
+            "capability denied: IO (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "IO capability is not enabled (grant it via --capability IO or the host API)"
                 .to_string(),
         ))
     }

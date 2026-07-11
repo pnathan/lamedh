@@ -7,6 +7,63 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## runtime(io): binary ports and deterministic ownership for host resources (#255)
+
+Lamedh now has a synchronous binary `Port` abstraction for byte streams —
+files, in-memory byte buffers, and the process's standard streams — living
+in a new optional embedded library, the `PORTS` module
+(`lib/31-ports.lisp`, `(require 'ports)` or `(import ports)`), following
+the namespace ruling from epic #253 and mirroring how `TEXT` (#254) wraps
+its kernel primitives. Representation: a new opaque `LispVal::Port`
+variant (`PortObj` in `src/lib.rs`) backed by a Rust enum over
+`fs::File`/`Cursor<Vec<u8>>`/`Vec<u8>`/the standard streams/a
+host-registered `Read`/`Write`, compared by identity like
+`Array`/`HashTable`/`Environment`; the kernel `PORT-*` substrate
+primitives live in `src/evaluator/builtins_ports.rs`.
+
+Construction: `ports:open-input`/`open-output`/`open-append` (files),
+`ports:open-input-bytes`/`open-output-bytes` + `output-contents`
+(in-memory byte buffers), `ports:stdin`/`stdout`/`stderr` (the process's
+standard streams). Binary operations work uniformly across every port
+kind: `read-byte!`/`read-bytes!` (EOF is `NIL` from `read-byte!`, a
+possibly-empty `Array<Char>` — never `NIL` — from `read-bytes!`),
+`write-byte!`/`write-bytes!` (returns the count actually written, so
+partial writes are observable), `flush!`, `close!` (idempotent — a
+second close is a silent no-op), `open-p`/`input-p`/`output-p`/
+`seekable-p`, and `position`/`seek!` on seekable ports (files and
+byte-array input ports; byte-array output ports and the standard streams
+are not seekable and signal a structured error on `position`/`seek!`).
+`ports:position` is qualified-only — deliberately left out of the export
+list so `(import ports)` never shadows the Prelude's flat
+`(position item lst)` list helper.
+Text wrappers (`read-line!`, `read-string!`, `write-string!`,
+`read-all-bytes!`) are thin, explicit layers over `TEXT`'s UTF-8
+boundary (#254) — bytes never implicitly become text. `with-open-port`
+closes its port on every exit from its body — normal return, an ordinary
+error, `THROW`, `RETURN-FROM`, or `GO` — via `UNWIND-PROTECT`; Rust's
+ordinary `Drop` (the file closes when the last reference to the port
+value is dropped) is a last-resort safety net, not the documented
+contract.
+
+Capability model unchanged from the existing filesystem builtins: opening
+a file port for reading needs `READ-FS`, for writing/appending needs
+`CREATE-FS`, `(ports:stdin)` needs `IO`; `stdout`/`stderr` and in-memory
+ports need no capability (matching `PRINC`/`PRIN1` already writing to
+stdout unconditionally). Acquisition is gated by `require_read_fs`/
+`require_create_fs`/`require_io` exactly like `read-file`/`write-file`,
+so `WITH-CAPABILITIES`'s dynamic-extent fence attenuation (#320/#325)
+reaches port construction the same way it reaches every other host
+builtin — verified directly: a port-open call inside
+`(with-capabilities () ...)` fails even when the host/CLI granted the
+capability. I/O errors are structured `LispVal::Error` values whose
+`data` is an alist of `:operation`/`:kind`/`:name`/`:os-error`, not just
+an English string.
+
+Embedding: `LispVal::wrap_reader`/`wrap_writer` let a host hand Lisp code
+an arbitrary `Read`/`Write` stream as a port (a pipe, a decompressor, a
+captured buffer, ...) without ever exposing a raw file descriptor to
+Lisp — see `docs/embedding.md`.
+
 ## runtime(modules): REQUIRE/PROVIDE and the Prelude/optional-library split (#256)
 
 Lamedh now has named, dependency-aware, load-once library units —

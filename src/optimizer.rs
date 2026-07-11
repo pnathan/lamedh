@@ -234,7 +234,8 @@ pub fn optimize(expr: &LispVal) -> LispVal {
         | LispVal::Array(_)
         | LispVal::Struct(_)
         | LispVal::Extension(_)
-        | LispVal::Error(_) => expr.clone(),
+        | LispVal::Error(_)
+        | LispVal::Port(_) => expr.clone(),
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => expr.clone(),
 

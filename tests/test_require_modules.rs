@@ -239,7 +239,8 @@ fn with_stdlib_still_loads_every_optional_module_and_marks_it_loaded() {
     assert_eq!(line(&env, "(module-state 'help-data)"), "REQUIRE-LOADED");
     // A later require is a documented no-op, not a redundant re-evaluation.
     assert_eq!(line(&env, "(require 'shell)"), "SHELL");
-    assert_eq!(line(&env, "(length (loaded-modules))"), "18");
+    assert_eq!(line(&env, "(module-state 'ports)"), "REQUIRE-LOADED");
+    assert_eq!(line(&env, "(length (loaded-modules))"), "19");
 }
 
 #[test]

@@ -40,6 +40,13 @@ There are five capabilities:
 whether the source path exists (via its error behavior), so it needs read
 authority too, not just write authority.
 
+The `PORTS` module's file-port constructors (Chapter 11) are gated by the
+same two capabilities — `ports:open-input` needs `READ-FS`,
+`ports:open-output`/`ports:open-append` need `CREATE-FS`, `ports:stdin`
+needs `IO` — checked the same way, so everything below about fences and
+attenuation applies to opening a port exactly as it applies to
+`read-file`/`write-file`.
+
 Try a gated operation with nothing granted:
 
 ```console
