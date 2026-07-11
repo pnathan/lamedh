@@ -580,21 +580,30 @@ constructor to a variant next month, and every unmarked `variant-case` over
 it that lacks an `else` starts failing loudly at the call site instead of
 silently falling through.
 
-Absorption into the union is a checker fact, not just a runtime one. Give a
-function that uses `variant-case` a declared signature over the variant
-name (`variant-case` is Lisp-layer syntax defined with `defvau`, not a form
-the checker's own static walker parses, so an explicit `declare-type!` —
-rather than relying on `see-type` to infer one — is the reliable way to
-give such a function a scheme), and a value built by *any* of that
-variant's constructors — but only that variant's constructors — type-checks
-against it:
+Absorption into the union is a checker fact, not just a runtime one, and
+`variant-case` is a form the checker's static walker understands natively
+(#350): the scrutinee unifies with the clause constructors' owning
+variant, each clause binds its constructor's field types, and the clause
+bodies join to one result. A function that consumes a variant through
+`variant-case` gets its scheme **inferred** — no `declare-type!` needed —
+and a value built by *any* of that variant's constructors — but only that
+variant's constructors — type-checks against it:
 
 ```lisp
 lamedh -s "(progn (defvariant shape (circle (r int64)) (rect (w int64) (h int64)))
                    (defun area (s) (variant-case s (circle (r) (* 3 (* r r))) (rect (w h) (* w h))))
-                   (declare-type! 'area '(-> (shape) int64))
-                   (list (check-type (area (circle 3))) (check-type (area 5))))"
-; => ("int64" "type error: in call to `AREA`: cannot unify int64 with SHAPE")
+                   (list (see-type 'area) (check-type (area (circle 3))) (check-type (area 5))))"
+; => ((CHECKED (-> (SHAPE) INT64)) "int64"
+;     "type error: in call to `AREA`: cannot unify int64 with SHAPE")
+```
+
+Parametric variants infer too — a consumer that never touches the payload
+stays polymorphic, and one that does pins the parameter:
+
+```lisp
+lamedh -s "(progn (defun unwrap-or0 (o) (variant-case o (some (v) v) (none () 0)))
+                   (see-type 'unwrap-or0))"
+; => (CHECKED (-> ((OPTION INT64)) INT64))
 ```
 
 A constructor from a *different* variant is not a shape, however many

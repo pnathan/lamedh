@@ -18,6 +18,9 @@ pub(super) struct Cx<'a> {
     pub(super) structs: &'a HashMap<String, Rc<StructDef>>,
     /// Parametric nominals (0.3 HM generics), for construction rules.
     pub(super) generics: &'a HashMap<String, Rc<GenericDef>>,
+    /// Declared sum types, for the `variant-case` eliminator rule (#350):
+    /// the scrutinee unifies with a clause ctor's OWNING variant, found here.
+    pub(super) variants: &'a HashMap<String, Rc<VariantDef>>,
     /// Declared schemes (experimental rows): axioms from `declare-type!`,
     /// consulted by the checker for callees the typed registry doesn't know.
     pub(super) declared: &'a HashMap<String, infer::Scheme>,
@@ -187,6 +190,7 @@ impl Cx<'_> {
                     "PROGN" if self.checking => self.elab_body(args, scope, max),
                     "QUOTE" if self.checking => self.elab_quote(args),
                     "COND" if self.checking => self.elab_cond(args, scope, max),
+                    "VARIANT-CASE" if self.checking => self.elab_variant_case(args, scope, max),
                     "WHEN" | "UNLESS" if self.checking => self.elab_when(args, scope, max),
                     _ => self.elab_call(&head, args, scope, max),
                 }
@@ -1406,6 +1410,121 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
+            had_clause = true;
+        }
+        if had_clause {
+            Ok((Core::LitI(0), self.walk(&result)))
+        } else {
+            Ok((Core::LitI(0), Ty::Any))
+        }
+    }
+
+    /// `(variant-case x (ctor (vars…) body…) … [(else body…)])` — the sum
+    /// eliminator (#350). The scrutinee unifies with each clause ctor's
+    /// OWNING variant (so mixed-variant clauses clash and constructing a
+    /// wrong-variant scrutinee is caught); clause vars bind positionally to
+    /// the ctor's field types; every clause body joins to one result type.
+    /// Exhaustiveness stays a runtime concern — the vau errors, naming the
+    /// missing brands. A ctor unknown at check time binds its vars `Any`
+    /// (the gradual frontier) but its body is still checked and joined.
+    fn elab_variant_case(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.is_empty() {
+            return Err("`variant-case` expects a scrutinee and clauses".to_string());
+        }
+        let (_, tx) = self.elab(&args[0], scope, max)?;
+        let result = self.fresh();
+        let mut had_clause = false;
+        for clause in &args[1..] {
+            let parts = list_to_vec(clause);
+            let Some(LispVal::Symbol(s)) = parts.first() else {
+                return Err(
+                    "`variant-case`: clause must start with a constructor or `else`".to_string(),
+                );
+            };
+            let ctor = s.borrow().name.clone();
+            let saved = scope.len();
+            let body = if ctor == "ELSE" {
+                &parts[1..]
+            } else {
+                if parts.len() < 2 {
+                    return Err(format!(
+                        "`variant-case`: clause for {ctor} needs a binding list"
+                    ));
+                }
+                let mut vars = Vec::new();
+                for v in list_to_vec(&parts[1]) {
+                    match v {
+                        LispVal::Symbol(n) => vars.push(n.borrow().name.clone()),
+                        other => {
+                            return Err(format!(
+                                "`variant-case`: clause for {ctor} binds a non-symbol {other:?}"
+                            ));
+                        }
+                    }
+                }
+                let field_tys: Vec<Ty> = if let Some(def) = self.structs.get(&ctor) {
+                    let owner = self
+                        .variants
+                        .values()
+                        .find(|v| v.ctors.iter().any(|c| *c == ctor));
+                    let want = match owner {
+                        Some(vd) => Ty::Variant(vd.clone()),
+                        // A brand outside any variant (a plain record case
+                        // via the same eliminator): demand the record itself.
+                        None => Ty::Struct(def.clone()),
+                    };
+                    self.unify(&tx, &want)
+                        .map_err(|e| format!("`variant-case`: scrutinee: {e}"))?;
+                    def.fields.iter().map(|(_, t)| t.clone()).collect()
+                } else if let Some(gdef) = self.generics.get(&ctor).cloned() {
+                    // Parametric ctor (0.3 HM generics): instantiate the
+                    // variant's parameters fresh; the scrutinee is the owning
+                    // variant's application over them, and the clause's field
+                    // types are the ctor's fields under the same instantiation.
+                    let fresh: Vec<Ty> = (0..gdef.arity).map(|_| self.fresh()).collect();
+                    let m: HashMap<u32, Ty> =
+                        (0..gdef.arity as u32).zip(fresh.iter().cloned()).collect();
+                    let want = match gdef.variant.as_deref().and_then(|v| self.generics.get(v)) {
+                        Some(vg) => Ty::App(vg.clone(), fresh),
+                        None => Ty::App(gdef.clone(), fresh),
+                    };
+                    self.unify(&tx, &want)
+                        .map_err(|e| format!("`variant-case`: scrutinee: {e}"))?;
+                    gdef.fields
+                        .iter()
+                        .map(|(_, t)| Infer::subst_vars(t, &m))
+                        .collect()
+                } else {
+                    // Unregistered at check time: the gradual frontier.
+                    vars.iter().map(|_| Ty::Any).collect()
+                };
+                if vars.len() != field_tys.len() {
+                    return Err(format!(
+                        "`variant-case`: clause for {ctor} binds {} var(s) but {ctor} has {} field(s)",
+                        vars.len(),
+                        field_tys.len()
+                    ));
+                }
+                for (v, t) in vars.into_iter().zip(field_tys) {
+                    scope.push((v, t));
+                    *max = (*max).max(scope.len());
+                }
+                &parts[2..]
+            };
+            // An empty clause body yields nil at runtime; its type is `Any`.
+            let bt = if body.is_empty() {
+                Ty::Any
+            } else {
+                self.elab_body(body, scope, max)?.1
+            };
+            scope.truncate(saved);
+            self.unify(&bt, &result)
+                .map_err(|e| format!("`variant-case` clauses disagree: {e}"))?;
             had_clause = true;
         }
         if had_clause {

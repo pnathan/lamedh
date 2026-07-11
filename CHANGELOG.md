@@ -7,6 +7,33 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## variant-case composes with the checker (#350)
+
+The checker has a native eliminator rule for `variant-case`: the
+scrutinee unifies with the clause constructors' owning variant, clause
+vars bind positionally to the constructor's field types, and every
+clause body joins to one result type. Before this, clauses like
+`(circ (r) (* r r))` were misread as constructor applications, so every
+variant-consuming `defun` carried a false `TYPE-ERROR` and was stuck on
+the dynamic tier — the two flagship 0.3 features (sums and the checker)
+didn't compose. Now `(defun area (x) (variant-case x (circ (r) (* r r))
+(sq (s) (* s s))))` checks as `(-> (SHAPE) INT64)`, parametric variants
+generalize (`(defun opt-len (o) (variant-case o (some (v) 1) (none ()
+0)))` : `∀a. (option a) → int64`), wrong-variant scrutinees are rejected
+at call sites, and binder-count/clause-body errors are real errors.
+Exhaustiveness stays a runtime concern (the vau names missing brands).
+
+## Docs: divergences from Common Lisp
+
+New one-pager `docs/cl-divergences.md` — the cheat-sheet for readers
+with CL reflexes, every claim probe-verified: Lisp-1 namespace, wrapping
+64-bit integers (no bignums/rationals), `'a'` char literals, pure
+`sort`/`rplaca`, collection-first hash accessors, the absent/replacement
+table (loop→dotimes/while, CLOS→protocols, values→lists,
+eql→eq/equal, …), same-word-different-behavior notes (`defvar`,
+`format`'s exact directive set, `case` defaults), and the list of CL
+reflexes that just work.
+
 ## Records — one definition form (breaking)
 
 ```lisp
