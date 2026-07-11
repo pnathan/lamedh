@@ -633,6 +633,10 @@ impl Environment {
         env.set("1+".to_string(), LispVal::Builtin(BuiltinFunc::Add1)); // Alias
         env.set("1-".to_string(), LispVal::Builtin(BuiltinFunc::Sub1)); // Alias
         env.set("RANDOM".to_string(), LispVal::Builtin(BuiltinFunc::Random));
+        env.set(
+            "RANDOM-SEED!".to_string(),
+            LispVal::Builtin(BuiltinFunc::RandomSeed),
+        );
 
         // Bitwise operations
         env.set("ASH".to_string(), LispVal::Builtin(BuiltinFunc::Ash));

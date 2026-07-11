@@ -385,7 +385,8 @@ pub(super) fn apply(
             | BuiltinFunc::Oddp
             | BuiltinFunc::Add1
             | BuiltinFunc::Sub1
-            | BuiltinFunc::Random => apply_new_numeric_ops(builtin, args, env),
+            | BuiltinFunc::Random
+            | BuiltinFunc::RandomSeed => apply_new_numeric_ops(builtin, args, env),
 
             // New bitwise operations
             BuiltinFunc::Ash | BuiltinFunc::Lognot | BuiltinFunc::Rot => {
