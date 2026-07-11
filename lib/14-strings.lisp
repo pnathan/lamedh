@@ -134,13 +134,23 @@ of range, rather than clamping."
   "Return S with ASCII letters lowercased."
   (list->string (mapcar #'char-downcase (string->list s))))
 
+(defun $string-capitalize-walk (chars in-word)
+  "CL word-capitalization walk: uppercase the first alphanumeric of each
+word (a maximal alphanumeric run), lowercase the rest, pass delimiters."
+  (if (null chars)
+      nil
+      (let* ((c (car chars))
+             (alnum (alphanumeric-p c)))
+        (cons (cond ((not alnum) c)
+                    (in-word (char-downcase c))
+                    (t (char-upcase c)))
+              ($string-capitalize-walk (cdr chars) alnum)))))
+
 (defun string-capitalize (s)
-  "Return S with its first character uppercased (ASCII) and the rest
-lowercased. (string-capitalize \"\") is \"\"."
-  (if (string-empty-p s)
-      s
-      (concat (string-upcase (substring s 0 1))
-              (string-downcase (substring s 1 (string-length* s))))))
+  "Return S with the first character of every word uppercased (ASCII) and
+the rest of each word lowercased, per CL: a word is a maximal run of
+alphanumeric characters. (string-capitalize \"\") is \"\"."
+  (list->string ($string-capitalize-walk (string->list s) ())))
 
 (defun string-reverse (s)
   "Reverse S. A named entry point onto the generic REVERSE (which already

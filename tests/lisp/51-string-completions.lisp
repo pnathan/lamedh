@@ -84,7 +84,8 @@
   (assert-equal (string-trim-right "") ""))
 
 (deftest str254-capitalize-reverse
-  (assert-equal (string-capitalize "hELLO world") "Hello world")
+  (assert-equal (string-capitalize "hELLO world") "Hello World")
+  (assert-equal (string-capitalize "don't-stop 4ever") "Don'T-Stop 4ever")
   (assert-equal (string-capitalize "") "")
   (assert-equal (string-reverse "hello") "olleh")
   (assert-equal (string-reverse "") ""))

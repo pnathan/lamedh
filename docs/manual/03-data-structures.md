@@ -232,8 +232,9 @@ been its own accidental divergence — see `lib/14-strings.lisp`'s header
 and `docs/cl-divergences.md`.) None of the comparison functions take
 optional start/end ranges; `substring` first if you need one.
 
-`string-capitalize` uppercases the first character and lowercases the
-rest: `(string-capitalize "hELLO world")` is `"Hello world"`.
+`string-capitalize` uppercases the first character of every word (a
+maximal alphanumeric run, as in CL) and lowercases the rest:
+`(string-capitalize "hELLO world")` is `"Hello World"`.
 
 Padding (0.3) never truncates: `(string-pad-left "42" 5 "0")` is
 `"00042"`, `(string-pad-right "ab" 4)` is `"ab  "`, and both return the

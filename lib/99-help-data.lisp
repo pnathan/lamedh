@@ -1862,7 +1862,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'SYNTAX "(string-capitalize s)")
     (cons 'CATEGORY 'strings)
     (cons 'DESCRIPTION "Returns s with its first character uppercased (ASCII) and the rest lowercased.")
-    (cons 'EXAMPLES '(((string-capitalize "hELLO world") "Hello world")))
+    (cons 'EXAMPLES '(((string-capitalize "hELLO world") "Hello World")))
     (cons 'SEE-ALSO '(string-upcase string-downcase))))
 
 (register-doc 'string-reverse
