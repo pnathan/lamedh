@@ -23,10 +23,10 @@ Cranelift when the default `jit` feature is enabled.
 ;; HM type checking for ordinary Lisp functions.
 (defun inc (n) (+ n 1))
 (check-type inc)
-; => "INC : (-> (int64) int64)"
+; => "INC : ((N int64)) -> int64 [compiled]"
 
 ;; Typed islands compile through the typed backend.
-(deffun-typed (sq int64) ((x int64))
+(defun-typed (sq int64) ((x int64))
   (* x x))
 
 (sq 12)
@@ -41,7 +41,7 @@ Cranelift when the default `jit` feature is enabled.
   caller environment explicitly.
 - **HM typing**: `CHECK-TYPE` infers and reports types for ordinary functions,
   including polymorphic and list-shaped functions that are not compileable.
-- **Typed compilation**: `DEFFUN-TYPED` registers typed functions that run through
+- **Typed compilation**: `DEFUN-TYPED` registers typed functions that run through
   the typed interpreter or native Cranelift backend, depending on features and
   compileability.
 - **Embeddable runtime**: the `lamedh` crate exposes `Environment`,
@@ -146,7 +146,7 @@ well-typed functions can still be checked.
 ```lisp
 (defun id (x) x)
 (check-type id)
-; => "ID : forall a. (-> (a) a)"
+; => "ID : (forall (a) (-> (a) a))"
 
 (defun lsum (xs)
   (if (null xs)
@@ -173,15 +173,17 @@ struct with the same fields. `let-typed` annotations use the same type names as
 function signatures:
 
 ```lisp
-(defstruct-typed Foo (n int64))
+(defrecord Foo (n int64))
 
-(deffun-typed (foo-n-plus-one int64) ((x Foo))
+(defun-typed (foo-n-plus-one int64) ((x Foo))
   (let-typed ((local Foo x))
     (+ (foo-n local) 1)))
 ```
 
-There is no trait/typeclass system or subtyping relation yet; type agreement is
-currently HM unification: same type, inferred type variable, or error.
+Typed protocols (`defprotocol`/`definstance`, 0.3) give one name many typed
+instances selected by inference; beyond that, type agreement is HM
+unification with row-polymorphic records: same type, inferred type
+variable, row subsumption, or error.
 
 ## Compilation
 
@@ -190,7 +192,7 @@ the default `jit` feature, compileable typed functions get a native Cranelift
 edition; without default features they still run through the typed closure path.
 
 ```lisp
-(deffun-typed (fib int64) ((n int64))
+(defun-typed (fib int64) ((n int64))
   (if (< n 2)
       n
       (+ (fib (- n 1)) (fib (- n 2)))))
@@ -203,9 +205,9 @@ When you want the Lisp/vau source optimizer to run before typed compilation,
 use the explicit optimizer-to-compiler bridge:
 
 ```lisp
-(deffun-typed-opt (inc int64) ((x int64))
+(defun-typed-opt (inc int64) ((x int64))
   (+ x 0))
-; optimizer rewrites the body to X, then DEFFUN-TYPED performs HM checking
+; optimizer rewrites the body to X, then DEFUN-TYPED performs HM checking
 ; and installs the compiled typed edition.
 ```
 
@@ -252,7 +254,7 @@ about 14.6 ms for `Lamedh-JIT` and 15.8 ms for `Lamedh-OptJIT`, compared with
 versions were GCC 13.3.0, SBCL 2.2.9, Ruby 3.0.1, Python 3.12.3, and Lamedh
 0.2.0 with the default `jit` feature enabled.
 
-`Lamedh-OptJIT` uses `deffun-typed-opt`: Lisp/vau source optimization first,
+`Lamedh-OptJIT` uses `defun-typed-opt`: Lisp/vau source optimization first,
 then HM checking and native compilation. On this recursive Fibonacci workload,
 the source optimizer has little to simplify, so the two Lamedh rows are best
 read as the same performance tier within run noise.
