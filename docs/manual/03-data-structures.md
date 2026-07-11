@@ -203,9 +203,38 @@ Splitting, joining, and searching:
 ```
 
 Also available: `ends-with-p`, `contains-p`, `string-index-of`,
-`string-replace`, `string-lessp` (code-point order), `string=` (an alias for
-`equal`), and `reverse`/`subseq`/`elt` (from the CL-compat layer, below —
-these work on strings as well as lists).
+`string-last-index-of` (rightmost occurrence), `string-count` (occurrence
+count), `string-replace`/`string-replace-all` (all occurrences) and
+`string-replace-first` (first occurrence only), `string-lessp`
+(code-point order), `string=` (an alias for `equal`), `string-trim-left`/
+`string-trim-right` (one-sided trims — `string-trim` does both), and
+`reverse`/`subseq`/`elt` (from the CL-compat layer, below — these work on
+strings as well as lists; `string-reverse` is a named alias for `reverse`).
+
+Construction and access (0.3, issue #254): `(make-string 5 "x")` is
+`"xxxxx"` (default fill is a space); `(string-empty-p "")` is `T`;
+`(string-concat "a" "b" "c")` is `"abc"` (a named alias for `concat`);
+`(char-at "hello" 1)` is `"e"` and signals a clear error naming the index
+and the string's length when the index is out of range (unlike
+`substring`, which clamps).
+
+The full comparison family (0.3, issue #254): case-sensitive ordering —
+`string<`, `string>`, `string<=`, `string>=` (CL's names; already
+case-sensitive in CL, so no divergence) — plus `string-ne` for
+inequality (this reader does not allow `/` inside a symbol, so CL's
+`string/=` cannot be spelled that way). A parallel Unicode-aware,
+locale-independent case-insensitive family uses an explicit `-ci` infix
+instead of CL's names: `string-ci=`, `string-ci<`, `string-ci>`,
+`string-ci<=`, `string-ci>=`, `string-ci-ne`. (`string-lessp` already
+existed with case-*sensitive* semantics before 0.3 grew this family, so
+reusing CL's case-insensitive names for the new functions would have
+been its own accidental divergence — see `lib/14-strings.lisp`'s header
+and `docs/cl-divergences.md`.) None of the comparison functions take
+optional start/end ranges; `substring` first if you need one.
+
+`string-capitalize` uppercases the first character of every word (a
+maximal alphanumeric run, as in CL) and lowercases the rest:
+`(string-capitalize "hELLO world")` is `"Hello World"`.
 
 Padding (0.3) never truncates: `(string-pad-left "42" 5 "0")` is
 `"00042"`, `(string-pad-right "ab" 4)` is `"ab  "`, and both return the
@@ -237,6 +266,35 @@ Two printing primitives sit under `format` (next):
 
 `princ-to-string` renders "for humans" (no quoting); `prin1-to-string`
 renders "for the reader" (quoted, escaped — output that can be read back).
+
+### The TEXT module: UTF-8 <-> Array<Char>
+
+`lib/30-text.lisp` (0.3, issue #254) carries the explicit boundary
+between `String` (Unicode text) and `Array<Char>` (the language-level
+byte-vector surface — `Char` is exactly a byte, 0-255, never a Unicode
+scalar; see `docs/cl-divergences.md` item 3). This is genuinely new
+library surface, not a completion of the flat `lib/14-strings.lisp`
+Prelude, so per the modules story (`lib/27-modules.lisp`) it lives in a
+`TEXT` module instead of growing the flat namespace:
+
+```
+(text:string->utf8 "héllo")
+; => an Array<Char> of the 6 UTF-8 bytes
+
+(text:utf8->string (text:string->utf8 "héllo"))
+; => "héllo"
+
+(import text)
+(utf8->string-lossy (list->array (list (make-char 104) (make-char 128))))
+; => "h<U+FFFD>"
+```
+
+`string->utf8` never fails (every Lisp `STRING` is valid Unicode).
+`utf8->string` is strict: invalid UTF-8 signals an error naming the
+offending byte offset. `utf8->string-lossy` instead substitutes the
+Unicode replacement character (U+FFFD) for invalid sequences. There is
+no implicit coercion between `String` and `Array<Char>` anywhere else in
+the language — crossing the boundary is always one of these three calls.
 
 ### format
 

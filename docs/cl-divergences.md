@@ -52,7 +52,6 @@ interpreter; when in doubt, probe (`lamedh -s '<expr>'`).
 | `define-condition`, `signal` | absent | errors are first-class values; raise with `error`, catch with `handler-case`/`handler-bind`/`restart-case` (all present), or Lisp 1.5 `errorset` (takes a **quoted** form) |
 | `#(1 2 3)` vector literals | absent | `(make-array n init)` / `(array ...)`; `aref`/`fetch`/`store` work |
 | Two-argument `floor`/`truncate` | absent | `(floor x)` is one-argument; `mod`/`rem` exist |
-| `string<` family | absent | `string=` exists; compare via `sort-by` keys |
 | `type-of` | absent | `see-type` (checker verdicts), predicates (`stringp`, `floatp`, …), `record-brand` |
 
 ## Same words, different behavior
@@ -70,6 +69,17 @@ interpreter; when in doubt, probe (`lamedh -s '<expr>'`).
   the error's message/payload.
 - **`car`/`cdr` of `nil`** return `nil` (CL-compatible; this is where
   Lamedh diverges from Lisp 1.5, which errored) — but `(car 5)` errors.
+- **`string<`/`string>`/`string<=`/`string>=` are present and
+  case-sensitive**, matching CL. **`string-lessp` is also present but
+  is case-sensitive here** (it predates the case-insensitive family and
+  keeps its original #147 meaning) — unlike CL, where `string-lessp`
+  is the case-*insensitive* member of the family. The genuinely
+  case-insensitive comparisons are `string-ci=`, `string-ci<`,
+  `string-ci-ne`, etc. (a `-ci` infix, not CL's `string-equal`/
+  `string-not-equal`/`string-lessp`/`string-greaterp` names) — see
+  `lib/14-strings.lisp`'s header for why. `string/=` cannot be written:
+  the reader does not treat `/` as a symbol constituent, so the
+  case-sensitive inequality function is spelled `string-ne`.
 
 ## CL reflexes that just work
 

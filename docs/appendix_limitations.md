@@ -50,17 +50,30 @@ Floats are 64-bit IEEE 754:
 
 The reader supports string escapes (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`). Strings
 also support substring, length, character-code conversion, and value-to-string
-rendering. The string layer (`lib/14-strings.lisp`) additionally provides search
-(`string-index-of`, `contains-p`, `starts-with-p`, `ends-with-p`), case
-conversion (`string-upcase`, `string-downcase`, `char-upcase`,
-`char-downcase`), comparison (`string=`, `string-lessp`), splitting and
-joining, trimming, and `string-replace`. Missing string operations
-include:
+rendering. The string layer (`lib/14-strings.lisp`, completed by issue #254)
+provides construction (`make-string`, `string-concat`, `char-at`), search
+(`string-index-of`, `string-last-index-of`, `string-count`, `contains-p`,
+`starts-with-p`, `ends-with-p`), case conversion (`string-upcase`,
+`string-downcase`, `string-capitalize`, `char-upcase`, `char-downcase`), a
+full case-sensitive comparison family (`string=`, `string-ne`, `string<`,
+`string>`, `string<=`, `string>=`, plus the original `string-lessp`) and a
+parallel Unicode-aware case-insensitive family (`string-ci=`, `string-ci<`,
+…), splitting and joining, one- and two-sided trimming, `string-reverse`,
+and `string-replace-first`/`string-replace-all`. The `TEXT` module
+(`lib/30-text.lisp`) adds an explicit String <-> UTF-8 `Array<Char>`
+boundary (`text:string->utf8`, `text:utf8->string`,
+`text:utf8->string-lossy`). Missing string operations include:
 
 - Regular expressions
-- Locale-aware collation and Unicode normalization
-- A full Common Lisp string comparison family (case-insensitive
-  `string-equal`, `string<`, …)
+- Locale-aware collation
+- Unicode normalization and grapheme-cluster indexing (string indices
+  count Unicode scalar values, not grapheme clusters)
+- Optional `:start`/`:end` range arguments on the comparison functions
+  (substring first if a range is needed)
+
+Reader note: `/` is not a symbol constituent, so CL's `string/=` cannot be
+spelled that way here — the case-sensitive inequality function is
+`string-ne` instead (see `docs/cl-divergences.md`).
 
 ---
 
@@ -285,7 +298,8 @@ Use the string layer directly:
 
 ```lisp
 (string= "abc" "abc")      ; => T
-(string-lessp "abc" "abd") ; => T
+(string< "abc" "abd")      ; => T (case-sensitive; CL's name)
+(string-ci= "ABC" "abc")   ; => T (Unicode-aware case-insensitive)
 ```
 
 ### Checking for Errors

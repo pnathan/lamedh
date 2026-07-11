@@ -19,6 +19,7 @@ Auto-generated from Lisp documentation database.
 - ERRORS - Error handling
 - IO - Input/Output
 - SPECIAL-FORMS - Special forms and macros
+- TEXT - Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)
 - STRINGS - String operations
 - LISTS - List manipulation
 - PREDICATES - Type and value predicates
@@ -730,23 +731,6 @@ Bitwise operations
 
 ---
 
-### LOGOR
-
-**Type:** `FUNCTION`
-
-**Syntax:** `(logor integer...)`
-
-Bitwise OR of all arguments.
-
-**Examples:**
-```lisp
-(LOGOR 5 3)  ; => 7
-```
-
-**See also:** LOGAND, LOGXOR, LOGNOT
-
----
-
 ### LOGAND
 
 **Type:** `FUNCTION`
@@ -901,7 +885,7 @@ Retrieves the value associated with key in hash-table. Returns NIL if the key is
 
 Sets the value for key in hash-table. SETHASH is accepted as a compatibility alias.
 
-**See also:** GETHASH, SETHASH, DELETE-KEY, MAKE-HASH-TABLE
+**See also:** GETHASH, SETHASH, REMHASH, MAKE-HASH-TABLE
 
 ---
 
@@ -1853,6 +1837,63 @@ Locally bind vau operatives for the extent of the body. Each clause's OPERANDS r
 
 ---
 
+# TEXT Functions
+
+Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)
+
+---
+
+### TEXT:STRING->UTF8
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(text:string->utf8 s)`
+
+Returns the exact UTF-8 bytes of string s as a fresh Array<Char> (an array whose every element is a Char byte 0-255). Never fails: every Lisp STRING is valid Unicode. Call qualified, or (import text) first to use STRING->UTF8 unqualified.
+
+**Examples:**
+```lisp
+(ARRAY-LENGTH* (TEXT:STRING->UTF8 "hi"))  ; => 2
+```
+
+**See also:** TEXT:UTF8->STRING, TEXT:UTF8->STRING-LOSSY
+
+---
+
+### TEXT:UTF8->STRING
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(text:utf8->string bytes)`
+
+Decodes bytes (an Array<Char>) as UTF-8 and returns the resulting STRING. Strict: signals a descriptive error naming the offending byte offset if bytes is not well-formed UTF-8; use UTF8->STRING-LOSSY for replacement-character decoding instead.
+
+**Examples:**
+```lisp
+(TEXT:UTF8->STRING (TEXT:STRING->UTF8 "hi"))  ; => "hi"
+```
+
+**See also:** TEXT:STRING->UTF8, TEXT:UTF8->STRING-LOSSY
+
+---
+
+### TEXT:UTF8->STRING-LOSSY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(text:utf8->string-lossy bytes)`
+
+Decodes bytes (an Array<Char>) as UTF-8, substituting the Unicode replacement character (U+FFFD) for any invalid byte sequence instead of signalling an error.
+
+**Examples:**
+```lisp
+(TEXT:UTF8->STRING-LOSSY (TEXT:STRING->UTF8 "hi"))  ; => "hi"
+```
+
+**See also:** TEXT:STRING->UTF8, TEXT:UTF8->STRING
+
+---
+
 # STRINGS Functions
 
 String operations
@@ -2138,6 +2179,403 @@ Returns the human-readable printed representation of object as a string, exactly
 ```
 
 **See also:** PRIN1-TO-STRING, PRINC, NUMBER->STRING
+
+---
+
+### MAKE-STRING
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(make-string n) or (make-string n char)`
+
+Returns a fresh string of length n, every character char (a one-character string or code point; default space). Signals an error if n is negative.
+
+**Examples:**
+```lisp
+(MAKE-STRING 3)  ; => "   "
+(MAKE-STRING 3 "x")  ; => "xxx"
+```
+
+**See also:** STRING-REPEAT, STRING-PAD-LEFT, STRING-PAD-RIGHT
+
+---
+
+### STRING-EMPTY-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-empty-p s)`
+
+True if s has length zero.
+
+**Examples:**
+```lisp
+(STRING-EMPTY-P "")  ; => T
+(STRING-EMPTY-P "a")  ; => ()
+```
+
+**See also:** STRING-LENGTH*
+
+---
+
+### STRING-CONCAT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-concat &rest strs)`
+
+Concatenates zero or more strings. A named alias for CONCAT.
+
+**Examples:**
+```lisp
+(STRING-CONCAT "a" "b" "c")  ; => "abc"
+(STRING-CONCAT)  ; => ""
+```
+
+**See also:** CONCAT
+
+---
+
+### CHAR-AT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(char-at s i)`
+
+One-character access: the character at index i in s, as a one-character string. Unlike SUBSTRING, an out-of-range i signals a clear error naming i and s's length instead of clamping.
+
+**Examples:**
+```lisp
+(CHAR-AT "hello" 0)  ; => "h"
+(CHAR-AT "hello" 4)  ; => "o"
+```
+
+**See also:** SUBSTRING, STRING-LENGTH*
+
+---
+
+### STRING<
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string< a b)`
+
+True if string a is lexicographically (by code point) before string b. Case-sensitive. Same ordering as STRING-LESSP, under CL's name for the case-sensitive comparison.
+
+**Examples:**
+```lisp
+(STRING< "abc" "abd")  ; => T
+```
+
+**See also:** STRING>, STRING<=, STRING>=, STRING-LESSP, STRING-CI<
+
+---
+
+### STRING>
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string> a b)`
+
+True if string a is lexicographically (by code point) after string b. Case-sensitive.
+
+**Examples:**
+```lisp
+(STRING> "abd" "abc")  ; => T
+```
+
+**See also:** STRING<, STRING<=, STRING>=, STRING-CI>
+
+---
+
+### STRING<=
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string<= a b)`
+
+Non-strict case-sensitive ordering: true unless a comes lexicographically after b.
+
+**Examples:**
+```lisp
+(STRING<= "abc" "abc")  ; => T
+```
+
+**See also:** STRING<, STRING>, STRING>=, STRING-CI<=
+
+---
+
+### STRING>=
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string>= a b)`
+
+Non-strict case-sensitive ordering: true unless a comes lexicographically before b.
+
+**Examples:**
+```lisp
+(STRING>= "abc" "abc")  ; => T
+```
+
+**See also:** STRING<, STRING>, STRING<=, STRING-CI>=
+
+---
+
+### STRING-NE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ne a b)`
+
+True if strings a and b do NOT have the same contents. Case-sensitive. Named STRING-NE rather than CL's STRING/=: the reader does not treat `/` as a symbol constituent, so `string/=` cannot be written as one token.
+
+**Examples:**
+```lisp
+(STRING-NE "a" "b")  ; => T
+(STRING-NE "a" "a")  ; => ()
+```
+
+**See also:** STRING=, STRING-CI-NE
+
+---
+
+### STRING-CI=
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ci= a b)`
+
+True if a and b have the same contents under Unicode default case folding (via STRING-CASEFOLD*: locale-independent, not ASCII-only). Named with a `-ci` infix rather than CL's STRING-EQUAL, because STRING-LESSP already has case-sensitive semantics here.
+
+**Examples:**
+```lisp
+(STRING-CI= "ABC" "abc")  ; => T
+```
+
+**See also:** STRING=, STRING-CI-NE, STRING-CI<, STRING-CI>
+
+---
+
+### STRING-CI-NE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ci-ne a b)`
+
+True if a and b do NOT have the same contents under Unicode case folding.
+
+**Examples:**
+```lisp
+(STRING-CI-NE "ABC" "xyz")  ; => T
+```
+
+**See also:** STRING-CI=, STRING-NE
+
+---
+
+### STRING-CI<
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ci< a b)`
+
+True if a is lexicographically before b under Unicode case folding.
+
+**Examples:**
+```lisp
+(STRING-CI< "abc" "ABD")  ; => T
+```
+
+**See also:** STRING-CI>, STRING-CI<=, STRING-CI>=, STRING<
+
+---
+
+### STRING-CI>
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ci> a b)`
+
+True if a is lexicographically after b under Unicode case folding.
+
+**Examples:**
+```lisp
+(STRING-CI> "ABD" "abc")  ; => T
+```
+
+**See also:** STRING-CI<, STRING-CI<=, STRING-CI>=
+
+---
+
+### STRING-CI<=
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ci<= a b)`
+
+Non-strict case-insensitive ordering: true unless a comes after b under Unicode case folding.
+
+**Examples:**
+```lisp
+(STRING-CI<= "ABC" "abc")  ; => T
+```
+
+**See also:** STRING-CI<, STRING-CI>, STRING-CI>=
+
+---
+
+### STRING-CI>=
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-ci>= a b)`
+
+Non-strict case-insensitive ordering: true unless a comes before b under Unicode case folding.
+
+**Examples:**
+```lisp
+(STRING-CI>= "ABC" "abc")  ; => T
+```
+
+**See also:** STRING-CI<, STRING-CI>, STRING-CI<=
+
+---
+
+### STRING-LAST-INDEX-OF
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-last-index-of s sub)`
+
+Returns the index of the LAST (rightmost) occurrence of non-empty sub in s, or NIL if sub does not occur (or is empty).
+
+**Examples:**
+```lisp
+(STRING-LAST-INDEX-OF "abcabc" "bc")  ; => 4
+```
+
+**See also:** STRING-INDEX-OF, STRING-COUNT
+
+---
+
+### STRING-COUNT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-count s sub)`
+
+Counts non-overlapping occurrences of non-empty sub in s; 0 if sub is empty or does not occur.
+
+**Examples:**
+```lisp
+(STRING-COUNT "abcabcabc" "abc")  ; => 3
+(STRING-COUNT "aaaa" "aa")  ; => 2
+```
+
+**See also:** STRING-INDEX-OF, STRING-LAST-INDEX-OF
+
+---
+
+### STRING-REPLACE-FIRST
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-replace-first s old new)`
+
+Replaces only the first (non-empty) occurrence of old in s with new.
+
+**Examples:**
+```lisp
+(STRING-REPLACE-FIRST "aaa" "a" "b")  ; => "baa"
+```
+
+**See also:** STRING-REPLACE, STRING-REPLACE-ALL
+
+---
+
+### STRING-REPLACE-ALL
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-replace-all s old new)`
+
+Replaces every (non-empty) occurrence of old in s with new. Alias for STRING-REPLACE, named to pair explicitly with STRING-REPLACE-FIRST.
+
+**Examples:**
+```lisp
+(STRING-REPLACE-ALL "aaa" "a" "b")  ; => "bbb"
+```
+
+**See also:** STRING-REPLACE, STRING-REPLACE-FIRST
+
+---
+
+### STRING-TRIM-LEFT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-trim-left s)`
+
+Removes leading whitespace from s.
+
+**Examples:**
+```lisp
+(STRING-TRIM-LEFT "  hi  ")  ; => "hi  "
+```
+
+**See also:** STRING-TRIM-RIGHT, STRING-TRIM
+
+---
+
+### STRING-TRIM-RIGHT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-trim-right s)`
+
+Removes trailing whitespace from s.
+
+**Examples:**
+```lisp
+(STRING-TRIM-RIGHT "  hi  ")  ; => "  hi"
+```
+
+**See also:** STRING-TRIM-LEFT, STRING-TRIM
+
+---
+
+### STRING-CAPITALIZE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-capitalize s)`
+
+Returns s with its first character uppercased (ASCII) and the rest lowercased.
+
+**Examples:**
+```lisp
+(STRING-CAPITALIZE "hELLO world")  ; => "Hello world"
+```
+
+**See also:** STRING-UPCASE, STRING-DOWNCASE
+
+---
+
+### STRING-REVERSE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(string-reverse s)`
+
+Reverses s. A named entry point onto the generic REVERSE (which already works on strings).
+
+**Examples:**
+```lisp
+(STRING-REVERSE "hello")  ; => "olleh"
+```
+
+**See also:** REVERSE
 
 ---
 

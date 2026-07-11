@@ -7,6 +7,36 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## stdlib(text): complete String API and the explicit UTF-8 Array<Char> boundary (#254)
+
+`lib/14-strings.lisp` (the flat Prelude string surface from #147) is now
+a complete String API: construction/access (`make-string`,
+`string-concat`, `string-empty-p`, bounds-checked `char-at`), the full
+case-sensitive comparison family (`string<`, `string>`, `string<=`,
+`string>=`, `string-ne`, alongside the existing `string=`/`string-lessp`)
+and a new Unicode-aware, locale-independent case-insensitive family
+(`string-ci=`, `string-ci<`, `string-ci-ne`, ...), reverse search
+(`string-last-index-of`), occurrence counting (`string-count`),
+`string-replace-first`/`string-replace-all`, one-argument
+`string-trim-left`/`string-trim-right`, `string-capitalize`, and
+`string-reverse`. `string-lessp`'s pre-existing case-sensitive (not CL's
+case-insensitive) meaning is unchanged and undisturbed by the new
+`-ci` family. New Rust kernel primitive `string-casefold*` backs the
+case-insensitive comparisons via Rust's locale-independent Unicode case
+fold.
+
+New `TEXT` module (`lib/30-text.lisp`, `(defmodule text ...)` /
+`with-module`, 0.3's module story) carries the explicit, non-coercive
+String <-> UTF-8 `Array<Char>` boundary: `(text:string->utf8 s)`,
+`(text:utf8->string bytes)` (strict — signals a descriptive error naming
+the offending byte offset on invalid UTF-8), and
+`(text:utf8->string-lossy bytes)` (U+FFFD substitution). `Char` stays
+exactly a `u8` byte and `Array<Char>` stays the ordinary dynamic array
+already used by the #137 typed/JIT `(array char)` island — no new value
+representation. New optional-library surface is namespaced per the
+epic #253 ruling rather than growing the flat Prelude; existing #147
+names are untouched.
+
 ## variant-case composes with the checker (#350)
 
 The checker has a native eliminator rule for `variant-case`: the

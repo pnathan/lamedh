@@ -650,6 +650,14 @@ pub enum BuiltinFunc {
     MakeChar,
     StringToNumber,
     NumberToString,
+    // Unicode-aware, locale-independent case fold (issue #254); backs the
+    // case-insensitive string comparison family in lib/14-strings.lisp.
+    StringCasefold,
+    // Explicit String <-> Array<Char> UTF-8 boundary (issue #254); wrapped by
+    // the TEXT module in lib/30-text.lisp.
+    StringToUtf8,
+    Utf8ToString,
+    Utf8ToStringLossy,
     // Parse one s-expression from a string via the reader
     ReadFromString,
     // Value -> string rendering (backs FORMAT and friends)
@@ -1709,6 +1717,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         "29-protocols.lisp",
         include_str!("../lib/29-protocols.lisp"),
     ),
+    ("30-text.lisp", include_str!("../lib/30-text.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
