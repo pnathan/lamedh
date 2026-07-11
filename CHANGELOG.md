@@ -7,6 +7,73 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## stdlib(data): optional JSON, URL, Base64, hex, and MIME codec modules (#257)
+
+Five new optional embedded libraries for ordinary application and HTTP
+programming, following the `TEXT`/`PORTS` namespace ruling from epic
+#253: `BASE64` (`lib/32-base64.lisp`), `HEX` (`lib/33-hex.lisp`), `URL`
+(`lib/34-url.lisp`), `JSON` (`lib/35-json.lisp`), and `MIME`
+(`lib/36-mime.lisp`) — `(require 'name)` or `(import name)`, independently
+of each other. All five are pure data transforms: **no capability is
+required**, and every operation works inside a sandbox with every
+capability denied. Every module is 100% Lisp — no new Rust kernel
+builtins were needed; JSON parsing leans on the existing `STRING->NUMBER`
+kernel primitive for exact int64-vs-float number classification and
+IEEE-754-faithful float lexing, and every codec's per-character/per-byte
+scan is written tail-recursively over UTF-8 byte codes (via
+`TEXT:STRING->UTF8` + `ARRAY->LIST`, both native and O(n)) rather than the
+Prelude's `STRING->LIST`, which recurses once per character and is not
+stack-safe past a few thousand characters — a general fix for any large
+flat input, not just JSON's own explicit `:MAX-DEPTH` nesting guard.
+
+`JSON:PARSE`/`STRINGIFY`: object↔hash table (`String` keys, last-key-wins
+on duplicates), array↔`Array` (not a list — the ticket's mapping, not a
+free choice), `true`/`false`/`null`↔`T`/`NIL`/the keyword `:NULL` (three
+mutually distinct values — `:NULL` avoids the `NIL`-is-both-false-and-
+empty-list pun), integer literals in `i64` range as exact `Number`s,
+literals outside that range controlled by `:ON-INTEGER-OVERFLOW` (`:ERROR`
+default, or `:FLOAT` to widen instead of erroring), every other number as
+`Float`. `STRINGIFY` always writes a `.` in `Float` output (even for a
+whole value like `2.0`) so a `Float` never silently round-trips back as an
+integer `Number`; `NaN`/infinite floats are a `STRINGIFY` error, not a
+silent approximation. Strict throughout: rejects trailing garbage,
+unescaped control characters, leading zeros, and unpaired `\u` surrogate
+escapes, with every error carrying a line/column position;
+`:MAX-DEPTH` (default 512) bounds nesting so deep input is a clean error
+instead of a native stack overflow. `:PRETTY`/`:INDENT` control compact
+vs. indented serialization.
+
+`BASE64:ENCODE`/`DECODE` and `HEX:ENCODE`/`DECODE`: `Array<Char>`
+bytes↔ASCII `String` (a byte is a `Char` or an integer 0-255, per the
+epic's byte-array convention), every one of the 256 byte values
+round-trips exactly in every position. Base64 supports `:ALPHABET`
+(`:STANDARD` RFC 4648 §4 `+/`, or `:URL` RFC 4648 §5 `-_`) and `:PAD`
+(default `T`) independently; Hex supports predictable-case `:CASE`
+(`:LOWER` default, `:UPPER`) on encode and is case-insensitive on decode.
+Both decoders are strict: invalid characters, misplaced/wrong-count
+padding, and length/padding-policy mismatches are named errors.
+
+`URL:ENCODE-PATH-SEGMENT`/`ENCODE-QUERY-COMPONENT` use different
+safe-character sets (conflating path-segment and query-component
+percent-encoding is a real bug class); `DECODE` is context-free (one
+decoder for both, `:LOSSY` mirrors `TEXT:UTF8->STRING`/`-LOSSY`).
+`URL:PARSE`/`BUILD` split/rebuild `SCHEME`/`USERINFO`/`HOST`/`PORT`
+(handles a bracketed IPv6 literal)/`PATH`/`QUERY`/`FRAGMENT` (the latter
+three returned raw, never auto-decoded, avoiding double-decode ambiguity)
+via a small explicit state machine — no regular expressions.
+`URL:PARSE-QUERY`/`BUILD-QUERY` preserve repeated keys and ordering as a
+list of conses, never collapsed into a hash table.
+
+`MIME:HEADERS-*`: a header list is `(name . value)` conses in original
+order with original case preserved — deliberately not a hash table, so
+`HEADERS-GET-ALL` never collapses a repeated header like `Set-Cookie`
+(`HEADERS-GET` returns only the first match; `HEADERS-ADD`/`-SET`/
+`-REMOVE`/`-NAMES` round out the API). `MIME:PARSE-CONTENT-TYPE`/
+`BUILD-CONTENT-TYPE` handle Content-Type parameters including
+quoted-string values with backslash escapes.
+
+New manual chapter: [12. Codecs](docs/manual/12-codecs.md).
+
 ## runtime(io): binary ports and deterministic ownership for host resources (#255)
 
 Lamedh now has a synchronous binary `Port` abstraction for byte streams —
