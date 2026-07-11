@@ -246,11 +246,25 @@ PRED (default #'<) compares the extracted keys."
   "Return LST with every element EQUAL to ITEM removed."
   (filter (lambda (x) (not (equal x item))) lst))
 
+(defun proper-list-p (x)
+  "T when X is a proper (nil-terminated) list."
+  (cond ((null x) t)
+        ((consp x) (proper-list-p (cdr x)))
+        (t ())))
+
 (defun flatten (tree)
-  "Flatten a nested list structure into a single flat list of leaves."
-  (cond ((null tree) nil)
-        ((atom tree) (list tree))
-        (t (append (flatten (car tree)) (flatten (cdr tree))))))
+  "Flatten nested PROPER lists into one flat list of leaves. A dotted
+pair is a LEAF, not structure -- (flatten '((1 . 2) (3 4))) is
+((1 . 2) 3 4). (Pre-0.3 flatten recursed into pairs and silently
+destroyed alist/coordinate-shaped data.) A dotted tail on TREE itself
+is also kept as a leaf."
+  (cond ((null tree) ())
+        ((not (consp tree)) (list tree))
+        (t (let ((head (car tree)))
+             (append (if (and (consp head) (proper-list-p head))
+                         (flatten head)
+                         (list head))
+                     (flatten (cdr tree)))))))
 
 ;;; ---- combinators ---------------------------------------------------------
 

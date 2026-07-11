@@ -285,3 +285,26 @@ fn dotted_parameter_tails_are_rest_params() {
     let out = eval_line("(fexpr (x . e) x)", &e);
     assert!(out.contains("(args env)"), "got: {out}");
 }
+
+#[test]
+fn flatten_treats_dotted_pairs_as_leaves() {
+    let e = env_with_stdlib();
+    // The 0.3 contract: nested PROPER lists flatten; a dotted pair is a
+    // leaf (pre-0.3 flatten recursed into pairs and destroyed
+    // alist/coordinate-shaped data silently).
+    assert_eq!(
+        eval_line("(flatten (list (cons 1 2) (list 3 4)))", &e),
+        "((1 . 2) 3 4)"
+    );
+    assert_eq!(eval_line("(flatten '(1 (2 (3)) 4))", &e), "(1 2 3 4)");
+    assert_eq!(eval_line("(flatten '((1 . 2)))", &e), "((1 . 2))");
+    assert_eq!(eval_line("(flatten ())", &e), "()");
+    // An alist survives flatten-of-one-level-nesting intact.
+    assert_eq!(
+        eval_line("(flatten (list (list (cons 'a 1) (cons 'b 2))))", &e),
+        "((A . 1) (B . 2))"
+    );
+    assert_eq!(eval_line("(proper-list-p (list 1 2))", &e), "T");
+    assert_eq!(eval_line("(proper-list-p (cons 1 2))", &e), "()");
+    assert_eq!(eval_line("(proper-list-p ())", &e), "T");
+}

@@ -53,9 +53,10 @@ nil-as-list imprecision (#336).
   `(1 2 3 4)`: it recurses into cons structure, so it silently destroys
   coordinate/alist-shaped data. Bit twice in one batch (bfs-maze
   find-cell, game-of-life neighbor census), and the failure mode is a
-  quietly wrong world, not an error. **Ruled**: flatten's contract is
-  structural, and `mapcan` (which exists) is the right one-level tool —
-  but the trap deserves a doc warning where flatten is taught.
+  quietly wrong world, not an error. **Fixed** (post-campaign, on
+  Paul's call): flatten now treats dotted pairs as leaves and only
+  recurses through proper lists; `proper-list-p` added. `mapcan`
+  remains the right one-level splice.
 - Checker/evaluator numeric strictness caught an `assoc`-miss nil
   flowing into `=` in game-of-life (isolated live cell has no census
   entry) — a bug class that would have silently mis-evolved worlds in a

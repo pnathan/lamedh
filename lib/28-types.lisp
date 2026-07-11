@@ -24,7 +24,7 @@
 
 (mapc (lambda (p) (declare-type! p '(forall (a) (-> (a) bool))))
       '(consp numberp stringp symbolp floatp charp atom listp arrayp
-        hash-table-p functionp boundp))
+        hash-table-p functionp boundp proper-list-p))
 
 ;; Integer-only predicates: the evaluator rejects non-integers, so the
 ;; checker may too (parity in the strict direction).

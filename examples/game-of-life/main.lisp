@@ -11,8 +11,8 @@
           (cons (- x 1) (1+ y)) (cons x (1+ y)) (cons (1+ x) (1+ y)))))
 
 (defun step-world (live)
-  "LIVE is a list of cells; returns the next generation. (mapcan, not
-flatten: flatten would recurse into the dotted-pair cells themselves.)"
+  "LIVE is a list of cells; returns the next generation. mapcan is the
+one-level splice for per-cell neighbor lists."
   (let ((census (frequencies (mapcan #'neighbors live))))
     (filter
      (lambda (cell)

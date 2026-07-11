@@ -70,6 +70,14 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## flatten respects dotted pairs (breaking)
+
+- `flatten` now flattens nested PROPER lists only; a dotted pair is a
+  leaf: `(flatten '((1 . 2) (3 4)))` is `((1 . 2) 3 4)`. The old
+  behavior recursed into every cons and silently destroyed
+  alist/coordinate-shaped data (it turned the classics' game-of-life
+  world into bare integers). New `proper-list-p` predicate, typed.
+
 ## Dotted parameter tails
 
 - `(lambda (a . more) ...)`, `(defun f (a . more) ...)`, and
