@@ -49,13 +49,25 @@ the recursion-depth guard fires. Two options:
 // Builtins only (no defun, list utilities, etc.)
 let env = Environment::new_with_builtins();
 
-// Builtins + the full embedded standard library (recommended)
+// Builtins + the Prelude (core vocabulary; no shell/testing/optimizer/
+// call-graph/condensation/pattern-matching/help database/... until you
+// (require 'name) them — see "Module registry" below)
+let env = Environment::with_prelude();
+
+// Builtins + the Prelude + every optional embedded library (recommended
+// for a fully-featured interpreter with no extra setup)
 let env = Environment::with_stdlib();
 ```
 
 `with_stdlib` evaluates the stdlib Lisp files that are baked into the binary
 at compile time.  It panics if the embedded stdlib fails to parse or evaluate,
-which should never happen in a correctly-built binary.
+which should never happen in a correctly-built binary. `with_prelude` is the
+same idea over a smaller file list — see `src/lib.rs`'s crate-level doc
+comment for the exact split — and is otherwise just as fully-featured (every
+kernel builtin is registered either way); it's for hosts that don't want the
+extra load time/vocabulary of libraries they won't use, or that want
+`require`'s registry to start from a known-small state before selectively
+pulling in their own modules.
 
 ## Evaluating Lisp
 
@@ -177,6 +189,56 @@ Current built-in feature flags:
 | `CREATE-FS` | Allow file writes and filesystem mutation               |
 | `TEMP-FS` | Allow temporary file and directory creation                |
 | `IO`      | Allow `(read)` to read an s-expression from standard input |
+
+## Module registry (`require`)
+
+Issue #256: `Environment::with_prelude()` environments (and `with_stdlib()`
+environments, for optional libraries a script requires that aren't already
+loaded) pull in named libraries on demand via Lisp's `(require 'name)`. The
+embedder-side half of that is a small API on `Environment`, documented in
+full in `docs/manual/10-modules.md` §10.7 (the Lisp-facing story: resolution
+order, load-once semantics, cycles, `provide`, `require-reload`).
+
+```rust
+use lamedh::environment::Environment;
+
+let env = Environment::with_prelude();
+
+// Register your own library's source under a name, without evaluating it
+// yet. Takes priority over any embedded module of the same name.
+env.register_module("json", include_str!("../lisp/json.lisp"));
+
+// Trigger `(require 'name)` from Rust, without writing Lisp source.
+lamedh::require_module("json", &env)?;
+
+// The module names currently REQUIRE-loaded in this environment.
+let loaded: Vec<String> = lamedh::loaded_modules(&env);
+assert!(loaded.contains(&"JSON".to_string()));
+```
+
+`register_module` and `require_module`/`loaded_modules` are independent: you
+can register a source and let a script `require` it later, or require it
+immediately from Rust. Registered sources are checked *before* the
+compiled-in optional libraries, so a host can override e.g. `shell` with its
+own implementation under the same name.
+
+`require`'s third resolution tier reads modules from disk, gated behind the
+`READ-FS` capability like every other filesystem operation. Configuring
+*where* it looks is Rust-only — Lisp can only read the configured list back,
+never set it, so a sandboxed script cannot expand its own filesystem module
+search path even if it has `READ-FS`:
+
+```rust
+env.enable_feature("READ-FS");
+env.add_module_search_path("/opt/myapp/lisp-modules");
+// env.clear_module_search_paths();  // reset to none
+```
+
+A required module's source always evaluates at the environment's root — a
+`require` called from inside a nested Lisp call still defines things
+globally, not into whatever local frame happened to be active — so there is
+nothing extra to arrange on the Rust side for `defun`/`def` inside a
+required module to behave as expected.
 
 ## Condition flags
 

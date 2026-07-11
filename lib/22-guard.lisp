@@ -260,3 +260,8 @@ the child's error in the parent on failure."
     (if (spawn-error-p outcome)
         (error (concat "spawned child failed: " (car (cdr outcome))))
         (car (cdr outcome)))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'guard)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'guard)

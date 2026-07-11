@@ -7,6 +7,56 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## runtime(modules): REQUIRE/PROVIDE and the Prelude/optional-library split (#256)
+
+Lamedh now has named, dependency-aware, load-once library units —
+`(require 'name)` / `(provide 'name)` — layered on the existing global
+symbol table with zero new symbol-identity machinery (no Common Lisp
+packages, no `pkg:symbol` reader syntax, no import renaming, no enforced
+privacy; see `lib/06-require.lisp`'s header for the full design). This is
+a *loading* discipline, distinct from and composable with `defmodule`'s
+existing *naming* discipline (`lib/27-modules.lisp`, docs/manual/10-modules.md
+§10.7).
+
+`require` resolves a module name through a per-environment registry in
+order: host-registered sources (`env.register_module(name, source)`,
+no capability required), sources embedded in the binary (no capability
+required), then — only under `READ-FS` — files under host-configured disk
+search paths (`env.add_module_search_path(path)`; Lisp can read but never
+set this list, so a host constrains disk resolution without exposing that
+authority to sandboxed code). A second `require` of an already-loaded
+module is a documented no-op; a module whose source errors, or which
+finishes without calling `(provide 'name)`, is *not* marked loaded (partial
+top-level definitions are not rolled back — this was never a transaction).
+A `require` for a module already mid-load (directly or transitively) is a
+hard cycle error naming the full chain. `(require-reload 'name)` is the
+explicit development escape hatch; ordinary `require` never silently
+re-evaluates. `provide` takes an optional exports list (metadata only);
+`require` warns on an unbound declared export or a cross-module export
+collision (errors instead, given `*require-strict-exports*`).
+`(loaded-modules)`, `(module-state 'name)`, and `(module-info 'name)`
+introspect the registry.
+
+New `Environment::with_prelude()` loads only the stable general-purpose
+vocabulary (core forms, lists, math, control flow, functional/string/
+sets-hash/conditions/array helpers, `format`, `setf`/CL-compat, and
+`require`/`provide` itself — see `src/lib.rs`'s crate doc for the exact
+file list) — lighter and faster-starting than `Environment::with_stdlib()`,
+which remains fully source- and behavior-compatible: it is now defined as
+the Prelude plus every previously-unconditional optional library (shell,
+Lisp 1.5 compatibility, testing, the optimizer, call-graph analysis,
+condensation, guard fences, pattern matching, the rulebook, variants,
+instrumentation, `defmodule` itself, the type table, protocols, the
+`TEXT` module, and the help system — including 20-condensation.lisp,
+closing the epic #253 acceptance criterion that it be loadable as an
+embedded optional module rather than only via `-i lib/`), loaded in the
+same order as before and immediately marked REQUIRE-loaded so a later
+`(require 'name)` against a `with_stdlib()` environment is a correct
+no-op rather than a redundant re-evaluation. Embedder API additions:
+`Environment::with_prelude`, `Environment::register_module`,
+`Environment::add_module_search_path`/`clear_module_search_paths`,
+`lamedh::require_module`, `lamedh::loaded_modules`.
+
 ## stdlib(text): complete String API and the explicit UTF-8 Array<Char> boundary (#254)
 
 `lib/14-strings.lisp` (the flat Prelude string surface from #147) is now

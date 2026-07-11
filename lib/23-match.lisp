@@ -358,3 +358,8 @@ form (1-based)."
   "SGREP-SOURCE over the file at PATH (requires the READ-FS capability),
 returning (line col subform bindings) hits."
   (sgrep-source pattern (read-file path)))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'match)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'match)

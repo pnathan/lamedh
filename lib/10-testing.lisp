@@ -100,3 +100,8 @@ A buggy test must not take down the whole run (issue #241)."
       (print (cons 'failures (reverse *test-failures*)))
       (print 'all-tests-passed))
   (zerop *test-fail*))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'testing)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'testing)

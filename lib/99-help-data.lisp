@@ -1,5 +1,13 @@
 ;;; Help Data - Documentation for Lamedh functions and special forms
 ;;; This file populates the help database with documentation entries
+;;;
+;;; REQUIRE-ABLE (issue #256): HELP-DATA is one of the optional embedded
+;;; modules -- it requires 'help-system first because REGISTER-DOC and
+;;; REGISTER-CATEGORY (defined there) run immediately at this file's top
+;;; level, not lazily inside a function body. `with_stdlib()` still loads
+;;; this file (and help-system before it) unconditionally, unchanged.
+
+(require 'help-system)
 
 ;;; ============================================================
 ;;; ARITHMETIC FUNCTIONS
@@ -2440,6 +2448,67 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'SEE-ALSO '(feature-enabled-p features))))
 
 ;;; ============================================================
+;;; MODULE LOADING (REQUIRE / PROVIDE, issue #256)
+;;; ============================================================
+
+(register-doc 'require
+  (list
+    (cons 'NAME 'require)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(require 'name)")
+    (cons 'CATEGORY 'modules)
+    (cons 'DESCRIPTION "Loads module NAME (a symbol or string) at most once in this environment; returns NAME's canonical (uppercase) symbol. A second REQUIRE of an already-loaded module is a no-op -- it never re-evaluates the source. NAME resolves through a per-environment registry, in order: (1) sources a host registered directly (Rust: env.register_module); (2) sources embedded in the binary (the numbered optional library files -- SHELL, TESTING, CONDENSATION, TEXT, ...); (3) -- only under the READ-FS capability -- files under host-configured disk search paths. A REQUIRE for a module already mid-load (directly or transitively) is a hard cycle error naming the full chain. A module whose source signals an error, or which finishes without calling (PROVIDE 'NAME), is NOT marked loaded -- whatever top-level definitions it already ran are not rolled back. See docs/manual/10-modules.md section 10.7 for the full story, and lib/06-require.lisp for the implementation.")
+    (cons 'EXAMPLES '(((require 'shell) SHELL)
+                       ((require 'shell) SHELL)))
+    (cons 'SEE-ALSO '(provide require-reload loaded-modules module-state module-info defmodule))))
+
+(register-doc 'provide
+  (list
+    (cons 'NAME 'provide)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(provide 'name) or (provide 'name exports)")
+    (cons 'CATEGORY 'modules)
+    (cons 'DESCRIPTION "Called from within a module's own source (as loaded by REQUIRE) to mark NAME complete; conventionally the module's last top-level form. REQUIRE signals an error if a module's source finishes evaluating without a matching PROVIDE. The optional EXPORTS argument is a list of symbol names this module claims to define -- metadata only, not enforcement (Lamedh has no reader-level privacy or namespaces); REQUIRE warns if a declared export ends up unbound, and warns (or, with *REQUIRE-STRICT-EXPORTS* bound to T, errors) if a declared export was already claimed by a different module.")
+    (cons 'EXAMPLES '(((provide 'my-app) MY-APP)))
+    (cons 'SEE-ALSO '(require require-reload))))
+
+(register-doc 'require-reload
+  (list
+    (cons 'NAME 'require-reload)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(require-reload 'name)")
+    (cons 'CATEGORY 'modules)
+    (cons 'DESCRIPTION "Development/debugging operation: forces NAME to be re-resolved and re-evaluated via REQUIRE's normal procedure even though it is already loaded. Ordinary REQUIRE never does this implicitly -- use REQUIRE-RELOAD when iterating on a registered or disk module's source without restarting the interpreter. Errors if NAME is currently mid-load.")
+    (cons 'SEE-ALSO '(require provide))))
+
+(register-doc 'loaded-modules
+  (list
+    (cons 'NAME 'loaded-modules)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(loaded-modules)")
+    (cons 'CATEGORY 'modules)
+    (cons 'DESCRIPTION "Returns all module names currently REQUIRE-loaded in this environment, in no particular order.")
+    (cons 'SEE-ALSO '(require module-state module-info))))
+
+(register-doc 'module-state
+  (list
+    (cons 'NAME 'module-state)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(module-state 'name)")
+    (cons 'CATEGORY 'modules)
+    (cons 'DESCRIPTION "Returns 'REQUIRE-LOADED, 'REQUIRE-LOADING, 'REQUIRE-UNLOADED, or NIL if NAME has never been REQUIREd, PROVIDEd, or registered in this environment.")
+    (cons 'SEE-ALSO '(require loaded-modules module-info))))
+
+(register-doc 'module-info
+  (list
+    (cons 'NAME 'module-info)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(module-info 'name)")
+    (cons 'CATEGORY 'modules)
+    (cons 'DESCRIPTION "Returns an alist of diagnostic metadata REQUIRE tracks for NAME: STATE, SOURCE (an origin string such as \"registered\", \"embedded\", or \"disk:<path>\"), DEPS (names REQUIREd while NAME itself was loading), EXPORTS, and ERROR (the last load failure's message, or NIL).")
+    (cons 'SEE-ALSO '(require module-state loaded-modules))))
+
+;;; ============================================================
 ;;; FIRST-CLASS ENVIRONMENTS
 ;;; ============================================================
 
@@ -2749,6 +2818,10 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   "Capability feature flags and shell access"
   '(feature-enabled-p features shell))
 
+(register-category 'modules
+  "REQUIRE/PROVIDE load-once library loading (issue #256)"
+  '(require provide require-reload loaded-modules module-state module-info))
+
 (register-category 'environments
   "First-class environment objects"
   '(the-environment make-environment current-environment))
@@ -2805,3 +2878,5 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 ;;; Done loading help data. Keep stdlib loading silent so CLI -s output is
 ;;; machine-readable and benchmark harnesses can parse stdout directly.
+
+(provide 'help-data)

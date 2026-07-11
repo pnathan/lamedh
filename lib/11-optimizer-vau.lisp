@@ -452,3 +452,8 @@ BOUND is an optional list of locally-bound names that shadow globals."
   "Optimize a DEFUN-TYPED definition before HM checking and native compilation."
   (eval (optimize-form (cons 'defun-typed x)) e))
 
+;;; REQUIRE-ABLE (issue #256): `(require 'optimizer-vau)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'optimizer-vau)
+

@@ -22,6 +22,14 @@
 ;;; efficiently or correctly on its own; see src/evaluator/builtins_core.rs.
 ;;; No capability is required: these are pure data transforms with no host
 ;;; side effect.
+;;;
+;;; REQUIRE-ABLE (issue #256): TEXT is one of the optional embedded modules
+;;; -- `(require 'text)` on a `with_prelude()` environment loads exactly this
+;;; file. It requires 'modules first because DEFMODULE/WITH-MODULE are
+;;; themselves an optional library now (lib/27-modules.lisp), not Prelude.
+;;; `with_stdlib()` still loads this file unconditionally, unchanged.
+
+(require 'modules)
 
 (defmodule text
   (:export string->utf8 utf8->string utf8->string-lossy))
@@ -46,3 +54,5 @@ character decoding is wanted instead of an error."
 replacement character (U+FFFD) for any invalid byte sequence instead of
 signalling an error."
     (utf8->string-lossy* bytes)))
+
+(provide 'text '(text:string->utf8 text:utf8->string text:utf8->string-lossy))

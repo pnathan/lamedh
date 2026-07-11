@@ -904,3 +904,8 @@ changed."
       (list (cons 'file path)
             (cons 'definitions results)
             (cons 'frontier frontier)))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'condensation)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'condensation)

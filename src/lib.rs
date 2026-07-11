@@ -168,44 +168,59 @@
 //! The companion binary crate `lamedh-cli` (in `cli/`) adds `rustyline` (REPL
 //! line-editing) and `clap` (argument parsing) but does not affect the library.
 //!
-//! ## Standard library
+//! ## Standard library: Prelude vs. optional modules
 //!
-//! [`environment::Environment::with_stdlib`] loads the following modules in order,
-//! all embedded in the binary at compile time (no `.lisp` files are needed at
-//! runtime):
+//! [`environment::Environment::with_stdlib`] loads every file below, in
+//! order, all embedded in the binary at compile time (no `.lisp` files are
+//! needed at runtime) — unchanged since before issue #256.
+//! [`environment::Environment::with_prelude`] is a lighter alternative that
+//! loads only the **Prelude** rows; pull in an **optional** row by name with
+//! `(require 'name)` (see `lib/06-require.lisp`) once you have either kind
+//! of environment. `with_stdlib` is defined as Prelude plus every optional
+//! module, so it remains fully source- and behavior-compatible.
 //!
-//! | Module | Key functions |
-//! |--------|--------------|
-//! | `00-core.lisp` | `DEFUN`, `PROG2`, `CSET`, `CSETQ` |
-//! | `01-list.lisp` | `APPEND`, `MEMBER`, `LENGTH`, `REVERSE`, `PAIRLIS`, `NULL`, `NCONC`, `COPY`, `SASSOC`, `MAPC`, `MAPCON` |
-//! | `02-cxr.lisp` | All 30 CAR/CDR compositions `CAAR`…`CDDDDR` |
-//! | `03-meta.lisp` | `DOCUMENTATION` |
-//! | `04-predicates.lisp` | `EQUAL` (structural equality) |
-//! | `05-math.lisp` | `ONEP`, `MINUSP`, `ADD1`, `SUB1`, `MAX`, `MIN`, `ABS` |
-//! | `07-shell.lisp` | `SH`, `SHELL-STDOUT`, `SHELL-STDERR`, `SHELL-EXIT-CODE`, `SHELL-OK-P` |
-//! | `08-vau.lisp` | Kernel-style derived forms: `$IF`, `$AND`, `$OR`, `$SEQUENCE` |
-//! | `09-lisp15.lisp` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
-//! | `10-testing.lisp` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
-//! | `11-optimizer-vau.lisp` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
-//! | `19-call-graph.lisp` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
-//! | `20-condensation.lisp` | Condensation: `DEFCONCEPT`/`DERIVE`/laws/examples, row concepts with branded field access, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`) |
-//! | `21-cl-compat.lisp` | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
-//! | `22-guard.lisp` | Guard fences (#284) + capability processes (#140): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `CAPABILITIES-NEEDED`, `SPAWN`/`SPAWN*`/`AWAIT` |
-//! | `23-match.lisp` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
-//! | `24-rules.lisp` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
-//! | `25-variants.lisp` | Sum types: `DEFVARIANT`, exhaustive `VARIANT-CASE`, Option, Result |
-//! | `26-instrument.lisp` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
-//! | `27-modules.lisp` | Modules: `DEFMODULE`/`WITH-MODULE`/`IMPORT`, `MODULE:SYMBOL` names, custom capabilities |
-//! | `28-types.lisp` | The type table: verified declared schemes for builtins and stdlib functions |
-//! | `29-protocols.lisp` | THE dispatch system: typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances) + conformance (`IMPLEMENTS!`/`IMPLEMENTS-P`) |
-//! | `97-doc-renderer.lisp` | REPL documentation renderer |
-//! | `98-help-system.lisp` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
-//! | `99-help-data.lisp` | Structured documentation database for all built-ins |
+//! | File | Tier | Requirable as | Key functions |
+//! |------|------|---------------|--------------|
+//! | `00-core.lisp` | Prelude | — | `DEFUN`, `PROG2`, `CSET`, `CSETQ` |
+//! | `01-list.lisp` | Prelude | — | `APPEND`, `MEMBER`, `LENGTH`, `REVERSE`, `PAIRLIS`, `NULL`, `NCONC`, `COPY`, `SASSOC`, `MAPC`, `MAPCON` |
+//! | `02-cxr.lisp` | Prelude | — | All 30 CAR/CDR compositions `CAAR`…`CDDDDR` |
+//! | `03-meta.lisp` | Prelude | — | `DOCUMENTATION` |
+//! | `04-predicates.lisp` | Prelude | — | `EQUAL` (structural equality) |
+//! | `05-math.lisp` | Prelude | — | `ONEP`, `MINUSP`, `ADD1`, `SUB1`, `MAX`, `MIN`, `ABS` |
+//! | `06-require.lisp` | Prelude | — | `REQUIRE`, `PROVIDE`, `REQUIRE-RELOAD`, `LOADED-MODULES`, `MODULE-INFO` |
+//! | `07-shell.lisp` | optional | `shell` | `SH`, `SHELL-STDOUT`, `SHELL-STDERR`, `SHELL-EXIT-CODE`, `SHELL-OK-P` |
+//! | `08-vau.lisp` | Prelude | — | Kernel-style derived forms: `$IF`, `$AND`, `$OR`, `$SEQUENCE` |
+//! | `09-lisp15.lisp` | optional | `lisp15` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
+//! | `10-testing.lisp` | optional | `testing` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
+//! | `11-optimizer-vau.lisp` | optional | `optimizer-vau` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
+//! | `12-control.lisp` … `18-format.lisp` | Prelude | — | Control flow, functional helpers, strings, sets/hash, conditions, arrays, `FORMAT` |
+//! | `19-call-graph.lisp` | optional | `call-graph` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
+//! | `20-condensation.lisp` | optional | `condensation` | Condensation: `DEFRECORD`/`DERIVE`, branded field access, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`) |
+//! | `21-cl-compat.lisp` | Prelude | — | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
+//! | `22-guard.lisp` | optional | `guard` | Guard fences (#284) + capability processes (#140): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `CAPABILITIES-NEEDED`, `SPAWN`/`SPAWN*`/`AWAIT` |
+//! | `23-match.lisp` | optional | `match` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
+//! | `24-rules.lisp` | optional | `rules` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
+//! | `25-variants.lisp` | optional | `variants` | Sum types: `DEFVARIANT`, exhaustive `VARIANT-CASE`, Option, Result |
+//! | `26-instrument.lisp` | optional | `instrument` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
+//! | `27-modules.lisp` | optional | `modules` | Namespacing: `DEFMODULE`/`WITH-MODULE`/`IMPORT`, `MODULE:SYMBOL` names, custom capabilities |
+//! | `28-types.lisp` | optional | `types` | The type table: verified declared schemes for builtins and stdlib functions |
+//! | `29-protocols.lisp` | optional | `protocols` | THE dispatch system: typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances) + conformance (`IMPLEMENTS!`/`IMPLEMENTS-P`) |
+//! | `30-text.lisp` | optional | `text` | Explicit String ↔ UTF-8 `Array<Char>` boundary: `TEXT:STRING->UTF8`, `TEXT:UTF8->STRING` |
+//! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
+//! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
+//! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
 //!
 //! Shell helpers (`07-shell.lisp`) require the `SHELL` capability to be granted
-//! by the host (`env.enable_feature("SHELL")`) or CLI (`--capability SHELL`).
-//! The testing framework (`10-testing.lisp`) is automatically available when
-//! you call [`environment::Environment::with_stdlib`].
+//! by the host (`env.enable_feature("SHELL")`) or CLI (`--capability SHELL`)
+//! — independent of, and in addition to, whatever loads the file itself. The
+//! testing framework (`10-testing.lisp`) is automatically available when you
+//! call [`environment::Environment::with_stdlib`], or via `(require 'testing)`
+//! on a lighter [`environment::Environment::with_prelude`] environment.
+//!
+//! Embedders can also register their own optional libraries — see
+//! [`environment::Environment::register_module`] — and, with the `READ-FS`
+//! capability, a host can configure disk directories `require` searches as a
+//! last resort (see [`environment::Environment::add_module_search_path`]).
 
 pub mod environment;
 pub mod evaluator;
@@ -672,6 +687,13 @@ pub enum BuiltinFunc {
     Describe,
     SeeSource,
     Disassemble,
+    // REQUIRE/PROVIDE module registry kernel support (issue #256): source
+    // resolution (host-registered, then embedded) and evaluating an
+    // in-memory module source string at the environment root. See
+    // lib/06-require.lisp for the Lisp-layer policy these back.
+    ModuleSourceLookup,
+    ModuleSearchPaths,
+    EvalModuleSource,
     // Concurrency primitives (gated behind the `concurrency` feature)
     #[cfg(feature = "concurrency")]
     MakeChannel,
@@ -1667,6 +1689,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/04-predicates.lisp"),
     ),
     ("05-math.lisp", include_str!("../lib/05-math.lisp")),
+    ("06-require.lisp", include_str!("../lib/06-require.lisp")),
     ("07-shell.lisp", include_str!("../lib/07-shell.lisp")),
     ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
     ("09-lisp15.lisp", include_str!("../lib/09-lisp15.lisp")),
@@ -1732,10 +1755,238 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The Prelude: the stable general-purpose language vocabulary loaded by
+/// [`Environment::with_prelude`] (issue #256, epic #253). This is the ticket's
+/// explicit Prelude list ("00-core through 05-math; 08-vau; 12-control through
+/// 18-format; 21-cl-compat") plus `06-require.lisp` -- REQUIRE/PROVIDE must be
+/// Prelude vocabulary too, since pulling in any optional library by name is
+/// the entire point of the split (see that file's header comment). Every file
+/// here is also part of [`STDLIB_SOURCES`] (duplicated `include_str!`, not
+/// shared storage) so [`load_stdlib`] stays completely independent of this
+/// list and therefore behavior-unchanged.
+const PRELUDE_SOURCES: &[(&str, &str)] = &[
+    ("00-core.lisp", include_str!("../lib/00-core.lisp")),
+    ("01-list.lisp", include_str!("../lib/01-list.lisp")),
+    ("02-cxr.lisp", include_str!("../lib/02-cxr.lisp")),
+    ("03-meta.lisp", include_str!("../lib/03-meta.lisp")),
+    (
+        "04-predicates.lisp",
+        include_str!("../lib/04-predicates.lisp"),
+    ),
+    ("05-math.lisp", include_str!("../lib/05-math.lisp")),
+    ("06-require.lisp", include_str!("../lib/06-require.lisp")),
+    ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
+    ("12-control.lisp", include_str!("../lib/12-control.lisp")),
+    (
+        "13-functional.lisp",
+        include_str!("../lib/13-functional.lisp"),
+    ),
+    ("14-strings.lisp", include_str!("../lib/14-strings.lisp")),
+    (
+        "15-sets-hash.lisp",
+        include_str!("../lib/15-sets-hash.lisp"),
+    ),
+    (
+        "16-conditions.lisp",
+        include_str!("../lib/16-conditions.lisp"),
+    ),
+    ("17-arrays.lisp", include_str!("../lib/17-arrays.lisp")),
+    ("18-format.lisp", include_str!("../lib/18-format.lisp")),
+    (
+        "21-cl-compat.lisp",
+        include_str!("../lib/21-cl-compat.lisp"),
+    ),
+];
+
+/// The embedded tier of REQUIRE's module resolution (issue #256): every
+/// currently-optional library file, as `(module_name, filename, source)`.
+/// `module_name` is what Lisp code passes to `(require 'name)` -- derived
+/// from the filename by dropping the numeric prefix and `.lisp` extension,
+/// uppercased. [`with_prelude`](Environment::with_prelude) does not evaluate
+/// these; [`load_stdlib`] evaluates them all (via [`STDLIB_SOURCES`], not
+/// this list) for `with_stdlib`'s unchanged eager load, then marks each one
+/// REQUIRE-loaded so `(require 'name)` afterward is a correct no-op instead
+/// of a redundant re-evaluation.
+///
+/// Not every file here is independently requirable in true isolation --
+/// some optional libraries call into others' functions from inside function
+/// bodies (resolved lazily at call time, so the file still *loads* cleanly)
+/// without themselves declaring `(require ...)` for that use; auditing and
+/// declaring the full transitive dependency graph for the *pre-existing*
+/// optional libraries is out of scope for #256 (only two real *load-time*
+/// forward references exist among them today -- 30-text.lisp's own
+/// `(require 'modules)` and 99-help-data.lisp's own
+/// `(require 'help-system)` -- both already declared in those files).
+const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
+    (
+        "SHELL",
+        "07-shell.lisp",
+        include_str!("../lib/07-shell.lisp"),
+    ),
+    (
+        "LISP15",
+        "09-lisp15.lisp",
+        include_str!("../lib/09-lisp15.lisp"),
+    ),
+    (
+        "TESTING",
+        "10-testing.lisp",
+        include_str!("../lib/10-testing.lisp"),
+    ),
+    (
+        "OPTIMIZER-VAU",
+        "11-optimizer-vau.lisp",
+        include_str!("../lib/11-optimizer-vau.lisp"),
+    ),
+    (
+        "CALL-GRAPH",
+        "19-call-graph.lisp",
+        include_str!("../lib/19-call-graph.lisp"),
+    ),
+    (
+        "CONDENSATION",
+        "20-condensation.lisp",
+        include_str!("../lib/20-condensation.lisp"),
+    ),
+    (
+        "GUARD",
+        "22-guard.lisp",
+        include_str!("../lib/22-guard.lisp"),
+    ),
+    (
+        "MATCH",
+        "23-match.lisp",
+        include_str!("../lib/23-match.lisp"),
+    ),
+    (
+        "RULES",
+        "24-rules.lisp",
+        include_str!("../lib/24-rules.lisp"),
+    ),
+    (
+        "VARIANTS",
+        "25-variants.lisp",
+        include_str!("../lib/25-variants.lisp"),
+    ),
+    (
+        "INSTRUMENT",
+        "26-instrument.lisp",
+        include_str!("../lib/26-instrument.lisp"),
+    ),
+    (
+        "MODULES",
+        "27-modules.lisp",
+        include_str!("../lib/27-modules.lisp"),
+    ),
+    (
+        "TYPES",
+        "28-types.lisp",
+        include_str!("../lib/28-types.lisp"),
+    ),
+    (
+        "PROTOCOLS",
+        "29-protocols.lisp",
+        include_str!("../lib/29-protocols.lisp"),
+    ),
+    ("TEXT", "30-text.lisp", include_str!("../lib/30-text.lisp")),
+    (
+        "DOC-RENDERER",
+        "97-doc-renderer.lisp",
+        include_str!("../lib/97-doc-renderer.lisp"),
+    ),
+    (
+        "HELP-SYSTEM",
+        "98-help-system.lisp",
+        include_str!("../lib/98-help-system.lisp"),
+    ),
+    (
+        "HELP-DATA",
+        "99-help-data.lisp",
+        include_str!("../lib/99-help-data.lisp"),
+    ),
+];
+
+/// (source, origin) for `name` (already uppercased) via the first two tiers
+/// of REQUIRE's resolution order: sources the host registered directly on
+/// `env`, then sources embedded in the binary ([`OPTIONAL_MODULES`]). The
+/// third tier (disk, capability-gated) is implemented in Lisp
+/// (`$require-resolve-disk` in `lib/06-require.lisp`) since it is ordinary
+/// host-side-effecting work the existing `FILE-EXISTS-P`/`READ-FILE`
+/// builtins already do correctly.
+pub(crate) fn module_source_lookup(
+    name: &str,
+    env: &Shared<Environment>,
+) -> Option<(String, &'static str)> {
+    let upper = name.to_uppercase();
+    if let Some(src) = env.registered_module_source(&upper) {
+        return Some((src, "registered"));
+    }
+    OPTIONAL_MODULES
+        .iter()
+        .find(|(n, _, _)| *n == upper)
+        .map(|(_, _, src)| (src.to_string(), "embedded"))
+}
+
+/// Parse and evaluate every top-level form in `src` into `env`.
+///
+/// Unlike [`load_file`], `src` is an in-memory string (a registered or
+/// embedded module's source), not a path, so there is no include-cycle
+/// bookkeeping here -- `require`'s own loading-stack (in
+/// `lib/06-require.lisp`) already detects module cycles at a higher level.
+/// `name` is used only to prefix error messages, mirroring `load_file`'s
+/// `path:line:column: ...` shape.
+///
+/// Callers evaluating on behalf of `require` (see the `$EVAL-MODULE-SOURCE`
+/// builtin) pass [`Environment::root_of`]`(env)` so that `defun`/`def`
+/// inside a required module land as ordinary global bindings regardless of
+/// the lexical frame `require` itself happens to run in.
+pub fn eval_module_source(
+    name: &str,
+    src: &str,
+    env: &Shared<Environment>,
+) -> Result<(), LispError> {
+    let stripped = reader::strip_shebang(src);
+    let mut rest = stripped;
+    loop {
+        rest = reader::skip_ws(rest);
+        let form_offset = stripped.len() - rest.len();
+        match reader::read_next_with_depth_limit(rest, env, env.reader_depth_limit()) {
+            Ok(None) => return Ok(()),
+            Ok(Some((expr, rem))) => match evaluator::eval(&expr, env) {
+                Ok(_) => rest = rem,
+                Err(LispError::Generic(msg)) => {
+                    let (line, col) = reader::position_of(stripped, form_offset);
+                    return Err(LispError::Generic(format!("{name}:{line}:{col}: {msg}")));
+                }
+                Err(other) => return Err(other),
+            },
+            Err((offset, detail)) => {
+                let anchor = reader::error_anchor(stripped, form_offset, offset, &detail);
+                let (line, col) = reader::position_of(stripped, anchor);
+                return Err(LispError::Generic(format!(
+                    "{name}:{line}:{col}: parse error: {detail}"
+                )));
+            }
+        }
+    }
+}
+
 /// Evaluate the embedded standard library into `env`.
 ///
 /// This is called by [`Environment::with_stdlib`]; call it directly if you want
 /// to load the stdlib into an environment you already have.
+///
+/// Behavior-unchanged (issue #256): this evaluates exactly the same files in
+/// exactly the same order as before REQUIRE/PROVIDE existed. The only
+/// addition is bookkeeping, interleaved file-by-file: immediately after an
+/// `OPTIONAL_MODULES` file's forms finish evaluating, it is marked
+/// REQUIRE-loaded (bypassing resolution/eval/PROVIDE-checking -- see
+/// `$require-mark-loaded!`). This must happen inline, not in one pass after
+/// the whole loop, because some stdlib files themselves call `(require
+/// 'name)` for an earlier optional file (30-text.lisp requires 'modules;
+/// 99-help-data.lisp requires 'help-system) -- without interleaved marking
+/// that `require` call would redundantly re-evaluate the dependency a
+/// second time instead of seeing it already loaded.
 pub fn load_stdlib(env: &Shared<Environment>) -> Result<(), LispError> {
     for (filename, src) in STDLIB_SOURCES {
         let exprs = reader::read_all(src, env)
@@ -1744,8 +1995,60 @@ pub fn load_stdlib(env: &Shared<Environment>) -> Result<(), LispError> {
             evaluator::eval(&expr, env)
                 .map_err(|e| LispError::Generic(format!("stdlib eval error in {filename}: {e}")))?;
         }
+        if let Some((name, _, _)) = OPTIONAL_MODULES.iter().find(|(_, f, _)| f == filename) {
+            let mark =
+                format!("($require-mark-loaded! (quote {name}) \"embedded (stdlib {filename})\")");
+            eval_str(&mark, env).map_err(|e| {
+                LispError::Generic(format!(
+                    "stdlib require-registry bookkeeping failed for {filename}: {e}"
+                ))
+            })?;
+        }
     }
     Ok(())
+}
+
+/// Evaluate the Prelude (see `PRELUDE_SOURCES`) into `env`.
+///
+/// This is called by [`Environment::with_prelude`]; call it directly if you
+/// want to load just the Prelude into an environment you already have.
+pub fn load_prelude(env: &Shared<Environment>) -> Result<(), LispError> {
+    for (filename, src) in PRELUDE_SOURCES {
+        let exprs = reader::read_all(src, env)
+            .map_err(|e| LispError::Generic(format!("prelude parse error in {filename}: {e}")))?;
+        for expr in exprs {
+            evaluator::eval(&expr, env).map_err(|e| {
+                LispError::Generic(format!("prelude eval error in {filename}: {e}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Embedder API (issue #256): trigger `(require 'name)` from Rust, without
+/// writing Lisp source. Equivalent to `env.require_module(name)` in the
+/// epic's stated embedding surface; a free function taking `env` explicitly
+/// to match this crate's existing convention ([`load_file`], [`load_stdlib`]).
+pub fn require_module(name: &str, env: &Shared<Environment>) -> Result<LispVal, LispError> {
+    eval_str(&format!("(require (quote {name}))"), env)
+}
+
+/// Embedder API (issue #256): the module names currently REQUIRE-loaded in
+/// `env`, in no particular order. Equivalent to `env.loaded_modules()` in
+/// the epic's stated embedding surface.
+pub fn loaded_modules(env: &Shared<Environment>) -> Vec<String> {
+    match eval_str("(loaded-modules)", env) {
+        Ok(list) => list
+            .as_list_vec()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| match v {
+                LispVal::Symbol(s) => Some(s.borrow().name.clone()),
+                _ => None,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Evaluate a single s-expression string, returning the typed value.

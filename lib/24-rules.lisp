@@ -136,3 +136,8 @@ the builtin constant-folder on FORM."
   :when (opt-pure-p ?a))
 
 (defrule append-nil (append ?x nil) ?x)
+
+;;; REQUIRE-ABLE (issue #256): `(require 'rules)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'rules)

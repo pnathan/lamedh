@@ -335,3 +335,8 @@
             (terpri))
           (keys HELP-DB))
   (terpri))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'help-system)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'help-system)

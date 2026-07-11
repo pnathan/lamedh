@@ -191,3 +191,11 @@ redefinition. Errors if the module or an exported binding is unknown."
             (set n (eval ($module-qualify module n) e)))
           exports)
     module))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'modules)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged. Note the terminology overlap: this file's
+;;; own "module" (DEFMODULE's namespacing unit) is a different concept from
+;;; REQUIRE/PROVIDE's "module" (a load-once library unit); see
+;;; lib/06-require.lisp's header.
+(provide 'modules)

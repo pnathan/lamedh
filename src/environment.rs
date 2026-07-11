@@ -34,6 +34,7 @@ use crate::{BuiltinFunc, LispError, LispVal, Shared, SharedCell, SpecialForm, Sy
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::path::PathBuf;
 
 /// RAII guard for a shallow dynamic (special) variable binding.
 ///
@@ -327,6 +328,21 @@ struct SharedState {
     /// 512 MiB [`crate::with_large_stack`] thread. Tune with
     /// [`Environment::set_reader_depth_limit`] (issue #270).
     reader_depth_limit: Cell<usize>,
+    /// Host-registered module sources for `require` (issue #256): module name
+    /// (uppercased) -> Lisp source text, set only via
+    /// [`Environment::register_module`]. Checked before the compiled-in
+    /// embedded module table, per the resolution order documented in
+    /// `lib/06-require.lisp`. Shared across the whole environment chain, like
+    /// `features` — registering a module anywhere makes it requirable
+    /// everywhere in this interpreter instance.
+    module_sources: SharedCell<HashMap<String, String>>,
+    /// Disk directories `require` searches (its third, capability-gated,
+    /// resolution tier) for `<path>/<downcased-name>.lisp`. Empty by default.
+    /// Deliberately Rust-only to mutate ([`Environment::add_module_search_path`]
+    /// / [`Environment::clear_module_search_paths`]): Lisp can only *read* the
+    /// list (`$MODULE-SEARCH-PATHS`), so a host constrains disk resolution
+    /// without exposing that authority to sandboxed Lisp code.
+    module_search_paths: SharedCell<Vec<PathBuf>>,
 }
 
 impl SharedState {
@@ -339,6 +355,8 @@ impl SharedState {
             features: SharedCell::new(HashSet::new()),
             jit: SharedCell::new(crate::jit::Jit::new()),
             reader_depth_limit: Cell::new(crate::reader::DEFAULT_READER_DEPTH),
+            module_sources: SharedCell::new(HashMap::new()),
+            module_search_paths: SharedCell::new(Vec::new()),
         }
     }
 }
@@ -531,6 +549,25 @@ impl Environment {
         env.set(
             "LOAD-FILE".to_string(),
             LispVal::Builtin(BuiltinFunc::LoadFile),
+        );
+        // REQUIRE/PROVIDE module registry kernel support (issue #256): the
+        // Lisp layer (`lib/06-require.lisp`) owns resolution order, load-once
+        // bookkeeping, cycle detection, and PROVIDE-checking; these three
+        // builtins supply only what needs representation access —
+        // host-registered/embedded source lookup, the read-only search-path
+        // accessor, and evaluating an in-memory source string at the
+        // environment root.
+        env.set(
+            "$MODULE-SOURCE-LOOKUP".to_string(),
+            LispVal::Builtin(BuiltinFunc::ModuleSourceLookup),
+        );
+        env.set(
+            "$MODULE-SEARCH-PATHS".to_string(),
+            LispVal::Builtin(BuiltinFunc::ModuleSearchPaths),
+        );
+        env.set(
+            "$EVAL-MODULE-SOURCE".to_string(),
+            LispVal::Builtin(BuiltinFunc::EvalModuleSource),
         );
 
         env.set(
@@ -1164,6 +1201,28 @@ impl Environment {
         // levels on that thread (issue #270).
         env.set_reader_depth_limit(50_000);
         crate::load_stdlib(&env).expect("embedded stdlib should always load cleanly");
+        env
+    }
+
+    /// Create a new environment with all builtins **and** the Prelude —
+    /// the stable general-purpose language vocabulary — pre-loaded, but
+    /// *without* the optional embedded libraries `with_stdlib` also loads
+    /// (issue #256, epic #253; see `PRELUDE_SOURCES` in `src/lib.rs` for the
+    /// exact file list and `lib/06-require.lisp` for the rationale). Pull in
+    /// an optional library by name with `(require 'name)`; see
+    /// [`Environment::register_module`] to add your own.
+    ///
+    /// This is lighter than [`Environment::with_stdlib`] (no shell/testing/
+    /// optimizer/call-graph/condensation/pattern-matching/help database/...
+    /// vocabulary until requested) but is otherwise fully-featured: every
+    /// kernel builtin is registered, exactly as with `with_stdlib`.
+    ///
+    /// Panics if the embedded Prelude fails to parse or evaluate (which would
+    /// be a compile-time bug, not a runtime condition).
+    pub fn with_prelude() -> Shared<Environment> {
+        let env = Self::new_with_builtins();
+        env.set_reader_depth_limit(50_000);
+        crate::load_prelude(&env).expect("embedded prelude should always load cleanly");
         env
     }
 
@@ -1976,5 +2035,69 @@ impl Environment {
     /// Embedders running on small threads (< 4 MiB) should *lower* this.
     pub fn set_reader_depth_limit(&self, limit: usize) {
         self.shared.reader_depth_limit.set(limit);
+    }
+
+    // Module registry (issue #256): the embedder half of `require`. Lisp's
+    // half lives in `lib/06-require.lisp`; see that file's header for the
+    // full resolution order and load-once semantics.
+
+    /// Register `source` as `name`'s module source for `(require 'name)` in
+    /// this environment chain, without evaluating it. Takes priority over any
+    /// embedded module of the same name (host-registered is `require`'s first
+    /// resolution tier). `name` is case-normalized to uppercase, matching
+    /// Lisp symbol convention. Shared across the whole environment chain,
+    /// like [`Environment::enable_feature`].
+    pub fn register_module(&self, name: &str, source: &str) {
+        self.shared
+            .module_sources
+            .borrow_mut()
+            .insert(name.to_uppercase(), source.to_string());
+    }
+
+    /// The host-registered source for `name` (already uppercased), if any.
+    /// Used by the `$MODULE-SOURCE-LOOKUP` builtin; embedders normally don't
+    /// need this directly (registering is one-way — Lisp discovers sources
+    /// through `require`).
+    pub fn registered_module_source(&self, name: &str) -> Option<String> {
+        self.shared.module_sources.borrow().get(name).cloned()
+    }
+
+    /// Add a directory to `require`'s disk search path list (its third,
+    /// `READ-FS`-gated, resolution tier). Rust-only to mutate — Lisp can only
+    /// read the list via `$MODULE-SEARCH-PATHS` — so a host constrains disk
+    /// module resolution without exposing that authority to sandboxed Lisp
+    /// code. Empty by default: no implicit filesystem module directory.
+    pub fn add_module_search_path<P: Into<PathBuf>>(&self, path: P) {
+        self.shared
+            .module_search_paths
+            .borrow_mut()
+            .push(path.into());
+    }
+
+    /// Remove every configured disk module search path.
+    pub fn clear_module_search_paths(&self) {
+        self.shared.module_search_paths.borrow_mut().clear();
+    }
+
+    /// The currently configured disk module search paths, in the order they
+    /// were added.
+    pub fn module_search_paths(&self) -> Vec<PathBuf> {
+        self.shared.module_search_paths.borrow().clone()
+    }
+
+    /// Walk `env`'s lexical parent chain to its root (the frame whose
+    /// bindings live in the shared per-symbol value cells rather than a
+    /// per-frame map). `require` (issue #256) always evaluates a required
+    /// module's forms at the root, via this, so `defun`/`def` inside it
+    /// become ordinary global bindings regardless of the lexical frame
+    /// `require` itself happens to be called from — mirroring what already
+    /// happens for `with_stdlib`'s and top-level `load_file`'s loads, both of
+    /// which are always invoked with `env` already at the root.
+    pub fn root_of(env: &Shared<Environment>) -> Shared<Environment> {
+        let mut current = env.clone();
+        while let Some(parent) = current.parent.clone() {
+            current = parent;
+        }
+        current
     }
 }

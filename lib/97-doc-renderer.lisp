@@ -208,3 +208,11 @@
 (defun dump-docs ()
   "Dump all documentation to stdout in markdown format."
   (render-all-docs-md))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'doc-renderer)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged. Its functions read the help database
+;;; (lib/98-help-system.lisp / lib/99-help-data.lisp) at call time, not at
+;;; load time, so it does not itself REQUIRE them -- require those yourself
+;;; before calling DUMP-DOCS/RENDER-ALL-DOCS-MD if the database is empty.
+(provide 'doc-renderer)

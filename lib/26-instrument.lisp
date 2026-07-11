@@ -100,3 +100,8 @@ SET, not the quoting CSET macro)."
           (remhash $trace-originals name)
           ($trace-install name original)
           name))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'instrument)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'instrument)

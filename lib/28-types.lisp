@@ -67,3 +67,8 @@
 (mapc (lambda (f) (declare-type! f '(-> (any) int64)))
       '(floor ceiling round truncate))
 (declare-type! 'isqrt '(-> (int64) int64))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'types)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'types)
