@@ -619,9 +619,8 @@ $ target/debug/lamedh -s "(let ((chan (make-channel))) (channel-send chan 42) (c
 ; => 42
 ```
 
-(Note: avoid `ch` as a variable name — the reader parses a bare `ch` as
-the Lisp-1.5 assembly hex literal `Ch` (hex `C` = 12), not a symbol;
-`chan` is safe.)
+(`ch` is an ordinary symbol as of 0.3 — H-suffix hex literals require a
+leading digit — so name your channels whatever you like.)
 
 `channel-recv-timeout` bounds the wait; it returns `nil` if nothing
 arrives in time, or the value if one does:

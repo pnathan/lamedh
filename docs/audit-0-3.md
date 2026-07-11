@@ -125,4 +125,5 @@ schemes to declare (each verified against evaluator behavior first):
 - Equality zoo (`eq/equal/=`): identity / structural / numeric — three
   real relations; `string-equal` is case-insensitive comparison, not a
   duplicate.
-- `format` vs `format-str`: print vs build — distinct.
+- `format` destinations: `t` prints, `nil` builds a string — one name,
+  distinguished by the first argument (there is no separate `format-str`).
