@@ -9,6 +9,7 @@ Auto-generated from Lisp documentation database.
 - INTROSPECTION - Inspecting registered definitions and compiled code
 - FLAGS - Global condition/signal flags
 - ENVIRONMENTS - First-class environment objects
+- MODULES - REQUIRE/PROVIDE load-once library loading (issue #256)
 - CAPABILITIES - Capability feature flags and shell access
 - FILESYSTEM - File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)
 - ARRAYS - Mutable random-access arrays (Lisp 1.5 Appendix A)
@@ -19,6 +20,12 @@ Auto-generated from Lisp documentation database.
 - ERRORS - Error handling
 - IO - Input/Output
 - SPECIAL-FORMS - Special forms and macros
+- MIME - Case-insensitive multi-value headers and Content-Type parse/build (MIME module, lib/36-mime.lisp, issue #257)
+- JSON - JSON parse/stringify (JSON module, lib/35-json.lisp, issue #257)
+- URL - URL parse/build, percent-encoding, and query-string parse/build (URL module, lib/34-url.lisp, issue #257)
+- HEX - Hexadecimal encode/decode over Array<Char> bytes (HEX module, lib/33-hex.lisp, issue #257)
+- BASE64 - Base64 encode/decode over Array<Char> bytes (BASE64 module, lib/32-base64.lisp, issue #257)
+- PORTS - Synchronous binary I/O ports (PORTS module, lib/31-ports.lisp)
 - TEXT - Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)
 - STRINGS - String operations
 - LISTS - List manipulation
@@ -231,6 +238,95 @@ Creates a new first-class environment. With no arguments creates a fresh root en
 Returns a snapshot of all currently visible bindings as a hash table (symbol → value). Unlike THE-ENVIRONMENT, this returns a new, frozen hash table rather than a live environment object. Useful for inspection, debugging, and serialisation. The keys are symbols; the values are the current binding values at call time.
 
 **See also:** THE-ENVIRONMENT, MAKE-ENVIRONMENT, KEYS
+
+---
+
+# MODULES Functions
+
+REQUIRE/PROVIDE load-once library loading (issue #256)
+
+---
+
+### REQUIRE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(require 'name)`
+
+Loads module NAME (a symbol or string) at most once in this environment; returns NAME's canonical (uppercase) symbol. A second REQUIRE of an already-loaded module is a no-op -- it never re-evaluates the source. NAME resolves through a per-environment registry, in order: (1) sources a host registered directly (Rust: env.register_module); (2) sources embedded in the binary (the numbered optional library files -- SHELL, TESTING, CONDENSATION, TEXT, ...); (3) -- only under the READ-FS capability -- files under host-configured disk search paths. A REQUIRE for a module already mid-load (directly or transitively) is a hard cycle error naming the full chain. A module whose source signals an error, or which finishes without calling (PROVIDE 'NAME), is NOT marked loaded -- whatever top-level definitions it already ran are not rolled back. See docs/manual/10-modules.md section 10.7 for the full story, and lib/06-require.lisp for the implementation.
+
+**Examples:**
+```lisp
+(REQUIRE (QUOTE SHELL))  ; => SHELL
+(REQUIRE (QUOTE SHELL))  ; => SHELL
+```
+
+**See also:** PROVIDE, REQUIRE-RELOAD, LOADED-MODULES, MODULE-STATE, MODULE-INFO, DEFMODULE
+
+---
+
+### PROVIDE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(provide 'name) or (provide 'name exports)`
+
+Called from within a module's own source (as loaded by REQUIRE) to mark NAME complete; conventionally the module's last top-level form. REQUIRE signals an error if a module's source finishes evaluating without a matching PROVIDE. The optional EXPORTS argument is a list of symbol names this module claims to define -- metadata only, not enforcement (Lamedh has no reader-level privacy or namespaces); REQUIRE warns if a declared export ends up unbound, and warns (or, with *REQUIRE-STRICT-EXPORTS* bound to T, errors) if a declared export was already claimed by a different module.
+
+**Examples:**
+```lisp
+(PROVIDE (QUOTE MY-APP))  ; => MY-APP
+```
+
+**See also:** REQUIRE, REQUIRE-RELOAD
+
+---
+
+### REQUIRE-RELOAD
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(require-reload 'name)`
+
+Development/debugging operation: forces NAME to be re-resolved and re-evaluated via REQUIRE's normal procedure even though it is already loaded. Ordinary REQUIRE never does this implicitly -- use REQUIRE-RELOAD when iterating on a registered or disk module's source without restarting the interpreter. Errors if NAME is currently mid-load.
+
+**See also:** REQUIRE, PROVIDE
+
+---
+
+### LOADED-MODULES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(loaded-modules)`
+
+Returns all module names currently REQUIRE-loaded in this environment, in no particular order.
+
+**See also:** REQUIRE, MODULE-STATE, MODULE-INFO
+
+---
+
+### MODULE-STATE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(module-state 'name)`
+
+Returns 'REQUIRE-LOADED, 'REQUIRE-LOADING, 'REQUIRE-UNLOADED, or NIL if NAME has never been REQUIREd, PROVIDEd, or registered in this environment.
+
+**See also:** REQUIRE, LOADED-MODULES, MODULE-INFO
+
+---
+
+### MODULE-INFO
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(module-info 'name)`
+
+Returns an alist of diagnostic metadata REQUIRE tracks for NAME: STATE, SOURCE (an origin string such as "registered", "embedded", or "disk:<path>"), DEPS (names REQUIREd while NAME itself was loading), EXPORTS, and ERROR (the last load failure's message, or NIL).
+
+**See also:** REQUIRE, MODULE-STATE, LOADED-MODULES
 
 ---
 
@@ -1837,6 +1933,863 @@ Locally bind vau operatives for the extent of the body. Each clause's OPERANDS r
 
 ---
 
+# MIME Functions
+
+Case-insensitive multi-value headers and Content-Type parse/build (MIME module, lib/36-mime.lisp, issue #257)
+
+---
+
+### MIME:HEADER-NAME=
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:header-name= a b)`
+
+Case-insensitive header-name equality (Unicode default case fold; agrees with ASCII case-insensitive comparison for HTTP header names).
+
+**See also:** MIME:HEADERS-GET
+
+---
+
+### MIME:HEADERS-GET
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:headers-get headers name)`
+
+The value of the first header in headers (a list of (name . value) conses) whose name matches name case-insensitively, or NIL.
+
+**See also:** MIME:HEADERS-GET-ALL, MIME:HEADERS-ADD
+
+---
+
+### MIME:HEADERS-GET-ALL
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:headers-get-all headers name)`
+
+Every value in headers whose name matches name case-insensitively, in original order — the multi-value accessor (e.g. every Set-Cookie value; never collapsed into one).
+
+**See also:** MIME:HEADERS-GET, MIME:HEADERS-ADD
+
+---
+
+### MIME:HEADERS-ADD
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:headers-add headers name value)`
+
+Returns a fresh headers list with (name . value) appended after headers. Never removes or collapses an existing entry of the same name — use for multi-value headers like Set-Cookie.
+
+**See also:** MIME:HEADERS-SET, MIME:HEADERS-GET-ALL
+
+---
+
+### MIME:HEADERS-SET
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:headers-set headers name value)`
+
+Returns a fresh headers list with every existing entry matching name (case-insensitive) removed and (name . value) appended once. Use only for headers that must be singular (e.g. Content-Type).
+
+**See also:** MIME:HEADERS-ADD, MIME:HEADERS-REMOVE
+
+---
+
+### MIME:HEADERS-REMOVE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:headers-remove headers name)`
+
+Returns a fresh headers list with every entry matching name (case-insensitive) removed.
+
+**See also:** MIME:HEADERS-SET
+
+---
+
+### MIME:HEADERS-NAMES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:headers-names headers)`
+
+The distinct header names in headers, each spelled the way it was first given, in first-seen order.
+
+**See also:** MIME:HEADERS-GET
+
+---
+
+### MIME:PARSE-CONTENT-TYPE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:parse-content-type s)`
+
+Parses a Content-Type header value s into an alist (TYPE . type-string) (SUBTYPE . subtype-string) (PARAMETERS . ((name . value)...)), parameters in order with quoted-string values already unescaped.
+
+**Examples:**
+```lisp
+(CDR (ASSOC (QUOTE TYPE) (MIME:PARSE-CONTENT-TYPE "text/html")))  ; => "text"
+```
+
+**See also:** MIME:BUILD-CONTENT-TYPE, MIME:CONTENT-TYPE-PARAMETER
+
+---
+
+### MIME:BUILD-CONTENT-TYPE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:build-content-type type subtype &optional parameters)`
+
+Builds a Content-Type header value from type, subtype, and an optional PARAMETERS list of (name . value) conses. A parameter value is written as a bare token when possible, else a quoted-string with "\" and '"' escaped.
+
+**See also:** MIME:PARSE-CONTENT-TYPE
+
+---
+
+### MIME:CONTENT-TYPE-PARAMETER
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(mime:content-type-parameter ct name)`
+
+Case-insensitive lookup of parameter name's value in ct (as returned by mime:parse-content-type), or NIL if absent.
+
+**See also:** MIME:PARSE-CONTENT-TYPE
+
+---
+
+# JSON Functions
+
+JSON parse/stringify (JSON module, lib/35-json.lisp, issue #257)
+
+---
+
+### JSON:PARSE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(json:parse s &key (max-depth 512) (on-integer-overflow ':error))`
+
+Parses JSON text s into a Lamedh value: object -> hash table (String keys, last-key-wins), array -> Array (not a list), string -> String, true -> T, false -> NIL, null -> the keyword :NULL (never NIL). Integer literals in i64 range are exact Numbers; out-of-range literals error unless :on-integer-overflow is :float. Every other number is a Float. Strict: rejects trailing garbage, unescaped control characters, leading zeros, and unpaired \u surrogate escapes, with line/column-located errors. :max-depth bounds nesting so deep input is a clean error, not a stack overflow.
+
+**Examples:**
+```lisp
+(ARRAY->LIST (JSON:PARSE "[1,2,3]"))  ; => (1 2 3)
+(JSON:PARSE "null")  ; => :NULL
+```
+
+**See also:** JSON:STRINGIFY, JSON:NULL-P
+
+---
+
+### JSON:STRINGIFY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(json:stringify v &key (pretty nil) (indent 2))`
+
+Serializes Lamedh value v to a JSON text String — the exact inverse of json:parse's mapping. :pretty (default NIL) produces multi-line, :indent-space-per-level indented output; compact output otherwise. A Float is always written with a "." so it round-trips back as a Float, never an integer. Signals an error for a NaN/infinite Float or a value outside the mapping.
+
+**Examples:**
+```lisp
+(JSON:STRINGIFY (LIST->ARRAY (LIST 1 2)))  ; => "[1,2]"
+```
+
+**See also:** JSON:PARSE
+
+---
+
+### JSON:NULL-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(json:null-p v)`
+
+T if v is the JSON null marker :NULL that json:parse produces for a JSON null literal (never NIL, so it is distinguishable from false and from an empty array).
+
+**Examples:**
+```lisp
+(JSON:NULL-P (JSON:PARSE "null"))  ; => T
+(JSON:NULL-P (JSON:PARSE "false"))  ; => ()
+```
+
+**See also:** JSON:PARSE
+
+---
+
+# URL Functions
+
+URL parse/build, percent-encoding, and query-string parse/build (URL module, lib/34-url.lisp, issue #257)
+
+---
+
+### URL:ENCODE-PATH-SEGMENT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:encode-path-segment s)`
+
+Percent-encodes s for use as one URL path segment: unreserved characters plus sub-delims and ":"/"@" stay literal; every other byte (including "/") is percent-encoded.
+
+**Examples:**
+```lisp
+(URL:ENCODE-PATH-SEGMENT "a b")  ; => "a%20b"
+```
+
+**See also:** URL:ENCODE-QUERY-COMPONENT, URL:DECODE
+
+---
+
+### URL:ENCODE-QUERY-COMPONENT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:encode-query-component s)`
+
+Percent-encodes s for use as a query-string key or value: only unreserved characters stay literal; everything else (including "&"/"="/"+") is percent-encoded.
+
+**Examples:**
+```lisp
+(URL:ENCODE-QUERY-COMPONENT "a&b")  ; => "a%26b"
+```
+
+**See also:** URL:ENCODE-PATH-SEGMENT, URL:DECODE, URL:BUILD-QUERY
+
+---
+
+### URL:DECODE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:decode s &key (lossy nil))`
+
+Percent-decodes s (produced by either encoder — decoding is context-free) back into the original Unicode STRING. Malformed "%XX" escapes are always errors; invalid UTF-8 after decoding is a strict error unless :lossy is T (U+FFFD substitution).
+
+**Examples:**
+```lisp
+(URL:DECODE "a%20b")  ; => "a b"
+```
+
+**See also:** URL:ENCODE-PATH-SEGMENT, URL:ENCODE-QUERY-COMPONENT, URL:DECODE-PATH-SEGMENT, URL:DECODE-QUERY-COMPONENT
+
+---
+
+### URL:DECODE-PATH-SEGMENT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:decode-path-segment s &key (lossy nil))`
+
+Alias for url:decode: percent-decoding is context-free, so this is identical to url:decode-query-component; provided so url:encode-path-segment has a same-named inverse.
+
+**See also:** URL:DECODE, URL:ENCODE-PATH-SEGMENT
+
+---
+
+### URL:DECODE-QUERY-COMPONENT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:decode-query-component s &key (lossy nil))`
+
+Alias for url:decode; see url:decode-path-segment.
+
+**See also:** URL:DECODE, URL:ENCODE-QUERY-COMPONENT
+
+---
+
+### URL:PARSE-QUERY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:parse-query s)`
+
+Parses query string s (without a leading "?") into a list of (key . value) conses, decoded via url:decode, in the string's original order. Repeated keys are preserved as repeated conses, never collapsed.
+
+**Examples:**
+```lisp
+(URL:PARSE-QUERY "a=1&b=2")  ; => (("a" . "1") ("b" . "2"))
+```
+
+**See also:** URL:BUILD-QUERY, URL:DECODE
+
+---
+
+### URL:BUILD-QUERY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:build-query pairs)`
+
+Builds a query string (without a leading "?") from pairs, a list of (key . value) conses, in the given order — the inverse of url:parse-query. Each key/value is percent-encoded via url:encode-query-component.
+
+**See also:** URL:PARSE-QUERY, URL:ENCODE-QUERY-COMPONENT
+
+---
+
+### URL:PARSE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:parse s)`
+
+Parses URL string s into an alist with keys SCHEME, USERINFO, HOST, PORT, PATH, QUERY, FRAGMENT. All are NIL when absent except PATH (always a string). PATH/QUERY/FRAGMENT/USERINFO are raw — still percent-encoded exactly as they appeared, never auto-decoded. No regular expressions are used.
+
+**See also:** URL:BUILD, URL:SCHEME, URL:HOST, URL:PORT, URL:PATH, URL:QUERY, URL:FRAGMENT, URL:USERINFO
+
+---
+
+### URL:BUILD
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:build u)`
+
+Builds a URL string from an alist u shaped like url:parse's result — the inverse of url:parse.
+
+**Examples:**
+```lisp
+(URL:BUILD (URL:PARSE "https://example.com/a?x=1"))  ; => "https://example.com/a?x=1"
+```
+
+**See also:** URL:PARSE
+
+---
+
+### URL:SCHEME
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:scheme u)`
+
+The SCHEME field of a url:parse alist, or NIL.
+
+**See also:** URL:PARSE
+
+---
+
+### URL:USERINFO
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:userinfo u)`
+
+The USERINFO field of a url:parse alist, or NIL.
+
+**See also:** URL:PARSE
+
+---
+
+### URL:HOST
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:host u)`
+
+The HOST field of a url:parse alist (a bracketed IPv6 literal is kept as one unit), or NIL.
+
+**See also:** URL:PARSE
+
+---
+
+### URL:PORT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:port u)`
+
+The PORT field of a url:parse alist (a Number), or NIL.
+
+**See also:** URL:PARSE
+
+---
+
+### URL:PATH
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:path u)`
+
+The PATH field of a url:parse alist (always a String, raw/still-encoded, possibly "").
+
+**See also:** URL:PARSE
+
+---
+
+### URL:QUERY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:query u)`
+
+The QUERY field of a url:parse alist (raw text after "?", no leading delimiter), or NIL.
+
+**See also:** URL:PARSE, URL:PARSE-QUERY
+
+---
+
+### URL:FRAGMENT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(url:fragment u)`
+
+The FRAGMENT field of a url:parse alist (raw text after "#", no leading delimiter), or NIL.
+
+**See also:** URL:PARSE
+
+---
+
+# HEX Functions
+
+Hexadecimal encode/decode over Array<Char> bytes (HEX module, lib/33-hex.lisp, issue #257)
+
+---
+
+### HEX:ENCODE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(hex:encode bytes &key (case ':lower))`
+
+Encodes bytes (an Array<Char>, elements Char or integer 0-255) as a hexadecimal ASCII String, two digits per byte. :case is :lower (default) or :upper.
+
+**Examples:**
+```lisp
+(HEX:ENCODE (TEXT:STRING->UTF8 "AB"))  ; => "4142"
+```
+
+**See also:** HEX:DECODE, BASE64:ENCODE
+
+---
+
+### HEX:DECODE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(hex:decode s)`
+
+Decodes s (a hexadecimal ASCII String, case-insensitive) into a fresh Array<Char> of the exact original bytes. Strict: an odd-length input or a non-hex-digit character is a named error.
+
+**Examples:**
+```lisp
+(ARRAY->LIST (HEX:DECODE "4142"))  ; => (65 66)
+```
+
+**See also:** HEX:ENCODE, BASE64:DECODE
+
+---
+
+# BASE64 Functions
+
+Base64 encode/decode over Array<Char> bytes (BASE64 module, lib/32-base64.lisp, issue #257)
+
+---
+
+### BASE64:ENCODE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(base64:encode bytes &key (alphabet ':standard) (pad t))`
+
+Encodes bytes (an Array<Char>, elements Char or integer 0-255) as a Base64 ASCII String. :alphabet is :standard (RFC 4648 "+/") or :url (RFC 4648 "-_"); :pad (default T) controls trailing "=" padding.
+
+**Examples:**
+```lisp
+(BASE64:ENCODE (TEXT:STRING->UTF8 "foo"))  ; => "Zm9v"
+```
+
+**See also:** BASE64:DECODE, HEX:ENCODE
+
+---
+
+### BASE64:DECODE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(base64:decode s &key (alphabet ':standard) (pad t))`
+
+Decodes s (a Base64 ASCII String, per :alphabet/:pad) into a fresh Array<Char> of the exact original bytes. Strict: invalid characters, misplaced/wrong-count padding, or a length inconsistent with the padding policy are named errors.
+
+**Examples:**
+```lisp
+(ARRAY->LIST (BASE64:DECODE "Zm9v"))  ; => (102 111 111)
+```
+
+**See also:** BASE64:ENCODE, HEX:DECODE
+
+---
+
+# PORTS Functions
+
+Synchronous binary I/O ports (PORTS module, lib/31-ports.lisp)
+
+---
+
+### PORTS:OPEN-INPUT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:open-input path)`
+
+Opens path as a binary input port. Requires the READ-FS capability.
+
+**See also:** PORTS:OPEN-OUTPUT, PORTS:OPEN-APPEND, PORTS:WITH-OPEN-PORT
+
+---
+
+### PORTS:OPEN-OUTPUT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:open-output path)`
+
+Opens path as a binary output port, truncating any existing contents (creating the file if needed). Requires the CREATE-FS capability.
+
+**See also:** PORTS:OPEN-INPUT, PORTS:OPEN-APPEND
+
+---
+
+### PORTS:OPEN-APPEND
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:open-append path)`
+
+Opens path as a binary output port positioned at end-of-file, preserving existing contents. Requires the CREATE-FS capability.
+
+**See also:** PORTS:OPEN-OUTPUT
+
+---
+
+### PORTS:OPEN-INPUT-BYTES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:open-input-bytes bytes)`
+
+Opens a binary input port reading from a private copy of bytes (an Array<Char>). No capability required.
+
+**Examples:**
+```lisp
+(PORTS:READ-BYTE! (PORTS:OPEN-INPUT-BYTES (LIST->ARRAY (LIST 65))))  ; => 65
+```
+
+**See also:** PORTS:OPEN-OUTPUT-BYTES, PORTS:OUTPUT-CONTENTS
+
+---
+
+### PORTS:OPEN-OUTPUT-BYTES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:open-output-bytes)`
+
+Opens a binary output port that accumulates written bytes in memory; read them back with ports:output-contents. No capability required; not seekable.
+
+**See also:** PORTS:OPEN-INPUT-BYTES, PORTS:OUTPUT-CONTENTS
+
+---
+
+### PORTS:OUTPUT-CONTENTS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:output-contents port)`
+
+Returns the bytes written so far to an open-output-bytes port, as a fresh Array<Char>.
+
+**See also:** PORTS:OPEN-OUTPUT-BYTES
+
+---
+
+### PORTS:STDIN
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:stdin)`
+
+The process's standard input as a binary input port. Requires the IO capability.
+
+**See also:** PORTS:STDOUT, PORTS:STDERR
+
+---
+
+### PORTS:STDOUT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:stdout)`
+
+The process's standard output as a binary output port. No capability required.
+
+**See also:** PORTS:STDIN, PORTS:STDERR
+
+---
+
+### PORTS:STDERR
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:stderr)`
+
+The process's standard error as a binary output port. No capability required.
+
+**See also:** PORTS:STDIN, PORTS:STDOUT
+
+---
+
+### PORTS:READ-BYTE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:read-byte! port)`
+
+Reads one byte from port as an integer 0-255, or NIL at EOF.
+
+**See also:** PORTS:READ-BYTES!, PORTS:WRITE-BYTE!
+
+---
+
+### PORTS:READ-BYTES!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:read-bytes! port n)`
+
+Reads up to n bytes from port into a fresh Array<Char>. May be shorter than n (including empty) at EOF or on a partial read; never NIL.
+
+**See also:** PORTS:READ-BYTE!, PORTS:READ-ALL-BYTES!
+
+---
+
+### PORTS:WRITE-BYTE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:write-byte! port byte)`
+
+Writes one byte (a Char or integer 0-255) to port.
+
+**See also:** PORTS:WRITE-BYTES!, PORTS:READ-BYTE!
+
+---
+
+### PORTS:WRITE-BYTES!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:write-bytes! port bytes)`
+
+Writes bytes (an Array<Char>) to port; returns the number of bytes actually written (may be less than the length of bytes on a partial write).
+
+**See also:** PORTS:WRITE-BYTE!, PORTS:READ-BYTES!
+
+---
+
+### PORTS:FLUSH!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:flush! port)`
+
+Flushes any buffered writes on port.
+
+**See also:** PORTS:WRITE-BYTES!, PORTS:CLOSE!
+
+---
+
+### PORTS:CLOSE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:close! port)`
+
+Closes port. Idempotent: closing an already-closed port is a silent no-op, never an error.
+
+**See also:** PORTS:WITH-OPEN-PORT, PORTS:OPEN-P
+
+---
+
+### PORTS:OPEN-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:open-p port)`
+
+T if port has not been closed.
+
+**See also:** PORTS:CLOSE!, PORTS:PORT-P
+
+---
+
+### PORTS:INPUT-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:input-p port)`
+
+T if port supports reading.
+
+**See also:** PORTS:OUTPUT-P, PORTS:PORT-P
+
+---
+
+### PORTS:OUTPUT-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:output-p port)`
+
+T if port supports writing.
+
+**See also:** PORTS:INPUT-P, PORTS:PORT-P
+
+---
+
+### PORTS:SEEKABLE-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:seekable-p port)`
+
+T if port supports ports:position/ports:seek!. Files and byte-array input ports are seekable; byte-array output ports and the standard streams are not.
+
+**See also:** PORTS:POSITION, PORTS:SEEK!
+
+---
+
+### PORTS:POSITION
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:position port)`
+
+The current byte offset in a seekable port. Signals an error on a non-seekable port. Qualified-only: deliberately not bound unqualified by (import ports), because the Prelude's flat (position item lst) list helper would be shadowed.
+
+**See also:** PORTS:SEEK!, PORTS:SEEKABLE-P
+
+---
+
+### PORTS:SEEK!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:seek! port offset)`
+
+Moves a seekable port to absolute byte offset from the start; returns the new position. Signals an error on a non-seekable port.
+
+**See also:** PORTS:POSITION, PORTS:SEEKABLE-P
+
+---
+
+### PORTS:PORT-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:port-p v)`
+
+T if v is a port (open or closed) of any kind.
+
+**See also:** PORTS:OPEN-P, PORTS:INPUT-P, PORTS:OUTPUT-P
+
+---
+
+### PORTS:NAME
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:name port)`
+
+port's diagnostic name (e.g. a file path, or "<stdin>").
+
+**See also:** PORTS:KIND
+
+---
+
+### PORTS:KIND
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:kind port)`
+
+port's diagnostic resource kind, as a symbol: FILE, MEMORY, STDIN, STDOUT, or STDERR (or a host-registered kind for an embedder-wrapped port).
+
+**See also:** PORTS:NAME
+
+---
+
+### PORTS:READ-LINE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:read-line! port)`
+
+Reads one line of text from port: bytes up to but excluding a trailing newline, decoded as UTF-8 (lossy). Returns NIL only at true EOF; a final line with no trailing newline is still returned once.
+
+**See also:** PORTS:READ-STRING!, PORTS:WRITE-STRING!
+
+---
+
+### PORTS:READ-STRING!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:read-string! port n)`
+
+Reads up to n bytes from port and decodes them as UTF-8 (lossy), returning a STRING.
+
+**See also:** PORTS:READ-LINE!, PORTS:WRITE-STRING!
+
+---
+
+### PORTS:WRITE-STRING!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:write-string! port s)`
+
+Writes string s to port as its exact UTF-8 bytes. Returns the number of bytes written.
+
+**See also:** PORTS:READ-STRING!, PORTS:READ-LINE!
+
+---
+
+### PORTS:READ-ALL-BYTES!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(ports:read-all-bytes! port)`
+
+Reads port to EOF, returning every remaining byte as a fresh Array<Char>.
+
+**See also:** PORTS:READ-BYTES!
+
+---
+
+### PORTS:WITH-OPEN-PORT
+
+**Type:** `MACRO`
+
+**Syntax:** `(ports:with-open-port (var port-expr) body...)`
+
+Binds var to the value of port-expr (a port) for body's dynamic extent, unconditionally closing it afterward: normal return, an ordinary error, THROW, RETURN-FROM, or GO unwinding all run the close, via UNWIND-PROTECT. Double-close is a no-op, so body may close var itself without error.
+
+**Examples:**
+```lisp
+(PORTS:WITH-OPEN-PORT (P (PORTS:OPEN-INPUT-BYTES (LIST->ARRAY (LIST 1 2)))) (PORTS:READ-BYTE! P))  ; => 1
+```
+
+**See also:** PORTS:CLOSE!, PORTS:OPEN-INPUT, PORTS:OPEN-OUTPUT
+
+---
+
 # TEXT Functions
 
 Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)
@@ -2555,7 +3508,7 @@ Returns s with its first character uppercased (ASCII) and the rest lowercased.
 
 **Examples:**
 ```lisp
-(STRING-CAPITALIZE "hELLO world")  ; => "Hello world"
+(STRING-CAPITALIZE "hELLO world")  ; => "Hello World"
 ```
 
 **See also:** STRING-UPCASE, STRING-DOWNCASE

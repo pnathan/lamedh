@@ -18,6 +18,7 @@ is closed by default. This manual covers the language as of version 0.3.0.
 | [9. The Typed JIT and Embedding](09-jit-and-embedding.md) | Execution tiers, compilation, hosting Lamedh from Rust |
 | [10. Modules](10-modules.md) | `defmodule`, `with-module`, `import`, module introspection, capability provision, `require`/`provide` load-once libraries |
 | [11. Ports and Binary I/O](11-ports-and-io.md) | The `PORTS` module: files, in-memory byte ports, standard streams, `with-open-port`, structured I/O errors, host-wrapped ports |
+| [12. Codecs](12-codecs.md) | `JSON`, `URL`, `BASE64`, `HEX`, `MIME`: parse/stringify, percent-encoding, Base64/Hex byte codecs, headers and Content-Type — capability-free pure-data transforms |
 
 Conventions used throughout: REPL results are shown as `; => result`
 comments; commands that need sandbox capabilities show the full command

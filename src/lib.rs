@@ -207,6 +207,11 @@
 //! | `29-protocols.lisp` | optional | `protocols` | THE dispatch system: typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances) + conformance (`IMPLEMENTS!`/`IMPLEMENTS-P`) |
 //! | `30-text.lisp` | optional | `text` | Explicit String ↔ UTF-8 `Array<Char>` boundary: `TEXT:STRING->UTF8`, `TEXT:UTF8->STRING` |
 //! | `31-ports.lisp` | optional | `ports` | Synchronous binary ports: `PORTS:OPEN-INPUT`/`OPEN-OUTPUT`/`OPEN-APPEND`, `READ-BYTE!`/`READ-BYTES!`/`WRITE-BYTE!`/`WRITE-BYTES!`, `WITH-OPEN-PORT` |
+//! | `32-base64.lisp` | optional | `base64` | `BASE64:ENCODE`/`DECODE`: `Array<Char>` bytes <-> Base64 `String`, `:STANDARD`/`:URL` alphabets, explicit padding |
+//! | `33-hex.lisp` | optional | `hex` | `HEX:ENCODE`/`DECODE`: `Array<Char>` bytes <-> hexadecimal `String`, predictable-case encode, case-insensitive decode |
+//! | `34-url.lisp` | optional | `url` | `URL:ENCODE-PATH-SEGMENT`/`ENCODE-QUERY-COMPONENT`/`DECODE`, `URL:PARSE`/`BUILD`, `URL:PARSE-QUERY`/`BUILD-QUERY` |
+//! | `35-json.lisp` | optional | `json` | `JSON:PARSE`/`STRINGIFY`: object<->hash table, array<->`Array`, `true`/`false`/`null`<->`T`/`NIL`/`:NULL`, `JSON:NULL-P` |
+//! | `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -2148,6 +2153,11 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ),
     ("30-text.lisp", include_str!("../lib/30-text.lisp")),
     ("31-ports.lisp", include_str!("../lib/31-ports.lisp")),
+    ("32-base64.lisp", include_str!("../lib/32-base64.lisp")),
+    ("33-hex.lisp", include_str!("../lib/33-hex.lisp")),
+    ("34-url.lisp", include_str!("../lib/34-url.lisp")),
+    ("35-json.lisp", include_str!("../lib/35-json.lisp")),
+    ("36-mime.lisp", include_str!("../lib/36-mime.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -2220,10 +2230,11 @@ const PRELUDE_SOURCES: &[(&str, &str)] = &[
 /// bodies (resolved lazily at call time, so the file still *loads* cleanly)
 /// without themselves declaring `(require ...)` for that use; auditing and
 /// declaring the full transitive dependency graph for the *pre-existing*
-/// optional libraries is out of scope for #256 (only two real *load-time*
-/// forward references exist among them today -- 30-text.lisp's own
-/// `(require 'modules)` and 99-help-data.lisp's own
-/// `(require 'help-system)` -- both already declared in those files).
+/// optional libraries is out of scope for #256 (the real *load-time*
+/// forward references among them: 30-text.lisp's own `(require 'modules)`;
+/// 99-help-data.lisp's own `(require 'help-system)`; and #257's five codec
+/// modules, each `(require 'modules)` and `base64`/`hex`/`json`/`url` also
+/// `(require 'text)` -- all already declared in those files).
 const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
     (
         "SHELL",
@@ -2301,6 +2312,15 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         "31-ports.lisp",
         include_str!("../lib/31-ports.lisp"),
     ),
+    (
+        "BASE64",
+        "32-base64.lisp",
+        include_str!("../lib/32-base64.lisp"),
+    ),
+    ("HEX", "33-hex.lisp", include_str!("../lib/33-hex.lisp")),
+    ("URL", "34-url.lisp", include_str!("../lib/34-url.lisp")),
+    ("JSON", "35-json.lisp", include_str!("../lib/35-json.lisp")),
+    ("MIME", "36-mime.lisp", include_str!("../lib/36-mime.lisp")),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

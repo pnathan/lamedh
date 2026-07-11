@@ -2185,6 +2185,311 @@ The classic Lisp 1.5 spelling.")
     (cons 'SEE-ALSO '(ports:read-bytes!))))
 
 ;;; ============================================================
+;;; BASE64 MODULE: Base64 encode/decode (issue #257, epic #253)
+;;; ============================================================
+
+(register-doc 'base64:encode
+  (list
+    (cons 'NAME 'base64:encode)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(base64:encode bytes &key (alphabet ':standard) (pad t))")
+    (cons 'CATEGORY 'base64)
+    (cons 'DESCRIPTION "Encodes bytes (an Array<Char>, elements Char or integer 0-255) as a Base64 ASCII String. :alphabet is :standard (RFC 4648 \"+/\") or :url (RFC 4648 \"-_\"); :pad (default T) controls trailing \"=\" padding.")
+    (cons 'EXAMPLES '(((base64:encode (text:string->utf8 "foo")) "Zm9v")))
+    (cons 'SEE-ALSO '(base64:decode hex:encode))))
+
+(register-doc 'base64:decode
+  (list
+    (cons 'NAME 'base64:decode)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(base64:decode s &key (alphabet ':standard) (pad t))")
+    (cons 'CATEGORY 'base64)
+    (cons 'DESCRIPTION "Decodes s (a Base64 ASCII String, per :alphabet/:pad) into a fresh Array<Char> of the exact original bytes. Strict: invalid characters, misplaced/wrong-count padding, or a length inconsistent with the padding policy are named errors.")
+    (cons 'EXAMPLES '(((array->list (base64:decode "Zm9v")) (102 111 111))))
+    (cons 'SEE-ALSO '(base64:encode hex:decode))))
+
+;;; ============================================================
+;;; HEX MODULE: hexadecimal encode/decode (issue #257, epic #253)
+;;; ============================================================
+
+(register-doc 'hex:encode
+  (list
+    (cons 'NAME 'hex:encode)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(hex:encode bytes &key (case ':lower))")
+    (cons 'CATEGORY 'hex)
+    (cons 'DESCRIPTION "Encodes bytes (an Array<Char>, elements Char or integer 0-255) as a hexadecimal ASCII String, two digits per byte. :case is :lower (default) or :upper.")
+    (cons 'EXAMPLES '(((hex:encode (text:string->utf8 "AB")) "4142")))
+    (cons 'SEE-ALSO '(hex:decode base64:encode))))
+
+(register-doc 'hex:decode
+  (list
+    (cons 'NAME 'hex:decode)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(hex:decode s)")
+    (cons 'CATEGORY 'hex)
+    (cons 'DESCRIPTION "Decodes s (a hexadecimal ASCII String, case-insensitive) into a fresh Array<Char> of the exact original bytes. Strict: an odd-length input or a non-hex-digit character is a named error.")
+    (cons 'EXAMPLES '(((array->list (hex:decode "4142")) (65 66))))
+    (cons 'SEE-ALSO '(hex:encode base64:decode))))
+
+;;; ============================================================
+;;; URL MODULE: percent-encoding, URL, and query-string parse/build
+;;; (issue #257, epic #253)
+;;; ============================================================
+
+(register-doc 'url:encode-path-segment
+  (list
+    (cons 'NAME 'url:encode-path-segment)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:encode-path-segment s)")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Percent-encodes s for use as one URL path segment: unreserved characters plus sub-delims and \":\"/\"@\" stay literal; every other byte (including \"/\") is percent-encoded.")
+    (cons 'EXAMPLES '(((url:encode-path-segment "a b") "a%20b")))
+    (cons 'SEE-ALSO '(url:encode-query-component url:decode))))
+
+(register-doc 'url:encode-query-component
+  (list
+    (cons 'NAME 'url:encode-query-component)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:encode-query-component s)")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Percent-encodes s for use as a query-string key or value: only unreserved characters stay literal; everything else (including \"&\"/\"=\"/\"+\") is percent-encoded.")
+    (cons 'EXAMPLES '(((url:encode-query-component "a&b") "a%26b")))
+    (cons 'SEE-ALSO '(url:encode-path-segment url:decode url:build-query))))
+
+(register-doc 'url:decode
+  (list
+    (cons 'NAME 'url:decode)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:decode s &key (lossy nil))")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Percent-decodes s (produced by either encoder — decoding is context-free) back into the original Unicode STRING. Malformed \"%XX\" escapes are always errors; invalid UTF-8 after decoding is a strict error unless :lossy is T (U+FFFD substitution).")
+    (cons 'EXAMPLES '(((url:decode "a%20b") "a b")))
+    (cons 'SEE-ALSO '(url:encode-path-segment url:encode-query-component url:decode-path-segment url:decode-query-component))))
+
+(register-doc 'url:decode-path-segment
+  (list
+    (cons 'NAME 'url:decode-path-segment)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:decode-path-segment s &key (lossy nil))")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Alias for url:decode: percent-decoding is context-free, so this is identical to url:decode-query-component; provided so url:encode-path-segment has a same-named inverse.")
+    (cons 'SEE-ALSO '(url:decode url:encode-path-segment))))
+
+(register-doc 'url:decode-query-component
+  (list
+    (cons 'NAME 'url:decode-query-component)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:decode-query-component s &key (lossy nil))")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Alias for url:decode; see url:decode-path-segment.")
+    (cons 'SEE-ALSO '(url:decode url:encode-query-component))))
+
+(register-doc 'url:parse-query
+  (list
+    (cons 'NAME 'url:parse-query)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:parse-query s)")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Parses query string s (without a leading \"?\") into a list of (key . value) conses, decoded via url:decode, in the string's original order. Repeated keys are preserved as repeated conses, never collapsed.")
+    (cons 'EXAMPLES '(((url:parse-query "a=1&b=2") (("a" . "1") ("b" . "2")))))
+    (cons 'SEE-ALSO '(url:build-query url:decode))))
+
+(register-doc 'url:build-query
+  (list
+    (cons 'NAME 'url:build-query)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:build-query pairs)")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Builds a query string (without a leading \"?\") from pairs, a list of (key . value) conses, in the given order — the inverse of url:parse-query. Each key/value is percent-encoded via url:encode-query-component.")
+    (cons 'SEE-ALSO '(url:parse-query url:encode-query-component))))
+
+(register-doc 'url:parse
+  (list
+    (cons 'NAME 'url:parse)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:parse s)")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Parses URL string s into an alist with keys SCHEME, USERINFO, HOST, PORT, PATH, QUERY, FRAGMENT. All are NIL when absent except PATH (always a string). PATH/QUERY/FRAGMENT/USERINFO are raw — still percent-encoded exactly as they appeared, never auto-decoded. No regular expressions are used.")
+    (cons 'SEE-ALSO '(url:build url:scheme url:host url:port url:path url:query url:fragment url:userinfo))))
+
+(register-doc 'url:build
+  (list
+    (cons 'NAME 'url:build)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(url:build u)")
+    (cons 'CATEGORY 'url)
+    (cons 'DESCRIPTION "Builds a URL string from an alist u shaped like url:parse's result — the inverse of url:parse.")
+    (cons 'EXAMPLES '(((url:build (url:parse "https://example.com/a?x=1")) "https://example.com/a?x=1")))
+    (cons 'SEE-ALSO '(url:parse))))
+
+(register-doc 'url:scheme
+  (list (cons 'NAME 'url:scheme) (cons 'TYPE 'function) (cons 'SYNTAX "(url:scheme u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The SCHEME field of a url:parse alist, or NIL.")
+        (cons 'SEE-ALSO '(url:parse))))
+
+(register-doc 'url:userinfo
+  (list (cons 'NAME 'url:userinfo) (cons 'TYPE 'function) (cons 'SYNTAX "(url:userinfo u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The USERINFO field of a url:parse alist, or NIL.")
+        (cons 'SEE-ALSO '(url:parse))))
+
+(register-doc 'url:host
+  (list (cons 'NAME 'url:host) (cons 'TYPE 'function) (cons 'SYNTAX "(url:host u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The HOST field of a url:parse alist (a bracketed IPv6 literal is kept as one unit), or NIL.")
+        (cons 'SEE-ALSO '(url:parse))))
+
+(register-doc 'url:port
+  (list (cons 'NAME 'url:port) (cons 'TYPE 'function) (cons 'SYNTAX "(url:port u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The PORT field of a url:parse alist (a Number), or NIL.")
+        (cons 'SEE-ALSO '(url:parse))))
+
+(register-doc 'url:path
+  (list (cons 'NAME 'url:path) (cons 'TYPE 'function) (cons 'SYNTAX "(url:path u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The PATH field of a url:parse alist (always a String, raw/still-encoded, possibly \"\").")
+        (cons 'SEE-ALSO '(url:parse))))
+
+(register-doc 'url:query
+  (list (cons 'NAME 'url:query) (cons 'TYPE 'function) (cons 'SYNTAX "(url:query u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The QUERY field of a url:parse alist (raw text after \"?\", no leading delimiter), or NIL.")
+        (cons 'SEE-ALSO '(url:parse url:parse-query))))
+
+(register-doc 'url:fragment
+  (list (cons 'NAME 'url:fragment) (cons 'TYPE 'function) (cons 'SYNTAX "(url:fragment u)")
+        (cons 'CATEGORY 'url) (cons 'DESCRIPTION "The FRAGMENT field of a url:parse alist (raw text after \"#\", no leading delimiter), or NIL.")
+        (cons 'SEE-ALSO '(url:parse))))
+
+;;; ============================================================
+;;; JSON MODULE: JSON parse/stringify (issue #257, epic #253)
+;;; ============================================================
+
+(register-doc 'json:parse
+  (list
+    (cons 'NAME 'json:parse)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(json:parse s &key (max-depth 512) (on-integer-overflow ':error))")
+    (cons 'CATEGORY 'json)
+    (cons 'DESCRIPTION "Parses JSON text s into a Lamedh value: object -> hash table (String keys, last-key-wins), array -> Array (not a list), string -> String, true -> T, false -> NIL, null -> the keyword :NULL (never NIL). Integer literals in i64 range are exact Numbers; out-of-range literals error unless :on-integer-overflow is :float. Every other number is a Float. Strict: rejects trailing garbage, unescaped control characters, leading zeros, and unpaired \\u surrogate escapes, with line/column-located errors. :max-depth bounds nesting so deep input is a clean error, not a stack overflow.")
+    (cons 'EXAMPLES '(((array->list (json:parse "[1,2,3]")) (1 2 3))
+                       ((json:parse "null") :NULL)))
+    (cons 'SEE-ALSO '(json:stringify json:null-p))))
+
+(register-doc 'json:stringify
+  (list
+    (cons 'NAME 'json:stringify)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(json:stringify v &key (pretty nil) (indent 2))")
+    (cons 'CATEGORY 'json)
+    (cons 'DESCRIPTION "Serializes Lamedh value v to a JSON text String — the exact inverse of json:parse's mapping. :pretty (default NIL) produces multi-line, :indent-space-per-level indented output; compact output otherwise. A Float is always written with a \".\" so it round-trips back as a Float, never an integer. Signals an error for a NaN/infinite Float or a value outside the mapping.")
+    (cons 'EXAMPLES '(((json:stringify (list->array (list 1 2))) "[1,2]")))
+    (cons 'SEE-ALSO '(json:parse))))
+
+(register-doc 'json:null-p
+  (list
+    (cons 'NAME 'json:null-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(json:null-p v)")
+    (cons 'CATEGORY 'json)
+    (cons 'DESCRIPTION "T if v is the JSON null marker :NULL that json:parse produces for a JSON null literal (never NIL, so it is distinguishable from false and from an empty array).")
+    (cons 'EXAMPLES '(((json:null-p (json:parse "null")) T)
+                       ((json:null-p (json:parse "false")) ())))
+    (cons 'SEE-ALSO '(json:parse))))
+
+;;; ============================================================
+;;; MIME MODULE: headers and Content-Type (issue #257, epic #253)
+;;; ============================================================
+
+(register-doc 'mime:header-name=
+  (list
+    (cons 'NAME 'mime:header-name=)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:header-name= a b)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Case-insensitive header-name equality (Unicode default case fold; agrees with ASCII case-insensitive comparison for HTTP header names).")
+    (cons 'SEE-ALSO '(mime:headers-get))))
+
+(register-doc 'mime:headers-get
+  (list
+    (cons 'NAME 'mime:headers-get)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:headers-get headers name)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "The value of the first header in headers (a list of (name . value) conses) whose name matches name case-insensitively, or NIL.")
+    (cons 'SEE-ALSO '(mime:headers-get-all mime:headers-add))))
+
+(register-doc 'mime:headers-get-all
+  (list
+    (cons 'NAME 'mime:headers-get-all)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:headers-get-all headers name)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Every value in headers whose name matches name case-insensitively, in original order — the multi-value accessor (e.g. every Set-Cookie value; never collapsed into one).")
+    (cons 'SEE-ALSO '(mime:headers-get mime:headers-add))))
+
+(register-doc 'mime:headers-add
+  (list
+    (cons 'NAME 'mime:headers-add)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:headers-add headers name value)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Returns a fresh headers list with (name . value) appended after headers. Never removes or collapses an existing entry of the same name — use for multi-value headers like Set-Cookie.")
+    (cons 'SEE-ALSO '(mime:headers-set mime:headers-get-all))))
+
+(register-doc 'mime:headers-set
+  (list
+    (cons 'NAME 'mime:headers-set)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:headers-set headers name value)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Returns a fresh headers list with every existing entry matching name (case-insensitive) removed and (name . value) appended once. Use only for headers that must be singular (e.g. Content-Type).")
+    (cons 'SEE-ALSO '(mime:headers-add mime:headers-remove))))
+
+(register-doc 'mime:headers-remove
+  (list
+    (cons 'NAME 'mime:headers-remove)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:headers-remove headers name)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Returns a fresh headers list with every entry matching name (case-insensitive) removed.")
+    (cons 'SEE-ALSO '(mime:headers-set))))
+
+(register-doc 'mime:headers-names
+  (list
+    (cons 'NAME 'mime:headers-names)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:headers-names headers)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "The distinct header names in headers, each spelled the way it was first given, in first-seen order.")
+    (cons 'SEE-ALSO '(mime:headers-get))))
+
+(register-doc 'mime:parse-content-type
+  (list
+    (cons 'NAME 'mime:parse-content-type)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:parse-content-type s)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Parses a Content-Type header value s into an alist (TYPE . type-string) (SUBTYPE . subtype-string) (PARAMETERS . ((name . value)...)), parameters in order with quoted-string values already unescaped.")
+    (cons 'EXAMPLES '(((cdr (assoc 'type (mime:parse-content-type "text/html"))) "text")))
+    (cons 'SEE-ALSO '(mime:build-content-type mime:content-type-parameter))))
+
+(register-doc 'mime:build-content-type
+  (list
+    (cons 'NAME 'mime:build-content-type)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:build-content-type type subtype &optional parameters)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Builds a Content-Type header value from type, subtype, and an optional PARAMETERS list of (name . value) conses. A parameter value is written as a bare token when possible, else a quoted-string with \"\\\" and '\"' escaped.")
+    (cons 'SEE-ALSO '(mime:parse-content-type))))
+
+(register-doc 'mime:content-type-parameter
+  (list
+    (cons 'NAME 'mime:content-type-parameter)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(mime:content-type-parameter ct name)")
+    (cons 'CATEGORY 'mime)
+    (cons 'DESCRIPTION "Case-insensitive lookup of parameter name's value in ct (as returned by mime:parse-content-type), or NIL if absent.")
+    (cons 'SEE-ALSO '(mime:parse-content-type))))
+
+;;; ============================================================
 ;;; ADDITIONAL LIST OPERATIONS
 ;;; ============================================================
 
@@ -3049,6 +3354,32 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     ports:name ports:kind
     ports:read-line! ports:read-string! ports:write-string!
     ports:read-all-bytes! ports:with-open-port))
+
+(register-category 'base64
+  "Base64 encode/decode over Array<Char> bytes (BASE64 module, lib/32-base64.lisp, issue #257)"
+  '(base64:encode base64:decode))
+
+(register-category 'hex
+  "Hexadecimal encode/decode over Array<Char> bytes (HEX module, lib/33-hex.lisp, issue #257)"
+  '(hex:encode hex:decode))
+
+(register-category 'url
+  "URL parse/build, percent-encoding, and query-string parse/build (URL module, lib/34-url.lisp, issue #257)"
+  '(url:encode-path-segment url:encode-query-component
+    url:decode url:decode-path-segment url:decode-query-component
+    url:parse-query url:build-query
+    url:parse url:build
+    url:scheme url:userinfo url:host url:port url:path url:query url:fragment))
+
+(register-category 'json
+  "JSON parse/stringify (JSON module, lib/35-json.lisp, issue #257)"
+  '(json:parse json:stringify json:null-p))
+
+(register-category 'mime
+  "Case-insensitive multi-value headers and Content-Type parse/build (MIME module, lib/36-mime.lisp, issue #257)"
+  '(mime:header-name= mime:headers-get mime:headers-get-all mime:headers-add
+    mime:headers-set mime:headers-remove mime:headers-names
+    mime:parse-content-type mime:build-content-type mime:content-type-parameter))
 
 (register-category 'special-forms
   "Special forms and macros"
