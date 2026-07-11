@@ -46,8 +46,15 @@ fn defrecord_validator_checks_invariant() {
         eval_line("(validate-invoice (make-invoice 1 10 'draft))", &env),
         "T"
     );
+    // 0.3: make- ENFORCES the invariant at construction.
+    let out = eval_line("(make-invoice 1 -10 'draft)", &env);
+    assert!(out.contains("invariant violated"), "got: {out}");
+    // The validator still judges values that bypass the make- door.
     assert_eq!(
-        eval_line("(validate-invoice (make-invoice 1 -10 'draft))", &env),
+        eval_line(
+            "(validate-invoice (record-with (make-invoice 1 10 'draft) 'amount -10))",
+            &env
+        ),
         "()"
     );
 }

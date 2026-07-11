@@ -70,6 +70,16 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## Invariants are enforced at construction (breaking)
+
+- `make-Name` now REFUSES a value the `:invariant` would fail
+  (`MAKE-ACCT: invariant violated`) instead of constructing it; the
+  wrapper captures the validator at definition time, so later rebinding
+  `validate-Name` cannot weaken construction. `validate-Name` remains
+  the judgment for the two roads that bypass the constructor door:
+  `record-with` updates and `#S` reader literals — validate explicitly
+  after either.
+
 ## flatten respects dotted pairs (breaking)
 
 - `flatten` now flattens nested PROPER lists only; a dotted pair is a

@@ -93,10 +93,9 @@ nil-as-list imprecision (#336).
 
 - **`defrecord :invariant` is validator-tier**: `make-circle` happily
   constructs a negative-radius circle; the invariant lives in
-  `validate-circle`. **Ruled** (the test suite pins exactly this), but
-  flagged as a design question: most newcomers will read `:invariant`
-  as construction-time enforcement. Candidates: enforce in `make-`,
-  or rename the section, or a manual callout. Owner's call.
+  `validate-circle`. Flagged as a design question; **owner ruled:
+  enforce in make-** — now fixed (post-campaign): construction refuses
+  invariant violations, validate-NAME judges record-with/#S escapes.
 - **The fuel identity is 10x/half, not +-5**: the tested contract is
   "measured at S steps: budget 10S runs, budget S/2 dies". My tighter
   folklore failed against a compiled-then-fenced function. Ruled; the

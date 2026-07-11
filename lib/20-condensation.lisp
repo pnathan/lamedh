@@ -628,6 +628,24 @@ condensation change plane. PARAMS non-nil = a parametric record."
                       ',(if params
                             `(forall ,params (-> ((,name ,@params)) bool))
                             `(-> (,name) bool)))
+       ;; An :invariant is ENFORCED at construction (0.3): the tier's
+       ;; raw constructor is wrapped so make-NAME rejects any value the
+       ;; validator would fail. record-with and #S literals bypass this
+       ;; door -- validate explicitly after either.
+       ,@(if invariant-section
+             (let ((ctor (condense-constructor-symbol name)))
+               ;; Capture the validator VALUE: construction enforces the
+               ;; invariant as declared here, immune to later rebinding
+               ;; of validate-NAME.
+               `((let ((raw ,ctor) (check ,validator))
+                   (set ',ctor
+                        (lambda (&rest args)
+                          (let ((self (apply raw args)))
+                            (if (funcall check self)
+                                self
+                                (error ,(concat (princ-to-string ctor)
+                                                ": invariant violated")))))))))
+             ())
        ',name)))
 
 (defvau defrecord (x e)
