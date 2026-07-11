@@ -224,3 +224,8 @@
     ((null names) nil)
     (t (call-graph-add! (car names))
        (call-graph-add-many! (cdr names)))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'call-graph)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'call-graph)

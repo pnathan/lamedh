@@ -266,3 +266,8 @@ convention: (some v) -> (funcall f v) [itself an option]; (none) stays."
 condition system into Result."
   (handler-case (ok (apply f args))
     (error (e) (err (error-message e)))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'variants)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'variants)

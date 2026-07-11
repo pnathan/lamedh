@@ -30,3 +30,8 @@ Signals an error if the command exits non-zero. Requires the SHELL feature."
     (if (shell-ok-p result)
         (shell-stdout result)
         (error (concat "shell command failed: " cmd)))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'shell)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'shell '(sh shell-exit-code shell-stdout shell-stderr shell-ok-p))

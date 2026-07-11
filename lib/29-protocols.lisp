@@ -331,3 +331,8 @@ report ((protocol . status)...) or errors naming the failures."
         report
         (error (concat "implements!: " (princ-to-string type)
                        " fails " (princ-to-string bad))))))
+
+;;; REQUIRE-ABLE (issue #256): `(require 'protocols)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'protocols)

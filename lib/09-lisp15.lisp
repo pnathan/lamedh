@@ -84,3 +84,8 @@
 
 ;;; TRACE and UNTRACE moved to lib/26-instrument.lisp as a REAL
 ;;; instrumentation facility (0.3: the Lisp 1.5 flag-only stubs are gone).
+
+;;; REQUIRE-ABLE (issue #256): `(require 'lisp15)` on a with_prelude()
+;;; environment loads exactly this file. with_stdlib() still loads it
+;;; unconditionally, unchanged.
+(provide 'lisp15)

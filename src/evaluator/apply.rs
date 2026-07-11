@@ -667,6 +667,89 @@ pub(super) fn apply(
                 Ok(LispVal::Symbol(env.intern_symbol("T")))
             }
 
+            BuiltinFunc::ModuleSourceLookup => {
+                // ($module-source-lookup "NAME") -- (source . origin) or NIL.
+                // Checks host-registered sources, then embedded ones; see
+                // crate::module_source_lookup. No capability required: both
+                // tiers are pure in-memory lookups.
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "$MODULE-SOURCE-LOOKUP requires exactly one argument".to_string(),
+                    ));
+                }
+                let name = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    LispVal::Symbol(s) => s.borrow().name.clone(),
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "$MODULE-SOURCE-LOOKUP: expected a string or symbol, got {}",
+                            err_val(other)
+                        )));
+                    }
+                };
+                match crate::module_source_lookup(&name, env) {
+                    Some((src, origin)) => Ok(LispVal::Cons {
+                        car: Shared::new(LispVal::String(src)),
+                        cdr: Shared::new(LispVal::String(origin.to_string())),
+                    }),
+                    None => Ok(LispVal::Nil),
+                }
+            }
+
+            BuiltinFunc::ModuleSearchPaths => {
+                // ($module-search-paths) -- the host-configured disk module
+                // search paths, read-only from Lisp (see
+                // Environment::add_module_search_path).
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "$MODULE-SEARCH-PATHS takes no arguments".to_string(),
+                    ));
+                }
+                let mut out = LispVal::Nil;
+                for p in env.module_search_paths().into_iter().rev() {
+                    out = LispVal::Cons {
+                        car: Shared::new(LispVal::String(p.display().to_string())),
+                        cdr: Shared::new(out),
+                    };
+                }
+                Ok(out)
+            }
+
+            BuiltinFunc::EvalModuleSource => {
+                // ($eval-module-source "NAME" "source text...") -- parse and
+                // evaluate every top-level form in the source string at the
+                // environment ROOT (see Environment::root_of), regardless of
+                // the lexical frame `require` is itself running in. Errors
+                // propagate as ordinary Lisp errors, prefixed
+                // "NAME:line:col: ...".
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "$EVAL-MODULE-SOURCE requires exactly two arguments".to_string(),
+                    ));
+                }
+                let display_name = match &args[0] {
+                    LispVal::String(s) => s.clone(),
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "$EVAL-MODULE-SOURCE: expected a string display name, got {}",
+                            err_val(other)
+                        )));
+                    }
+                };
+                let source = match &args[1] {
+                    LispVal::String(s) => s.clone(),
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "$EVAL-MODULE-SOURCE: expected a string source, got {}",
+                            err_val(other)
+                        )));
+                    }
+                };
+                let root = Environment::root_of(env);
+                crate::eval_module_source(&display_name, &source, &root)?;
+                Ok(LispVal::Symbol(env.intern_symbol("T")))
+            }
+
             BuiltinFunc::ReadFile => {
                 require_read_fs(env)?;
                 if args.len() != 1 {

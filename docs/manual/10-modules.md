@@ -15,6 +15,11 @@ namespace), introspection, module-provided custom capabilities, and the
 one caveat worth knowing before you lean on this: qualification is
 name-based, not scope-based.
 
+§10.7 covers a related but separate concern: `require`/`provide`, the
+*loading* discipline (whether and when a library's source runs at all,
+at most once per environment) that composes with everything above (the
+*naming* discipline for what its symbols are called once it does).
+
 ## 10.1 `defmodule`: declaring a module
 
 ```console
@@ -345,3 +350,138 @@ the intended function call alike — so by the time `(area 5)` runs,
 `geometry:area` has been shadowed by the `let`-bound number `6`, and
 calling it errors. The fix is the usual one: don't reuse a module
 function's name as an inner binding inside that module's own body.
+
+## 10.7 `require`/`provide`: load-once libraries (issue #256)
+
+Everything above is a **naming** discipline: `defmodule`/`with-module`
+decide what a library's symbols are called, once its source has run. This
+section is about a different, composable concern — a **loading**
+discipline: whether and when that source runs at all.
+
+`require`/`provide` (`lib/06-require.lisp`) load a named library **at most
+once** per environment:
+
+```console
+$ target/debug/lamedh -s "(progn (require 'shell) (sh \"echo hi\"))" --capability SHELL
+; => "hi\n"
+```
+
+A second `require` of the same name is a no-op — it returns the name
+without touching the source again:
+
+```console
+$ target/debug/lamedh -s "(list (require 'shell) (require 'shell))"
+; => (SHELL SHELL)
+```
+
+### Prelude vs. optional modules
+
+`Environment::with_stdlib()` (what the `lamedh` binary and `-s`/script mode
+above use) still loads everything it always has — every file in
+`src/lib.rs`'s standard library list, unconditionally, in the same order as
+before this feature existed. It is defined as the **Prelude** (the stable
+general-purpose vocabulary: core forms, lists, math, control flow,
+strings, sets/hash, conditions, arrays, `format`, `setf`/CL-compat, and
+`require`/`provide` itself) plus every currently-**optional** embedded
+library (shell, Lisp 1.5 compatibility, testing, the optimizer, call-graph
+analysis, condensation, guard fences, pattern matching, the rulebook,
+variants, instrumentation, `defmodule` itself, the type table, protocols,
+the text/UTF-8 module, and the help system) — see the module table in
+`src/lib.rs`'s crate-level doc comment for the exact, current list and
+which name each optional file is requirable under (`shell`, `testing`,
+`condensation`, `text`, ...).
+
+Embedders who want a lighter, faster-starting environment use
+`Environment::with_prelude()` instead, then pull in only what they need:
+
+```rust
+use lamedh::environment::Environment;
+
+let env = Environment::with_prelude();      // core vocabulary only
+lamedh::eval_str("(require 'testing)", &env).unwrap();   // now DEFTEST etc. exist
+```
+
+`(loaded-modules)` lists everything currently loaded; `(module-state
+'name)` and `(module-info 'name)` give finer-grained diagnostics (state,
+source origin, dependencies discovered while it loaded, declared exports,
+and the last load failure's message, if any):
+
+```console
+$ target/debug/lamedh -s "(module-info 'shell)"
+; => ((STATE . REQUIRE-LOADED) (SOURCE . "embedded (stdlib 07-shell.lisp)") (DEPS) (EXPORTS SH SHELL-EXIT-CODE SHELL-STDOUT SHELL-STDERR SHELL-OK-P) (ERROR))
+```
+
+### Resolution order
+
+`require` resolves a name through three tiers, in order:
+
+1. **host-registered** — sources an embedding host added directly via
+   `env.register_module(name, source)` (Rust; see `docs/embedding.md`);
+2. **embedded** — the optional library files baked into the binary (the
+   ones listed above);
+3. **disk** — only under the `READ-FS` capability, files named
+   `<search-path>/<downcased-name>.lisp` under directories the host
+   configured with `env.add_module_search_path(path)`. Lisp can only
+   *read* that configured list (`$module-search-paths`), never set it —
+   hosts constrain disk module resolution without handing that authority
+   to sandboxed Lisp code.
+
+Host-registered and embedded sources need no capability. A module that can
+only resolve on disk is unreachable without `READ-FS`, exactly like
+`load-file` always has been:
+
+```console
+$ target/debug/lamedh -s "(require 'this-does-not-exist-anywhere)"
+Error: require: failed to load module THIS-DOES-NOT-EXIST-ANYWHERE: unknown module THIS-DOES-NOT-EXIST-ANYWHERE (checked host-registered and embedded sources)
+  in: $REQUIRE-LOAD ← REQUIRE
+```
+
+### Writing a requirable module
+
+A module's source ordinarily ends with `(provide 'name)`, naming itself:
+
+```lisp
+(require 'json)
+(require 'http)
+
+(defun my-app () ...)
+(provide 'my-app)
+```
+
+`provide` takes an optional second argument, a list of names the module
+claims to export — metadata only (Lamedh has no enforced privacy or
+reader-level qualification): `require` warns if a declared export ends up
+unbound, and warns (or, with `*require-strict-exports*` bound to `T`,
+errors) if a declared export was already claimed by a different module.
+
+`require` signals an error — and does **not** mark the module loaded — if
+its source finishes evaluating **without** calling `(provide 'name)`.
+Whatever top-level definitions already ran before that point are **not**
+rolled back; this mirrors `load-file`'s ordinary incremental semantics
+(forms before an error already took effect), not a transaction. A later
+`require` of the same name retries from scratch.
+
+### Cycles
+
+Requiring a module that is already mid-load (directly or transitively, in
+this environment) is a hard error naming the full chain, e.g. a module `A`
+whose source requires `B`, whose source requires `A` again, reports:
+
+```
+Error: require: dependency cycle: A -> B -> A
+```
+
+This is why `lib/30-text.lisp` opens with `(require 'modules)` rather than
+the reverse: `text` genuinely depends on `defmodule`/`with-module`
+(`lib/27-modules.lisp`, requirable as `modules`), and declaring real
+dependencies as ordinary top-level `require` forms — rather than relying on
+load order — is what makes a cycle in the *declared* dependency graph
+detectable at all.
+
+### Development reload
+
+Ordinary `require` never re-evaluates a loaded module, even after you
+change the file it came from (for embedded/registered sources) or edit a
+disk file. `(require-reload 'name)` is the explicit escape hatch: it
+re-resolves and re-evaluates unconditionally, exactly as if the module had
+never been loaded.
