@@ -19,6 +19,31 @@ pub(super) fn make_lambda(
 /// function body (`Code::MakeLambda`) can reuse a body compiled once at the
 /// enclosing definition's compile time instead of recompiling it on every
 /// construction (issue #233).
+/// Walk a parameter list that may be proper or dotted. A dotted symbol
+/// tail is the classic rest-parameter shorthand — `(a b . more)` means
+/// `(a b &rest more)`. Returns the proper prefix and the dotted tail
+/// symbol, if any.
+fn param_list_to_vec(
+    params: &LispVal,
+    what: &str,
+) -> Result<(Vec<LispVal>, Option<LispVal>), LispError> {
+    let mut vec = Vec::new();
+    let mut current = params;
+    while let LispVal::Cons { car, cdr } = current {
+        vec.push(car.as_ref().clone());
+        current = cdr;
+    }
+    match current {
+        LispVal::Nil => Ok((vec, None)),
+        LispVal::Symbol(_) => Ok((vec, Some(current.clone()))),
+        other => Err(LispError::Generic(format!(
+            "{what} parameter list must be a proper list or end in a rest \
+             symbol, got tail {}",
+            err_val(other)
+        ))),
+    }
+}
+
 #[inline(never)]
 pub(super) fn build_lambda(
     params: &LispVal,
@@ -26,7 +51,7 @@ pub(super) fn build_lambda(
     compiled_body: Shared<crate::Code>,
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
-    let p_list = list_to_vec(params)?;
+    let (p_list, dotted_tail) = param_list_to_vec(params, "lambda")?;
     let mut params_vec = Vec::new();
     // Ids come from the parameter symbol objects themselves (via
     // `binder_id`), not from re-interning the names — re-interning minted a
@@ -68,6 +93,17 @@ pub(super) fn build_lambda(
             ));
         }
     }
+    if let Some(LispVal::Symbol(tail_sym)) = &dotted_tail {
+        if rest_param.is_some() {
+            return Err(LispError::Generic(
+                "parameter list has both &rest and a dotted tail".to_string(),
+            ));
+        }
+        let rest_name = tail_sym.borrow().name.clone();
+        check_param_name(&rest_name, "lambda")?;
+        rest_param = Some(rest_name);
+        rest_param_id = Some(env.binder_id(tail_sym));
+    }
     Ok(LispVal::Lambda(Box::new(crate::Lambda {
         params: params_vec,
         rest_param,
@@ -86,7 +122,12 @@ pub(super) fn make_fexpr(
     body: &LispVal,
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
-    let p_list = list_to_vec(params)?;
+    let (p_list, dotted_tail) = param_list_to_vec(params, "fexpr")?;
+    if dotted_tail.is_some() {
+        return Err(LispError::Generic(
+            "fexpr parameter list is (args env) — it takes no rest tail".to_string(),
+        ));
+    }
     // Names and ids collected together from the symbol objects — see the
     // issue #285 note in `build_lambda`.
     let pairs: Result<Vec<(String, u32)>, _> = p_list
@@ -121,7 +162,7 @@ pub(super) fn make_macro(
     body: &LispVal,
     env: &Shared<Environment>,
 ) -> Result<LispVal, LispError> {
-    let p_list = list_to_vec(params)?;
+    let (p_list, dotted_tail) = param_list_to_vec(params, "macro")?;
     let mut params_vec = Vec::new();
     // Ids from the symbol objects via `binder_id` — see build_lambda (#285).
     let mut param_ids: Vec<u32> = Vec::new();
@@ -159,6 +200,17 @@ pub(super) fn make_macro(
                 "macro parameters must be symbols".to_string(),
             ));
         }
+    }
+    if let Some(LispVal::Symbol(tail_sym)) = &dotted_tail {
+        if rest_param.is_some() {
+            return Err(LispError::Generic(
+                "parameter list has both &rest and a dotted tail".to_string(),
+            ));
+        }
+        let rest_name = tail_sym.borrow().name.clone();
+        check_param_name(&rest_name, "macro")?;
+        rest_param = Some(rest_name);
+        rest_param_id = Some(env.binder_id(tail_sym));
     }
     Ok(LispVal::Macro(Box::new(crate::Macro {
         params: params_vec,

@@ -256,3 +256,32 @@ fn random_is_a_prng_not_a_clock() {
     let out = eval_line("(random 0)", &e);
     assert!(out.contains("positive"), "got: {out}");
 }
+
+#[test]
+fn dotted_parameter_tails_are_rest_params() {
+    let e = env_with_stdlib();
+    // The classic shorthand: (a . more) == (a &rest more).
+    assert_eq!(
+        eval_line("(funcall (lambda (a . more) (list a more)) 1 2 3)", &e),
+        "(1 (2 3))"
+    );
+    assert_eq!(
+        eval_line("(funcall (lambda (a . more) (list a more)) 1)", &e),
+        "(1 ())"
+    );
+    eval_line("(defun dtail (a . more) (list a more))", &e);
+    assert_eq!(eval_line("(dtail 1 2 3)", &e), "(1 (2 3))");
+    eval_line(
+        "(defmacro dm (test . body) `(if ,test () (progn ,@body)))",
+        &e,
+    );
+    assert_eq!(eval_line("(dm () 1 2 3)", &e), "3");
+    // Mixing both spellings is an error, as is a non-symbol tail.
+    let out = eval_line("(lambda (a &rest b . c) 1)", &e);
+    assert!(out.contains("both &rest and a dotted tail"), "got: {out}");
+    let out = eval_line("(lambda (a . 5) 1)", &e);
+    assert!(out.contains("rest symbol"), "got: {out}");
+    // Fexprs keep their fixed (args env) shape, with a real message.
+    let out = eval_line("(fexpr (x . e) x)", &e);
+    assert!(out.contains("(args env)"), "got: {out}");
+}
