@@ -1,4 +1,4 @@
-# v0.3.0 — 2026-07-10
+# v0.3.0 — unreleased
 
 condensation
 
@@ -69,6 +69,14 @@ Gap-probe additions (each follows its class's argument order):
   typed `(forall (a) (-> ((list a)) (list (pair a int64))))`.
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
+
+## Dotted parameter tails
+
+- `(lambda (a . more) ...)`, `(defun f (a . more) ...)`, and
+  `(defmacro m (test . body) ...)` now accept the classic dotted-tail
+  shorthand as `&rest` (previously an inscrutable `list_to_vec` error).
+  Mixing both spellings errors; fexprs keep their fixed `(args env)`
+  shape with a message that says so.
 
 ## random is a PRNG now
 
