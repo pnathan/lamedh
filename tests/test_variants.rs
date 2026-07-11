@@ -140,3 +140,100 @@ fn nullary_constructors_are_singleton_like_and_round_trip() {
         "T"
     );
 }
+
+// ---- variant-case in the checker (#350) -----------------------------------
+// The checker has a native eliminator rule for `variant-case`: the scrutinee
+// unifies with the clause ctors' owning variant, clause vars bind to field
+// types, and clause bodies join to one result. Before #350 clauses were
+// misread as constructor applications and every variant-consuming function
+// carried a false TYPE-ERROR.
+
+#[test]
+fn variant_case_consumers_check_clean() {
+    let e = env();
+    eval_line(
+        "(defun area3 (s) (variant-case s (circle (r) (* r r)) (rect (w h) (* w h))))",
+        &e,
+    );
+    assert_eq!(
+        eval_line("(see-type 'area3)", &e),
+        "(CHECKED (-> (SHAPE) INT64))"
+    );
+    assert_eq!(eval_line("(area3 (rect 2 4))", &e), "8");
+    // The scrutinee type flows to call sites: a non-member ctor is rejected.
+    eval_line("(defvariant temp3 (hot3 (h int64)) (cold3 (c int64)))", &e);
+    let out = eval_line("(check-type (area3 (hot3 1)))", &e);
+    assert!(out.contains("not a constructor of variant SHAPE"), "{out}");
+}
+
+#[test]
+fn variant_case_checks_parametric_variants() {
+    let e = env();
+    // Fully generic consumer: the payload stays polymorphic.
+    eval_line(
+        "(defun opt-len3 (o) (variant-case o (some (v) 1) (none () 0)))",
+        &e,
+    );
+    assert_eq!(
+        eval_line("(see-type 'opt-len3)", &e),
+        "(CHECKED (FORALL (A) (-> ((OPTION A)) INT64)))"
+    );
+    // A clause body using the payload pins the parameter.
+    eval_line(
+        "(defun unwrap-or0 (o) (variant-case o (some (v) v) (none () 0)))",
+        &e,
+    );
+    assert_eq!(
+        eval_line("(see-type 'unwrap-or0)", &e),
+        "(CHECKED (-> ((OPTION INT64)) INT64))"
+    );
+    assert_eq!(eval_line("(unwrap-or0 (some 42))", &e), "42");
+}
+
+#[test]
+fn variant_case_clause_misuse_is_still_an_error() {
+    let e = env();
+    // A genuine type error inside a clause body still surfaces.
+    eval_line(
+        "(defun bad-body3 (s) (variant-case s (circle (r) (concat r \"x\")) (rect (w h) \"y\")))",
+        &e,
+    );
+    let out = eval_line("(see-type 'bad-body3)", &e);
+    assert!(out.contains("TYPE-ERROR"), "{out}");
+    // Binding the wrong number of fields is caught statically.
+    eval_line(
+        "(defun bad-arity3 (s) (variant-case s (circle (r x) r) (rect (w h) w)))",
+        &e,
+    );
+    let out = eval_line("(see-type 'bad-arity3)", &e);
+    assert!(out.contains("binds 2 var(s)"), "{out}");
+    // Clause bodies must join: int64 vs string disagrees.
+    eval_line(
+        "(defun disagree3 (s) (variant-case s (circle (r) r) (rect (w h) \"str\")))",
+        &e,
+    );
+    let out = eval_line("(see-type 'disagree3)", &e);
+    assert!(out.contains("clauses disagree"), "{out}");
+    // Mixing two variants' ctors in one case clashes at the scrutinee.
+    eval_line("(defvariant temp4 (hot4 (h int64)) (cold4 (c int64)))", &e);
+    eval_line(
+        "(defun mixed3 (x) (variant-case x (circle (r) r) (hot4 (h) h) (else 0)))",
+        &e,
+    );
+    let out = eval_line("(see-type 'mixed3)", &e);
+    assert!(out.contains("TYPE-ERROR"), "{out}");
+}
+
+#[test]
+fn variant_case_else_clause_joins() {
+    let e = env();
+    eval_line(
+        "(defun radius-or (s) (variant-case s (circle (r) r) (else 0)))",
+        &e,
+    );
+    assert_eq!(
+        eval_line("(see-type 'radius-or)", &e),
+        "(CHECKED (-> (SHAPE) INT64))"
+    );
+    assert_eq!(eval_line("(radius-or (rect 2 4))", &e), "0");
+}
