@@ -70,6 +70,14 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## random is a PRNG now
+
+- `random` previously returned `nanos-since-epoch mod n` on EVERY call —
+  a monotonic wall-clock ramp, not a random sequence (found when the
+  monte-carlo-pi example converged to 2.57). It is now SplitMix64 over
+  persistent thread-local state, lazily time-seeded; new
+  `(random-seed! n)` makes runs reproducible.
+
 ## The substrate star (breaking)
 
 The monomorphic per-type implementations behind the protocols now carry

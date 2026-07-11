@@ -1,4 +1,37 @@
 use super::*;
+
+thread_local! {
+    /// PRNG state for RANDOM: 0 = not yet seeded (seed lazily from the
+    /// clock on first use; RANDOM-SEED! sets it explicitly).
+    static RNG_STATE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// SplitMix64 step over the thread-local state.
+pub(super) fn rng_next() -> u64 {
+    RNG_STATE.with(|cell| {
+        let mut s = cell.get();
+        if s == 0 {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            s = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+                | 1;
+        }
+        s = s.wrapping_add(0x9E3779B97F4A7C15);
+        cell.set(s);
+        let mut z = s;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^ (z >> 31)
+    })
+}
+
+pub(super) fn rng_seed(seed: u64) {
+    // `| 1` keeps 0 reserved as the "unseeded" sentinel.
+    RNG_STATE.with(|cell| cell.set(seed | 1));
+}
+
 #[inline(never)]
 pub(super) fn apply_symbol_op(
     op: &BuiltinFunc,
@@ -797,17 +830,27 @@ pub(super) fn apply_new_numeric_ops(
                         err_val(&args[0])
                     )));
                 }
-                // Simple linear congruential generator using system time as seed
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let seed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64;
-                let random_val = (seed % (*n as u64)) as i64;
+                let random_val = (rng_next() % (*n as u64)) as i64;
                 Ok(LispVal::Number(random_val))
             } else {
                 Err(LispError::Generic(format!(
                     "RANDOM: expected an integer, got {}",
+                    err_val(&args[0])
+                )))
+            }
+        }
+        BuiltinFunc::RandomSeed => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "RANDOM-SEED! requires exactly one argument".to_string(),
+                ));
+            }
+            if let LispVal::Number(n) = &args[0] {
+                rng_seed(*n as u64);
+                Ok(LispVal::Number(*n))
+            } else {
+                Err(LispError::Generic(format!(
+                    "RANDOM-SEED!: expected an integer, got {}",
                     err_val(&args[0])
                 )))
             }

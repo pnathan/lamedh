@@ -215,3 +215,44 @@ fn stdlib_staples_0_3() {
     assert_eq!(eval_line("(string-pad-left \"hello\" 3)", &e), "\"hello\"");
     assert_eq!(eval_line("(string-repeat \"ab\" 3)", &e), "\"ababab\"");
 }
+
+#[test]
+fn random_is_a_prng_not_a_clock() {
+    let e = env_with_stdlib();
+    // Seeded runs reproduce exactly.
+    eval_line("(random-seed! 42)", &e);
+    let a = eval_line("(mapcar (lambda (i) (random 1000)) (iota 20))", &e);
+    eval_line("(random-seed! 42)", &e);
+    let b = eval_line("(mapcar (lambda (i) (random 1000)) (iota 20))", &e);
+    assert_eq!(a, b);
+    // The old bug: successive draws were a monotonic wall-clock ramp.
+    assert_eq!(
+        eval_line(
+            "(let ((xs (mapcar (lambda (i) (random 1000000)) (iota 50))))
+               (equal xs (sort (copy xs) #'<)))",
+            &e
+        ),
+        "()"
+    );
+    // In range, and plenty of distinct values.
+    assert_eq!(
+        eval_line(
+            "(every (lambda (x) (and (>= x 0) (< x 10)))
+                    (mapcar (lambda (i) (random 10)) (iota 200)))",
+            &e
+        ),
+        "T"
+    );
+    assert_eq!(
+        eval_line(
+            "(> (length (remove-duplicates
+                          (mapcar (lambda (i) (random 1000000)) (iota 100))))
+                90)",
+            &e
+        ),
+        "T"
+    );
+    // Misuse still errors.
+    let out = eval_line("(random 0)", &e);
+    assert!(out.contains("positive"), "got: {out}");
+}

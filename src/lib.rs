@@ -523,6 +523,7 @@ pub enum BuiltinFunc {
     Add1,
     Sub1,
     Random,
+    RandomSeed,
     // Bitwise
     Ash,
     Lognot,
