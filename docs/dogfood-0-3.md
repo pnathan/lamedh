@@ -87,3 +87,40 @@ nil-as-list imprecision (#336).
 - Generic recursive variants ((bst a)) with variant-case give clean
   persistent trees; `defrule`-based simplification made symbolic-diff's
   cleanup declarative (the rulebook composing with hand-written deriv).
+
+### Batch E (language showcase)
+
+- **`defrecord :invariant` is validator-tier**: `make-circle` happily
+  constructs a negative-radius circle; the invariant lives in
+  `validate-circle`. **Ruled** (the test suite pins exactly this), but
+  flagged as a design question: most newcomers will read `:invariant`
+  as construction-time enforcement. Candidates: enforce in `make-`,
+  or rename the section, or a manual callout. Owner's call.
+- **The fuel identity is 10x/half, not +-5**: the tested contract is
+  "measured at S steps: budget 10S runs, budget S/2 dies". My tighter
+  folklore failed against a compiled-then-fenced function. Ruled; the
+  example now states the real margins.
+- **handler-bind's post-unwind deviation bites exactly as documented**:
+  restarts established inside the erroring callee are dead by the time
+  the handler runs. The canonical restarts-around-handler shape (policy
+  owns both) works and reads well. Ruled -- ch6's documentation earned
+  its keep.
+- `defmacro` parameter lists take `&rest`, not a dotted tail
+  (`(test . body)` dies with `list_to_vec: not a proper list, got tail
+  BODY`). Ruled for now, but the error message should name the actual
+  problem -- improvement candidate.
+- `unless` already exists in the stdlib -- the collision sweep habit
+  caught an example about to shadow a core form.
+
+## Tally
+
+51 programs, all green, pinned forever by tests/test_examples.rs (the
+harness runs every examples/*/main.lisp with READ-FS and empty *ARGV*
+and fails on any error; each program self-checks internally).
+
+Improvements driven: random-is-a-clock kernel bug fixed (#340, with
+random-seed!); dotted-pair checker rules + wordcount pilot (#337);
+derived nil-as-list imprecision filed (#336). Ruled-with-flag items for
+0.4 consideration: invariant enforcement tier; a `box` spelling for the
+one-slot-array mutable cell; flatten's dotted-pair trap needs a doc
+warning; defmacro's dotted-tail error message.
