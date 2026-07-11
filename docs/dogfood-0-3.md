@@ -67,3 +67,23 @@ nil-as-list imprecision (#336).
 - Sequence/pair machinery held up under real load: (pair int64 int64)
   hash keys for LCS memo and BFS predecessor maps; variants as huffman
   trees with variant-case recursion; frequencies as the life census.
+
+### Batch D (data structures / interpreters)
+
+- 9/10 first-run pass — including the metacircular evaluator, a
+  brainfuck interpreter, and SICP lazy streams. The interpreter tier is
+  where the language is most at home: closures as tagged data,
+  quoted programs as test fixtures, `apply` bridging mini-prims to real
+  builtins all composed without friction.
+- `try-call`'s `err` payload is the message STRING, not a first-class
+  error value — `(error-message e)` on it errors. **Ruled** (read the
+  owner: lib/25 documents the bridge), but the asymmetry with
+  `errorset`/handler-case (which carry error values) is worth one manual
+  sentence where try-call is taught.
+- Pattern that recurred 3× and earned its keep: a one-slot array as a
+  mutable cell captured by closures (memoized thunks, heap size,
+  brainfuck output). If 0.4 wants a nicer spelling, `box`/`unbox` over
+  this exact representation is the candidate.
+- Generic recursive variants ((bst a)) with variant-case give clean
+  persistent trees; `defrule`-based simplification made symbolic-diff's
+  cleanup declarative (the rulebook composing with hand-written deriv).
