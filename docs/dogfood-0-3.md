@@ -46,3 +46,24 @@ nil-as-list imprecision (#336).
 - `string-index-of` returning nil-on-miss composes fine when the miss is
   handled at the edge (base-conversion's `digit-value`) — the pattern
   the type table's honesty rule 1 assumes.
+
+### Batch C (DP/graphs)
+
+- **`flatten` eats dotted pairs** — `(flatten '((1 . 2) (3 . 4)))` is
+  `(1 2 3 4)`: it recurses into cons structure, so it silently destroys
+  coordinate/alist-shaped data. Bit twice in one batch (bfs-maze
+  find-cell, game-of-life neighbor census), and the failure mode is a
+  quietly wrong world, not an error. **Ruled**: flatten's contract is
+  structural, and `mapcan` (which exists) is the right one-level tool —
+  but the trap deserves a doc warning where flatten is taught.
+- Checker/evaluator numeric strictness caught an `assoc`-miss nil
+  flowing into `=` in game-of-life (isolated live cell has no census
+  entry) — a bug class that would have silently mis-evolved worlds in a
+  lenient Lisp. The strictness is earning its keep.
+- Self-check honesty: my remembered knapsack constant was for a
+  different instance; replaced with an in-file exhaustive-subset oracle
+  (12 items, 4096 subsets, instant). Examples now prefer independent
+  oracles over remembered constants where feasible.
+- Sequence/pair machinery held up under real load: (pair int64 int64)
+  hash keys for LCS memo and BFS predecessor maps; variants as huffman
+  trees with variant-case recursion; frequencies as the life census.
