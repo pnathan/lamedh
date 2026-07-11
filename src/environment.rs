@@ -1056,6 +1056,22 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::NumberToString),
         );
         env.set(
+            "STRING-CASEFOLD*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringCasefold),
+        );
+        env.set(
+            "STRING->UTF8*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringToUtf8),
+        );
+        env.set(
+            "UTF8->STRING*".to_string(),
+            LispVal::Builtin(BuiltinFunc::Utf8ToString),
+        );
+        env.set(
+            "UTF8->STRING-LOSSY*".to_string(),
+            LispVal::Builtin(BuiltinFunc::Utf8ToStringLossy),
+        );
+        env.set(
             "READ-FROM-STRING".to_string(),
             LispVal::Builtin(BuiltinFunc::ReadFromString),
         );

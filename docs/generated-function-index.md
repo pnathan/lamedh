@@ -31,6 +31,7 @@
 | `CAR` | FUNCTION | LISTS |
 | `CDR` | FUNCTION | LISTS |
 | `CEILING` | FUNCTION | ARITHMETIC |
+| `CHAR-AT` | FUNCTION | STRINGS |
 | `CHAR-CODE` | FUNCTION | STRINGS |
 | `CHARP` | FUNCTION | PREDICATES |
 | `CHECK-TYPE` | SPECIAL-FORM | META |
@@ -126,8 +127,8 @@
 | `LOAD-FILE` | FUNCTION | IO |
 | `LOG` | FUNCTION | ARITHMETIC |
 | `LOGAND` | FUNCTION | BITWISE |
+| `LOGIOR` | FUNCTION | BITWISE |
 | `LOGNOT` | FUNCTION | BITWISE |
-| `LOGOR` | FUNCTION | BITWISE |
 | `LOGXOR` | FUNCTION | BITWISE |
 | `MACRO` | SPECIAL-FORM | SPECIAL-FORMS |
 | `MACROEXPAND` | FUNCTION | META |
@@ -138,6 +139,7 @@
 | `MAKE-ENVIRONMENT` | FUNCTION | ENVIRONMENTS |
 | `MAKE-ERROR` | FUNCTION | ERRORS |
 | `MAKE-HASH-TABLE` | FUNCTION | HASH-TABLES |
+| `MAKE-STRING` | FUNCTION | STRINGS |
 | `MAKE-TEMP-DIRECTORY` | FUNCTION | FILESYSTEM |
 | `MAKE-TEMP-FILE` | FUNCTION | FILESYSTEM |
 | `MAKNAM` | FUNCTION | STRINGS |
@@ -197,7 +199,28 @@
 | `SQRT` | FUNCTION | ARITHMETIC |
 | `STORE` | FUNCTION | ARRAYS |
 | `STRING->NUMBER` | FUNCTION | STRINGS |
+| `STRING-CAPITALIZE` | FUNCTION | STRINGS |
+| `STRING-CI-NE` | FUNCTION | STRINGS |
+| `STRING-CI<` | FUNCTION | STRINGS |
+| `STRING-CI<=` | FUNCTION | STRINGS |
+| `STRING-CI=` | FUNCTION | STRINGS |
+| `STRING-CI>` | FUNCTION | STRINGS |
+| `STRING-CI>=` | FUNCTION | STRINGS |
+| `STRING-CONCAT` | FUNCTION | STRINGS |
+| `STRING-COUNT` | FUNCTION | STRINGS |
+| `STRING-EMPTY-P` | FUNCTION | STRINGS |
+| `STRING-LAST-INDEX-OF` | FUNCTION | STRINGS |
 | `STRING-LENGTH*` | FUNCTION | STRINGS |
+| `STRING-NE` | FUNCTION | STRINGS |
+| `STRING-REPLACE-ALL` | FUNCTION | STRINGS |
+| `STRING-REPLACE-FIRST` | FUNCTION | STRINGS |
+| `STRING-REVERSE` | FUNCTION | STRINGS |
+| `STRING-TRIM-LEFT` | FUNCTION | STRINGS |
+| `STRING-TRIM-RIGHT` | FUNCTION | STRINGS |
+| `STRING<` | FUNCTION | STRINGS |
+| `STRING<=` | FUNCTION | STRINGS |
+| `STRING>` | FUNCTION | STRINGS |
+| `STRING>=` | FUNCTION | STRINGS |
 | `STRINGP` | FUNCTION | PREDICATES |
 | `SUB1` | FUNCTION | ARITHMETIC |
 | `SUBLIS` | FUNCTION | LISTS |
@@ -206,6 +229,9 @@
 | `SYMBOLP` | FUNCTION | PREDICATES |
 | `TAN` | FUNCTION | ARITHMETIC |
 | `TERPRI` | FUNCTION | IO |
+| `TEXT:STRING->UTF8` | FUNCTION | TEXT |
+| `TEXT:UTF8->STRING` | FUNCTION | TEXT |
+| `TEXT:UTF8->STRING-LOSSY` | FUNCTION | TEXT |
 | `THE-ENVIRONMENT` | FUNCTION | ENVIRONMENTS |
 | `TIMES` | FUNCTION | ARITHMETIC |
 | `TRUNCATE` | FUNCTION | ARITHMETIC |
@@ -213,4 +239,4 @@
 | `VAULET` | MACRO | SPECIAL-FORMS |
 | `WRITE-FILE` | FUNCTION | FILESYSTEM |
 | `ZEROP` | FUNCTION | PREDICATES |
-(() () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () ())
+(() () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () ())

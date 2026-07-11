@@ -553,6 +553,35 @@ fn gcd_i64(mut a: i64, mut b: i64, env: &Shared<Environment>) -> i64 {
     if a < 0 && a != i64::MIN { -a } else { a }
 }
 
+/// Extract raw bytes from an `Array<Char>` LispVal, for the UTF-8 boundary
+/// builtins (issue #254). Errors name the offending element and its index.
+fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, LispError> {
+    match v {
+        LispVal::Array(a) => {
+            let items = a.borrow();
+            let mut bytes = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    LispVal::Char(b) => bytes.push(*b),
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "{}: element {i} is not a Char, got {}",
+                            name.to_uppercase(),
+                            err_val(other)
+                        )));
+                    }
+                }
+            }
+            Ok(bytes)
+        }
+        other => Err(LispError::Generic(format!(
+            "{}: expected an array of Char, got {}",
+            name.to_uppercase(),
+            err_val(other)
+        ))),
+    }
+}
+
 /// String-operation kernel primitives (issue #147). These cannot be expressed
 /// in pure Lisp; the convenience layer (split/join/trim/upcase/...) is built on
 /// top of them in `lib/`.
@@ -700,6 +729,52 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
                     err_val(&args[0])
                 ))),
             }
+        }
+        BuiltinFunc::StringCasefold => {
+            // (string-casefold* s) — Unicode default-case-fold S (via Rust's
+            // locale-independent `to_lowercase`); backs the case-insensitive
+            // STRING-CI= family (issue #254). Kernel-only: Unicode case
+            // tables are Rust's domain, not the Lisp layer's.
+            require_one("string-casefold*")?;
+            let s = get_str(0, "string-casefold*")?;
+            Ok(LispVal::String(s.to_lowercase()))
+        }
+        BuiltinFunc::StringToUtf8 => {
+            // (string->utf8* s) — exact UTF-8 bytes of S as an Array<Char>
+            // (issue #254 / epic #253: Array<Char> is the language-level
+            // byte-vector surface; Char stays a u8).
+            require_one("string->utf8*")?;
+            let s = get_str(0, "string->utf8*")?;
+            let bytes: Vec<LispVal> = s.bytes().map(LispVal::Char).collect();
+            Ok(LispVal::Array(Shared::new(SharedCell::new(bytes))))
+        }
+        BuiltinFunc::Utf8ToString => {
+            // (utf8->string* bytes) — validate BYTES (an Array<Char>) as
+            // UTF-8 and return the decoded String, or signal a descriptive
+            // error carrying the offending byte offset (issue #254).
+            require_one("utf8->string*")?;
+            let bytes = get_char_array_bytes(&args[0], "utf8->string*")?;
+            match std::str::from_utf8(&bytes) {
+                Ok(s) => Ok(LispVal::String(s.to_string())),
+                Err(e) => Err(LispError::Generic(format!(
+                    "UTF8->STRING: invalid UTF-8 at byte offset {} of {} ({}); use UTF8->STRING-LOSSY for replacement-character decoding",
+                    e.valid_up_to(),
+                    bytes.len(),
+                    match e.error_len() {
+                        Some(n) => format!("invalid {n}-byte sequence"),
+                        None => "truncated sequence at end of input".to_string(),
+                    }
+                ))),
+            }
+        }
+        BuiltinFunc::Utf8ToStringLossy => {
+            // (utf8->string-lossy* bytes) — decode BYTES (an Array<Char>) as
+            // UTF-8, substituting U+FFFD for invalid sequences (issue #254).
+            require_one("utf8->string-lossy*")?;
+            let bytes = get_char_array_bytes(&args[0], "utf8->string-lossy*")?;
+            Ok(LispVal::String(
+                String::from_utf8_lossy(&bytes).into_owned(),
+            ))
         }
         BuiltinFunc::Prin1ToString => {
             require_one("prin1-to-string")?;

@@ -1636,6 +1636,280 @@ The classic Lisp 1.5 spelling.")
     (cons 'SEE-ALSO '(prin1-to-string princ number->string))))
 
 ;;; ============================================================
+;;; STRING API COMPLETIONS (issue #254, epic #253)
+;;; ============================================================
+
+(register-doc 'make-string
+  (list
+    (cons 'NAME 'make-string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-string n) or (make-string n char)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns a fresh string of length n, every character char (a one-character string or code point; default space). Signals an error if n is negative.")
+    (cons 'EXAMPLES '(((make-string 3) "   ")
+                       ((make-string 3 "x") "xxx")))
+    (cons 'SEE-ALSO '(string-repeat string-pad-left string-pad-right))))
+
+(register-doc 'string-empty-p
+  (list
+    (cons 'NAME 'string-empty-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-empty-p s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if s has length zero.")
+    (cons 'EXAMPLES '(((string-empty-p "") t)
+                       ((string-empty-p "a") nil)))
+    (cons 'SEE-ALSO '(string-length*))))
+
+(register-doc 'string-concat
+  (list
+    (cons 'NAME 'string-concat)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-concat &rest strs)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Concatenates zero or more strings. A named alias for CONCAT.")
+    (cons 'EXAMPLES '(((string-concat "a" "b" "c") "abc")
+                       ((string-concat) "")))
+    (cons 'SEE-ALSO '(concat))))
+
+(register-doc 'char-at
+  (list
+    (cons 'NAME 'char-at)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(char-at s i)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "One-character access: the character at index i in s, as a one-character string. Unlike SUBSTRING, an out-of-range i signals a clear error naming i and s's length instead of clamping.")
+    (cons 'EXAMPLES '(((char-at "hello" 0) "h")
+                       ((char-at "hello" 4) "o")))
+    (cons 'SEE-ALSO '(substring string-length*))))
+
+(register-doc 'string<
+  (list
+    (cons 'NAME 'string<)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string< a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if string a is lexicographically (by code point) before string b. Case-sensitive. Same ordering as STRING-LESSP, under CL's name for the case-sensitive comparison.")
+    (cons 'EXAMPLES '(((string< "abc" "abd") t)))
+    (cons 'SEE-ALSO '(string> string<= string>= string-lessp string-ci<))))
+
+(register-doc 'string>
+  (list
+    (cons 'NAME 'string>)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string> a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if string a is lexicographically (by code point) after string b. Case-sensitive.")
+    (cons 'EXAMPLES '(((string> "abd" "abc") t)))
+    (cons 'SEE-ALSO '(string< string<= string>= string-ci>))))
+
+(register-doc 'string<=
+  (list
+    (cons 'NAME 'string<=)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string<= a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Non-strict case-sensitive ordering: true unless a comes lexicographically after b.")
+    (cons 'EXAMPLES '(((string<= "abc" "abc") t)))
+    (cons 'SEE-ALSO '(string< string> string>= string-ci<=))))
+
+(register-doc 'string>=
+  (list
+    (cons 'NAME 'string>=)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string>= a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Non-strict case-sensitive ordering: true unless a comes lexicographically before b.")
+    (cons 'EXAMPLES '(((string>= "abc" "abc") t)))
+    (cons 'SEE-ALSO '(string< string> string<= string-ci>=))))
+
+(register-doc 'string-ne
+  (list
+    (cons 'NAME 'string-ne)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ne a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if strings a and b do NOT have the same contents. Case-sensitive. Named STRING-NE rather than CL's STRING/=: the reader does not treat `/` as a symbol constituent, so `string/=` cannot be written as one token.")
+    (cons 'EXAMPLES '(((string-ne "a" "b") t)
+                       ((string-ne "a" "a") nil)))
+    (cons 'SEE-ALSO '(string= string-ci-ne))))
+
+(register-doc 'string-ci=
+  (list
+    (cons 'NAME 'string-ci=)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ci= a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if a and b have the same contents under Unicode default case folding (via STRING-CASEFOLD*: locale-independent, not ASCII-only). Named with a `-ci` infix rather than CL's STRING-EQUAL, because STRING-LESSP already has case-sensitive semantics here.")
+    (cons 'EXAMPLES '(((string-ci= "ABC" "abc") t)))
+    (cons 'SEE-ALSO '(string= string-ci-ne string-ci< string-ci>))))
+
+(register-doc 'string-ci-ne
+  (list
+    (cons 'NAME 'string-ci-ne)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ci-ne a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if a and b do NOT have the same contents under Unicode case folding.")
+    (cons 'EXAMPLES '(((string-ci-ne "ABC" "xyz") t)))
+    (cons 'SEE-ALSO '(string-ci= string-ne))))
+
+(register-doc 'string-ci<
+  (list
+    (cons 'NAME 'string-ci<)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ci< a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if a is lexicographically before b under Unicode case folding.")
+    (cons 'EXAMPLES '(((string-ci< "abc" "ABD") t)))
+    (cons 'SEE-ALSO '(string-ci> string-ci<= string-ci>= string<))))
+
+(register-doc 'string-ci>
+  (list
+    (cons 'NAME 'string-ci>)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ci> a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "True if a is lexicographically after b under Unicode case folding.")
+    (cons 'EXAMPLES '(((string-ci> "ABD" "abc") t)))
+    (cons 'SEE-ALSO '(string-ci< string-ci<= string-ci>=))))
+
+(register-doc 'string-ci<=
+  (list
+    (cons 'NAME 'string-ci<=)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ci<= a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Non-strict case-insensitive ordering: true unless a comes after b under Unicode case folding.")
+    (cons 'EXAMPLES '(((string-ci<= "ABC" "abc") t)))
+    (cons 'SEE-ALSO '(string-ci< string-ci> string-ci>=))))
+
+(register-doc 'string-ci>=
+  (list
+    (cons 'NAME 'string-ci>=)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-ci>= a b)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Non-strict case-insensitive ordering: true unless a comes before b under Unicode case folding.")
+    (cons 'EXAMPLES '(((string-ci>= "ABC" "abc") t)))
+    (cons 'SEE-ALSO '(string-ci< string-ci> string-ci<=))))
+
+(register-doc 'string-last-index-of
+  (list
+    (cons 'NAME 'string-last-index-of)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-last-index-of s sub)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns the index of the LAST (rightmost) occurrence of non-empty sub in s, or NIL if sub does not occur (or is empty).")
+    (cons 'EXAMPLES '(((string-last-index-of "abcabc" "bc") 4)))
+    (cons 'SEE-ALSO '(string-index-of string-count))))
+
+(register-doc 'string-count
+  (list
+    (cons 'NAME 'string-count)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-count s sub)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Counts non-overlapping occurrences of non-empty sub in s; 0 if sub is empty or does not occur.")
+    (cons 'EXAMPLES '(((string-count "abcabcabc" "abc") 3)
+                       ((string-count "aaaa" "aa") 2)))
+    (cons 'SEE-ALSO '(string-index-of string-last-index-of))))
+
+(register-doc 'string-replace-first
+  (list
+    (cons 'NAME 'string-replace-first)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-replace-first s old new)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Replaces only the first (non-empty) occurrence of old in s with new.")
+    (cons 'EXAMPLES '(((string-replace-first "aaa" "a" "b") "baa")))
+    (cons 'SEE-ALSO '(string-replace string-replace-all))))
+
+(register-doc 'string-replace-all
+  (list
+    (cons 'NAME 'string-replace-all)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-replace-all s old new)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Replaces every (non-empty) occurrence of old in s with new. Alias for STRING-REPLACE, named to pair explicitly with STRING-REPLACE-FIRST.")
+    (cons 'EXAMPLES '(((string-replace-all "aaa" "a" "b") "bbb")))
+    (cons 'SEE-ALSO '(string-replace string-replace-first))))
+
+(register-doc 'string-trim-left
+  (list
+    (cons 'NAME 'string-trim-left)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-trim-left s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Removes leading whitespace from s.")
+    (cons 'EXAMPLES '(((string-trim-left "  hi  ") "hi  ")))
+    (cons 'SEE-ALSO '(string-trim-right string-trim))))
+
+(register-doc 'string-trim-right
+  (list
+    (cons 'NAME 'string-trim-right)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-trim-right s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Removes trailing whitespace from s.")
+    (cons 'EXAMPLES '(((string-trim-right "  hi  ") "  hi")))
+    (cons 'SEE-ALSO '(string-trim-left string-trim))))
+
+(register-doc 'string-capitalize
+  (list
+    (cons 'NAME 'string-capitalize)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-capitalize s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Returns s with its first character uppercased (ASCII) and the rest lowercased.")
+    (cons 'EXAMPLES '(((string-capitalize "hELLO world") "Hello world")))
+    (cons 'SEE-ALSO '(string-upcase string-downcase))))
+
+(register-doc 'string-reverse
+  (list
+    (cons 'NAME 'string-reverse)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-reverse s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Reverses s. A named entry point onto the generic REVERSE (which already works on strings).")
+    (cons 'EXAMPLES '(((string-reverse "hello") "olleh")))
+    (cons 'SEE-ALSO '(reverse))))
+
+;;; ============================================================
+;;; TEXT MODULE: UTF-8 <-> Array<Char> (issue #254, epic #253)
+;;; ============================================================
+
+(register-doc 'text:string->utf8
+  (list
+    (cons 'NAME 'text:string->utf8)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(text:string->utf8 s)")
+    (cons 'CATEGORY 'text)
+    (cons 'DESCRIPTION "Returns the exact UTF-8 bytes of string s as a fresh Array<Char> (an array whose every element is a Char byte 0-255). Never fails: every Lisp STRING is valid Unicode. Call qualified, or (import text) first to use STRING->UTF8 unqualified.")
+    (cons 'EXAMPLES '(((array-length* (text:string->utf8 "hi")) 2)))
+    (cons 'SEE-ALSO '(text:utf8->string text:utf8->string-lossy))))
+
+(register-doc 'text:utf8->string
+  (list
+    (cons 'NAME 'text:utf8->string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(text:utf8->string bytes)")
+    (cons 'CATEGORY 'text)
+    (cons 'DESCRIPTION "Decodes bytes (an Array<Char>) as UTF-8 and returns the resulting STRING. Strict: signals a descriptive error naming the offending byte offset if bytes is not well-formed UTF-8; use UTF8->STRING-LOSSY for replacement-character decoding instead.")
+    (cons 'EXAMPLES '(((text:utf8->string (text:string->utf8 "hi")) "hi")))
+    (cons 'SEE-ALSO '(text:string->utf8 text:utf8->string-lossy))))
+
+(register-doc 'text:utf8->string-lossy
+  (list
+    (cons 'NAME 'text:utf8->string-lossy)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(text:utf8->string-lossy bytes)")
+    (cons 'CATEGORY 'text)
+    (cons 'DESCRIPTION "Decodes bytes (an Array<Char>) as UTF-8, substituting the Unicode replacement character (U+FFFD) for any invalid byte sequence instead of signalling an error.")
+    (cons 'EXAMPLES '(((text:utf8->string-lossy (text:string->utf8 "hi")) "hi")))
+    (cons 'SEE-ALSO '(text:string->utf8 text:utf8->string))))
+
+;;; ============================================================
 ;;; ADDITIONAL LIST OPERATIONS
 ;;; ============================================================
 
@@ -2415,7 +2689,18 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   "String operations"
   '(concat index explode implode gensym intern maknam
     string-length* substring char-code code-char make-char
-    string->number number->string prin1-to-string princ-to-string))
+    string->number number->string prin1-to-string princ-to-string
+    make-string string-empty-p string-concat char-at
+    string< string> string<= string>= string-ne
+    string-ci= string-ci-ne string-ci< string-ci> string-ci<= string-ci>=
+    string-last-index-of string-count
+    string-replace-first string-replace-all
+    string-trim-left string-trim-right
+    string-capitalize string-reverse))
+
+(register-category 'text
+  "Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)"
+  '(text:string->utf8 text:utf8->string text:utf8->string-lossy))
 
 (register-category 'special-forms
   "Special forms and macros"

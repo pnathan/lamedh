@@ -77,6 +77,10 @@ pub(super) fn apply(
             | BuiltinFunc::MakeChar
             | BuiltinFunc::StringToNumber
             | BuiltinFunc::NumberToString
+            | BuiltinFunc::StringCasefold
+            | BuiltinFunc::StringToUtf8
+            | BuiltinFunc::Utf8ToString
+            | BuiltinFunc::Utf8ToStringLossy
             | BuiltinFunc::Prin1ToString
             | BuiltinFunc::PrincToString => apply_string_lib(builtin, args),
             BuiltinFunc::ReadFromString => {
