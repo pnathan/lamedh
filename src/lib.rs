@@ -206,6 +206,7 @@
 //! | `28-types.lisp` | optional | `types` | The type table: verified declared schemes for builtins and stdlib functions |
 //! | `29-protocols.lisp` | optional | `protocols` | THE dispatch system: typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances) + conformance (`IMPLEMENTS!`/`IMPLEMENTS-P`) |
 //! | `30-text.lisp` | optional | `text` | Explicit String ↔ UTF-8 `Array<Char>` boundary: `TEXT:STRING->UTF8`, `TEXT:UTF8->STRING` |
+//! | `31-ports.lisp` | optional | `ports` | Synchronous binary ports: `PORTS:OPEN-INPUT`/`OPEN-OUTPUT`/`OPEN-APPEND`, `READ-BYTE!`/`READ-BYTES!`/`WRITE-BYTE!`/`WRITE-BYTES!`, `WITH-OPEN-PORT` |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -261,7 +262,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 // ── Shared reference-counting and interior-mutability type aliases ─────────
@@ -694,6 +695,34 @@ pub enum BuiltinFunc {
     ModuleSourceLookup,
     ModuleSearchPaths,
     EvalModuleSource,
+    // Binary ports (issue #255, epic #253): kernel substrate wrapped by the
+    // PORTS module in lib/31-ports.lisp. Capability-gated construction
+    // (READ-FS/CREATE-FS/IO); the binary operations below work uniformly
+    // across every port kind once you have one.
+    PortOpenInputFile,
+    PortOpenOutputFile,
+    PortOpenAppendFile,
+    PortOpenInputBytes,
+    PortOpenOutputBytes,
+    PortOutputContents,
+    PortStdin,
+    PortStdout,
+    PortStderr,
+    PortReadByte,
+    PortReadBytes,
+    PortWriteByte,
+    PortWriteBytes,
+    PortFlush,
+    PortClose,
+    PortOpenP,
+    PortInputP,
+    PortOutputP,
+    PortSeekableP,
+    PortPosition,
+    PortSeek,
+    PortP,
+    PortName,
+    PortKind,
     // Concurrency primitives (gated behind the `concurrency` feature)
     #[cfg(feature = "concurrency")]
     MakeChannel,
@@ -1238,6 +1267,13 @@ pub enum LispVal {
     /// handler variable in `(handler-case ...)`.  Boxed behind a [`Shared`]
     /// pointer so the `LispVal` stays small.
     Error(Shared<ErrorObj>),
+    /// A synchronous binary I/O handle (issue #255, epic #253): a file,
+    /// in-memory byte buffer, standard stream, or host-wrapped
+    /// reader/writer. Opaque from Lisp — operated on only through the
+    /// `PORT-*` kernel primitives (`src/evaluator/builtins_ports.rs`),
+    /// wrapped by the `PORTS` module (`lib/31-ports.lisp`). Compares by
+    /// identity, like `Array`/`HashTable`/`Environment`. See [`PortObj`].
+    Port(Shared<PortObj>),
     /// A message-passing channel (only present under the `concurrency` feature).
     ///
     /// Created with `(make-channel)`.  Both ends are bundled together so that
@@ -1259,6 +1295,368 @@ pub struct ErrorObj {
     pub message: String,
     /// Structured payload: a cons list of irritants, or `Nil`.
     pub data: LispVal,
+}
+
+/// Backing storage for a [`PortObj`]. Never exposed to Lisp directly —
+/// `PortObj`'s methods are the only way in or out, so a raw file descriptor
+/// never crosses the Lisp boundary (issue #255's embedding requirement).
+enum PortState {
+    /// Closed (either explicitly, or default-constructed). Every operation
+    /// except `close`/`port-open-p` errors on this state.
+    Closed,
+    File(fs::File),
+    MemoryInput(std::io::Cursor<Vec<u8>>),
+    /// A growable output buffer; not seekable (append-only), matching the
+    /// simplest reading of "output byte-array port" in the issue.
+    MemoryOutput(Vec<u8>),
+    Stdin(std::io::Stdin),
+    Stdout(std::io::Stdout),
+    Stderr(std::io::Stderr),
+    /// A host-registered arbitrary byte source, installed via
+    /// [`LispVal::wrap_reader`] without exposing a raw fd to Lisp.
+    HostReader(Box<dyn Read>),
+    /// A host-registered arbitrary byte sink, installed via
+    /// [`LispVal::wrap_writer`].
+    HostWriter(Box<dyn Write>),
+}
+
+impl fmt::Debug for PortState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tag = match self {
+            PortState::Closed => "Closed",
+            PortState::File(_) => "File",
+            PortState::MemoryInput(_) => "MemoryInput",
+            PortState::MemoryOutput(_) => "MemoryOutput",
+            PortState::Stdin(_) => "Stdin",
+            PortState::Stdout(_) => "Stdout",
+            PortState::Stderr(_) => "Stderr",
+            PortState::HostReader(_) => "HostReader",
+            PortState::HostWriter(_) => "HostWriter",
+        };
+        write!(f, "{tag}")
+    }
+}
+
+/// The payload of a [`LispVal::Port`] (issue #255, epic #253): a synchronous
+/// binary I/O handle over a file, an in-memory byte buffer, a standard
+/// stream, or a host-wrapped reader/writer.
+///
+/// **Deterministic ownership.** The documented contract is an explicit
+/// close (`(ports:close! p)`, or `(ports:with-open-port (p ...) ...)` which
+/// closes on every exit path via `UNWIND-PROTECT`). Rust's ordinary `Drop`
+/// — the underlying `File`/etc. closes automatically when the last
+/// [`Shared`] reference to this `PortObj` is dropped, since `state` owns it
+/// with no `mem::forget` anywhere — is a last-resort safety net, not the
+/// primary cleanup path; nothing here needs a custom `Drop` impl because
+/// `fs::File` and friends already close themselves on drop.
+///
+/// **Capabilities.** `PortObj` itself performs no capability checks; the
+/// kernel primitives that construct one (`src/evaluator/builtins_ports.rs`)
+/// check `READ-FS`/`CREATE-FS`/`IO` before ever calling these constructors,
+/// exactly like the existing file builtins in `src/evaluator/apply.rs`.
+#[derive(Debug)]
+pub struct PortObj {
+    /// Diagnostic resource kind, e.g. `"file"`, `"memory"`, `"stdin"`.
+    pub kind: &'static str,
+    /// Diagnostic name, e.g. a file path or `"<stdin>"`. Not necessarily
+    /// unique; used only for `print`/error messages.
+    pub name: String,
+    readable: bool,
+    writable: bool,
+    seekable: bool,
+    state: SharedCell<PortState>,
+}
+
+impl PortObj {
+    fn new(
+        kind: &'static str,
+        name: impl Into<String>,
+        readable: bool,
+        writable: bool,
+        seekable: bool,
+        state: PortState,
+    ) -> Shared<PortObj> {
+        Shared::new(PortObj {
+            kind,
+            name: name.into(),
+            readable,
+            writable,
+            seekable,
+            state: SharedCell::new(state),
+        })
+    }
+
+    /// True unless the port has been closed (explicitly or via `Drop`'s
+    /// state transition — there is no separate case for the latter; closing
+    /// always goes through the same `PortState::Closed` transition).
+    pub fn is_open(&self) -> bool {
+        !matches!(*self.state.borrow(), PortState::Closed)
+    }
+
+    pub fn is_readable(&self) -> bool {
+        self.readable
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    pub fn is_seekable(&self) -> bool {
+        self.seekable
+    }
+
+    fn require_open(&self) -> std::io::Result<()> {
+        if self.is_open() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("port is closed"))
+        }
+    }
+
+    /// Read exactly one byte, or `Ok(None)` at EOF.
+    pub fn read_byte(&self) -> std::io::Result<Option<u8>> {
+        self.require_open()?;
+        if !self.readable {
+            return Err(std::io::Error::other("port is not readable"));
+        }
+        let mut buf = [0u8; 1];
+        let n = self.read_into(&mut buf)?;
+        Ok(if n == 0 { None } else { Some(buf[0]) })
+    }
+
+    /// Read up to `max` bytes. Returns fewer than `max` (including zero) at
+    /// EOF or on a partial read — never `None`; EOF and "no bytes available
+    /// right now" are both an empty/short `Vec`, matching `Read::read`.
+    pub fn read_bytes(&self, max: usize) -> std::io::Result<Vec<u8>> {
+        self.require_open()?;
+        if !self.readable {
+            return Err(std::io::Error::other("port is not readable"));
+        }
+        let mut buf = vec![0u8; max];
+        let n = self.read_into(&mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    fn read_into(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            PortState::File(f) => f.read(buf),
+            PortState::MemoryInput(c) => c.read(buf),
+            PortState::Stdin(s) => s.lock().read(buf),
+            PortState::HostReader(r) => r.read(buf),
+            _ => Err(std::io::Error::other("port is not readable")),
+        }
+    }
+
+    /// Write `data`; returns the number of bytes written (may be short of
+    /// `data.len()` for a partial write).
+    pub fn write_bytes(&self, data: &[u8]) -> std::io::Result<usize> {
+        self.require_open()?;
+        if !self.writable {
+            return Err(std::io::Error::other("port is not writable"));
+        }
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            PortState::File(f) => f.write(data),
+            PortState::MemoryOutput(v) => {
+                v.extend_from_slice(data);
+                Ok(data.len())
+            }
+            PortState::Stdout(s) => s.lock().write(data),
+            PortState::Stderr(s) => s.lock().write(data),
+            PortState::HostWriter(w) => w.write(data),
+            _ => Err(std::io::Error::other("port is not writable")),
+        }
+    }
+
+    /// Flush buffered writes. A no-op (not an error) on ports with nothing
+    /// to flush (readers, already-closed-is-caught-above, memory buffers).
+    pub fn flush(&self) -> std::io::Result<()> {
+        self.require_open()?;
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            PortState::File(f) => f.flush(),
+            PortState::Stdout(s) => s.lock().flush(),
+            PortState::Stderr(s) => s.lock().flush(),
+            PortState::HostWriter(w) => w.flush(),
+            _ => Ok(()),
+        }
+    }
+
+    /// Close the port. Idempotent: closing an already-closed port is a
+    /// silent no-op, never an error (issue #255's documented contract).
+    pub fn close(&self) {
+        *self.state.borrow_mut() = PortState::Closed;
+    }
+
+    /// Current byte offset, for seekable ports only.
+    pub fn position(&self) -> std::io::Result<u64> {
+        self.require_open()?;
+        if !self.seekable {
+            return Err(std::io::Error::other("port does not support position/seek"));
+        }
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            PortState::File(f) => f.stream_position(),
+            PortState::MemoryInput(c) => Ok(c.position()),
+            _ => Err(std::io::Error::other("port does not support position/seek")),
+        }
+    }
+
+    /// Seek to an absolute byte offset from the start, for seekable ports
+    /// only. Returns the new position.
+    pub fn seek_to(&self, offset: u64) -> std::io::Result<u64> {
+        self.require_open()?;
+        if !self.seekable {
+            return Err(std::io::Error::other("port does not support position/seek"));
+        }
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            PortState::File(f) => f.seek(SeekFrom::Start(offset)),
+            PortState::MemoryInput(c) => {
+                c.set_position(offset);
+                Ok(offset)
+            }
+            _ => Err(std::io::Error::other("port does not support position/seek")),
+        }
+    }
+
+    /// The accumulated bytes of an output byte-array port. Errors for any
+    /// other port kind.
+    pub fn output_contents(&self) -> std::io::Result<Vec<u8>> {
+        match &*self.state.borrow() {
+            PortState::MemoryOutput(v) => Ok(v.clone()),
+            _ => Err(std::io::Error::other(
+                "port is not an output byte-array port",
+            )),
+        }
+    }
+
+    // ── Constructors ────────────────────────────────────────────────────
+
+    pub(crate) fn open_input_file(path: &str) -> std::io::Result<Shared<PortObj>> {
+        let f = fs::File::open(path)?;
+        Ok(PortObj::new(
+            "file",
+            path,
+            true,
+            false,
+            true,
+            PortState::File(f),
+        ))
+    }
+
+    pub(crate) fn open_output_file(path: &str, append: bool) -> std::io::Result<Shared<PortObj>> {
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(append)
+            .truncate(!append)
+            .open(path)?;
+        Ok(PortObj::new(
+            "file",
+            path,
+            false,
+            true,
+            true,
+            PortState::File(f),
+        ))
+    }
+
+    pub(crate) fn open_memory_input(bytes: Vec<u8>) -> Shared<PortObj> {
+        PortObj::new(
+            "memory",
+            "<memory-input>",
+            true,
+            false,
+            true,
+            PortState::MemoryInput(std::io::Cursor::new(bytes)),
+        )
+    }
+
+    pub(crate) fn open_memory_output() -> Shared<PortObj> {
+        PortObj::new(
+            "memory",
+            "<memory-output>",
+            false,
+            true,
+            false,
+            PortState::MemoryOutput(Vec::new()),
+        )
+    }
+
+    pub(crate) fn stdin_port() -> Shared<PortObj> {
+        PortObj::new(
+            "stdin",
+            "<stdin>",
+            true,
+            false,
+            false,
+            PortState::Stdin(std::io::stdin()),
+        )
+    }
+
+    pub(crate) fn stdout_port() -> Shared<PortObj> {
+        PortObj::new(
+            "stdout",
+            "<stdout>",
+            false,
+            true,
+            false,
+            PortState::Stdout(std::io::stdout()),
+        )
+    }
+
+    pub(crate) fn stderr_port() -> Shared<PortObj> {
+        PortObj::new(
+            "stderr",
+            "<stderr>",
+            false,
+            true,
+            false,
+            PortState::Stderr(std::io::stderr()),
+        )
+    }
+}
+
+impl LispVal {
+    /// Wrap a host `Read` stream as an input [`LispVal::Port`], for
+    /// embedders that want to hand Lisp code a byte source (a pipe, a
+    /// decompressor, a network stream, ...) without exposing a raw file
+    /// descriptor (issue #255's embedding requirement). The resulting port
+    /// is not seekable; `kind`/`name` are diagnostic only.
+    pub fn wrap_reader(
+        name: impl Into<String>,
+        kind: &'static str,
+        reader: Box<dyn Read>,
+    ) -> LispVal {
+        LispVal::Port(PortObj::new(
+            kind,
+            name,
+            true,
+            false,
+            false,
+            PortState::HostReader(reader),
+        ))
+    }
+
+    /// Wrap a host `Write` sink as an output [`LispVal::Port`]. See
+    /// [`LispVal::wrap_reader`].
+    pub fn wrap_writer(
+        name: impl Into<String>,
+        kind: &'static str,
+        writer: Box<dyn Write>,
+    ) -> LispVal {
+        LispVal::Port(PortObj::new(
+            kind,
+            name,
+            false,
+            true,
+            false,
+            PortState::HostWriter(writer),
+        ))
+    }
 }
 
 /// The payload of a [`LispVal::Channel`] (only present under the `concurrency` feature).
@@ -1320,6 +1718,7 @@ impl fmt::Debug for LispVal {
             LispVal::Struct(s) => write!(f, "Struct(type={}, fields={:?})", s.type_name, s.fields),
             LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
             LispVal::Error(e) => write!(f, "Error({:?}, {:?})", e.message, e.data),
+            LispVal::Port(p) => write!(f, "Port(kind={}, name={:?})", p.kind, p.name),
             #[cfg(feature = "concurrency")]
             LispVal::Channel(_) => write!(f, "Channel(...)"),
         }
@@ -1351,6 +1750,7 @@ impl Clone for LispVal {
             LispVal::Struct(s) => LispVal::Struct(s.clone()),
             LispVal::Extension(e) => LispVal::Extension(e.clone()),
             LispVal::Error(e) => LispVal::Error(e.clone()),
+            LispVal::Port(p) => LispVal::Port(p.clone()),
             #[cfg(feature = "concurrency")]
             LispVal::Channel(c) => LispVal::Channel(std::sync::Arc::clone(c)),
         }
@@ -1404,6 +1804,9 @@ impl PartialEq for LispVal {
             }
             (LispVal::Extension(a), LispVal::Extension(b)) => a.eq_ext(b.as_ref()),
             (LispVal::Error(a), LispVal::Error(b)) => a.message == b.message && a.data == b.data,
+            // Ports are opaque and compare by identity (issue #255), like
+            // Array/HashTable/Native/Environment.
+            (LispVal::Port(a), LispVal::Port(b)) => Shared::ptr_eq(a, b),
             #[cfg(feature = "concurrency")]
             (LispVal::Channel(a), LispVal::Channel(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
@@ -1448,6 +1851,9 @@ impl Hash for LispVal {
             LispVal::Error(e) => {
                 e.message.hash(state);
                 e.data.hash(state);
+            }
+            LispVal::Port(p) => {
+                Shared::as_ptr(p).hash(state);
             }
             LispVal::Builtin(_)
             | LispVal::Lambda(_)
@@ -1741,6 +2147,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         include_str!("../lib/29-protocols.lisp"),
     ),
     ("30-text.lisp", include_str!("../lib/30-text.lisp")),
+    ("31-ports.lisp", include_str!("../lib/31-ports.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -1889,6 +2296,11 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         include_str!("../lib/29-protocols.lisp"),
     ),
     ("TEXT", "30-text.lisp", include_str!("../lib/30-text.lisp")),
+    (
+        "PORTS",
+        "31-ports.lisp",
+        include_str!("../lib/31-ports.lisp"),
+    ),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

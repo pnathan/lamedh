@@ -1136,6 +1136,103 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ErrorData),
         );
 
+        // Binary ports (issue #255, epic #253): kernel substrate wrapped by
+        // the PORTS module in lib/31-ports.lisp. Flat "*"-suffixed names,
+        // like the STRING->UTF8*/UTF8->STRING* substrate for TEXT.
+        env.set(
+            "PORT-OPEN-INPUT-FILE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOpenInputFile),
+        );
+        env.set(
+            "PORT-OPEN-OUTPUT-FILE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOpenOutputFile),
+        );
+        env.set(
+            "PORT-OPEN-APPEND-FILE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOpenAppendFile),
+        );
+        env.set(
+            "PORT-OPEN-INPUT-BYTES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOpenInputBytes),
+        );
+        env.set(
+            "PORT-OPEN-OUTPUT-BYTES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOpenOutputBytes),
+        );
+        env.set(
+            "PORT-OUTPUT-CONTENTS*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOutputContents),
+        );
+        env.set(
+            "PORT-STDIN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortStdin),
+        );
+        env.set(
+            "PORT-STDOUT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortStdout),
+        );
+        env.set(
+            "PORT-STDERR*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortStderr),
+        );
+        env.set(
+            "PORT-READ-BYTE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortReadByte),
+        );
+        env.set(
+            "PORT-READ-BYTES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortReadBytes),
+        );
+        env.set(
+            "PORT-WRITE-BYTE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortWriteByte),
+        );
+        env.set(
+            "PORT-WRITE-BYTES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortWriteBytes),
+        );
+        env.set(
+            "PORT-FLUSH*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortFlush),
+        );
+        env.set(
+            "PORT-CLOSE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortClose),
+        );
+        env.set(
+            "PORT-OPEN-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOpenP),
+        );
+        env.set(
+            "PORT-INPUT-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortInputP),
+        );
+        env.set(
+            "PORT-OUTPUT-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortOutputP),
+        );
+        env.set(
+            "PORT-SEEKABLE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortSeekableP),
+        );
+        env.set(
+            "PORT-POSITION*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortPosition),
+        );
+        env.set(
+            "PORT-SEEK*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortSeek),
+        );
+        env.set("PORT-P*".to_string(), LispVal::Builtin(BuiltinFunc::PortP));
+        env.set(
+            "PORT-NAME*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortName),
+        );
+        env.set(
+            "PORT-KIND*".to_string(),
+            LispVal::Builtin(BuiltinFunc::PortKind),
+        );
+
         // Introspection
         env.set(
             "DESCRIBE".to_string(),

@@ -240,6 +240,49 @@ globally, not into whatever local frame happened to be active — so there is
 nothing extra to arrange on the Rust side for `defun`/`def` inside a
 required module to behave as expected.
 
+## Ports (host-wrapped I/O)
+
+Issue #255: `LispVal::Port` is a synchronous binary I/O handle over a file,
+an in-memory byte buffer, a standard stream, or (via the two constructors
+below) an arbitrary host `Read`/`Write` stream — a pipe, a decompressor, a
+captured in-process buffer — exposed to Lisp without ever handing over a
+raw file descriptor. See `docs/manual/11-ports-and-io.md` for the
+Lisp-facing story (the `PORTS` module, `lib/31-ports.lisp`: `read-byte!`,
+`write-bytes!`, `with-open-port`, capability gating, ...).
+
+```rust
+use lamedh::LispVal;
+
+let env = Environment::with_stdlib();
+
+// Wrap an arbitrary Read stream as an input port.
+let data = b"hello".to_vec();
+let port = LispVal::wrap_reader(
+    "my-source",              // diagnostic name
+    "pipe",                   // diagnostic resource kind
+    Box::new(std::io::Cursor::new(data)),
+);
+env.set("MY-SOURCE".to_string(), port);
+
+// Wrap an arbitrary Write sink as an output port.
+let sink = LispVal::wrap_writer("my-sink", "capture", Box::new(std::io::sink()));
+env.set("MY-SINK".to_string(), sink);
+```
+
+```lisp
+(import ports)
+(array->list (read-all-bytes! my-source))  ; => (104 101 108 108 111)
+(write-string! my-sink "hi")               ; writes through to the wrapped Write
+```
+
+Host-wrapped ports are not seekable and need no capability from Lisp's
+side — the host already decided to hand this stream over by constructing
+the `LispVal`, exactly like `register_fn`. Every other port operation
+(`read-byte!`, `write-bytes!`, `flush!`, `close!`, `port-p`, ...) treats a
+host-wrapped port exactly like a file or memory port. Ports compare by
+identity and print as an opaque `#<port:kind "name" open|closed>`
+diagnostic — never as a readable literal.
+
 ## Condition flags
 
 Condition flags are boolean markers in the environment, distinct from feature

@@ -223,6 +223,7 @@ pub(super) fn describe_kind(val: &LispVal) -> &'static str {
         LispVal::Environment(_) => "bound to an environment",
         LispVal::Error(_) => "bound to an error/condition object",
         LispVal::Extension(_) => "bound to a host extension value",
+        LispVal::Port(_) => "bound to a port",
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => "bound to a channel",
     }

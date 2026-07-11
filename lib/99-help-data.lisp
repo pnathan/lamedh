@@ -1918,6 +1918,273 @@ The classic Lisp 1.5 spelling.")
     (cons 'SEE-ALSO '(text:string->utf8 text:utf8->string))))
 
 ;;; ============================================================
+;;; PORTS MODULE: binary I/O (issue #255, epic #253)
+;;; ============================================================
+
+(register-doc 'ports:open-input
+  (list
+    (cons 'NAME 'ports:open-input)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:open-input path)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Opens path as a binary input port. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(ports:open-output ports:open-append ports:with-open-port))))
+
+(register-doc 'ports:open-output
+  (list
+    (cons 'NAME 'ports:open-output)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:open-output path)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Opens path as a binary output port, truncating any existing contents (creating the file if needed). Requires the CREATE-FS capability.")
+    (cons 'SEE-ALSO '(ports:open-input ports:open-append))))
+
+(register-doc 'ports:open-append
+  (list
+    (cons 'NAME 'ports:open-append)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:open-append path)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Opens path as a binary output port positioned at end-of-file, preserving existing contents. Requires the CREATE-FS capability.")
+    (cons 'SEE-ALSO '(ports:open-output))))
+
+(register-doc 'ports:open-input-bytes
+  (list
+    (cons 'NAME 'ports:open-input-bytes)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:open-input-bytes bytes)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Opens a binary input port reading from a private copy of bytes (an Array<Char>). No capability required.")
+    (cons 'EXAMPLES '(((ports:read-byte! (ports:open-input-bytes (list->array (list 65)))) 65)))
+    (cons 'SEE-ALSO '(ports:open-output-bytes ports:output-contents))))
+
+(register-doc 'ports:open-output-bytes
+  (list
+    (cons 'NAME 'ports:open-output-bytes)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:open-output-bytes)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Opens a binary output port that accumulates written bytes in memory; read them back with ports:output-contents. No capability required; not seekable.")
+    (cons 'SEE-ALSO '(ports:open-input-bytes ports:output-contents))))
+
+(register-doc 'ports:output-contents
+  (list
+    (cons 'NAME 'ports:output-contents)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:output-contents port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Returns the bytes written so far to an open-output-bytes port, as a fresh Array<Char>.")
+    (cons 'SEE-ALSO '(ports:open-output-bytes))))
+
+(register-doc 'ports:stdin
+  (list
+    (cons 'NAME 'ports:stdin)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:stdin)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "The process's standard input as a binary input port. Requires the IO capability.")
+    (cons 'SEE-ALSO '(ports:stdout ports:stderr))))
+
+(register-doc 'ports:stdout
+  (list
+    (cons 'NAME 'ports:stdout)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:stdout)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "The process's standard output as a binary output port. No capability required.")
+    (cons 'SEE-ALSO '(ports:stdin ports:stderr))))
+
+(register-doc 'ports:stderr
+  (list
+    (cons 'NAME 'ports:stderr)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:stderr)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "The process's standard error as a binary output port. No capability required.")
+    (cons 'SEE-ALSO '(ports:stdin ports:stdout))))
+
+(register-doc 'ports:read-byte!
+  (list
+    (cons 'NAME 'ports:read-byte!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:read-byte! port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Reads one byte from port as an integer 0-255, or NIL at EOF.")
+    (cons 'SEE-ALSO '(ports:read-bytes! ports:write-byte!))))
+
+(register-doc 'ports:read-bytes!
+  (list
+    (cons 'NAME 'ports:read-bytes!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:read-bytes! port n)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Reads up to n bytes from port into a fresh Array<Char>. May be shorter than n (including empty) at EOF or on a partial read; never NIL.")
+    (cons 'SEE-ALSO '(ports:read-byte! ports:read-all-bytes!))))
+
+(register-doc 'ports:write-byte!
+  (list
+    (cons 'NAME 'ports:write-byte!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:write-byte! port byte)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Writes one byte (a Char or integer 0-255) to port.")
+    (cons 'SEE-ALSO '(ports:write-bytes! ports:read-byte!))))
+
+(register-doc 'ports:write-bytes!
+  (list
+    (cons 'NAME 'ports:write-bytes!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:write-bytes! port bytes)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Writes bytes (an Array<Char>) to port; returns the number of bytes actually written (may be less than the length of bytes on a partial write).")
+    (cons 'SEE-ALSO '(ports:write-byte! ports:read-bytes!))))
+
+(register-doc 'ports:flush!
+  (list
+    (cons 'NAME 'ports:flush!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:flush! port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Flushes any buffered writes on port.")
+    (cons 'SEE-ALSO '(ports:write-bytes! ports:close!))))
+
+(register-doc 'ports:close!
+  (list
+    (cons 'NAME 'ports:close!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:close! port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Closes port. Idempotent: closing an already-closed port is a silent no-op, never an error.")
+    (cons 'SEE-ALSO '(ports:with-open-port ports:open-p))))
+
+(register-doc 'ports:with-open-port
+  (list
+    (cons 'NAME 'ports:with-open-port)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(ports:with-open-port (var port-expr) body...)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Binds var to the value of port-expr (a port) for body's dynamic extent, unconditionally closing it afterward: normal return, an ordinary error, THROW, RETURN-FROM, or GO unwinding all run the close, via UNWIND-PROTECT. Double-close is a no-op, so body may close var itself without error.")
+    (cons 'EXAMPLES '(((ports:with-open-port (p (ports:open-input-bytes (list->array (list 1 2)))) (ports:read-byte! p)) 1)))
+    (cons 'SEE-ALSO '(ports:close! ports:open-input ports:open-output))))
+
+(register-doc 'ports:port-p
+  (list
+    (cons 'NAME 'ports:port-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:port-p v)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "T if v is a port (open or closed) of any kind.")
+    (cons 'SEE-ALSO '(ports:open-p ports:input-p ports:output-p))))
+
+(register-doc 'ports:open-p
+  (list
+    (cons 'NAME 'ports:open-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:open-p port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "T if port has not been closed.")
+    (cons 'SEE-ALSO '(ports:close! ports:port-p))))
+
+(register-doc 'ports:input-p
+  (list
+    (cons 'NAME 'ports:input-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:input-p port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "T if port supports reading.")
+    (cons 'SEE-ALSO '(ports:output-p ports:port-p))))
+
+(register-doc 'ports:output-p
+  (list
+    (cons 'NAME 'ports:output-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:output-p port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "T if port supports writing.")
+    (cons 'SEE-ALSO '(ports:input-p ports:port-p))))
+
+(register-doc 'ports:name
+  (list
+    (cons 'NAME 'ports:name)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:name port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "port's diagnostic name (e.g. a file path, or \"<stdin>\").")
+    (cons 'SEE-ALSO '(ports:kind))))
+
+(register-doc 'ports:kind
+  (list
+    (cons 'NAME 'ports:kind)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:kind port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "port's diagnostic resource kind, as a symbol: FILE, MEMORY, STDIN, STDOUT, or STDERR (or a host-registered kind for an embedder-wrapped port).")
+    (cons 'SEE-ALSO '(ports:name))))
+
+(register-doc 'ports:seekable-p
+  (list
+    (cons 'NAME 'ports:seekable-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:seekable-p port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "T if port supports ports:position/ports:seek!. Files and byte-array input ports are seekable; byte-array output ports and the standard streams are not.")
+    (cons 'SEE-ALSO '(ports:position ports:seek!))))
+
+(register-doc 'ports:position
+  (list
+    (cons 'NAME 'ports:position)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:position port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "The current byte offset in a seekable port. Signals an error on a non-seekable port. Qualified-only: deliberately not bound unqualified by (import ports), because the Prelude's flat (position item lst) list helper would be shadowed.")
+    (cons 'SEE-ALSO '(ports:seek! ports:seekable-p))))
+
+(register-doc 'ports:seek!
+  (list
+    (cons 'NAME 'ports:seek!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:seek! port offset)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Moves a seekable port to absolute byte offset from the start; returns the new position. Signals an error on a non-seekable port.")
+    (cons 'SEE-ALSO '(ports:position ports:seekable-p))))
+
+(register-doc 'ports:read-line!
+  (list
+    (cons 'NAME 'ports:read-line!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:read-line! port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Reads one line of text from port: bytes up to but excluding a trailing newline, decoded as UTF-8 (lossy). Returns NIL only at true EOF; a final line with no trailing newline is still returned once.")
+    (cons 'SEE-ALSO '(ports:read-string! ports:write-string!))))
+
+(register-doc 'ports:read-string!
+  (list
+    (cons 'NAME 'ports:read-string!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:read-string! port n)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Reads up to n bytes from port and decodes them as UTF-8 (lossy), returning a STRING.")
+    (cons 'SEE-ALSO '(ports:read-line! ports:write-string!))))
+
+(register-doc 'ports:write-string!
+  (list
+    (cons 'NAME 'ports:write-string!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:write-string! port s)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Writes string s to port as its exact UTF-8 bytes. Returns the number of bytes written.")
+    (cons 'SEE-ALSO '(ports:read-string! ports:read-line!))))
+
+(register-doc 'ports:read-all-bytes!
+  (list
+    (cons 'NAME 'ports:read-all-bytes!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(ports:read-all-bytes! port)")
+    (cons 'CATEGORY 'ports)
+    (cons 'DESCRIPTION "Reads port to EOF, returning every remaining byte as a fresh Array<Char>.")
+    (cons 'SEE-ALSO '(ports:read-bytes!))))
+
+;;; ============================================================
 ;;; ADDITIONAL LIST OPERATIONS
 ;;; ============================================================
 
@@ -2770,6 +3037,18 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 (register-category 'text
   "Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)"
   '(text:string->utf8 text:utf8->string text:utf8->string-lossy))
+
+(register-category 'ports
+  "Synchronous binary I/O ports (PORTS module, lib/31-ports.lisp)"
+  '(ports:open-input ports:open-output ports:open-append
+    ports:open-input-bytes ports:open-output-bytes ports:output-contents
+    ports:stdin ports:stdout ports:stderr
+    ports:read-byte! ports:read-bytes! ports:write-byte! ports:write-bytes!
+    ports:flush! ports:close! ports:open-p ports:input-p ports:output-p
+    ports:seekable-p ports:position ports:seek! ports:port-p
+    ports:name ports:kind
+    ports:read-line! ports:read-string! ports:write-string!
+    ports:read-all-bytes! ports:with-open-port))
 
 (register-category 'special-forms
   "Special forms and macros"

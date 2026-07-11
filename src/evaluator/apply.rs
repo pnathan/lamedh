@@ -107,6 +107,30 @@ pub(super) fn apply(
             | BuiltinFunc::ErrorP
             | BuiltinFunc::ErrorMessage
             | BuiltinFunc::ErrorData => apply_error_value_op(builtin, args, env),
+            BuiltinFunc::PortOpenInputFile
+            | BuiltinFunc::PortOpenOutputFile
+            | BuiltinFunc::PortOpenAppendFile
+            | BuiltinFunc::PortOpenInputBytes
+            | BuiltinFunc::PortOpenOutputBytes
+            | BuiltinFunc::PortOutputContents
+            | BuiltinFunc::PortStdin
+            | BuiltinFunc::PortStdout
+            | BuiltinFunc::PortStderr
+            | BuiltinFunc::PortReadByte
+            | BuiltinFunc::PortReadBytes
+            | BuiltinFunc::PortWriteByte
+            | BuiltinFunc::PortWriteBytes
+            | BuiltinFunc::PortFlush
+            | BuiltinFunc::PortClose
+            | BuiltinFunc::PortOpenP
+            | BuiltinFunc::PortInputP
+            | BuiltinFunc::PortOutputP
+            | BuiltinFunc::PortSeekableP
+            | BuiltinFunc::PortPosition
+            | BuiltinFunc::PortSeek
+            | BuiltinFunc::PortP
+            | BuiltinFunc::PortName
+            | BuiltinFunc::PortKind => apply_port_op(builtin, args, env),
             BuiltinFunc::Evlis => {
                 // evlis[m;a] — evaluate each element of m in environment a
                 let (list, eval_env) = match args.len() {

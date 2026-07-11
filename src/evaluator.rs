@@ -47,7 +47,7 @@
 
 #![allow(clippy::mutable_key_type)]
 use crate::{
-    BuiltinFunc, LispError, LispVal, Shared, SharedCell, SpecialForm, StructObj,
+    BuiltinFunc, LispError, LispVal, PortObj, Shared, SharedCell, SpecialForm, StructObj,
     environment::{DynamicBinding, Environment},
 };
 use std::cell::Cell;
@@ -56,6 +56,7 @@ use std::collections::HashMap;
 mod apply;
 mod builtins_core;
 mod builtins_extra;
+mod builtins_ports;
 mod builtins_tail;
 mod compile;
 pub(crate) mod core;
@@ -73,6 +74,7 @@ mod tests;
 use self::apply::*;
 use self::builtins_core::*;
 use self::builtins_extra::*;
+use self::builtins_ports::*;
 use self::builtins_tail::*;
 use self::compile::*;
 use self::core::*;
