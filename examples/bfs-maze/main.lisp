@@ -20,8 +20,8 @@
        (< y (length $maze)) (< x (string-length* (ref $maze y)))
        (not (equal (cell x y) "#"))))
 
-;; NOTE: flatten recurses INTO dotted pairs ((1 . 2) -> 1 2), so it
-;; cannot carry coordinate cells; append the per-row match lists instead.
+;; Appending the per-row match lists keeps the shape explicit. (0.3's
+;; flatten treats dotted-pair cells as leaves, so it would work too.)
 (defun row-matches (row-idx line mark)
   (filter #'consp
           (map (enumerate (string->list line))
