@@ -63,7 +63,7 @@ as the bare symbol — a field with no type is an `any` field either way.
 | `make-Name` | constructor, one positional argument per field |
 | `Name-p` | predicate — true only for values with this exact brand |
 | `Name-field` | one accessor per field |
-| `validate-Name` | runs the `:invariant` (default: always true) |
+| `validate-Name` | runs the `:invariant` (default: always true); `make-Name` enforces it at construction |
 
 `(:derive equality lens)` adds more, covered in §4.7. `defrecord` is built
 on the condensation substrate, so every generated symbol is
@@ -299,19 +299,29 @@ lamedh -s '(progn (defrecord point (x int64) (y int64))
 
 ## 4.7 Invariants and derivations
 
-`:invariant` attaches a validity predicate over the record's own fields,
-checked by the generated `validate-Name`:
+`:invariant` attaches a validity predicate over the record's own fields.
+It is **enforced at construction** — `make-Name` refuses a violating
+value — and also available as the generated judgment `validate-Name`:
 
 ```lisp
 lamedh -s '(progn (defrecord acct (bal int64) (:invariant (>= bal 0)))
-                   (list (validate-acct (make-acct 5)) (validate-acct (make-acct -5))))'
+                   (list (validate-acct (make-acct 5))
+                         (errorset (quote (make-acct -5)))))'
 ; => (T ())
 ```
 
 Multiple expressions in `:invariant` are implicitly `and`ed together. The
 invariant is arbitrary Lisp, checked dynamically (the validator's own
 signature, `(-> (Name) bool)`, is declared in lockstep) — `defrecord` does
-not try to prove your invariant, only to run it.
+not try to prove your invariant, only to run it. Two roads bypass the
+constructor door — `record-with` updates and `#S` reader literals — so
+validate explicitly after either when the invariant matters:
+
+```lisp
+lamedh -s '(progn (defrecord acct (bal int64) (:invariant (>= bal 0)))
+                   (validate-acct (record-with (make-acct 5) (quote bal) -1)))'
+; => ()
+```
 
 `:derive` generates deterministic support code from the same field list.
 Three targets exist:

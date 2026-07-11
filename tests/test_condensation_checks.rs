@@ -26,8 +26,13 @@ fn deflaw_attaches_predicate_and_trace_metadata() {
         eval_line("(invoice-nonnegative (make-invoice 1 10 'draft))", &env),
         "T"
     );
+    // make- now enforces the invariant (0.3), so the law is exercised on
+    // a value smuggled past the constructor with record-with.
     assert_eq!(
-        eval_line("(invoice-nonnegative (make-invoice 1 -10 'draft))", &env),
+        eval_line(
+            "(invoice-nonnegative (record-with (make-invoice 1 10 'draft) 'amount -10))",
+            &env
+        ),
         "()"
     );
     assert_eq!(
@@ -70,8 +75,10 @@ fn condense_check_runs_concept_examples() {
         "(example valid-draft-invoice (:for invoice) (:given (make-invoice 1 100 'draft)) (:expect (validate-invoice *it*)))",
         &env,
     );
+    // The invalid exhibit arrives via record-with — make- enforces the
+    // invariant as of 0.3.
     eval_line(
-        "(example invalid-negative-invoice (:for invoice) (:given (make-invoice 1 -100 'draft)) (:expect (validate-invoice *it*)))",
+        "(example invalid-negative-invoice (:for invoice) (:given (record-with (make-invoice 1 100 'draft) 'amount -100)) (:expect (validate-invoice *it*)))",
         &env,
     );
 
