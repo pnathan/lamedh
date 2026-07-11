@@ -752,6 +752,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::DeclareInstance),
         );
         env.set(
+            "DECLARE-PROTOCOL-DISPATCH!".to_string(),
+            LispVal::Builtin(BuiltinFunc::DeclareProtocolDispatch),
+        );
+        env.set(
             "RECORD-WITH".to_string(),
             LispVal::Builtin(BuiltinFunc::RecordWith),
         );
@@ -1525,6 +1529,15 @@ impl Environment {
     /// Register a protocol INSTANCE scheme (0.3 typed protocols).
     pub fn jit_declare_instance(&self, name: &str, form: &LispVal) -> Result<String, String> {
         self.shared.jit.borrow_mut().declare_instance(name, form)
+    }
+
+    /// Set a protocol's dispatch argument position (fn-first protocols
+    /// like `map` dispatch on 1; the default is 0).
+    pub fn jit_declare_protocol_dispatch(&self, name: &str, idx: usize) {
+        self.shared
+            .jit
+            .borrow_mut()
+            .declare_protocol_dispatch(name, idx)
     }
 
     /// Declare a sum type (variant) in the typed registry (#312).

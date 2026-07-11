@@ -40,7 +40,7 @@
                          (codes r (concat prefix "1") acc)))))
 
 (defun encode (s table)
-  (string-join (map (string->list s) (lambda (c) (cdr (assoc c table)))) ""))
+  (string-join (map (lambda (c) (cdr (assoc c table))) (string->list s)) ""))
 
 (defun decode (bits tree)
   (decode-aux (string->list bits) tree tree ""))

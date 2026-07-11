@@ -1079,17 +1079,20 @@ Three resolutions from one definition:
 Define your own with `defprotocol` + `definstance`; `defprotocol` captures
 any prior binding of the name as the fallback instance, which is how the
 kernel's `length` kept everything it already handled. The shipped
-protocols are `length`, `map`, `for-each`, `ref`, `put!`, and `copy` —
-all take the collection FIRST (`(map coll fn)`, `(ref coll k)`), because
-protocols dispatch on their first argument:
+protocols are `length`, `map`, `for-each`, `ref`, `put!`, and `copy`.
+Argument order follows Common Lisp: higher-order functions take the
+FUNCTION first (`(map fn coll)`, like `mapcar`), access operations take
+the collection first (`(ref coll k)`, like `aref`/`elt`). A protocol
+declares which argument position it dispatches on — `(:dispatch 1)` for
+the fn-first pair — and the default is 0:
 
 ```lisp
-lamedh -s '(map (list 1 2 3) (lambda (x) (* x x)))'
+lamedh -s '(map (lambda (x) (* x x)) (list 1 2 3))'
 ; => (1 4 9)
 ```
 
 `map` is kind-preserving (a list maps to a list, an array to an array, a
-string to a string — `(map "abc" #'string-upcase)` is `"ABC"`);
+string to a string — `(map #'string-upcase "abc")` is `"ABC"`);
 `for-each` visits for effect, and its hash instance receives
 `(fn key value)`. The Lisp 1.5 appendix's tails-visiting `map` lives on as
 `map-tails`.

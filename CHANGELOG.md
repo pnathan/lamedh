@@ -70,6 +70,22 @@ Gap-probe additions (each follows its class's argument order):
 - `(string-pad-left s width [pad])` / `string-pad-right` /
   `(string-repeat s n)` — padding never truncates.
 
+## HOF protocols are function-first (breaking)
+
+- Ruled: higher-order functions follow the CL convention — FUNCTION
+  FIRST. `map` and `for-each` flip to `(map fn coll)` /
+  `(for-each fn coll)`; `option-then` and `result-then` flip to
+  `(option-then f o)` / `(result-then f r)`, matching
+  `option-map`/`result-map`. Access operations (`ref`, `put!`, `copy`,
+  `sort-by`) stay collection-first, matching CL's `aref`/`elt`/`sort`.
+- Protocols now declare their dispatch position:
+  `(defprotocol map "..." (:dispatch 1))` dispatches on the second
+  argument (kernel: `declare-protocol-dispatch!`; the checker selects
+  instances by the dispatch argument's shape).
+- `filter` is now a generic kind-preserving protocol — it was already
+  fn-first, so nothing breaks: lists as before, plus arrays and strings
+  (`(filter #'alpha-p "a1b2c")` is `"abc"`).
+
 ## Invariants are enforced at construction (breaking)
 
 - `make-Name` now REFUSES a value the `:invariant` would fail

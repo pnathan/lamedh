@@ -243,6 +243,8 @@ pub struct Jit {
     /// argument's inferred type. The runtime half (dispatch by value kind)
     /// lives in lib/29-protocols.lisp; this is the checker half.
     pub(super) protocol_instances: HashMap<String, Vec<infer::Scheme>>,
+    /// Which argument position each protocol dispatches on (absent = 0).
+    pub(super) protocol_dispatch: HashMap<String, usize>,
     /// Parametric nominals (0.3 HM generics): records and variant
     /// constructors with type parameters, plus parametric variants
     /// themselves. Uses appear as [`Ty::App`].
@@ -287,6 +289,12 @@ impl Jit {
             .or_default()
             .push(scheme);
         Ok(rendered)
+    }
+
+    /// Set which argument position protocol `name` dispatches on (fn-first
+    /// protocols like `map` dispatch on 1; the default is 0).
+    pub fn declare_protocol_dispatch(&mut self, name: &str, idx: usize) {
+        self.protocol_dispatch.insert(name.to_string(), idx);
     }
 
     /// Register a record type WITHOUT installing typed functions (issue
@@ -666,6 +674,7 @@ impl Jit {
                 structs: &self.structs,
                 generics: &self.generics,
                 protocols: &self.protocol_instances,
+                protocol_dispatch: &self.protocol_dispatch,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -790,6 +799,7 @@ impl Jit {
                 structs: &self.structs,
                 generics: &self.generics,
                 protocols: &self.protocol_instances,
+                protocol_dispatch: &self.protocol_dispatch,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -870,6 +880,7 @@ impl Jit {
                 structs: &self.structs,
                 generics: &self.generics,
                 protocols: &self.protocol_instances,
+                protocol_dispatch: &self.protocol_dispatch,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -943,6 +954,7 @@ impl Jit {
                 structs: &self.structs,
                 generics: &self.generics,
                 protocols: &self.protocol_instances,
+                protocol_dispatch: &self.protocol_dispatch,
                 infer: RefCell::new(infer),
                 checking: false,
                 resolver: None,
@@ -1045,6 +1057,7 @@ impl Jit {
                 structs: &self.structs,
                 generics: &self.generics,
                 protocols: &self.protocol_instances,
+                protocol_dispatch: &self.protocol_dispatch,
                 infer: RefCell::new(infer),
                 checking: true,
                 resolver,
@@ -1121,6 +1134,7 @@ impl Jit {
             structs: &self.structs,
             generics: &self.generics,
             protocols: &self.protocol_instances,
+            protocol_dispatch: &self.protocol_dispatch,
             infer: RefCell::new(infer),
             checking: true,
             resolver,

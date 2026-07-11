@@ -11,11 +11,10 @@
   (let ((clean (letters-only s)))
     (equal clean (reverse clean))))
 
-(for-each '("racecar"
+(for-each (lambda (s) (format t "~a :: ~a~%" (palindrome-p s) s)) '("racecar"
             "A man, a plan, a canal: Panama"
             "Was it a car or a cat I saw?"
-            "definitely not")
-  (lambda (s) (format t "~a :: ~a~%" (palindrome-p s) s)))
+            "definitely not"))
 
 ;; Largest palindromic product of two 2-digit factors.
 (defun numeric-palindrome-p (n)

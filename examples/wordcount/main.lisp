@@ -29,14 +29,13 @@ first-seen order (FREQUENCIES preserves it; the sort is stable)."
 
 (defun report (rows)
   "Print RANK. COUNT WORD lines, counts right-aligned."
-  (for-each (enumerate rows 1)
-            (lambda (row)
+  (for-each (lambda (row)
               (let ((rank (car row))
                     (cell (cadr row)))
                 (format t "~a. ~a ~a~%"
                         rank
                         (string-pad-left (number->string (cdr cell)) 6)
-                        (car cell))))))
+                        (car cell)))) (enumerate rows 1)))
 
 (defun count-or-default (s)
   "Parse S as a count, defaulting to 10. STRING->NUMBER is nil-on-miss,

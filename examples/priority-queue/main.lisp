@@ -45,7 +45,7 @@
 
 (defun heapsort (xs)
   (let ((h (heap-make (length xs))))
-    (for-each xs (lambda (x) (heap-push h x)))
+    (for-each (lambda (x) (heap-push h x)) xs)
     (mapcar (lambda (i) (heap-pop h)) (iota (length xs)))))
 
 (format t "~a~%" (heapsort (list 5 3 8 1 9 2 7)))

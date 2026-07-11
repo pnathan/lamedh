@@ -4,13 +4,13 @@
 ;;; Run: cargo run -- examples/dijkstra/main.lisp
 
 (def $graph (make-hash-table))
-(for-each '((a . ((b . 7) (c . 9) (f . 14)))
+(for-each (lambda (entry) (put! $graph (car entry) (cdr entry)))
+          '((a . ((b . 7) (c . 9) (f . 14)))
             (b . ((a . 7) (c . 10) (d . 15)))
             (c . ((a . 9) (b . 10) (d . 11) (f . 2)))
             (d . ((b . 15) (c . 11) (e . 6)))
             (e . ((d . 6) (f . 9)))
-            (f . ((a . 14) (c . 2) (e . 9))))
-  (lambda (entry) (put! $graph (car entry) (cdr entry))))
+            (f . ((a . 14) (c . 2) (e . 9)))))
 
 (defun insert-sorted (item frontier)
   "FRONTIER is ((dist . node) ...) ascending by dist."
@@ -45,8 +45,7 @@
                dist))))))
 
 (def $dist (dijkstra 'a))
-(for-each '(a b c d e f)
-  (lambda (n) (format t "a -> ~a: ~a~%" n (gethash $dist n))))
+(for-each (lambda (n) (format t "a -> ~a: ~a~%" n (gethash $dist n))) '(a b c d e f))
 
 ;; self-check: the classic wikipedia-instance distances.
 (if (and (= (gethash $dist 'e) 20)

@@ -16,8 +16,7 @@
            (lambda (g) (length (cdr g)))
            #'>))
 
-(for-each $groups
-  (lambda (g) (format t "~a: ~a~%" (car g) (cdr g))))
+(for-each (lambda (g) (format t "~a: ~a~%" (car g) (cdr g))) $groups)
 
 ;; self-check: listen-family has 3, cat-family has 3, dog is alone.
 (defun group-of (word)

@@ -13,11 +13,15 @@ stdlib definitions.
 
 - **Variadic operators**: anything that folds associatively is variadic —
   `+ - * and or max min list concat` ✔, comparisons chain ✔ (0.3).
-- **Argument order**: container operations are COLLECTION FIRST
-  (`gethash/sethash/remhash/fetch/store/getp/putp` ✔); search functions
-  are NEEDLE FIRST (`member/assoc/exists` — Lisp heritage, coherent as a
-  class). `alist-get` is a container op (collection first) — both orders
-  are correct under the convention; documented.
+- **Argument order**: container/access operations are COLLECTION FIRST
+  (`gethash/sethash/remhash/fetch/store/getp/putp/ref/put!` ✔, matching
+  CL's `aref`/`elt`/`sort`); higher-order functions are FUNCTION FIRST
+  (`mapcar/mapc/filter/every/map/for-each/option-map/option-then` ✔ —
+  the CL convention, ruled 0.3); search functions are NEEDLE FIRST
+  (`member/assoc/exists` — Lisp heritage, coherent as a class).
+  `alist-get` is a container op (collection first) — both orders are
+  correct under the convention; documented. Protocols declare their
+  dispatch position (`(:dispatch 1)` for fn-first HOFs).
 - **Naming**: predicates end `-p`; mutators end `!`; conversions use `->`;
   the monomorphic substrate behind a protocol carries a trailing `*`
   (`string-length*`, `array-copy*`) — the bare name is the protocol.
@@ -81,15 +85,17 @@ duplicates — `char-code` is the strict kernel primitive (string-only),
 `char->code` the coercing wrapper (char, one-char string, or int
 passthrough). Same relationship as `parse-integer` vs `string->number`.
 
-**Ruling — `filter`/`reduce` stay list-specific, fn-first.** They belong
-to the fn-first heritage class (`mapcar`/`mapc`/`every`/`exists`), and
-protocols dispatch on the FIRST argument, so protocolizing them would
-either flip their argument order out from under every existing caller or
-bless two argument orders permanently. The generic sequence story is the
-collection-first protocols; when you need a generic filter/reduce today,
-go through `map`/`for-each` or convert at the edge (`array->list`,
-`string->list`). Revisit only if 0.4's dispatch can key on a non-first
-argument.
+**Ruling (superseded, then resolved) — HOFs are FN-FIRST.** Paul's call:
+function-first is the CL standard; collection-first HOFs were the odd
+ones out. Protocols gained `(:dispatch n)` (dispatch on any argument
+position), so `map`/`for-each` flipped to `(map fn coll)`, and
+`filter` — already fn-first — became a generic kind-preserving protocol
+with zero breakage. `option-then`/`result-then` flipped fn-first to
+match `option-map`/`result-map`. `reduce` stays list-specific (its
+optional init makes it multi-arity — the honesty rule for schemes — and
+its protocolization can wait for a real need). Access ops (`ref`,
+`put!`, `copy`, `sort-by`) stay collection-first, matching CL's
+`aref`/`elt`/`sort`.
 
 ## Findings: checker knowledge (→ batch 3, "typing with vigor")
 

@@ -28,8 +28,7 @@
 
 ;; Ten nodes, edges forming three components: {0..3} {4 5} {6 7 8 9}.
 (def $uf (uf-make 10))
-(for-each '((0 . 1) (1 . 2) (2 . 3) (4 . 5) (6 . 7) (7 . 8) (8 . 9))
-  (lambda (e) (uf-union $uf (car e) (cdr e))))
+(for-each (lambda (e) (uf-union $uf (car e) (cdr e))) '((0 . 1) (1 . 2) (2 . 3) (4 . 5) (6 . 7) (7 . 8) (8 . 9)))
 
 (def $components
   (length (remove-duplicates (mapcar (lambda (i) (uf-find $uf i)) (iota 10)))))

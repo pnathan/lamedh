@@ -446,6 +446,35 @@ pub(super) fn apply(
                     .map_err(LispError::Generic)?;
                 Ok(LispVal::String(rendered))
             }
+            // (declare-protocol-dispatch! 'name idx) — which argument
+            // position the protocol dispatches on (fn-first protocols
+            // like MAP dispatch on 1; the default is 0).
+            BuiltinFunc::DeclareProtocolDispatch => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "declare-protocol-dispatch! requires exactly two arguments: name index"
+                            .to_string(),
+                    ));
+                }
+                let LispVal::Symbol(s) = &args[0] else {
+                    return Err(LispError::Generic(
+                        "DECLARE-PROTOCOL-DISPATCH!: name must be a symbol".to_string(),
+                    ));
+                };
+                let LispVal::Number(n) = &args[1] else {
+                    return Err(LispError::Generic(
+                        "DECLARE-PROTOCOL-DISPATCH!: index must be an integer".to_string(),
+                    ));
+                };
+                if *n < 0 {
+                    return Err(LispError::Generic(
+                        "DECLARE-PROTOCOL-DISPATCH!: index must be non-negative".to_string(),
+                    ));
+                }
+                let name = s.borrow().name.clone();
+                env.jit_declare_protocol_dispatch(&name, *n as usize);
+                Ok(args[0].clone())
+            }
             // (capability-mask-allows-p 'name) — read-only introspection of
             // the dynamic capability mask (#320): T when no fence is active
             // or the active mask includes NAME. Used by the Lisp layer to

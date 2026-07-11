@@ -13,8 +13,7 @@
 
 (defun rle-encode (s)
   (string-join
-   (map (runs (string->list s))
-        (lambda (r) (concat (number->string (cdr r)) (car r))))
+   (map (lambda (r) (concat (number->string (cdr r)) (car r))) (runs (string->list s)))
    ""))
 
 (defun rle-decode (s)

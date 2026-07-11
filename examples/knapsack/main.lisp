@@ -17,13 +17,12 @@
   "Best total value within CAPACITY (0/1 per item)."
   (let ((best (array (1+ capacity))))
     (dotimes (c (1+ capacity)) (put! best c 0))
-    (for-each items
-      (lambda (it)
+    (for-each (lambda (it)
         (let ((w (item-weight it)) (v (item-value it))
               (c capacity))
           (while (>= c w)
             (put! best c (max (ref best c) (+ v (ref best (- c w)))))
-            (setq c (- c 1))))))
+            (setq c (- c 1))))) items)
     (ref best capacity)))
 
 (def $best (knapsack $items 400))

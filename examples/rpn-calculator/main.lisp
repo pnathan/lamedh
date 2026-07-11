@@ -36,11 +36,11 @@
              (ok (s) (rpn-aux (cdr tokens) s))
              (err (e) (err e))))))
 
-(for-each '("3 4 + 2 *" "5 1 2 + 4 * + 3 -" "1 0 /" "2 +" "1 2")
-  (lambda (expr)
-    (variant-case (rpn-eval expr)
-      (ok (v) (format t "~a = ~a~%" expr v))
-      (err (e) (format t "~a => error: ~a~%" expr e)))))
+(for-each (lambda (expr)
+            (variant-case (rpn-eval expr)
+              (ok (v) (format t "~a = ~a~%" expr v))
+              (err (e) (format t "~a => error: ~a~%" expr e))))
+          '("3 4 + 2 *" "5 1 2 + 4 * + 3 -" "1 0 /" "2 +" "1 2"))
 
 ;; self-check: values, and every failure mode is an err, not a crash.
 (if (and (equal (rpn-eval "3 4 + 2 *") (ok 14))

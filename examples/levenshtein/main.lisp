@@ -24,10 +24,10 @@
       (dotimes (j (1+ lb)) (put! prev j (ref cur j))))
     (ref prev lb)))
 
-(for-each '(("kitten" . "sitting") ("flaw" . "lawn") ("lamedh" . "lamedh"))
-  (lambda (pair)
-    (format t "~a -> ~a: ~a~%" (car pair) (cdr pair)
-            (levenshtein (car pair) (cdr pair)))))
+(for-each (lambda (pair)
+            (format t "~a -> ~a: ~a~%" (car pair) (cdr pair)
+                    (levenshtein (car pair) (cdr pair))))
+          '(("kitten" . "sitting") ("flaw" . "lawn") ("lamedh" . "lamedh")))
 
 ;; self-check: the textbook distances.
 (if (and (= (levenshtein "kitten" "sitting") 3)
