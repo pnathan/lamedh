@@ -33,3 +33,16 @@ nil-as-list imprecision (#336).
 - 8/10 batch A programs ran correctly on first write — protocol names,
   staples (`sort-by`, `enumerate`, `take`), `dotimes`/`while`,
   `format`, and float arithmetic behaved as documented.
+
+### Batch B (sorting/searching/strings)
+
+- 10/10 pass; the only iteration was an authoring slip (`letter-p` for
+  the real `alpha-p`). Notable positives under load: `take-while`/
+  `drop`/`take` compose cleanly for run grouping; Option + `variant-case`
+  is exactly right as a binary-search result type (no nil-index
+  ambiguity); the string `map` instance carries caesar rot13 in one
+  line; seeded `random` (#340) makes the quicksort/base-conversion
+  torture tests reproducible.
+- `string-index-of` returning nil-on-miss composes fine when the miss is
+  handled at the edge (base-conversion's `digit-value`) — the pattern
+  the type table's honesty rule 1 assumes.
