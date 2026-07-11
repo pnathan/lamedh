@@ -78,6 +78,25 @@ fn utf8_to_string_lossy_substitutes_replacement_char() {
 }
 
 #[test]
+fn integer_elements_are_bytes_too() {
+    // Evaluator arrays are heterogeneous and `store` writes integers, so a
+    // numerically-assembled buffer must decode: bytes are Char OR 0..=255.
+    let env = Environment::with_stdlib();
+    assert_eq!(
+        eval_line("(utf8->string* (list->array (list 104 105)))", &env),
+        "\"hi\""
+    );
+    let out = eval_line(
+        "(utf8->string-lossy* (let ((a (string->utf8* \"hio\"))) (store a 1 255) a))",
+        &env,
+    );
+    assert_eq!(out, "\"h\u{FFFD}o\"");
+    // Out-of-range integers are named, with index.
+    let out = eval_line("(utf8->string* (list->array (list 104 256)))", &env);
+    assert!(out.contains("element 1 is not a byte"), "got: {out}");
+}
+
+#[test]
 fn text_module_wraps_the_kernel_primitives() {
     let env = Environment::with_stdlib();
     eval_line("(import text)", &env);

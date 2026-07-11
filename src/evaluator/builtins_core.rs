@@ -554,7 +554,10 @@ fn gcd_i64(mut a: i64, mut b: i64, env: &Shared<Environment>) -> i64 {
 }
 
 /// Extract raw bytes from an `Array<Char>` LispVal, for the UTF-8 boundary
-/// builtins (issue #254). Errors name the offending element and its index.
+/// builtins (issue #254). Evaluator arrays are heterogeneous, and `store`
+/// writes integers, so a byte is a `Char` OR an integer in 0..=255 —
+/// otherwise numerically-assembled buffers (the normal way to build one)
+/// would be rejected. Errors name the offending element and its index.
 fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, LispError> {
     match v {
         LispVal::Array(a) => {
@@ -563,9 +566,10 @@ fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, LispError> {
             for (i, item) in items.iter().enumerate() {
                 match item {
                     LispVal::Char(b) => bytes.push(*b),
+                    LispVal::Number(n) if (0..=255).contains(n) => bytes.push(*n as u8),
                     other => {
                         return Err(LispError::Generic(format!(
-                            "{}: element {i} is not a Char, got {}",
+                            "{}: element {i} is not a byte (Char or integer 0-255), got {}",
                             name.to_uppercase(),
                             err_val(other)
                         )));
