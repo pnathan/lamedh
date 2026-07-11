@@ -105,18 +105,19 @@ fn variant_values_dispatch_through_their_variant() {
 #[test]
 fn map_and_for_each_are_sequence_protocols() {
     let e = env_with_stdlib();
-    // Kind-preserving map, collection first (protocols dispatch on arg 1).
-    assert_eq!(eval_line("(map (list 1 2 3) #'1+)", &e), "(2 3 4)");
+    // Kind-preserving map, FUNCTION FIRST (the CL HOF convention); the
+    // protocol dispatches on argument position 1.
+    assert_eq!(eval_line("(map #'1+ (list 1 2 3))", &e), "(2 3 4)");
     assert_eq!(
-        eval_line("(array->list (map (list->array (list 1 2)) #'1+))", &e),
+        eval_line("(array->list (map #'1+ (list->array (list 1 2))))", &e),
         "(2 3)"
     );
-    let out = eval_line("(check-type (map 5 #'1+))", &e);
+    let out = eval_line("(check-type (map #'1+ 5))", &e);
     assert!(out.contains("no `MAP` instance for int64"), "got: {out}");
     // Strings map to strings (kind preservation across all three kinds).
-    assert_eq!(eval_line("(map \"abc\" #'string-upcase)", &e), "\"ABC\"");
+    assert_eq!(eval_line("(map #'string-upcase \"abc\")", &e), "\"ABC\"");
     assert_eq!(
-        eval_line("(check-type (map \"ab\" #'string-upcase))", &e),
+        eval_line("(check-type (map #'string-upcase \"ab\"))", &e),
         "\"string\""
     );
     // for-each over lists and hash tables (key value pairs), for effect.
@@ -124,7 +125,7 @@ fn map_and_for_each_are_sequence_protocols() {
         eval_line(
             "(let ((n (array 1)))
                (store n 0 0)
-               (for-each (list 1 2 3) (lambda (x) (store n 0 (+ (fetch n 0) x))))
+               (for-each (lambda (x) (store n 0 (+ (fetch n 0) x))) (list 1 2 3))
                (fetch n 0))",
             &e
         ),
@@ -135,7 +136,7 @@ fn map_and_for_each_are_sequence_protocols() {
             "(let ((h (make-hash-table)) (acc (array 1)))
                (store acc 0 0)
                (sethash h 'a 2) (sethash h 'b 3)
-               (for-each h (lambda (k v) (store acc 0 (+ (fetch acc 0) v))))
+               (for-each (lambda (k v) (store acc 0 (+ (fetch acc 0) v))) h)
                (fetch acc 0))",
             &e
         ),
@@ -146,12 +147,24 @@ fn map_and_for_each_are_sequence_protocols() {
         eval_line(
             "(let ((acc (array 1)))
                (store acc 0 \"\")
-               (for-each \"xyz\" (lambda (c) (store acc 0 (concat (fetch acc 0) c))))
+               (for-each (lambda (c) (store acc 0 (concat (fetch acc 0) c))) \"xyz\")
                (fetch acc 0))",
             &e
         ),
         "\"xyz\""
     );
+    // Custom fn-first protocols via (:dispatch 1).
+    eval_line("(defprotocol pick \"grab\" (:dispatch 1))", &e);
+    eval_line(
+        "(definstance pick ((f any) (xs (list a))) any (funcall f (car xs)))",
+        &e,
+    );
+    eval_line(
+        "(definstance pick ((f any) (s string)) any (funcall f (ref s 0)))",
+        &e,
+    );
+    assert_eq!(eval_line("(pick #'1+ (list 41 5))", &e), "42");
+    assert_eq!(eval_line("(pick #'string-upcase \"x y\")", &e), "\"X\"");
 }
 
 #[test]
@@ -241,4 +254,24 @@ fn copy_protocol_covers_every_kind() {
     // Immutable kinds: identity; atoms via the Lisp 1.5 fallback.
     assert_eq!(eval_line("(copy \"s\")", &e), "\"s\"");
     assert_eq!(eval_line("(copy 'atom)", &e), "ATOM");
+}
+
+#[test]
+fn filter_is_a_generic_fn_first_protocol() {
+    let e = env_with_stdlib();
+    assert_eq!(eval_line("(filter #'evenp (list 1 2 3 4))", &e), "(2 4)");
+    assert_eq!(
+        eval_line(
+            "(array->list (filter #'evenp (list->array (list 1 2 3 4))))",
+            &e
+        ),
+        "(2 4)"
+    );
+    assert_eq!(eval_line("(filter #'alpha-p \"a1b2c\")", &e), "\"abc\"");
+    assert_eq!(
+        eval_line("(check-type (filter #'evenp (list 1 2)))", &e),
+        "\"(list int64)\""
+    );
+    let out = eval_line("(check-type (filter #'evenp 5))", &e);
+    assert!(out.contains("no `FILTER` instance for int64"), "got: {out}");
 }

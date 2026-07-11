@@ -32,8 +32,8 @@
     line))
 
 (def $interior-shade (ref $palette (- (string-length* $palette) 1)))
-(def $rows (map (iota $height) #'render-row))
-(for-each $rows (lambda (line) (format t "~a~%" line)))
+(def $rows (map #'render-row (iota $height)))
+(for-each (lambda (line) (format t "~a~%" line)) $rows)
 
 ;; self-check: the main cardioid is in-set (deepest shade) and the top-left
 ;; corner escapes immediately (background shade).

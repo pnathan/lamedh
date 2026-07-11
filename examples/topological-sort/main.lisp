@@ -17,8 +17,7 @@
   "Prerequisite-first order, or (error) on a cycle."
   (let ((indeg (make-hash-table))
         (nodes (mapcar #'car deps)))
-    (for-each deps
-      (lambda (d) (put! indeg (car d) (length (cdr d)))))
+    (for-each (lambda (d) (put! indeg (car d) (length (cdr d)))) deps)
     (topo-aux deps indeg
               (filter (lambda (n) (= 0 (gethash indeg n))) nodes)
               ())))

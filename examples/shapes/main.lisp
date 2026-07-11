@@ -33,7 +33,7 @@
         (make-rect 'door 2.0 1.0)
         (make-triangle 'sail 3.0 4.0)))
 
-(for-each $shapes (lambda (s) (format t "~a~%" (shape-label s))))
+(for-each (lambda (s) (format t "~a~%" (shape-label s))) $shapes)
 
 (def $total (reduce (lambda (acc s) (+ acc (area s))) $shapes 0.0))
 (format t "total area: ~a~%" $total)

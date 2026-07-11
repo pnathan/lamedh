@@ -110,12 +110,17 @@ fn option_and_result_work() {
     assert_eq!(eval_line("(option-of 3)", &e), "#S(SOME 3)");
     assert_eq!(eval_line("(result-or (ok 1) 99)", &e), "1");
     assert_eq!(eval_line("(result-or (err \"bad\") 99)", &e), "99");
+    // then/map are FUNCTION FIRST, like every CL-convention HOF.
     assert_eq!(
         eval_line(
-            "(unwrap-result (result-then (ok 2) (lambda (v) (ok (* v 10)))))",
+            "(unwrap-result (result-then (lambda (v) (ok (* v 10))) (ok 2)))",
             &e
         ),
         "20"
+    );
+    assert_eq!(
+        eval_line("(option-then (lambda (v) (some (* v 2))) (some 21))", &e),
+        "#S(SOME 42)"
     );
     // try-call bridges the condition system into Result.
     assert_eq!(eval_line("(err-p (try-call #'car 5))", &e), "T");

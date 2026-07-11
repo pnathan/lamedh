@@ -15,7 +15,7 @@
               (bottles (- n 1)))))
 
 ;; Three verses from the top, then the pivotal ending.
-(for-each (list 99 98 2 1 0) #'verse)
+(for-each #'verse (list 99 98 2 1 0))
 
 ;; self-check: grammar boundaries.
 (if (and (equal (bottles 2) "2 bottles")

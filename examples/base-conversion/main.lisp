@@ -20,8 +20,7 @@
           (string->list s)
           0))
 
-(for-each '(2 8 12 16 36)
-  (lambda (b) (format t "255 in base ~a: ~a~%" b (to-base 255 b))))
+(for-each (lambda (b) (format t "255 in base ~a: ~a~%" b (to-base 255 b))) '(2 8 12 16 36))
 
 ;; self-check: agree with reader radix literals, and round-trip randoms.
 (random-seed! 3)

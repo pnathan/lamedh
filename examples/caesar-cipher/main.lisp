@@ -13,7 +13,7 @@
           (t c))))
 
 (defun caesar (s k)
-  (map s (lambda (c) (shift-char c k))))
+  (map (lambda (c) (shift-char c k)) s))
 
 (def $plain "Attack at dawn, Lamedh!")
 (def $cipher (caesar $plain 13))

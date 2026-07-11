@@ -12,8 +12,7 @@
               (hanoi (- n 1) via to from))))
 
 (def $moves (hanoi 4 'a 'c 'b))
-(for-each (take $moves 5)
-  (lambda (m) (format t "move disk ~a: ~a -> ~a~%" (car m) (cadr m) (caddr m))))
+(for-each (lambda (m) (format t "move disk ~a: ~a -> ~a~%" (car m) (cadr m) (caddr m))) (take $moves 5))
 (format t "... ~a moves total~%" (length $moves))
 
 ;; self-check: 2^4-1 moves, and replaying them never puts a larger disk

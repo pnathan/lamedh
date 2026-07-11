@@ -18,13 +18,13 @@
 (defun to-roman (n) (to-roman-aux n $romans ""))
 
 (def $values (make-hash-table))
-(for-each '(("I" . 1) ("V" . 5) ("X" . 10) ("L" . 50)
-            ("C" . 100) ("D" . 500) ("M" . 1000))
-  (lambda (cell) (put! $values (car cell) (cdr cell))))
+(for-each (lambda (cell) (put! $values (car cell) (cdr cell)))
+          '(("I" . 1) ("V" . 5) ("X" . 10) ("L" . 50)
+            ("C" . 100) ("D" . 500) ("M" . 1000)))
 
 (defun from-roman (s)
   "Sum the letters; subtract instead when a smaller value precedes a larger."
-  (let ((vals (map (string->list s) (lambda (c) (ref $values c)))))
+  (let ((vals (map (lambda (c) (ref $values c)) (string->list s))))
     (from-roman-aux vals 0)))
 
 (defun from-roman-aux (vals acc)
@@ -33,8 +33,7 @@
          (from-roman-aux (cdr vals) (- acc (car vals))))
         (t (from-roman-aux (cdr vals) (+ acc (car vals))))))
 
-(for-each (list 4 9 14 40 90 1994 2026)
-  (lambda (n) (format t "~a = ~a~%" n (to-roman n))))
+(for-each (lambda (n) (format t "~a = ~a~%" n (to-roman n))) (list 4 9 14 40 90 1994 2026))
 
 ;; self-check: round trip over 1..2026.
 (if (every (lambda (n) (= n (from-roman (to-roman n)))) (iota 2026 1))

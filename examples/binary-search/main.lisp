@@ -18,11 +18,10 @@
 
 (def $arr (list->array (list 2 3 5 7 11 13 17 19 23 29)))
 
-(for-each (list 7 11 4)
-  (lambda (x)
+(for-each (lambda (x)
     (variant-case (bsearch $arr x)
       (some (i) (format t "~a found at index ~a~%" x i))
-      (none () (format t "~a not present~%" x)))))
+      (none () (format t "~a not present~%" x)))) (list 7 11 4))
 
 ;; self-check: every element is found at its own index; absentees miss.
 (if (and (every (lambda (i) (equal (bsearch $arr (ref $arr i)) (some i)))

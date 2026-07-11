@@ -24,15 +24,13 @@
 ;; flatten treats dotted-pair cells as leaves, so it would work too.)
 (defun row-matches (row-idx line mark)
   (filter #'consp
-          (map (enumerate (string->list line))
-               (lambda (c)
-                 (if (equal (cadr c) mark) (cons (car c) row-idx) ())))))
+          (map (lambda (c)
+                 (if (equal (cadr c) mark) (cons (car c) row-idx) ())) (enumerate (string->list line)))))
 
 (defun find-cell (mark)
   "The (x . y) of the cell containing MARK."
   (car (apply #'append
-              (map (enumerate $maze)
-                   (lambda (row) (row-matches (car row) (cadr row) mark))))))
+              (map (lambda (row) (row-matches (car row) (cadr row) mark)) (enumerate $maze)))))
 
 (defun neighbors (pos)
   (let ((x (car pos)) (y (cdr pos)))
@@ -85,19 +83,17 @@
 
 ;; Render the maze with the path dotted in.
 (def $path-set (make-hash-table))
-(for-each $path (lambda (p) (put! $path-set p t)))
-(for-each (enumerate $maze)
-  (lambda (row)
+(for-each (lambda (p) (put! $path-set p t)) $path)
+(for-each (lambda (row)
     (format t "~a~%"
       (string-join
-       (map (enumerate (string->list (cadr row)))
-            (lambda (c)
+       (map (lambda (c)
               (let ((pos (cons (car c) (car row))))
                 (if (and (gethash $path-set pos)
                          (equal (cadr c) "."))
                     "o"
-                    (cadr c)))))
-       ""))))
+                    (cadr c)))) (enumerate (string->list (cadr row))))
+       ""))) (enumerate $maze))
 
 ;; self-check: known shortest length for this maze, path is connected,
 ;; and every step is an open cell.

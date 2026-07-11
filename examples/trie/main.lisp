@@ -46,8 +46,7 @@
     (none () ())))
 
 (def $trie (trie-make))
-(for-each '("car" "cart" "carbon" "cat" "dog" "do" "door")
-  (lambda (w) (trie-insert $trie w)))
+(for-each (lambda (w) (trie-insert $trie w)) '("car" "cart" "carbon" "cat" "dog" "do" "door"))
 
 (format t "car...  -> ~a~%" (autocomplete $trie "car"))
 (format t "do...   -> ~a~%" (autocomplete $trie "do"))

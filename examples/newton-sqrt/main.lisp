@@ -19,9 +19,9 @@
 
 (defun newton-sqrt (x) (newton-sqrt-aux 1.0 x))
 
-(for-each (list 2.0 9.0 100.0 0.25)
-  (lambda (x)
-    (format t "sqrt(~a) ~~ ~a (builtin ~a)~%" x (newton-sqrt x) (sqrt x))))
+(for-each (lambda (x)
+            (format t "sqrt(~a) ~~ ~a (builtin ~a)~%" x (newton-sqrt x) (sqrt x)))
+          (list 2.0 9.0 100.0 0.25))
 
 ;; self-check: within tolerance of the builtin everywhere.
 (if (every (lambda (x) (< (abs (- (newton-sqrt x) (sqrt x))) 0.001))

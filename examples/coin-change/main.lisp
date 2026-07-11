@@ -10,12 +10,11 @@
   (let ((table (array (1+ amount))))
     (dotimes (i (1+ amount)) (put! table i 0))
     (put! table 0 1)
-    (for-each $coins
-      (lambda (c)
+    (for-each (lambda (c)
         (let ((a c))
           (while (<= a amount)
             (put! table a (+ (ref table a) (ref table (- a c))))
-            (setq a (1+ a))))))
+            (setq a (1+ a))))) $coins)
     (ref table amount)))
 
 (defun fewest (amount)
@@ -34,9 +33,8 @@
                       ()))))
     (let ((r (ref table amount))) (if r r -1))))
 
-(for-each (list 11 25 63 99)
-  (lambda (a)
-    (format t "~a cents: ~a ways, fewest ~a coins~%" a (ways a) (fewest a))))
+(for-each (lambda (a)
+    (format t "~a cents: ~a ways, fewest ~a coins~%" a (ways a) (fewest a))) (list 11 25 63 99))
 
 ;; self-check: classic US-coin answers.
 (if (and (= (ways 25) 13)

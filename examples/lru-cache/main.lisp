@@ -31,8 +31,7 @@
 (def $get (car $cache))
 (def $put (cdr $cache))
 
-(for-each '((a . 1) (b . 2) (c . 3))
-  (lambda (kv) (funcall $put (car kv) (cdr kv))))
+(for-each (lambda (kv) (funcall $put (car kv) (cdr kv))) '((a . 1) (b . 2) (c . 3)))
 (funcall $get 'a)                       ; a is now most recent
 (def $evicted (funcall $put 'd 4))      ; b is the LRU -> evicted
 (format t "evicted: ~a~%" $evicted)

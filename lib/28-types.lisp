@@ -34,7 +34,7 @@
 ;;; ---- list functions --------------------------------------------------------
 
 (declare-type! 'member '(forall (a) (-> (a (list a)) (list a))))
-(declare-type! 'filter '(forall (a) (-> ((-> (a) bool) (list a)) (list a))))
+;; filter's list scheme now lives on its protocol instance (lib/29).
 (declare-type! 'mapc '(forall (a b) (-> ((-> (a) b) (list a)) (list a))))
 (declare-type! 'every '(forall (a) (-> ((-> (a) bool) (list a)) bool)))
 (declare-type! 'exists '(forall (a) (-> ((-> (a) bool) (list a)) bool)))

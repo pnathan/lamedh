@@ -218,13 +218,14 @@ missing brands."
 (declare-type! 'option-map
                '(forall (a b) (-> ((-> (a) b) (option a)) (option b))))
 
-(defun option-then (o f)
-  "Monadic bind: (some v) -> (funcall f v) [itself an option]; (none) stays."
+(defun option-then (f o)
+  "Monadic bind, function first like OPTION-MAP and the CL HOF
+convention: (some v) -> (funcall f v) [itself an option]; (none) stays."
   (variant-case o
     (some (v) (funcall f v))
     (none () o)))
 (declare-type! 'option-then
-               '(forall (a b) (-> ((option a) (-> (a) (option b))) (option b))))
+               '(forall (a b) (-> ((-> (a) (option b)) (option a)) (option b))))
 
 ;;; ---- Result ------------------------------------------------------------
 
@@ -252,13 +253,13 @@ missing brands."
 (declare-type! 'result-map
                '(forall (a b e) (-> ((-> (a) b) (result a e)) (result b e))))
 
-(defun result-then (r f)
+(defun result-then (f r)
   "Monadic bind: (ok v) -> (funcall f v) [itself a result]; (err m) stays."
   (variant-case r
     (ok (v) (funcall f v))
     (err (m) r)))
 (declare-type! 'result-then
-               '(forall (a b e) (-> ((result a e) (-> (a) (result b e))) (result b e))))
+               '(forall (a b e) (-> ((-> (a) (result b e)) (result a e)) (result b e))))
 
 (defun try-call (f &rest args)
   "Call F, capturing a signaled error as (err message): the bridge from the

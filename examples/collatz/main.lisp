@@ -16,11 +16,10 @@
                  #'cdr #'>)
         5))
 
-(for-each (enumerate $champions 1)
-  (lambda (row)
+(for-each (lambda (row)
     (let ((rank (car row)) (cell (cadr row)))
       (format t "~a. start ~a -> ~a steps~%"
-              rank (car cell) (cdr cell)))))
+              rank (car cell) (cdr cell)))) (enumerate $champions 1))
 
 ;; self-check: the known champion under 1000 is 871 with 178 steps.
 (if (equal (car $champions) (cons 871 178))

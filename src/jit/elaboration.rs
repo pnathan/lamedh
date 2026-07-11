@@ -22,8 +22,11 @@ pub(super) struct Cx<'a> {
     /// consulted by the checker for callees the typed registry doesn't know.
     pub(super) declared: &'a HashMap<String, infer::Scheme>,
     /// Protocol instance schemes (0.3): multiple per name, selected by the
-    /// first argument's inferred shape.
+    /// dispatch argument's inferred shape.
     pub(super) protocols: &'a HashMap<String, Vec<infer::Scheme>>,
+    /// Which argument position a protocol dispatches on (absent = 0).
+    /// Fn-first protocols like `map` dispatch on position 1.
+    pub(super) protocol_dispatch: &'a HashMap<String, usize>,
     /// The inference state for this definition: fresh variables + substitution
     /// (issue #135). Held behind a `RefCell` so the elaboration methods keep
     /// their `&self` signatures while still threading one shared substitution.
@@ -654,8 +657,9 @@ impl Cx<'_> {
     }
 
     /// Elaborate a call to a protocol name: select the instance whose
-    /// first-parameter shape matches the first argument, then unify all
-    /// arguments against the instantiated instance scheme.
+    /// dispatch-position parameter shape matches the corresponding
+    /// argument, then unify all arguments against the instantiated
+    /// instance scheme. Fn-first protocols (`map`) dispatch on 1.
     fn elab_protocol_call(
         &self,
         name: &str,
@@ -664,17 +668,21 @@ impl Cx<'_> {
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
         let instances = &self.protocols[name];
-        if args.is_empty() {
-            return Err(format!("`{name}`: protocol calls need arguments"));
+        let d = self.protocol_dispatch.get(name).copied().unwrap_or(0);
+        if args.len() <= d {
+            return Err(format!(
+                "`{name}`: protocol calls need at least {} arguments",
+                d + 1
+            ));
         }
-        let (_, ta) = self.elab(&args[0], scope, max)?;
-        let w = self.walk(&ta);
-        // Unresolved first argument: gradual — but when every instance
+        let arg_tys: Vec<Ty> = args
+            .iter()
+            .map(|a| self.elab(a, scope, max).map(|(_, t)| t))
+            .collect::<Result<_, _>>()?;
+        let w = self.walk(&arg_tys[d]);
+        // Unresolved dispatch argument: gradual — but when every instance
         // agrees on one GROUND result type, the result is still known.
         if matches!(w, Ty::Var(_) | Ty::Any) {
-            for a in &args[1..] {
-                self.elab(a, scope, max)?;
-            }
             let mut shared: Option<Ty> = None;
             for inst in instances {
                 if let Ty::Fn(_, ret) = &inst.ty {
@@ -692,7 +700,7 @@ impl Cx<'_> {
         // Resolved: select by shape, then unify against the instance.
         for inst in instances {
             let shape_ok = match &inst.ty {
-                Ty::Fn(ps, _) if !ps.is_empty() => Self::instance_shape_matches(&ps[0], &w),
+                Ty::Fn(ps, _) if ps.len() > d => Self::instance_shape_matches(&ps[d], &w),
                 _ => false,
             };
             if !shape_ok {
@@ -707,11 +715,8 @@ impl Cx<'_> {
                     args.len()
                 ));
             }
-            self.unify(&ta, &ps[0])
-                .map_err(|e| format!("in call to `{name}`: {e}"))?;
-            for (a, p) in args[1..].iter().zip(ps[1..].iter()) {
-                let (_, at) = self.elab(a, scope, max)?;
-                self.unify(&at, p)
+            for (at, p) in arg_tys.iter().zip(ps.iter()) {
+                self.unify(at, p)
                     .map_err(|e| format!("in call to `{name}`: {e}"))?;
             }
             return Ok((Core::LitI(0), *ret));

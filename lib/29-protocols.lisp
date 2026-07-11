@@ -25,6 +25,14 @@
 
 (def $protocol-instances (make-hash-table))
 (def $protocol-fallbacks (make-hash-table))
+;; Which argument position each protocol dispatches on (default 0).
+;; Fn-first protocols (the CL convention for HOFs: map, for-each)
+;; dispatch on 1.
+(def $protocol-dispatch (make-hash-table))
+
+(defun $protocol-dispatch-idx (name)
+  (let ((hit (gethash $protocol-dispatch name)))
+    (if hit hit 0)))
 
 (defun $protocol-type-key (v)
   "The dispatch key for VALUE: its record brand (or variant), else its kind."
@@ -69,20 +77,27 @@
             (if vhit (cdr vhit) ()))))))
 
 (defvau defprotocol (x e)
-  "(DEFPROTOCOL name [docstring]) -- declare NAME as a typed protocol. Any
-existing binding of NAME becomes the fallback instance (so builtins keep
-working for everything they already handled); DEFINSTANCE adds typed
-instances. The name is rebound to the dispatcher."
+  "(DEFPROTOCOL name [docstring] [(:dispatch n)]) -- declare NAME as a
+typed protocol. Any existing binding of NAME becomes the fallback
+instance (so builtins keep working for everything they already handled);
+DEFINSTANCE adds typed instances. The name is rebound to the dispatcher.
+(:dispatch n) selects the argument position that drives dispatch --
+fn-first protocols like MAP dispatch on 1; the default is 0."
   (let* ((name (car x))
+         (dispatch-section (assoc ':dispatch (filter #'consp (cdr x))))
+         (idx (if dispatch-section (cadr dispatch-section) 0))
          ;; errorset-wrapped: (value) when bound, () when not.
          (prior (errorset name)))
     (sethash $protocol-instances name ())
+    (sethash $protocol-dispatch name idx)
+    (declare-protocol-dispatch! name idx)
     (if prior (sethash $protocol-fallbacks name (car prior)) ())
     (set name
          (lambda (&rest args)
            (let* ((table (gethash $protocol-instances name))
-                  (key ($protocol-type-key (car args)))
-                  (inst ($protocol-lookup table key (car args))))
+                  (dval (nth ($protocol-dispatch-idx name) args))
+                  (key ($protocol-type-key dval))
+                  (inst ($protocol-lookup table key dval)))
              (cond
                (inst (apply inst args))
                ((gethash $protocol-fallbacks name)
@@ -94,8 +109,9 @@ instances. The name is rebound to the dispatcher."
 
 (defvau definstance (x e)
   "(DEFINSTANCE name ((arg type) more-args...) result-type body...) --
-add a typed instance to protocol NAME. The first parameter's type selects
-the instance (record/variant brands, (list a), string, (array t), hash,
+add a typed instance to protocol NAME. The dispatch parameter's type
+(position 0 unless the protocol declared (:dispatch n)) selects the
+instance (record/variant brands, (list a), string, (array t), hash,
 scalars); the full scheme is registered with the checker, and the body
 becomes an ordinary (compilable) function."
   (let* ((name (car x))
@@ -104,8 +120,8 @@ becomes an ordinary (compilable) function."
          (body (cdr (cdr (cdr x))))
          (argnames (mapcar (lambda (p) (if (consp p) (car p) p)) params))
          (argtys (mapcar (lambda (p) (if (consp p) (cadr p) 'any)) params))
-         (first-ty (car argtys))
-         (key ($protocol-shape-key first-ty))
+         (dispatch-ty (nth ($protocol-dispatch-idx name) argtys))
+         (key ($protocol-shape-key (if dispatch-ty dispatch-ty (car argtys))))
          (impl-name (intern (concat "$" (princ-to-string name) "@"
                                     (princ-to-string key))))
          ;; Type variables: any bare lowercase symbol in the types that is
@@ -165,34 +181,55 @@ DEFINSTANCE for your own types).")
 
 ;;; ---- map and for-each: the sequence protocols -------------------------------
 ;;;
-;;; Collection FIRST (protocols dispatch on their first argument, and it
-;;; matches the container convention): (map coll fn), (for-each coll fn).
-;;; MAP is kind-preserving — a list maps to a list, an array to an array.
-;;; FOR-EACH visits for effect and returns (); the hash instance visits
-;;; (key value) pairs.
+;;; Function FIRST, the CL convention for higher-order functions
+;;; (mapcar/mapc heritage): (map fn coll), (for-each fn coll). These
+;;; protocols dispatch on argument position 1 (the collection). MAP is
+;;; kind-preserving — a list maps to a list, an array to an array, a
+;;; string to a string. FOR-EACH visits for effect and returns (); the
+;;; hash instance visits (key value) pairs.
 
 (defprotocol map
-  "Kind-preserving map: (map coll fn). Extend with DEFINSTANCE.")
+  "Kind-preserving map: (map fn coll). Extend with DEFINSTANCE."
+  (:dispatch 1))
 
-(definstance map ((xs (list a)) (f (-> (a) b))) (list b)
+(definstance map ((f (-> (a) b)) (xs (list a))) (list b)
   (mapcar f xs))
-(definstance map ((arr (array any)) (f any)) (array any)
+(definstance map ((f any) (arr (array any))) (array any)
   (array-map* arr f))
-(definstance map ((s string) (f (-> (string) string))) string
+(definstance map ((f (-> (string) string)) (s string)) string
   (list->string (mapcar f (string->list s))))
 
 (defprotocol for-each
-  "Visit each element for effect: (for-each coll fn) => (). The hash
-instance calls (fn key value).")
+  "Visit each element for effect: (for-each fn coll) => (). The hash
+instance calls (fn key value)."
+  (:dispatch 1))
 
-(definstance for-each ((xs (list a)) (f (-> (a) b))) (list b)
+(definstance for-each ((f (-> (a) b)) (xs (list a))) (list b)
   (mapc f xs))
-(definstance for-each ((arr (array any)) (f any)) any
+(definstance for-each ((f any) (arr (array any))) any
   (progn (array-map* arr f) ()))
-(definstance for-each ((h hash) (f any)) any
+(definstance for-each ((f any) (h hash)) any
   (progn (maphash h f) ()))
-(definstance for-each ((s string) (f (-> (string) b))) any
+(definstance for-each ((f (-> (string) b)) (s string)) any
   (progn (mapc f (string->list s)) ()))
+
+;;; FILTER goes generic the same way -- it was ALREADY fn-first, so the
+;;; existing list-only binding becomes the fallback and nothing breaks;
+;;; arrays and strings gain kind-preserving instances.
+
+(defprotocol filter
+  "Kind-preserving filter: (filter pred coll). Extend with DEFINSTANCE."
+  (:dispatch 1))
+
+(definstance filter ((f (-> (a) bool)) (xs (list a))) (list a)
+  (funcall (gethash $protocol-fallbacks 'filter) f xs))
+(definstance filter ((f any) (arr (array any))) (array any)
+  (list->array (funcall (gethash $protocol-fallbacks 'filter)
+                        f (array->list arr))))
+(definstance filter ((f (-> (string) bool)) (s string)) string
+  (string-join (funcall (gethash $protocol-fallbacks 'filter)
+                        f (string->list s))
+               ""))
 
 ;;; ---- ref, put!, copy: the access protocols ----------------------------------
 ;;;

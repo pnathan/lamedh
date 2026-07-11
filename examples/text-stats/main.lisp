@@ -22,11 +22,10 @@
     (format t "  longest line: ~a chars~%"
             (reduce #'max (mapcar #'string-length* lines) 0))
     (format t "  top words:~%")
-    (for-each top
-      (lambda (cell)
+    (for-each (lambda (cell)
         (format t "    ~a ~a~%"
                 (string-pad-left (number->string (cdr cell)) 5)
-                (car cell))))
+                (car cell))) top)
     (length ws)))
 
 (def $path (if *ARGV* (car *ARGV*) "README.md"))

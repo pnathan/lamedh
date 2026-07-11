@@ -24,10 +24,9 @@
 
 (defun queens (n) (solve n () 0))
 
-(for-each (list 4 5 6 7 8)
-  (lambda (n) (format t "~a-queens: ~a solutions~%" n (queens n))))
+(for-each (lambda (n) (format t "~a-queens: ~a solutions~%" n (queens n))) (list 4 5 6 7 8))
 
 ;; self-check: the known sequence 2, 10, 4, 40, 92.
-(if (equal (map (list 4 5 6 7 8) #'queens) (list 2 10 4 40 92))
+(if (equal (map #'queens (list 4 5 6 7 8)) (list 2 10 4 40 92))
     (print 'ok)
     (error "n-queens self-check failed"))

@@ -24,10 +24,10 @@
   (clrhash $memo)
   (string-join (lcs a b 0 0) ""))
 
-(for-each '(("ABCBDAB" . "BDCABA") ("banana" . "atana") ("abc" . "xyz"))
-  (lambda (p)
-    (format t "lcs(~a, ~a) = \"~a\"~%" (car p) (cdr p)
-            (lcs-string (car p) (cdr p)))))
+(for-each (lambda (p)
+            (format t "lcs(~a, ~a) = \"~a\"~%" (car p) (cdr p)
+                    (lcs-string (car p) (cdr p))))
+          '(("ABCBDAB" . "BDCABA") ("banana" . "atana") ("abc" . "xyz")))
 
 ;; self-check: textbook answers.
 (if (and (= (string-length* (lcs-string "ABCBDAB" "BDCABA")) 4)

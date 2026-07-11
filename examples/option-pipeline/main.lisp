@@ -29,11 +29,10 @@
            (lambda () (or-else (lookup $env-cfg key)
                                (lambda () (lookup $defaults key))))))
 
-(for-each '(port verbose workers missing)
-  (lambda (k)
+(for-each (lambda (k)
     (variant-case (config k)
       (some (v) (format t "~a = ~a~%" k v))
-      (none () (format t "~a is unset~%" k)))))
+      (none () (format t "~a is unset~%" k)))) '(port verbose workers missing))
 
 ;; self-check: the () set on the CLI WINS over the default t -- the
 ;; whole point of Option over nil-punning; unwrap-or gives defaults;
