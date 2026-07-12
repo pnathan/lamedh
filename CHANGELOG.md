@@ -7,6 +7,28 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## checker: literal-nil `if` joins stop committing to `(list a)` — the nil-on-miss guard idiom checks (#336)
+
+The on-demand derived-scheme path (#308) was re-introducing the bias the
+declared layer's honesty rule 1 exists to prevent: deriving `parse-integer`
+(body `(if hit n nil)`) committed the `if` join to the nil side, producing
+`(-> (a) (list b))`, and the standard guard idiom downstream —
+`(let ((n (parse-integer s))) (if (numberp n) n 10))` — was then REJECTED
+with "`if` branches disagree: List(Var) vs Int64". Now a literal-`nil`
+branch meeting a non-list branch (ground scalar or still-free variable)
+degrades the `if` to `any` (gradual, matching `when`/`unless`) instead of
+erroring or pinning a free variable to "list of something"; nil-vs-list
+still unifies as a list, and two non-nil branches that genuinely disagree
+still error. A companion fix keeps self-recursive nil-on-miss helpers
+honest: when a body's final type degrades to `any` but a recursive call
+already concretized the assumed return variable mid-elaboration,
+`check_callee` forces the assumption back to `any` before generalizing
+(this also newly CHECKS `$require-resolve-disk`, previously a TYPE-ERROR).
+`cond` joins are deliberately unchanged (see `elab_cond`'s comment; the
+`cond` analogue needs a nil-on-miss-aware recursion assumption — a 0.4
+direction the ticket itself names). Docs: the join rule is described in
+docs/typed-checker-design.md.
+
 ## stdlib(io): format's directive set grows, plus READ-LINE, WITH-OUTPUT-TO-STRING, and s-expression file round-trip (#150)
 
 Closes out the I/O & formatting ticket that #255's PORTS module left

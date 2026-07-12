@@ -485,17 +485,67 @@ impl Cx<'_> {
         scope.truncate(saved);
         let (e, te) = self.elab(&args[2], scope, max)?;
         scope.truncate(saved);
-        if self.unify(&tt, &te).is_err() {
+        let lhs_nil = self.is_bare_nil(&args[1]);
+        let rhs_nil = self.is_bare_nil(&args[2]);
+        let result_ty =
+            self.join_branch_types(lhs_nil, &tt, rhs_nil, &te, "`if` branches disagree")?;
+        Ok((Core::If(Box::new(c), Box::new(t), Box::new(e)), result_ty))
+    }
+
+    /// Does a checker-mode branch/clause *source expression* look like a
+    /// bare `nil`/`()` literal (as opposed to a computed value that merely
+    /// happens to type as a list)? Meaningless outside `self.checking`
+    /// (codegen never elaborates a literal `LispVal::Nil` — see the `elab`
+    /// match arm). Used by [`Cx::join_branch_types`] (#336).
+    fn is_bare_nil(&self, expr: &LispVal) -> bool {
+        self.checking && matches!(expr, LispVal::Nil)
+    }
+
+    /// Join the two branch result types of an `if` (#336 — the
+    /// nil-on-miss honesty rule (lib/28-types.lisp rule 1) extended to the
+    /// checker's on-demand DERIVED path, not just the declared layer).
+    ///
+    /// A bare `nil`/`()` literal types as `(list _)` — an empty list of
+    /// unknown element type (see the `LispVal::Nil` arm of `elab`) — purely
+    /// so that a nil branch meeting a genuine list branch still unifies as
+    /// a list (e.g. `(if p (list 1 2) nil)` stays `(list int64)`, exactly
+    /// as before this change). But when a literal-nil branch meets a
+    /// branch that is NOT itself a list — a ground scalar, or a still-free
+    /// type variable nothing has pinned to anything concrete yet — forcing
+    /// that unification either hard-errors (the guard idiom,
+    /// `(if (numberp n) n 10)`, where `n` flowed from a nil-on-miss
+    /// function) or silently commits the other branch's free variable to
+    /// "list of something" (`(if t x nil)` deriving `x`'s own parameter as
+    /// `(list a)`). Both outcomes are exactly the bias the declared-layer
+    /// honesty rule forbids. Mirror that rule here: such a join degrades
+    /// the whole `if` to `any` (heterogeneous — the same call
+    /// `elab_when` already makes for its implicit nil branch) instead of
+    /// unifying or erroring. Two branches that are both nil, both
+    /// non-nil, or one nil meeting an already-list-or-`any` branch are
+    /// untouched — they fall through to the ordinary `unify`, so a
+    /// genuine type conflict between two concrete branches still errors.
+    fn join_branch_types(
+        &self,
+        lhs_nil: bool,
+        lty: &Ty,
+        rhs_nil: bool,
+        rty: &Ty,
+        disagreement: &str,
+    ) -> Result<Ty, String> {
+        if lhs_nil != rhs_nil {
+            let other = self.walk(if lhs_nil { rty } else { lty });
+            if !matches!(other, Ty::List(_) | Ty::Any) {
+                return Ok(Ty::Any);
+            }
+        }
+        if self.unify(lty, rty).is_err() {
             return Err(format!(
-                "`if` branches disagree: {:?} vs {:?}",
-                self.walk(&tt),
-                self.walk(&te)
+                "{disagreement}: {:?} vs {:?}",
+                self.walk(lty),
+                self.walk(rty)
             ));
         }
-        Ok((
-            Core::If(Box::new(c), Box::new(t), Box::new(e)),
-            self.walk(&tt),
-        ))
+        Ok(self.walk(lty))
     }
 
     fn elab_let(
@@ -825,8 +875,29 @@ impl Cx<'_> {
         let outcome = self
             .elab_body(body, &mut scope, &mut max)
             .and_then(|(_, bt)| {
-                self.unify(&bt, &ret)
-                    .map_err(|_| "return type mismatch across branches".to_string())
+                let wbt = self.walk(&bt);
+                // #336: for a SELF-RECURSIVE callee, a recursive call site
+                // unifies against `ret` *while the body is still being
+                // elaborated* — an ordinary sibling clause can concretize
+                // `ret` before the body's OWN top-level honesty-rule join
+                // (an outer nil-vs-non-list `if`, see `join_branch_types`)
+                // gets to decide the honest answer is `any`. When that
+                // happens, `bt` (the body's final, authoritative type) is
+                // `any` even though `ret` already got pinned to something
+                // concrete along the way; `unify(any, ret)` alone cannot
+                // undo that (`any` only absorbs a *still-free* variable).
+                // Trust `bt` and force `ret` back to `any` rather than let
+                // the internal concretization leak into the generalized
+                // scheme.
+                if matches!(wbt, Ty::Any) && !matches!(self.walk(&ret), Ty::Var(_)) {
+                    if let Ty::Var(id) = &ret {
+                        self.infer.borrow_mut().force_any(*id);
+                    }
+                    Ok(())
+                } else {
+                    self.unify(&bt, &ret)
+                        .map_err(|_| "return type mismatch across branches".to_string())
+                }
             });
         self.assumptions.borrow_mut().remove(name);
         {
@@ -1381,6 +1452,27 @@ impl Cx<'_> {
 
     /// `(cond (test body…) …)` : every clause body unifies to one result type;
     /// tests follow Lisp truthiness (any type). With no clause, `any`.
+    ///
+    /// #336 investigated extending the `if`-branch honesty-rule degrade
+    /// (see `join_branch_types`) to `cond` too, but a self-recursive
+    /// nil-on-miss helper's OWN clause join happens *before* `cond`'s
+    /// result type is even computed: `check_callee`'s pre-allocated
+    /// recursion-assumption return variable gets bound the moment a
+    /// concrete sibling clause (e.g. `(equal … ) i)`) unifies with the
+    /// recursive call's placeholder, which is exactly the ordinary,
+    /// desired behavior for recursion — but it means the honesty-rule
+    /// degrade (applied only to `cond`'s own *result*) arrives too late to
+    /// keep that variable free, and downstream callers that legitimately
+    /// relied on the pre-#336 all-gradual fallback (a failed derivation
+    /// degrading the *caller's* call site to a free var) regress from
+    /// CHECKED to a hard TYPE-ERROR (`string-index-of-aux` chains into
+    /// `contains-p`, `$require-load`, `$module-qualified-p`). `if` has no
+    /// such accumulator to corrupt (each `if` is a single two-way join), so
+    /// it stays fixed; `cond` is deliberately left untouched here — a
+    /// correct `cond` fix needs the self-recursion assumption itself to
+    /// stay honest about nil-on-miss bodies (the ticket's own 0.4 direction
+    /// "derive nil-on-miss bodies as no-result"), not a change local to the
+    /// join. See the PR body for the full trace.
     fn elab_cond(
         &self,
         clauses: &[LispVal],
@@ -1468,10 +1560,7 @@ impl Cx<'_> {
                     }
                 }
                 let field_tys: Vec<Ty> = if let Some(def) = self.structs.get(&ctor) {
-                    let owner = self
-                        .variants
-                        .values()
-                        .find(|v| v.ctors.iter().any(|c| *c == ctor));
+                    let owner = self.variants.values().find(|v| v.ctors.contains(&ctor));
                     let want = match owner {
                         Some(vd) => Ty::Variant(vd.clone()),
                         // A brand outside any variant (a plain record case

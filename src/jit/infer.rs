@@ -143,6 +143,22 @@ impl Infer {
         Ok(())
     }
 
+    /// Force variable `v`'s binding to `any`, OVERWRITING any existing
+    /// binding (#336). Used only by `check_callee`'s self-recursion
+    /// assumption: a recursive call site unifies against the assumed
+    /// return variable *before* the body's own honesty-rule join (an outer
+    /// nil-vs-non-list `if`) can decide the honest answer is `any` — an
+    /// ordinary sibling clause (e.g. the non-recursive branch of a
+    /// self-recursive nil-on-miss helper) can concretize that variable in
+    /// the meantime. `unify(any, v)` alone cannot undo that concretization
+    /// (`any` absorbs without binding, so it only stays a no-op once `v` is
+    /// already bound). Safe here specifically because `v` is a fresh,
+    /// definition-scoped variable with no other consumer relying on its
+    /// prior (wrong) binding surviving.
+    pub(crate) fn force_any(&mut self, v: u32) {
+        self.subst.insert(v, Ty::Any);
+    }
+
     /// Unify two types, extending the substitution so that they become equal,
     /// or returning an error describing the clash. Variables bind (with an
     /// occurs-check); `Any` (the gradual top, #162) absorbs anything without
