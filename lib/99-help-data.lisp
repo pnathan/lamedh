@@ -3571,6 +3571,87 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'DESCRIPTION "Sets socket's read and write timeout in milliseconds together; NIL blocks without a timeout (the default). A timed-out receive-from/send/send-to signals a structured :TIMEOUT error.")
     (cons 'SEE-ALSO '(udp:receive-from tcp:set-read-timeout!))))
 
+(register-doc 'http:request
+  (list
+    (cons 'NAME 'http:request)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Performs an HTTP/1.1 request over plaintext http:// (https:// is a structured :HTTPS-UNSUPPORTED error pending the TLS ruling, issue #365). Requires NET-CONNECT (via tcp:connect; HTTP adds no capability of its own). :HEADERS is an ordered (name . value) list (repeats preserved); :BODY is NIL, a String, an Array<Char>, or a readable PORTS port (streamed via chunked transfer-encoding). Follows 301/302/303/307/308 redirects by default, hop-capped, stripping credentials cross-origin. Returns a response alist whose :BODY is an UNREAD framing-aware body stream.")
+    (cons 'SEE-ALSO '(http:get http:post http:response-status http:response-body http:collect-string))))
+
+(register-doc 'http:get
+  (list
+    (cons 'NAME 'http:get)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:get url &key headers connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Ergonomic (http:request \"GET\" url ...). See http:request for every keyword and the capability/scheme rules.")
+    (cons 'SEE-ALSO '(http:request http:post http:collect-string))))
+
+(register-doc 'http:post
+  (list
+    (cons 'NAME 'http:post)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:post url &key body headers connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Ergonomic (http:request \"POST\" url :body body ...). See http:request for every keyword.")
+    (cons 'SEE-ALSO '(http:request http:get))))
+
+(register-doc 'http:response-status
+  (list
+    (cons 'NAME 'http:response-status)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:response-status response)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "The integer status code of a client response alist. Companions: http:response-reason, http:response-version, http:response-headers, http:response-header (case-insensitive first-match lookup), http:response-body (the unread body stream).")
+    (cons 'SEE-ALSO '(http:request http:response-body mime:headers-get))))
+
+(register-doc 'http:response-body
+  (list
+    (cons 'NAME 'http:response-body)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:response-body response)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "The response's UNREAD body stream: framing-aware (Content-Length exact / chunked / read-to-close / no body for HEAD, 1xx, 204, 304). Read incrementally with http:stream-read!, or collect bounded with http:collect-bytes / http:collect-string / http:collect-json.")
+    (cons 'SEE-ALSO '(http:stream-read! http:collect-bytes http:collect-string http:collect-json))))
+
+(register-doc 'http:stream-read!
+  (list
+    (cons 'NAME 'http:stream-read!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:stream-read! stream n)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Reads up to N bytes from an HTTP body stream, honoring its message framing -- never reads past this message's body. Returns a fresh Array<Char>, possibly shorter than N, empty exactly at the logical end of the body (mirrors ports:read-bytes!). Companions: http:stream-eof-p, http:stream-read-all!, http:stream-close! (closes the client connection; a no-op for a server request body).")
+    (cons 'SEE-ALSO '(http:stream-eof-p http:stream-close! http:collect-bytes ports:read-bytes!))))
+
+(register-doc 'http:collect-string
+  (list
+    (cons 'NAME 'http:collect-string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:collect-string stream &key max-bytes lossy)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Collects an HTTP body stream to its end (bounded: default 10 MiB, error past :MAX-BYTES -- never unbounded buffering) and decodes it as UTF-8 into a String (:LOSSY t for replacement characters instead of a strict decode error). Companions: http:collect-bytes (raw Array<Char>), http:collect-json (parses via json:parse).")
+    (cons 'SEE-ALSO '(http:collect-bytes http:collect-json http:stream-read! text:utf8->string))))
+
+(register-doc 'http:serve
+  (list
+    (cons 'NAME 'http:serve)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:serve listener handler &key read-timeout-ms max-line-bytes max-header-count max-body-bytes on-error max-requests stop-p)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Serves HTTP/1.1 on a tcp:listen listener (NET-LISTEN gates the listen; HTTP adds no capability). HANDLER: request alist -> response alist (see http:respond). Serial keep-alive: one connection served fully before the next accept (concurrency is issue #140's scope). Request line/header/body limits enforced (oversize body -> 413 without running the handler); an uncaught handler error becomes a generic 500 that never leaks the condition to the peer (:ON-ERROR receives it host-side). :STOP-P is consulted between connections; :MAX-REQUESTS bounds the connection count. http:serve-one! accepts and serves exactly one connection.")
+    (cons 'SEE-ALSO '(http:serve-one! http:respond tcp:listen))))
+
+(register-doc 'http:respond
+  (list
+    (cons 'NAME 'http:respond)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(http:respond status &key headers body reason)")
+    (cons 'CATEGORY 'http)
+    (cons 'DESCRIPTION "Builds a response alist for an http:serve handler: STATUS integer, :HEADERS an ordered (name . value) list, :BODY NIL/String/Array<Char>/readable PORTS port (a port streams out chunked; Content-Length is set automatically otherwise), :REASON defaulting to http:default-reason. The handler-side request accessors are http:request-method, -target, -path, -query, -headers, -header, -body (a streaming body, Content-Length and chunked framing both), -version, and -peer-addr.")
+    (cons 'SEE-ALSO '(http:serve http:default-reason http:request-body))))
+
 ;;; ============================================================
 ;;; REGISTER CATEGORIES
 ;;; ============================================================
@@ -3666,6 +3747,20 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   "UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities"
   '(udp:bind udp:connect! udp:send-to udp:send udp:receive-from
     udp:close! udp:socket-p udp:socket-open-p udp:local-addr udp:set-timeout!))
+
+(register-category 'http
+  "HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)"
+  '(http:request http:get http:post
+    http:response-status http:response-reason http:response-version
+    http:response-headers http:response-header http:response-body
+    http:request-method http:request-target http:request-path
+    http:request-query http:request-headers http:request-header
+    http:request-body http:request-version http:request-peer-addr
+    http:request-url
+    http:stream-read! http:stream-read-all! http:stream-eof-p
+    http:stream-close!
+    http:collect-bytes http:collect-string http:collect-json
+    http:serve http:serve-one! http:respond http:default-reason))
 
 (register-category 'special-forms
   "Special forms and macros"

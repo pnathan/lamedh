@@ -2446,6 +2446,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("37-net.lisp", include_str!("../lib/37-net.lisp")),
     ("38-tcp.lisp", include_str!("../lib/38-tcp.lisp")),
     ("39-udp.lisp", include_str!("../lib/39-udp.lisp")),
+    ("40-http.lisp", include_str!("../lib/40-http.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -2612,6 +2613,7 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
     ("NET", "37-net.lisp", include_str!("../lib/37-net.lisp")),
     ("TCP", "38-tcp.lisp", include_str!("../lib/38-tcp.lisp")),
     ("UDP", "39-udp.lisp", include_str!("../lib/39-udp.lisp")),
+    ("HTTP", "40-http.lisp", include_str!("../lib/40-http.lisp")),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

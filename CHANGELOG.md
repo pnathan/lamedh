@@ -7,6 +7,68 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## stdlib(http): capability-gated streaming HTTP/1.1 client and server (#259)
+
+A new optional embedded library, `HTTP` (`lib/40-http.lisp`) — an
+HTTP/1.1 client and server written **entirely in Lisp** over the #258
+TCP substrate and the #257 codecs (`URL` for parsing, `MIME` for
+ordered/case-insensitive multi-value headers, `JSON` for
+`http:collect-json`): **zero new crate dependencies, zero new Rust
+kernel surface** (the ticket's "back it with a Rust HTTP crate" text was
+overridden by the epic's no-new-dependency ruling; status-line/header/
+chunked framing proved to be ordinary Lisp string/byte work). HTTP/2 and
+HTTP/3 are out of scope. `(require 'http)` on a prelude environment;
+`with_stdlib()` loads it eagerly like every optional module.
+
+**Plaintext `http://` only**: TLS is pending the owner dependency ruling
+(#365), so `https://` — given directly or arriving via a redirect
+`Location` — is a structured `:CATEGORY :HTTPS-UNSUPPORTED` error naming
+that issue, checked at one single scheme checkpoint where TLS later
+slots in without API change; never a silent downgrade.
+
+Client: `http:request` (+ `http:get`/`http:post`), request bodies
+NIL/String/`Array<Char>`/readable port (ports stream out chunked);
+response `:BODY` is an unread framing-aware body stream —
+`Content-Length` exact / chunked (hex size lines, extensions, trailers,
+zero-chunk terminator) / read-to-close / no body for HEAD/1xx/204/304 —
+read incrementally (`http:stream-read!`/`stream-eof-p`/`stream-close!`)
+or collected bounded (`http:collect-bytes`/`-string`/`-json`, 10 MiB
+default cap; text is an explicit UTF-8 step). `Connection: close`
+always (no pooling). Timeouts: connect / per-read / overall deadline.
+Redirects: 301/302/303/307/308, hop-capped, 303→GET, 301/302 POST→GET,
+307/308 method+body-preserving (unreplayable streamed bodies are a clear
+error), cross-origin hops strip `Authorization`/`Cookie`/
+`Proxy-Authorization`; no ambient proxy variables.
+
+Server: `http:serve`/`http:serve-one!` over a `tcp:listen` listener;
+handler gets a request alist (path/query/headers/streaming body — CL and
+chunked framing both) and returns `http:respond` alists (body
+NIL/String/bytes/port, `Content-Length` set automatically, port bodies
+chunked). Serial keep-alive: one connection served fully before the next
+accept (concurrency is #140's business); request-line/header-size/
+header-count/body-size limits enforced (oversize body → `413` without
+running the handler); an uncaught handler error is a generic `500` that
+never leaks the condition to the peer (`:on-error` receives it
+host-side); `:stop-p`/`:max-requests` for between-connection shutdown.
+
+**No new capability**: requiring `HTTP` grants nothing — the client
+rides `tcp:connect`'s `NET-CONNECT` gate, the server `tcp:listen`'s
+`NET-LISTEN`, both fence-attenuated as ever (tested for both sides).
+
+Fixed en route: `lib/27-modules.lisp` now declares its real dependency
+`(require 'condensation)` — under `with_prelude()`, `(require 'modules)`
+followed by any `WITH-MODULE` body (e.g. `(require 'text)`) died with
+"unbound variable: CONDENSE-APPEND-NEW" because `with_stdlib()`'s eager
+load order had been masking the missing declaration.
+
+Tests: `tests/test_http.rs` — loopback-only `std::thread` peers,
+OS-assigned ports; chunked/CL/204/304 framing, repeated headers,
+case-insensitive lookup, truncated bodies, malformed status lines, read
+timeouts, >100 KB bodies both framings (tail-recursive, stack-safe),
+redirect matrix incl. loop capping and credential stripping, server
+parsing/dispatch/keep-alive/413/500-sanitization, capability denial and
+fence attenuation. Manual: `docs/manual/13-networking.md` §13.7.
+
 ## runtime(net): capability-gated DNS, TCP, and UDP over binary ports (#258)
 
 Lamedh now has synchronous networking: DNS resolution, TCP (connect/bind/
