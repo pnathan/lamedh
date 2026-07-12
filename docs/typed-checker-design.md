@@ -142,6 +142,27 @@ definitions.
    builtin signatures, `Any`-coercion blame, surface annotations for the
    checkable types — tracked as follow-ups.)
 
+### Branch joins and literal `nil` (#336)
+
+A bare `nil`/`()` literal types as `(list _)` so that a nil branch meeting a
+genuine list branch still unifies as a list (`(if p (list 1 2) nil)` is
+`(list int64)`). But when a literal-nil `if` branch meets a branch that is
+**not** a list — a ground scalar, or a still-free variable — the join
+**degrades to `any`** instead of erroring or committing the other side to
+"list of something". This extends the declared layer's nil-on-miss honesty
+rule (lib/28-types.lisp rule 1: `parse-integer`, `nth`, `assoc`… get no
+result-type axiom) to the on-demand derived path (#308), so the standard
+guard idiom `(let ((n (parse-integer s))) (if (numberp n) n 10))` checks as
+`int64`. Two non-nil branches that disagree still error; nil-vs-list and
+nil-vs-`any` joins are unchanged. The same honesty applies to a
+self-recursive nil-on-miss helper: if a body's final type degrades to `any`
+but a recursive call already concretized the assumed return variable
+mid-elaboration, `check_callee` forces the assumption back to `any` before
+generalizing (the body's own join is authoritative). `cond` is deliberately
+NOT degraded this way — see the comment on `elab_cond` — a `cond` fix needs
+the recursion assumption itself to be nil-on-miss-aware (a 0.4 direction in
+the ticket).
+
 ## Known limitation
 
 Lists are typed **homogeneous** (`(list α)`), like most typed languages.
