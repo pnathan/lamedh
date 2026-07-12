@@ -757,6 +757,35 @@ pub enum BuiltinFunc {
     UdpSend,
     UdpReceiveFrom,
     UdpSetTimeout,
+    // OS integration (issue #260, epic #253): kernel substrate wrapped by
+    // the OS/OS-LINUX modules in lib/41-os.lisp, lib/42-os-linux.lisp.
+    OsArgs,
+    OsExecutablePath,
+    OsCwd,
+    OsChdir,
+    OsEnvGet,
+    OsEnvList,
+    OsEnvSet,
+    OsEnvUnset,
+    OsPid,
+    OsPpid,
+    OsHostname,
+    OsNow,
+    OsMonotonicNanos,
+    OsSleep,
+    OsPrngStep,
+    OsRandomBytes,
+    OsSpawn,
+    OsProcessWait,
+    OsProcessTryWait,
+    OsProcessId,
+    OsProcessKill,
+    OsProcessTerminate,
+    OsProcessOpenP,
+    OsProcessP,
+    OsSignal,
+    OsLinuxStat,
+    OsLinuxReadlink,
     // Concurrency primitives (gated behind the `concurrency` feature)
     #[cfg(feature = "concurrency")]
     MakeChannel,
@@ -1323,6 +1352,16 @@ pub enum LispVal {
     /// `NET-HANDLE-*` kernel primitives (`src/evaluator/builtins_net.rs`).
     /// Compares by identity, like [`LispVal::Port`]. See [`NetHandleObj`].
     NetHandle(Shared<NetHandleObj>),
+    /// A spawned child process (issue #260, epic #253): an opaque owned
+    /// handle over `std::process::Child`. Never a bare PID -- operated on
+    /// only through the `OS-PROCESS-*` kernel primitives
+    /// (`src/evaluator/builtins_os.rs`), wrapped by the `OS` module
+    /// (`lib/41-os.lisp`). Its stdin/stdout/stderr pipes (when requested as
+    /// `:PIPE`) are ordinary [`LispVal::Port`]s (issue #255), reusing
+    /// [`LispVal::wrap_reader`]/[`LispVal::wrap_writer`]. Compares by
+    /// identity, like [`LispVal::Port`]/[`LispVal::NetHandle`]. See
+    /// [`ChildObj`].
+    OsChild(Shared<ChildObj>),
     /// A message-passing channel (only present under the `concurrency` feature).
     ///
     /// Created with `(make-channel)`.  Both ends are bundled together so that
@@ -1876,6 +1915,302 @@ impl NetHandleObj {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OS integration (issue #260, epic #253): spawned child processes and
+// signal delivery.
+// ---------------------------------------------------------------------------
+
+/// Backing storage for a [`ChildObj`]. Never exposed to Lisp directly,
+/// mirroring [`PortState`]/[`NetHandleState`].
+enum ChildState {
+    /// The child has not yet been reaped: `wait!`/`try-wait` may still block
+    /// or poll it, and `kill!`/`terminate!` may still signal it.
+    Running(std::process::Child),
+    /// The child has exited and been reaped (by `wait!`/`try-wait!`
+    /// observing exit, or the Drop backstop's best-effort non-blocking
+    /// reap); its exit status is cached here. Every operation except
+    /// `open-p`/re-reading the cached status is a documented no-op/error on
+    /// this state, mirroring `PortObj::close`'s "double-close is a no-op"
+    /// contract.
+    Reaped(ChildExitStatus),
+}
+
+impl fmt::Debug for ChildState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tag = match self {
+            ChildState::Running(_) => "Running",
+            ChildState::Reaped(_) => "Reaped",
+        };
+        write!(f, "{tag}")
+    }
+}
+
+/// A child process's exit status, normalized off `std::process::ExitStatus`
+/// into plain typed data (`src/evaluator/builtins_os.rs` turns this into a
+/// structured alist) instead of exposing the platform `ExitStatus` type.
+#[derive(Debug, Clone, Copy)]
+pub struct ChildExitStatus {
+    /// The process's exit code, if it exited normally (as opposed to being
+    /// terminated by a signal).
+    pub code: Option<i32>,
+    /// The signal number that terminated the process, if any (Unix only;
+    /// via `std::os::unix::process::ExitStatusExt`).
+    pub signal: Option<i32>,
+    /// True iff the process exited with status 0.
+    pub success: bool,
+}
+
+impl From<std::process::ExitStatus> for ChildExitStatus {
+    #[cfg(unix)]
+    fn from(status: std::process::ExitStatus) -> Self {
+        use std::os::unix::process::ExitStatusExt;
+        ChildExitStatus {
+            code: status.code(),
+            signal: status.signal(),
+            success: status.success(),
+        }
+    }
+
+    // Signal termination is a POSIX concept; on a non-Unix target there is
+    // no such thing to report (issue #260 is explicitly scoped to
+    // Linux/POSIX, but this keeps the dependency-light core compilable
+    // elsewhere rather than hard-breaking the build).
+    #[cfg(not(unix))]
+    fn from(status: std::process::ExitStatus) -> Self {
+        ChildExitStatus {
+            code: status.code(),
+            signal: None,
+            success: status.success(),
+        }
+    }
+}
+
+/// The payload of a [`LispVal::OsChild`] (issue #260, epic #253): a spawned
+/// `std::process::Child`. Like [`NetHandleObj`], not a byte stream itself --
+/// its stdio pipes (when requested) are separate [`LispVal::Port`]s wrapping
+/// `ChildStdin`/`ChildStdout`/`ChildStderr` via [`LispVal::wrap_writer`]/
+/// [`LispVal::wrap_reader`] -- so it gets its own opaque representation.
+///
+/// **Deterministic ownership.** Explicit `wait!`/`try-wait!` (which reap the
+/// process) or `kill!`/`terminate!` (which signal it; the caller must still
+/// `wait!` to reap it, exactly like POSIX) are the primary cleanup path.
+/// **Drop backstop**: when the last reference goes away, a best-effort
+/// non-blocking `try_wait` reaps the child if it has *already* exited
+/// (avoiding a zombie); a still-running child is deliberately left running
+/// rather than killed -- matching common daemon-spawning idioms and
+/// documented here and in `lib/41-os.lisp`, not a silent surprise kill.
+///
+/// **Capabilities.** Like `PortObj`/`NetHandleObj`, this performs no
+/// capability checks itself; `src/evaluator/builtins_os.rs` checks
+/// `OS-PROCESS` before ever constructing one (plus consults the host policy
+/// hook, [`environment::Environment::set_os_policy`]), and `OS-SIGNAL`
+/// before signaling any PID not held as an owned handle. Continued use of an
+/// already-spawned child (`wait!`/`try-wait!`/`kill!`/`terminate!`) performs
+/// no further capability check -- the epic's "a successfully returned handle
+/// is authority to continue" rule.
+#[derive(Debug)]
+pub struct ChildObj {
+    /// Diagnostic name: the program path as spawned. Not necessarily unique;
+    /// used only for `print`/error messages.
+    pub name: String,
+    /// The child's OS PID, captured at spawn time and retained even after
+    /// the child is reaped (unlike a live-only `Child::id()` read) so
+    /// diagnostics/logging can always report it.
+    pub pid: u32,
+    state: SharedCell<ChildState>,
+}
+
+impl ChildObj {
+    pub(crate) fn new(name: impl Into<String>, child: std::process::Child) -> Shared<Self> {
+        let pid = child.id();
+        Shared::new(ChildObj {
+            name: name.into(),
+            pid,
+            state: SharedCell::new(ChildState::Running(child)),
+        })
+    }
+
+    /// True unless the child has been reaped (`wait!`/`try-wait!` observed
+    /// its exit, or the Drop backstop did).
+    pub fn is_open(&self) -> bool {
+        matches!(&*self.state.borrow(), ChildState::Running(_))
+    }
+
+    /// Block until the child exits, then reap and cache its status.
+    /// Idempotent: calling this again after the child is already reaped
+    /// returns the cached status instead of erroring.
+    pub fn wait(&self) -> std::io::Result<ChildExitStatus> {
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            ChildState::Running(c) => {
+                let status: ChildExitStatus = c.wait()?.into();
+                *state = ChildState::Reaped(status);
+                Ok(status)
+            }
+            ChildState::Reaped(status) => Ok(*status),
+        }
+    }
+
+    /// Non-blocking poll: `Ok(None)` if still running, `Ok(Some(status))`
+    /// (reaping it) if it has exited. Idempotent like [`ChildObj::wait`].
+    pub fn try_wait(&self) -> std::io::Result<Option<ChildExitStatus>> {
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            ChildState::Running(c) => match c.try_wait()? {
+                Some(exit) => {
+                    let status: ChildExitStatus = exit.into();
+                    *state = ChildState::Reaped(status);
+                    Ok(Some(status))
+                }
+                None => Ok(None),
+            },
+            ChildState::Reaped(status) => Ok(Some(*status)),
+        }
+    }
+
+    /// Send `SIGKILL` (hard kill) via `std::process::Child::kill`, the one
+    /// signal std exposes without FFI. Errors with `:CLOSED` (via the
+    /// caller) if already reaped. Does not reap -- call `wait!`/`try-wait!`
+    /// afterward, exactly like POSIX `kill` + `waitpid`.
+    pub fn kill(&self) -> std::io::Result<()> {
+        match &mut *self.state.borrow_mut() {
+            ChildState::Running(c) => c.kill(),
+            ChildState::Reaped(_) => Err(std::io::Error::other("process is closed")),
+        }
+    }
+
+    /// Send `SIGTERM` (graceful termination) via [`send_signal`]. See
+    /// [`ChildObj::kill`] for the reaping contract.
+    pub fn terminate(&self) -> std::io::Result<()> {
+        match &*self.state.borrow() {
+            ChildState::Running(_) => send_signal(self.pid as i32, SIGTERM),
+            ChildState::Reaped(_) => Err(std::io::Error::other("process is closed")),
+        }
+    }
+}
+
+impl Drop for ChildObj {
+    /// Drop backstop (issue #260's "deterministic close + Drop backstop"):
+    /// best-effort, non-blocking reap of an already-exited child so it does
+    /// not linger as a zombie just because the Lisp handle was garbage
+    /// collected/dropped without an explicit `wait!`/`try-wait!`. A child
+    /// that is *still running* when the last reference drops is
+    /// deliberately left running, not killed -- see the struct doc comment.
+    fn drop(&mut self) {
+        if let ChildState::Running(c) = &mut *self.state.borrow_mut() {
+            let _ = c.try_wait();
+        }
+    }
+}
+
+/// `kill(2)`'s well-known signal numbers on Linux/most POSIX systems,
+/// exposed as typed names (issue #260's "typed signal names/numbers")
+/// instead of Lisp code ever needing to know raw numbers.
+pub const SIGHUP: i32 = 1;
+pub const SIGINT: i32 = 2;
+pub const SIGQUIT: i32 = 3;
+pub const SIGKILL: i32 = 9;
+pub const SIGPIPE: i32 = 13;
+pub const SIGALRM: i32 = 14;
+pub const SIGTERM: i32 = 15;
+pub const SIGCHLD: i32 = 17;
+pub const SIGCONT: i32 = 18;
+pub const SIGSTOP: i32 = 19;
+pub const SIGUSR1: i32 = 10;
+pub const SIGUSR2: i32 = 12;
+
+/// Look up a typed signal name (case-insensitive, with or without the
+/// leading "SIG") against the fixed table above. `None` for anything not in
+/// the table -- this interface deliberately does not accept raw signal
+/// numbers from Lisp (issue #253's "no raw syscall numbers" ruling extends
+/// to signal numbers: every signal Lisp can send has a name).
+pub fn signal_by_name(name: &str) -> Option<i32> {
+    let upper = name
+        .trim_start_matches(':')
+        .trim_start_matches("SIG")
+        .to_ascii_uppercase();
+    Some(match upper.as_str() {
+        "HUP" => SIGHUP,
+        "INT" => SIGINT,
+        "QUIT" => SIGQUIT,
+        "KILL" => SIGKILL,
+        "PIPE" => SIGPIPE,
+        "ALRM" => SIGALRM,
+        "TERM" => SIGTERM,
+        "CHLD" => SIGCHLD,
+        "CONT" => SIGCONT,
+        "STOP" => SIGSTOP,
+        "USR1" => SIGUSR1,
+        "USR2" => SIGUSR2,
+        _ => return None,
+    })
+}
+
+// `kill(2)` is a named, fixed, POSIX libc function -- not the "raw syscall
+// numbers" issue #253/#260 rule out (that ruling targets an unrestricted
+// `(syscall number ...)` Lisp primitive; this is one hard-coded, typed,
+// internal Rust helper, the same technique `std::process::Child::kill`
+// itself uses internally on Unix). No new crate dependency: `libc` is
+// already dynamically linked into every Rust binary on Linux, this just
+// declares one of its well-known symbols. Lisp never sees a raw signal
+// number or a general FFI primitive -- only [`signal_by_name`]'s fixed
+// table and the typed `OS-PROCESS-TERMINATE*`/`OS-SIGNAL*` kernel
+// primitives (`src/evaluator/builtins_os.rs`).
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+/// Send POSIX signal `sig` to `pid` via `kill(2)`. See the `unsafe extern`
+/// block above for why this is in scope for issue #260 despite "no raw
+/// syscalls"/"no arbitrary FFI". Not available on a non-Unix target (issue
+/// #260 is explicitly scoped to Linux/POSIX); kept `#[cfg(not(unix))]`-safe
+/// so the dependency-light core stays compilable elsewhere rather than
+/// hard-breaking the build.
+#[cfg(unix)]
+pub(crate) fn send_signal(pid: i32, sig: i32) -> std::io::Result<()> {
+    // SAFETY: `kill(2)` takes two plain integers and returns a plain
+    // integer; no pointers cross the FFI boundary, so there is no aliasing/
+    // provenance/lifetime concern. `-1` signals failure with `errno` set,
+    // which `std::io::Error::last_os_error()` reads immediately afterward
+    // (nothing else on this thread touches `errno` in between).
+    let rc = unsafe { kill(pid, sig) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn send_signal(_pid: i32, _sig: i32) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "signal delivery is not supported on this platform",
+    ))
+}
+
+/// An OS operation subject to the host policy hook (issue #260, epic #253):
+/// [`environment::Environment::set_os_policy`]. Mirrors [`NetOperation`]'s
+/// role for networking.
+#[derive(Debug, Clone)]
+pub enum OsOperation<'a> {
+    /// Spawning a child process (`OS-SPAWN*`).
+    Spawn {
+        program: &'a str,
+        args: &'a [String],
+        cwd: Option<&'a str>,
+    },
+    /// Sending a signal to a PID not held as an owned child handle
+    /// (`OS-SIGNAL*`).
+    Signal { pid: i64, signal: i32 },
+}
+
+/// A host-installed policy callback consulted by `builtins_os.rs` before
+/// spawning or signaling, in addition to (not instead of) the
+/// `OS-PROCESS`/`OS-SIGNAL` capability checks. See
+/// [`environment::Environment::set_os_policy`].
+pub(crate) type OsPolicyFn = dyn Fn(&OsOperation) -> bool;
+
 /// A network operation subject to the host policy hook (issue #258, epic
 /// #253): [`environment::Environment::set_net_policy`]. Coarser than the
 /// three capabilities (`NET-DNS`/`NET-CONNECT`/`NET-LISTEN`) it complements
@@ -2002,6 +2337,7 @@ impl fmt::Debug for LispVal {
             LispVal::NetHandle(h) => {
                 write!(f, "NetHandle(kind={}, name={:?})", h.kind, h.name)
             }
+            LispVal::OsChild(c) => write!(f, "OsChild(name={:?})", c.name),
             #[cfg(feature = "concurrency")]
             LispVal::Channel(_) => write!(f, "Channel(...)"),
         }
@@ -2035,6 +2371,7 @@ impl Clone for LispVal {
             LispVal::Error(e) => LispVal::Error(e.clone()),
             LispVal::Port(p) => LispVal::Port(p.clone()),
             LispVal::NetHandle(h) => LispVal::NetHandle(h.clone()),
+            LispVal::OsChild(c) => LispVal::OsChild(c.clone()),
             #[cfg(feature = "concurrency")]
             LispVal::Channel(c) => LispVal::Channel(std::sync::Arc::clone(c)),
         }
@@ -2094,6 +2431,9 @@ impl PartialEq for LispVal {
             // Network handles are likewise opaque and compare by identity
             // (issue #258).
             (LispVal::NetHandle(a), LispVal::NetHandle(b)) => Shared::ptr_eq(a, b),
+            // Child-process handles are likewise opaque and compare by
+            // identity (issue #260).
+            (LispVal::OsChild(a), LispVal::OsChild(b)) => Shared::ptr_eq(a, b),
             #[cfg(feature = "concurrency")]
             (LispVal::Channel(a), LispVal::Channel(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
@@ -2144,6 +2484,9 @@ impl Hash for LispVal {
             }
             LispVal::NetHandle(h) => {
                 Shared::as_ptr(h).hash(state);
+            }
+            LispVal::OsChild(c) => {
+                Shared::as_ptr(c).hash(state);
             }
             LispVal::Builtin(_)
             | LispVal::Lambda(_)
@@ -2447,6 +2790,8 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("38-tcp.lisp", include_str!("../lib/38-tcp.lisp")),
     ("39-udp.lisp", include_str!("../lib/39-udp.lisp")),
     ("40-http.lisp", include_str!("../lib/40-http.lisp")),
+    ("41-os.lisp", include_str!("../lib/41-os.lisp")),
+    ("42-os-linux.lisp", include_str!("../lib/42-os-linux.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -2614,6 +2959,12 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
     ("TCP", "38-tcp.lisp", include_str!("../lib/38-tcp.lisp")),
     ("UDP", "39-udp.lisp", include_str!("../lib/39-udp.lisp")),
     ("HTTP", "40-http.lisp", include_str!("../lib/40-http.lisp")),
+    ("OS", "41-os.lisp", include_str!("../lib/41-os.lisp")),
+    (
+        "OS-LINUX",
+        "42-os-linux.lisp",
+        include_str!("../lib/42-os-linux.lisp"),
+    ),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

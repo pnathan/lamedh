@@ -25,7 +25,9 @@
 //!
 //! ## Capabilities
 //!
-//! Dangerous operations (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are gated behind feature
+//! Dangerous operations (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`,
+//! `NET-DNS`, `NET-CONNECT`, `NET-LISTEN`, `OS-ENV`, `OS-ENV-WRITE`,
+//! `OS-PROCESS`, `OS-SIGNAL`) are gated behind feature
 //! flags that are all **off by default**.  Call [`Environment::enable_feature`]
 //! to opt in.  Because `SharedState` is shared across the whole chain, a
 //! feature enabled anywhere is visible everywhere.
@@ -357,6 +359,15 @@ struct SharedState {
     /// as `module_search_paths`. Shared across the whole environment chain,
     /// like `features`.
     net_policy: SharedCell<Option<NetPolicy>>,
+    /// Host policy hook for OS integration (issue #260, epic #253), consulted
+    /// by `src/evaluator/builtins_os.rs` in addition to (not instead of) the
+    /// `OS-PROCESS`/`OS-SIGNAL` capability checks -- same shape and purpose as
+    /// `net_policy`: an embedder can scope a granted capability (e.g.
+    /// restrict spawn to a specific executable/argv/cwd, or restrict signals
+    /// to a specific target PID range) without exposing that authority to
+    /// sandboxed Lisp code. `None` (the default) allows every operation once
+    /// its capability is granted.
+    os_policy: SharedCell<Option<OsPolicy>>,
 }
 
 /// Wrapper around the boxed policy callback so `SharedState` can keep
@@ -367,6 +378,16 @@ struct NetPolicy(Shared<crate::NetPolicyFn>);
 impl fmt::Debug for NetPolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "NetPolicy(<callback>)")
+    }
+}
+
+/// Wrapper around the boxed OS policy callback, mirroring [`NetPolicy`].
+#[derive(Clone)]
+struct OsPolicy(Shared<crate::OsPolicyFn>);
+
+impl fmt::Debug for OsPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "OsPolicy(<callback>)")
     }
 }
 
@@ -383,6 +404,7 @@ impl SharedState {
             module_sources: SharedCell::new(HashMap::new()),
             module_search_paths: SharedCell::new(Vec::new()),
             net_policy: SharedCell::new(None),
+            os_policy: SharedCell::new(None),
         }
     }
 }
@@ -497,7 +519,9 @@ impl Environment {
     /// This does **not** load the Lisp standard library (`defun`, `append`,
     /// etc.).  Use [`Environment::with_stdlib`] for a fully-featured environment.
     ///
-    /// All capability flags (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`) are disabled by default.
+    /// All capability flags (`SHELL`, `READ-FS`, `CREATE-FS`, `TEMP-FS`, `IO`,
+    /// `NET-DNS`, `NET-CONNECT`, `NET-LISTEN`, `OS-ENV`, `OS-ENV-WRITE`,
+    /// `OS-PROCESS`, `OS-SIGNAL`) are disabled by default.
     pub fn new_with_builtins() -> Shared<Environment> {
         let env = Shared::new(Environment::new());
         let t_symbol = env.intern_symbol("T");
@@ -1342,6 +1366,110 @@ impl Environment {
         env.set(
             "UDP-SET-TIMEOUT*".to_string(),
             LispVal::Builtin(BuiltinFunc::UdpSetTimeout),
+        );
+
+        // OS integration (issue #260, epic #253): kernel substrate wrapped by
+        // the OS/OS-LINUX modules in lib/41-os.lisp, lib/42-os-linux.lisp.
+        // Flat "*"-suffixed names, like the PORT-*/NET-*/TCP-*/UDP-*
+        // substrate above.
+        env.set(
+            "OS-ARGS*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsArgs),
+        );
+        env.set(
+            "OS-EXECUTABLE-PATH*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsExecutablePath),
+        );
+        env.set("OS-CWD*".to_string(), LispVal::Builtin(BuiltinFunc::OsCwd));
+        env.set(
+            "OS-CHDIR*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsChdir),
+        );
+        env.set(
+            "OS-ENV-GET*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsEnvGet),
+        );
+        env.set(
+            "OS-ENV-LIST*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsEnvList),
+        );
+        env.set(
+            "OS-ENV-SET*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsEnvSet),
+        );
+        env.set(
+            "OS-ENV-UNSET*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsEnvUnset),
+        );
+        env.set("OS-PID*".to_string(), LispVal::Builtin(BuiltinFunc::OsPid));
+        env.set(
+            "OS-PPID*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsPpid),
+        );
+        env.set(
+            "OS-HOSTNAME*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsHostname),
+        );
+        env.set("OS-NOW*".to_string(), LispVal::Builtin(BuiltinFunc::OsNow));
+        env.set(
+            "OS-MONOTONIC-NANOS*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsMonotonicNanos),
+        );
+        env.set(
+            "OS-SLEEP*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsSleep),
+        );
+        env.set(
+            "OS-PRNG-STEP*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsPrngStep),
+        );
+        env.set(
+            "OS-RANDOM-BYTES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsRandomBytes),
+        );
+        env.set(
+            "OS-SPAWN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsSpawn),
+        );
+        env.set(
+            "OS-PROCESS-WAIT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessWait),
+        );
+        env.set(
+            "OS-PROCESS-TRY-WAIT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessTryWait),
+        );
+        env.set(
+            "OS-PROCESS-ID*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessId),
+        );
+        env.set(
+            "OS-PROCESS-KILL*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessKill),
+        );
+        env.set(
+            "OS-PROCESS-TERMINATE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessTerminate),
+        );
+        env.set(
+            "OS-PROCESS-OPEN-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessOpenP),
+        );
+        env.set(
+            "OS-PROCESS-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsProcessP),
+        );
+        env.set(
+            "OS-SIGNAL*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsSignal),
+        );
+        env.set(
+            "OS-LINUX-STAT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsLinuxStat),
+        );
+        env.set(
+            "OS-LINUX-READLINK*".to_string(),
+            LispVal::Builtin(BuiltinFunc::OsLinuxReadlink),
         );
 
         // Introspection
@@ -2336,6 +2464,53 @@ impl Environment {
     pub(crate) fn check_net_policy(&self, op: NetOperation, host: &str, port: u16) -> bool {
         match &*self.shared.net_policy.borrow() {
             Some(p) => (p.0)(op, host, port),
+            None => true,
+        }
+    }
+
+    // OS policy hook (issue #260, epic #253): the embedder half of scoped
+    // OS-integration grants, complementing the coarse-grained OS-PROCESS/
+    // OS-SIGNAL capabilities exactly like `set_net_policy` does for
+    // networking.
+
+    /// Install a policy callback consulted before every process spawn or
+    /// signal delivery (`src/evaluator/builtins_os.rs`). Called with a
+    /// [`crate::OsOperation`] describing the attempted operation; return
+    /// `true` to allow, `false` to deny with a structured `:policy-denied`
+    /// error.
+    ///
+    /// This is *in addition to* the coarse capability check, not a
+    /// replacement for it -- both must pass. Lets a host scope a broad grant
+    /// (e.g. `OS-PROCESS` for a build tool) to specific executables/argv/cwd,
+    /// or `OS-SIGNAL` to specific target PIDs. Rust-only to install: Lisp
+    /// code cannot install, replace, or inspect the policy.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use lamedh::OsOperation;
+    /// env.set_os_policy(|op| match op {
+    ///     OsOperation::Spawn { program, .. } => program == "/usr/bin/true",
+    ///     OsOperation::Signal { .. } => false,
+    /// });
+    /// ```
+    pub fn set_os_policy<F>(&self, policy: F)
+    where
+        F: Fn(&crate::OsOperation) -> bool + 'static,
+    {
+        *self.shared.os_policy.borrow_mut() = Some(OsPolicy(Shared::new(policy)));
+    }
+
+    /// Remove any installed OS policy callback, reverting to allow-all-when-
+    /// capability-granted.
+    pub fn clear_os_policy(&self) {
+        *self.shared.os_policy.borrow_mut() = None;
+    }
+
+    /// Consult the installed OS policy (if any) for `op`. `true` (allow) when
+    /// no policy is installed -- the documented default.
+    pub(crate) fn check_os_policy(&self, op: &crate::OsOperation) -> bool {
+        match &*self.shared.os_policy.borrow() {
+            Some(p) => (p.0)(op),
             None => true,
         }
     }

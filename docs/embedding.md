@@ -192,6 +192,10 @@ Current built-in feature flags:
 | `NET-DNS` | Allow explicit hostname resolution (`net:resolve`)          |
 | `NET-CONNECT` | Allow outbound TCP/UDP connections (`tcp:connect`, `udp:connect!`, `udp:send-to`) |
 | `NET-LISTEN` | Allow binding/listening for inbound traffic (`tcp:listen`, `udp:bind`) |
+| `OS-ENV` | Allow reading process identity/environment (`os:args`, `os:cwd`, `os:env-get`, `os:pid`, `os:hostname`, ...) |
+| `OS-ENV-WRITE` | Allow mutating it (`os:chdir!`, `os:env-set!`, `os:env-unset!`) |
+| `OS-PROCESS` | Allow spawning child processes (`os:spawn`); a returned handle needs no further grant to wait/kill/terminate it |
+| `OS-SIGNAL` | Allow signaling a PID not held as an owned child handle (`os:signal!`) |
 
 ## Module registry (`require`)
 
@@ -327,6 +331,52 @@ policy — like `add_module_search_path`, this is deliberately Rust-only.
 
 See `docs/manual/13-networking.md` for the Lisp-facing story (`NET`/
 `TCP`/`UDP` modules, `NET:ADDRESS`, structured error categories).
+
+## OS policy (scoped process/signal grants)
+
+Issue #260: `OS-PROCESS`/`OS-SIGNAL` (above) are the same kind of coarse
+on/off switch as `NET-CONNECT` — a `OS-PROCESS` grant so a script can spawn
+a specific build tool must not become unrestricted "run any executable
+with any argv" authority. `set_os_policy` mirrors `set_net_policy`: a
+Rust-only hook consulted *in addition to* (not instead of) the capability
+check, before every spawn or signal delivery:
+
+```rust
+use lamedh::OsOperation;
+
+let env = Environment::with_stdlib();
+env.enable_feature("OS-PROCESS");
+
+env.set_os_policy(|op| match op {
+    // Only ever allow spawning this one build tool, and only from the
+    // project directory.
+    OsOperation::Spawn { program, cwd, .. } => {
+        *program == "/usr/bin/make" && *cwd == Some("/srv/build")
+    }
+    OsOperation::Signal { .. } => false,
+});
+
+// Revert to allow-all-when-capability-granted (the default).
+// env.clear_os_policy();
+```
+
+The callback receives an `OsOperation`: `Spawn { program, args, cwd }`
+(`args` is the argv passed to `os:spawn`, not including `program` itself)
+or `Signal { pid, signal }` (the numeric signal, resolved from the typed
+name Lisp passed to `os:signal!`). Returning `false` denies with a
+structured `:POLICY-DENIED` error. `None` (never installing a policy) is
+the default and allows every operation once its capability is granted.
+Lisp code cannot install, replace, or inspect the policy.
+
+Note the scope: this hook governs `os:spawn` and `os:signal!` only.
+`os:process-kill!`/`os:process-terminate!` operate on an already-returned
+child handle and are not re-checked against the policy (Chapter 11's
+"an open handle is authority to keep using it" rule) — scope what you are
+willing to let `os:spawn` start, not what a script can do to a child it
+already legitimately started.
+
+See `docs/manual/14-os.md` for the Lisp-facing story (`OS`/`OS-LINUX`
+modules, structured error categories, the Drop backstop).
 
 ## Condition flags
 

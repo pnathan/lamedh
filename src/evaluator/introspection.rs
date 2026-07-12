@@ -225,6 +225,7 @@ pub(super) fn describe_kind(val: &LispVal) -> &'static str {
         LispVal::Extension(_) => "bound to a host extension value",
         LispVal::Port(_) => "bound to a port",
         LispVal::NetHandle(_) => "bound to a network handle",
+        LispVal::OsChild(_) => "bound to a child-process handle",
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => "bound to a channel",
     }

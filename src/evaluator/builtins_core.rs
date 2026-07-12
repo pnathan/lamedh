@@ -1411,6 +1411,80 @@ pub(super) fn require_net_listen(env: &Shared<Environment>) -> Result<(), LispEr
     }
 }
 
+/// Capability guards for OS integration (issue #260, epic #253). Same shape
+/// as `require_read_fs`/`require_net_dns` and friends above:
+///
+/// - `OS-ENV` -- reading process identity/environment (args, executable
+///   path, cwd, env vars, pid/ppid, hostname).
+/// - `OS-ENV-WRITE` -- mutating it (chdir, setting/unsetting env vars).
+/// - `OS-PROCESS` -- spawning a child process. Once a child handle is
+///   returned, waiting on/killing/terminating *that* handle needs no further
+///   capability check (the epic's "a successfully returned handle is
+///   authority to continue" rule, same as `PORTS`/`NET`).
+/// - `OS-SIGNAL` -- sending a signal to an arbitrary PID not held as an
+///   owned child handle.
+pub(super) fn require_os_env(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("OS-ENV") && crate::evaluator::core::cap_mask_allows("OS-ENV") {
+        Ok(())
+    } else if env.feature_enabled("OS-ENV") {
+        Err(LispError::Generic(
+            "capability denied: OS-ENV (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "OS-ENV capability is not enabled (grant it via --capability OS-ENV or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+pub(super) fn require_os_env_write(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("OS-ENV-WRITE")
+        && crate::evaluator::core::cap_mask_allows("OS-ENV-WRITE")
+    {
+        Ok(())
+    } else if env.feature_enabled("OS-ENV-WRITE") {
+        Err(LispError::Generic(
+            "capability denied: OS-ENV-WRITE (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "OS-ENV-WRITE capability is not enabled (grant it via --capability OS-ENV-WRITE or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+pub(super) fn require_os_process(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("OS-PROCESS") && crate::evaluator::core::cap_mask_allows("OS-PROCESS") {
+        Ok(())
+    } else if env.feature_enabled("OS-PROCESS") {
+        Err(LispError::Generic(
+            "capability denied: OS-PROCESS (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "OS-PROCESS capability is not enabled (grant it via --capability OS-PROCESS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+pub(super) fn require_os_signal(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("OS-SIGNAL") && crate::evaluator::core::cap_mask_allows("OS-SIGNAL") {
+        Ok(())
+    } else if env.feature_enabled("OS-SIGNAL") {
+        Err(LispError::Generic(
+            "capability denied: OS-SIGNAL (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "OS-SIGNAL capability is not enabled (grant it via --capability OS-SIGNAL or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
 /// Build a unique path inside the system temp directory.
 ///
 /// Uses the process ID and a per-process monotone counter so that concurrent
