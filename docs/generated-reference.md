@@ -20,6 +20,9 @@ Auto-generated from Lisp documentation database.
 - ERRORS - Error handling
 - IO - Input/Output
 - SPECIAL-FORMS - Special forms and macros
+- UDP - UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
+- TCP - TCP connect/bind/listen/accept over binary ports (TCP module, lib/38-tcp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
+- NET - Addresses and DNS resolution (NET module, lib/37-net.lisp, issue #258); NET-DNS capability
 - MIME - Case-insensitive multi-value headers and Content-Type parse/build (MIME module, lib/36-mime.lisp, issue #257)
 - JSON - JSON parse/stringify (JSON module, lib/35-json.lisp, issue #257)
 - URL - URL parse/build, percent-encoding, and query-string parse/build (URL module, lib/34-url.lisp, issue #257)
@@ -464,6 +467,30 @@ Writes the string content to the file at path, replacing any existing content. C
 ```
 
 **See also:** READ-FILE, MAKE-TEMP-FILE, FEATURE-ENABLED-P
+
+---
+
+### READ-SEXPR-FILE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(read-sexpr-file path)`
+
+Reads path's full text (requires READ-FS) and parses it into a list of every top-level s-expression it contains, via READ-STRING. The inverse of WRITE-SEXPR-FILE (issue #150, lib/18-format.lisp).
+
+**See also:** WRITE-SEXPR-FILE, READ-FILE, READ-STRING
+
+---
+
+### WRITE-SEXPR-FILE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(write-sexpr-file path forms)`
+
+Writes forms (a list of s-expressions) to path (requires CREATE-FS), one per line in readable (PRIN1) form; the inverse of READ-SEXPR-FILE (issue #150, lib/18-format.lisp).
+
+**See also:** READ-SEXPR-FILE, WRITE-FILE, PRIN1-TO-STRING
 
 ---
 
@@ -1546,6 +1573,72 @@ Prints n space characters to standard output without a trailing newline. Lisp 1.
 
 ---
 
+### FORMAT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(format dest ctrl &rest args)`
+
+CL-style format string rendering (issue #150, lib/18-format.lisp). DEST nil returns the formatted string; t prints it to stdout and returns nil; a PORTS port writes the UTF-8 bytes to it and returns nil. Directives: ~a ~s ~d ~f ~x ~o ~b ~c ~% ~& ~~ ~{...~} ~^ -- an unrecognized directive, or a supported one with an unsupported numeric/colon/at-sign prefix, is a hard error rather than a silent pass-through. See docs/cl-divergences.md and lib/18-format.lisp's header for exact semantics.
+
+**Arguments:**
+- `DEST` - NIL (string), T (stdout), or a PORTS port
+- `CTRL` - The control string
+- `ARGS` - Zero or more arguments consumed by the control string's directives
+
+**Returns:** The formatted string (DEST nil) or NIL (DEST t or a port)
+
+**Examples:**
+```lisp
+(FORMAT () "~a + ~a = ~a" 2 3 5)  ; => "2 + 3 = 5"
+(FORMAT () "~,4f" 3.14159)  ; => "3.1416"
+(FORMAT () "~{~a~^, ~}" (1 2 3))  ; => "1, 2, 3"
+```
+
+**See also:** PRIN1-TO-STRING, PRINC-TO-STRING, PORTS:WRITE-STRING!
+
+---
+
+### READ-LINE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(read-line &optional port)`
+
+Reads one line of text (bytes up to but excluding a trailing newline, decoded as UTF-8 lossy) from PORT, or from the process's standard input if PORT is not given (which requires the IO capability). Returns NIL only at true EOF. Thin sugar over PORTS:READ-LINE! (lib/18-format.lisp), lazily requiring the PORTS module on first use.
+
+**Arguments:**
+- `PORT` - Optional PORTS port; defaults to (ports:stdin)
+
+**Returns:** A STRING, or NIL at true EOF
+
+**See also:** PORTS:READ-LINE!, PORTS:STDIN, WITH-OUTPUT-TO-STRING
+
+---
+
+### WITH-OUTPUT-TO-STRING
+
+**Type:** `MACRO`
+
+**Syntax:** `(with-output-to-string (var) body...)`
+
+Binds VAR to a fresh in-memory output port for BODY's dynamic extent (write to it with ports:write-string!, ports:write-byte!/write-bytes!, or format with VAR as the destination) and returns everything written to it, decoded as UTF-8 (lossy), as a STRING. The port is always closed afterward; if BODY signals an error, that error propagates (no string is returned) and the port is still closed. Lazily requires the PORTS module on first use.
+
+**Arguments:**
+- `BINDING` - A one-element list (var)
+- `BODY` - Forms writing to VAR
+
+**Returns:** The captured STRING
+
+**Examples:**
+```lisp
+(WITH-OUTPUT-TO-STRING (S) (PORTS:WRITE-STRING! S "hi"))  ; => "hi"
+```
+
+**See also:** READ-LINE, PORTS:OPEN-OUTPUT-BYTES, PORTS:OUTPUT-CONTENTS
+
+---
+
 # SPECIAL-FORMS Functions
 
 Special forms and macros
@@ -1930,6 +2023,305 @@ Locally bind fexprs (unevaluated-argument operatives) for the extent of the body
 Locally bind vau operatives for the extent of the body. Each clause's OPERANDS receives the unevaluated operand list and ENV the caller's environment, as with VAU. Parallel LET semantics.
 
 **See also:** VAU, $VAU, FLET, MACROLET, FEXPRLET
+
+---
+
+# UDP Functions
+
+UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
+
+---
+
+### UDP:BIND
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:bind host port)`
+
+Binds a UDP socket to host:port (port 0 for an OS-assigned ephemeral port). Requires the NET-LISTEN capability -- a bound socket receives datagrams from any sender, matching "binding for inbound traffic".
+
+**See also:** UDP:CONNECT!, UDP:SEND-TO, UDP:RECEIVE-FROM
+
+---
+
+### UDP:CONNECT!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:connect! socket host port)`
+
+Sets socket's default peer to host:port so udp:send/udp:receive-from can be used without repeating the address. Requires the NET-CONNECT capability.
+
+**See also:** UDP:SEND, UDP:BIND
+
+---
+
+### UDP:SEND-TO
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:send-to socket host port bytes)`
+
+Sends bytes (an Array<Char>) as one datagram to host:port, returning the number of bytes sent. Requires the NET-CONNECT capability.
+
+**See also:** UDP:SEND, UDP:RECEIVE-FROM
+
+---
+
+### UDP:SEND
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:send socket bytes)`
+
+Sends bytes as one datagram to socket's connected peer (see udp:connect!).
+
+**See also:** UDP:CONNECT!, UDP:SEND-TO
+
+---
+
+### UDP:RECEIVE-FROM
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:receive-from socket maxlen)`
+
+Blocks for one datagram of at most maxlen bytes, returning (list bytes peer-address possibly-truncated-p). Datagram boundaries are preserved. possibly-truncated-p is T exactly when the received length equals maxlen, since plain std::net exposes no MSG_TRUNC indicator.
+
+**See also:** UDP:BIND, UDP:SEND-TO
+
+---
+
+### UDP:CLOSE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:close! socket)`
+
+Closes socket. Idempotent; every subsequent send/receive on socket errors immediately with a :CLOSED error.
+
+**See also:** UDP:BIND, UDP:SOCKET-OPEN-P
+
+---
+
+### UDP:SOCKET-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:socket-p x)`
+
+T if x is a UDP socket handle (as returned by udp:bind).
+
+**See also:** UDP:BIND, TCP:LISTENER-P
+
+---
+
+### UDP:SOCKET-OPEN-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:socket-open-p socket)`
+
+T unless socket has been closed.
+
+**See also:** UDP:CLOSE!
+
+---
+
+### UDP:SET-TIMEOUT!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(udp:set-timeout! socket ms)`
+
+Sets socket's read and write timeout in milliseconds together; NIL blocks without a timeout (the default). A timed-out receive-from/send/send-to signals a structured :TIMEOUT error.
+
+**See also:** UDP:RECEIVE-FROM, TCP:SET-READ-TIMEOUT!
+
+---
+
+# TCP Functions
+
+TCP connect/bind/listen/accept over binary ports (TCP module, lib/38-tcp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
+
+---
+
+### TCP:CONNECT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:connect host port) or (tcp:connect host port timeout-ms)`
+
+Connects to host:port over TCP, returning a duplex binary PORTS port -- every PORTS operation (read-byte!, write-bytes!, close!, ...) works on it unchanged. Requires the NET-CONNECT capability. TIMEOUT-MS, if given, bounds the connect attempt; NIL (default) blocks without a timeout.
+
+**See also:** TCP:LISTEN, TCP:ACCEPT, PORTS:READ-BYTES!, PORTS:WRITE-BYTES!
+
+---
+
+### TCP:LISTEN
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:listen host port) or (tcp:listen host port backlog)`
+
+Binds and listens on host:port for inbound TCP connections, returning a listener handle. Requires the NET-LISTEN capability. BACKLOG (default 128) is accepted for API completeness but is currently advisory only.
+
+**See also:** TCP:ACCEPT, TCP:CLOSE-LISTENER!, TCP:LISTENER-P
+
+---
+
+### TCP:ACCEPT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:accept listener)`
+
+Blocks until an inbound connection arrives on listener, returning (cons port peer-address) -- port is a duplex PORTS port, peer-address a NET:ADDRESS. Rejects use after tcp:close-listener! with a :CLOSED error.
+
+**See also:** TCP:LISTEN, NET:PEER-ADDR
+
+---
+
+### TCP:SHUTDOWN!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:shutdown! port how)`
+
+Shuts down port's read half, write half, or both (HOW: :read, :write, or :both) without closing it.
+
+**See also:** TCP:CONNECT, PORTS:CLOSE!
+
+---
+
+### TCP:SET-READ-TIMEOUT!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:set-read-timeout! port ms)`
+
+Sets port's read timeout in milliseconds; NIL blocks without a timeout (the default). A timed-out read signals a structured :TIMEOUT error.
+
+**See also:** TCP:SET-WRITE-TIMEOUT!, PORTS:READ-BYTES!
+
+---
+
+### TCP:SET-WRITE-TIMEOUT!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:set-write-timeout! port ms)`
+
+Sets port's write timeout in milliseconds; NIL blocks without a timeout (the default).
+
+**See also:** TCP:SET-READ-TIMEOUT!, PORTS:WRITE-BYTES!
+
+---
+
+### TCP:CLOSE-LISTENER!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:close-listener! listener)`
+
+Closes listener. Idempotent, like ports:close!. Every subsequent tcp:accept on this listener errors immediately with a :CLOSED error.
+
+**See also:** TCP:LISTEN, TCP:LISTENER-OPEN-P
+
+---
+
+### TCP:LISTENER-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:listener-p x)`
+
+T if x is a TCP listener handle (as returned by tcp:listen).
+
+**See also:** TCP:LISTEN, UDP:SOCKET-P
+
+---
+
+### TCP:LISTENER-OPEN-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tcp:listener-open-p listener)`
+
+T unless listener has been closed.
+
+**See also:** TCP:CLOSE-LISTENER!
+
+---
+
+# NET Functions
+
+Addresses and DNS resolution (NET module, lib/37-net.lisp, issue #258); NET-DNS capability
+
+---
+
+### NET:ADDRESS
+
+**Type:** `RECORD`
+
+**Syntax:** `(net:make-address family ip port)`
+
+A DEFRECORD with fields FAMILY (:ipv4 or :ipv6), IP (a string, never bracketed), and PORT (an integer 0-65535). Accessors: net:address-family, net:address-ip, net:address-port. First-class, printable address data -- the kernel never hands Lisp a raw platform socket-address struct.
+
+**See also:** NET:RESOLVE, NET:ADDRESS->STRING, NET:LOCAL-ADDR, NET:PEER-ADDR
+
+---
+
+### NET:ADDRESS->STRING
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(net:address->string addr)`
+
+Formats addr as "ip:port", bracketing an IPv6 host (e.g. "[::1]:8080").
+
+**Examples:**
+```lisp
+(NET:ADDRESS->STRING (NET:MAKE-ADDRESS (QUOTE :IPV4) "127.0.0.1" 80))  ; => "127.0.0.1:80"
+```
+
+**See also:** NET:ADDRESS, NET:RESOLVE
+
+---
+
+### NET:RESOLVE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(net:resolve host) or (net:resolve host port)`
+
+Resolves host (and optional service port, default 0) to an ordered list of NET:ADDRESS records via the system resolver. Requires the NET-DNS capability. Signals a structured error (:CATEGORY :DNS) on failure.
+
+**See also:** NET:ADDRESS, NET:LOCAL-ADDR, NET:PEER-ADDR, TCP:CONNECT
+
+---
+
+### NET:LOCAL-ADDR
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(net:local-addr resource)`
+
+The local NET:ADDRESS a connected TCP port or a TCP/UDP network handle is bound to. No capability required.
+
+**See also:** NET:PEER-ADDR, TCP:LISTEN, UDP:BIND
+
+---
+
+### NET:PEER-ADDR
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(net:peer-addr port)`
+
+The remote NET:ADDRESS a connected TCP port is connected to. No capability required.
+
+**See also:** NET:LOCAL-ADDR, TCP:CONNECT, TCP:ACCEPT
 
 ---
 

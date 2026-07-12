@@ -3360,6 +3360,218 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'SEE-ALSO '(make-temp-file create-directory delete-file feature-enabled-p))))
 
 ;;; ============================================================
+;;; NETWORKING (NET / TCP / UDP modules, issue #258)
+;;; ============================================================
+
+(register-doc 'net:resolve
+  (list
+    (cons 'NAME 'net:resolve)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(net:resolve host) or (net:resolve host port)")
+    (cons 'CATEGORY 'net)
+    (cons 'DESCRIPTION "Resolves host (and optional service port, default 0) to an ordered list of NET:ADDRESS records via the system resolver. Requires the NET-DNS capability. Signals a structured error (:CATEGORY :DNS) on failure.")
+    (cons 'SEE-ALSO '(net:address net:local-addr net:peer-addr tcp:connect))))
+
+(register-doc 'net:local-addr
+  (list
+    (cons 'NAME 'net:local-addr)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(net:local-addr resource)")
+    (cons 'CATEGORY 'net)
+    (cons 'DESCRIPTION "The local NET:ADDRESS a connected TCP port or a TCP/UDP network handle is bound to. No capability required.")
+    (cons 'SEE-ALSO '(net:peer-addr tcp:listen udp:bind))))
+
+(register-doc 'net:peer-addr
+  (list
+    (cons 'NAME 'net:peer-addr)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(net:peer-addr port)")
+    (cons 'CATEGORY 'net)
+    (cons 'DESCRIPTION "The remote NET:ADDRESS a connected TCP port is connected to. No capability required.")
+    (cons 'SEE-ALSO '(net:local-addr tcp:connect tcp:accept))))
+
+(register-doc 'net:address->string
+  (list
+    (cons 'NAME 'net:address->string)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(net:address->string addr)")
+    (cons 'CATEGORY 'net)
+    (cons 'DESCRIPTION "Formats addr as \"ip:port\", bracketing an IPv6 host (e.g. \"[::1]:8080\").")
+    (cons 'EXAMPLES '(((net:address->string (net:make-address ':ipv4 "127.0.0.1" 80)) "127.0.0.1:80")))
+    (cons 'SEE-ALSO '(net:address net:resolve))))
+
+(register-doc 'net:address
+  (list
+    (cons 'NAME 'net:address)
+    (cons 'TYPE 'record)
+    (cons 'SYNTAX "(net:make-address family ip port)")
+    (cons 'CATEGORY 'net)
+    (cons 'DESCRIPTION "A DEFRECORD with fields FAMILY (:ipv4 or :ipv6), IP (a string, never bracketed), and PORT (an integer 0-65535). Accessors: net:address-family, net:address-ip, net:address-port. First-class, printable address data -- the kernel never hands Lisp a raw platform socket-address struct.")
+    (cons 'SEE-ALSO '(net:resolve net:address->string net:local-addr net:peer-addr))))
+
+(register-doc 'tcp:connect
+  (list
+    (cons 'NAME 'tcp:connect)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:connect host port) or (tcp:connect host port timeout-ms)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Connects to host:port over TCP, returning a duplex binary PORTS port -- every PORTS operation (read-byte!, write-bytes!, close!, ...) works on it unchanged. Requires the NET-CONNECT capability. TIMEOUT-MS, if given, bounds the connect attempt; NIL (default) blocks without a timeout.")
+    (cons 'SEE-ALSO '(tcp:listen tcp:accept ports:read-bytes! ports:write-bytes!))))
+
+(register-doc 'tcp:listen
+  (list
+    (cons 'NAME 'tcp:listen)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:listen host port) or (tcp:listen host port backlog)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Binds and listens on host:port for inbound TCP connections, returning a listener handle. Requires the NET-LISTEN capability. BACKLOG (default 128) is accepted for API completeness but is currently advisory only.")
+    (cons 'SEE-ALSO '(tcp:accept tcp:close-listener! tcp:listener-p))))
+
+(register-doc 'tcp:accept
+  (list
+    (cons 'NAME 'tcp:accept)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:accept listener)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Blocks until an inbound connection arrives on listener, returning (cons port peer-address) -- port is a duplex PORTS port, peer-address a NET:ADDRESS. Rejects use after tcp:close-listener! with a :CLOSED error.")
+    (cons 'SEE-ALSO '(tcp:listen net:peer-addr))))
+
+(register-doc 'tcp:shutdown!
+  (list
+    (cons 'NAME 'tcp:shutdown!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:shutdown! port how)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Shuts down port's read half, write half, or both (HOW: :read, :write, or :both) without closing it.")
+    (cons 'SEE-ALSO '(tcp:connect ports:close!))))
+
+(register-doc 'tcp:set-read-timeout!
+  (list
+    (cons 'NAME 'tcp:set-read-timeout!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:set-read-timeout! port ms)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Sets port's read timeout in milliseconds; NIL blocks without a timeout (the default). A timed-out read signals a structured :TIMEOUT error.")
+    (cons 'SEE-ALSO '(tcp:set-write-timeout! ports:read-bytes!))))
+
+(register-doc 'tcp:set-write-timeout!
+  (list
+    (cons 'NAME 'tcp:set-write-timeout!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:set-write-timeout! port ms)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Sets port's write timeout in milliseconds; NIL blocks without a timeout (the default).")
+    (cons 'SEE-ALSO '(tcp:set-read-timeout! ports:write-bytes!))))
+
+(register-doc 'tcp:close-listener!
+  (list
+    (cons 'NAME 'tcp:close-listener!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:close-listener! listener)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "Closes listener. Idempotent, like ports:close!. Every subsequent tcp:accept on this listener errors immediately with a :CLOSED error.")
+    (cons 'SEE-ALSO '(tcp:listen tcp:listener-open-p))))
+
+(register-doc 'tcp:listener-p
+  (list
+    (cons 'NAME 'tcp:listener-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:listener-p x)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "T if x is a TCP listener handle (as returned by tcp:listen).")
+    (cons 'SEE-ALSO '(tcp:listen udp:socket-p))))
+
+(register-doc 'tcp:listener-open-p
+  (list
+    (cons 'NAME 'tcp:listener-open-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tcp:listener-open-p listener)")
+    (cons 'CATEGORY 'tcp)
+    (cons 'DESCRIPTION "T unless listener has been closed.")
+    (cons 'SEE-ALSO '(tcp:close-listener!))))
+
+(register-doc 'udp:bind
+  (list
+    (cons 'NAME 'udp:bind)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:bind host port)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Binds a UDP socket to host:port (port 0 for an OS-assigned ephemeral port). Requires the NET-LISTEN capability -- a bound socket receives datagrams from any sender, matching \"binding for inbound traffic\".")
+    (cons 'SEE-ALSO '(udp:connect! udp:send-to udp:receive-from))))
+
+(register-doc 'udp:connect!
+  (list
+    (cons 'NAME 'udp:connect!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:connect! socket host port)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Sets socket's default peer to host:port so udp:send/udp:receive-from can be used without repeating the address. Requires the NET-CONNECT capability.")
+    (cons 'SEE-ALSO '(udp:send udp:bind))))
+
+(register-doc 'udp:send-to
+  (list
+    (cons 'NAME 'udp:send-to)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:send-to socket host port bytes)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Sends bytes (an Array<Char>) as one datagram to host:port, returning the number of bytes sent. Requires the NET-CONNECT capability.")
+    (cons 'SEE-ALSO '(udp:send udp:receive-from))))
+
+(register-doc 'udp:send
+  (list
+    (cons 'NAME 'udp:send)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:send socket bytes)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Sends bytes as one datagram to socket's connected peer (see udp:connect!).")
+    (cons 'SEE-ALSO '(udp:connect! udp:send-to))))
+
+(register-doc 'udp:receive-from
+  (list
+    (cons 'NAME 'udp:receive-from)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:receive-from socket maxlen)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Blocks for one datagram of at most maxlen bytes, returning (list bytes peer-address possibly-truncated-p). Datagram boundaries are preserved. possibly-truncated-p is T exactly when the received length equals maxlen, since plain std::net exposes no MSG_TRUNC indicator.")
+    (cons 'SEE-ALSO '(udp:bind udp:send-to))))
+
+(register-doc 'udp:close!
+  (list
+    (cons 'NAME 'udp:close!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:close! socket)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Closes socket. Idempotent; every subsequent send/receive on socket errors immediately with a :CLOSED error.")
+    (cons 'SEE-ALSO '(udp:bind udp:socket-open-p))))
+
+(register-doc 'udp:socket-p
+  (list
+    (cons 'NAME 'udp:socket-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:socket-p x)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "T if x is a UDP socket handle (as returned by udp:bind).")
+    (cons 'SEE-ALSO '(udp:bind tcp:listener-p))))
+
+(register-doc 'udp:socket-open-p
+  (list
+    (cons 'NAME 'udp:socket-open-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:socket-open-p socket)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "T unless socket has been closed.")
+    (cons 'SEE-ALSO '(udp:close!))))
+
+(register-doc 'udp:set-timeout!
+  (list
+    (cons 'NAME 'udp:set-timeout!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(udp:set-timeout! socket ms)")
+    (cons 'CATEGORY 'udp)
+    (cons 'DESCRIPTION "Sets socket's read and write timeout in milliseconds together; NIL blocks without a timeout (the default). A timed-out receive-from/send/send-to signals a structured :TIMEOUT error.")
+    (cons 'SEE-ALSO '(udp:receive-from tcp:set-read-timeout!))))
+
+;;; ============================================================
 ;;; REGISTER CATEGORIES
 ;;; ============================================================
 
@@ -3438,6 +3650,22 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   '(mime:header-name= mime:headers-get mime:headers-get-all mime:headers-add
     mime:headers-set mime:headers-remove mime:headers-names
     mime:parse-content-type mime:build-content-type mime:content-type-parameter))
+
+(register-category 'net
+  "Addresses and DNS resolution (NET module, lib/37-net.lisp, issue #258); NET-DNS capability"
+  '(net:address net:address-p net:address-family net:address-ip net:address-port
+    net:make-address net:address->string net:resolve net:local-addr net:peer-addr))
+
+(register-category 'tcp
+  "TCP connect/bind/listen/accept over binary ports (TCP module, lib/38-tcp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities"
+  '(tcp:connect tcp:listen tcp:accept tcp:shutdown!
+    tcp:set-read-timeout! tcp:set-write-timeout! tcp:close-listener!
+    tcp:listener-p tcp:listener-open-p tcp:local-addr tcp:peer-addr))
+
+(register-category 'udp
+  "UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities"
+  '(udp:bind udp:connect! udp:send-to udp:send udp:receive-from
+    udp:close! udp:socket-p udp:socket-open-p udp:local-addr udp:set-timeout!))
 
 (register-category 'special-forms
   "Special forms and macros"

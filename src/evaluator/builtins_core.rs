@@ -1360,6 +1360,57 @@ pub(super) fn require_io(env: &Shared<Environment>) -> Result<(), LispError> {
     }
 }
 
+/// Capability guards for the three networking feature tiers (issue #258,
+/// epic #253). Same shape as `require_read_fs` and friends above: checked
+/// through the same `cap_mask_allows` dynamic-extent mask so
+/// `WITH-CAPABILITIES` fences attenuate networking exactly like filesystem
+/// access (issue #320/#325).
+pub(super) fn require_net_dns(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("NET-DNS") && crate::evaluator::core::cap_mask_allows("NET-DNS") {
+        Ok(())
+    } else if env.feature_enabled("NET-DNS") {
+        Err(LispError::Generic(
+            "capability denied: NET-DNS (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "NET-DNS capability is not enabled (grant it via --capability NET-DNS or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+pub(super) fn require_net_connect(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("NET-CONNECT") && crate::evaluator::core::cap_mask_allows("NET-CONNECT")
+    {
+        Ok(())
+    } else if env.feature_enabled("NET-CONNECT") {
+        Err(LispError::Generic(
+            "capability denied: NET-CONNECT (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "NET-CONNECT capability is not enabled (grant it via --capability NET-CONNECT or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
+pub(super) fn require_net_listen(env: &Shared<Environment>) -> Result<(), LispError> {
+    if env.feature_enabled("NET-LISTEN") && crate::evaluator::core::cap_mask_allows("NET-LISTEN") {
+        Ok(())
+    } else if env.feature_enabled("NET-LISTEN") {
+        Err(LispError::Generic(
+            "capability denied: NET-LISTEN (attenuated by an enclosing fence)".to_string(),
+        ))
+    } else {
+        Err(LispError::Generic(
+            "NET-LISTEN capability is not enabled (grant it via --capability NET-LISTEN or the host API)"
+                .to_string(),
+        ))
+    }
+}
+
 /// Build a unique path inside the system temp directory.
 ///
 /// Uses the process ID and a per-process monotone counter so that concurrent

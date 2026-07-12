@@ -7,6 +7,90 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## runtime(net): capability-gated DNS, TCP, and UDP over binary ports (#258)
+
+Lamedh now has synchronous networking: DNS resolution, TCP (connect/bind/
+listen/accept/shutdown/timeouts), and UDP (bind/send-to/receive-from),
+built entirely on `std::net` — **zero new crate dependencies**. Three new
+optional embedded libraries follow the epic #253 namespace ruling (a
+genuinely new facility, not flat-namespace growth): `NET`
+(`lib/37-net.lisp`, addresses/DNS), `TCP` (`lib/38-tcp.lisp`), and `UDP`
+(`lib/39-udp.lisp`). **TLS is explicitly deferred** — see below.
+
+Representation: a connected TCP stream is an ordinary `LispVal::Port`
+(#255) — a new `PortState::TcpStream` variant — so every `PORTS` operation
+(`read-byte!`/`write-bytes!`/`close!`/`with-open-port`/`port-p`/...) works
+on it unchanged, and it is the seam a future TLS layer wraps without an
+API change. Listeners and UDP sockets are not byte streams, so they get
+their own opaque resource, a new `LispVal::NetHandle` (`NetHandleObj` in
+`src/lib.rs`) — identity-compared, printed, self-evaluating, and Drop-
+backstopped exactly like `Port`. Kernel substrate:
+`src/evaluator/builtins_net.rs`.
+
+Addresses: `NET:ADDRESS` is a `DEFRECORD` (family/ip/port) — first-class,
+printable data; the kernel never hands a raw `std::net::SocketAddr` to
+Lisp, only a `(family ip port)` triple that `NET` wraps.
+`NET:ADDRESS->STRING` brackets IPv6 (`"[::1]:8080"`). `NET:RESOLVE`
+resolves a host (and optional service port) to an ordered list of
+addresses; `NET:LOCAL-ADDR`/`NET:PEER-ADDR` inspect a connected port or
+handle.
+
+TCP: `TCP:CONNECT` (optional timeout-ms), `TCP:LISTEN` (backlog argument
+accepted for API completeness but currently advisory-only — `std::net`
+has no OS backlog customization without an extra crate), `TCP:ACCEPT`
+(returns `(port . peer-address)`), `TCP:SHUTDOWN!` (`:READ`/`:WRITE`/
+`:BOTH`), `TCP:SET-READ-TIMEOUT!`/`SET-WRITE-TIMEOUT!`,
+`TCP:CLOSE-LISTENER!` (idempotent; every subsequent `ACCEPT` errors
+immediately — a blocked `ACCEPT` on another OS thread is not guaranteed
+to unblock, since plain `std::net::TcpListener` has no portable
+wakeup-on-close).
+
+UDP: `UDP:BIND`, `UDP:CONNECT!` (sets a default peer), `UDP:SEND-TO`/
+`UDP:SEND`, `UDP:RECEIVE-FROM` (returns `(bytes peer-address
+possibly-truncated-p)` — datagram boundaries are preserved; the
+truncation flag is a best-effort "received length equals the requested
+buffer size" signal, since plain `std::net` exposes no `MSG_TRUNC`
+without raw syscalls, out of this issue's no-new-dependency/no-ioctl
+scope).
+
+Capability model: three new ambient authorities, checked through the same
+`require_*`/`cap_mask_allows` dynamic-extent-fence pattern as
+`READ-FS`/`CREATE-FS`/`IO` (#320/#325) — verified directly, a networking
+call inside `(with-capabilities () ...)` fails even when the host/CLI
+granted the capability. `NET-DNS` gates explicit resolution
+(`NET:RESOLVE`); `NET-CONNECT` gates outbound connections/sends
+(`TCP:CONNECT`, `UDP:CONNECT!`, `UDP:SEND-TO`); `NET-LISTEN` gates
+binding/listening (`TCP:LISTEN`, `UDP:BIND` — even an ephemeral-port UDP
+socket receives from any sender once bound, so it needs the "inbound
+traffic" capability like a TCP listener does). Once a resource is
+acquired, continued use needs no further check (#255's "a successfully
+returned handle is authority to continue" rule) — reading/writing an open
+TCP port, or sending on an already-`CONNECT!`ed UDP socket, is
+unrestricted.
+
+In addition to the capability, a new Rust-only embedder hook,
+`Environment::set_net_policy` (`src/environment.rs`), is consulted before
+every resolve/connect/bind with the operation and the caller-supplied
+host/port (not yet DNS-resolved): a scoped-grant mechanism so a broad
+`NET-CONNECT` grant (e.g. for an HTTP client) does not become
+unrestricted SSRF authority. `None` (the default) allows every operation
+once its capability is granted; Lisp code cannot install, replace, or
+inspect the policy. Errors are structured `LispVal::Error` values whose
+`data` alist includes `:OPERATION`/`:CATEGORY`/`:HOST`/`:PORT`/
+`:OS-ERROR`, `:CATEGORY` being one of `:TIMEOUT`/`:REFUSED`/`:RESET`/
+`:DNS`/`:CLOSED`/`:POLICY-DENIED`/`:ADDR-IN-USE`/
+`:ADDR-NOT-AVAILABLE`/`:OTHER` — extended onto `PORTS`' existing
+`:OPERATION`/`:KIND`/`:NAME`/`:OS-ERROR` error shape for TCP-stream byte
+operations too, so a timed-out `read-byte!` on a TCP port classifies the
+same way a failed `TCP:CONNECT` does.
+
+**TLS deferred.** The issue's TLS section (wrap a connected TCP port as a
+TLS client/server port, certificate verification, ALPN/SNI) is out of
+scope for this change: it forces a TLS-crate dependency decision that
+belongs to the project owner, and this issue ships zero new dependencies.
+The port-wrapping design (a TCP connection is an ordinary `Port`) is the
+seam a TLS layer wraps later without changing the `PORTS`/`TCP` API.
+
 ## checker: literal-nil `if` joins stop committing to `(list a)` — the nil-on-miss guard idiom checks (#336)
 
 The on-demand derived-scheme path (#308) was re-introducing the bias the

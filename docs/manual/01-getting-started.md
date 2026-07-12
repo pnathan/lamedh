@@ -217,9 +217,11 @@ $ lamedh --capability READ-FS -s '(read-file "data.txt")'
 ```
 
 The known capability names are `READ-FS`, `CREATE-FS`, `TEMP-FS`,
-`SHELL`, and `IO`. Chapter 7 covers the full capability model, including
-how to grant capabilities from embedding Rust code and how attenuated
-capability sets propagate to spawned interpreter threads.
+`SHELL`, `IO`, `NET-DNS`, `NET-CONNECT`, and `NET-LISTEN`. Chapter 7
+covers the full capability model, including how to grant capabilities
+from embedding Rust code and how attenuated capability sets propagate to
+spawned interpreter threads; Chapter 13 covers the three networking
+capabilities specifically.
 
 ## 1.8 Case: Symbols Are Uppercase
 

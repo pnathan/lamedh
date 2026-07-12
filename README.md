@@ -46,8 +46,10 @@ Cranelift when the default `jit` feature is enabled.
   compileability.
 - **Embeddable runtime**: the `lamedh` crate exposes `Environment`,
   `eval_str()`, `eval_all()`, `load_file()`, and `LispValExtension`.
-- **Sandboxed capabilities**: filesystem, shell, temp files, and stdin are off
-  by default unless the host or CLI grants a capability.
+- **Sandboxed capabilities**: filesystem, shell, temp files, stdin, and
+  networking (DNS/TCP/UDP) are off by default unless the host or CLI
+  grants a capability, plus a Rust-only policy hook to scope a granted
+  networking capability to specific hosts/ports.
 
 ## Quick Start
 

@@ -179,7 +179,8 @@ struct Args {
 
     /// Grant a sandbox capability to the interpreter.  May be specified
     /// multiple times.  Known capabilities: READ-FS, CREATE-FS, TEMP-FS,
-    /// SHELL, IO.  Capability names are case-insensitive.
+    /// SHELL, IO, NET-DNS, NET-CONNECT, NET-LISTEN.  Capability names are
+    /// case-insensitive.
     ///
     /// Example: `lamedh --capability READ-FS --capability SHELL`
     #[arg(long = "capability", short = 'c', action = clap::ArgAction::Append)]

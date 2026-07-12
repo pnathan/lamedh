@@ -19,6 +19,7 @@ is closed by default. This manual covers the language as of version 0.3.0.
 | [10. Modules](10-modules.md) | `defmodule`, `with-module`, `import`, module introspection, capability provision, `require`/`provide` load-once libraries |
 | [11. Ports and Binary I/O](11-ports-and-io.md) | The `PORTS` module: files, in-memory byte ports, standard streams, `with-open-port`, structured I/O errors, host-wrapped ports |
 | [12. Codecs](12-codecs.md) | `JSON`, `URL`, `BASE64`, `HEX`, `MIME`: parse/stringify, percent-encoding, Base64/Hex byte codecs, headers and Content-Type — capability-free pure-data transforms |
+| [13. Networking](13-networking.md) | `NET`, `TCP`, `UDP`: addresses, DNS resolution, TCP connect/listen/accept, UDP bind/send-to/receive-from, `NET-DNS`/`NET-CONNECT`/`NET-LISTEN` capabilities, structured error categories (TLS deferred) |
 
 Conventions used throughout: REPL results are shown as `; => result`
 comments; commands that need sandbox capabilities show the full command

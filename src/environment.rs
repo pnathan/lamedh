@@ -30,9 +30,12 @@
 //! to opt in.  Because `SharedState` is shared across the whole chain, a
 //! feature enabled anywhere is visible everywhere.
 
-use crate::{BuiltinFunc, LispError, LispVal, Shared, SharedCell, SpecialForm, Symbol};
+use crate::{
+    BuiltinFunc, LispError, LispVal, NetOperation, Shared, SharedCell, SpecialForm, Symbol,
+};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::PathBuf;
 
@@ -343,6 +346,28 @@ struct SharedState {
     /// list (`$MODULE-SEARCH-PATHS`), so a host constrains disk resolution
     /// without exposing that authority to sandboxed Lisp code.
     module_search_paths: SharedCell<Vec<PathBuf>>,
+    /// Host policy hook for networking (issue #258, epic #253), consulted by
+    /// `src/evaluator/builtins_net.rs` in addition to (not instead of) the
+    /// `NET-DNS`/`NET-CONNECT`/`NET-LISTEN` capability checks. `None` (the
+    /// default) allows every operation once its capability is granted.
+    /// Deliberately Rust-only to install ([`Environment::set_net_policy`]):
+    /// Lisp cannot install or inspect a policy, so a host scopes a granted
+    /// capability (e.g. restricting an HTTP-client grant's destinations)
+    /// without exposing that authority to sandboxed Lisp code -- same shape
+    /// as `module_search_paths`. Shared across the whole environment chain,
+    /// like `features`.
+    net_policy: SharedCell<Option<NetPolicy>>,
+}
+
+/// Wrapper around the boxed policy callback so `SharedState` can keep
+/// deriving `Debug` (closures don't implement it).
+#[derive(Clone)]
+struct NetPolicy(Shared<crate::NetPolicyFn>);
+
+impl fmt::Debug for NetPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NetPolicy(<callback>)")
+    }
 }
 
 impl SharedState {
@@ -357,6 +382,7 @@ impl SharedState {
             reader_depth_limit: Cell::new(crate::reader::DEFAULT_READER_DEPTH),
             module_sources: SharedCell::new(HashMap::new()),
             module_search_paths: SharedCell::new(Vec::new()),
+            net_policy: SharedCell::new(None),
         }
     }
 }
@@ -1231,6 +1257,91 @@ impl Environment {
         env.set(
             "PORT-KIND*".to_string(),
             LispVal::Builtin(BuiltinFunc::PortKind),
+        );
+
+        // Networking (issue #258, epic #253): kernel substrate wrapped by
+        // the NET/TCP/UDP modules in lib/37-net.lisp, lib/38-tcp.lisp,
+        // lib/39-udp.lisp. Flat "*"-suffixed names, like the PORT-* substrate
+        // above.
+        env.set(
+            "NET-RESOLVE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetResolve),
+        );
+        env.set(
+            "NET-LOCAL-ADDR*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetLocalAddr),
+        );
+        env.set(
+            "NET-PEER-ADDR*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetPeerAddr),
+        );
+        env.set(
+            "TCP-CONNECT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TcpConnect),
+        );
+        env.set(
+            "TCP-LISTEN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TcpListen),
+        );
+        env.set(
+            "TCP-ACCEPT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TcpAccept),
+        );
+        env.set(
+            "TCP-SHUTDOWN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TcpShutdown),
+        );
+        env.set(
+            "TCP-SET-READ-TIMEOUT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TcpSetReadTimeout),
+        );
+        env.set(
+            "TCP-SET-WRITE-TIMEOUT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TcpSetWriteTimeout),
+        );
+        env.set(
+            "NET-HANDLE-CLOSE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetHandleClose),
+        );
+        env.set(
+            "NET-HANDLE-OPEN-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetHandleOpenP),
+        );
+        env.set(
+            "NET-HANDLE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetHandleP),
+        );
+        env.set(
+            "NET-HANDLE-KIND*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetHandleKind),
+        );
+        env.set(
+            "NET-HANDLE-NAME*".to_string(),
+            LispVal::Builtin(BuiltinFunc::NetHandleName),
+        );
+        env.set(
+            "UDP-BIND*".to_string(),
+            LispVal::Builtin(BuiltinFunc::UdpBind),
+        );
+        env.set(
+            "UDP-CONNECT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::UdpConnect),
+        );
+        env.set(
+            "UDP-SEND-TO*".to_string(),
+            LispVal::Builtin(BuiltinFunc::UdpSendTo),
+        );
+        env.set(
+            "UDP-SEND*".to_string(),
+            LispVal::Builtin(BuiltinFunc::UdpSend),
+        );
+        env.set(
+            "UDP-RECEIVE-FROM*".to_string(),
+            LispVal::Builtin(BuiltinFunc::UdpReceiveFrom),
+        );
+        env.set(
+            "UDP-SET-TIMEOUT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::UdpSetTimeout),
         );
 
         // Introspection
@@ -2180,6 +2291,53 @@ impl Environment {
     /// were added.
     pub fn module_search_paths(&self) -> Vec<PathBuf> {
         self.shared.module_search_paths.borrow().clone()
+    }
+
+    // Networking policy hook (issue #258, epic #253): the embedder half of
+    // scoped network grants, complementing the coarse-grained NET-DNS/
+    // NET-CONNECT/NET-LISTEN capabilities the same way `enable_feature` does
+    // for filesystem access. Shared across the whole environment chain, like
+    // `register_module`.
+
+    /// Install a policy callback consulted before every DNS resolution,
+    /// outbound connection, or bind/listen (`src/evaluator/builtins_net.rs`).
+    /// Called with the operation, the caller-supplied host/address string
+    /// (not yet DNS-resolved), and the port; return `true` to allow, `false`
+    /// to deny with a structured `:policy-denied` error.
+    ///
+    /// This is *in addition to* the coarse capability check, not a
+    /// replacement for it -- both must pass. Lets a host scope a broad grant
+    /// (e.g. NET-CONNECT for an HTTP client) to specific destinations so it
+    /// is not unrestricted SSRF authority. Rust-only to install: Lisp code
+    /// cannot install, replace, or inspect the policy.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use lamedh::NetOperation;
+    /// env.set_net_policy(|op, host, port| {
+    ///     !(op == NetOperation::Connect && host == "169.254.169.254")
+    /// });
+    /// ```
+    pub fn set_net_policy<F>(&self, policy: F)
+    where
+        F: Fn(NetOperation, &str, u16) -> bool + 'static,
+    {
+        *self.shared.net_policy.borrow_mut() = Some(NetPolicy(Shared::new(policy)));
+    }
+
+    /// Remove any installed policy callback, reverting to allow-all-when-
+    /// capability-granted.
+    pub fn clear_net_policy(&self) {
+        *self.shared.net_policy.borrow_mut() = None;
+    }
+
+    /// Consult the installed policy (if any) for `op` against `host`/`port`.
+    /// `true` (allow) when no policy is installed -- the documented default.
+    pub(crate) fn check_net_policy(&self, op: NetOperation, host: &str, port: u16) -> bool {
+        match &*self.shared.net_policy.borrow() {
+            Some(p) => (p.0)(op, host, port),
+            None => true,
+        }
     }
 
     /// Walk `env`'s lexical parent chain to its root (the frame whose

@@ -268,6 +268,7 @@ use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 
 // ── Shared reference-counting and interior-mutability type aliases ─────────
@@ -728,6 +729,34 @@ pub enum BuiltinFunc {
     PortP,
     PortName,
     PortKind,
+    // Networking (issue #258, epic #253): DNS/address, TCP, and UDP kernel
+    // substrate wrapped by the NET/TCP/UDP modules (lib/37-net.lisp,
+    // lib/38-tcp.lisp, lib/39-udp.lisp). Capability-gated construction
+    // (NET-DNS/NET-CONNECT/NET-LISTEN) plus a host policy hook
+    // (`Environment::set_net_policy`); see `src/evaluator/builtins_net.rs`.
+    // A connected TCP stream is an ordinary Port (PortOpen*/PortRead*/...
+    // above work on it unchanged); listeners and UDP sockets are
+    // `LispVal::NetHandle`.
+    NetResolve,
+    NetLocalAddr,
+    NetPeerAddr,
+    TcpConnect,
+    TcpListen,
+    TcpAccept,
+    TcpShutdown,
+    TcpSetReadTimeout,
+    TcpSetWriteTimeout,
+    NetHandleClose,
+    NetHandleOpenP,
+    NetHandleP,
+    NetHandleKind,
+    NetHandleName,
+    UdpBind,
+    UdpConnect,
+    UdpSendTo,
+    UdpSend,
+    UdpReceiveFrom,
+    UdpSetTimeout,
     // Concurrency primitives (gated behind the `concurrency` feature)
     #[cfg(feature = "concurrency")]
     MakeChannel,
@@ -1278,7 +1307,22 @@ pub enum LispVal {
     /// `PORT-*` kernel primitives (`src/evaluator/builtins_ports.rs`),
     /// wrapped by the `PORTS` module (`lib/31-ports.lisp`). Compares by
     /// identity, like `Array`/`HashTable`/`Environment`. See [`PortObj`].
+    ///
+    /// A connected TCP stream (issue #258, epic #253) is represented as an
+    /// ordinary `Port` too (`PortState::TcpStream`), so every `PORTS`
+    /// operation (`read-byte!`, `write-bytes!`, `close!`, `port-p`, ...)
+    /// works on it unchanged -- see `TCP-CONNECT*`/`TCP-ACCEPT*` in
+    /// `src/evaluator/builtins_net.rs`.
     Port(Shared<PortObj>),
+    /// A network listener or datagram socket (issue #258, epic #253):
+    /// opaque owned resources that are NOT byte streams (unlike a connected
+    /// TCP stream, which is a [`LispVal::Port`]) -- a `TcpListener` accepts
+    /// connections, a `UdpSocket` sends/receives whole datagrams. Wrapped by
+    /// the `TCP`/`UDP` modules (`lib/37-net.lisp`/`38-tcp.lisp`/`39-udp.lisp`).
+    /// Opaque from Lisp -- operated on only through the `TCP-*`/`UDP-*`/
+    /// `NET-HANDLE-*` kernel primitives (`src/evaluator/builtins_net.rs`).
+    /// Compares by identity, like [`LispVal::Port`]. See [`NetHandleObj`].
+    NetHandle(Shared<NetHandleObj>),
     /// A message-passing channel (only present under the `concurrency` feature).
     ///
     /// Created with `(make-channel)`.  Both ends are bundled together so that
@@ -1323,6 +1367,12 @@ enum PortState {
     /// A host-registered arbitrary byte sink, installed via
     /// [`LispVal::wrap_writer`].
     HostWriter(Box<dyn Write>),
+    /// A connected TCP stream (issue #258, epic #253) -- `TCP-CONNECT*` or
+    /// `TCP-ACCEPT*` in `src/evaluator/builtins_net.rs`. Not seekable. The
+    /// only `PortState` with TCP-specific out-of-band operations
+    /// (`shutdown`/timeouts/peer address); see [`PortObj::tcp_peer_addr`]
+    /// and friends below.
+    TcpStream(TcpStream),
 }
 
 impl fmt::Debug for PortState {
@@ -1331,6 +1381,7 @@ impl fmt::Debug for PortState {
             PortState::Closed => "Closed",
             PortState::File(_) => "File",
             PortState::MemoryInput(_) => "MemoryInput",
+            PortState::TcpStream(_) => "TcpStream",
             PortState::MemoryOutput(_) => "MemoryOutput",
             PortState::Stdin(_) => "Stdin",
             PortState::Stdout(_) => "Stdout",
@@ -1450,6 +1501,7 @@ impl PortObj {
             PortState::MemoryInput(c) => c.read(buf),
             PortState::Stdin(s) => s.lock().read(buf),
             PortState::HostReader(r) => r.read(buf),
+            PortState::TcpStream(s) => s.read(buf),
             _ => Err(std::io::Error::other("port is not readable")),
         }
     }
@@ -1471,6 +1523,7 @@ impl PortObj {
             PortState::Stdout(s) => s.lock().write(data),
             PortState::Stderr(s) => s.lock().write(data),
             PortState::HostWriter(w) => w.write(data),
+            PortState::TcpStream(s) => s.write(data),
             _ => Err(std::io::Error::other("port is not writable")),
         }
     }
@@ -1485,6 +1538,7 @@ impl PortObj {
             PortState::Stdout(s) => s.lock().flush(),
             PortState::Stderr(s) => s.lock().flush(),
             PortState::HostWriter(w) => w.flush(),
+            PortState::TcpStream(s) => s.flush(),
             _ => Ok(()),
         }
     }
@@ -1538,7 +1592,77 @@ impl PortObj {
         }
     }
 
+    // ── TCP-specific operations (issue #258, epic #253) ───────────────────
+    //
+    // These four methods only make sense for `PortState::TcpStream`; every
+    // other port kind errors. They live on `PortObj` rather than a free
+    // function in `builtins_net.rs` for the same reason the byte operations
+    // above do: representation access (`std::net::TcpStream`'s methods)
+    // stays next to the `PortState` that owns it.
+
+    fn with_tcp_stream<T>(
+        &self,
+        op: &str,
+        f: impl FnOnce(&TcpStream) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.require_open()?;
+        match &*self.state.borrow() {
+            PortState::TcpStream(s) => f(s),
+            _ => Err(std::io::Error::other(format!(
+                "{op}: not a TCP stream port"
+            ))),
+        }
+    }
+
+    /// The remote address this TCP stream is connected to.
+    pub fn tcp_peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.with_tcp_stream("peer-addr", |s| s.peer_addr())
+    }
+
+    /// The local address this TCP stream is bound to.
+    pub fn tcp_local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.with_tcp_stream("local-addr", |s| s.local_addr())
+    }
+
+    /// Shut down the read half, write half, or both, per
+    /// [`std::net::Shutdown`]. Does not close the port -- matches the ticket's
+    /// "shutdown read/write/both" as an operation distinct from `close!`.
+    pub fn tcp_shutdown(&self, how: std::net::Shutdown) -> std::io::Result<()> {
+        self.with_tcp_stream("shutdown", |s| s.shutdown(how))
+    }
+
+    /// Set (or, with `None`, clear) the read timeout.
+    pub fn tcp_set_read_timeout(&self, dur: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.with_tcp_stream("set-read-timeout", |s| s.set_read_timeout(dur))
+    }
+
+    /// Set (or, with `None`, clear) the write timeout.
+    pub fn tcp_set_write_timeout(&self, dur: Option<std::time::Duration>) -> std::io::Result<()> {
+        self.with_tcp_stream("set-write-timeout", |s| s.set_write_timeout(dur))
+    }
+
     // ── Constructors ────────────────────────────────────────────────────
+
+    /// Wrap a connected [`TcpStream`] as a duplex binary [`LispVal::Port`]
+    /// (issue #258, epic #253). Not seekable. `name` is diagnostic only
+    /// (typically the peer address). Capability checks
+    /// (`NET-CONNECT`/`NET-LISTEN`) happen in `builtins_net.rs` before this
+    /// is called, matching every other `PortObj` constructor's split.
+    ///
+    /// This is deliberately the same `LispVal::Port` representation as every
+    /// other port, not a new variant: it is the seam a future TLS layer can
+    /// wrap without changing the port API (`ports:*` and any TLS wrapper
+    /// would both take/return this same `Port` shape).
+    pub(crate) fn tcp_stream(name: impl Into<String>, stream: TcpStream) -> Shared<PortObj> {
+        PortObj::new(
+            "tcp-stream",
+            name,
+            true,
+            true,
+            false,
+            PortState::TcpStream(stream),
+        )
+    }
 
     pub(crate) fn open_input_file(path: &str) -> std::io::Result<Shared<PortObj>> {
         let f = fs::File::open(path)?;
@@ -1624,6 +1748,157 @@ impl PortObj {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// Network resources (issue #258, epic #253): listeners and datagram sockets.
+// ---------------------------------------------------------------------------
+
+/// Backing storage for a [`NetHandleObj`]. Never exposed to Lisp directly,
+/// mirroring [`PortState`].
+enum NetHandleState {
+    /// Closed (explicitly, via `NET-HANDLE-CLOSE*`). Every operation except
+    /// close/open-p errors on this state -- same documented contract as
+    /// [`PortObj::close`].
+    Closed,
+    TcpListener(TcpListener),
+    UdpSocket(UdpSocket),
+}
+
+impl fmt::Debug for NetHandleState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tag = match self {
+            NetHandleState::Closed => "Closed",
+            NetHandleState::TcpListener(_) => "TcpListener",
+            NetHandleState::UdpSocket(_) => "UdpSocket",
+        };
+        write!(f, "{tag}")
+    }
+}
+
+/// The payload of a [`LispVal::NetHandle`] (issue #258, epic #253): a TCP
+/// listener or a UDP socket. Unlike a connected TCP stream (a
+/// [`LispVal::Port`]), neither of these is a byte stream -- a listener
+/// yields new connections via `accept`, a UDP socket sends/receives whole
+/// datagrams -- so they get their own opaque representation instead of
+/// reusing `PortState`, following the same "representation access is Rust,
+/// policy is Lisp" split as [`PortObj`].
+///
+/// **Deterministic ownership.** Same documented contract as `PortObj`:
+/// explicit close (`(tcp:close-listener! l)` / `(udp:close! s)`) is the
+/// primary cleanup path; Rust's ordinary `Drop` (`TcpListener`/`UdpSocket`
+/// close their fd automatically once the last [`Shared`] reference is
+/// dropped) is a last-resort safety net, not the primary path.
+///
+/// **Capabilities.** Like `PortObj`, this performs no capability checks
+/// itself; `src/evaluator/builtins_net.rs` checks `NET-LISTEN` before ever
+/// constructing one, plus consults the host policy hook
+/// ([`environment::Environment::set_net_policy`]) so a granted capability
+/// can be scoped to specific hosts/ports.
+#[derive(Debug)]
+pub struct NetHandleObj {
+    /// Diagnostic resource kind: `"tcp-listener"` or `"udp-socket"`.
+    pub kind: &'static str,
+    /// Diagnostic name, e.g. the bound local address. Not necessarily
+    /// unique; used only for `print`/error messages.
+    pub name: String,
+    state: SharedCell<NetHandleState>,
+}
+
+impl NetHandleObj {
+    fn new(kind: &'static str, name: impl Into<String>, state: NetHandleState) -> Shared<Self> {
+        Shared::new(NetHandleObj {
+            kind,
+            name: name.into(),
+            state: SharedCell::new(state),
+        })
+    }
+
+    pub(crate) fn tcp_listener(name: impl Into<String>, listener: TcpListener) -> Shared<Self> {
+        NetHandleObj::new("tcp-listener", name, NetHandleState::TcpListener(listener))
+    }
+
+    pub(crate) fn udp_socket(name: impl Into<String>, socket: UdpSocket) -> Shared<Self> {
+        NetHandleObj::new("udp-socket", name, NetHandleState::UdpSocket(socket))
+    }
+
+    /// True unless the handle has been closed.
+    pub fn is_open(&self) -> bool {
+        !matches!(*self.state.borrow(), NetHandleState::Closed)
+    }
+
+    fn require_open(&self) -> std::io::Result<()> {
+        if self.is_open() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("network handle is closed"))
+        }
+    }
+
+    /// Close the handle. Idempotent: closing an already-closed handle is a
+    /// silent no-op, never an error (matches `PortObj::close`'s contract).
+    pub fn close(&self) {
+        *self.state.borrow_mut() = NetHandleState::Closed;
+    }
+
+    /// The address this handle is bound to.
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.require_open()?;
+        match &*self.state.borrow() {
+            NetHandleState::TcpListener(l) => l.local_addr(),
+            NetHandleState::UdpSocket(s) => s.local_addr(),
+            NetHandleState::Closed => unreachable!("checked by require_open"),
+        }
+    }
+
+    /// Accept one incoming TCP connection, returning the new stream (wrapped
+    /// as an ordinary [`LispVal::Port`] by the caller) and the peer address.
+    /// Errors (not panics) if this handle is a UDP socket.
+    pub fn tcp_accept(&self) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+        self.require_open()?;
+        match &*self.state.borrow() {
+            NetHandleState::TcpListener(l) => l.accept(),
+            _ => Err(std::io::Error::other("not a TCP listener")),
+        }
+    }
+
+    /// Run `f` with the underlying `UdpSocket`. Errors if this handle is a
+    /// TCP listener. Centralizes the open-check + variant-match every UDP
+    /// operation in `builtins_net.rs` needs.
+    pub fn with_udp_socket<T>(
+        &self,
+        f: impl FnOnce(&UdpSocket) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.require_open()?;
+        match &*self.state.borrow() {
+            NetHandleState::UdpSocket(s) => f(s),
+            _ => Err(std::io::Error::other("not a UDP socket")),
+        }
+    }
+}
+
+/// A network operation subject to the host policy hook (issue #258, epic
+/// #253): [`environment::Environment::set_net_policy`]. Coarser than the
+/// three capabilities (`NET-DNS`/`NET-CONNECT`/`NET-LISTEN`) it complements
+/// -- UDP `send-to`/`connect` are policy-checked as `Connect`, UDP `bind` as
+/// `Listen` -- since the policy question ("is this host/port allowed") is
+/// the same shape for TCP and UDP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetOperation {
+    /// Explicit hostname resolution (`NET-RESOLVE*`).
+    Resolve,
+    /// Outbound connection: `TCP-CONNECT*`, `UDP-CONNECT*`, `UDP-SEND-TO*`.
+    Connect,
+    /// Binding/listening for inbound traffic: `TCP-LISTEN*`, `UDP-BIND*`.
+    Listen,
+}
+
+/// A host-installed policy callback consulted by `builtins_net.rs` before
+/// resolving/connecting/binding, in addition to (not instead of) the
+/// coarse-grained capability check. Lets an embedder scope a granted
+/// capability to specific hosts/ports -- e.g. an HTTP-client grant that
+/// should not become unrestricted SSRF authority. See
+/// [`environment::Environment::set_net_policy`].
+pub(crate) type NetPolicyFn = dyn Fn(NetOperation, &str, u16) -> bool;
 
 impl LispVal {
     /// Wrap a host `Read` stream as an input [`LispVal::Port`], for
@@ -1724,6 +1999,9 @@ impl fmt::Debug for LispVal {
             LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
             LispVal::Error(e) => write!(f, "Error({:?}, {:?})", e.message, e.data),
             LispVal::Port(p) => write!(f, "Port(kind={}, name={:?})", p.kind, p.name),
+            LispVal::NetHandle(h) => {
+                write!(f, "NetHandle(kind={}, name={:?})", h.kind, h.name)
+            }
             #[cfg(feature = "concurrency")]
             LispVal::Channel(_) => write!(f, "Channel(...)"),
         }
@@ -1756,6 +2034,7 @@ impl Clone for LispVal {
             LispVal::Extension(e) => LispVal::Extension(e.clone()),
             LispVal::Error(e) => LispVal::Error(e.clone()),
             LispVal::Port(p) => LispVal::Port(p.clone()),
+            LispVal::NetHandle(h) => LispVal::NetHandle(h.clone()),
             #[cfg(feature = "concurrency")]
             LispVal::Channel(c) => LispVal::Channel(std::sync::Arc::clone(c)),
         }
@@ -1812,6 +2091,9 @@ impl PartialEq for LispVal {
             // Ports are opaque and compare by identity (issue #255), like
             // Array/HashTable/Native/Environment.
             (LispVal::Port(a), LispVal::Port(b)) => Shared::ptr_eq(a, b),
+            // Network handles are likewise opaque and compare by identity
+            // (issue #258).
+            (LispVal::NetHandle(a), LispVal::NetHandle(b)) => Shared::ptr_eq(a, b),
             #[cfg(feature = "concurrency")]
             (LispVal::Channel(a), LispVal::Channel(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
@@ -1859,6 +2141,9 @@ impl Hash for LispVal {
             }
             LispVal::Port(p) => {
                 Shared::as_ptr(p).hash(state);
+            }
+            LispVal::NetHandle(h) => {
+                Shared::as_ptr(h).hash(state);
             }
             LispVal::Builtin(_)
             | LispVal::Lambda(_)
@@ -2158,6 +2443,9 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("34-url.lisp", include_str!("../lib/34-url.lisp")),
     ("35-json.lisp", include_str!("../lib/35-json.lisp")),
     ("36-mime.lisp", include_str!("../lib/36-mime.lisp")),
+    ("37-net.lisp", include_str!("../lib/37-net.lisp")),
+    ("38-tcp.lisp", include_str!("../lib/38-tcp.lisp")),
+    ("39-udp.lisp", include_str!("../lib/39-udp.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -2321,6 +2609,9 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
     ("URL", "34-url.lisp", include_str!("../lib/34-url.lisp")),
     ("JSON", "35-json.lisp", include_str!("../lib/35-json.lisp")),
     ("MIME", "36-mime.lisp", include_str!("../lib/36-mime.lisp")),
+    ("NET", "37-net.lisp", include_str!("../lib/37-net.lisp")),
+    ("TCP", "38-tcp.lisp", include_str!("../lib/38-tcp.lisp")),
+    ("UDP", "39-udp.lisp", include_str!("../lib/39-udp.lisp")),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

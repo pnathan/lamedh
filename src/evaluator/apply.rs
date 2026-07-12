@@ -131,6 +131,26 @@ pub(super) fn apply(
             | BuiltinFunc::PortP
             | BuiltinFunc::PortName
             | BuiltinFunc::PortKind => apply_port_op(builtin, args, env),
+            BuiltinFunc::NetResolve
+            | BuiltinFunc::NetLocalAddr
+            | BuiltinFunc::NetPeerAddr
+            | BuiltinFunc::TcpConnect
+            | BuiltinFunc::TcpListen
+            | BuiltinFunc::TcpAccept
+            | BuiltinFunc::TcpShutdown
+            | BuiltinFunc::TcpSetReadTimeout
+            | BuiltinFunc::TcpSetWriteTimeout
+            | BuiltinFunc::NetHandleClose
+            | BuiltinFunc::NetHandleOpenP
+            | BuiltinFunc::NetHandleP
+            | BuiltinFunc::NetHandleKind
+            | BuiltinFunc::NetHandleName
+            | BuiltinFunc::UdpBind
+            | BuiltinFunc::UdpConnect
+            | BuiltinFunc::UdpSendTo
+            | BuiltinFunc::UdpSend
+            | BuiltinFunc::UdpReceiveFrom
+            | BuiltinFunc::UdpSetTimeout => apply_net_op(builtin, args, env),
             BuiltinFunc::Evlis => {
                 // evlis[m;a] — evaluate each element of m in environment a
                 let (list, eval_env) = match args.len() {

@@ -240,9 +240,10 @@ fn with_stdlib_still_loads_every_optional_module_and_marks_it_loaded() {
     // A later require is a documented no-op, not a redundant re-evaluation.
     assert_eq!(line(&env, "(require 'shell)"), "SHELL");
     assert_eq!(line(&env, "(module-state 'ports)"), "REQUIRE-LOADED");
-    // Every OPTIONAL_MODULES row (src/lib.rs) — 19 pre-existing plus the
-    // five #257 codec modules (base64, hex, url, json, mime).
-    assert_eq!(line(&env, "(length (loaded-modules))"), "24");
+    // Every OPTIONAL_MODULES row (src/lib.rs) — 19 pre-existing, the five
+    // #257 codec modules (base64, hex, url, json, mime), and the three
+    // #258 networking modules (net, tcp, udp).
+    assert_eq!(line(&env, "(length (loaded-modules))"), "27");
 }
 
 #[test]

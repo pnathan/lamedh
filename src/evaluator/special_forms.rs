@@ -416,7 +416,8 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         | LispVal::Struct(_)
         | LispVal::Extension(_)
         | LispVal::Error(_)
-        | LispVal::Port(_) => Ok(TcoStep::Done(Ok(val.clone()))),
+        | LispVal::Port(_)
+        | LispVal::NetHandle(_) => Ok(TcoStep::Done(Ok(val.clone()))),
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => Ok(TcoStep::Done(Ok(val.clone()))),
 
