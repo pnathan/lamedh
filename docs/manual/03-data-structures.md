@@ -322,7 +322,7 @@ Supported directives:
 | `~a` / `~A` | human (`princ`) rendering of the next argument |
 | `~s` / `~S` | readable (`prin1`) rendering of the next argument |
 | `~d` / `~D` | the next argument as a decimal datum |
-| `~f` / `~F` | fixed-point float; `~<n>f` (e.g. `~4f`) rounds/pads to exactly n digits after the decimal point |
+| `~f` / `~F` | fixed-point float; `~,<n>f` (e.g. `~,4f`, CL's digit-count slot) rounds/pads to exactly n digits after the decimal point; CL's width form `~4f` is not implemented and errors |
 | `~x` / `~X` | the next argument (an integer) in hexadecimal |
 | `~o` / `~O` | the next argument (an integer) in octal |
 | `~b` / `~B` | the next argument (an integer) in binary |
@@ -337,7 +337,7 @@ Supported directives:
 (format nil "~{~a~^, ~}" '(1 2 3))
 ; => "1, 2, 3"
 
-(format nil "~x ~4f" 255 3.14159)
+(format nil "~x ~,4f" 255 3.14159)
 ; => "FF 3.1416"
 ```
 

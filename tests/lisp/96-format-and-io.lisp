@@ -9,12 +9,14 @@
 ;;; ---- ~f fixed-point --------------------------------------------------------
 
 (deftest format-fixed-with-digits
-  (assert-equal (format nil "~4f" 3.14159) "3.1416")
-  (assert-equal (format nil "~2f" 3.14159) "3.14")
-  (assert-equal (format nil "~0f" 3.6) "4")
-  (assert-equal (format nil "~2f" 5) "5.00")
-  (assert-equal (format nil "~2f" -3.14159) "-3.14")
-  (assert-equal (format nil "~2f" 0.005) "0.01"))
+  (assert-equal (format nil "~,4f" 3.14159) "3.1416")
+  (assert-equal (format nil "~,2f" 3.14159) "3.14")
+  (assert-equal (format nil "~,0f" 3.6) "4")
+  (assert-equal (format nil "~,2f" 5) "5.00")
+  (assert-equal (format nil "~,2f" -3.14159) "-3.14")
+  (assert-equal (format nil "~,2f" 0.005) "0.01")
+  ;; CL reads a bare leading digit as WIDTH; unimplemented, so it errors.
+  (assert-nil (errorset '(format nil "~4f" 3.14159) nil)))
 
 (deftest format-fixed-bare
   (assert-equal (format nil "~f" 3.5) "3.5")

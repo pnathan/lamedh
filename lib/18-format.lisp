@@ -12,7 +12,8 @@
 ;;;   ~a / ~A     human (princ) rendering of the next argument
 ;;;   ~s / ~S     readable (prin1) rendering of the next argument
 ;;;   ~d / ~D     the next argument rendered as a decimal datum
-;;;   ~f / ~F     fixed-point float; ~<n>f (e.g. ~4f) rounds/pads to exactly
+;;;   ~f / ~F     fixed-point float; ~,<n>f (e.g. ~,4f -- CL's digit-count
+;;;               parameter position) rounds/pads to exactly
 ;;;               n digits after the decimal point. Bare ~f (no digit count)
 ;;;               uses the argument's default rendering (an integer gets a
 ;;;               trailing ".0"); Lisp's float printer never emits
@@ -21,8 +22,9 @@
 ;;;   ~x / ~X     the next argument (an integer) rendered in hexadecimal
 ;;;   ~o / ~O     the next argument (an integer) rendered in octal
 ;;;   ~b / ~B     the next argument (an integer) rendered in binary
-;;;   ~c / ~C     the next argument, a one-character string or a CHAR,
-;;;               rendered as the bare character (no quoting)
+;;;   ~c / ~C     the next argument -- a one-character string, a CHAR, or
+;;;               an integer code point 0-255 (the stdlib char convention,
+;;;               lib/14) -- rendered as the bare character (no quoting)
 ;;;   ~%          newline
 ;;;   ~&          a newline, but only if the output built so far by *this*
 ;;;               FORMAT call does not already end in one (CL "fresh-line").
@@ -116,7 +118,7 @@ decimal point (DIG a non-negative integer), rounding half away from zero."
             (if (> dig 0) (concat "." (string-pad-left (princ-to-string frac) dig "0")) ""))))
 
 (defun $format-fixed (x dig)
-  "Render number X for ~f. DIG is the ~<n>f digit count, or NIL for bare
+  "Render number X for ~f. DIG is the ~,<n>f digit count, or NIL for bare
 ~f: an integer prints with an added \".0\"; a float prints via its default
 (always fixed-point -- Lisp's float printer never emits scientific
 notation, see printer.rs) rendering."
@@ -128,12 +130,15 @@ notation, see printer.rs) rendering."
     (t (concat (princ-to-string x) ".0"))))
 
 (defun $format-char (c)
-  "Render C for ~c: a one-character string prints as itself; a CHAR (byte)
-value prints as its one-character string. Errors otherwise."
+  "Render C for ~c, accepting the stdlib's full char convention (see
+lib/14-strings.lisp): a one-character string prints as itself; a CHAR
+(byte) or an integer code point 0-255 prints as its one-character
+string. Errors otherwise."
   (cond
     ((and (stringp c) (= (string-length* c) 1)) c)
     ((charp c) (code-char (char-code c)))
-    (t (error (concat "FORMAT: ~c requires a one-character string or a CHAR, got "
+    ((and (numberp c) (>= c 0) (<= c 255)) (code-char c))
+    (t (error (concat "FORMAT: ~c requires a one-character string, a CHAR, or a code point 0-255, got "
                        (prin1-to-string c))))))
 
 (defun $format-find-close (ctrl j n)
@@ -172,15 +177,31 @@ $FORMAT-ITERATE know how much of an iteration list a ~{...~} pass consumed."
         (if (not (equal c "~"))
             (format-build ctrl args (+ i 1) n (concat acc c))
             (let* ((j (+ i 1))
-                   (digits-end ($format-digit-run ctrl j n))
-                   (has-digits (> digits-end j))
-                   (numarg (if has-digits (string->number (substring ctrl j digits-end)) nil))
+                   ;; CL's ~F parameters are (width,digits,...): the digit
+                   ;; count is the SECOND, comma-separated slot -- ~,4f.
+                   ;; We implement ONLY that slot. A bare leading digit run
+                   ;; (~4f) is CL's WIDTH parameter, which we do NOT
+                   ;; implement, so -- like every other unsupported prefix
+                   ;; -- it is a hard error rather than a silent
+                   ;; same-syntax-different-meaning trap.
+                   (has-comma (and (< j n) (equal (substring ctrl j (+ j 1)) ",")))
+                   (dstart (if has-comma (+ j 1) j))
+                   (digits-end ($format-digit-run ctrl dstart n))
+                   (has-digits (> digits-end dstart))
+                   (numarg (if has-digits (string->number (substring ctrl dstart digits-end)) nil))
                    (d (substring ctrl digits-end (+ digits-end 1)))
                    (next (+ digits-end 1)))
               (cond
-                ((and has-digits (not (or (equal d "f") (equal d "F"))))
+                ((and has-comma
+                      (not (and has-digits (or (equal d "f") (equal d "F")))))
+                 (error (concat "FORMAT: unsupported prefix in ~,"
+                                 (substring ctrl dstart digits-end) d)))
+                ((and (not has-comma) has-digits)
                  (error (concat "FORMAT: unsupported numeric prefix in ~"
-                                 (substring ctrl j digits-end) d)))
+                                 (substring ctrl dstart digits-end) d
+                                 (if (or (equal d "f") (equal d "F"))
+                                     " (in CL that position is WIDTH, which is not implemented; a digit count is ~,Nf)"
+                                     ""))))
                 ((equal d "%")
                  (format-build ctrl args next n (concat acc (code-char 10))))
                 ((equal d "&")

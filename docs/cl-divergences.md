@@ -65,7 +65,9 @@ interpreter; when in doubt, probe (`lamedh -s '<expr>'`).
   (see `lib/18-format.lisp` and the manual's [format
   section](manual/03-data-structures.md#format) for exact semantics of
   each). Unlike CL, `~f`/`~x`/`~o`/`~b` do not support CL's full mincol/
-  padchar parameter grammar (only `~<n>f`'s digit count), and `~^` only
+  padchar parameter grammar (only the digit-count parameter, written in
+  CL's own second slot: `~,4f`; the width form `~4f` is a hard error
+  rather than a reinterpretation), and `~^` only
   supports its plain no-parameter form. **Any other directive, or any of
   the above written with an unsupported prefix (`~3a`, `~:d`, ...), is a
   hard error naming it** -- unlike CL, and unlike this project's own

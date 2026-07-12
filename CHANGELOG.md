@@ -11,7 +11,7 @@ language. Sections below, roughly newest first.
 
 Closes out the I/O & formatting ticket that #255's PORTS module left
 partially done. `format` (`lib/18-format.lisp`) grows from `~a ~s ~d ~% ~~`
-to `~a ~s ~d ~f ~x ~o ~b ~c ~% ~& ~~ ~{...~} ~^`: `~f`/`~<n>f` fixed-point
+to `~a ~s ~d ~f ~x ~o ~b ~c ~% ~& ~~ ~{...~} ~^`: `~f`/`~,<n>f` fixed-point
 floats, `~x`/`~o`/`~b` integer radix, `~c` bare-character rendering, `~&`
 fresh-line (scoped to the current `format` call's own output — nothing in
 the language tracks a destination's column across calls), `~{...~}` list

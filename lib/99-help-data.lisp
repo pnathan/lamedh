@@ -658,7 +658,7 @@
                   (args "Zero or more arguments consumed by the control string's directives")))
     (cons 'RETURNS "The formatted string (DEST nil) or NIL (DEST t or a port)")
     (cons 'EXAMPLES '(((format nil "~a + ~a = ~a" 2 3 5) "2 + 3 = 5")
-                       ((format nil "~4f" 3.14159) "3.1416")
+                       ((format nil "~,4f" 3.14159) "3.1416")
                        ((format nil "~{~a~^, ~}" (1 2 3)) "1, 2, 3")))
     (cons 'SEE-ALSO '(prin1-to-string princ-to-string ports:write-string!))))
 
