@@ -7,6 +7,81 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## runtime(os): typed Linux/POSIX interface, opaque owned handles, no raw syscalls (#260)
+
+Two new optional embedded modules over a new `OS-*`/`OS-LINUX-*` Rust
+kernel substrate (`src/evaluator/builtins_os.rs`, zero new crate
+dependencies — `std::env`/`std::process`/`std::fs`/`std::time` only,
+plus one hard-coded `kill(2)` FFI declaration, see below): `OS`
+(`lib/41-os.lisp`, portable) and `OS-LINUX` (`lib/42-os-linux.lisp`,
+typed Linux-specific facilities), per the epic's "portable module + a
+Linux-only module, unsupported operations signal structured errors
+rather than binding opaquely" ruling.
+
+**No raw syscall numbers, no bare file descriptors/PIDs as authority.**
+A spawned process is `LispVal::OsChild` — an opaque handle (compares by
+identity, deterministic `wait!`/`try-wait!` reap, Drop backstop) never
+reconstructible from a printed integer; its stdio pipes (when
+requested) are ordinary #255 `PORTS` ports, reusing the existing
+`wrap_reader`/`wrap_writer` embedder API rather than adding new port
+representations. Signals go only through a fixed typed-name table
+(`os:signal!`, `:term`/`:kill`/`:hup`/...) — never a raw signal number.
+
+`OS`: process identity/environment (`args`, `executable-path`, `cwd`,
+`chdir!`, `env-get`/`env-list`/`env-set!`/`env-unset!`, `pid`, `ppid`,
+`hostname`), time (`now`, `monotonic-nanos`, `elapsed-seconds`,
+`sleep`/`sleep-seconds`), randomness (`make-prng`/`prng-next` — a pure,
+explicitly-seeded SplitMix64 generator — and `random-bytes`, OS-backed
+secure entropy from `/dev/urandom`; the pre-existing global `random`
+convenience function is untouched, not replaced), and process
+spawn/control (`spawn` — explicit argv with **no shell interpolation**,
+explicit/inherited environment, per-stream `:inherit`/`:null`/`:pipe`
+stdio, returning a `(:handle :stdin :stdout :stderr)` alist —
+`process-wait!`/`process-try-wait!`/`process-kill!`/`process-terminate!`/
+`process-alive-p`/`process-id`, and `signal!` for PIDs not held as an
+owned handle). `OS-LINUX`: `stat`/`lstat` (typed alist — size, mode,
+uid/gid, nlink, ino/dev, mtime/atime/ctime, is-dir/is-file/is-symlink;
+never a raw C struct) and `readlink`.
+
+**Capabilities** (all off by default, same `require_*`/fence-attenuation
+machinery as `READ-FS`/`NET-CONNECT`): `OS-ENV` (read identity/env),
+`OS-ENV-WRITE` (mutate it), `OS-PROCESS` (spawn — a returned child
+handle needs no further grant to `wait!`/`try-wait!`/`kill!`/
+`terminate!`, the epic's "a returned handle is authority to continue"
+rule), `OS-SIGNAL` (signal a PID not held as an owned handle).
+`OS-LINUX-STAT*`/`OS-LINUX-READLINK*` reuse the existing `READ-FS` grant
+rather than inventing a parallel one. Time/randomness are ungated (pure
+or read-only-entropy, mirroring the pre-existing global `random`). A new
+host policy hook, `Environment::set_os_policy`/`OsOperation`, mirrors
+`set_net_policy` for spawn/signal (scope a grant to a specific
+executable/argv/cwd or target PID) — checked in addition to, not
+instead of, the capability.
+
+**Structured errors** throughout (`:category` `:not-found`/
+`:permission-denied`/`:already-exists`/`:invalid-argument`/`:closed`/
+`:policy-denied`/`:unsupported-platform`/`:signal-failed`/`:other`),
+following #258's `builtins_net.rs` pattern.
+
+**Deferred** out of this increment (see the ticket's own "only after the
+basic resource/polling model is stable" sequencing): a standalone `pipe`
+primitive not tied to a spawned child, terminal/PTY settings,
+eventfd/timerfd/signalfd/epoll, Unix-domain sockets, and openat-style
+directory-relative operations.
+
+**`kill(2)` FFI**: `SIGTERM`/arbitrary-PID `SIGNAL!` need a signal number
+Rust std has no safe API for; `src/lib.rs` declares one hard-coded
+`unsafe extern "C" { fn kill(pid: i32, sig: i32) -> i32; }` (the same
+technique `std::process::Child::kill` uses internally for `SIGKILL`) —
+a single fixed, typed, internal binding, not the "arbitrary FFI"/"raw
+syscall numbers" the epic rules out; Lisp only ever reaches it through
+the fixed signal-name table and the typed kernel primitives.
+
+Relation to `lib/07-shell.lisp`: `shell`/`sh` (unchanged) remain the
+`/bin/sh -c` convenience escape hatch; `os:spawn` is this ticket's
+principled typed layer — explicit argv, no shell interpolation,
+non-blocking wait, and kill/terminate control none of `shell`'s API
+exposes.
+
 ## stdlib(http): capability-gated streaming HTTP/1.1 client and server (#259)
 
 A new optional embedded library, `HTTP` (`lib/40-http.lisp`) — an

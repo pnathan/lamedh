@@ -129,6 +129,11 @@ pub fn print(val: &LispVal) -> String {
             h.name,
             if h.is_open() { "open" } else { "closed" }
         ),
+        LispVal::OsChild(c) => format!(
+            "#<process {:?} {}>",
+            c.name,
+            if c.is_open() { "running" } else { "reaped" }
+        ),
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => "<channel>".to_string(),
         LispVal::Nil => "()".to_string(),

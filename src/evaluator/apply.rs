@@ -151,6 +151,33 @@ pub(super) fn apply(
             | BuiltinFunc::UdpSend
             | BuiltinFunc::UdpReceiveFrom
             | BuiltinFunc::UdpSetTimeout => apply_net_op(builtin, args, env),
+            BuiltinFunc::OsArgs
+            | BuiltinFunc::OsExecutablePath
+            | BuiltinFunc::OsCwd
+            | BuiltinFunc::OsChdir
+            | BuiltinFunc::OsEnvGet
+            | BuiltinFunc::OsEnvList
+            | BuiltinFunc::OsEnvSet
+            | BuiltinFunc::OsEnvUnset
+            | BuiltinFunc::OsPid
+            | BuiltinFunc::OsPpid
+            | BuiltinFunc::OsHostname
+            | BuiltinFunc::OsNow
+            | BuiltinFunc::OsMonotonicNanos
+            | BuiltinFunc::OsSleep
+            | BuiltinFunc::OsPrngStep
+            | BuiltinFunc::OsRandomBytes
+            | BuiltinFunc::OsSpawn
+            | BuiltinFunc::OsProcessWait
+            | BuiltinFunc::OsProcessTryWait
+            | BuiltinFunc::OsProcessId
+            | BuiltinFunc::OsProcessKill
+            | BuiltinFunc::OsProcessTerminate
+            | BuiltinFunc::OsProcessOpenP
+            | BuiltinFunc::OsProcessP
+            | BuiltinFunc::OsSignal
+            | BuiltinFunc::OsLinuxStat
+            | BuiltinFunc::OsLinuxReadlink => apply_os_op(builtin, args, env),
             BuiltinFunc::Evlis => {
                 // evlis[m;a] — evaluate each element of m in environment a
                 let (list, eval_env) = match args.len() {

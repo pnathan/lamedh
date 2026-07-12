@@ -20,6 +20,9 @@ Auto-generated from Lisp documentation database.
 - ERRORS - Error handling
 - IO - Input/Output
 - SPECIAL-FORMS - Special forms and macros
+- OS-LINUX - Typed Linux file metadata and symlinks (OS-LINUX module, lib/42-os-linux.lisp, issue #260); READ-FS capability
+- OS - Process identity/environment, time, randomness, and process spawn/control (OS module, lib/41-os.lisp, issue #260); OS-ENV/OS-ENV-WRITE/OS-PROCESS/OS-SIGNAL capabilities
+- HTTP - HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)
 - UDP - UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
 - TCP - TCP connect/bind/listen/accept over binary ports (TCP module, lib/38-tcp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
 - NET - Addresses and DNS resolution (NET module, lib/37-net.lisp, issue #258); NET-DNS capability
@@ -2023,6 +2026,557 @@ Locally bind fexprs (unevaluated-argument operatives) for the extent of the body
 Locally bind vau operatives for the extent of the body. Each clause's OPERANDS receives the unevaluated operand list and ENV the caller's environment, as with VAU. Parallel LET semantics.
 
 **See also:** VAU, $VAU, FLET, MACROLET, FEXPRLET
+
+---
+
+# OS-LINUX Functions
+
+Typed Linux file metadata and symlinks (OS-LINUX module, lib/42-os-linux.lisp, issue #260); READ-FS capability
+
+---
+
+### OS-LINUX:STAT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os-linux:stat path)`
+
+path's metadata, following a trailing symlink (like stat(2)), as a typed alist: :size :mode :uid :gid :nlink :ino :dev :mtime :atime :ctime :is-dir :is-file :is-symlink -- never a raw C struct. Requires READ-FS.
+
+**See also:** OS-LINUX:LSTAT, OS-LINUX:STAT-SIZE, OS-LINUX:READLINK
+
+---
+
+### OS-LINUX:LSTAT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os-linux:lstat path)`
+
+Like os-linux:stat, but does not follow a trailing symlink (like lstat(2)) -- if path itself is a symlink, describes the symlink, and :is-symlink is T.
+
+**See also:** OS-LINUX:STAT, OS-LINUX:READLINK
+
+---
+
+### OS-LINUX:READLINK
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os-linux:readlink path)`
+
+The target path points to, as a string, if path is a symlink. Requires READ-FS. Signals a structured :INVALID-ARGUMENT error if path is not a symlink.
+
+**See also:** OS-LINUX:LSTAT
+
+---
+
+# OS Functions
+
+Process identity/environment, time, randomness, and process spawn/control (OS module, lib/41-os.lisp, issue #260); OS-ENV/OS-ENV-WRITE/OS-PROCESS/OS-SIGNAL capabilities
+
+---
+
+### OS:ARGS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:args)`
+
+The process's raw argv (including argv[0]) as a list of strings. Requires OS-ENV. Distinct from *ARGV*, which the CLI binds to only the arguments after a script path.
+
+**See also:** OS:EXECUTABLE-PATH
+
+---
+
+### OS:EXECUTABLE-PATH
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:executable-path)`
+
+The absolute path to the currently running executable. Requires OS-ENV.
+
+**See also:** OS:ARGS
+
+---
+
+### OS:CWD
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:cwd)`
+
+The process's current working directory, as a string. Requires OS-ENV.
+
+**See also:** OS:CHDIR!
+
+---
+
+### OS:CHDIR!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:chdir! path)`
+
+Changes the process's current working directory to path (process-wide; affects every subsequent relative-path filesystem operation). Requires OS-ENV-WRITE.
+
+**See also:** OS:CWD
+
+---
+
+### OS:ENV-GET
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:env-get name)`
+
+The value of environment variable name, or NIL if unset. Requires OS-ENV.
+
+**See also:** OS:ENV-LIST, OS:ENV-SET!, OS:ENV-UNSET!
+
+---
+
+### OS:ENV-LIST
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:env-list)`
+
+Every environment variable as an alist of (name . value) strings, sorted by name. Requires OS-ENV.
+
+**See also:** OS:ENV-GET
+
+---
+
+### OS:ENV-SET!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:env-set! name value)`
+
+Sets environment variable name to value (process-wide). Requires OS-ENV-WRITE.
+
+**See also:** OS:ENV-GET, OS:ENV-UNSET!
+
+---
+
+### OS:ENV-UNSET!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:env-unset! name)`
+
+Removes environment variable name (process-wide); a no-op if already unset. Requires OS-ENV-WRITE.
+
+**See also:** OS:ENV-SET!
+
+---
+
+### OS:PID
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:pid)`
+
+This process's OS process ID. Requires OS-ENV.
+
+**See also:** OS:PPID, OS:PROCESS-ID
+
+---
+
+### OS:PPID
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:ppid)`
+
+This process's parent process ID. Requires OS-ENV. Linux-only (std has no portable getppid()); signals a structured :UNSUPPORTED-PLATFORM error elsewhere.
+
+**See also:** OS:PID
+
+---
+
+### OS:HOSTNAME
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:hostname)`
+
+This host's hostname. Requires OS-ENV. Linux-only; signals a structured :UNSUPPORTED-PLATFORM error elsewhere.
+
+**See also:** OS:PID
+
+---
+
+### OS:NOW
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:now)`
+
+Current wall-clock time since the Unix epoch, as (CONS seconds nanoseconds). No capability required.
+
+**See also:** OS:NOW-UNIX, OS:MONOTONIC-NANOS
+
+---
+
+### OS:NOW-UNIX
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:now-unix)`
+
+Current wall-clock time since the Unix epoch as a single float number of seconds. No capability required.
+
+**See also:** OS:NOW
+
+---
+
+### OS:MONOTONIC-NANOS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:monotonic-nanos)`
+
+Nanoseconds elapsed since an arbitrary, process-local, never-goes-backward reference point -- not comparable across processes or with os:now. No capability required.
+
+**See also:** OS:ELAPSED-SECONDS, OS:NOW
+
+---
+
+### OS:ELAPSED-SECONDS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:elapsed-seconds start-nanos)`
+
+Seconds elapsed since start-nanos (a prior os:monotonic-nanos reading), as a float. No capability required.
+
+**See also:** OS:MONOTONIC-NANOS
+
+---
+
+### OS:SLEEP
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:sleep ms)`
+
+Blocks the calling thread for ms milliseconds. Always sleeps for at least the requested duration; no EINTR/short-sleep behavior is observable. No capability required.
+
+**See also:** OS:SLEEP-SECONDS
+
+---
+
+### OS:SLEEP-SECONDS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:sleep-seconds secs)`
+
+Blocks the calling thread for secs seconds (a float or integer). See os:sleep.
+
+**See also:** OS:SLEEP
+
+---
+
+### OS:MAKE-PRNG
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:make-prng seed)`
+
+A fresh deterministic PRNG state seeded with seed (any integer). Distinct from the global time-seeded (random n): explicitly seeded and reproducible. No capability required.
+
+**See also:** OS:PRNG-NEXT, OS:RANDOM-DOUBLE, RANDOM
+
+---
+
+### OS:PRNG-NEXT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:prng-next state)`
+
+Advances PRNG state (from os:make-prng or a prior os:prng-next) one SplitMix64 step. Returns (CONS new-state value), value a non-negative integer in [0, 2^63). Purely functional -- never mutates state in place. Deterministic: the same state always yields the same result.
+
+**Examples:**
+```lisp
+(CDR (OS:PRNG-NEXT (OS:MAKE-PRNG 42)))  ; => 6839728766377637706
+```
+
+**See also:** OS:MAKE-PRNG, OS:RANDOM-DOUBLE
+
+---
+
+### OS:RANDOM-DOUBLE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:random-double state)`
+
+Like os:prng-next, but value is a float in [0.0, 1.0).
+
+**See also:** OS:PRNG-NEXT
+
+---
+
+### OS:RANDOM-BYTES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:random-bytes n)`
+
+N cryptographically secure random bytes from the OS entropy source (/dev/urandom on Linux) as a fresh Array<Char>. No capability required -- a read-only entropy source, not application data. Distinct from os:make-prng/os:prng-next's deterministic, explicitly-seeded generator.
+
+**See also:** OS:MAKE-PRNG
+
+---
+
+### OS:SPAWN
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:spawn program &optional argv &key (inherit-env t) env cwd stdin stdout stderr)`
+
+Spawns program (a path, never run through a shell -- argv is passed through literally, no interpolation) with argv (a list of strings). Requires OS-PROCESS. :INHERIT-ENV/:ENV control the child's environment; :CWD its working directory; :STDIN/:STDOUT/:STDERR are each NIL/:INHERIT/:NULL/:PIPE. Returns ((:handle . child) (:stdin . port-or-nil) (:stdout . port-or-nil) (:stderr . port-or-nil)).
+
+**See also:** OS:PROCESS-HANDLE, OS:PROCESS-WAIT!, OS:PROCESS-KILL!, SHELL
+
+---
+
+### OS:PROCESS-HANDLE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-handle process)`
+
+The OS:CHILD handle inside an os:spawn result alist. Companions: os:process-stdin, os:process-stdout, os:process-stderr (the stdio ports requested as :pipe, or NIL).
+
+**See also:** OS:SPAWN, OS:PROCESS-WAIT!
+
+---
+
+### OS:PROCESS-WAIT!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-wait! handle)`
+
+Blocks until the child behind handle exits, then reaps it. Returns an exit-status alist: ((:exit-code . n-or-nil) (:signal . n-or-nil) (:success . t-or-nil)). Idempotent: a second call after reaping returns the cached status. No further capability required once handle exists (OS-PROCESS covers continued use).
+
+**See also:** OS:PROCESS-TRY-WAIT!, OS:EXIT-CODE, OS:EXIT-SUCCESS-P
+
+---
+
+### OS:PROCESS-TRY-WAIT!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-try-wait! handle)`
+
+Non-blocking poll of handle: NIL if still running, else the same exit-status alist os:process-wait! returns (reaping the child).
+
+**See also:** OS:PROCESS-WAIT!
+
+---
+
+### OS:PROCESS-ID
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-id handle)`
+
+handle's OS PID. Retained (not NIL) even after the process has been reaped, for diagnostics/logging.
+
+**See also:** OS:PID, OS:PROCESS-ALIVE-P
+
+---
+
+### OS:PROCESS-ALIVE-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-alive-p handle)`
+
+T unless handle has been reaped (by os:process-wait!/os:process-try-wait! or the Drop backstop).
+
+**See also:** OS:PROCESS-WAIT!
+
+---
+
+### OS:PROCESS-KILL!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-kill! handle)`
+
+Sends SIGKILL to the child behind handle (hard, unignorable). Does NOT reap it -- call os:process-wait!/os:process-try-wait! afterward. Signals a :CLOSED error if already reaped.
+
+**See also:** OS:PROCESS-TERMINATE!, OS:PROCESS-WAIT!
+
+---
+
+### OS:PROCESS-TERMINATE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-terminate! handle)`
+
+Sends SIGTERM to the child behind handle (graceful; the child may ignore or handle it). Does NOT reap it. Signals a :CLOSED error if already reaped.
+
+**See also:** OS:PROCESS-KILL!, OS:SIGNAL!
+
+---
+
+### OS:PROCESS-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:process-p x)`
+
+T if x is an OS:CHILD handle (as returned by os:process-handle).
+
+**See also:** OS:SPAWN
+
+---
+
+### OS:EXIT-CODE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:exit-code status)`
+
+The :exit-code field of an exit-status alist, or NIL if the process was terminated by a signal. Companions: os:exit-signal, os:exit-success-p.
+
+**See also:** OS:PROCESS-WAIT!, OS:EXIT-SUCCESS-P
+
+---
+
+### OS:SIGNAL!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(os:signal! pid signal-name)`
+
+Sends signal-name (a typed name, e.g. :term, :kill, :hup, :int, :usr1, :usr2, :quit, :cont, :stop, :chld, :pipe, :alrm -- never a raw number) to pid (an arbitrary integer PID not necessarily owned as a handle). Requires OS-SIGNAL. Prefer os:process-kill!/os:process-terminate! for a handle you already hold -- those need only OS-PROCESS.
+
+**See also:** OS:PROCESS-KILL!, OS:PROCESS-TERMINATE!
+
+---
+
+# HTTP Functions
+
+HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)
+
+---
+
+### HTTP:REQUEST
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count)`
+
+Performs an HTTP/1.1 request over plaintext http:// (https:// is a structured :HTTPS-UNSUPPORTED error pending the TLS ruling, issue #365). Requires NET-CONNECT (via tcp:connect; HTTP adds no capability of its own). :HEADERS is an ordered (name . value) list (repeats preserved); :BODY is NIL, a String, an Array<Char>, or a readable PORTS port (streamed via chunked transfer-encoding). Follows 301/302/303/307/308 redirects by default, hop-capped, stripping credentials cross-origin. Returns a response alist whose :BODY is an UNREAD framing-aware body stream.
+
+**See also:** HTTP:GET, HTTP:POST, HTTP:RESPONSE-STATUS, HTTP:RESPONSE-BODY, HTTP:COLLECT-STRING
+
+---
+
+### HTTP:GET
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:get url &key headers connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects)`
+
+Ergonomic (http:request "GET" url ...). See http:request for every keyword and the capability/scheme rules.
+
+**See also:** HTTP:REQUEST, HTTP:POST, HTTP:COLLECT-STRING
+
+---
+
+### HTTP:POST
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:post url &key body headers connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects)`
+
+Ergonomic (http:request "POST" url :body body ...). See http:request for every keyword.
+
+**See also:** HTTP:REQUEST, HTTP:GET
+
+---
+
+### HTTP:RESPONSE-STATUS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:response-status response)`
+
+The integer status code of a client response alist. Companions: http:response-reason, http:response-version, http:response-headers, http:response-header (case-insensitive first-match lookup), http:response-body (the unread body stream).
+
+**See also:** HTTP:REQUEST, HTTP:RESPONSE-BODY, MIME:HEADERS-GET
+
+---
+
+### HTTP:RESPONSE-BODY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:response-body response)`
+
+The response's UNREAD body stream: framing-aware (Content-Length exact / chunked / read-to-close / no body for HEAD, 1xx, 204, 304). Read incrementally with http:stream-read!, or collect bounded with http:collect-bytes / http:collect-string / http:collect-json.
+
+**See also:** HTTP:STREAM-READ!, HTTP:COLLECT-BYTES, HTTP:COLLECT-STRING, HTTP:COLLECT-JSON
+
+---
+
+### HTTP:STREAM-READ!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:stream-read! stream n)`
+
+Reads up to N bytes from an HTTP body stream, honoring its message framing -- never reads past this message's body. Returns a fresh Array<Char>, possibly shorter than N, empty exactly at the logical end of the body (mirrors ports:read-bytes!). Companions: http:stream-eof-p, http:stream-read-all!, http:stream-close! (closes the client connection; a no-op for a server request body).
+
+**See also:** HTTP:STREAM-EOF-P, HTTP:STREAM-CLOSE!, HTTP:COLLECT-BYTES, PORTS:READ-BYTES!
+
+---
+
+### HTTP:COLLECT-STRING
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:collect-string stream &key max-bytes lossy)`
+
+Collects an HTTP body stream to its end (bounded: default 10 MiB, error past :MAX-BYTES -- never unbounded buffering) and decodes it as UTF-8 into a String (:LOSSY t for replacement characters instead of a strict decode error). Companions: http:collect-bytes (raw Array<Char>), http:collect-json (parses via json:parse).
+
+**See also:** HTTP:COLLECT-BYTES, HTTP:COLLECT-JSON, HTTP:STREAM-READ!, TEXT:UTF8->STRING
+
+---
+
+### HTTP:SERVE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:serve listener handler &key read-timeout-ms max-line-bytes max-header-count max-body-bytes on-error max-requests stop-p)`
+
+Serves HTTP/1.1 on a tcp:listen listener (NET-LISTEN gates the listen; HTTP adds no capability). HANDLER: request alist -> response alist (see http:respond). Serial keep-alive: one connection served fully before the next accept (concurrency is issue #140's scope). Request line/header/body limits enforced (oversize body -> 413 without running the handler); an uncaught handler error becomes a generic 500 that never leaks the condition to the peer (:ON-ERROR receives it host-side). :STOP-P is consulted between connections; :MAX-REQUESTS bounds the connection count. http:serve-one! accepts and serves exactly one connection.
+
+**See also:** HTTP:SERVE-ONE!, HTTP:RESPOND, TCP:LISTEN
+
+---
+
+### HTTP:RESPOND
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(http:respond status &key headers body reason)`
+
+Builds a response alist for an http:serve handler: STATUS integer, :HEADERS an ordered (name . value) list, :BODY NIL/String/Array<Char>/readable PORTS port (a port streams out chunked; Content-Length is set automatically otherwise), :REASON defaulting to http:default-reason. The handler-side request accessors are http:request-method, -target, -path, -query, -headers, -header, -body (a streaming body, Content-Length and chunked framing both), -version, and -peer-addr.
+
+**See also:** HTTP:SERVE, HTTP:DEFAULT-REASON, HTTP:REQUEST-BODY
 
 ---
 

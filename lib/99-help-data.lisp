@@ -3653,6 +3653,326 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'SEE-ALSO '(http:serve http:default-reason http:request-body))))
 
 ;;; ============================================================
+;;; OS INTEGRATION (OS / OS-LINUX modules, issue #260)
+;;; ============================================================
+
+(register-doc 'os:args
+  (list
+    (cons 'NAME 'os:args)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:args)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "The process's raw argv (including argv[0]) as a list of strings. Requires OS-ENV. Distinct from *ARGV*, which the CLI binds to only the arguments after a script path.")
+    (cons 'SEE-ALSO '(os:executable-path))))
+
+(register-doc 'os:executable-path
+  (list
+    (cons 'NAME 'os:executable-path)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:executable-path)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "The absolute path to the currently running executable. Requires OS-ENV.")
+    (cons 'SEE-ALSO '(os:args))))
+
+(register-doc 'os:cwd
+  (list
+    (cons 'NAME 'os:cwd)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:cwd)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "The process's current working directory, as a string. Requires OS-ENV.")
+    (cons 'SEE-ALSO '(os:chdir!))))
+
+(register-doc 'os:chdir!
+  (list
+    (cons 'NAME 'os:chdir!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:chdir! path)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Changes the process's current working directory to path (process-wide; affects every subsequent relative-path filesystem operation). Requires OS-ENV-WRITE.")
+    (cons 'SEE-ALSO '(os:cwd))))
+
+(register-doc 'os:env-get
+  (list
+    (cons 'NAME 'os:env-get)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:env-get name)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "The value of environment variable name, or NIL if unset. Requires OS-ENV.")
+    (cons 'SEE-ALSO '(os:env-list os:env-set! os:env-unset!))))
+
+(register-doc 'os:env-list
+  (list
+    (cons 'NAME 'os:env-list)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:env-list)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Every environment variable as an alist of (name . value) strings, sorted by name. Requires OS-ENV.")
+    (cons 'SEE-ALSO '(os:env-get))))
+
+(register-doc 'os:env-set!
+  (list
+    (cons 'NAME 'os:env-set!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:env-set! name value)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Sets environment variable name to value (process-wide). Requires OS-ENV-WRITE.")
+    (cons 'SEE-ALSO '(os:env-get os:env-unset!))))
+
+(register-doc 'os:env-unset!
+  (list
+    (cons 'NAME 'os:env-unset!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:env-unset! name)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Removes environment variable name (process-wide); a no-op if already unset. Requires OS-ENV-WRITE.")
+    (cons 'SEE-ALSO '(os:env-set!))))
+
+(register-doc 'os:pid
+  (list
+    (cons 'NAME 'os:pid)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:pid)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "This process's OS process ID. Requires OS-ENV.")
+    (cons 'SEE-ALSO '(os:ppid os:process-id))))
+
+(register-doc 'os:ppid
+  (list
+    (cons 'NAME 'os:ppid)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:ppid)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "This process's parent process ID. Requires OS-ENV. Linux-only (std has no portable getppid()); signals a structured :UNSUPPORTED-PLATFORM error elsewhere.")
+    (cons 'SEE-ALSO '(os:pid))))
+
+(register-doc 'os:hostname
+  (list
+    (cons 'NAME 'os:hostname)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:hostname)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "This host's hostname. Requires OS-ENV. Linux-only; signals a structured :UNSUPPORTED-PLATFORM error elsewhere.")
+    (cons 'SEE-ALSO '(os:pid))))
+
+(register-doc 'os:now
+  (list
+    (cons 'NAME 'os:now)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:now)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Current wall-clock time since the Unix epoch, as (CONS seconds nanoseconds). No capability required.")
+    (cons 'SEE-ALSO '(os:now-unix os:monotonic-nanos))))
+
+(register-doc 'os:now-unix
+  (list
+    (cons 'NAME 'os:now-unix)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:now-unix)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Current wall-clock time since the Unix epoch as a single float number of seconds. No capability required.")
+    (cons 'SEE-ALSO '(os:now))))
+
+(register-doc 'os:monotonic-nanos
+  (list
+    (cons 'NAME 'os:monotonic-nanos)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:monotonic-nanos)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Nanoseconds elapsed since an arbitrary, process-local, never-goes-backward reference point -- not comparable across processes or with os:now. No capability required.")
+    (cons 'SEE-ALSO '(os:elapsed-seconds os:now))))
+
+(register-doc 'os:elapsed-seconds
+  (list
+    (cons 'NAME 'os:elapsed-seconds)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:elapsed-seconds start-nanos)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Seconds elapsed since start-nanos (a prior os:monotonic-nanos reading), as a float. No capability required.")
+    (cons 'SEE-ALSO '(os:monotonic-nanos))))
+
+(register-doc 'os:sleep
+  (list
+    (cons 'NAME 'os:sleep)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:sleep ms)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Blocks the calling thread for ms milliseconds. Always sleeps for at least the requested duration; no EINTR/short-sleep behavior is observable. No capability required.")
+    (cons 'SEE-ALSO '(os:sleep-seconds))))
+
+(register-doc 'os:sleep-seconds
+  (list
+    (cons 'NAME 'os:sleep-seconds)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:sleep-seconds secs)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Blocks the calling thread for secs seconds (a float or integer). See os:sleep.")
+    (cons 'SEE-ALSO '(os:sleep))))
+
+(register-doc 'os:make-prng
+  (list
+    (cons 'NAME 'os:make-prng)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:make-prng seed)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "A fresh deterministic PRNG state seeded with seed (any integer). Distinct from the global time-seeded (random n): explicitly seeded and reproducible. No capability required.")
+    (cons 'SEE-ALSO '(os:prng-next os:random-double random))))
+
+(register-doc 'os:prng-next
+  (list
+    (cons 'NAME 'os:prng-next)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:prng-next state)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Advances PRNG state (from os:make-prng or a prior os:prng-next) one SplitMix64 step. Returns (CONS new-state value), value a non-negative integer in [0, 2^63). Purely functional -- never mutates state in place. Deterministic: the same state always yields the same result.")
+    (cons 'EXAMPLES '(((cdr (os:prng-next (os:make-prng 42))) 6839728766377637706)))
+    (cons 'SEE-ALSO '(os:make-prng os:random-double))))
+
+(register-doc 'os:random-double
+  (list
+    (cons 'NAME 'os:random-double)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:random-double state)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Like os:prng-next, but value is a float in [0.0, 1.0).")
+    (cons 'SEE-ALSO '(os:prng-next))))
+
+(register-doc 'os:random-bytes
+  (list
+    (cons 'NAME 'os:random-bytes)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:random-bytes n)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "N cryptographically secure random bytes from the OS entropy source (/dev/urandom on Linux) as a fresh Array<Char>. No capability required -- a read-only entropy source, not application data. Distinct from os:make-prng/os:prng-next's deterministic, explicitly-seeded generator.")
+    (cons 'SEE-ALSO '(os:make-prng))))
+
+(register-doc 'os:spawn
+  (list
+    (cons 'NAME 'os:spawn)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:spawn program &optional argv &key (inherit-env t) env cwd stdin stdout stderr)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Spawns program (a path, never run through a shell -- argv is passed through literally, no interpolation) with argv (a list of strings). Requires OS-PROCESS. :INHERIT-ENV/:ENV control the child's environment; :CWD its working directory; :STDIN/:STDOUT/:STDERR are each NIL/:INHERIT/:NULL/:PIPE. Returns ((:handle . child) (:stdin . port-or-nil) (:stdout . port-or-nil) (:stderr . port-or-nil)).")
+    (cons 'SEE-ALSO '(os:process-handle os:process-wait! os:process-kill! shell))))
+
+(register-doc 'os:process-handle
+  (list
+    (cons 'NAME 'os:process-handle)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-handle process)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "The OS:CHILD handle inside an os:spawn result alist. Companions: os:process-stdin, os:process-stdout, os:process-stderr (the stdio ports requested as :pipe, or NIL).")
+    (cons 'SEE-ALSO '(os:spawn os:process-wait!))))
+
+(register-doc 'os:process-wait!
+  (list
+    (cons 'NAME 'os:process-wait!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-wait! handle)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Blocks until the child behind handle exits, then reaps it. Returns an exit-status alist: ((:exit-code . n-or-nil) (:signal . n-or-nil) (:success . t-or-nil)). Idempotent: a second call after reaping returns the cached status. No further capability required once handle exists (OS-PROCESS covers continued use).")
+    (cons 'SEE-ALSO '(os:process-try-wait! os:exit-code os:exit-success-p))))
+
+(register-doc 'os:process-try-wait!
+  (list
+    (cons 'NAME 'os:process-try-wait!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-try-wait! handle)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Non-blocking poll of handle: NIL if still running, else the same exit-status alist os:process-wait! returns (reaping the child).")
+    (cons 'SEE-ALSO '(os:process-wait!))))
+
+(register-doc 'os:process-id
+  (list
+    (cons 'NAME 'os:process-id)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-id handle)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "handle's OS PID. Retained (not NIL) even after the process has been reaped, for diagnostics/logging.")
+    (cons 'SEE-ALSO '(os:pid os:process-alive-p))))
+
+(register-doc 'os:process-alive-p
+  (list
+    (cons 'NAME 'os:process-alive-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-alive-p handle)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "T unless handle has been reaped (by os:process-wait!/os:process-try-wait! or the Drop backstop).")
+    (cons 'SEE-ALSO '(os:process-wait!))))
+
+(register-doc 'os:process-kill!
+  (list
+    (cons 'NAME 'os:process-kill!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-kill! handle)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Sends SIGKILL to the child behind handle (hard, unignorable). Does NOT reap it -- call os:process-wait!/os:process-try-wait! afterward. Signals a :CLOSED error if already reaped.")
+    (cons 'SEE-ALSO '(os:process-terminate! os:process-wait!))))
+
+(register-doc 'os:process-terminate!
+  (list
+    (cons 'NAME 'os:process-terminate!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-terminate! handle)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Sends SIGTERM to the child behind handle (graceful; the child may ignore or handle it). Does NOT reap it. Signals a :CLOSED error if already reaped.")
+    (cons 'SEE-ALSO '(os:process-kill! os:signal!))))
+
+(register-doc 'os:process-p
+  (list
+    (cons 'NAME 'os:process-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:process-p x)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "T if x is an OS:CHILD handle (as returned by os:process-handle).")
+    (cons 'SEE-ALSO '(os:spawn))))
+
+(register-doc 'os:exit-code
+  (list
+    (cons 'NAME 'os:exit-code)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:exit-code status)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "The :exit-code field of an exit-status alist, or NIL if the process was terminated by a signal. Companions: os:exit-signal, os:exit-success-p.")
+    (cons 'SEE-ALSO '(os:process-wait! os:exit-success-p))))
+
+(register-doc 'os:signal!
+  (list
+    (cons 'NAME 'os:signal!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os:signal! pid signal-name)")
+    (cons 'CATEGORY 'os)
+    (cons 'DESCRIPTION "Sends signal-name (a typed name, e.g. :term, :kill, :hup, :int, :usr1, :usr2, :quit, :cont, :stop, :chld, :pipe, :alrm -- never a raw number) to pid (an arbitrary integer PID not necessarily owned as a handle). Requires OS-SIGNAL. Prefer os:process-kill!/os:process-terminate! for a handle you already hold -- those need only OS-PROCESS.")
+    (cons 'SEE-ALSO '(os:process-kill! os:process-terminate!))))
+
+(register-doc 'os-linux:stat
+  (list
+    (cons 'NAME 'os-linux:stat)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os-linux:stat path)")
+    (cons 'CATEGORY 'os-linux)
+    (cons 'DESCRIPTION "path's metadata, following a trailing symlink (like stat(2)), as a typed alist: :size :mode :uid :gid :nlink :ino :dev :mtime :atime :ctime :is-dir :is-file :is-symlink -- never a raw C struct. Requires READ-FS.")
+    (cons 'SEE-ALSO '(os-linux:lstat os-linux:stat-size os-linux:readlink))))
+
+(register-doc 'os-linux:lstat
+  (list
+    (cons 'NAME 'os-linux:lstat)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os-linux:lstat path)")
+    (cons 'CATEGORY 'os-linux)
+    (cons 'DESCRIPTION "Like os-linux:stat, but does not follow a trailing symlink (like lstat(2)) -- if path itself is a symlink, describes the symlink, and :is-symlink is T.")
+    (cons 'SEE-ALSO '(os-linux:stat os-linux:readlink))))
+
+(register-doc 'os-linux:readlink
+  (list
+    (cons 'NAME 'os-linux:readlink)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(os-linux:readlink path)")
+    (cons 'CATEGORY 'os-linux)
+    (cons 'DESCRIPTION "The target path points to, as a string, if path is a symlink. Requires READ-FS. Signals a structured :INVALID-ARGUMENT error if path is not a symlink.")
+    (cons 'SEE-ALSO '(os-linux:lstat))))
+
+;;; ============================================================
 ;;; REGISTER CATEGORIES
 ;;; ============================================================
 
@@ -3761,6 +4081,27 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     http:stream-close!
     http:collect-bytes http:collect-string http:collect-json
     http:serve http:serve-one! http:respond http:default-reason))
+
+(register-category 'os
+  "Process identity/environment, time, randomness, and process spawn/control (OS module, lib/41-os.lisp, issue #260); OS-ENV/OS-ENV-WRITE/OS-PROCESS/OS-SIGNAL capabilities"
+  '(os:args os:executable-path os:cwd os:chdir!
+    os:env-get os:env-list os:env-set! os:env-unset!
+    os:pid os:ppid os:hostname
+    os:now os:now-unix os:monotonic-nanos os:elapsed-seconds
+    os:sleep os:sleep-seconds
+    os:make-prng os:prng-next os:random-double os:random-bytes
+    os:spawn os:process-handle os:process-stdin os:process-stdout
+    os:process-stderr os:process-wait! os:process-try-wait! os:process-id
+    os:process-alive-p os:process-kill! os:process-terminate! os:process-p
+    os:exit-code os:exit-signal os:exit-success-p os:signal!))
+
+(register-category 'os-linux
+  "Typed Linux file metadata and symlinks (OS-LINUX module, lib/42-os-linux.lisp, issue #260); READ-FS capability"
+  '(os-linux:stat os-linux:lstat os-linux:readlink
+    os-linux:stat-size os-linux:stat-mode os-linux:stat-uid os-linux:stat-gid
+    os-linux:stat-nlink os-linux:stat-ino os-linux:stat-dev
+    os-linux:stat-mtime os-linux:stat-atime os-linux:stat-ctime
+    os-linux:stat-directory-p os-linux:stat-file-p os-linux:stat-symlink-p))
 
 (register-category 'special-forms
   "Special forms and macros"
