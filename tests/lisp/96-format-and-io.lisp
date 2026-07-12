@@ -42,8 +42,10 @@
 (deftest format-char
   (assert-equal (format nil "~c" "Z") "Z")
   (assert-equal (format nil "~c" (make-char 65)) "A")
+  ;; The stdlib char convention (lib/14): an integer code point is a char.
+  (assert-equal (format nil "~c" 65) "A")
   (assert-nil   (errorset '(format nil "~c" "ab") nil))
-  (assert-nil   (errorset '(format nil "~c" 65) nil)))
+  (assert-nil   (errorset '(format nil "~c" 256) nil)))
 
 ;;; ---- ~& fresh-line -----------------------------------------------------------
 
