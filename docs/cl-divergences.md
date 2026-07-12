@@ -61,9 +61,19 @@ interpreter; when in doubt, probe (`lamedh -s '<expr>'`).
   but plain `def` defines a lexical global, and there is no
   `(declare (special …))`.
 - **`case`** takes `t`, `otherwise`, *or* `else` as the default clause.
-- **`format`** supports exactly `~a ~s ~d ~% ~~`; anything else (`~f`,
-  `~&`, `~{`) passes through **literally** rather than erroring.
-  Destinations `nil` (string) and `t` (stdout) behave as in CL.
+- **`format`** supports `~a ~s ~d ~f ~x ~o ~b ~c ~% ~& ~~ ~{...~} ~^`
+  (see `lib/18-format.lisp` and the manual's [format
+  section](manual/03-data-structures.md#format) for exact semantics of
+  each). Unlike CL, `~f`/`~x`/`~o`/`~b` do not support CL's full mincol/
+  padchar parameter grammar (only `~<n>f`'s digit count), and `~^` only
+  supports its plain no-parameter form. **Any other directive, or any of
+  the above written with an unsupported prefix (`~3a`, `~:d`, ...), is a
+  hard error naming it** -- unlike CL, and unlike this project's own
+  pre-0.3 behavior, which passed unrecognized directives through
+  literally; the larger directive set made a silent typo too easy to miss.
+  Destinations `nil` (string), `t` (stdout), and a PORTS port (writes
+  UTF-8 bytes to it) are supported; anything else is an error, whereas CL
+  also accepts a native stream object.
 - **`error`** produces a first-class error value that flows through
   `handler-case` — there is no condition class hierarchy; discriminate on
   the error's message/payload.

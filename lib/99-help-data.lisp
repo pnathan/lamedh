@@ -646,6 +646,46 @@
     (cons 'RETURNS "T on success")
     (cons 'SEE-ALSO '(read eval))))
 
+(register-doc 'format
+  (list
+    (cons 'NAME 'format)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(format dest ctrl &rest args)")
+    (cons 'CATEGORY 'io)
+    (cons 'DESCRIPTION "CL-style format string rendering (issue #150, lib/18-format.lisp). DEST nil returns the formatted string; t prints it to stdout and returns nil; a PORTS port writes the UTF-8 bytes to it and returns nil. Directives: ~a ~s ~d ~f ~x ~o ~b ~c ~% ~& ~~ ~{...~} ~^ -- an unrecognized directive, or a supported one with an unsupported numeric/colon/at-sign prefix, is a hard error rather than a silent pass-through. See docs/cl-divergences.md and lib/18-format.lisp's header for exact semantics.")
+    (cons 'ARGS '((dest "NIL (string), T (stdout), or a PORTS port")
+                  (ctrl "The control string")
+                  (args "Zero or more arguments consumed by the control string's directives")))
+    (cons 'RETURNS "The formatted string (DEST nil) or NIL (DEST t or a port)")
+    (cons 'EXAMPLES '(((format nil "~a + ~a = ~a" 2 3 5) "2 + 3 = 5")
+                       ((format nil "~4f" 3.14159) "3.1416")
+                       ((format nil "~{~a~^, ~}" (1 2 3)) "1, 2, 3")))
+    (cons 'SEE-ALSO '(prin1-to-string princ-to-string ports:write-string!))))
+
+(register-doc 'read-line
+  (list
+    (cons 'NAME 'read-line)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-line &optional port)")
+    (cons 'CATEGORY 'io)
+    (cons 'DESCRIPTION "Reads one line of text (bytes up to but excluding a trailing newline, decoded as UTF-8 lossy) from PORT, or from the process's standard input if PORT is not given (which requires the IO capability). Returns NIL only at true EOF. Thin sugar over PORTS:READ-LINE! (lib/18-format.lisp), lazily requiring the PORTS module on first use.")
+    (cons 'ARGS '((port "Optional PORTS port; defaults to (ports:stdin)")))
+    (cons 'RETURNS "A STRING, or NIL at true EOF")
+    (cons 'SEE-ALSO '(ports:read-line! ports:stdin with-output-to-string))))
+
+(register-doc 'with-output-to-string
+  (list
+    (cons 'NAME 'with-output-to-string)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(with-output-to-string (var) body...)")
+    (cons 'CATEGORY 'io)
+    (cons 'DESCRIPTION "Binds VAR to a fresh in-memory output port for BODY's dynamic extent (write to it with ports:write-string!, ports:write-byte!/write-bytes!, or format with VAR as the destination) and returns everything written to it, decoded as UTF-8 (lossy), as a STRING. The port is always closed afterward; if BODY signals an error, that error propagates (no string is returned) and the port is still closed. Lazily requires the PORTS module on first use.")
+    (cons 'ARGS '((binding "A one-element list (var)")
+                  (body "Forms writing to VAR")))
+    (cons 'RETURNS "The captured STRING")
+    (cons 'EXAMPLES '(((with-output-to-string (s) (ports:write-string! s "hi")) "hi")))
+    (cons 'SEE-ALSO '(read-line ports:open-output-bytes ports:output-contents))))
+
 ;;; ============================================================
 ;;; STRING FUNCTIONS
 ;;; ============================================================
@@ -3158,6 +3198,24 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'EXAMPLES '(((write-file "/tmp/hello.txt" "hello world\n") t)))
     (cons 'SEE-ALSO '(read-file make-temp-file feature-enabled-p))))
 
+(register-doc 'read-sexpr-file
+  (list
+    (cons 'NAME 'read-sexpr-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-sexpr-file path)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Reads path's full text (requires READ-FS) and parses it into a list of every top-level s-expression it contains, via READ-STRING. The inverse of WRITE-SEXPR-FILE (issue #150, lib/18-format.lisp).")
+    (cons 'SEE-ALSO '(write-sexpr-file read-file read-string))))
+
+(register-doc 'write-sexpr-file
+  (list
+    (cons 'NAME 'write-sexpr-file)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(write-sexpr-file path forms)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Writes forms (a list of s-expressions) to path (requires CREATE-FS), one per line in readable (PRIN1) form; the inverse of READ-SEXPR-FILE (issue #150, lib/18-format.lisp).")
+    (cons 'SEE-ALSO '(read-sexpr-file write-file prin1-to-string))))
+
 (register-doc 'file-exists-p
   (list
     (cons 'NAME 'file-exists-p)
@@ -3390,7 +3448,8 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'io
   "Input/Output"
-  '(print prin1 princ terpri read load-file spaces))
+  '(print prin1 princ terpri read load-file spaces
+    format read-line with-output-to-string))
 
 (register-category 'errors
   "Error handling"
@@ -3419,6 +3478,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 (register-category 'filesystem
   "File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)"
   '(read-file read-file-byte read-file-section write-file
+    read-sexpr-file write-sexpr-file
     file-exists-p directory-p file-p file-readable-p file-writable-p
     file-executable-p file-size directory-files file-newer-p
     chmod create-directory delete-file rename-file
