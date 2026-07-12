@@ -244,17 +244,150 @@ host can scope a broad grant to specific destinations. There is no
 Lisp-facing equivalent; this is deliberately an embedder-only lever, like
 `add_module_search_path` (Chapter 10).
 
-## 13.7 TLS (not in this release)
+## 13.7 HTTP (client and server)
+
+`HTTP` (`lib/40-http.lisp`, issue #259) is an HTTP/1.1 client and server
+written entirely in Lisp on top of `TCP`/`PORTS` and the `URL`/`MIME`/
+`JSON` codec modules — zero new crate dependencies, zero new Rust kernel
+surface, HTTP/2 and HTTP/3 out of scope. Pull it in with
+`(require 'http)`; `with_stdlib()` environments (including the CLI) have
+it already. **Plaintext `http://` only for now**: an `https://` URL — given
+directly or arriving as a redirect `Location` — signals a structured error
+with `:CATEGORY :HTTPS-UNSUPPORTED` naming issue #365 (the pending TLS
+dependency ruling), never a silent downgrade. Requiring `HTTP` grants no
+network authority: the client needs `NET-CONNECT` and the server needs
+`NET-LISTEN`, both enforced by the underlying `tcp:connect`/`tcp:listen`
+gates (§13.1) — `HTTP` adds no new capability of its own.
+
+### Client
+
+`http:request`, with `http:get`/`http:post` sugar. Requests and responses
+are plain alists; headers are `MIME`'s ordered `(name . value)` list
+(repeats preserved, lookup case-insensitive — Chapter 12's conventions).
+
+```console
+$ target/debug/lamedh --capability NET-CONNECT
+> (require 'http)
+HTTP
+> (def r (http:get "http://127.0.0.1:8080/hello"))
+...
+> (http:response-status r)
+200
+> (http:collect-string (http:response-body r))
+"hello world"
+```
+
+The response's `:BODY` is an **unread body stream** — a framing-aware
+reader (`Content-Length` exact bytes / chunked decoding with hex size
+lines and trailer skipping / read-to-close / no body for HEAD, 1xx, 204,
+304) that never over-reads into the connection and never buffers without
+bound. Read it incrementally with `http:stream-read!` /
+`http:stream-eof-p` / `http:stream-close!`, or collect it bounded (10 MiB
+default, `:max-bytes` to change) with `http:collect-bytes` /
+`http:collect-string` / `http:collect-json`. Bodies are bytes; text
+decoding is an explicit UTF-8 step (`collect-string`, strict by default,
+`:lossy t` for replacement characters), and `collect-json` composes with
+`json:parse` (Chapter 12) rather than being an HTTP primitive.
+
+Request bodies: `:body` is `NIL`, a String, an `Array<Char>`, or a
+readable `PORTS` port — the port case streams out via chunked
+transfer-encoding. The client always sends `Connection: close` (no
+connection reuse; every hop is a fresh connection), adds `Host`
+(with the port iff non-default) and `Content-Length`/`Transfer-Encoding`
+automatically, and never overrides a header you set explicitly.
+
+Timeouts: `:connect-timeout-ms` bounds the TCP connect;
+`:read-timeout-ms` bounds every individual socket read (a stalled server
+signals `:CATEGORY :TIMEOUT`); `:overall-timeout-ms` is a coarse
+wall-clock deadline checked between connection phases and redirect hops.
+
+Redirects: 301/302/303/307/308 followed by default (`:follow-redirects
+nil` to disable), capped at `:max-redirects` (default 5, exceeding it is
+`:CATEGORY :TOO-MANY-REDIRECTS`). Method rules: 303 always becomes GET;
+301/302 downgrade POST to GET and drop the body; 307/308 preserve method
+and body (a streamed port body cannot be replayed — that is a clear
+error, not a silent empty resend). A cross-origin hop strips
+`Authorization`/`Cookie`/`Proxy-Authorization`. A `Location` naming a
+different scheme is never followed silently: `https://` is the
+`:HTTPS-UNSUPPORTED` error above, anything else `:UNSUPPORTED-SCHEME`.
+Bare relative references (`foo`, `../foo`) are an explicit
+`:UNSUPPORTED-REDIRECT` error — absolute, protocol-relative, and
+absolute-path forms are resolved. No proxy support: ambient proxy
+environment variables are deliberately ignored.
+
+### Server
+
+```lisp
+(require 'http)                                   ; needs NET-LISTEN to listen
+(def listener (tcp:listen "127.0.0.1" 8080))
+(http:serve listener
+  (lambda (req)
+    (cond
+      ((equal (http:request-path req) "/hello")
+       (http:respond 200
+         :headers (list (cons "Content-Type" "text/plain; charset=utf-8"))
+         :body "hello world"))
+      ((equal (http:request-method req) "POST")
+       (http:respond 200
+         :body (concat "you said: "
+                       (http:collect-string (http:request-body req)))))
+      (t (http:respond 404 :body "not found")))))
+```
+
+The handler receives a request alist (`http:request-method`, `-path`,
+`-query`, `-headers`, `-header`, `-body` — an unread body stream with the
+same framing awareness as the client's, `Content-Length` and chunked
+alike — `-version`, `-peer-addr`, `-target`) and returns a response built
+with `http:respond` (status, `:headers`, `:body` as `NIL`/String/
+`Array<Char>`/readable port — the port case streams out chunked;
+`Content-Length` is set automatically otherwise).
+
+Execution model: synchronous and serial — one connection is served fully
+(every keep-alive request on it, in order: `Connection: keep-alive` is
+honored, unread request-body bytes are drained between requests, and
+`Connection: close` or HTTP/1.0 ends the connection) before the next is
+accepted. Concurrent serving belongs to the isolated-worker design
+(issue #140), not this module. `http:serve-one!` accepts and serves
+exactly one connection (useful for tests); `http:serve` loops with
+`:max-requests` (a connection-count bound) and `:stop-p` (a shutdown
+predicate consulted between connections — it cannot interrupt a blocking
+accept; see `tcp:close-listener!`'s documented limitation).
+
+Limits and failure behavior: request lines and header lines are bounded
+(`:max-line-bytes`, default 8 KiB), header count is bounded
+(`:max-header-count`, default 200), and a request body larger than
+`:max-body-bytes` (default 10 MiB) is refused with `413` without invoking
+the handler. An uncaught handler error becomes a generic
+`500 Internal Server Error` that never carries the condition's message or
+data to the peer; pass `:on-error` to receive the structured condition
+host-side for diagnostics.
+
+Resource-cleanup rules: the server closes each accepted connection port
+itself (via `unwind-protect`), including when the handler errors. On the
+client side, collecting a response body to the end leaves the connection
+to be dropped with the response value; call `http:stream-close!` on a
+response body you abandon partway to close its connection deterministically
+rather than waiting for `Drop` (Chapter 11's ownership rule).
+
+Verification paths: the default build and `--no-default-features` both
+carry `HTTP` (it is embedded Lisp, not a Cargo feature) — `cargo test`
+and `cargo test --no-default-features` both run its suite
+(`tests/test_http.rs`), loopback-only.
+
+## 13.8 TLS (not in this release)
 
 Wrapping a connected TCP port as a TLS client/server port — certificate
 verification, ALPN/SNI, handshake timeouts — is explicitly out of scope
 for this release: it forces a TLS-crate dependency decision that belongs
-to the project owner, and this release ships zero new dependencies. The
-design here is the seam a future TLS layer wraps without an API change:
-a TLS port would be, like a TCP stream, an ordinary `PORTS` port, taking
-and returning the same shape `tcp:connect`/`tcp:accept` already do.
+to the project owner, and this release ships zero new dependencies (the
+ruling is tracked as issue #365). The design here is the seam a future
+TLS layer wraps without an API change: a TLS port would be, like a TCP
+stream, an ordinary `PORTS` port, taking and returning the same shape
+`tcp:connect`/`tcp:accept` already do — and `HTTP` (§13.7) would gain
+`https://` support at its single scheme checkpoint without any API
+change.
 
-## 13.8 Summary
+## 13.9 Summary
 
 - A connected TCP stream is an ordinary `PORTS` port; a listener or a UDP
   socket is its own opaque handle (`net:*`/`tcp:*`/`udp:*` predicates,
@@ -269,5 +402,11 @@ and returning the same shape `tcp:connect`/`tcp:accept` already do.
 - `tcp:listen`'s `backlog` argument and `udp:receive-from`'s truncation
   flag are both honestly-documented, std-library-shaped limitations, not
   full OS-level control — see §13.3/§13.4.
+- `HTTP` (§13.7) is a pure-Lisp HTTP/1.1 client and server over the TCP
+  substrate — streaming framing-aware bodies, bounded collection,
+  redirect policy, serial keep-alive serving; plaintext `http://` only,
+  no new capability of its own.
 - TLS is deferred to a follow-up that can make its own dependency
-  decision; the port-wrapping design here is the seam it will use.
+  decision (issue #365); the port-wrapping design here is the seam it
+  will use, and `HTTP`'s single scheme checkpoint is where `https://`
+  slots in.

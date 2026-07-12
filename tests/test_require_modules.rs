@@ -241,9 +241,9 @@ fn with_stdlib_still_loads_every_optional_module_and_marks_it_loaded() {
     assert_eq!(line(&env, "(require 'shell)"), "SHELL");
     assert_eq!(line(&env, "(module-state 'ports)"), "REQUIRE-LOADED");
     // Every OPTIONAL_MODULES row (src/lib.rs) — 19 pre-existing, the five
-    // #257 codec modules (base64, hex, url, json, mime), and the three
-    // #258 networking modules (net, tcp, udp).
-    assert_eq!(line(&env, "(length (loaded-modules))"), "27");
+    // #257 codec modules (base64, hex, url, json, mime), the three #258
+    // networking modules (net, tcp, udp), and the #259 http module.
+    assert_eq!(line(&env, "(length (loaded-modules))"), "28");
 }
 
 #[test]

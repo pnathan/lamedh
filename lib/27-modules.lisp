@@ -33,6 +33,19 @@
 ;;; through WITH-CAPABILITIES/SANDBOXED/SPAWN like any built-in capability,
 ;;; and can never grant kernel abilities (READ-FS and friends remain
 ;;; host-granted only).
+;;;
+;;; DEPENDS ON CONDENSATION (discovered by issue #259's own require-path
+;;; test): WITH-MODULE's bookkeeping calls CONDENSE-APPEND-NEW, defined in
+;;; lib/20-condensation.lisp, not this file -- a real gap under
+;;; `with_prelude()` (unlike `with_stdlib()`, which happens to eager-load
+;;; 20-condensation.lisp before 27-modules.lisp regardless of REQUIRE
+;;; order): `(require 'modules)` alone left CONDENSE-APPEND-NEW unbound,
+;;; so the FIRST `(with-module ...)` body anywhere -- e.g. simply
+;;; `(require 'text)`, since lib/30-text.lisp itself uses WITH-MODULE --
+;;; failed with an "unbound variable" error. Declared explicitly here so
+;;; every REQUIRE path (not just the eager one) works. No cycle:
+;;; 20-condensation.lisp uses no module-system macros itself.
+(require 'condensation)
 
 (def $modules (make-hash-table))
 
