@@ -300,7 +300,9 @@ the language — crossing the boundary is always one of these three calls.
 
 `lib/18-format.lisp` implements a useful subset of Common Lisp's `format`.
 The first argument is the destination: `nil` returns the formatted string,
-`t` prints it (and returns `nil`).
+`t` prints it to stdout (and returns `nil`), and a PORTS port (see
+[Ports and I/O](11-ports-and-io.md)) writes the UTF-8 bytes to it (and
+returns `nil`).
 
 ```
 (format nil "~a and ~s~%" 42 "str")
@@ -308,6 +310,9 @@ The first argument is the destination: `nil` returns the formatted string,
 
 (format t "hi ~a~%" 'world)
 ; => prints "hi WORLD\n", returns ()
+
+(format (ports:open-output-bytes) "~a" 42)
+; => writes "42" to the port, returns ()
 ```
 
 Supported directives:
@@ -316,12 +321,39 @@ Supported directives:
 |---|---|
 | `~a` / `~A` | human (`princ`) rendering of the next argument |
 | `~s` / `~S` | readable (`prin1`) rendering of the next argument |
-| `~d` / `~D` | the next argument as a decimal datum (currently same as `~a`) |
+| `~d` / `~D` | the next argument as a decimal datum |
+| `~f` / `~F` | fixed-point float; `~,<n>f` (e.g. `~,4f`, CL's digit-count slot) rounds/pads to exactly n digits after the decimal point; CL's width form `~4f` is not implemented and errors |
+| `~x` / `~X` | the next argument (an integer) in hexadecimal |
+| `~o` / `~O` | the next argument (an integer) in octal |
+| `~b` / `~B` | the next argument (an integer) in binary |
+| `~c` / `~C` | the next argument, a one-character string or a `CHAR`, as the bare character |
 | `~%` | newline |
+| `~&` | a newline, unless this call's output so far already ends in one ("fresh-line") |
 | `~~` | a literal tilde |
+| `~{...~}` | iteration: the next argument is a list; repeat the enclosed directives over its elements until it is exhausted |
+| `~^` | inside `~{...~}` (or at top level), stop early if there are no more arguments -- the `~a~^, ` idiom for joining a list without a trailing separator |
 
-Unrecognized directives pass through literally rather than erroring, so a
-typo in a format string degrades gracefully instead of crashing.
+```
+(format nil "~{~a~^, ~}" '(1 2 3))
+; => "1, 2, 3"
+
+(format nil "~x ~,4f" 255 3.14159)
+; => "FF 3.1416"
+```
+
+An unrecognized directive -- including any of the above written with an
+unsupported numeric/colon/at-sign prefix, e.g. `~3a` or `~:d` -- is a hard
+error naming the offending directive, not a silent pass-through: a typo
+should not degrade gracefully into wrong output. See
+[cl-divergences.md](../cl-divergences.md) for the exact rule.
+
+`READ-LINE` (read one line, from an explicit port or, if none is given,
+the process's stdin under the `IO` capability), `WITH-OUTPUT-TO-STRING`
+(capture writes to a fresh in-memory port as a string), and
+`READ-SEXPR-FILE` / `WRITE-SEXPR-FILE` (round-trip a list of s-expressions
+through a file, under `READ-FS` / `CREATE-FS`) are also defined in
+`lib/18-format.lisp`, built on the [PORTS module](11-ports-and-io.md) and
+the existing whole-file `READ-FILE`/`WRITE-FILE` builtins.
 
 ## Property Lists on Symbols
 

@@ -7,6 +7,36 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## stdlib(io): format's directive set grows, plus READ-LINE, WITH-OUTPUT-TO-STRING, and s-expression file round-trip (#150)
+
+Closes out the I/O & formatting ticket that #255's PORTS module left
+partially done. `format` (`lib/18-format.lisp`) grows from `~a ~s ~d ~% ~~`
+to `~a ~s ~d ~f ~x ~o ~b ~c ~% ~& ~~ ~{...~} ~^`: `~f`/`~,<n>f` fixed-point
+floats, `~x`/`~o`/`~b` integer radix, `~c` bare-character rendering, `~&`
+fresh-line (scoped to the current `format` call's own output — nothing in
+the language tracks a destination's column across calls), `~{...~}` list
+iteration with the `~a~^, `-style early-stop separator idiom named as
+optional in the original ticket. **An unrecognized directive, or a
+supported one written with an unsupported numeric/colon/at-sign prefix
+(`~3a`, `~:d`), is now a hard error naming it, not the old silent
+pass-through** — the larger directive set made a typo too easy to miss;
+see `docs/cl-divergences.md`. `format`'s destination also now accepts a
+`PORTS` port (writes the UTF-8 bytes to it), on top of the existing `nil`
+(string) and `t` (stdout).
+
+New on top of `PORTS` (#255), each lazily `(require 'ports)`ing on first
+use so an environment that never touches I/O never pays for it: `read-line`
+(`&optional port`, defaulting to the process's stdin under the `IO`
+capability) and `with-output-to-string` (capture writes to a fresh
+in-memory port as a string, always closing the port, even on error).
+`read-sexpr-file`/`write-sexpr-file` round-trip a list of s-expressions
+through a file on top of the existing whole-file `read-file`/`write-file`
+builtins and the existing `read-string` reader builtin — no new Rust
+kernel surface for any of this ticket. `format-build`'s control-string
+walk and the new `~{...~}` iteration helper both stay tail-recursive
+(stack-safe past the #361 10,000-frame trap for both a long control
+string and a long iteration list).
+
 ## stdlib(data): optional JSON, URL, Base64, hex, and MIME codec modules (#257)
 
 Five new optional embedded libraries for ordinary application and HTTP
