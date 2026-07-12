@@ -123,6 +123,12 @@ pub fn print(val: &LispVal) -> String {
             p.name,
             if p.is_open() { "open" } else { "closed" }
         ),
+        LispVal::NetHandle(h) => format!(
+            "#<net:{} {:?} {}>",
+            h.kind,
+            h.name,
+            if h.is_open() { "open" } else { "closed" }
+        ),
         #[cfg(feature = "concurrency")]
         LispVal::Channel(_) => "<channel>".to_string(),
         LispVal::Nil => "()".to_string(),

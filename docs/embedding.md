@@ -189,6 +189,9 @@ Current built-in feature flags:
 | `CREATE-FS` | Allow file writes and filesystem mutation               |
 | `TEMP-FS` | Allow temporary file and directory creation                |
 | `IO`      | Allow `(read)` to read an s-expression from standard input |
+| `NET-DNS` | Allow explicit hostname resolution (`net:resolve`)          |
+| `NET-CONNECT` | Allow outbound TCP/UDP connections (`tcp:connect`, `udp:connect!`, `udp:send-to`) |
+| `NET-LISTEN` | Allow binding/listening for inbound traffic (`tcp:listen`, `udp:bind`) |
 
 ## Module registry (`require`)
 
@@ -282,6 +285,48 @@ the `LispVal`, exactly like `register_fn`. Every other port operation
 host-wrapped port exactly like a file or memory port. Ports compare by
 identity and print as an opaque `#<port:kind "name" open|closed>`
 diagnostic — never as a readable literal.
+
+## Networking policy (scoped grants)
+
+Issue #258: `NET-DNS`/`NET-CONNECT`/`NET-LISTEN` (above) are coarse
+on/off switches, exactly like `READ-FS`/`CREATE-FS`. That is too coarse
+for a common embedding shape — granting `NET-CONNECT` so a script can use
+an HTTP-client library must not become unrestricted SSRF authority (any
+host, any port, including internal/link-local addresses). `set_net_policy`
+is a Rust-only hook consulted *in addition to* (not instead of) the
+capability check, before every DNS resolution, outbound connection, or
+bind/listen:
+
+```rust
+use lamedh::NetOperation;
+
+let env = Environment::with_stdlib();
+env.enable_feature("NET-CONNECT");
+
+env.set_net_policy(|op, host, port| {
+    // Block the cloud-metadata address regardless of port; allow
+    // everything else this capability already permits.
+    !(op == NetOperation::Connect && host == "169.254.169.254")
+});
+
+// Revert to allow-all-when-capability-granted (the default).
+// env.clear_net_policy();
+```
+
+The callback receives the operation (`NetOperation::Resolve`/`Connect`/
+`Listen` — `UDP:CONNECT!`/`UDP:SEND-TO` check as `Connect`, `UDP:BIND` as
+`Listen`, the same shape as TCP) and the caller-supplied host/port —
+**not** a post-DNS-resolved IP address, so a policy that only checks the
+literal hostname string will not catch a malicious DNS answer resolving
+an allowed name to an internal address; re-resolving and re-checking the
+IP is the caller's responsibility if that threat model matters. Returning
+`false` denies with a structured `:POLICY-DENIED` error. `None` (never
+installing a policy) is the default and allows every operation once its
+capability is granted. Lisp code cannot install, replace, or inspect the
+policy — like `add_module_search_path`, this is deliberately Rust-only.
+
+See `docs/manual/13-networking.md` for the Lisp-facing story (`NET`/
+`TCP`/`UDP` modules, `NET:ADDRESS`, structured error categories).
 
 ## Condition flags
 

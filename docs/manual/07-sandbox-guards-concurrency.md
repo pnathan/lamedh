@@ -26,7 +26,7 @@ It cannot touch the filesystem, run a shell command, or read from stdin.
 Those are host capabilities, and the host (the CLI, or your embedding Rust
 code) must grant them explicitly.
 
-There are five capabilities:
+There are eight capabilities:
 
 | Capability  | Gates |
 |-------------|-------|
@@ -35,6 +35,9 @@ There are five capabilities:
 | `TEMP-FS`   | Temporary file/directory creation: `make-temp-file`, `make-temp-directory` |
 | `SHELL`     | The `shell` builtin and the `lib/07-shell.lisp` helper layer |
 | `IO`        | Stdin-consuming reads: `read` |
+| `NET-DNS`   | Explicit hostname resolution: `net:resolve` (Chapter 13) |
+| `NET-CONNECT` | Outbound TCP/UDP connections: `tcp:connect`, `udp:connect!`, `udp:send-to` (Chapter 13) |
+| `NET-LISTEN` | Binding/listening for inbound traffic: `tcp:listen`, `udp:bind` (Chapter 13) |
 
 `rename-file` needs *both* `READ-FS` and `CREATE-FS` — renaming observes
 whether the source path exists (via its error behavior), so it needs read
@@ -45,7 +48,10 @@ same two capabilities — `ports:open-input` needs `READ-FS`,
 `ports:open-output`/`ports:open-append` need `CREATE-FS`, `ports:stdin`
 needs `IO` — checked the same way, so everything below about fences and
 attenuation applies to opening a port exactly as it applies to
-`read-file`/`write-file`.
+`read-file`/`write-file`. The three `NET-*` capabilities work the same
+way too — see Chapter 13 for the full networking story, including a
+Rust-only host policy hook that scopes a granted networking capability to
+specific hosts/ports.
 
 Try a gated operation with nothing granted:
 

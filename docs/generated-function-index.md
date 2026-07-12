@@ -102,6 +102,7 @@
 | `FLOAT-LESSP` | FUNCTION | PREDICATES |
 | `FLOATP` | FUNCTION | PREDICATES |
 | `FLOOR` | FUNCTION | ARITHMETIC |
+| `FORMAT` | FUNCTION | IO |
 | `FUNCALL` | FUNCTION | META |
 | `FUNCTIONP` | FUNCTION | PREDICATES |
 | `GCD` | FUNCTION | ARITHMETIC |
@@ -170,6 +171,11 @@
 | `MOD` | FUNCTION | ARITHMETIC |
 | `MODULE-INFO` | FUNCTION | MODULES |
 | `MODULE-STATE` | FUNCTION | MODULES |
+| `NET:ADDRESS` | RECORD | NET |
+| `NET:ADDRESS->STRING` | FUNCTION | NET |
+| `NET:LOCAL-ADDR` | FUNCTION | NET |
+| `NET:PEER-ADDR` | FUNCTION | NET |
+| `NET:RESOLVE` | FUNCTION | NET |
 | `NOT` | FUNCTION | PREDICATES |
 | `NTH` | FUNCTION | LISTS |
 | `NTHCDR` | FUNCTION | LISTS |
@@ -228,6 +234,8 @@
 | `READ-FILE` | FUNCTION | FILESYSTEM |
 | `READ-FILE-BYTE` | FUNCTION | FILESYSTEM |
 | `READ-FILE-SECTION` | FUNCTION | FILESYSTEM |
+| `READ-LINE` | FUNCTION | IO |
+| `READ-SEXPR-FILE` | FUNCTION | FILESYSTEM |
 | `REMAINDER` | FUNCTION | ARITHMETIC |
 | `REMPROP` | FUNCTION | PLISTS |
 | `RENAME-FILE` | FUNCTION | FILESYSTEM |
@@ -280,6 +288,15 @@
 | `SUBSTRING` | FUNCTION | STRINGS |
 | `SYMBOLP` | FUNCTION | PREDICATES |
 | `TAN` | FUNCTION | ARITHMETIC |
+| `TCP:ACCEPT` | FUNCTION | TCP |
+| `TCP:CLOSE-LISTENER!` | FUNCTION | TCP |
+| `TCP:CONNECT` | FUNCTION | TCP |
+| `TCP:LISTEN` | FUNCTION | TCP |
+| `TCP:LISTENER-OPEN-P` | FUNCTION | TCP |
+| `TCP:LISTENER-P` | FUNCTION | TCP |
+| `TCP:SET-READ-TIMEOUT!` | FUNCTION | TCP |
+| `TCP:SET-WRITE-TIMEOUT!` | FUNCTION | TCP |
+| `TCP:SHUTDOWN!` | FUNCTION | TCP |
 | `TERPRI` | FUNCTION | IO |
 | `TEXT:STRING->UTF8` | FUNCTION | TEXT |
 | `TEXT:UTF8->STRING` | FUNCTION | TEXT |
@@ -287,6 +304,15 @@
 | `THE-ENVIRONMENT` | FUNCTION | ENVIRONMENTS |
 | `TIMES` | FUNCTION | ARITHMETIC |
 | `TRUNCATE` | FUNCTION | ARITHMETIC |
+| `UDP:BIND` | FUNCTION | UDP |
+| `UDP:CLOSE!` | FUNCTION | UDP |
+| `UDP:CONNECT!` | FUNCTION | UDP |
+| `UDP:RECEIVE-FROM` | FUNCTION | UDP |
+| `UDP:SEND` | FUNCTION | UDP |
+| `UDP:SEND-TO` | FUNCTION | UDP |
+| `UDP:SET-TIMEOUT!` | FUNCTION | UDP |
+| `UDP:SOCKET-OPEN-P` | FUNCTION | UDP |
+| `UDP:SOCKET-P` | FUNCTION | UDP |
 | `URL:BUILD` | FUNCTION | URL |
 | `URL:BUILD-QUERY` | FUNCTION | URL |
 | `URL:DECODE` | FUNCTION | URL |
@@ -305,6 +331,8 @@
 | `URL:USERINFO` | FUNCTION | URL |
 | `VAU` | SPECIAL-FORM | SPECIAL-FORMS |
 | `VAULET` | MACRO | SPECIAL-FORMS |
+| `WITH-OUTPUT-TO-STRING` | MACRO | IO |
 | `WRITE-FILE` | FUNCTION | FILESYSTEM |
+| `WRITE-SEXPR-FILE` | FUNCTION | FILESYSTEM |
 | `ZEROP` | FUNCTION | PREDICATES |
-(() () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () ())
+(() () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () ())

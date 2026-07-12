@@ -129,13 +129,61 @@ fn io_error(
     }))))
 }
 
+/// Like [`io_error`], but with an extra `:CATEGORY` key (issue #258: a
+/// connected TCP stream is an ordinary port, so its `PORTS`-level read/
+/// write/flush/close/timeout errors need the same timeout/refused/reset/
+/// closed classification as every other networking error --
+/// `src/evaluator/builtins_net.rs`'s `classify_io_error`). Only used for
+/// `port.kind == "tcp-stream"`, below; every other port kind keeps
+/// `io_error`'s original four-key shape unchanged.
+fn io_error_categorized(
+    env: &Shared<Environment>,
+    operation: &str,
+    kind: &str,
+    name: &str,
+    category: &str,
+    detail: &str,
+) -> LispError {
+    match io_error(env, operation, kind, name, detail) {
+        LispError::Signaled(v) => {
+            if let LispVal::Error(e) = v.as_ref() {
+                let sym = |s: &str| LispVal::Symbol(env.intern_symbol(s));
+                let cons = |car: LispVal, cdr: LispVal| LispVal::Cons {
+                    car: Shared::new(car),
+                    cdr: Shared::new(cdr),
+                };
+                let category_pair = cons(sym(":CATEGORY"), sym(&format!(":{category}")));
+                let data = cons(category_pair, e.data.clone());
+                LispError::Signaled(Box::new(LispVal::Error(Shared::new(crate::ErrorObj {
+                    message: e.message.clone(),
+                    data,
+                }))))
+            } else {
+                LispError::Signaled(v)
+            }
+        }
+        other => other,
+    }
+}
+
 fn port_io_error(
     env: &Shared<Environment>,
     operation: &str,
     port: &PortObj,
     e: std::io::Error,
 ) -> LispError {
-    io_error(env, operation, port.kind, &port.name, &e.to_string())
+    if port.kind == "tcp-stream" {
+        io_error_categorized(
+            env,
+            operation,
+            port.kind,
+            &port.name,
+            super::builtins_net::classify_io_error(e.kind()),
+            &e.to_string(),
+        )
+    } else {
+        io_error(env, operation, port.kind, &port.name, &e.to_string())
+    }
 }
 
 #[inline(never)]
