@@ -467,6 +467,7 @@ pub enum Core {
 /// `ceiling`/`truncate` return an integer). Only ops whose native lowering is
 /// bit-identical to the evaluator's Rust implementation appear here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
 pub enum FUnOp {
     /// `sqrt`: `fsqrt` instruction; `float64 -> float64`.
     Sqrt,
@@ -476,13 +477,26 @@ pub enum FUnOp {
     Ceil,
     /// `truncate`: `trunc` instruction then saturating `f64 as i64`; `-> int64`.
     Trunc,
+    /// `sin`: libm via the `jit_ftrans` trampoline; `float64 -> float64`.
+    Sin,
+    /// `cos`: libm trampoline; `float64 -> float64`.
+    Cos,
+    /// `tan`: libm trampoline; `float64 -> float64`.
+    Tan,
+    /// `exp`: libm trampoline; `float64 -> float64`.
+    Exp,
+    /// `round`: `f64::round` (half away from zero, unlike Cranelift's
+    /// ties-to-even `nearest`) via the trampoline, then `as i64`; `-> int64`.
+    Round,
 }
 
 impl FUnOp {
     /// Apply the op to an `f64`, returning the result as a raw 64-bit word
     /// (float bits for `float64` results, the integer value for `int64`
-    /// results). This is the single source of truth the Core interpreter uses,
-    /// and it mirrors exactly what the native lowering emits.
+    /// results). This is the single source of truth: the Core interpreter
+    /// calls it directly, and the native backend either emits the identical
+    /// instruction sequence (the direct ops) or calls [`super::jit_ftrans`],
+    /// which is itself a thin wrapper over this method.
     pub fn apply_word(self, x: f64) -> u64 {
         match self {
             FUnOp::Sqrt => x.sqrt().to_bits(),
@@ -490,6 +504,42 @@ impl FUnOp {
             FUnOp::Floor => x.floor() as i64 as u64,
             FUnOp::Ceil => x.ceil() as i64 as u64,
             FUnOp::Trunc => x.trunc() as i64 as u64,
+            FUnOp::Sin => x.sin().to_bits(),
+            FUnOp::Cos => x.cos().to_bits(),
+            FUnOp::Tan => x.tan().to_bits(),
+            FUnOp::Exp => x.exp().to_bits(),
+            FUnOp::Round => x.round() as i64 as u64,
+        }
+    }
+
+    /// True when this op lowers to a libm call (via `jit_ftrans`) rather than a
+    /// direct Cranelift instruction.
+    pub fn is_libm(self) -> bool {
+        matches!(
+            self,
+            FUnOp::Sin | FUnOp::Cos | FUnOp::Tan | FUnOp::Exp | FUnOp::Round
+        )
+    }
+
+    /// The `jit_ftrans` opcode (the `#[repr(u64)]` discriminant).
+    pub fn opcode(self) -> u64 {
+        self as u64
+    }
+
+    /// Inverse of [`Self::opcode`], for the trampoline. Panics on an unknown
+    /// code — the native backend only ever passes an op's own discriminant.
+    pub fn from_opcode(op: u64) -> FUnOp {
+        match op {
+            0 => FUnOp::Sqrt,
+            1 => FUnOp::Floor,
+            2 => FUnOp::Ceil,
+            3 => FUnOp::Trunc,
+            4 => FUnOp::Sin,
+            5 => FUnOp::Cos,
+            6 => FUnOp::Tan,
+            7 => FUnOp::Exp,
+            8 => FUnOp::Round,
+            other => panic!("jit_ftrans: unknown FUnOp opcode {other}"),
         }
     }
 }

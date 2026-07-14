@@ -193,6 +193,23 @@ impl Cx<'_> {
                     "TRUNCATE" if !self.checking => {
                         self.elab_funary(FUnOp::Trunc, Ty::Int64, args, scope, max)
                     }
+                    // Transcendentals + half-away `round` via the libm
+                    // trampoline (`jit_ftrans`). Same codegen-only gating.
+                    "SIN" if !self.checking => {
+                        self.elab_funary(FUnOp::Sin, Ty::Float64, args, scope, max)
+                    }
+                    "COS" if !self.checking => {
+                        self.elab_funary(FUnOp::Cos, Ty::Float64, args, scope, max)
+                    }
+                    "TAN" if !self.checking => {
+                        self.elab_funary(FUnOp::Tan, Ty::Float64, args, scope, max)
+                    }
+                    "EXP" if !self.checking => {
+                        self.elab_funary(FUnOp::Exp, Ty::Float64, args, scope, max)
+                    }
+                    "ROUND" if !self.checking => {
+                        self.elab_funary(FUnOp::Round, Ty::Int64, args, scope, max)
+                    }
                     // Checker-only forms (#162): list/pair processing + `quote`/
                     // `cond`/`when` whose `elab_*` emit only a placeholder
                     // `Core::LitI(0)` for type purposes — they typecheck untyped

@@ -70,6 +70,21 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: `sin`/`cos`/`tan`/`exp`/`round` compile to native (libm trampoline)
+
+The transcendental float intrinsics `sin`, `cos`, `tan`, `exp`, and the
+half-away-from-zero `round` now compile too, completing the unary float set.
+They have no direct Cranelift instruction, so the native backend calls a new
+`jit_ftrans` trampoline — which is a one-line wrapper over the same
+`FUnOp::apply_word` the Core interpreter uses, so the compiled and
+interpreted results are identical by construction (`(sin 1.0)` →
+`0.8414709848078965` either way; `(round 2.5)` → `3` and `(round -2.5)` →
+`-3`, i.e. `f64::round`'s half-away rounding, not Cranelift `nearest`'s
+ties-to-even). A typed body can now compile real float math end to end. The
+trampoline is `jit`-only; the dependency-light checker/Core-interpreter path
+computes the same values without it. Soundness-gated by the differential
+fuzzer.
+
 ## jit: `sqrt`/`floor`/`ceiling`/`truncate` compile to native
 
 The typed JIT now lowers the unary float intrinsics `sqrt`, `floor`,

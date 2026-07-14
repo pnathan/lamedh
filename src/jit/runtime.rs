@@ -312,6 +312,18 @@ pub(crate) unsafe extern "C" fn jit_bad_char(ctx: *const core::ffi::c_void, n: i
     ctx.record_bad_char(n);
 }
 
+/// Host trampoline for the libm float intrinsics (`sin`/`cos`/`tan`/`exp`/
+/// `round`) that have no direct Cranelift instruction. `op` is the [`FUnOp`]
+/// discriminant; `x` is the float argument. Returns the result as a raw word
+/// (float bits for the transcendentals, the integer value for `round`),
+/// exactly matching [`FUnOp::apply_word`] — which is literally what it calls,
+/// so the native path and the Core interpreter can never diverge. Pure math:
+/// no `Ctx`, no unsafe.
+#[cfg(feature = "jit")]
+pub(crate) extern "C" fn jit_ftrans(op: u64, x: f64) -> u64 {
+    super::types::FUnOp::from_opcode(op).apply_word(x)
+}
+
 /// Host trampoline a native edition calls immediately before making a
 /// non-tail call (issue #271): mirrors [`Ctx::enter_call`] for the direct
 /// native-to-native `call_indirect` fast path, which otherwise never reaches
