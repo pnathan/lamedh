@@ -20,9 +20,20 @@
 (def $h 64)           ; pixel rows (two per terminal line)
 (def $esc (code-char 27))
 
-(defun clamp01 (x) (max 0.0 (min 1.0 x)))
+;; clamp01 and lerp are TYPED (native): they sit on the per-pixel hot path
+;; and are called from the compiled noise/palette kernels. min/max aren't
+;; in the compiled subset, so clamp01 uses if-guards -- bit-identical to
+;; (max 0.0 (min 1.0 x)) for every finite input.
+(defun-typed (clamp01 float64) ((x float64))
+  (if (< x 0.0) 0.0 (if (> x 1.0) 1.0 x)))
+(defun-typed (lerp float64) ((a float64) (b float64) (u float64))
+  (+ a (* (- b a) u)))
+;; c255 stays interpreted (it is the byte-membrane: float -> 0..255 int).
 (defun c255 (x) (truncate (max 0.0 (min 255.0 x))))
-(defun lerp (a b u) (+ a (* (- b a) u)))
+
+;; T iff FN reached native code (explain-compile's TIER is COMPILED).
+(defun compiled-p (fn)
+  (equal (cdr (assoc 'tier (explain-compile fn))) 'compiled))
 
 (defun fg (r g b)
   (format nil "~a[38;2;~a;~a;~am" $esc (c255 r) (c255 g) (c255 b)))
@@ -31,23 +42,31 @@
 (def $reset (format nil "~a[0m" $esc))
 
 ;; ---------------------------------------------------------------------
-;; noise kernel: sin-fract lattice hash -> smoothed value noise -> fbm
-(defun fract (x) (- x (floor x)))
+;; noise kernel: sin-fract lattice hash -> smoothed value noise -> fbm.
+;; ALL THREE ARE TYPED (native code): this is the dominant per-pixel cost
+;; -- one nebula() call evaluates fbm three times, i.e. ~60 sines. The
+;; typed bodies mirror the interpreted math exactly (same operand order),
+;; so results are bit-identical to the tree-walked version and the terminal
+;; render stays byte-for-byte unchanged; the compiler just runs it native.
+;; The fract idiom is (- z (float (floor z))) because the typed island is
+;; strict about int/float mixing.
+(defun-typed (hash2 float64) ((x float64) (y float64))
+  (let ((z (* 43758.5453123 (sin (+ (* x 12.9898) (* y 78.233))))))
+    (- z (float (floor z)))))
 
-(defun hash2 (x y)
-  (fract (* 43758.5453123 (sin (+ (* x 12.9898) (* y 78.233))))))
+;; No let* in the typed subset, so bindings nest; (1+ xi) becomes (+ xi 1.0)
+;; and floor's int result is lifted with (float ...) before reuse.
+(defun-typed (noise2 float64) ((x float64) (y float64))
+  (let ((xi (float (floor x))) (yi (float (floor y))))
+    (let ((xf (- x xi)) (yf (- y yi)))
+      (let ((u (* xf xf (- 3.0 (* 2.0 xf))))
+            (v (* yf yf (- 3.0 (* 2.0 yf))))
+            (a (hash2 xi yi))          (b (hash2 (+ xi 1.0) yi))
+            (c (hash2 xi (+ yi 1.0)))  (d (hash2 (+ xi 1.0) (+ yi 1.0))))
+        (lerp (lerp a b u) (lerp c d u) v)))))
 
-(defun noise2 (x y)
-  (let* ((xi (floor x)) (yi (floor y))
-         (xf (- x xi))  (yf (- y yi))
-         (u (* xf xf (- 3.0 (* 2.0 xf))))
-         (v (* yf yf (- 3.0 (* 2.0 yf))))
-         (a (hash2 xi yi))       (b (hash2 (1+ xi) yi))
-         (c (hash2 xi (1+ yi)))  (d (hash2 (1+ xi) (1+ yi))))
-    (lerp (lerp a b u) (lerp c d u) v)))
-
-(defun fbm (x y)
-  "Five octaves of value noise."
+(defun-typed (fbm float64) ((x float64) (y float64))
+  ;; Five octaves of value noise.
   (+ (* 0.5     (noise2 x y))
      (* 0.25    (noise2 (* 2.0 x) (* 2.0 y)))
      (* 0.125   (noise2 (* 4.0 x) (* 4.0 y)))
@@ -103,16 +122,21 @@
          (d (* (expt (clamp01 v) 1.45) (+ 0.30 (* 1.05 band)))))
     (list (clamp01 d) qy)))
 
-(defun star-glow (x y sx sy core spike)
-  "Additive luminance of a 4-point diffraction star at (sx, sy)."
-  (let* ((dx (- x sx)) (dy (- y sy))
-         (d2 (+ (* dx dx) (* dy dy)))
-         (glow (/ core (+ 1.0 (* 0.16 d2))))
-         (dd (sqrt d2))
-         (arm (max 0.0 (- 1.0 (/ dd 17.0))))
-         (sh (* spike (max 0.0 (- 1.0 (* 0.55 (abs dy)))) arm))
-         (sv (* spike (max 0.0 (- 1.0 (* 0.55 (abs dx)))) arm)))
-    (+ glow (* arm (+ sh sv)))))
+;; TYPED (native). Additive luminance of a 4-point diffraction star.
+;; (max 0.0 e) -> (if (< e 0.0) 0.0 e) and (abs d) -> (if (< d 0.0) (- 0.0 d) d),
+;; each bit-identical to the interpreted form for finite inputs.
+(defun-typed (star-glow float64)
+    ((x float64) (y float64) (sx float64) (sy float64)
+     (core float64) (spike float64))
+  (let ((dx (- x sx)) (dy (- y sy)))
+    (let ((d2 (+ (* dx dx) (* dy dy)))
+          (adx (if (< dx 0.0) (- 0.0 dx) dx))
+          (ady (if (< dy 0.0) (- 0.0 dy) dy)))
+      (let ((glow (/ core (+ 1.0 (* 0.16 d2))))
+            (arm  (let ((e (- 1.0 (/ (sqrt d2) 17.0)))) (if (< e 0.0) 0.0 e))))
+        (let ((sh (* spike (let ((e (- 1.0 (* 0.55 ady)))) (if (< e 0.0) 0.0 e)) arm))
+              (sv (* spike (let ((e (- 1.0 (* 0.55 adx)))) (if (< e 0.0) 0.0 e)) arm)))
+          (+ glow (* arm (+ sh sv))))))))
 
 (defun planet-color (dx dy density)
   "Lambert-shaded banded gas giant; dx dy relative to center."
@@ -258,12 +282,18 @@
                             0.45 1.0))
     (format t "~a~adomain-warped fBm ~a value noise ~a one frame, no loops left running~a~%~%"
             (str-repeat " " 19) $dim (code-char 183) (code-char 183) $reset)
-    ;; silent self-check: geometry and color ranges hold; errors if not.
+    ;; silent self-check: geometry + color ranges hold, AND the number-
+    ;; crunching kernels actually reached native code (a regression that
+    ;; dropped one back to interpreted would still be correct, just slow --
+    ;; this makes it loud). Prints nothing; errors on failure.
     (let ((probe (pixel-at 50 32)))
       (if (and (= (length lines) 32)
                (= (length probe) 3)
                (<= 0 (c255 (car probe)) 255)
-               (equal (pal 0.0) (list 4.0 3.0 18.0)))
+               (equal (pal 0.0) (list 4.0 3.0 18.0))
+               (compiled-p 'fbm) (compiled-p 'noise2) (compiled-p 'hash2)
+               (compiled-p 'star-glow) (compiled-p 'clamp01) (compiled-p 'lerp)
+               (compiled-p 'fold-checksums))
           ()
           (error "lamed-nebula self-check failed")))))
 
@@ -315,6 +345,26 @@
 (defun crc32 (bytes)                        ; CRC-32 of a SMALL list (headers)
   (logxor (crc-feed #xffffffff bytes) #xffffffff))
 
+;; TYPED (native): fold a WHOLE scanline array into the running CRC-32 and
+;; Adler-32 in one compiled tail-recursive pass. STATE is a 3-int array
+;; [crc, adler-a, adler-b]; TABLE is the CRC table; both mutate in place.
+;; This replaces what used to be a per-byte interpreted DOTIMES -- at high
+;; scale that was ~17M tree-walked iterations; here it is one native loop
+;; per row (the shift `(ash c -8)` is a literal constant, so it compiles).
+(defun-typed (fold-checksums int64)
+    ((table (array int64)) (state (array int64)) (row (array int64))
+     (i int64) (n int64))
+  (if (>= i n)
+      0
+      (progn
+        (store state 0
+               (logxor (fetch table
+                              (logand (logxor (fetch state 0) (fetch row i)) 255))
+                       (ash (fetch state 0) -8)))
+        (store state 1 (mod (+ (fetch state 1) (fetch row i)) 65521))
+        (store state 2 (mod (+ (fetch state 2) (fetch state 1)) 65521))
+        (fold-checksums table state row (+ i 1) n))))
+
 ;; ── chunk framing (for the tiny IHDR/IEND chunks): len|type|data|CRC ──
 (defun png-chunk (type-bytes data)
   (append (be32 (length data))
@@ -345,6 +395,8 @@
            ;; 2 zlib-header bytes + 5 block-header bytes/scanline + raw + 4.
            (idat-len (+ 2 (* height 5) (* height rowlen) 4))
            (row (make-array rowlen))         ; ONE reused scanline buffer
+           (cs  (make-array 3))              ; [crc, adler-a, adler-b] for the
+                                             ; native fold-checksums kernel
            (crc #xffffffff) (aa 1) (ab 0))   ; running CRC / Adler state
       (format t "Painting ~ax~a (scale ~a) ...~%" width height scale)
       ;; signature + IHDR chunk
@@ -374,12 +426,12 @@
               (store row (+ o 1)  (c255 (nth 1 c)))
               (store row (+ o 2)  (c255 (nth 2 c)))
               (setq o (+ o 3))))
-          ;; fold this scanline's bytes into CRC and Adler, by index
-          (dotimes (i rowlen)
-            (let ((byte (fetch row i)))
-              (setq crc (crc-step crc byte))
-              (setq aa (mod (+ aa byte) 65521))
-              (setq ab (mod (+ ab aa) 65521))))
+          ;; fold this scanline's bytes into CRC and Adler natively: load the
+          ;; running state, run the compiled kernel over the whole row, read
+          ;; it back. (Native loop instead of a per-byte interpreted DOTIMES.)
+          (store cs 0 crc) (store cs 1 aa) (store cs 2 ab)
+          (fold-checksums $crc-table cs row 0 rowlen)
+          (setq crc (fetch cs 0) aa (fetch cs 1) ab (fetch cs 2))
           (ports:write-bytes! p row)))
       ;; Adler-32 trailer, then the IDAT chunk CRC
       (let ((adler (logior (ash ab 16) aa)))
