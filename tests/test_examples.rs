@@ -71,6 +71,7 @@ example_tests! {
     coin_change => "coin-change",
     collatz => "collatz",
     dijkstra => "dijkstra",
+    fable => "fable",
     factorial => "factorial",
     fibonacci => "fibonacci",
     fizzbuzz => "fizzbuzz",
