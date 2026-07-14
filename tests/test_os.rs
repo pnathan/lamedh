@@ -478,14 +478,22 @@ fn signal_sends_sigterm_to_an_external_pid() {
     // Spawn a process entirely outside Lisp's OS:SPAWN (a plain
     // std::process::Child), then use OS:SIGNAL! -- gated by OS-SIGNAL, not
     // OS-PROCESS, since it isn't an owned OS:CHILD handle -- to signal it.
+    //
+    // Build the environment BEFORE spawning the child, and give the child a
+    // generous lifetime: env_with_os() loads the whole stdlib and, on a
+    // heavily loaded machine with parallel test threads, used to take longer
+    // than the old `sleep 10` -- the child then exited normally on its own,
+    // kill(2) still succeeded on the fresh zombie (so OS:SIGNAL! returned T),
+    // and wait() reported a NORMAL exit instead of SIGTERM. That made this
+    // test flake under load in ANY feature configuration.
+    let env = env_with_os();
+    grant(&env, &["OS-SIGNAL"]);
+
     let mut child = std::process::Command::new("/bin/sleep")
-        .arg("10")
+        .arg("300")
         .spawn()
         .unwrap();
     let pid = child.id();
-
-    let env = env_with_os();
-    grant(&env, &["OS-SIGNAL"]);
     let out = eval_line(&format!("(os:signal! {pid} ':term)"), &env);
     assert_eq!(out, "T", "got: {out}");
 
