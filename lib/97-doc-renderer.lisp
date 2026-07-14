@@ -215,4 +215,13 @@
 ;;; (lib/98-help-system.lisp / lib/99-help-data.lisp) at call time, not at
 ;;; load time, so it does not itself REQUIRE them -- require those yourself
 ;;; before calling DUMP-DOCS/RENDER-ALL-DOCS-MD if the database is empty.
+;;; Registered as a module for introspection (issue #56). The markdown
+;;; renderers stay FLAT (they compose with the flat help database and
+;;; register-doc surface); this DEFMODULE only records metadata -- no
+;;; with-module body rewrite, nothing imported.
+(require 'modules)
+(defmodule doc-renderer
+  (:export render-markdown-header render-markdown-code render-doc-entry-md
+           render-category-md render-all-docs-md render-function-index-md
+           dump-docs))
 (provide 'doc-renderer)

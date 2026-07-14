@@ -70,6 +70,28 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## modules: help subsystem registered; #56 namespacing complete
+
+`doc-renderer` and `help-system` gain metadata-only `defmodule`
+declarations, completing issue #56: **every optional stdlib library is now
+a registered module.** The help surface stays flat — `help`/`apropos` are
+REPL UX and `register-doc`/`register-category` are the documentation API
+called across the whole codebase — so this is registration, not
+qualification.
+
+With this, the #56 retrofit is done. Two libraries were fully **qualified**
+because their public names are genuinely tool-shaped: `shell` (`shell:sh`,
+…) and the `match` search/rewrite tools (`match:sgrep`, `match:rewrite`,
+…). Every other optional — the language-defining forms (variants,
+protocols, guard, condensation's records, types), the ergonomically-flat
+DSLs (testing, instrument, lisp15), the pipeline-hook/kernel-pinned
+surfaces (rules, optimizer-vau, call-graph), and the help subsystem — is a
+**metadata-only registered module** whose names stay exactly where they
+were. Introspect any of them with `(module-p 'name)`,
+`(module-exports 'name)`, `(module-requires 'name)`. The prerequisite
+load-order reorder (module system ahead of the optionals) is the
+foundation this all rests on.
+
 ## modules: sgrep/rewrite tools move under the `match` namespace (#56)
 
 The structural search-and-rewrite tools in `lib/23-match.lisp` are now
