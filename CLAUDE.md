@@ -48,6 +48,7 @@ Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before every 
 3. **`environment.rs`**: environment and symbol table.
    - Provides lexical parent chains, symbol interning, property lists, dynamic/special bindings, feature/capability flags, and builtin registration.
    - Use `Environment::with_stdlib()` for normal interpreter startup; use `new_with_builtins()` only when tests need a minimal kernel.
+   - `with_stdlib()`/`with_prelude()` serve a deep-copy fork (`fork_world`) of a per-thread prototype — first call on a thread pays the real load, later calls cost milliseconds, and every returned environment is a fully isolated world. `with_stdlib_fresh()`/`with_prelude_fresh()` bypass the cache for one-environment processes.
 
 4. **`printer.rs`**: readable output formatting for `LispVal` values.
 
@@ -65,7 +66,7 @@ The tree-walking evaluator uses large Rust stack frames for non-tail calls. Entr
 
 ## CLI Behavior
 
-`cli/src/main.rs` starts with `Environment::with_stdlib()`, grants any `--capability/-c` flags, binds script arguments as `*ARGV*`, loads each `-i` path, then chooses script mode, `-s` batch mode, or the REPL.
+`cli/src/main.rs` starts with `Environment::with_stdlib_fresh()` (one environment per process, so the per-thread prototype cache would only add overhead; identical result), grants any `--capability/-c` flags, binds script arguments as `*ARGV*`, loads each `-i` path, then chooses script mode, `-s` batch mode, or the REPL.
 
 Important CLI semantics:
 

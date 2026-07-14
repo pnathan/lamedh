@@ -146,17 +146,26 @@ list is what maps the local spelling onto that."
   (append old
           (filter (lambda (p) (null (assoc (car p) old))) new)))
 
-(defun $module-rewrite (form module renames)
-  "Apply the module RENAMES alist to references. QUOTE/QUASIQUOTE untouched."
-  (cond
-    ((symbolp form)
-     (let ((hit (assoc form renames)))
-       (if (and hit (not ($module-qualified-p form))) (cdr hit) form)))
-    ((not (consp form)) form)
-    ((eq (car form) 'quote) form)
-    ((eq (car form) 'quasiquote) form)
-    (t (cons ($module-rewrite (car form) module renames)
-             ($module-rewrite (cdr form) module renames)))))
+(defun $module-renames-table (renames)
+  "Hash-table view of a rename alist: local -> stored, first binding wins
+(matching ASSOC's earliest-match rule). Built once per WITH-MODULE body so
+$MODULE-REWRITE does an O(1) hash probe per symbol instead of an O(renames)
+ASSOC walk per AST node -- the walk made loading a large module body
+quadratic (renames x nodes) and dominated stdlib cold start."
+  (let ((h (make-hash-table)))
+    (mapc (lambda (p)
+            (if (gethash h (car p))
+                ()
+                (sethash h (car p) (cdr p))))
+          renames)
+    h))
+
+(defun $module-rewrite (form module rmap)
+  "Apply the module renames (RMAP: hash table, local -> stored) to
+references. QUOTE/QUASIQUOTE untouched. Thin wrapper over the SEXPR-RENAME
+kernel builtin -- the walk visits every AST node of every WITH-MODULE body,
+and the interpreted edition of it dominated stdlib cold start."
+  (sexpr-rename form rmap))
 
 (defvau with-module (x e)
   "(WITH-MODULE name form...) -- evaluate FORMs with definitions and
@@ -167,12 +176,13 @@ module function's name as an inner binding inside the module body."
   (let* ((module (car x))
          (body (cdr x))
          (defined ($module-collect-defs module body))
-         (renames ($module-merge-renames (getp module "module.locals") defined)))
+         (renames ($module-merge-renames (getp module "module.locals") defined))
+         (rmap ($module-renames-table renames)))
     (if (module-p module) () (eval (list 'defmodule module) e))
     (putp module "module.locals" renames)
     (let ((result ()))
       (mapc (lambda (form)
-              (setq result (eval ($module-rewrite form module renames) e)))
+              (setq result (eval ($module-rewrite form module rmap) e)))
             body)
       (mapc (lambda (pair)
               ;; Uniform outside spelling: generated names whose stored form
@@ -183,11 +193,16 @@ module function's name as an inner binding inside the module body."
                 (if (eq uniform (cdr pair))
                     ()
                     (set uniform (eval (cdr pair) e))))
-              (putp (cdr pair) "module" module)
-              (putp module "module.functions"
-                    (condense-append-new (getp module "module.functions")
-                                         (list (cdr pair)))))
+              (putp (cdr pair) "module" module))
             defined)
+      ;; One merged registry write instead of one quadratic append per name:
+      ;; CONDENSE-APPEND-NEW checks each new name against the growing list,
+      ;; so a single call over all stored names is exactly equivalent to the
+      ;; former per-pair loop (same order, same dedup) at a fraction of the
+      ;; cost on large module bodies.
+      (putp module "module.functions"
+            (condense-append-new (getp module "module.functions")
+                                 (mapcar (lambda (p) (cdr p)) defined)))
       result)))
 
 (defvau import (x e)

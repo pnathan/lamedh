@@ -41,6 +41,20 @@ use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::PathBuf;
 
+thread_local! {
+    /// Per-thread prototype worlds behind [`Environment::with_stdlib`] /
+    /// [`Environment::with_prelude`]: built once per thread by the real
+    /// loader, then deep-copy-forked (never handed out, never mutated) so
+    /// every subsequent call costs milliseconds instead of a full stdlib
+    /// evaluation. Thread-local rather than process-global because the
+    /// default build's `Shared`/`SharedCell` are `Rc`/`RefCell` — the object
+    /// graph is not `Send`, so worlds cannot cross threads.
+    static STDLIB_PROTOTYPE: std::cell::RefCell<Option<Shared<Environment>>> =
+        const { std::cell::RefCell::new(None) };
+    static PRELUDE_PROTOTYPE: std::cell::RefCell<Option<Shared<Environment>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// RAII guard for a shallow dynamic (special) variable binding.
 ///
 /// On construction the current value in the symbol's global value cell is saved
@@ -589,6 +603,10 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::CurrentEnvironment),
         );
         env.set("KEYS".to_string(), LispVal::Builtin(BuiltinFunc::Keys));
+        env.set(
+            "SEXPR-RENAME".to_string(),
+            LispVal::Builtin(BuiltinFunc::SexprRename),
+        );
         env.set("GETP".to_string(), LispVal::Builtin(BuiltinFunc::GetP));
         env.set("PUTP".to_string(), LispVal::Builtin(BuiltinFunc::PutP));
         env.set(
@@ -1522,9 +1540,51 @@ impl Environment {
     /// library pre-loaded. This is the recommended entry point for host code
     /// that wants a fully-featured Lisp interpreter without shipping .lisp files.
     ///
+    /// The first call on a thread parses and evaluates the embedded stdlib
+    /// once into a private, never-escaping prototype world; every call
+    /// (including the first) then returns a deep-copy fork of that prototype
+    /// via [`Environment::fork_world`] — a fresh symbol table, fresh global
+    /// value cells, fresh closures/containers — in a few milliseconds
+    /// instead of re-evaluating ~45 library files. Each returned environment
+    /// is a fully isolated world: definitions, redefinitions, dynamic
+    /// variables, property lists, condition flags, and capability grants in
+    /// one are never visible in another, exactly as with the pre-fork
+    /// loader. Symbol `EQ` identity holds within each returned world (as it
+    /// always has; distinct `with_stdlib` worlds have always had distinct
+    /// symbol interning).
+    ///
+    /// Use [`Environment::with_stdlib_fresh`] to bypass the per-thread
+    /// prototype (e.g. in a process that builds exactly one environment).
+    ///
     /// Panics if the embedded stdlib fails to parse or evaluate (which would be
     /// a compile-time bug, not a runtime condition).
     pub fn with_stdlib() -> Shared<Environment> {
+        STDLIB_PROTOTYPE.with(|slot| {
+            let mut proto = slot.borrow_mut();
+            if proto.is_none() {
+                *proto = Some(Self::with_stdlib_fresh());
+            }
+            let p = proto.as_ref().expect("prototype was just installed");
+            // The prototype never escapes this thread-local, so nothing can
+            // have mutated it; a fork is observably identical to a fresh
+            // load. Fall back to the full load if the world ever becomes
+            // unforkable (it cannot for the embedded stdlib — see
+            // `fork_world` — but the fallback keeps this future-proof).
+            Environment::fork_world(p).unwrap_or_else(|_| Self::with_stdlib_fresh())
+        })
+    }
+
+    /// Build a stdlib environment by actually parsing and evaluating the
+    /// embedded sources — the pre-caching behavior of
+    /// [`Environment::with_stdlib`], which now serves a deep-copy fork of a
+    /// per-thread prototype instead of re-evaluating ~45 files per call.
+    ///
+    /// Use this when you want exactly one fully-loaded environment and do
+    /// not want a prototype copy retained in thread-local storage for the
+    /// rest of the thread's life (e.g. a one-environment-per-process CLI),
+    /// or when you need to measure/exercise the real loader. The resulting
+    /// environment is indistinguishable from a `with_stdlib()` fork.
+    pub fn with_stdlib_fresh() -> Shared<Environment> {
         let env = Self::new_with_builtins();
         // The interpreter entry points that consume this environment
         // (`load_file`, `eval_str`/`eval_all`, `read-from-string`) are
@@ -1553,9 +1613,29 @@ impl Environment {
     /// vocabulary until requested) but is otherwise fully-featured: every
     /// kernel builtin is registered, exactly as with `with_stdlib`.
     ///
+    /// Like [`Environment::with_stdlib`], calls after the first on a thread
+    /// are served as a cheap deep-copy fork of a per-thread prototype (see
+    /// [`Environment::fork_world`]); use [`Environment::with_prelude_fresh`]
+    /// to bypass the prototype.
+    ///
     /// Panics if the embedded Prelude fails to parse or evaluate (which would
     /// be a compile-time bug, not a runtime condition).
     pub fn with_prelude() -> Shared<Environment> {
+        PRELUDE_PROTOTYPE.with(|slot| {
+            let mut proto = slot.borrow_mut();
+            if proto.is_none() {
+                *proto = Some(Self::with_prelude_fresh());
+            }
+            let p = proto.as_ref().expect("prototype was just installed");
+            Environment::fork_world(p).unwrap_or_else(|_| Self::with_prelude_fresh())
+        })
+    }
+
+    /// Build a Prelude environment by actually evaluating the embedded
+    /// Prelude sources — the pre-caching behavior of
+    /// [`Environment::with_prelude`]. Same trade-off as
+    /// [`Environment::with_stdlib_fresh`].
+    pub fn with_prelude_fresh() -> Shared<Environment> {
         let env = Self::new_with_builtins();
         env.set_reader_depth_limit(50_000);
         crate::load_prelude(&env).expect("embedded prelude should always load cleanly");
@@ -2529,5 +2609,567 @@ impl Environment {
             current = parent;
         }
         current
+    }
+
+    /// Deep-copy an entire interpreter world, returning an isomorphic,
+    /// fully isolated copy of `proto` (typically a root environment).
+    ///
+    /// Everything reachable from `proto` is duplicated with fresh
+    /// allocations: the symbol table (fresh `Rc<RefCell<Symbol>>` cells with
+    /// identical names, ids, flags, plists, and global value cells),
+    /// every environment frame, cons cell, closure (lambda/fexpr/macro/vau,
+    /// including pre-compiled [`crate::Code`] bodies), hash table, array,
+    /// struct, and error value. Sharing and identity are preserved
+    /// *isomorphically*: two references to one object in the prototype map
+    /// to two references to one (new) object in the copy, so `EQ` results
+    /// inside the copied world are exactly those of the prototype world.
+    /// Because the two worlds share no mutable cell, no mutation in one can
+    /// ever be observed in the other.
+    ///
+    /// A few values are deliberately shared rather than copied, because they
+    /// are immutable or host-owned: builtin tags, `Native` host closures,
+    /// `Extension` values, slot-routing tables, net/OS policy callbacks, and
+    /// the immutable definitions behind the typed registry's declaration
+    /// plane (see `Jit::clone_for_fork`).
+    ///
+    /// Returns `Err` when the world contains state that cannot be soundly
+    /// duplicated: live host handles (ports, sockets, child processes,
+    /// channels) or registered typed (`defun-typed`) functions. A freshly
+    /// loaded stdlib prototype contains none of these, which is what
+    /// [`Environment::with_stdlib`] relies on; callers must fall back to a
+    /// full fresh load on `Err`.
+    pub fn fork_world(proto: &Shared<Environment>) -> Result<Shared<Environment>, String> {
+        worldfork::WorldCopier::new().copy_env(proto)
+    }
+}
+
+/// Memoized whole-world deep copy (the mechanism behind
+/// [`Environment::fork_world`]). Lives in a child module of `environment`
+/// so it can reach `SharedState`'s and `SymbolTable`'s private fields.
+mod worldfork {
+    use super::*;
+    use crate::{Code, ErrorObj, Fexpr, Lambda, Macro, StructObj, Vau};
+
+    /// Memo map keyed by prototype allocation address, using the crate's
+    /// fast integer hasher — the copier does one lookup+insert per copied
+    /// allocation, so hashing is its hottest edge.
+    type PtrMap<T> = HashMap<usize, T, BuildHasherDefault<FxHasher>>;
+
+    /// Identity-preserving copier. Every memo table is keyed by the address
+    /// of the *prototype* allocation; the prototype is kept alive by the
+    /// caller for the whole copy, so addresses are stable and never reused
+    /// while a `WorldCopier` is running.
+    pub(super) struct WorldCopier {
+        states: PtrMap<Shared<SharedState>>,
+        symbols: PtrMap<Shared<SharedCell<Symbol>>>,
+        envs: PtrMap<Shared<Environment>>,
+        /// `Shared<LispVal>` cells (cons children). Also preserves structural
+        /// sharing so a DAG never blows up into a tree.
+        vals: PtrMap<Shared<LispVal>>,
+        codes: PtrMap<Shared<Code>>,
+        tables: PtrMap<Shared<SharedCell<HashMap<LispVal, LispVal>>>>,
+        arrays: PtrMap<Shared<SharedCell<Vec<LispVal>>>>,
+    }
+
+    impl WorldCopier {
+        pub(super) fn new() -> Self {
+            // Capacities sized for the stdlib prototype (measured: ~2.5k
+            // symbols, ~88k shared value cells, ~15k code nodes) so a
+            // typical fork never rehashes its two big memo tables.
+            WorldCopier {
+                states: PtrMap::default(),
+                symbols: PtrMap::with_capacity_and_hasher(4096, Default::default()),
+                envs: PtrMap::default(),
+                vals: PtrMap::with_capacity_and_hasher(1 << 17, Default::default()),
+                codes: PtrMap::with_capacity_and_hasher(1 << 15, Default::default()),
+                arrays: PtrMap::default(),
+                tables: PtrMap::default(),
+            }
+        }
+
+        /// Copy the globally shared interpreter state (symbol table, flags,
+        /// dynamic set, features, typed registry, module registry, policies).
+        fn copy_state(&mut self, old: &Shared<SharedState>) -> Result<Shared<SharedState>, String> {
+            let key = Shared::as_ptr(old) as usize;
+            if let Some(hit) = self.states.get(&key) {
+                return Ok(hit.clone());
+            }
+            let jit = old.jit.borrow().clone_for_fork().ok_or_else(|| {
+                "fork_world: typed (defun-typed) functions are registered; \
+                     a world with compiled typed editions cannot be forked"
+                    .to_string()
+            })?;
+            let new_state = Shared::new(SharedState {
+                symbols: SharedCell::new(SymbolTable::new()),
+                condition_flags: SharedCell::new(old.condition_flags.borrow().clone()),
+                dynamic_vars: SharedCell::new(old.dynamic_vars.borrow().clone()),
+                has_dynamic: Cell::new(old.has_dynamic.get()),
+                features: SharedCell::new(old.features.borrow().clone()),
+                jit: SharedCell::new(jit),
+                reader_depth_limit: Cell::new(old.reader_depth_limit.get()),
+                module_sources: SharedCell::new(old.module_sources.borrow().clone()),
+                module_search_paths: SharedCell::new(old.module_search_paths.borrow().clone()),
+                net_policy: SharedCell::new(old.net_policy.borrow().clone()),
+                os_policy: SharedCell::new(old.os_policy.borrow().clone()),
+            });
+            // Memoize BEFORE copying symbols: symbol values reach closures,
+            // closures reach environments, and environments reach back to
+            // this state.
+            self.states.insert(key, new_state.clone());
+
+            // Rebuild the symbol table with identical ids and counters. All
+            // symbols (interned + gensym) live in by_id, in id order.
+            let (old_by_id, old_names, gensym_counter, next_id) = {
+                let t = old.symbols.borrow();
+                (
+                    t.by_id.clone(),
+                    t.symbols
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Shared::as_ptr(v) as usize))
+                        .collect::<Vec<_>>(),
+                    t.gensym_counter,
+                    t.next_id,
+                )
+            };
+            let mut new_by_id = Vec::with_capacity(old_by_id.len());
+            for sym in &old_by_id {
+                new_by_id.push(self.copy_symbol(sym)?);
+            }
+            let mut new_names = HashMap::with_capacity(old_names.len());
+            for (name, ptr) in old_names {
+                let mapped = self
+                    .symbols
+                    .get(&ptr)
+                    .expect("interned symbol must be in by_id")
+                    .clone();
+                new_names.insert(name, mapped);
+            }
+            *new_state.symbols.borrow_mut() = SymbolTable {
+                symbols: new_names,
+                gensym_counter,
+                next_id,
+                by_id: new_by_id,
+            };
+            Ok(new_state)
+        }
+
+        /// Copy one symbol cell: same name/id/flags, deep-copied plist and
+        /// global value cell.
+        fn copy_symbol(
+            &mut self,
+            old: &Shared<SharedCell<Symbol>>,
+        ) -> Result<Shared<SharedCell<Symbol>>, String> {
+            let key = Shared::as_ptr(old) as usize;
+            if let Some(hit) = self.symbols.get(&key) {
+                return Ok(hit.clone());
+            }
+            let (name, id, is_keyword, is_dynamic, special_form) = {
+                let s = old.borrow();
+                (
+                    s.name.clone(),
+                    s.id,
+                    s.is_keyword,
+                    s.is_dynamic,
+                    s.special_form,
+                )
+            };
+            let new_sym = Shared::new(SharedCell::new(Symbol {
+                name,
+                plist: HashMap::new(),
+                value: None,
+                id,
+                is_keyword,
+                is_dynamic,
+                special_form,
+            }));
+            // Memoize BEFORE filling value/plist: the value can contain a
+            // closure whose body references this very symbol.
+            self.symbols.insert(key, new_sym.clone());
+            let (old_value, old_plist) = {
+                let s = old.borrow();
+                (s.value.clone(), s.plist.clone())
+            };
+            let value = match old_value {
+                Some(v) => Some(self.copy_val(&v)?),
+                None => None,
+            };
+            let mut plist = HashMap::with_capacity(old_plist.len());
+            for (k, v) in old_plist {
+                plist.insert(k, self.copy_val(&v)?);
+            }
+            {
+                let mut s = new_sym.borrow_mut();
+                s.value = value;
+                s.plist = plist;
+            }
+            Ok(new_sym)
+        }
+
+        /// Copy an environment frame (and, transitively, its parent chain and
+        /// shared state).
+        pub(super) fn copy_env(
+            &mut self,
+            old: &Shared<Environment>,
+        ) -> Result<Shared<Environment>, String> {
+            let key = Shared::as_ptr(old) as usize;
+            if let Some(hit) = self.envs.get(&key) {
+                return Ok(hit.clone());
+            }
+            let shared = self.copy_state(&old.shared)?;
+            // copy_state can recursively copy THIS env (a symbol's value may
+            // close over it); re-check the memo before allocating a second copy.
+            if let Some(hit) = self.envs.get(&key) {
+                return Ok(hit.clone());
+            }
+            let parent = match &old.parent {
+                Some(p) => Some(self.copy_env(p)?),
+                None => None,
+            };
+            if let Some(hit) = self.envs.get(&key) {
+                return Ok(hit.clone());
+            }
+            let new_env = Shared::new(Environment {
+                parent,
+                bindings: SharedCell::new(BindingMap::default()),
+                // Slot-routing tables are immutable id lists — safe to share.
+                routing: old.routing.clone(),
+                slots: SharedCell::new(Vec::new()),
+                shared,
+            });
+            self.envs.insert(key, new_env.clone());
+            let old_bindings: Vec<(u32, LispVal)> = old
+                .bindings
+                .borrow()
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            let old_slots: Vec<LispVal> = old.slots.borrow().clone();
+            {
+                let mut b = new_env.bindings.borrow_mut();
+                for (id, v) in old_bindings {
+                    let copied = self.copy_val(&v)?;
+                    b.insert(id, copied);
+                }
+            }
+            {
+                let mut s = new_env.slots.borrow_mut();
+                for v in old_slots {
+                    let copied = self.copy_val(&v)?;
+                    s.push(copied);
+                }
+            }
+            Ok(new_env)
+        }
+
+        /// Copy a shared value cell (a cons child). Cons spines are walked
+        /// iteratively so list length never becomes native recursion depth.
+        fn copy_shared_val(&mut self, old: &Shared<LispVal>) -> Result<Shared<LispVal>, String> {
+            // World-free immutable scalars: share the cell itself. These
+            // contain no symbols, environments, or mutable state, and every
+            // equality on them (including the EQ builtin) is by value, so
+            // sharing is unobservable — and they are the majority of cons
+            // leaves, so this saves both allocations and memo traffic.
+            match &**old {
+                LispVal::Number(_)
+                | LispVal::Char(_)
+                | LispVal::Float(_)
+                | LispVal::String(_)
+                | LispVal::Builtin(_)
+                | LispVal::Nil => return Ok(old.clone()),
+                _ => {}
+            }
+            let key = Shared::as_ptr(old) as usize;
+            if let Some(hit) = self.vals.get(&key) {
+                return Ok(hit.clone());
+            }
+            if let LispVal::Cons { .. } = &**old {
+                // Walk the cdr spine, copying cars (tree recursion is bounded
+                // by expression nesting depth, not list length).
+                let mut spine: Vec<(usize, Shared<LispVal>)> = Vec::new();
+                let mut cur: Shared<LispVal> = old.clone();
+                let tail: Shared<LispVal> = loop {
+                    let LispVal::Cons { car, cdr } = &*cur else {
+                        unreachable!("spine walk only enters Cons cells")
+                    };
+                    let copied_car = self.copy_shared_val(car)?;
+                    spine.push((Shared::as_ptr(&cur) as usize, copied_car));
+                    let next = cdr.clone();
+                    if let Some(hit) = self.vals.get(&(Shared::as_ptr(&next) as usize)) {
+                        break hit.clone();
+                    }
+                    if matches!(&*next, LispVal::Cons { .. }) {
+                        cur = next;
+                    } else {
+                        // Non-cons tail: scalar sharing and memoization are
+                        // both handled by the entry logic above.
+                        break self.copy_shared_val(&next)?;
+                    }
+                };
+                let mut t = tail;
+                for (cell_key, car) in spine.into_iter().rev() {
+                    let cell = Shared::new(LispVal::Cons { car, cdr: t });
+                    self.vals.insert(cell_key, cell.clone());
+                    t = cell;
+                }
+                return Ok(t);
+            }
+            let copied = Shared::new(self.copy_val(old)?);
+            self.vals.insert(key, copied.clone());
+            Ok(copied)
+        }
+
+        /// Copy one value. Exhaustive over `LispVal`: adding a variant is a
+        /// compile error here until its fork semantics are decided.
+        fn copy_val(&mut self, old: &LispVal) -> Result<LispVal, String> {
+            Ok(match old {
+                LispVal::Symbol(s) => LispVal::Symbol(self.copy_symbol(s)?),
+                LispVal::Number(n) => LispVal::Number(*n),
+                LispVal::Char(c) => LispVal::Char(*c),
+                LispVal::Float(f) => LispVal::Float(*f),
+                LispVal::String(s) => LispVal::String(s.clone()),
+                LispVal::Builtin(b) => LispVal::Builtin(b.clone()),
+                LispVal::Nil => LispVal::Nil,
+                LispVal::Cons { car, cdr } => LispVal::Cons {
+                    car: self.copy_shared_val(car)?,
+                    cdr: self.copy_shared_val(cdr)?,
+                },
+                LispVal::Lambda(l) => LispVal::Lambda(Box::new(Lambda {
+                    params: l.params.clone(),
+                    rest_param: l.rest_param.clone(),
+                    body: Box::new(self.copy_val(&l.body)?),
+                    env: self.copy_env(&l.env)?,
+                    param_ids: l.param_ids.clone(),
+                    rest_param_id: l.rest_param_id,
+                    param_routing: l.param_routing.clone(),
+                    compiled: match &l.compiled {
+                        Some(c) => Some(self.copy_code(c)?),
+                        None => None,
+                    },
+                })),
+                LispVal::Fexpr(f) => LispVal::Fexpr(Box::new(Fexpr {
+                    params: f.params.clone(),
+                    body: Box::new(self.copy_val(&f.body)?),
+                    env: self.copy_env(&f.env)?,
+                    param_ids: f.param_ids.clone(),
+                })),
+                LispVal::Macro(m) => LispVal::Macro(Box::new(Macro {
+                    params: m.params.clone(),
+                    rest_param: m.rest_param.clone(),
+                    body: Box::new(self.copy_val(&m.body)?),
+                    env: self.copy_env(&m.env)?,
+                    param_ids: m.param_ids.clone(),
+                    rest_param_id: m.rest_param_id,
+                })),
+                LispVal::Vau(v) => LispVal::Vau(Box::new(Vau {
+                    operands_param: v.operands_param.clone(),
+                    env_param: v.env_param.clone(),
+                    body: Box::new(self.copy_val(&v.body)?),
+                    env: self.copy_env(&v.env)?,
+                    operands_param_id: v.operands_param_id,
+                    env_param_id: v.env_param_id,
+                })),
+                LispVal::HashTable(h) => {
+                    let key = Shared::as_ptr(h) as usize;
+                    if let Some(hit) = self.tables.get(&key) {
+                        LispVal::HashTable(hit.clone())
+                    } else {
+                        let new_table = Shared::new(SharedCell::new(HashMap::new()));
+                        // Memoize first: a table can (via its values) reach itself.
+                        self.tables.insert(key, new_table.clone());
+                        let entries: Vec<(LispVal, LispVal)> = h
+                            .borrow()
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        for (k, v) in entries {
+                            let ck = self.copy_val(&k)?;
+                            let cv = self.copy_val(&v)?;
+                            new_table.borrow_mut().insert(ck, cv);
+                        }
+                        LispVal::HashTable(new_table)
+                    }
+                }
+                // Host-registered closures are opaque and host-owned; they
+                // receive the calling environment as an argument, so sharing
+                // the handle across worlds is sound.
+                LispVal::Native(f) => LispVal::Native(f.clone()),
+                LispVal::Environment(e) => LispVal::Environment(self.copy_env(e)?),
+                LispVal::Array(a) => {
+                    let key = Shared::as_ptr(a) as usize;
+                    if let Some(hit) = self.arrays.get(&key) {
+                        LispVal::Array(hit.clone())
+                    } else {
+                        let new_arr = Shared::new(SharedCell::new(Vec::new()));
+                        self.arrays.insert(key, new_arr.clone());
+                        let elems: Vec<LispVal> = a.borrow().clone();
+                        for e in elems {
+                            let copied = self.copy_val(&e)?;
+                            new_arr.borrow_mut().push(copied);
+                        }
+                        LispVal::Array(new_arr)
+                    }
+                }
+                LispVal::Struct(s) => {
+                    let mut fields = Vec::with_capacity(s.fields.len());
+                    for f in &s.fields {
+                        fields.push(self.copy_val(f)?);
+                    }
+                    LispVal::Struct(Shared::new(StructObj {
+                        type_name: s.type_name.clone(),
+                        fields,
+                    }))
+                }
+                // Host extension values compare by identity and are
+                // host-owned; share the handle (none exist in a freshly
+                // loaded stdlib world).
+                LispVal::Extension(e) => LispVal::Extension(e.clone()),
+                LispVal::Error(e) => LispVal::Error(Shared::new(ErrorObj {
+                    message: e.message.clone(),
+                    data: self.copy_val(&e.data)?,
+                })),
+                LispVal::Port(_) => {
+                    return Err("fork_world: live PORT handles cannot be forked".to_string());
+                }
+                LispVal::NetHandle(_) => {
+                    return Err("fork_world: live network handles cannot be forked".to_string());
+                }
+                LispVal::OsChild(_) => {
+                    return Err(
+                        "fork_world: live child-process handles cannot be forked".to_string()
+                    );
+                }
+                #[cfg(feature = "concurrency")]
+                LispVal::Channel(_) => {
+                    return Err("fork_world: live channels cannot be forked".to_string());
+                }
+            })
+        }
+
+        /// Copy a pre-compiled body. Symbol handles inside the tree are
+        /// remapped to the fork's cells; ids and routing tables are already
+        /// world-independent and are shared/copied verbatim.
+        fn copy_code(&mut self, old: &Shared<Code>) -> Result<Shared<Code>, String> {
+            let key = Shared::as_ptr(old) as usize;
+            if let Some(hit) = self.codes.get(&key) {
+                return Ok(hit.clone());
+            }
+            let copied = match &**old {
+                Code::Const(v) => Code::Const(self.copy_val(v)?),
+                Code::Var(s) => Code::Var(self.copy_symbol(s)?),
+                Code::LocalGet { depth, slot, sym } => Code::LocalGet {
+                    depth: *depth,
+                    slot: *slot,
+                    sym: self.copy_symbol(sym)?,
+                },
+                Code::If(c, t, e) => {
+                    Code::If(self.copy_code(c)?, self.copy_code(t)?, self.copy_code(e)?)
+                }
+                Code::Seq(items) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for i in items {
+                        out.push(self.copy_code(i)?);
+                    }
+                    Code::Seq(out)
+                }
+                Code::Let {
+                    bindings,
+                    routing,
+                    body,
+                } => {
+                    let mut bs = Vec::with_capacity(bindings.len());
+                    for (id, code) in bindings {
+                        bs.push((*id, self.copy_code(code)?));
+                    }
+                    Code::Let {
+                        bindings: bs,
+                        routing: routing.clone(),
+                        body: self.copy_code(body)?,
+                    }
+                }
+                Code::Call {
+                    callee,
+                    args,
+                    original,
+                } => {
+                    let mut cargs = Vec::with_capacity(args.len());
+                    for a in args {
+                        cargs.push(self.copy_code(a)?);
+                    }
+                    Code::Call {
+                        callee: self.copy_code(callee)?,
+                        args: cargs,
+                        original: self.copy_val(original)?,
+                    }
+                }
+                Code::SetVar(pairs) => {
+                    let mut out = Vec::with_capacity(pairs.len());
+                    for (sym, code) in pairs {
+                        out.push((self.copy_symbol(sym)?, self.copy_code(code)?));
+                    }
+                    Code::SetVar(out)
+                }
+                Code::UnwindProtect { body, cleanups } => {
+                    let mut cl = Vec::with_capacity(cleanups.len());
+                    for c in cleanups {
+                        cl.push(self.copy_code(c)?);
+                    }
+                    Code::UnwindProtect {
+                        body: self.copy_code(body)?,
+                        cleanups: cl,
+                    }
+                }
+                Code::While { cond, body } => {
+                    let mut b = Vec::with_capacity(body.len());
+                    for c in body {
+                        b.push(self.copy_code(c)?);
+                    }
+                    Code::While {
+                        cond: self.copy_code(cond)?,
+                        body: b,
+                    }
+                }
+                Code::For {
+                    var_id,
+                    start,
+                    end,
+                    step,
+                    body,
+                } => {
+                    let mut b = Vec::with_capacity(body.len());
+                    for c in body {
+                        b.push(self.copy_code(c)?);
+                    }
+                    Code::For {
+                        var_id: *var_id,
+                        start: self.copy_code(start)?,
+                        end: self.copy_code(end)?,
+                        step: match step {
+                            Some(s) => Some(self.copy_code(s)?),
+                            None => None,
+                        },
+                        body: b,
+                    }
+                }
+                Code::MakeLambda {
+                    params,
+                    body_forms,
+                    compiled_body,
+                } => {
+                    let mut bf = Vec::with_capacity(body_forms.len());
+                    for f in body_forms {
+                        bf.push(self.copy_val(f)?);
+                    }
+                    Code::MakeLambda {
+                        params: self.copy_val(params)?,
+                        body_forms: bf,
+                        compiled_body: self.copy_code(compiled_body)?,
+                    }
+                }
+                Code::Interp(v) => Code::Interp(self.copy_val(v)?),
+            };
+            let copied = Shared::new(copied);
+            self.codes.insert(key, copied.clone());
+            Ok(copied)
+        }
     }
 }

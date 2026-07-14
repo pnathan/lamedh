@@ -797,6 +797,15 @@ pub enum BuiltinFunc {
     ChannelRecv,
     #[cfg(feature = "concurrency")]
     ChannelRecvTimeout,
+    /// `(sexpr-rename form table)` — structural symbol renaming: rebuild
+    /// `form` with every unqualified symbol that appears as a key in the
+    /// hash `table` replaced by its mapped value, leaving `(quote …)` /
+    /// `(quasiquote …)` forms untouched. The kernel edition of the module
+    /// system's rename walk (`lib/27-modules.lisp`): the transform is purely
+    /// mechanical and runs over every AST node of every `with-module` body,
+    /// which made the interpreted walk the dominant cost of loading large
+    /// module files.
+    SexprRename,
     #[cfg(feature = "concurrency")]
     CloneInterpreter,
 }

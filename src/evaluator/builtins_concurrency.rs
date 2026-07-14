@@ -237,7 +237,10 @@ pub(super) fn apply_spawn(
     std::thread::Builder::new()
         .stack_size(crate::INTERPRETER_STACK_SIZE)
         .spawn(move || {
-            let child = Environment::with_stdlib();
+            // `_fresh`: this thread builds exactly one environment and then
+            // exits, so the per-thread prototype cache behind with_stdlib()
+            // would only add a fork pass and a second retained copy.
+            let child = Environment::with_stdlib_fresh();
             for cap in &caps {
                 child.enable_feature(cap);
             }

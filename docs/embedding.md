@@ -69,6 +69,32 @@ extra load time/vocabulary of libraries they won't use, or that want
 `require`'s registry to start from a known-small state before selectively
 pulling in their own modules.
 
+### Startup cost: the per-thread prototype fork
+
+The first `with_stdlib()` (or `with_prelude()`) call on a thread evaluates
+the embedded sources once into a private prototype world; every call —
+including the first — then returns a **deep-copy fork** of that prototype
+(`Environment::fork_world`): fresh symbol table, fresh global value cells,
+fresh closures and containers, in milliseconds instead of a full stdlib
+evaluation. Each returned environment is a fully isolated world — nothing
+one environment does (defs, redefinitions, plists, dynamic variables,
+capability grants, registry mutations) is ever visible in another, exactly
+as with a from-scratch load. The prototype never escapes and is retained in
+thread-local storage for the life of the thread.
+
+Two consequences for embedders:
+
+- A host that builds **many** interpreter instances on one thread (test
+  harnesses, per-request sandboxes) pays the full load once per thread and
+  a cheap fork per instance.
+- A host that builds exactly **one** environment per process can call
+  `Environment::with_stdlib_fresh()` / `with_prelude_fresh()` to skip the
+  prototype cache entirely (this is what the `lamedh` CLI does); the result
+  is indistinguishable.
+
+The default build's object graph is `Rc`/`RefCell`-based, so prototypes are
+per-thread, never shared across threads.
+
 ## Evaluating Lisp
 
 ```rust

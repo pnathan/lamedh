@@ -283,7 +283,8 @@ pub(super) fn apply(
             | BuiltinFunc::Set
             | BuiltinFunc::DeleteKey
             | BuiltinFunc::CurrentEnvironment
-            | BuiltinFunc::Keys => apply_hashtable_op(builtin, args, env),
+            | BuiltinFunc::Keys
+            | BuiltinFunc::SexprRename => apply_hashtable_op(builtin, args, env),
             BuiltinFunc::Atom => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
