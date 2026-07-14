@@ -70,6 +70,26 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: `let` and `progn` compile to native
+
+The typed JIT now lowers ordinary `let` and `progn` to native code, not just
+the explicit `let-typed` spelling. Both were previously gated to the checker
+only (they typechecked but stalled a `defun-typed`/one-door `defun` body at
+the CHECKED tier), even though their elaborators already emit real codegen
+core — `elab_let` a `Core::Let`, `elab_body` a `Core::Seq` — the very nodes
+`let-typed` compiles. A typed body built from `let`, `progn`, `if`,
+arithmetic, comparisons, and array `fetch`/`store` now reaches `TIER
+. COMPILED` and runs as native code (e.g. a recursive array fill compiles and
+executes identically to the interpreter).
+
+The boundary is principled: `cond`/`when`/`quote` (and the list/pair forms)
+stay checker-only, because their elaborators emit only a placeholder
+`Core::LitI(0)` for typing purposes — compiling them would miscompile to
+literal `0`, so they correctly refuse the native tier and keep the whole
+function interpreted. Verified sound by the differential fuzzer
+(interpreter-vs-JIT) across the stdlib, since one-door `defun` now
+auto-compiles any function whose body uses `let`/`progn`.
+
 ## test: split the examples monolith; adopt cargo-nextest as an optional runner (#58)
 
 `tests/test_examples.rs` ran all 51 classics programs inside a single
