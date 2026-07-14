@@ -1598,6 +1598,10 @@ impl Jit {
                 self.dis_emit(a, dst, out, reg, lab);
                 out.push(format!("    {dst} = and  {dst}, 0xff        ; code-char"));
             }
+            Core::FUnary(op, a) => {
+                self.dis_emit(a, dst, out, reg, lab);
+                out.push(format!("    {dst} = fun  {op:?} {dst}"));
+            }
             Core::Not(a) => {
                 self.dis_emit(a, dst, out, reg, lab);
                 out.push(format!("    {dst} = not  {dst}"));

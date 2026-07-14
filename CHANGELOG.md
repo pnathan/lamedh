@@ -70,6 +70,27 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: `sqrt`/`floor`/`ceiling`/`truncate` compile to native
+
+The typed JIT now lowers the unary float intrinsics `sqrt`, `floor`,
+`ceiling`, and `truncate` to native code — a new `Core::FUnary` node wired
+through all three executors (the Cranelift backend, the Core interpreter, and
+the disassembler). `sqrt` uses the `fsqrt` instruction and yields `float64`;
+`floor`/`ceiling`/`truncate` use the `floor`/`ceil`/`trunc` instructions
+followed by a **saturating** `fcvt_to_sint_sat`, which matches Rust's
+saturating `f64 as i64` that the evaluator uses — so `(floor -2.3)` → `-3`
+and `(sqrt 2.0)` → `1.4142135623730951` are bit-identical whether
+interpreted or compiled (a single `FUnOp::apply_word` is the shared source of
+truth). A typed body doing real float math like
+`(sqrt (+ (* a a) (* b b)))` now reaches `TIER . COMPILED`.
+
+The lowering is codegen-only: in checking mode these keep their permissive
+declared schemes from `lib/28-types.lisp` (argument `any`); the compiled path
+requires a concrete `float64` argument or the function stays interpreted. The
+transcendentals (`sin`/`cos`/`exp`) and half-away-from-zero `round` need a
+libm trampoline and land separately. Soundness-gated by the differential
+interpreter-vs-JIT fuzzer.
+
 ## jit: `let` and `progn` compile to native
 
 The typed JIT now lowers ordinary `let` and `progn` to native code, not just

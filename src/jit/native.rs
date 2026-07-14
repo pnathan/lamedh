@@ -505,6 +505,35 @@ impl Emitter<'_, '_, '_> {
                     },
                 ))
             }
+            Core::FUnary(op, a) => {
+                use super::types::FUnOp;
+                // Unary float intrinsic: bitcast the arg word to f64, apply the
+                // op, and produce the result word. `sqrt` yields a float word;
+                // the rounding ops floor/ceil/trunc convert to int64 with a
+                // *saturating* fcvt, matching Rust's saturating `f64 as i64` that
+                // the evaluator and Core interpreter use.
+                let v = self.emit_value(a);
+                let af = self.as_f(v);
+                let r = match op {
+                    FUnOp::Sqrt => {
+                        let rf = self.b.ins().sqrt(af);
+                        self.as_i(rf)
+                    }
+                    FUnOp::Floor => {
+                        let rf = self.b.ins().floor(af);
+                        self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                    }
+                    FUnOp::Ceil => {
+                        let rf = self.b.ins().ceil(af);
+                        self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                    }
+                    FUnOp::Trunc => {
+                        let rf = self.b.ins().trunc(af);
+                        self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                    }
+                };
+                Emitted::Value(r)
+            }
             Core::ArrayNew(n) => {
                 let n = self.emit_value(n);
                 // Pass the signed length through unchanged: `jit_alloc`
