@@ -3571,13 +3571,103 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'DESCRIPTION "Sets socket's read and write timeout in milliseconds together; NIL blocks without a timeout (the default). A timed-out receive-from/send/send-to signals a structured :TIMEOUT error.")
     (cons 'SEE-ALSO '(udp:receive-from tcp:set-read-timeout!))))
 
+(register-doc 'tls:available-p
+  (list
+    (cons 'NAME 'tls:available-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:available-p)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "T if this build of lamedh was compiled with the net-tls cargo feature (rustls); NIL otherwise. Every tls:* name is bound either way -- with the feature off, every other tls:* operation signals a structured :TLS-UNAVAILABLE error instead of doing any work.")
+    (cons 'SEE-ALSO '(tls:connect tls:wrap-client))))
+
+(register-doc 'tls:connect
+  (list
+    (cons 'NAME 'tls:connect)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:connect host port &key connect-timeout-ms handshake-timeout-ms alpn extra-roots)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "tcp:connect + tls:wrap-client sugar: connects to host:port then TLS-wraps the result, :hostname defaulting to host (used for SNI and certificate verification). Verification is on by default against the default (webpki-roots) root store plus :extra-roots (a list of PEM sources: String paths, READ-FS-gated, or Array<Char> bytes). :handshake-timeout-ms bounds the handshake via the underlying TCP port's read/write timeouts. Returns an ordinary PORTS port.")
+    (cons 'SEE-ALSO '(tls:wrap-client tls:connect-insecure! tls:alpn-protocol tls:peer-certificates))))
+
+(register-doc 'tls:connect-insecure!
+  (list
+    (cons 'NAME 'tls:connect-insecure!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:connect-insecure! host port &key connect-timeout-ms handshake-timeout-ms alpn)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "Like tls:connect, but skips certificate-chain verification entirely -- the only Lisp-facing way to do so. ALWAYS signals a structured :POLICY-DENIED error unless the embedding host has separately opted in via Environment::set_allow_insecure_tls (Rust-only, default false) -- Lisp code alone can never disable verification.")
+    (cons 'SEE-ALSO '(tls:connect tls:wrap-client-insecure!))))
+
+(register-doc 'tls:wrap-client
+  (list
+    (cons 'NAME 'tls:wrap-client)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:wrap-client port &key hostname alpn extra-roots)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "Wraps port -- an already-connected tcp:connect PORT -- as a TLS client, performing the handshake now (blocking). Consumes port (it becomes CLOSED); returns a new PORTS port. :hostname is required (SNI + certificate verification). See tls:connect for the connect+wrap sugar.")
+    (cons 'SEE-ALSO '(tls:connect tls:wrap-client-insecure! tls:wrap-server))))
+
+(register-doc 'tls:wrap-client-insecure!
+  (list
+    (cons 'NAME 'tls:wrap-client-insecure!)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:wrap-client-insecure! port &key hostname alpn)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "Like tls:wrap-client, but skips certificate verification -- denied by default (:POLICY-DENIED) unless the host opted in via Environment::set_allow_insecure_tls. See tls:connect-insecure! for the connect+wrap sugar.")
+    (cons 'SEE-ALSO '(tls:wrap-client tls:connect-insecure!))))
+
+(register-doc 'tls:wrap-server
+  (list
+    (cons 'NAME 'tls:wrap-server)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:wrap-server port cert key &key alpn)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "Wraps port -- an already-accepted tcp:accept PORT -- as a TLS server, performing the handshake now (blocking). Consumes port (it becomes CLOSED); returns a new PORTS port. cert/key are each a PEM source (String path, READ-FS-gated, or Array<Char> bytes); cert may be a full chain, leaf first. No client-certificate authentication is requested.")
+    (cons 'SEE-ALSO '(tls:wrap-client tcp:accept))))
+
+(register-doc 'tls:alpn-protocol
+  (list
+    (cons 'NAME 'tls:alpn-protocol)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:alpn-protocol port)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "The ALPN protocol negotiated on TLS port (a String), or NIL if none was negotiated.")
+    (cons 'SEE-ALSO '(tls:connect tls:wrap-server))))
+
+(register-doc 'tls:peer-certificates
+  (list
+    (cons 'NAME 'tls:peer-certificates)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:peer-certificates port)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "The peer's certificate chain on TLS port, leaf first, as a list of Array<Char> raw DER bytes -- or NIL if none presented. No X.509 parser is part of this dependency ruling, so these are opaque DER bytes, not parsed fields; see tls:peer-certificate-summary for structural (unparsed) data.")
+    (cons 'SEE-ALSO '(tls:peer-certificate-summary))))
+
+(register-doc 'tls:peer-certificate-summary
+  (list
+    (cons 'NAME 'tls:peer-certificate-summary)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:peer-certificate-summary port)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "A structural summary alist for TLS port's peer certificate chain: ((:count . N) (:leaf-der-length . M) (:leaf-der . bytes)), or NIL if none presented. No parsed subject/issuer/expiry fields -- see tls:peer-certificates for the full raw DER chain.")
+    (cons 'SEE-ALSO '(tls:peer-certificates))))
+
+(register-doc 'tls:sni-hostname
+  (list
+    (cons 'NAME 'tls:sni-hostname)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(tls:sni-hostname port)")
+    (cons 'CATEGORY 'tls)
+    (cons 'DESCRIPTION "The SNI hostname a TLS client offered when connecting to server-side port, or NIL if none was sent (or port is a client-side TLS port).")
+    (cons 'SEE-ALSO '(tls:wrap-server))))
+
 (register-doc 'http:request
   (list
     (cons 'NAME 'http:request)
     (cons 'TYPE 'function)
-    (cons 'SYNTAX "(http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count)")
+    (cons 'SYNTAX "(http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count extra-roots)")
     (cons 'CATEGORY 'http)
-    (cons 'DESCRIPTION "Performs an HTTP/1.1 request over plaintext http:// (https:// is a structured :HTTPS-UNSUPPORTED error pending the TLS ruling, issue #365). Requires NET-CONNECT (via tcp:connect; HTTP adds no capability of its own). :HEADERS is an ordered (name . value) list (repeats preserved); :BODY is NIL, a String, an Array<Char>, or a readable PORTS port (streamed via chunked transfer-encoding). Follows 301/302/303/307/308 redirects by default, hop-capped, stripping credentials cross-origin. Returns a response alist whose :BODY is an UNREAD framing-aware body stream.")
+    (cons 'DESCRIPTION "Performs an HTTP/1.1 request. http:// always; https:// too when the net-tls cargo feature is compiled in (:extra-roots forwards to tls:connect for a private/throwaway CA) -- otherwise https:// is a structured :HTTPS-UNSUPPORTED error naming the net-tls feature (issue #365). Requires NET-CONNECT (via tcp:connect; HTTP adds no capability of its own). :HEADERS is an ordered (name . value) list (repeats preserved); :BODY is NIL, a String, an Array<Char>, or a readable PORTS port (streamed via chunked transfer-encoding). Follows 301/302/303/307/308 redirects by default, hop-capped, stripping credentials cross-origin, never crossing schemes silently. Returns a response alist whose :BODY is an UNREAD framing-aware body stream.")
     (cons 'SEE-ALSO '(http:get http:post http:response-status http:response-body http:collect-string))))
 
 (register-doc 'http:get
@@ -4068,8 +4158,15 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   '(udp:bind udp:connect! udp:send-to udp:send udp:receive-from
     udp:close! udp:socket-p udp:socket-open-p udp:local-addr udp:set-timeout!))
 
+(register-category 'tls
+  "TLS client/server wrap of a connected TCP port (TLS module, lib/43-tls.lisp, issue #365); off-by-default net-tls cargo feature, rustls/ring"
+  '(tls:available-p tls:connect tls:connect-insecure!
+    tls:wrap-client tls:wrap-client-insecure! tls:wrap-server
+    tls:alpn-protocol tls:peer-certificates tls:peer-certificate-summary
+    tls:sni-hostname))
+
 (register-category 'http
-  "HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)"
+  "HTTP/1.1 client and server (http:// always, https:// with the net-tls cargo feature -- issue #365)"
   '(http:request http:get http:post
     http:response-status http:response-reason http:response-version
     http:response-headers http:response-header http:response-body

@@ -151,6 +151,14 @@ pub(super) fn apply(
             | BuiltinFunc::UdpSend
             | BuiltinFunc::UdpReceiveFrom
             | BuiltinFunc::UdpSetTimeout => apply_net_op(builtin, args, env),
+            BuiltinFunc::TlsAvailableP
+            | BuiltinFunc::TlsWrapClient
+            | BuiltinFunc::TlsWrapClientInsecure
+            | BuiltinFunc::TlsWrapServer
+            | BuiltinFunc::TlsAlpnProtocol
+            | BuiltinFunc::TlsPeerCertificates
+            | BuiltinFunc::TlsPeerCertificateSummary
+            | BuiltinFunc::TlsSniHostname => apply_tls_op(builtin, args, env),
             BuiltinFunc::OsArgs
             | BuiltinFunc::OsExecutablePath
             | BuiltinFunc::OsCwd

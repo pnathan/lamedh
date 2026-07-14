@@ -382,6 +382,18 @@ struct SharedState {
     /// sandboxed Lisp code. `None` (the default) allows every operation once
     /// its capability is granted.
     os_policy: SharedCell<Option<OsPolicy>>,
+    /// Host embedder opt-in for `tls:connect-insecure!` (issue #365, epic
+    /// #253), gated behind the `net-tls` cargo feature. Default-deny
+    /// (`false`): even though `tls:connect-insecure!` is an explicitly named
+    /// Lisp-facing API (never a silent flag on the ordinary `tls:connect`),
+    /// it also refuses to run unless the *host* has separately called
+    /// [`Environment::set_allow_insecure_tls`] -- Lisp code alone can never
+    /// disable certificate verification, mirroring `net_policy`'s "Rust-only
+    /// to install" shape one level further (a policy callback can only
+    /// *narrow* an already-granted capability; this flag is a second,
+    /// independent gate an embedder must explicitly widen).
+    #[cfg(feature = "net-tls")]
+    allow_insecure_tls: Cell<bool>,
 }
 
 /// Wrapper around the boxed policy callback so `SharedState` can keep
@@ -419,6 +431,8 @@ impl SharedState {
             module_search_paths: SharedCell::new(Vec::new()),
             net_policy: SharedCell::new(None),
             os_policy: SharedCell::new(None),
+            #[cfg(feature = "net-tls")]
+            allow_insecure_tls: Cell::new(false),
         }
     }
 }
@@ -1384,6 +1398,46 @@ impl Environment {
         env.set(
             "UDP-SET-TIMEOUT*".to_string(),
             LispVal::Builtin(BuiltinFunc::UdpSetTimeout),
+        );
+
+        // TLS (issue #365, epic #253): kernel substrate wrapped by the TLS
+        // module in lib/43-tls.lisp, behind the off-by-default `net-tls`
+        // cargo feature. Registered unconditionally (see BuiltinFunc's own
+        // doc comment) so `(require 'tls)` and every `tls:*` name always
+        // resolve; with the feature compiled out every one of these except
+        // TLS-AVAILABLE-P* signals a structured `:category :tls-unavailable`
+        // error instead of doing any work.
+        env.set(
+            "TLS-AVAILABLE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsAvailableP),
+        );
+        env.set(
+            "TLS-WRAP-CLIENT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsWrapClient),
+        );
+        env.set(
+            "TLS-WRAP-CLIENT-INSECURE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsWrapClientInsecure),
+        );
+        env.set(
+            "TLS-WRAP-SERVER*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsWrapServer),
+        );
+        env.set(
+            "TLS-ALPN-PROTOCOL*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsAlpnProtocol),
+        );
+        env.set(
+            "TLS-PEER-CERTIFICATES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsPeerCertificates),
+        );
+        env.set(
+            "TLS-PEER-CERTIFICATE-SUMMARY*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsPeerCertificateSummary),
+        );
+        env.set(
+            "TLS-SNI-HOSTNAME*".to_string(),
+            LispVal::Builtin(BuiltinFunc::TlsSniHostname),
         );
 
         // OS integration (issue #260, epic #253): kernel substrate wrapped by
@@ -2595,6 +2649,38 @@ impl Environment {
         }
     }
 
+    // TLS insecure-connect host opt-in (issue #365, epic #253). Only
+    // compiled with the `net-tls` feature -- see `SharedState::allow_insecure_tls`'s
+    // doc comment for why this exists as a *second*, independent, Rust-only
+    // gate rather than folding into `set_net_policy`.
+
+    /// Allow (`true`) or continue denying (`false`, the default) Lisp's
+    /// `tls:connect-insecure!` -- the one explicitly-named API that skips
+    /// certificate verification. With this left at its default, calling
+    /// `tls:connect-insecure!` always signals a structured
+    /// `:category :policy-denied` error, no matter what Lisp code does; only
+    /// the host embedder can widen this gate.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // A test harness that trusts a throwaway self-signed CA would
+    /// // normally pass it as an extra root instead -- this flag is for
+    /// // the rarer case of truly skipping verification (e.g. a
+    /// // developer-only debug tool).
+    /// env.set_allow_insecure_tls(true);
+    /// ```
+    #[cfg(feature = "net-tls")]
+    pub fn set_allow_insecure_tls(&self, allow: bool) {
+        self.shared.allow_insecure_tls.set(allow);
+    }
+
+    /// Whether the host has opted in to `tls:connect-insecure!`. `false`
+    /// (deny) unless [`Environment::set_allow_insecure_tls`] was called.
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn allow_insecure_tls(&self) -> bool {
+        self.shared.allow_insecure_tls.get()
+    }
+
     /// Walk `env`'s lexical parent chain to its root (the frame whose
     /// bindings live in the shared per-symbol value cells rather than a
     /// per-frame map). `require` (issue #256) always evaluates a required
@@ -2711,6 +2797,8 @@ mod worldfork {
                 module_search_paths: SharedCell::new(old.module_search_paths.borrow().clone()),
                 net_policy: SharedCell::new(old.net_policy.borrow().clone()),
                 os_policy: SharedCell::new(old.os_policy.borrow().clone()),
+                #[cfg(feature = "net-tls")]
+                allow_insecure_tls: Cell::new(old.allow_insecure_tls.get()),
             });
             // Memoize BEFORE copying symbols: symbol values reach closures,
             // closures reach environments, and environments reach back to

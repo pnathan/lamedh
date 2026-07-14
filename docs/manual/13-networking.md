@@ -9,8 +9,8 @@ crate dependencies. Pull them in with `(require 'net)`/`(require 'tcp)`/
 `(require 'udp)` on a `with_prelude()`-style environment; `with_stdlib()`
 environments (including the `lamedh` CLI) already have all three loaded.
 
-**TLS is not covered here** — it is explicitly out of scope for this
-release; see §13.7.
+**TLS** (`TLS`, `lib/43-tls.lisp`) wraps a connected TCP `Port` as a client
+or server, behind the off-by-default `net-tls` cargo feature — see §13.8.
 
 A connected TCP stream is an ordinary `PORTS` port (Chapter 11): every
 `read-byte!`/`write-bytes!`/`close!`/`with-open-port`/`port-p` operation
@@ -251,13 +251,24 @@ written entirely in Lisp on top of `TCP`/`PORTS` and the `URL`/`MIME`/
 `JSON` codec modules — zero new crate dependencies, zero new Rust kernel
 surface, HTTP/2 and HTTP/3 out of scope. Pull it in with
 `(require 'http)`; `with_stdlib()` environments (including the CLI) have
-it already. **Plaintext `http://` only for now**: an `https://` URL — given
-directly or arriving as a redirect `Location` — signals a structured error
-with `:CATEGORY :HTTPS-UNSUPPORTED` naming issue #365 (the pending TLS
-dependency ruling), never a silent downgrade. Requiring `HTTP` grants no
-network authority: the client needs `NET-CONNECT` and the server needs
-`NET-LISTEN`, both enforced by the underlying `tcp:connect`/`tcp:listen`
-gates (§13.1) — `HTTP` adds no new capability of its own.
+it already. **`http://` always; `https://` client support when the
+`net-tls` cargo feature is compiled in** (§13.8): an `https://` URL — given
+directly or arriving as a redirect `Location` — connects via `tcp:connect`
+then wraps with `tls:connect` (verification on, SNI, ALPN `"http/1.1"`)
+before speaking HTTP/1.1, exactly the same way as `http://` from every
+other function's point of view. With `net-tls` compiled out, `https://`
+signals a structured error with `:CATEGORY :HTTPS-UNSUPPORTED` naming the
+`net-tls` feature, never a silent downgrade; redirects never silently cross
+schemes either way. Requiring `HTTP` grants no network authority: the
+client needs `NET-CONNECT` and the server needs `NET-LISTEN`, both enforced
+by the underlying `tcp:connect`/`tcp:listen` gates (§13.1) — `HTTP` adds no
+new capability of its own (an `https://` client additionally rides
+`tls:connect`'s own gates — see §13.8 — but that is `READ-FS`, only if you
+pass a path `:extra-roots`, not a new networking capability). Server-side
+`https://` (wrapping an accepted connection before `serve`/`serve-one!`
+parses it) is out of scope: `tls:wrap-server` already composes directly
+with `tcp:accept` for a caller that wants a TLS server without this
+module's own accept loop.
 
 ### Client
 
@@ -307,9 +318,11 @@ nil` to disable), capped at `:max-redirects` (default 5, exceeding it is
 301/302 downgrade POST to GET and drop the body; 307/308 preserve method
 and body (a streamed port body cannot be replayed — that is a clear
 error, not a silent empty resend). A cross-origin hop strips
-`Authorization`/`Cookie`/`Proxy-Authorization`. A `Location` naming a
-different scheme is never followed silently: `https://` is the
-`:HTTPS-UNSUPPORTED` error above, anything else `:UNSUPPORTED-SCHEME`.
+`Authorization`/`Cookie`/`Proxy-Authorization`. A `Location` naming an
+unsupported scheme is never followed silently: an `https://` redirect is
+followed exactly like an `https://` initial request (§13.7's own rule —
+the `:HTTPS-UNSUPPORTED` error above with `net-tls` off, a real TLS-wrapped
+hop with it on), anything else is `:UNSUPPORTED-SCHEME`.
 Bare relative references (`foo`, `../foo`) are an explicit
 `:UNSUPPORTED-REDIRECT` error — absolute, protocol-relative, and
 absolute-path forms are resolved. No proxy support: ambient proxy
@@ -372,41 +385,169 @@ rather than waiting for `Drop` (Chapter 11's ownership rule).
 Verification paths: the default build and `--no-default-features` both
 carry `HTTP` (it is embedded Lisp, not a Cargo feature) — `cargo test`
 and `cargo test --no-default-features` both run its suite
-(`tests/test_http.rs`), loopback-only.
+(`tests/test_http.rs`), loopback-only. `https://` support specifically
+needs `cargo test --features net-tls` — see §13.8.
 
-## 13.8 TLS (not in this release)
+## 13.8 TLS
 
-Wrapping a connected TCP port as a TLS client/server port — certificate
-verification, ALPN/SNI, handshake timeouts — is explicitly out of scope
-for this release: it forces a TLS-crate dependency decision that belongs
-to the project owner, and this release ships zero new dependencies (the
-ruling is tracked as issue #365). The design here is the seam a future
-TLS layer wraps without an API change: a TLS port would be, like a TCP
-stream, an ordinary `PORTS` port, taking and returning the same shape
-`tcp:connect`/`tcp:accept` already do — and `HTTP` (§13.7) would gain
-`https://` support at its single scheme checkpoint without any API
-change.
+`TLS` (`lib/43-tls.lisp`, issue #365) wraps a connected TCP `Port` as a
+client or server, behind a new **`net-tls` cargo feature that is NOT in the
+default feature set** — build with `cargo build --features net-tls` (or
+`cargo run --features net-tls`, `cargo test --features net-tls`) to use it.
+The default build's behavior and dependency tree are unchanged: nothing
+here pulls in `rustls`/`webpki-roots`/`rustls-pemfile` unless you ask for
+this feature. Backed by `rustls` (owner ruling, #364/#365: not
+`native-tls`, so nothing links system OpenSSL/SChannel/SecureTransport),
+with the `ring` crypto provider (not `aws-lc-rs`: no cmake/nasm build-tool
+requirement).
+
+```console
+$ target/debug/lamedh -s "(tls:available-p)"
+NIL
+$ cargo build --features net-tls && target/debug/lamedh -s "(tls:available-p)"
+T
+```
+
+**`(require 'tls)` always works, regardless of the feature** — `lib/43-tls.lisp`
+is embedded like every other optional module, so the file loads and every
+`tls:*` name resolves either way. `tls:available-p` reports whether
+`net-tls` is actually compiled in; every other `tls:*` operation signals a
+structured `:CATEGORY :TLS-UNAVAILABLE` error instead of doing any work
+when it is not, rather than an unbound-variable error — a program can
+`(require 'tls)` unconditionally and branch on `tls:available-p`.
+
+A TLS stream is an ordinary `PORTS` port (§13 intro, Chapter 11): every
+read/write/close/`with-open-port`/`port-p` operation, and every `TCP`
+out-of-band operation (`tcp:shutdown!`, `tcp:set-read-timeout!`/
+`set-write-timeout!`, `net:local-addr`/`net:peer-addr`) already works on it
+unchanged — `PortObj`'s TCP-specific methods were generalized to match a
+TLS-wrapped socket's underlying `.sock` too.
+
+**Wrapping consumes the plaintext port**: `tls:wrap-client port
+:hostname host &key alpn extra-roots` and `tls:wrap-server port cert key
+&key alpn` take ownership of the underlying TCP connection out of `port` —
+that original `Port` value becomes `CLOSED` (errors like any other closed
+port) the instant it is wrapped, so there is never a moment where the same
+socket is reachable as both a plaintext port and a TLS port. `tls:connect
+host port &key connect-timeout-ms handshake-timeout-ms alpn extra-roots`
+is `tcp:connect` + `wrap-client` sugar (`:hostname` defaults to `host`);
+`:handshake-timeout-ms`, if given, sets both the read and write timeout on
+the TCP port before wrapping, so a stalled handshake times out instead of
+blocking forever — this is "handshake timeout via the underlying socket's
+read/write timeouts."
+
+```console
+$ target/debug/lamedh --capability NET-LISTEN --capability NET-CONNECT --capability READ-FS
+> (require 'tls)
+TLS
+> (def listener (tcp:listen "127.0.0.1" 0))
+...
+```
+
+Verification is on by default: the certificate chain is checked against the
+default root store (Mozilla's set, via `webpki-roots`) plus any
+`:extra-roots` you supply — each a PEM source, a String path (`READ-FS`
+capability, checked the same way `read-file` is) or an `Array<Char>` of raw
+bytes — trusted in addition to the default store; this is also how a test
+harness trusts a throwaway self-signed CA. The certificate is checked
+against `:hostname`, which doubles as the SNI server name sent during the
+handshake. A verification failure signals a structured `:CATEGORY
+:TLS-VERIFY-FAILED` error; other handshake failures (malformed records, a
+peer that isn't speaking TLS at all, ...) are `:TLS-HANDSHAKE`;
+misconfiguration (a bad hostname, unparseable PEM data, ...) is
+`:TLS-CONFIG` — every other §13.5 category (`:TIMEOUT`, `:RESET`, ...)
+applies unchanged for the underlying transport.
+
+**No insecure bypass without an explicitly named API, and a host opt-in.**
+`tls:connect-insecure!`/`tls:wrap-client-insecure!` are the *only* way to
+skip certificate verification — there is no keyword flag on `tls:connect`
+that silently does it — and calling them signals a structured
+`:CATEGORY :POLICY-DENIED` error unless the *embedding host* has separately
+called the new `Environment::set_allow_insecure_tls` (Rust-only, default
+`false`; see `docs/embedding.md`). This mirrors `set_net_policy`'s "Lisp
+cannot install or inspect this" shape one level further: a policy callback
+can only narrow an already-granted capability, while this flag is a second,
+independent gate the host must explicitly widen. Lisp code alone can never
+disable verification, no matter what it calls.
+
+```console
+$ target/debug/lamedh --capability NET-CONNECT -s "(tls:connect-insecure! \"127.0.0.1\" 1)"
+Error: tls-wrap-client-insecure*: POLICY-DENIED: tls:connect-insecure! requires host opt-in (Environment::set_allow_insecure_tls) -- Lisp code alone cannot disable certificate verification
+  in: TLS:CONNECT-INSECURE!
+```
+
+ALPN and peer-certificate diagnostics:
+
+```lisp
+(tls:alpn-protocol port)              ; => "http/1.1", or NIL if none negotiated
+(tls:peer-certificates port)          ; => list of Array<Char> DER, leaf first, or NIL
+(tls:peer-certificate-summary port)   ; => ((:count . 1) (:leaf-der-length . 851) (:leaf-der . #<array>))
+(tls:sni-hostname port)               ; => the SNI a client offered, server-side only
+```
+
+`tls:peer-certificate-summary` is deliberately structural, not parsed: this
+dependency ruling adds no X.509 parser (`rustls` + `webpki-roots` +
+`rustls-pemfile` only), so there are no subject/issuer/expiry fields — a
+caller that needs those pulls in its own X.509 parser and works from
+`tls:peer-certificates`'s raw DER.
+
+Server-side wrapping mirrors the client: `cert` may be a full chain
+(leaf first) in one PEM source; `key` is the matching private key; no
+client-certificate authentication is requested.
+
+```console
+$ target/debug/lamedh --capability NET-LISTEN --capability READ-FS
+> (require 'tls)
+TLS
+> (let* ((accepted (tcp:accept my-listener))
+         (plain (car accepted))
+         (tls (tls:wrap-server plain "cert.pem" "key.pem" :alpn (list "http/1.1"))))
+    (ports:write-bytes! tls (text:string->utf8 "hi"))
+    (ports:close! tls))
+```
+
+**https:// through HTTP** (§13.7): with `net-tls` compiled in, `http:request`
+(and `get`/`post`) connect an `https://` URL — initial request or redirect
+`Location` alike — via `tcp:connect` then `tls:connect` (ALPN `"http/1.1"`)
+before speaking HTTP/1.1 over the resulting port; `:extra-roots` on
+`request`/`get`/`post` forwards verbatim to `tls:connect`. With `net-tls`
+compiled out, `https://` keeps the same `:CATEGORY :HTTPS-UNSUPPORTED`
+error either way — never a silent downgrade or a scheme silently crossed on
+redirect. Server-side `https://` (wrapping an accepted connection before
+`serve`/`serve-one!` parses it) is out of scope for `HTTP` itself —
+`tls:wrap-server` already composes directly with `tcp:accept`.
+
+Verification paths: `cargo test --features net-tls` runs
+`tests/test_tls.rs` (loopback-only, a throwaway self-signed CA generated
+per test via the `rcgen` **dev-dependency** — never a build/normal
+dependency). The default build and `--no-default-features` both still pass
+`cargo test`/`cargo test --no-default-features`: `TLS` loads either way
+(behavior above), and the feature-off assertions live in
+`tests/test_net.rs`/`tests/test_http.rs`.
 
 ## 13.9 Summary
 
 - A connected TCP stream is an ordinary `PORTS` port; a listener or a UDP
   socket is its own opaque handle (`net:*`/`tcp:*`/`udp:*` predicates,
-  never a raw file descriptor or integer).
+  never a raw file descriptor or integer). A TLS-wrapped stream (§13.8) is
+  the same `PORTS` port shape too.
 - `NET-DNS`/`NET-CONNECT`/`NET-LISTEN` are independent, fence-attenuated
   capabilities; an embedder can further scope any of them with
   `set_net_policy` (Rust-only).
 - Structured errors carry a portable `:CATEGORY` (`:TIMEOUT`/`:REFUSED`/
   `:RESET`/`:DNS`/`:CLOSED`/`:POLICY-DENIED`/`:ADDR-IN-USE`/
   `:ADDR-NOT-AVAILABLE`/`:OTHER`), including for a TCP port's ordinary
-  `PORTS` read/write operations.
+  `PORTS` read/write operations; TLS adds `:TLS-VERIFY-FAILED`/
+  `:TLS-HANDSHAKE`/`:TLS-CONFIG`/`:TLS-UNAVAILABLE`.
 - `tcp:listen`'s `backlog` argument and `udp:receive-from`'s truncation
   flag are both honestly-documented, std-library-shaped limitations, not
   full OS-level control — see §13.3/§13.4.
 - `HTTP` (§13.7) is a pure-Lisp HTTP/1.1 client and server over the TCP
   substrate — streaming framing-aware bodies, bounded collection,
-  redirect policy, serial keep-alive serving; plaintext `http://` only,
-  no new capability of its own.
-- TLS is deferred to a follow-up that can make its own dependency
-  decision (issue #365); the port-wrapping design here is the seam it
-  will use, and `HTTP`'s single scheme checkpoint is where `https://`
-  slots in.
+  redirect policy, serial keep-alive serving; `http://` always, `https://`
+  client support with `net-tls`; no new capability of its own.
+- `TLS` (§13.8) wraps a connected TCP port as a client or server, behind
+  the off-by-default `net-tls` cargo feature (rustls/ring) — verification
+  on by default, `:extra-roots` for private CAs, no insecure bypass without
+  both an explicitly named API and a host-only opt-in, and the same
+  `PORTS` port shape `TCP` already established.
