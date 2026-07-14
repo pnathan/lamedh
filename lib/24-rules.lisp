@@ -140,4 +140,11 @@ the builtin constant-folder on FORM."
 ;;; REQUIRE-ABLE (issue #256): `(require 'rules)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The rulebook API
+;;; stays FLAT: `optimize-form` is the shared compiler pipeline hook this
+;;; file redefines (see lib/11-optimizer-vau.lisp), so the surface is pinned
+;;; flat. This DEFMODULE only records metadata.
+(require 'modules)
+(defmodule rules
+  (:export defrule undefrule list-rules apply-rules optimize-form))
 (provide 'rules)

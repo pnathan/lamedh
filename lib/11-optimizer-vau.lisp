@@ -455,5 +455,12 @@ BOUND is an optional list of locally-bound names that shadow globals."
 ;;; REQUIRE-ABLE (issue #256): `(require 'optimizer-vau)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The optimizer
+;;; entry points stay FLAT (`optimize-form` is the compiler pipeline hook,
+;;; shared with lib/24-rules.lisp); this DEFMODULE only records metadata.
+(require 'modules)
+(defmodule optimizer-vau
+  (:export opt-pure-p opt-all-pure-p opt-pass opt-collapse-frames
+           optimize-form defun-typed-opt))
 (provide 'optimizer-vau)
 

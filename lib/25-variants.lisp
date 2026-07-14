@@ -270,4 +270,12 @@ condition system into Result."
 ;;; REQUIRE-ABLE (issue #256): `(require 'variants)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). Sum-type forms
+;;; stay FLAT (language-defining: `defvariant`/`variant-case`/Option/Result);
+;;; this DEFMODULE only records metadata -- no WITH-MODULE body rewrite.
+(require 'modules)
+(defmodule variants
+  (:export defvariant variant-ctors variant-of variant-case option-of
+           unwrap unwrap-or option-map option-then unwrap-result result-or
+           result-map result-then try-call))
 (provide 'variants)

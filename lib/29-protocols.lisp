@@ -335,4 +335,11 @@ report ((protocol . status)...) or errors naming the failures."
 ;;; REQUIRE-ABLE (issue #256): `(require 'protocols)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The dispatch
+;;; vocabulary stays FLAT (language-defining: `defprotocol`/`definstance`
+;;; and conformance are THE dispatch system); this DEFMODULE only records
+;;; metadata -- no WITH-MODULE body rewrite.
+(require 'modules)
+(defmodule protocols
+  (:export defprotocol definstance ref implements-p implements!))
 (provide 'protocols)
