@@ -146,6 +146,7 @@ pub fn compile_native(
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
     jb.symbol("jit_bad_char", super::jit_bad_char as *const u8);
+    jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     let mut module = JITModule::new(jb);
@@ -212,6 +213,16 @@ pub fn compile_native(
         .declare_function("jit_bad_char", Linkage::Import, &bcsig)
         .map_err(|e| e.to_string())?;
 
+    // Imported libm float-intrinsic trampoline (`sin`/`cos`/`tan`/`exp`/
+    // `round`): (opcode, x) -> result word. Pure math, no `Ctx`.
+    let mut ftsig = module.make_signature();
+    ftsig.params.push(AbiParam::new(types::I64));
+    ftsig.params.push(AbiParam::new(types::F64));
+    ftsig.returns.push(AbiParam::new(types::I64));
+    let ftrans_id = module
+        .declare_function("jit_ftrans", Linkage::Import, &ftsig)
+        .map_err(|e| e.to_string())?;
+
     // Imported non-tail-call depth guard (issue #271): `jit_enter_call`
     // (ctx) -> bool-as-i64 (nonzero = ok, depth bumped; zero = at the cap, a
     // recursion-limit error is now pending) and `jit_exit_call` (ctx) -> (),
@@ -250,6 +261,7 @@ pub fn compile_native(
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
         let bad_char_ref = module.declare_func_in_func(bad_char_id, b.func);
+        let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
@@ -296,6 +308,7 @@ pub fn compile_native(
             alloc_ref,
             array_oob_ref,
             bad_char_ref,
+            ftrans_ref,
             enter_call_ref,
             exit_call_ref,
             callee_sig,
@@ -354,6 +367,9 @@ struct Emitter<'a, 'b, 'c> {
     /// Imported [`super::jit_bad_char`] (issue #281): records the CODE-CHAR
     /// range error on `Ctx` from the out-of-range arm of a CODE-CHAR narrowing.
     bad_char_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_ftrans`]: the libm float-intrinsic trampoline
+    /// (`sin`/`cos`/`tan`/`exp`/`round`), called from the `FUnary` arm.
+    ftrans_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
@@ -511,25 +527,35 @@ impl Emitter<'_, '_, '_> {
                 // op, and produce the result word. `sqrt` yields a float word;
                 // the rounding ops floor/ceil/trunc convert to int64 with a
                 // *saturating* fcvt, matching Rust's saturating `f64 as i64` that
-                // the evaluator and Core interpreter use.
+                // the evaluator and Core interpreter use. The libm ops
+                // (sin/cos/tan/exp/round — no direct instruction) call the
+                // `jit_ftrans` trampoline, which returns the result word already
+                // (float bits or the integer), computed by `FUnOp::apply_word`.
                 let v = self.emit_value(a);
                 let af = self.as_f(v);
-                let r = match op {
-                    FUnOp::Sqrt => {
-                        let rf = self.b.ins().sqrt(af);
-                        self.as_i(rf)
-                    }
-                    FUnOp::Floor => {
-                        let rf = self.b.ins().floor(af);
-                        self.b.ins().fcvt_to_sint_sat(types::I64, rf)
-                    }
-                    FUnOp::Ceil => {
-                        let rf = self.b.ins().ceil(af);
-                        self.b.ins().fcvt_to_sint_sat(types::I64, rf)
-                    }
-                    FUnOp::Trunc => {
-                        let rf = self.b.ins().trunc(af);
-                        self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                let r = if op.is_libm() {
+                    let opc = self.iconst(op.opcode() as i64);
+                    let call = self.b.ins().call(self.ftrans_ref, &[opc, af]);
+                    self.b.inst_results(call)[0]
+                } else {
+                    match op {
+                        FUnOp::Sqrt => {
+                            let rf = self.b.ins().sqrt(af);
+                            self.as_i(rf)
+                        }
+                        FUnOp::Floor => {
+                            let rf = self.b.ins().floor(af);
+                            self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                        }
+                        FUnOp::Ceil => {
+                            let rf = self.b.ins().ceil(af);
+                            self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                        }
+                        FUnOp::Trunc => {
+                            let rf = self.b.ins().trunc(af);
+                            self.b.ins().fcvt_to_sint_sat(types::I64, rf)
+                        }
+                        _ => unreachable!("libm ops routed through jit_ftrans above"),
                     }
                 };
                 Emitted::Value(r)
