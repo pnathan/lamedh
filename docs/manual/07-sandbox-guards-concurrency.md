@@ -119,27 +119,30 @@ env.enable_feature("SHELL");
 
 ## 7.2 The Shell Layer
 
-`lib/07-shell.lisp` wraps the raw `shell` builtin (which just returns the
-`(exit-code stdout stderr)` triple) with convenience accessors and an
-error-checked runner, all still gated by `SHELL`.
+`lib/07-shell.lisp` is the `shell` module: it wraps the raw `shell` builtin
+(which just returns the `(exit-code stdout stderr)` triple) with convenience
+accessors and an error-checked runner, all still gated by `SHELL`. Its
+helpers are called qualified (`shell:sh`, `shell:shell-stdout`) or bound
+flat with `(import shell)`.
 
-`shell-exit-code`, `shell-stdout`, and `shell-stderr` pull a field out of
-a raw result:
+`shell:shell-exit-code`, `shell:shell-stdout`, and `shell:shell-stderr`
+pull a field out of a raw result:
 
 ```console
 $ target/debug/lamedh --capability SHELL \
-    -s '(let ((r (shell "echo x"))) (list (shell-exit-code r) (shell-stdout r) (shell-ok-p r)))'
+    -s '(let ((r (shell "echo x"))) (list (shell:shell-exit-code r) (shell:shell-stdout r) (shell:shell-ok-p r)))'
 ; => (0 "x\n" T)
 ```
 
-`sh` is the one you reach for day to day: it runs a command and returns
-just its stdout, signaling a Lisp error if the exit code is non-zero.
+`shell:sh` is the one you reach for day to day: it runs a command and
+returns just its stdout, signaling a Lisp error if the exit code is
+non-zero.
 
 ```console
-$ target/debug/lamedh --capability SHELL -s '(sh "echo hello-from-sh")'
+$ target/debug/lamedh --capability SHELL -s '(shell:sh "echo hello-from-sh")'
 ; => "hello-from-sh\n"
 
-$ target/debug/lamedh --capability SHELL -s '(sh "exit 3")'
+$ target/debug/lamedh --capability SHELL -s '(shell:sh "exit 3")'
 Error: shell command failed: exit 3
 ```
 
@@ -462,7 +465,7 @@ $ target/debug/lamedh -s "(progn (defun pure (x) (* x x)) (capabilities-needed '
 form:
 
 ```console
-$ target/debug/lamedh -s "(capabilities-needed-form '(write-file \"x\" (sh \"date\")))"
+$ target/debug/lamedh -s "(capabilities-needed-form '(write-file \"x\" (shell:sh \"date\")))"
 ; => (SHELL CREATE-FS)
 ```
 

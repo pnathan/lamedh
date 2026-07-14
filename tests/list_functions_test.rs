@@ -1,8 +1,10 @@
 use lamedh::{Shared, environment::Environment, eval_line, evaluator, reader};
 
 fn env_with_prologue() -> Shared<Environment> {
-    let env = Environment::new_with_builtins();
-    lamedh::load_directory("lib", &env).unwrap();
+    // Canonical stdlib loader (STDLIB_SOURCES order), not filename-sorted
+    // load_directory("lib"): since #56 the low-numbered optionals require the
+    // module system to load ahead of them (see cxr_and_equal_test.rs).
+    let env = Environment::with_stdlib();
     let prologue = std::fs::read_to_string("prologue.lisp").unwrap();
     let expressions = reader::read_all(&prologue, &env).unwrap();
     for expr in expressions {

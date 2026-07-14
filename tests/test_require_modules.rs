@@ -26,7 +26,7 @@ fn with_prelude_has_no_optional_vocabulary_until_required() {
     line(&env, "(setf x 5)");
     assert_eq!(line(&env, "x"), "5");
     // Optional-library vocabulary is absent.
-    assert!(!env.is_bound("SHELL-OK-P"));
+    assert!(!env.is_bound("SHELL:SHELL-OK-P"));
     assert!(!env.is_bound("DEFTEST"));
     assert!(!env.is_bound("DEFMODULE"));
     assert_eq!(line(&env, "(loaded-modules)"), "()");
@@ -35,9 +35,10 @@ fn with_prelude_has_no_optional_vocabulary_until_required() {
 #[test]
 fn require_pulls_in_an_optional_embedded_module() {
     let env = Environment::with_prelude();
-    assert!(!env.is_bound("SHELL-OK-P"));
+    // shell is a fully-qualified module now (#56): its vocabulary is SHELL:*.
+    assert!(!env.is_bound("SHELL:SHELL-OK-P"));
     assert_eq!(line(&env, "(require 'shell)"), "SHELL");
-    assert!(env.is_bound("SHELL-OK-P"));
+    assert!(env.is_bound("SHELL:SHELL-OK-P"));
     assert_eq!(line(&env, "(module-state 'shell)"), "REQUIRE-LOADED");
     assert_eq!(line(&env, "(member 'SHELL (loaded-modules))"), "(SHELL)");
 }
@@ -230,7 +231,8 @@ fn require_reload_forces_re_evaluation() {
 fn with_stdlib_still_loads_every_optional_module_and_marks_it_loaded() {
     let env = Environment::with_stdlib();
     // Spot-check vocabulary from several optional files, exactly as before.
-    assert!(env.is_bound("SH"));
+    // shell is a fully-qualified module now (#56): SHELL:SH, not flat SH.
+    assert!(env.is_bound("SHELL:SH"));
     assert!(env.is_bound("DEFTEST"));
     assert!(env.is_bound("DEFMODULE"));
     assert!(env.is_bound("HELP"));

@@ -70,6 +70,21 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## modules: shell helpers move under the `shell` namespace (#56)
+
+`lib/07-shell.lisp` is now the `shell` module (`defmodule shell`, built on
+the reordered load sequence from the previous entry). Its five helpers are
+qualified: `shell:sh`, `shell:shell-exit-code`, `shell:shell-stdout`,
+`shell:shell-stderr`, `shell:shell-ok-p` — call them qualified or bind them
+flat with `(import shell)`. The module declares `(:requires SHELL)` for
+capability introspection (`(module-requires 'shell)`). The bare kernel
+`shell` builtin (the `(exit-code stdout stderr)` primitive) is unchanged and
+stays flat — only the Lisp helper layer is namespaced. **Behavior change**:
+`(sh ...)` and the flat accessors are no longer bound by default; use
+`shell:sh` or `(import shell)`. Guard's `capabilities-needed` still infers
+`SHELL` through `shell:sh` (it walks the call graph into the kernel
+primitive). First of the #56 tool-library retrofits.
+
 ## internal: stdlib load order — module system ahead of the optionals (#56 prep)
 
 Reordered the embedded `STDLIB_SOURCES` load sequence so the module

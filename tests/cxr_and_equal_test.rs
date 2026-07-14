@@ -1,10 +1,12 @@
 use lamedh::{self, Shared, environment::Environment, eval_line};
 
 fn env_with_stdlib() -> Shared<Environment> {
-    let env = Environment::new_with_builtins();
-    //    lamedh::load_file("prologue.lisp", &env).unwrap();
-    lamedh::load_directory("lib", &env).unwrap();
-    env
+    // Use the canonical stdlib loader (STDLIB_SOURCES load order), not a raw
+    // filename-sorted load_directory("lib"): since #56 the low-numbered
+    // optionals (e.g. 07-shell) require the module system, which must load
+    // ahead of them -- an ordering load_directory's filename sort does not
+    // honor.
+    Environment::with_stdlib()
 }
 
 #[test]
