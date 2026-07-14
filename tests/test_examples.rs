@@ -78,6 +78,7 @@ example_tests! {
     game_of_life => "game-of-life",
     huffman => "huffman",
     knapsack => "knapsack",
+    lamed_nebula => "lamed-nebula",
     lazy_streams => "lazy-streams",
     levenshtein => "levenshtein",
     lisp_in_lisp => "lisp-in-lisp",
