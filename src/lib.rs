@@ -628,6 +628,8 @@ pub enum BuiltinFunc {
     ReadFile,
     ReadFileByte,
     ReadFileSection,
+    ReadFileSectionLossy,
+    ReadFileSectionBytes,
     WriteFile,
     // File metadata predicates (gated behind READ-FS capability)
     FileExistsP,

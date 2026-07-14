@@ -893,51 +893,50 @@ pub(super) fn apply(
             }
 
             BuiltinFunc::ReadFileSection => {
+                // (read-file-section path offset len) — read up to LEN bytes at
+                // OFFSET and decode them as UTF-8 STRICTLY (issue #359): invalid
+                // bytes signal an error rather than the silent U+FFFD coercion
+                // epic #253 bans. Use READ-FILE-SECTION-LOSSY for
+                // replacement-character decoding, or READ-FILE-SECTION-BYTES to
+                // get the raw bytes and cross the text boundary yourself.
                 require_read_fs(env)?;
-                if args.len() != 3 {
-                    return Err(LispError::Generic(
-                        "read-file-section requires exactly three arguments: path offset len"
-                            .to_string(),
-                    ));
+                let buf = read_file_section_bytes("READ-FILE-SECTION", args)?;
+                match String::from_utf8(buf) {
+                    Ok(s) => Ok(LispVal::String(s)),
+                    Err(e) => {
+                        let ue = e.utf8_error();
+                        let total = e.as_bytes().len();
+                        Err(LispError::Generic(format!(
+                            "READ-FILE-SECTION: invalid UTF-8 at byte offset {} of {} ({}); use READ-FILE-SECTION-LOSSY for replacement-character decoding or READ-FILE-SECTION-BYTES for the raw bytes",
+                            ue.valid_up_to(),
+                            total,
+                            match ue.error_len() {
+                                Some(n) => format!("invalid {n}-byte sequence"),
+                                None => "truncated sequence at end of input".to_string(),
+                            }
+                        )))
+                    }
                 }
-                let path = match &args[0] {
-                    LispVal::String(s) => s.clone(),
-                    _ => {
-                        return Err(LispError::Generic(format!(
-                            "READ-FILE-SECTION: path must be a string, got {}",
-                            err_val(&args[0])
-                        )));
-                    }
-                };
-                let offset = match &args[1] {
-                    LispVal::Number(n) if *n >= 0 => *n as u64,
-                    _ => {
-                        return Err(LispError::Generic(format!(
-                            "READ-FILE-SECTION: offset must be a non-negative integer, got {}",
-                            err_val(&args[1])
-                        )));
-                    }
-                };
-                let len = match &args[2] {
-                    LispVal::Number(n) if *n >= 0 => *n as usize,
-                    _ => {
-                        return Err(LispError::Generic(format!(
-                            "READ-FILE-SECTION: len must be a non-negative integer, got {}",
-                            err_val(&args[2])
-                        )));
-                    }
-                };
-                use std::io::{Read, Seek, SeekFrom};
-                let mut file = std::fs::File::open(&path)
-                    .map_err(|e| LispError::Generic(format!("read-file-section: {e}")))?;
-                file.seek(SeekFrom::Start(offset))
-                    .map_err(|e| LispError::Generic(format!("read-file-section: seek: {e}")))?;
-                let mut buf = vec![0u8; len];
-                let n = file
-                    .read(&mut buf)
-                    .map_err(|e| LispError::Generic(format!("read-file-section: {e}")))?;
-                buf.truncate(n);
+            }
+
+            BuiltinFunc::ReadFileSectionLossy => {
+                // (read-file-section-lossy path offset len) — the explicit
+                // opt-in to lossy UTF-8 decoding: invalid bytes become U+FFFD,
+                // mirroring TEXT:UTF8->STRING-LOSSY (issue #359).
+                require_read_fs(env)?;
+                let buf = read_file_section_bytes("READ-FILE-SECTION-LOSSY", args)?;
                 Ok(LispVal::String(String::from_utf8_lossy(&buf).into_owned()))
+            }
+
+            BuiltinFunc::ReadFileSectionBytes => {
+                // (read-file-section-bytes path offset len) — the raw bytes as
+                // an Array<Char> (the epic #253 byte-vector surface), no text
+                // decoding at all. Cross the boundary explicitly with
+                // TEXT:UTF8->STRING / -LOSSY or feed a codec (issue #359).
+                require_read_fs(env)?;
+                let buf = read_file_section_bytes("READ-FILE-SECTION-BYTES", args)?;
+                let bytes: Vec<LispVal> = buf.into_iter().map(LispVal::Char).collect();
+                Ok(LispVal::Array(Shared::new(SharedCell::new(bytes))))
             }
 
             BuiltinFunc::WriteFile => {
@@ -2185,4 +2184,56 @@ fn apply_record_type_op(
         }
         _ => unreachable!("routed only for record type ops"),
     }
+}
+
+/// Shared open+seek+read for the `READ-FILE-SECTION*` family (issue #359):
+/// read up to `len` bytes of `path` starting at byte `offset`, returning the
+/// raw bytes with no text decoding. The three surface builtins differ only in
+/// how they turn these bytes into a value — strict decode, explicit lossy
+/// decode, or the raw `Array<Char>` byte buffer — so the byte read lives here
+/// once. `who` names the caller for error messages.
+fn read_file_section_bytes(who: &str, args: &[LispVal]) -> Result<Vec<u8>, LispError> {
+    if args.len() != 3 {
+        return Err(LispError::Generic(format!(
+            "{who} requires exactly three arguments: path offset len"
+        )));
+    }
+    let path = match &args[0] {
+        LispVal::String(s) => s.clone(),
+        _ => {
+            return Err(LispError::Generic(format!(
+                "{who}: path must be a string, got {}",
+                err_val(&args[0])
+            )));
+        }
+    };
+    let offset = match &args[1] {
+        LispVal::Number(n) if *n >= 0 => *n as u64,
+        _ => {
+            return Err(LispError::Generic(format!(
+                "{who}: offset must be a non-negative integer, got {}",
+                err_val(&args[1])
+            )));
+        }
+    };
+    let len = match &args[2] {
+        LispVal::Number(n) if *n >= 0 => *n as usize,
+        _ => {
+            return Err(LispError::Generic(format!(
+                "{who}: len must be a non-negative integer, got {}",
+                err_val(&args[2])
+            )));
+        }
+    };
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file =
+        std::fs::File::open(&path).map_err(|e| LispError::Generic(format!("{who}: {e}")))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| LispError::Generic(format!("{who}: seek: {e}")))?;
+    let mut buf = vec![0u8; len];
+    let n = file
+        .read(&mut buf)
+        .map_err(|e| LispError::Generic(format!("{who}: {e}")))?;
+    buf.truncate(n);
+    Ok(buf)
 }

@@ -3185,8 +3185,26 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(read-file-section path offset len)")
     (cons 'CATEGORY 'filesystem)
-    (cons 'DESCRIPTION "Reads up to len bytes starting at byte offset from the file at path. Returns the bytes as a string (lossily decoded from UTF-8; non-UTF-8 bytes become replacement characters). Returns a shorter string if fewer than len bytes are available. Requires the READ-FS capability.")
-    (cons 'SEE-ALSO '(read-file read-file-byte write-file feature-enabled-p))))
+    (cons 'DESCRIPTION "Reads up to len bytes starting at byte offset from the file at path and decodes them as UTF-8 STRICTLY: invalid bytes signal an error (naming the offending byte offset) rather than being silently coerced. Returns a shorter string if fewer than len bytes are available. Use READ-FILE-SECTION-LOSSY for replacement-character decoding, or READ-FILE-SECTION-BYTES for the raw bytes. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(read-file-section-lossy read-file-section-bytes read-file read-file-byte write-file feature-enabled-p))))
+
+(register-doc 'read-file-section-lossy
+  (list
+    (cons 'NAME 'read-file-section-lossy)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-file-section-lossy path offset len)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Like READ-FILE-SECTION but decodes UTF-8 lossily: invalid bytes become the U+FFFD replacement character instead of signaling an error. The explicit opt-in to lossy decoding, mirroring TEXT:UTF8->STRING-LOSSY. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(read-file-section read-file-section-bytes feature-enabled-p))))
+
+(register-doc 'read-file-section-bytes
+  (list
+    (cons 'NAME 'read-file-section-bytes)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(read-file-section-bytes path offset len)")
+    (cons 'CATEGORY 'filesystem)
+    (cons 'DESCRIPTION "Reads up to len bytes starting at byte offset from the file at path and returns them as an Array of bytes (Array<Char>), with no text decoding. Cross the text boundary yourself with TEXT:UTF8->STRING / TEXT:UTF8->STRING-LOSSY, or feed the bytes to a codec (BASE64, HEX, JSON, ...). Returns a shorter array if fewer than len bytes are available. Requires the READ-FS capability.")
+    (cons 'SEE-ALSO '(read-file-section read-file-section-lossy feature-enabled-p))))
 
 (register-doc 'write-file
   (list
@@ -4238,7 +4256,8 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'filesystem
   "File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)"
-  '(read-file read-file-byte read-file-section write-file
+  '(read-file read-file-byte read-file-section read-file-section-lossy
+    read-file-section-bytes write-file
     read-sexpr-file write-sexpr-file
     file-exists-p directory-p file-p file-readable-p file-writable-p
     file-executable-p file-size directory-files file-newer-p
