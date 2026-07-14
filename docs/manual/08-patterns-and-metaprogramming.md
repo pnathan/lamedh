@@ -139,12 +139,12 @@ $ lamedh -s "(instantiate '(list ??xs) '((??xs 1 2 3)))"
 pattern, as `(subform . bindings)` pairs:
 
 ```
-$ lamedh -s "(sgrep '(+ ?a ?b) '(let ((x (+ 1 2))) (* x (+ 3 4))))"
+$ lamedh -s "(match:sgrep '(+ ?a ?b) '(let ((x (+ 1 2))) (* x (+ 3 4))))"
 ; => (((+ 1 2) (?B . 2) (?A . 1)) ((+ 3 4) (?B . 4) (?A . 3)))
 ```
 
 `sgrep-fn` runs `sgrep` over a function's own source, via `see-source` — grep
-a definition the way you'd grep a file: `(sgrep '(+ ?a ?b) (see-source 'f))`
+a definition the way you'd grep a file: `(match:sgrep '(+ ?a ?b) (see-source 'f))`
 for `(defun f (x) (+ x 1))` finds `(((+ X 1) (?B . 1) (?A . X)))`.
 
 ### Positions: `sgrep-source` and `read-all-positioned`
@@ -155,12 +155,12 @@ for `(defun f (x) (+ x 1))` finds `(((+ X 1) (?B . 1) (?A . X)))`.
 itself:
 
 ```
-$ lamedh -s '(sgrep-source (quote (defun ?name ?_ ??_)) "(defun f (x) x)
+$ lamedh -s '(match:sgrep-source (quote (defun ?name ?_ ??_)) "(defun f (x) x)
 (defun g (y) y)")'
 ; => ((1 1 (DEFUN F (X) X) ((?NAME . F))) (2 1 (DEFUN G (Y) Y) ((?NAME . G))))
 
 $ lamedh -s '(mapcar (lambda (hit) (match hit ((?line ?col ?form ?bs) (list ?line ?col ?form))))
-  (sgrep-source (quote (defun ?name ?_ ??_)) "(defun f (x) x)
+  (match:sgrep-source (quote (defun ?name ?_ ??_)) "(defun f (x) x)
 (defun g (y) y)"))'
 ; => ((1 1 (DEFUN F (X) X)) (2 1 (DEFUN G (Y) Y)))
 ```
@@ -173,8 +173,8 @@ and several `record-ref`-based accessors — good real targets:
 
 ```
 $ lamedh --capability READ-FS -s "(list
-  (mapcar (lambda (h) (list (car h) (car (cdr h)))) (sgrep-file '(defrecord ?name ??_) \"examples/npcs.lisp\"))
-  (sgrep-file '(record-ref ?_ ??_) \"examples/npcs.lisp\"))"
+  (mapcar (lambda (h) (list (car h) (car (cdr h)))) (match:sgrep-file '(defrecord ?name ??_) \"examples/npcs.lisp\"))
+  (match:sgrep-file '(record-ref ?_ ??_) \"examples/npcs.lisp\"))"
 ; => (((26 1) (31 1) (36 1))
 ;     ((49 1 (RECORD-REF SELF (QUOTE NAME)) ()) (50 1 (RECORD-REF SELF (QUOTE HP)) ())))
 ```
@@ -184,7 +184,7 @@ Three `defrecord` forms, at lines 26, 31, and 36 — `goblin`, `merchant`, and
 
 ## 8.3 `rewrite`: Structural Transformation
 
-`(rewrite pattern template form)` replaces every subform matching `pattern`
+`(match:rewrite pattern template form)` replaces every subform matching `pattern`
 with `template` instantiated against that match's bindings. It runs
 bottom-up, single pass: children are rewritten before their parent is
 checked, so a nested match is already transformed by the time it reaches an
@@ -193,7 +193,7 @@ re-searched at its own node, so a template can echo the pattern's own shape
 without looping.
 
 ```
-$ lamedh -s "(rewrite '(+ ?a 0) '?a '(+ (+ x 0) 5))"
+$ lamedh -s "(match:rewrite '(+ ?a 0) '?a '(+ (+ x 0) 5))"
 ; => (+ X 5)
 ```
 
@@ -204,7 +204,7 @@ two algebraic identities with `?or` simplifies an arbitrarily nested
 expression in one pass — nested `+0`/`*1` wrappers all get peeled together:
 
 ```
-$ lamedh -s "(defun simplify (form) (rewrite '(?or (+ ?a 0) (* ?a 1)) '?a form))
+$ lamedh -s "(defun simplify (form) (match:rewrite '(?or (+ ?a 0) (* ?a 1)) '?a form))
   (simplify '(+ (* (+ x 0) 1) 0))"
 ; => X
 ```
