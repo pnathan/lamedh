@@ -266,6 +266,63 @@ impl Jit {
         Jit::default()
     }
 
+    /// Clone this registry for a forked interpreter world (the stdlib
+    /// prototype fork; see `Environment::with_stdlib`).
+    ///
+    /// The declaration plane — declared schemes, protocol instances and
+    /// dispatch positions, struct/variant/generic definitions — is immutable
+    /// plain data behind `Rc`s and clones freely: each fork gets its own
+    /// *maps*, so later registrations diverge per world while the shared
+    /// definitions themselves are never mutated in place.
+    ///
+    /// Registered typed **functions** (`funcs`) are different: a `TypedFn`
+    /// carries interior mutability (compiled/native editions, generation
+    /// counters), so sharing one across worlds would leak redefinition state
+    /// between them. Each fork therefore gets its own `TypedFn` cells with
+    /// the signature/core/generation copied. The *closure* compiled edition
+    /// is shared — `compile_with_tco` closures capture only the (immutable)
+    /// core IR and the function's own id, and dispatch every cross-function
+    /// call through the per-invocation `Ctx`, so they are world-free. The
+    /// *native* (Cranelift) edition is **not** shared: its machine code
+    /// bakes in the addresses of the prototype's entry cells, so carrying it
+    /// over would route direct calls through the other world after a
+    /// redefinition. Forked worlds start with no native edition (the
+    /// portable closure tier serves calls, bit-identically); any
+    /// `defun-typed` in the fork rebuilds native editions against the
+    /// fork's own cells, exactly as a redefinition already does.
+    pub(crate) fn clone_for_fork(&self) -> Option<Jit> {
+        let funcs: Vec<Rc<TypedFn>> = self
+            .funcs
+            .iter()
+            .map(|f| {
+                Rc::new(TypedFn {
+                    name: f.name.clone(),
+                    id: f.id,
+                    params: RefCell::new(f.params.borrow().clone()),
+                    ret: RefCell::new(f.ret.borrow().clone()),
+                    core: RefCell::new(f.core.borrow().clone()),
+                    slots: Cell::new(f.slots.get()),
+                    compiled: RefCell::new(f.compiled.borrow().clone()),
+                    #[cfg(feature = "jit")]
+                    native: RefCell::new(None),
+                    #[cfg(feature = "jit")]
+                    entry: Box::new(Cell::new(0)),
+                    generation: Cell::new(f.generation.get()),
+                })
+            })
+            .collect();
+        Some(Jit {
+            funcs,
+            by_name: self.by_name.clone(),
+            structs: self.structs.clone(),
+            protocol_instances: self.protocol_instances.clone(),
+            protocol_dispatch: self.protocol_dispatch.clone(),
+            generics: self.generics.clone(),
+            variants: self.variants.clone(),
+            declared: self.declared.clone(),
+        })
+    }
+
     /// Register a **declared** scheme for `name` from its surface form, e.g.
     /// `(forall (r) (-> ((record ((amount int64)) r)) int64))`. Returns the
     /// rendered scheme. The declaration is an axiom, not a checked fact — the

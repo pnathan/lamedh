@@ -412,7 +412,17 @@ pub fn load_stdlib(env: &Rc<Environment>) {
 }
 ```
 
-`Environment::with_stdlib()` calls `new_with_builtins()` then `load_stdlib()`.
+`Environment::with_stdlib()` serves a **deep-copy fork of a per-thread
+prototype**: the first call on a thread runs `new_with_builtins()` +
+`load_stdlib()` once into a private prototype world, and every call
+(including the first) returns `Environment::fork_world(prototype)` — an
+isomorphic copy with a fresh symbol table, fresh global value cells, and
+fresh closures/containers, built in milliseconds. Forked worlds share no
+mutable cell, so isolation between environments is exactly that of
+independent full loads. `Environment::with_stdlib_fresh()` bypasses the
+prototype and runs the loader directly (the CLI uses it, since it builds
+exactly one environment per process). `with_prelude()` /
+`with_prelude_fresh()` mirror the same split.
 
 **Consequence:** The stdlib is always exactly what was compiled in. Users cannot replace stdlib files at runtime unless they call `load_file()` explicitly afterward (which can shadow definitions).
 

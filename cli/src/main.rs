@@ -246,7 +246,12 @@ fn warn_on_overflow(env: &Environment, had_overflow: bool) {
 fn run(args: Args) {
     // Use the embedded stdlib so the interpreter is self-contained. A lib/
     // directory on disk can still override or extend it via -i.
-    let env = Environment::with_stdlib();
+    //
+    // The `_fresh` variant: the CLI builds exactly one environment per
+    // process, so `with_stdlib()`'s per-thread prototype cache would only
+    // add a fork pass and retain a second copy of the world for the life of
+    // the process. The result is identical either way.
+    let env = Environment::with_stdlib_fresh();
 
     // Grant capabilities requested on the command line.
     for cap in &args.capabilities {

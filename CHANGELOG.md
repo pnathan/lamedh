@@ -11,6 +11,47 @@ same battery is seconds. `BRUTAL=1` still scales every batch to its deep
 sweep. This takes the single biggest tax off day-to-day and agent iteration
 with no loss of ship-gate coverage.
 
+## perf(startup): with_stdlib world fork + module-rewrite kernel builtin
+
+Two attacks on stdlib-loading cost, one per consumer shape:
+
+**Many environments per process** (test suites, per-request sandboxes):
+`Environment::with_stdlib()`/`with_prelude()` now build a private
+per-thread prototype world once and serve every call as a **deep-copy
+fork** (`Environment::fork_world`): a memoized graph copy that
+duplicates the symbol table (same names/ids, fresh `Rc` cells), every
+global value cell, environment frame, closure (including pre-compiled
+`Code` bodies), hash table, array, plist, and the typed registry —
+preserving sharing and `EQ` identity isomorphically, sharing only
+immutable/host-owned values (builtins, `Native`/`Extension` handles,
+routing tables, typed declaration-plane definitions, closure-tier
+compiled editions). Forked worlds share no mutable cell, so isolation
+is exactly that of independent full loads; a world holding live host
+handles (ports/sockets/children/channels) refuses to fork and the
+caller falls back to a real load. Measured: a fork costs ~65 ms
+release / ~130 ms debug vs ~740 ms / ~5.6 s for a full load, and
+`cargo test --test test_examples` (61 fresh environments on one
+large-stack thread) drops accordingly. `tests/test_helpers.rs`'s
+`env_with_stdlib` now rides `with_stdlib()` instead of re-reading
+`lib/` from disk. New `tests/test_world_fork.rs` pins the contract:
+isolation (defs, redefinitions, plists, registries, capability flags,
+dynamic vars, typed definitions), symbol identity, late binding, full
+vocabulary, fresh/fork agreement, and fork-is-cheap.
+
+**One environment per process** (the CLI): cold start was dominated by
+the module system's rename walk — `$MODULE-REWRITE` did an O(renames)
+`ASSOC` per AST node over every `WITH-MODULE` body (loading
+`40-http.lisp` alone cost ~390 ms). The walk is now the `SEXPR-RENAME`
+kernel builtin (hash-table lookup per symbol, quote/quasiquote
+untouched, exact same semantics) plus a single merged
+`module.functions` registry write instead of a quadratic per-name
+append; `with-module` keeps the same surface. New
+`Environment::with_stdlib_fresh()`/`with_prelude_fresh()` run the
+loader directly with no prototype retention; the CLI uses
+`with_stdlib_fresh()` (it builds exactly one world). Measured:
+`40-http.lisp` 393 ms → ~118 ms, full embedded load ~985 ms → ~710 ms
+on the same machine.
+
 ## Gauntlet speed (dev tooling)
 
 `scripts/gauntlet.sh` runs the authoritative verification in **release**

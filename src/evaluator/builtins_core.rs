@@ -1272,7 +1272,85 @@ pub(super) fn apply_hashtable_op(
                 )))
             }
         }
+        BuiltinFunc::SexprRename => {
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "sexpr-rename takes exactly two arguments: form table".to_string(),
+                ));
+            }
+            if let LispVal::HashTable(table) = &args[1] {
+                Ok(sexpr_rename(&args[0], &table.borrow()))
+            } else {
+                Err(LispError::Generic(format!(
+                    "SEXPR-RENAME: expected a hash table as its second argument, got {}",
+                    err_val(&args[1])
+                )))
+            }
+        }
         _ => Err(LispError::Generic("Not a hash table operation".to_string())),
+    }
+}
+
+/// The walk under `(sexpr-rename form table)`: rebuild `form`, replacing
+/// every symbol that (a) appears as a key in `table` and (b) is not already
+/// module-qualified (contains `:` — which also exempts keywords), with its
+/// mapped value. A cons whose head is the literal symbol `QUOTE` or
+/// `QUASIQUOTE` is returned untouched (shared, not copied) — and this check
+/// is applied at *every* cons level, exactly matching the Lisp
+/// `$MODULE-REWRITE` this replaces (`lib/27-modules.lisp`), whose recursion
+/// on the cdr re-tested the head at each spine cell.
+///
+/// The cdr spine is walked iteratively so list length never becomes native
+/// recursion depth; recursion is only on cars (expression nesting depth).
+fn sexpr_rename(form: &LispVal, table: &HashMap<LispVal, LispVal>) -> LispVal {
+    fn head_is_quote(car: &LispVal) -> bool {
+        if let LispVal::Symbol(s) = car {
+            let name = &s.borrow().name;
+            name == "QUOTE" || name == "QUASIQUOTE"
+        } else {
+            false
+        }
+    }
+    match form {
+        LispVal::Symbol(s) => {
+            if let Some(hit) = table.get(form)
+                && !s.borrow().name.contains(':')
+            {
+                return hit.clone();
+            }
+            form.clone()
+        }
+        LispVal::Cons { car, cdr } => {
+            if head_is_quote(car) {
+                return form.clone();
+            }
+            // Iterative spine walk: collect renamed cars until a quote-headed
+            // sub-spine (kept shared) or a non-cons tail.
+            let mut cars: Vec<LispVal> = vec![sexpr_rename(car, table)];
+            let mut cur: Shared<LispVal> = cdr.clone();
+            let tail: LispVal = loop {
+                match &*cur {
+                    LispVal::Cons { car, cdr } => {
+                        if head_is_quote(car) {
+                            break (*cur).clone();
+                        }
+                        cars.push(sexpr_rename(car, table));
+                        let next = cdr.clone();
+                        cur = next;
+                    }
+                    other => break sexpr_rename(other, table),
+                }
+            };
+            let mut out = tail;
+            for c in cars.into_iter().rev() {
+                out = LispVal::Cons {
+                    car: Shared::new(c),
+                    cdr: Shared::new(out),
+                };
+            }
+            out
+        }
+        _ => form.clone(),
     }
 }
 
