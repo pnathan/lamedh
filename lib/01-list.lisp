@@ -1,8 +1,11 @@
-(defun pairlis (keys vals)
+(defun $pairlis-aux (keys vals acc)
   (if (or (null keys) (null vals))
-      nil
-      (cons (cons (car keys) (car vals))
-            (pairlis (cdr keys) (cdr vals)))))
+      (reverse-aux acc nil)
+      ($pairlis-aux (cdr keys) (cdr vals)
+                     (cons (cons (car keys) (car vals)) acc))))
+
+(defun pairlis (keys vals)
+  ($pairlis-aux keys vals nil))
 
 (defun null (x)
   (eq x nil))
@@ -40,10 +43,15 @@
   "Append X and Y; in this implementation equivalent to APPEND (no destructive modification)."
   (append x y))
 
+(defun $copy-aux (x acc)
+  (if (atom x)
+      (reverse-aux acc x)
+      ($copy-aux (cdr x) (cons (copy (car x)) acc))))
+
 (defun copy (x)
   "Return a copy of list structure X."
   (cond ((atom x) x)
-        (t (cons (copy (car x)) (copy (cdr x))))))
+        (t ($copy-aux x nil))))
 
 (defun sassoc (x y fn)
   "Search alist Y for key X; call FN with no args and return its result if not found."

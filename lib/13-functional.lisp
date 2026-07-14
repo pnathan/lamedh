@@ -34,11 +34,14 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
 
 ;;; ---- filtering -----------------------------------------------------------
 
+(defun $filter-aux (pred lst acc)
+  (cond ((null lst) (reverse-aux acc nil))
+        ((funcall pred (car lst)) ($filter-aux pred (cdr lst) (cons (car lst) acc)))
+        (t ($filter-aux pred (cdr lst) acc))))
+
 (defun filter (pred lst)
   "Return the elements of LST for which PRED is non-NIL."
-  (cond ((null lst) nil)
-        ((funcall pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
-        (t (filter pred (cdr lst)))))
+  ($filter-aux pred lst nil))
 
 (defun remove-if-not (pred lst)
   "Alias for FILTER: keep elements satisfying PRED."
@@ -112,11 +115,14 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
 
 ;;; ---- slicing -------------------------------------------------------------
 
+(defun $take-aux (lst n acc)
+  (if (or (null lst) (< n 1))
+      (reverse-aux acc nil)
+      ($take-aux (cdr lst) (- n 1) (cons (car lst) acc))))
+
 (defun take (lst n)
   "Return the first N elements of LST (fewer if LST is shorter)."
-  (if (or (null lst) (< n 1))
-      nil
-      (cons (car lst) (take (cdr lst) (- n 1)))))
+  ($take-aux lst n nil))
 
 (defun drop (lst n)
   "Return LST with its first N elements removed."
@@ -124,11 +130,14 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
       lst
       (drop (cdr lst) (- n 1))))
 
+(defun $take-while-aux (pred lst acc)
+  (cond ((null lst) (reverse-aux acc nil))
+        ((funcall pred (car lst)) ($take-while-aux pred (cdr lst) (cons (car lst) acc)))
+        (t (reverse-aux acc nil))))
+
 (defun take-while (pred lst)
   "Return the leading elements of LST that satisfy PRED."
-  (cond ((null lst) nil)
-        ((funcall pred (car lst)) (cons (car lst) (take-while pred (cdr lst))))
-        (t nil)))
+  ($take-while-aux pred lst nil))
 
 (defun drop-while (pred lst)
   "Return LST after dropping its leading elements that satisfy PRED."
@@ -136,20 +145,26 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
         ((funcall pred (car lst)) (drop-while pred (cdr lst)))
         (t lst)))
 
+(defun $butlast-aux (lst acc)
+  (if (or (null lst) (null (cdr lst)))
+      (reverse-aux acc nil)
+      ($butlast-aux (cdr lst) (cons (car lst) acc))))
+
 (defun butlast (lst)
   "Return LST without its last element."
-  (if (or (null lst) (null (cdr lst)))
-      nil
-      (cons (car lst) (butlast (cdr lst)))))
+  ($butlast-aux lst nil))
 
 ;;; ---- combining / generating ----------------------------------------------
+
+(defun $zip-aux (a b acc)
+  (if (or (null a) (null b))
+      (reverse-aux acc nil)
+      ($zip-aux (cdr a) (cdr b) (cons (list (car a) (car b)) acc))))
 
 (defun zip (a b)
   "Pair up elements of A and B into a list of two-element lists; stops at the
 shorter input."
-  (if (or (null a) (null b))
-      nil
-      (cons (list (car a) (car b)) (zip (cdr a) (cdr b)))))
+  ($zip-aux a b nil))
 
 (defun unzip (pairs)
   "Inverse of ZIP: given a list of two-element lists, return a two-element list
@@ -235,12 +250,15 @@ PRED (default #'<) compares the extracted keys."
 
 ;;; ---- de-duplication / flattening -----------------------------------------
 
+(defun $remove-duplicates-aux (lst acc)
+  (cond ((null lst) (reverse-aux acc nil))
+        ((member (car lst) (cdr lst))
+         ($remove-duplicates-aux (remove-all (cdr lst) (car lst)) (cons (car lst) acc)))
+        (t ($remove-duplicates-aux (cdr lst) (cons (car lst) acc)))))
+
 (defun remove-duplicates (lst)
   "Return LST with later EQUAL duplicates removed (keeps first occurrence)."
-  (cond ((null lst) nil)
-        ((member (car lst) (cdr lst))
-         (cons (car lst) (remove-duplicates (remove-all (cdr lst) (car lst)))))
-        (t (cons (car lst) (remove-duplicates (cdr lst))))))
+  ($remove-duplicates-aux lst nil))
 
 (defun remove-all (lst item)
   "Return LST with every element EQUAL to ITEM removed."

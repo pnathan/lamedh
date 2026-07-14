@@ -34,14 +34,17 @@
 
 ;;; ---- string <-> list of chars --------------------------------------------
 
-(defun string->list-aux (s i n)
-  (if (< i n)
-      (cons (substring s i (+ i 1)) (string->list-aux s (+ i 1) n))
-      nil))
+(defun $string->list-aux (s i acc)
+  "Walk S from the last index down to 0, consing each character onto ACC.
+Iterating backwards builds the result in forward order directly (no
+separate reverse pass), and stays a single self-recursive tail call."
+  (if (< i 0)
+      acc
+      ($string->list-aux s (- i 1) (cons (substring s i (+ i 1)) acc))))
 
 (defun string->list (s)
   "Return the characters of S as a list of one-character strings."
-  (string->list-aux s 0 (string-length* s)))
+  ($string->list-aux s (- (string-length* s) 1) nil))
 
 (defun list->string (chars)
   "Concatenate a list of strings into one string."
@@ -134,17 +137,20 @@ of range, rather than clamping."
   "Return S with ASCII letters lowercased."
   (list->string (mapcar #'char-downcase (string->list s))))
 
+(defun $string-capitalize-aux (chars in-word acc)
+  (if (null chars)
+      (reverse-aux acc nil)
+      (let* ((c (car chars))
+             (alnum (alphanumeric-p c))
+             (out (cond ((not alnum) c)
+                        (in-word (char-downcase c))
+                        (t (char-upcase c)))))
+        ($string-capitalize-aux (cdr chars) alnum (cons out acc)))))
+
 (defun $string-capitalize-walk (chars in-word)
   "CL word-capitalization walk: uppercase the first alphanumeric of each
 word (a maximal alphanumeric run), lowercase the rest, pass delimiters."
-  (if (null chars)
-      nil
-      (let* ((c (car chars))
-             (alnum (alphanumeric-p c)))
-        (cons (cond ((not alnum) c)
-                    (in-word (char-downcase c))
-                    (t (char-upcase c)))
-              ($string-capitalize-walk (cdr chars) alnum)))))
+  ($string-capitalize-aux chars in-word nil))
 
 (defun string-capitalize (s)
   "Return S with the first character of every word uppercased (ASCII) and
@@ -324,25 +330,33 @@ STRING-REPLACE, named to pair explicitly with STRING-REPLACE-FIRST."
                 new
                 (substring s (+ idx (string-length* old)) (string-length* s))))))
 
+(defun $string-split-aux (s delim acc)
+  (let ((idx (string-index-of s delim)))
+    (if (or (null idx) (= (string-length* delim) 0))
+        (reverse-aux (cons s acc) nil)
+        ($string-split-aux
+         (substring s (+ idx (string-length* delim)) (string-length* s))
+         delim
+         (cons (substring s 0 idx) acc)))))
+
 (defun string-split (s delim)
   "Split S on (non-empty) string DELIM into a list of substrings. Empty
 fields are preserved: a leading/trailing/doubled DELIM yields \"\" list
 elements, e.g. (string-split \",a,,b,\" \",\") is (\"\" \"a\" \"\" \"b\" \"\").
 A DELIM that never occurs (or is empty) yields (list S) unchanged."
-  (let ((idx (string-index-of s delim)))
-    (if (or (null idx) (= (string-length* delim) 0))
-        (list s)
-        (cons (substring s 0 idx)
-              (string-split
-               (substring s (+ idx (string-length* delim)) (string-length* s))
-               delim)))))
+  ($string-split-aux s delim nil))
+
+(defun $string-join-aux (lst sep acc)
+  (if (null lst)
+      acc
+      ($string-join-aux (cdr lst) sep (concat acc sep (car lst)))))
 
 (defun string-join (lst sep)
   "Join a list of strings LST with separator SEP. (string-join nil sep) is
 \"\"; a single-element list is returned unchanged (no separator)."
   (cond ((null lst) "")
         ((null (cdr lst)) (car lst))
-        (t (concat (car lst) sep (string-join (cdr lst) sep)))))
+        (t ($string-join-aux (cdr lst) sep (car lst)))))
 
 (defun $string-ltrim (s i n)
   (if (and (< i n) (whitespace-p (substring s i (+ i 1))))
@@ -371,9 +385,14 @@ A DELIM that never occurs (or is empty) yields (list S) unchanged."
 
 ;;; ---- padding ---------------------------------------------------------------
 
+(defun $string-repeat-aux (s n acc)
+  (if (< n 1)
+      acc
+      ($string-repeat-aux s (- n 1) (concat acc s))))
+
 (defun string-repeat (s n)
   "S concatenated with itself N times (\"\" when N <= 0)."
-  (if (< n 1) "" (concat s (string-repeat s (- n 1)))))
+  ($string-repeat-aux s n ""))
 
 (defun string-pad-left (s width &optional pad)
   "Pad S on the LEFT to WIDTH using PAD (default \" \"): right-aligns.

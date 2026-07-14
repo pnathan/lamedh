@@ -70,6 +70,31 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## stdlib: tail-recursive Prelude list/string builders — no more eval-frame overflow on ordinary-sized input (#361)
+
+`string->list`, `filter` (the LIST fallback under the protocol), `take`,
+`take-while`, `butlast`, `zip`, `pairlis`, `copy` (and its actual dispatch
+target for lists, `copy-list*`), `remove-duplicates`,
+`string-join`, `string-repeat` (and `make-string`, which calls it),
+`string-capitalize`'s word-walk, and `string-split` recursed
+non-tail-recursively — each built its result via `(cons x (recurse ...))`
+(or the CONCAT equivalent for the string builders) with the recursive call
+*inside* the cons, not in tail position. That is genuinely non-tail: it
+consumed one native eval frame per input element, hitting the ~10000-frame
+recursion guard on inputs of only a few thousand elements/characters —
+`(string->list <4kb string>)` or `(filter #'evenp <5000-element list>)`
+errored outright. Found during #257 (codecs); its workaround was local to
+the codec modules, so every flat-Prelude caller stayed exposed.
+
+Each is now a tail-recursive accumulator (+ `reverse`/`reverse-aux` at the
+end) or, for the string builders, a direct accumulating concatenation —
+the evaluator's TCO keeps native stack usage O(1) regardless of input
+size. Purely an internal rewrite: arguments, return values, and edge
+cases (empty input, `n <= 0`, `n` past the end, dotted tails) are
+unchanged; new `$`-prefixed accumulator helpers are internal. Declared/
+inferred type schemes for every touched public function are unchanged
+(verified via `see-type` before/after).
+
 ## runtime(os): typed Linux/POSIX interface, opaque owned handles, no raw syscalls (#260)
 
 Two new optional embedded modules over a new `OS-*`/`OS-LINUX-*` Rust
