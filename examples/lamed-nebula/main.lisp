@@ -3,8 +3,16 @@
 ;;; warping, a multi-stop color gradient, Lambert-shaded sphere, additive
 ;;; light compositing, and 24-bit ANSI half-block (U+2580) pixel output
 ;;; at double vertical resolution.
-;;; Run: cargo run -- examples/lamed-nebula/main.lisp
-;;; (Best viewed in a truecolor terminal at >= 104 columns.)
+;;; Also: a from-scratch PNG encoder (CRC-32, Adler-32, stored DEFLATE).
+;;; Run (terminal): cargo run -- examples/lamed-nebula/main.lisp
+;;;   (Best viewed in a truecolor terminal at >= 104 columns.)
+;;; Run (PNG file): cargo run -- --capability CREATE-FS \
+;;;                   examples/lamed-nebula/main.lisp nebula.png [scale]
+;;;   A trailing path argument opts into a PNG (default 300x192); an
+;;;   optional integer SCALE renders at (100*scale)x(64*scale), e.g.
+;;;   scale 30 -> 3000x1920. With no argument the program renders to the
+;;;   terminal exactly as before. Huge scales are slow (tree-walking
+;;;   interpreter, millions of fBm pixels) -- build --release first.
 
 ;; ---------------------------------------------------------------------
 ;; canvas
@@ -144,12 +152,17 @@
                (r (+ (car base)  (* 14.0 teal)))
                (g (+ (nth 1 base) (* 46.0 teal)))
                (b (+ (nth 2 base) (* 60.0 teal)))
-               ;; pinprick starfield, dimmed where the gas is thick
-               (sh (hash2 (+ fx 91.0) (+ fy 57.0)))
+               ;; pinprick starfield, dimmed where the gas is thick.
+               ;; Sampled on the integer 100x64 lattice (floor) so a star is
+               ;; one grid cell whether we render one pixel per cell (terminal)
+               ;; or supersample for the PNG -- at integer coords floor is the
+               ;; identity, so the terminal output is unchanged.
+               (sfx (+ 0.0 (floor fx))) (sfy (+ 0.0 (floor fy)))
+               (sh (hash2 (+ sfx 91.0) (+ sfy 57.0)))
                (occ (- 1.0 (* 0.8 (clamp01 (* 1.4 density))))))
           (if (> sh 0.9885)
               (let* ((sb (* occ (expt (/ (- sh 0.9885) 0.0115) 2.0)))
-                     (warm (hash2 (+ fx 7.0) (+ fy 3.0))))
+                     (warm (hash2 (+ sfx 7.0) (+ sfy 3.0))))
                 (if (> warm 0.5)
                     (setq r (+ r (* 255.0 sb)) g (+ g (* 226.0 sb))
                           b (+ b (* 178.0 sb)))
@@ -226,30 +239,169 @@
 (def $lamed (code-char 1500))              ; ל
 
 ;; ---------------------------------------------------------------------
-;; show
-(princ (format nil "~%  ~a~a~a~a~%" $frame-fg (code-char 9484)
-               (str-repeat (code-char 9472) $w) (code-char 9488)))
-(def $lines (mapcar #'render-line (iota (/ $h 2))))
-(for-each (lambda (line) (format t "  ~a~%" line)) $lines)
-(princ (format nil "  ~a~a~a~a~a~%" $frame-fg (code-char 9492)
-               (str-repeat (code-char 9472) $w) (code-char 9496) $reset))
-(format t "  ~a~%" (gradient-rule (+ $w 2)))
-(format t "~%~a~a~a~a~a~a~%"
-        (str-repeat " " 50) $dim (code-char 183)
-        (concat " " (fg 255.0 238.0 186.0) $lamed $dim " ") (code-char 183)
-        $reset)
-(format t "~a~a~%" (str-repeat " " 27)
-        (gradient-title (list "T" "H" "E" " " " " "L" "A" "M" "E" "D"
-                              " " " " "N" "E" "B" "U" "L" "A")
-                        0.45 1.0))
-(format t "~a~adomain-warped fBm ~a value noise ~a one frame, no loops left running~a~%~%"
-        (str-repeat " " 19) $dim (code-char 183) (code-char 183) $reset)
+;; terminal show -- the default, unchanged path
+(defun render-terminal ()
+  (princ (format nil "~%  ~a~a~a~a~%" $frame-fg (code-char 9484)
+                 (str-repeat (code-char 9472) $w) (code-char 9488)))
+  (let ((lines (mapcar #'render-line (iota (/ $h 2)))))
+    (for-each (lambda (line) (format t "  ~a~%" line)) lines)
+    (princ (format nil "  ~a~a~a~a~a~%" $frame-fg (code-char 9492)
+                   (str-repeat (code-char 9472) $w) (code-char 9496) $reset))
+    (format t "  ~a~%" (gradient-rule (+ $w 2)))
+    (format t "~%~a~a~a~a~a~a~%"
+            (str-repeat " " 50) $dim (code-char 183)
+            (concat " " (fg 255.0 238.0 186.0) $lamed $dim " ") (code-char 183)
+            $reset)
+    (format t "~a~a~%" (str-repeat " " 27)
+            (gradient-title (list "T" "H" "E" " " " " "L" "A" "M" "E" "D"
+                                  " " " " "N" "E" "B" "U" "L" "A")
+                            0.45 1.0))
+    (format t "~a~adomain-warped fBm ~a value noise ~a one frame, no loops left running~a~%~%"
+            (str-repeat " " 19) $dim (code-char 183) (code-char 183) $reset)
+    ;; silent self-check: geometry and color ranges hold; errors if not.
+    (let ((probe (pixel-at 50 32)))
+      (if (and (= (length lines) 32)
+               (= (length probe) 3)
+               (<= 0 (c255 (car probe)) 255)
+               (equal (pal 0.0) (list 4.0 3.0 18.0)))
+          ()
+          (error "lamed-nebula self-check failed")))))
 
-;; silent self-check: geometry and color ranges hold; errors if not.
-(let ((probe (pixel-at 50 32)))
-  (if (and (= (length $lines) 32)
-           (= (length probe) 3)
-           (<= 0 (c255 (car probe)) 255)
-           (equal (pal 0.0) (list 4.0 3.0 18.0)))
-      ()
-      (error "lamed-nebula self-check failed")))
+;; =====================================================================
+;; PNG WRITER  (opt-in: `... examples/lamed-nebula/main.lisp out.png`)
+;; ---------------------------------------------------------------------
+;; A from-scratch PNG encoder in Lisp: 8-byte signature, IHDR (8-bit
+;; truecolor RGB), one IDAT carrying a zlib stream of *uncompressed*
+;; ("stored") DEFLATE blocks (one per scanline) with a trailing Adler-32,
+;; and IEND. Every chunk carries a CRC-32. No zlib, no host help -- just
+;; logand/logior/logxor/ash and mod.
+;;
+;; ARRAYS, NOT LISTS, on every per-pixel/per-byte path: at 3000x1920 the
+;; image is ~5.8M pixels / ~17M bytes, so a cons list there would both
+;; churn allocation and (since MAPC/FOR-EACH recurses one eval frame per
+;; element) blow the eval-depth limit. Instead each scanline is a reused
+;; flat byte ARRAY filled by index with DOTIMES/STORE, streamed straight
+;; to the port, with CRC-32 and Adler-32 folded in as running state --
+;; so memory stays bounded to one row regardless of image size. Only tiny
+;; fixed-size headers (<= 8 bytes) are ever lists.
+;;
+;; The PNG has no half-block compromise, so it renders at true
+;; one-cell-per-pixel resolution; the caller-chosen scale over the 100x64
+;; base IS the detail (and the supersampling), so no extra oversampling.
+
+;; ── little integer helpers ────────────────────────────────────────────
+(defun be32 (x)                             ; 4 bytes, big-endian, as a list
+  (list (logand (ash x -24) 255) (logand (ash x -16) 255)
+        (logand (ash x -8) 255)  (logand x 255)))
+
+;; ── CRC-32 (table-driven; IEEE 802.3 polynomial). Table is an ARRAY. ──
+(defun crc-entry (n)
+  (let ((c n))
+    (dotimes (k 8)
+      (if (= 1 (logand c 1))
+          (setq c (logxor #xedb88320 (ash c -1)))
+          (setq c (ash c -1))))
+    c))
+(def $crc-table (list->array (mapcar #'crc-entry (iota 256))))
+
+(defun crc-step (c b)                       ; fold one byte into a CRC state
+  (logxor (fetch $crc-table (logand (logxor c b) 255)) (ash c -8)))
+
+(defun crc-feed (c lst)                     ; fold a SMALL fixed list of bytes
+  (let ((cc c))
+    (for-each (lambda (b) (setq cc (crc-step cc b))) lst)
+    cc))
+
+(defun crc32 (bytes)                        ; CRC-32 of a SMALL list (headers)
+  (logxor (crc-feed #xffffffff bytes) #xffffffff))
+
+;; ── chunk framing (for the tiny IHDR/IEND chunks): len|type|data|CRC ──
+(defun png-chunk (type-bytes data)
+  (append (be32 (length data))
+          type-bytes data
+          (be32 (crc32 (append type-bytes data)))))
+
+(def $type-ihdr (list 73 72 68 82))         ; "IHDR"
+(def $type-idat (list 73 68 65 84))         ; "IDAT"
+(def $type-iend (list 73 69 78 68))         ; "IEND"
+
+(defun write-list! (p lst)
+  "Write a SMALL fixed-size byte list to port P."
+  (ports:write-bytes! p (list->array lst)))
+
+;; ── the streaming, array-based renderer ───────────────────────────────
+(defun render-png (path scale)
+  (require 'ports)
+  ;; Open the port FIRST so the CREATE-FS capability check fails fast,
+  ;; before the (potentially very long) render.
+  (ports:with-open-port (p (ports:open-output path))
+    (let* ((width  (* $w scale))
+           (height (* $h scale))
+           (invsc  (/ 1.0 (+ 0.0 scale)))
+           (rowlen (+ 1 (* 3 width)))        ; filter byte + RGB triples
+           (nlen   (logxor rowlen 65535))    ; stored-block ~LEN (rowlen<64KiB)
+           ;; IDAT payload length is exactly computable up front, so we can
+           ;; write the chunk length prefix before streaming the body:
+           ;; 2 zlib-header bytes + 5 block-header bytes/scanline + raw + 4.
+           (idat-len (+ 2 (* height 5) (* height rowlen) 4))
+           (row (make-array rowlen))         ; ONE reused scanline buffer
+           (crc #xffffffff) (aa 1) (ab 0))   ; running CRC / Adler state
+      (format t "Painting ~ax~a (scale ~a) ...~%" width height scale)
+      ;; signature + IHDR chunk
+      (write-list! p (list 137 80 78 71 13 10 26 10))
+      (write-list! p (png-chunk $type-ihdr
+                                (append (be32 width) (be32 height)
+                                        (list 8 2 0 0 0))))  ; 8-bit truecolor
+      ;; IDAT: length prefix, then type + body streamed while CRC accrues
+      (write-list! p (be32 idat-len))
+      (setq crc (crc-feed crc $type-idat))
+      (write-list! p $type-idat)
+      (setq crc (crc-feed crc (list 120 1)))     ; zlib header 0x78 0x01
+      (write-list! p (list 120 1))
+      (dotimes (py height)
+        ;; stored-block header for this scanline
+        (let ((hdr (list (if (= py (- height 1)) 1 0)   ; BFINAL on last row
+                         (logand rowlen 255) (logand (ash rowlen -8) 255)
+                         (logand nlen 255)   (logand (ash nlen -8) 255))))
+          (setq crc (crc-feed crc hdr))
+          (write-list! p hdr))
+        ;; fill the row array by index (filter byte 0, then RGB)
+        (let ((sy (* invsc (+ 0.0 py))) (o 1))
+          (store row 0 0)
+          (dotimes (px width)
+            (let ((c (pixel-at (* invsc (+ 0.0 px)) sy)))
+              (store row o        (c255 (car c)))
+              (store row (+ o 1)  (c255 (nth 1 c)))
+              (store row (+ o 2)  (c255 (nth 2 c)))
+              (setq o (+ o 3))))
+          ;; fold this scanline's bytes into CRC and Adler, by index
+          (dotimes (i rowlen)
+            (let ((byte (fetch row i)))
+              (setq crc (crc-step crc byte))
+              (setq aa (mod (+ aa byte) 65521))
+              (setq ab (mod (+ ab aa) 65521))))
+          (ports:write-bytes! p row)))
+      ;; Adler-32 trailer, then the IDAT chunk CRC
+      (let ((adler (logior (ash ab 16) aa)))
+        (setq crc (crc-feed crc (be32 adler)))
+        (write-list! p (be32 adler)))
+      (write-list! p (be32 (logxor crc #xffffffff)))
+      ;; IEND
+      (write-list! p (png-chunk $type-iend ()))
+      ;; self-check + report (total = sig 8 + IHDR 25 + IDAT 12+len + IEND 12)
+      (if (and (< 0 width) (< 0 height) (< rowlen 65536))
+          (format t "Wrote ~a (~ax~a, ~a bytes).~%"
+                  path width height (+ idat-len 57))
+          (error "lamed-nebula PNG self-check failed")))))
+
+;; ---------------------------------------------------------------------
+;; dispatch:
+;;   no argument            -> paint the terminal (default, unchanged)
+;;   PATH                   -> small PNG at scale 3  (300x192)
+;;   PATH SCALE             -> PNG at (100*SCALE)x(64*SCALE); e.g. 30 -> 3000x1920
+(if (and (boundp '*ARGV*) *ARGV* (car *ARGV*))
+    (render-png (car *ARGV*)
+                (if (nth 1 *ARGV*)
+                    (max 1 (truncate (string->number (nth 1 *ARGV*))))
+                    3))
+    (render-terminal))
