@@ -80,13 +80,13 @@ fn test_lisp_cannot_self_escalate() {
 fn test_sh_helper_returns_stdout() {
     let env = env_with_stdlib();
     env.enable_feature("SHELL");
-    assert_eq!(eval_line("(sh \"printf hello\")", &env), "\"hello\"");
+    assert_eq!(eval_line("(shell:sh \"printf hello\")", &env), "\"hello\"");
 }
 
 #[test]
 fn test_sh_helper_errors_on_nonzero() {
     let env = env_with_stdlib();
     env.enable_feature("SHELL");
-    let out = eval_line("(sh \"exit 1\")", &env);
+    let out = eval_line("(shell:sh \"exit 1\")", &env);
     assert!(out.contains("failed"), "got: {out}");
 }

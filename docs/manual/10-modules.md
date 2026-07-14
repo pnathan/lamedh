@@ -362,7 +362,7 @@ discipline: whether and when that source runs at all.
 once** per environment:
 
 ```console
-$ target/debug/lamedh -s "(progn (require 'shell) (sh \"echo hi\"))" --capability SHELL
+$ target/debug/lamedh -s "(progn (require 'shell) (shell:sh \"echo hi\"))" --capability SHELL
 ; => "hi\n"
 ```
 

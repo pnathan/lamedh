@@ -350,7 +350,7 @@ fn capabilities_needed_infers_transitively_and_cycle_safely() {
         let e = env();
         eval_line("(defun cn-fetch (p) (read-file p))", &e);
         eval_line(
-            "(defun cn-deploy (p q) (cn-fetch p) (rename-file p q) (sh \"true\"))",
+            "(defun cn-deploy (p q) (cn-fetch p) (rename-file p q) (shell:sh \"true\"))",
             &e,
         );
         eval_line("(defun cn-pure (x) (* x x))", &e);
@@ -382,7 +382,7 @@ fn capabilities_needed_form_analyzes_raw_forms() {
     with_large_stack(|| {
         let e = env();
         let out = eval_line(
-            "(capabilities-needed-form '(write-file \"x\" (sh \"date\")))",
+            "(capabilities-needed-form '(write-file \"x\" (shell:sh \"date\")))",
             &e,
         );
         assert!(
