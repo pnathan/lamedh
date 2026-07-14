@@ -95,6 +95,90 @@ unchanged; new `$`-prefixed accumulator helpers are internal. Declared/
 inferred type schemes for every touched public function are unchanged
 (verified via `see-type` before/after).
 
+## runtime(net): TLS port wrapping behind an off-by-default cargo feature (#365)
+
+A new optional embedded module, `TLS` (`lib/43-tls.lisp`), wrapping a
+connected TCP `Port` (#258) as a TLS client or server — the seam #258's own
+design predicted. Backed by `rustls` + `webpki-roots` + `rustls-pemfile`
+(owner ruling, #364/#365: rustls over native-tls, so nothing here links
+system OpenSSL/SChannel/SecureTransport), all three behind a new **`net-tls`
+cargo feature that is NOT in the default feature set** — the default build's
+behavior and dependency tree are byte-identical to before this change; only
+`cargo build --features net-tls` (or `cargo test --features net-tls`) pulls
+in a TLS crate at all. The crypto provider is `ring`, not `aws-lc-rs`: no
+cmake/nasm build-tool requirement.
+
+A TLS stream is an ordinary `PORTS` `Port` (two new `PortState` variants,
+themselves gated by `net-tls`): every `PORTS` read/write/close operation and
+every `TCP` out-of-band operation (`shutdown!`, `set-read-timeout!`/
+`set-write-timeout!`, `local-addr`/`peer-addr`) keeps working on it
+unchanged. `tls:wrap-client`/`tls:wrap-server` take ownership of the
+underlying TCP connection out of the plaintext `Port` you pass in (it
+becomes `CLOSED` the instant it is wrapped — never simultaneously reachable
+as both plaintext and TLS); `tls:connect`/`tls:connect-insecure!` are
+`tcp:connect` + wrap sugar for the common case.
+
+Verification is on by default (default root store: Mozilla's set, via
+`webpki-roots`, plus any `:extra-roots` you supply as PEM — a String path,
+`READ-FS`-gated, or `Array<Char>` bytes — this is also how a test harness
+trusts a throwaway self-signed CA) and checks the certificate against
+`:hostname`, also used for SNI. `:alpn` offers protocol names;
+`tls:alpn-protocol` reads back what was negotiated. `tls:peer-certificates`/
+`tls:peer-certificate-summary` expose the peer's raw DER chain and a
+structural summary (count, leaf length, leaf bytes) — no X.509 parser is
+part of this dependency ruling, so there are no parsed subject/issuer/expiry
+fields, by design. `tls:sni-hostname` reads the SNI a client offered,
+server-side. Server cert/key are supplied the same way as `:extra-roots`
+(PEM path or bytes); a handshake timeout is the underlying TCP port's own
+read/write timeout, set before (or after) wrapping.
+
+**No insecure bypass without an explicitly named API, and a host opt-in.**
+`tls:connect-insecure!`/`tls:wrap-client-insecure!` are the only way to skip
+certificate verification — there is no keyword flag on `tls:connect` that
+silently does it — and even they signal a structured `:policy-denied` error
+unless the *host* embedding this interpreter separately calls the new
+`Environment::set_allow_insecure_tls` (Rust-only, default `false`, modeled
+on `set_net_policy`'s "Lisp cannot install/inspect this" shape). Lisp code
+alone can never disable verification, no matter what it calls. Key material
+is never exposed to any printer path.
+
+**Feature-off behavior, not feature-off absence.** Every `TLS-*` kernel
+builtin is registered unconditionally, so `(require 'tls)` and every
+`tls:*` name always resolve regardless of how the crate was built — with
+`net-tls` compiled out, every one of them except `tls:available-p` (which
+reports the compiled-in state) signals a structured `:category
+:tls-unavailable` error instead of doing any work, rather than an
+unbound-variable error.
+
+`HTTP` (#259, `lib/40-http.lisp`) gains `https://` client support when
+`net-tls` is compiled in: `$http-check-scheme!` — the single scheme
+checkpoint the plaintext-only design deliberately isolated for exactly this
+— now permits `https://` (initial request or redirect `Location` alike)
+when `(tls:available-p)`, connecting via `tcp:connect` then `tls:connect`
+before speaking HTTP/1.1 over the resulting port; `http:request`/`get`/
+`post` gained an `:extra-roots` keyword forwarded to `tls:connect`. With
+`net-tls` compiled out, `https://` keeps its previous structured
+`:https-unsupported` error (now naming the `net-tls` feature rather than
+this now-closed issue). Redirects still never silently cross schemes.
+Server-side `https://` (wrapping an accepted connection before `serve`/
+`serve-one!` parses it) is out of scope here — `tls:wrap-server` already
+composes directly with `tcp:accept` for a caller that wants one without
+going through `HTTP`'s own accept loop.
+
+Tests: `tests/test_tls.rs` (`#[cfg(feature = "net-tls")]`-gated,
+loopback-only) — a throwaway self-signed CA + "localhost" leaf certificate
+generated fresh per test via the `rcgen` **dev-dependency** (never a
+build/normal dependency, so it does not affect `net-tls`'s "off by default"
+story for embedders); client/server round trip both directions of the wrap,
+negotiated ALPN, peer-certificate summary, verification failure against an
+untrusted CA with the default root store, `connect-insecure!` denied without
+the host opt-in and working with it, and `https://` end to end through
+`http:request`. Feature-off behavior is covered in the normal suites instead
+(`tests/test_net.rs`, `tests/test_http.rs`), gated
+`#[cfg(not(feature = "net-tls"))]` so they run in the default and
+`--no-default-features` builds and stay correct once `net-tls` is on.
+Manual: `docs/manual/13-networking.md` §13.8; embedding: `docs/embedding.md`.
+
 ## runtime(os): typed Linux/POSIX interface, opaque owned handles, no raw syscalls (#260)
 
 Two new optional embedded modules over a new `OS-*`/`OS-LINUX-*` Rust

@@ -6,15 +6,29 @@
 ;;;
 ;;; SCOPE RULINGS (binding, recorded here so the "why" survives the code):
 ;;;
-;;; - PLAINTEXT http:// ONLY. The ticket asks for TLS-verified https:// by
-;;;   default; that is explicitly deferred pending an owner dependency
-;;;   ruling for a TLS crate (issue #365). Every code path that would
-;;;   otherwise connect to an https:// URL -- the initial request AND any
-;;;   redirect Location -- signals the SAME clear structured error naming
-;;;   issue #365 instead of silently downgrading, upgrading, or connecting
-;;;   in the clear to a URL that asked for TLS. $HTTP-CHECK-SCHEME! is the
-;;;   one place this is enforced, so a future TLS layer slots in there
-;;;   without changing any other function's signature.
+;;; - https:// CLIENT SUPPORT WHEN net-tls IS COMPILED IN (issue #365). The
+;;;   TLS dependency ruling landed rustls behind the off-by-default net-tls
+;;;   cargo feature (lib/43-tls.lisp, the TLS module) -- $HTTP-CHECK-SCHEME!
+;;;   (the single scheme checkpoint the earlier plaintext-only design
+;;;   deliberately isolated for exactly this) now checks
+;;;   `(tls:available-p)` at request time: with the feature compiled in, an
+;;;   https:// URL -- the initial request or a redirect Location alike --
+;;;   connects via TCP:CONNECT then wraps with TLS:CONNECT (certificate
+;;;   verification on, SNI/ALPN "http/1.1") before speaking HTTP/1.1 over
+;;;   the resulting port -- the same PORTS port shape, so nothing else in
+;;;   this file changes. With the feature compiled out, https:// still
+;;;   signals the same clear structured `:HTTPS-UNSUPPORTED` error as
+;;;   before (now naming the `net-tls` cargo feature instead of issue #365,
+;;;   since #365 is what added the feature). Redirects never silently cross
+;;;   from https:// to http:// or vice versa -- $HTTP-CHECK-SCHEME! is
+;;;   still the one enforcement point, run again on every redirect hop.
+;;;   SERVER-SIDE https:// (wrapping an accepted connection before SERVE/
+;;;   SERVE-ONE! parses it) is explicitly out of scope here: the ruling
+;;;   text scopes this addition to the client ("after tcp:connect, wrap via
+;;;   tls: before speaking HTTP"), and TLS:WRAP-SERVER already composes
+;;;   with TCP:ACCEPT directly for a caller that wants a TLS server without
+;;;   going through this module's SERVE/SERVE-ONE! (which only ever accepts
+;;;   plaintext connections themselves).
 ;;;
 ;;; - ZERO NEW CRATE DEPENDENCIES, PURE LISP. The ticket's own text asks
 ;;;   for "a maintained Rust HTTP implementation" behind a Cargo feature;
@@ -88,13 +102,17 @@
 ;;;
 ;;; REQUIRE-ABLE (issue #256): `(require 'http)` on a `with_prelude()`
 ;;; environment loads exactly this file (after 'modules 'text 'ports 'url
-;;; 'mime 'tcp 'json, each already require-idempotent).
+;;; 'mime 'tcp 'tls 'json, each already require-idempotent). 'tls loads
+;;; unconditionally regardless of the net-tls cargo feature (see its own
+;;; file header) -- requiring it here grants no capability and costs
+;;; nothing when the feature is off.
 
 (require 'modules)
 (require 'text)
 (require 'ports)
 (require 'url)
 (require 'mime)
+(require 'tls)
 (require 'tcp)
 (require 'json)
 
@@ -437,11 +455,17 @@ bounded by :MAX-BYTES. Decodes the body as UTF-8 lossily before parsing."
        (error (concat "HTTP: URL has no scheme: " (prin1-to-string url))
               (list (cons ':category ':bad-url) (cons ':url url))))
       ((string-ci= sch "http") nil)
+      ((and (string-ci= sch "https") (tls:available-p)) nil)
       ((string-ci= sch "https")
-       (error "HTTP: https:// is not supported yet -- TLS support is pending an owner dependency ruling (issue #365); use plaintext http://"
+       (error "HTTP: https:// requires the `net-tls` cargo feature, which this build of lamedh was not compiled with (issue #365); rebuild with --features net-tls, or use plaintext http://"
               (list (cons ':category ':https-unsupported) (cons ':url url))))
-      (t (error (concat "HTTP: unsupported URL scheme " (prin1-to-string sch) " (only http:// is supported)")
+      (t (error (concat "HTTP: unsupported URL scheme " (prin1-to-string sch) " (only http:// and https:// are supported)")
                 (list (cons ':category ':unsupported-scheme) (cons ':url url) (cons ':scheme sch)))))))
+
+(defun $http-default-port (parsed)
+  "80, or 443 for an https:// URL -- both the implicit connect port and the
+threshold for omitting an explicit port from the Host header."
+  (if (string-ci= (url:scheme parsed) "https") 443 80))
 
 (defun $http-target-for (parsed)
   (let* ((p (url:path parsed))
@@ -451,7 +475,7 @@ bounded by :MAX-BYTES. Decodes the body as UTF-8 lossily before parsing."
 
 (defun $http-host-header-value (parsed)
   (let ((h (url:host parsed)) (p (url:port parsed)))
-    (if (or (null p) (= p 80)) h (concat h ":" (princ-to-string p)))))
+    (if (or (null p) (= p ($http-default-port parsed))) h (concat h ":" (princ-to-string p)))))
 
 (defun $http-body-length (body)
   (cond
@@ -492,11 +516,23 @@ bounded by :MAX-BYTES. Decodes the body as UTF-8 lossily before parsing."
     (t (error (concat "HTTP: unsupported request body type " (prin1-to-string body))
               (list (cons ':category ':bad-body))))))
 
-(defun $http-send-request! (parsed method hdrs body connect-timeout-ms)
-  (let ((host (url:host parsed)) (port (if (url:port parsed) (url:port parsed) 80)))
+(defun $http-open-transport! (parsed host port connect-timeout-ms extra-roots)
+  "The connected PORTS port to speak HTTP/1.1 over: a plain TCP:CONNECT for
+http://, or TLS:CONNECT (verification on, SNI = HOST, ALPN \"http/1.1\",
+:EXTRA-ROOTS forwarded from REQUEST) for https:// -- the single place
+$HTTP-SEND-REQUEST! opens a connection, so the scheme decides transport
+without touching anything downstream (the returned value is a PORTS port
+either way)."
+  (if (string-ci= (url:scheme parsed) "https")
+      (tls:connect host port :connect-timeout-ms connect-timeout-ms :alpn '("http/1.1")
+                    :extra-roots extra-roots)
+      (tcp:connect host port connect-timeout-ms)))
+
+(defun $http-send-request! (parsed method hdrs body connect-timeout-ms extra-roots)
+  (let ((host (url:host parsed)) (port (if (url:port parsed) (url:port parsed) ($http-default-port parsed))))
     (if (null host)
         (error "HTTP: URL has no host" (list (cons ':category ':bad-url)))
-        (let ((tcp-port (tcp:connect host port connect-timeout-ms)))
+        (let ((tcp-port ($http-open-transport! parsed host port connect-timeout-ms extra-roots)))
           (ports:write-string! tcp-port (concat method " " ($http-target-for parsed) " HTTP/1.1\r\n"))
           ($http-write-headers! tcp-port hdrs)
           (ports:write-string! tcp-port "\r\n")
@@ -560,7 +596,7 @@ bounded by :MAX-BYTES. Decodes the body as UTF-8 lossily before parsing."
 (defun $http-origin (parsed)
   (list (string-downcase (if (url:scheme parsed) (url:scheme parsed) ""))
         (string-downcase (if (url:host parsed) (url:host parsed) ""))
-        (if (url:port parsed) (url:port parsed) 80)))
+        (if (url:port parsed) (url:port parsed) ($http-default-port parsed))))
 
 (defun $http-same-origin-p (a b) (equal ($http-origin a) ($http-origin b)))
 
@@ -605,12 +641,12 @@ supported."
       nil))
 
 (defun $http-request-loop (method url hdrs body connect-timeout-ms read-timeout-ms max-redirects
-                            follow-redirects max-line-bytes max-header-count hop deadline)
+                            follow-redirects max-line-bytes max-header-count hop deadline extra-roots)
   ($http-check-deadline! deadline)
   (let ((parsed (url:parse url)))
     ($http-check-scheme! parsed url)
     (let* ((sent-headers ($http-prepare-headers hdrs parsed body))
-           (tcp-port ($http-send-request! parsed method sent-headers body connect-timeout-ms)))
+           (tcp-port ($http-send-request! parsed method sent-headers body connect-timeout-ms extra-roots)))
       (if read-timeout-ms (tcp:set-read-timeout! tcp-port read-timeout-ms) nil)
       (let* ((status ($http-read-status! tcp-port max-line-bytes max-header-count))
              (version (car status)) (code (cadr status)) (reason (caddr status))
@@ -640,45 +676,53 @@ supported."
                            (next-headers (if cross-origin ($http-strip-credentials hdrs) hdrs)))
                       ($http-request-loop next-method next-url next-headers next-body connect-timeout-ms
                                            read-timeout-ms max-redirects follow-redirects max-line-bytes
-                                           max-header-count (+ hop 1) deadline))))))))))
+                                           max-header-count (+ hop 1) deadline extra-roots))))))))))
 
 (defun request (method url &key (headers ()) (body nil) (connect-timeout-ms nil) (read-timeout-ms nil)
                 (overall-timeout-ms nil) (max-redirects $http-default-max-redirects) (follow-redirects t)
-                (max-line-bytes $http-default-max-line-bytes) (max-header-count $http-default-max-header-count))
+                (max-line-bytes $http-default-max-line-bytes) (max-header-count $http-default-max-header-count)
+                (extra-roots ()))
   "Perform an HTTP/1.1 request: METHOD (a string, e.g. \"GET\") against URL
-(plaintext http:// only -- see the file header). :HEADERS is a list of
-(name . value) conses (repeated names preserved, mirroring MIME's
-representation); :BODY is NIL, a String, an Array<Char>, or a readable
-PORTS port (streamed via chunked Transfer-Encoding). :CONNECT-TIMEOUT-MS
-bounds TCP:CONNECT; :READ-TIMEOUT-MS bounds every individual socket read
-(status line, headers, and each body read alike); :OVERALL-TIMEOUT-MS is a
-coarse wall-clock deadline checked between phases (connect, and each
-redirect hop) via MONOTONIC-MICROS -- not a preemptive mid-read
-cancellation, which :READ-TIMEOUT-MS already covers at finer grain.
-:MAX-REDIRECTS (default 5) caps 301/302/303/307/308 hops when
-:FOLLOW-REDIRECTS (default T) is on; cross-origin hops strip
-Authorization/Cookie/Proxy-Authorization, and a redirect Location asking
-for https:// (or any non-http scheme) is the same structured error as an
-https:// URL given directly. The returned response's :BODY is an UNREAD
-body stream (see STREAM-READ!/STREAM-READ-ALL!/COLLECT-BYTES/
-COLLECT-STRING/COLLECT-JSON) -- streaming end to end, per the ticket."
+(http:// always; https:// when the `net-tls` cargo feature is compiled in
+-- see the file header). :HEADERS is a list of (name . value) conses
+(repeated names preserved, mirroring MIME's representation); :BODY is NIL,
+a String, an Array<Char>, or a readable PORTS port (streamed via chunked
+Transfer-Encoding). :CONNECT-TIMEOUT-MS bounds TCP:CONNECT; :READ-TIMEOUT-MS
+bounds every individual socket read (status line, headers, and each body
+read alike); :OVERALL-TIMEOUT-MS is a coarse wall-clock deadline checked
+between phases (connect, and each redirect hop) via MONOTONIC-MICROS -- not
+a preemptive mid-read cancellation, which :READ-TIMEOUT-MS already covers
+at finer grain. :MAX-REDIRECTS (default 5) caps 301/302/303/307/308 hops
+when :FOLLOW-REDIRECTS (default T) is on; cross-origin hops strip
+Authorization/Cookie/Proxy-Authorization, and a redirect Location naming an
+unsupported scheme is the same structured error as passing it to URL
+directly -- https:// is never silently crossed to/from http:// on a
+redirect. :EXTRA-ROOTS is forwarded verbatim to TLS:CONNECT for an
+https:// URL (ignored for http://) -- see TLS:WRAP-CLIENT for its shape;
+this is how a caller (or a test harness) trusts a private/throwaway CA. The
+returned response's :BODY is an UNREAD body stream (see STREAM-READ!/
+STREAM-READ-ALL!/COLLECT-BYTES/COLLECT-STRING/COLLECT-JSON) -- streaming
+end to end, per the ticket."
   (let ((deadline (if overall-timeout-ms (+ (monotonic-micros) (* overall-timeout-ms 1000)) nil)))
     ($http-request-loop (string-upcase method) url headers body connect-timeout-ms read-timeout-ms
-                         max-redirects follow-redirects max-line-bytes max-header-count 0 deadline)))
+                         max-redirects follow-redirects max-line-bytes max-header-count 0 deadline
+                         extra-roots)))
 
 (defun get (url &key (headers ()) (connect-timeout-ms nil) (read-timeout-ms nil) (overall-timeout-ms nil)
-            (max-redirects $http-default-max-redirects) (follow-redirects t))
+            (max-redirects $http-default-max-redirects) (follow-redirects t) (extra-roots ()))
   "Ergonomic (request \"GET\" url ...); see REQUEST for every keyword."
   (request "GET" url :headers headers :connect-timeout-ms connect-timeout-ms :read-timeout-ms read-timeout-ms
-           :overall-timeout-ms overall-timeout-ms :max-redirects max-redirects :follow-redirects follow-redirects))
+           :overall-timeout-ms overall-timeout-ms :max-redirects max-redirects :follow-redirects follow-redirects
+           :extra-roots extra-roots))
 
 (defun post (url &key (headers ()) (body nil) (connect-timeout-ms nil) (read-timeout-ms nil)
-             (overall-timeout-ms nil) (max-redirects $http-default-max-redirects) (follow-redirects t))
+             (overall-timeout-ms nil) (max-redirects $http-default-max-redirects) (follow-redirects t)
+             (extra-roots ()))
   "Ergonomic (request \"POST\" url :body body ...); see REQUEST for every
 keyword."
   (request "POST" url :headers headers :body body :connect-timeout-ms connect-timeout-ms
            :read-timeout-ms read-timeout-ms :overall-timeout-ms overall-timeout-ms
-           :max-redirects max-redirects :follow-redirects follow-redirects))
+           :max-redirects max-redirects :follow-redirects follow-redirects :extra-roots extra-roots))
 
 ;;; ============================================================================
 ;;; SERVER

@@ -319,6 +319,14 @@ fn read_timeout_fires_on_a_stalled_response() {
     server.join().unwrap();
 }
 
+// Feature-off behavior (issue #365): with the `net-tls` cargo feature
+// compiled out, https:// keeps this exact structured error -- see
+// tests/test_tls.rs for the feature-ON behavior (https:// end to end
+// through http:request, over the loopback TLS harness there). This test is
+// necessarily feature-off-only: with net-tls on, https://example.invalid/
+// instead fails DNS resolution (a different, TLS-unrelated error), since
+// https:// is no longer unconditionally rejected.
+#[cfg(not(feature = "net-tls"))]
 #[test]
 fn https_url_is_a_clear_structured_error_naming_issue_365() {
     let env = client_env();

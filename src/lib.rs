@@ -757,6 +757,27 @@ pub enum BuiltinFunc {
     UdpSend,
     UdpReceiveFrom,
     UdpSetTimeout,
+    // TLS (issue #365, epic #253): kernel substrate wrapped by the TLS
+    // module in lib/43-tls.lisp, behind the off-by-default `net-tls` cargo
+    // feature (src/evaluator/builtins_tls.rs). These variants are ALWAYS
+    // registered, unlike the `concurrency`-gated variants below -- with
+    // `net-tls` compiled out, calling any of them (other than
+    // `TlsAvailableP`) signals a structured `:category :tls-unavailable`
+    // error instead of being an unbound-variable error, so `(require 'tls)`
+    // and every `tls:*` name always resolve regardless of how the crate was
+    // built. A TLS stream reuses `LispVal::Port` (new `PortState` variants
+    // gated by the same feature), so every `PORTS`/`TCP` operation
+    // (read/write/close/shutdown/timeouts/peer-addr) keeps working on it
+    // unchanged -- see `PortObj::tls_wrap_client`/`tls_wrap_server` in
+    // `src/lib.rs`.
+    TlsAvailableP,
+    TlsWrapClient,
+    TlsWrapClientInsecure,
+    TlsWrapServer,
+    TlsAlpnProtocol,
+    TlsPeerCertificates,
+    TlsPeerCertificateSummary,
+    TlsSniHostname,
     // OS integration (issue #260, epic #253): kernel substrate wrapped by
     // the OS/OS-LINUX modules in lib/41-os.lisp, lib/42-os-linux.lisp.
     OsArgs,
@@ -1421,6 +1442,18 @@ enum PortState {
     /// (`shutdown`/timeouts/peer address); see [`PortObj::tcp_peer_addr`]
     /// and friends below.
     TcpStream(TcpStream),
+    /// A TLS client stream wrapping a connected TCP port (issue #365, epic
+    /// #253), only present with the `net-tls` cargo feature. Not seekable.
+    /// Boxed because `rustls::StreamOwned` is large relative to the other
+    /// variants here (it embeds the whole `ClientConnection` state machine),
+    /// and this is the rare variant, not the hot one.
+    #[cfg(feature = "net-tls")]
+    TlsClient(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    /// A TLS server stream wrapping an accepted TCP port (issue #365, epic
+    /// #253), only present with the `net-tls` cargo feature. Mirrors
+    /// `TlsClient`.
+    #[cfg(feature = "net-tls")]
+    TlsServer(Box<rustls::StreamOwned<rustls::ServerConnection, TcpStream>>),
 }
 
 impl fmt::Debug for PortState {
@@ -1436,6 +1469,10 @@ impl fmt::Debug for PortState {
             PortState::Stderr(_) => "Stderr",
             PortState::HostReader(_) => "HostReader",
             PortState::HostWriter(_) => "HostWriter",
+            #[cfg(feature = "net-tls")]
+            PortState::TlsClient(_) => "TlsClient",
+            #[cfg(feature = "net-tls")]
+            PortState::TlsServer(_) => "TlsServer",
         };
         write!(f, "{tag}")
     }
@@ -1550,6 +1587,10 @@ impl PortObj {
             PortState::Stdin(s) => s.lock().read(buf),
             PortState::HostReader(r) => r.read(buf),
             PortState::TcpStream(s) => s.read(buf),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsClient(s) => s.read(buf),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsServer(s) => s.read(buf),
             _ => Err(std::io::Error::other("port is not readable")),
         }
     }
@@ -1572,6 +1613,10 @@ impl PortObj {
             PortState::Stderr(s) => s.lock().write(data),
             PortState::HostWriter(w) => w.write(data),
             PortState::TcpStream(s) => s.write(data),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsClient(s) => s.write(data),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsServer(s) => s.write(data),
             _ => Err(std::io::Error::other("port is not writable")),
         }
     }
@@ -1587,6 +1632,10 @@ impl PortObj {
             PortState::Stderr(s) => s.lock().flush(),
             PortState::HostWriter(w) => w.flush(),
             PortState::TcpStream(s) => s.flush(),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsClient(s) => s.flush(),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsServer(s) => s.flush(),
             _ => Ok(()),
         }
     }
@@ -1642,12 +1691,20 @@ impl PortObj {
 
     // ── TCP-specific operations (issue #258, epic #253) ───────────────────
     //
-    // These four methods only make sense for `PortState::TcpStream`; every
-    // other port kind errors. They live on `PortObj` rather than a free
-    // function in `builtins_net.rs` for the same reason the byte operations
-    // above do: representation access (`std::net::TcpStream`'s methods)
-    // stays next to the `PortState` that owns it.
-
+    // These methods only make sense for a port that owns a `TcpStream`
+    // (`PortState::TcpStream`, or -- issue #365 -- a TLS-wrapped one, whose
+    // `.sock` field IS the same underlying `TcpStream`); every other port
+    // kind errors. They live on `PortObj` rather than a free function in
+    // `builtins_net.rs` for the same reason the byte operations above do:
+    // representation access (`std::net::TcpStream`'s methods) stays next to
+    // the `PortState` that owns it. Reusing these four methods for TLS
+    // states (rather than adding TLS-specific duplicates) is what lets
+    // `tcp:shutdown!`/`tcp:set-read-timeout!`/`tcp:set-write-timeout!`/
+    // `net:peer-addr`/`net:local-addr` keep working unchanged on a TLS port
+    // -- issue #365's "handshake timeout via the underlying socket's
+    // read/write timeouts" is exactly `tcp:set-read-timeout!` called before
+    // (to bound the handshake) or after (to bound subsequent application
+    // data) wrapping.
     fn with_tcp_stream<T>(
         &self,
         op: &str,
@@ -1656,18 +1713,23 @@ impl PortObj {
         self.require_open()?;
         match &*self.state.borrow() {
             PortState::TcpStream(s) => f(s),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsClient(s) => f(&s.sock),
+            #[cfg(feature = "net-tls")]
+            PortState::TlsServer(s) => f(&s.sock),
             _ => Err(std::io::Error::other(format!(
-                "{op}: not a TCP stream port"
+                "{op}: not a TCP or TLS stream port"
             ))),
         }
     }
 
-    /// The remote address this TCP stream is connected to.
+    /// The remote address this TCP (or TLS-wrapped TCP) stream is connected
+    /// to.
     pub fn tcp_peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         self.with_tcp_stream("peer-addr", |s| s.peer_addr())
     }
 
-    /// The local address this TCP stream is bound to.
+    /// The local address this TCP (or TLS-wrapped TCP) stream is bound to.
     pub fn tcp_local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         self.with_tcp_stream("local-addr", |s| s.local_addr())
     }
@@ -1675,6 +1737,9 @@ impl PortObj {
     /// Shut down the read half, write half, or both, per
     /// [`std::net::Shutdown`]. Does not close the port -- matches the ticket's
     /// "shutdown read/write/both" as an operation distinct from `close!`.
+    /// On a TLS port this shuts down the underlying TCP socket directly
+    /// (no TLS `close_notify` is sent) -- an abrupt half-close, documented
+    /// as such; use `close!` for an orderly TLS shutdown.
     pub fn tcp_shutdown(&self, how: std::net::Shutdown) -> std::io::Result<()> {
         self.with_tcp_stream("shutdown", |s| s.shutdown(how))
     }
@@ -1689,6 +1754,69 @@ impl PortObj {
         self.with_tcp_stream("set-write-timeout", |s| s.set_write_timeout(dur))
     }
 
+    // ── TLS-specific operations (issue #365, epic #253) ───────────────────
+    //
+    // Diagnostics that only make sense once a TLS handshake has completed:
+    // negotiated ALPN protocol and peer certificates. Mirrors the TCP block
+    // above's shape. Only compiled with the `net-tls` feature; the Lisp-
+    // facing `:CATEGORY :TLS-UNAVAILABLE` error for a feature-off build is
+    // produced entirely in `src/evaluator/builtins_tls.rs`, not here.
+    #[cfg(feature = "net-tls")]
+    fn with_tls_connection<T>(
+        &self,
+        op: &str,
+        client: impl FnOnce(&rustls::ClientConnection) -> T,
+        server: impl FnOnce(&rustls::ServerConnection) -> T,
+    ) -> std::io::Result<T> {
+        self.require_open()?;
+        match &*self.state.borrow() {
+            PortState::TlsClient(s) => Ok(client(&s.conn)),
+            PortState::TlsServer(s) => Ok(server(&s.conn)),
+            _ => Err(std::io::Error::other(format!("{op}: not a TLS port"))),
+        }
+    }
+
+    /// The ALPN protocol negotiated during the handshake, if any (client or
+    /// server side alike).
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn tls_alpn_protocol(&self) -> std::io::Result<Option<Vec<u8>>> {
+        self.with_tls_connection(
+            "alpn-protocol",
+            |c| c.alpn_protocol().map(|p| p.to_vec()),
+            |c| c.alpn_protocol().map(|p| p.to_vec()),
+        )
+    }
+
+    /// The peer's certificate chain (leaf first), as raw DER bytes -- see
+    /// issue #365's "peer-certificate diagnostics (DER bytes + a summary
+    /// alist)"; `lib/43-tls.lisp` builds the summary alist from this.
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn tls_peer_certificates(&self) -> std::io::Result<Option<Vec<Vec<u8>>>> {
+        self.with_tls_connection(
+            "peer-certificates",
+            |c| {
+                c.peer_certificates()
+                    .map(|certs| certs.iter().map(|c| c.as_ref().to_vec()).collect())
+            },
+            |c| {
+                c.peer_certificates()
+                    .map(|certs| certs.iter().map(|c| c.as_ref().to_vec()).collect())
+            },
+        )
+    }
+
+    /// The SNI hostname a TLS client offered during the handshake, server
+    /// side only (`None` for a client port, or if the client sent none).
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn tls_sni_hostname(&self) -> std::io::Result<Option<String>> {
+        self.require_open()?;
+        match &*self.state.borrow() {
+            PortState::TlsServer(s) => Ok(s.conn.server_name().map(|s| s.to_string())),
+            PortState::TlsClient(_) => Ok(None),
+            _ => Err(std::io::Error::other("sni-hostname: not a TLS port")),
+        }
+    }
+
     // ── Constructors ────────────────────────────────────────────────────
 
     /// Wrap a connected [`TcpStream`] as a duplex binary [`LispVal::Port`]
@@ -1698,9 +1826,9 @@ impl PortObj {
     /// is called, matching every other `PortObj` constructor's split.
     ///
     /// This is deliberately the same `LispVal::Port` representation as every
-    /// other port, not a new variant: it is the seam a future TLS layer can
-    /// wrap without changing the port API (`ports:*` and any TLS wrapper
-    /// would both take/return this same `Port` shape).
+    /// other port, not a new variant: it is the seam issue #365's TLS layer
+    /// wraps without changing the port API (`ports:*` and the TLS wrapper
+    /// both take/return this same `Port` shape).
     pub(crate) fn tcp_stream(name: impl Into<String>, stream: TcpStream) -> Shared<PortObj> {
         PortObj::new(
             "tcp-stream",
@@ -1709,6 +1837,76 @@ impl PortObj {
             true,
             false,
             PortState::TcpStream(stream),
+        )
+    }
+
+    /// Take ownership of the underlying [`TcpStream`] out of a connected TCP
+    /// port, leaving the original `PortObj` in the `Closed` state (issue
+    /// #365, epic #253): a TLS wrap consumes the plaintext port and returns
+    /// a brand-new `Port` over the same socket -- the original Lisp `Port`
+    /// value that named the plaintext connection stops working (errors like
+    /// any other closed port) the instant it is wrapped, rather than
+    /// silently continuing to allow plaintext reads/writes alongside the
+    /// TLS session on the same fd. Errors (without consuming the state) if
+    /// this port is not an open `TcpStream` port.
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn take_tcp_stream(&self) -> std::io::Result<TcpStream> {
+        self.require_open()?;
+        {
+            let state = self.state.borrow();
+            if !matches!(&*state, PortState::TcpStream(_)) {
+                return Err(std::io::Error::other("not an open TCP stream port"));
+            }
+        }
+        let mut state = self.state.borrow_mut();
+        match std::mem::replace(&mut *state, PortState::Closed) {
+            PortState::TcpStream(s) => Ok(s),
+            other => {
+                // Restore -- another borrow raced this one between the check
+                // above and here. `PortObj`'s `SharedCell` (a `RefCell`) is
+                // never accessed from more than one thread concurrently in
+                // this codebase's usage, so this arm is unreachable in
+                // practice; restoring is still the safe thing to do if it
+                // somehow were.
+                *state = other;
+                Err(std::io::Error::other("not an open TCP stream port"))
+            }
+        }
+    }
+
+    /// Wrap an owned [`TcpStream`] and a completed-or-in-progress
+    /// [`rustls::ClientConnection`] as a duplex binary [`LispVal::Port`]
+    /// (issue #365, epic #253). Not seekable. `name` is diagnostic only.
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn tls_client(
+        name: impl Into<String>,
+        stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+    ) -> Shared<PortObj> {
+        PortObj::new(
+            "tls-client",
+            name,
+            true,
+            true,
+            false,
+            PortState::TlsClient(Box::new(stream)),
+        )
+    }
+
+    /// Wrap an owned [`TcpStream`] and a completed-or-in-progress
+    /// [`rustls::ServerConnection`] as a duplex binary [`LispVal::Port`]
+    /// (issue #365, epic #253). Mirrors [`PortObj::tls_client`].
+    #[cfg(feature = "net-tls")]
+    pub(crate) fn tls_server(
+        name: impl Into<String>,
+        stream: rustls::StreamOwned<rustls::ServerConnection, TcpStream>,
+    ) -> Shared<PortObj> {
+        PortObj::new(
+            "tls-server",
+            name,
+            true,
+            true,
+            false,
+            PortState::TlsServer(Box::new(stream)),
         )
     }
 
@@ -2801,6 +2999,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("40-http.lisp", include_str!("../lib/40-http.lisp")),
     ("41-os.lisp", include_str!("../lib/41-os.lisp")),
     ("42-os-linux.lisp", include_str!("../lib/42-os-linux.lisp")),
+    ("43-tls.lisp", include_str!("../lib/43-tls.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -2974,6 +3173,7 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         "42-os-linux.lisp",
         include_str!("../lib/42-os-linux.lisp"),
     ),
+    ("TLS", "43-tls.lisp", include_str!("../lib/43-tls.lisp")),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

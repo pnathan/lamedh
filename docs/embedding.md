@@ -358,6 +358,59 @@ policy — like `add_module_search_path`, this is deliberately Rust-only.
 See `docs/manual/13-networking.md` for the Lisp-facing story (`NET`/
 `TCP`/`UDP` modules, `NET:ADDRESS`, structured error categories).
 
+## TLS (feature flag + insecure-connect opt-in)
+
+Issue #365: `TLS` (`lib/43-tls.lisp`) wraps a connected TCP `Port` as a
+client or server. It requires two separate things from an embedder, one at
+build time and one at runtime:
+
+**1. The `net-tls` cargo feature** (off by default — the owner's ruling,
+#364/#365, so the default dependency tree/behavior stays exactly as it
+was):
+
+```toml
+[dependencies]
+lamedh = { path = "...", features = ["net-tls"] }
+```
+
+With this feature compiled out, `lib/43-tls.lisp` still loads (every
+`tls:*` name is bound), but every operation except `tls:available-p`
+signals a structured `:CATEGORY :TLS-UNAVAILABLE` error. Check
+`(tls:available-p)` from Lisp, or `cfg!(feature = "net-tls")` from Rust, to
+tell which build you have.
+
+**2. `Environment::set_allow_insecure_tls`, for `tls:connect-insecure!`
+only.** Every ordinary `tls:connect`/`tls:wrap-client` call verifies the
+peer certificate; `tls:connect-insecure!`/`tls:wrap-client-insecure!` are
+the *only* Lisp-facing way to skip verification, and even they refuse to
+run unless the host has separately opted in — mirroring `set_net_policy`'s
+"Rust-only to install" shape one level further: Lisp code alone can never
+disable certificate verification, no matter what it calls.
+
+```rust
+let env = Environment::with_stdlib();
+env.enable_feature("NET-CONNECT");
+
+// Left at the default (false): tls:connect-insecure! always signals a
+// structured :POLICY-DENIED error, regardless of what Lisp code does.
+
+// A host that has a real reason to allow it (e.g. a developer-only debug
+// tool, or a test harness that would otherwise need :extra-roots instead):
+env.set_allow_insecure_tls(true);
+```
+
+Only present when the `net-tls` feature is enabled (it would be dead code
+otherwise — there is no insecure-connect operation to gate without TLS
+compiled in at all). Root-of-trust extension for the *ordinary*, verified
+path (a private/internal CA, or a test harness's throwaway CA) does not
+need this flag at all: pass PEM data as `:extra-roots` to `tls:connect`/
+`tls:wrap-client` instead, which is almost always the better fit — it
+keeps verification on, just against a different trust store.
+
+See `docs/manual/13-networking.md` §13.8 for the full Lisp-facing story
+(certificate/ALPN/SNI diagnostics, structured error categories, the
+`https://` integration in `HTTP`).
+
 ## OS policy (scoped process/signal grants)
 
 Issue #260: `OS-PROCESS`/`OS-SIGNAL` (above) are the same kind of coarse

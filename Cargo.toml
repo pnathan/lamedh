@@ -22,6 +22,30 @@ cranelift-module = { version = "0.133", optional = true }
 cranelift-codegen = { version = "0.133", optional = true }
 cranelift-frontend = { version = "0.133", optional = true }
 
+# TLS port wrapping (issue #365, epic #253). Off by default -- an owner
+# dependency ruling (see #364/#365) picked rustls specifically so the
+# default, dependency-light build stays exactly as it was: none of these
+# three crates (nor their transitive crypto-provider deps) are pulled in,
+# compiled, or even resolved unless `--features net-tls` is passed. `ring`
+# is the selected crypto provider (pure-Rust-plus-assembly, no cmake/nasm
+# build tool required, unlike the `aws-lc-rs` alternative) -- see
+# src/evaluator/builtins_tls.rs's module header for the full ruling.
+rustls = { version = "0.23", optional = true, default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+] }
+webpki-roots = { version = "0.26", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+
+[dev-dependencies]
+# Test-only: generates a throwaway self-signed CA + leaf cert for the
+# loopback TLS integration tests (tests/test_tls.rs). Never built for a
+# normal `cargo build`/`cargo install` -- dev-dependencies are excluded from
+# that graph, so this does not affect the net-tls feature's "off by default"
+# story for embedders.
+rcgen = "0.13"
+
 [features]
 default = ["jit", "concurrency"]
 jit = [
@@ -30,6 +54,16 @@ jit = [
     "dep:cranelift-codegen",
     "dep:cranelift-frontend",
 ]
+# TLS port wrapping (issue #365, epic #253): rustls-backed tls: module
+# (lib/43-tls.lisp) plus https:// support in the http: module. OFF BY
+# DEFAULT per the owner's dependency ruling -- the default build's behavior
+# and dependency tree are unchanged. With this feature compiled out, the
+# TLS-* kernel builtins are still bound (so `(require 'tls)` still loads
+# cleanly and `tls:*` names still exist) but every one of them signals a
+# structured `:category :tls-unavailable` error instead of doing any work;
+# https:// keeps today's `:category :https-unsupported` error either way
+# until this feature is compiled in. See src/evaluator/builtins_tls.rs.
+net-tls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
 # Enable this feature to replace Rc->Arc and RefCell->RwLock for shared
 # LispVal inner types (Cons, Symbol, HashTable, Array) and Environment.
 # This uses atomic reference counting at the cost of higher overhead per

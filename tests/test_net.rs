@@ -755,6 +755,39 @@ fn dropping_an_unclosed_tcp_stream_still_releases_its_fd() {
     let _ = server.join();
 }
 
+// ── TLS off-behavior (issue #365) ───────────────────────────────────────
+//
+// With the `net-tls` cargo feature compiled out, `(require 'tls)` still
+// loads cleanly (lib/43-tls.lisp is embedded like every other optional
+// module, regardless of the feature -- see its own file header),
+// `tls:available-p` reports NIL, and every other TLS:* operation signals a
+// structured `:CATEGORY :TLS-UNAVAILABLE` error instead of doing any TLS
+// work. See tests/test_tls.rs for the feature-ON behavior (loopback TLS
+// round trips) -- this test is necessarily feature-off-only, since with
+// net-tls on, TLS:AVAILABLE-P is T and TLS:WRAP-CLIENT would instead fail
+// differently (a bad-port-argument error, not :TLS-UNAVAILABLE).
+
+#[cfg(not(feature = "net-tls"))]
+#[test]
+fn tls_module_loads_but_every_operation_is_unavailable_without_the_net_tls_feature() {
+    let env = env_with_net();
+    assert_eq!(eval_line("(require 'tls)", &env), "TLS");
+    let available = eval_line("(tls:available-p)", &env);
+    assert!(available == "NIL" || available == "()", "got: {available}");
+    let out = eval_line(
+        "(handler-case (tls:wrap-client nil :hostname \"example.com\")
+            (error (e) (cdr (assoc ':category (error-data e)))))",
+        &env,
+    );
+    assert_eq!(out, ":TLS-UNAVAILABLE", "got: {out}");
+    let out2 = eval_line(
+        "(handler-case (tls:wrap-client-insecure! nil :hostname \"example.com\")
+            (error (e) (cdr (assoc ':category (error-data e)))))",
+        &env,
+    );
+    assert_eq!(out2, ":TLS-UNAVAILABLE", "got: {out2}");
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 fn list_items(v: &LispVal) -> Vec<LispVal> {
