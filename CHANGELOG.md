@@ -70,6 +70,28 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## test: split the examples monolith; adopt cargo-nextest as an optional runner (#58)
+
+`tests/test_examples.rs` ran all 51 classics programs inside a single
+`#[test]` looping over `examples/`, making it one ~200s serial tall pole.
+It is now **one test per example** (a `example_tests!` manifest expanding
+to a `#[test]` each, plus an `examples_manifest_is_complete` guard that
+fails loudly if a program is added/removed without updating the manifest).
+Each program builds its own stdlib environment — cheap since the world-fork
+(#370) — so the harness runs them in parallel: the example suite's tall
+pole drops from the sum of all 51 to the single slowest program (~4× on the
+binary in isolation). This speeds any binary-serializing runner, including
+the release `scripts/gauntlet.sh` ship gate.
+
+Also adds `.config/nextest.toml` and documents **`cargo nextest run`** as an
+optional faster local runner (process-per-test, full cross-binary
+parallelism; it inherits the 128 MiB `RUST_MIN_STACK` from
+`.cargo/config.toml`, so stdlib-building tests pass under it). nextest is
+for fast local iteration — the authoritative ship gate is still the release
+gauntlet (nextest does not run doctests). Measured on this machine (debug,
+full default suite): `cargo test` 806 s → `cargo nextest run` ~651 s; the
+monolith split is what closes most of that gap for `cargo test` itself.
+
 ## modules: help subsystem registered; #56 namespacing complete
 
 `doc-renderer` and `help-system` gain metadata-only `defmodule`

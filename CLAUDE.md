@@ -26,6 +26,8 @@ This repository is a Cargo workspace with two primary crates:
 - **Run script with arguments**: `cargo run -- path/to/script.lisp arg1 arg2`
 - **Run all tests**: `cargo test`
 - **Run a specific test**: `cargo test <test_name>`
+- **Faster local test runs**: `cargo nextest run` (optional; process-per-test with full cross-binary parallelism, faster than `cargo test`; `.config/nextest.toml` tunes it). It does **not** run doctests — add `cargo test --doc` when those matter.
+- **Ship gate (authoritative)**: `scripts/gauntlet.sh [verdict-file]` — release, default + `--no-default-features` + `--features fuzz` + clippy; a ship needs `DEFAULT-GREEN`/`NDF-GREEN`/`FUZZ-GREEN`/`CLIPPY-GREEN` in the verdict file. This, not a bare `cargo test`, is the merge gate.
 - **Lint**: `cargo clippy --workspace --all-targets`
 - **Format**: `cargo fmt --all`
 - **Benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
