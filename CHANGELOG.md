@@ -70,6 +70,23 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## internal: stdlib load order — module system ahead of the optionals (#56 prep)
+
+Reordered the embedded `STDLIB_SOURCES` load sequence so the module
+system (`20-condensation.lisp` then `27-modules.lisp`) loads immediately
+after the Prelude, ahead of every optional library. Previously the
+pre-0.3 optionals (`07-shell`, `10-testing`, `11-optimizer-vau`,
+`19-call-graph`, `22-guard` … `26-instrument`) loaded *before*
+`27-modules.lisp`, so none of them could be wrapped in
+`DEFMODULE`/`WITH-MODULE` at their own load position — the blocker for
+the #56 namespacing retrofit. Only the load ORDER in `src/lib.rs`
+changed; filenames keep their historical numbers, the optionals are
+reordered by their real dependency edges (optimizer-vau → rules,
+call-graph → guard, types → protocols), and `PRELUDE_SOURCES`
+(`with_prelude`) is untouched. No user-visible behavior change: every
+name still resolves identically; this only makes the module system
+available to the libraries that will be retrofitted onto it.
+
 ## io: `read-file-section` decodes strictly — no more silent lossy text coercion (#359)
 
 `read-file-section` decoded its bytes with `from_utf8_lossy`, silently

@@ -2928,6 +2928,9 @@ impl LispVal {
 ///
 /// Each entry is `(filename, source)`. The filename is used only for error messages.
 const STDLIB_SOURCES: &[(&str, &str)] = &[
+    // ---- Prelude (the stable core vocabulary; mirrors PRELUDE_SOURCES) ----
+    // Loaded first so the module system and every optional below can rely on
+    // the full Prelude being present.
     ("00-core.lisp", include_str!("../lib/00-core.lisp")),
     ("01-list.lisp", include_str!("../lib/01-list.lisp")),
     ("02-cxr.lisp", include_str!("../lib/02-cxr.lisp")),
@@ -2938,14 +2941,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ),
     ("05-math.lisp", include_str!("../lib/05-math.lisp")),
     ("06-require.lisp", include_str!("../lib/06-require.lisp")),
-    ("07-shell.lisp", include_str!("../lib/07-shell.lisp")),
     ("08-vau.lisp", include_str!("../lib/08-vau.lisp")),
-    ("09-lisp15.lisp", include_str!("../lib/09-lisp15.lisp")),
-    ("10-testing.lisp", include_str!("../lib/10-testing.lisp")),
-    (
-        "11-optimizer-vau.lisp",
-        include_str!("../lib/11-optimizer-vau.lisp"),
-    ),
     ("12-control.lisp", include_str!("../lib/12-control.lisp")),
     (
         "13-functional.lisp",
@@ -2963,17 +2959,34 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("17-arrays.lisp", include_str!("../lib/17-arrays.lisp")),
     ("18-format.lisp", include_str!("../lib/18-format.lisp")),
     (
-        "19-call-graph.lisp",
-        include_str!("../lib/19-call-graph.lisp"),
+        "21-cl-compat.lisp",
+        include_str!("../lib/21-cl-compat.lisp"),
     ),
+    // ---- Module system ----
+    // condensation + modules must load ahead of every optional so those
+    // optionals can be wrapped in DEFMODULE/WITH-MODULE (issue #56). The
+    // filenames keep their historical numbers; only load ORDER changed here.
+    // condensation needs the Prelude only; modules needs condensation.
     (
         "20-condensation.lisp",
         include_str!("../lib/20-condensation.lisp"),
     ),
+    ("27-modules.lisp", include_str!("../lib/27-modules.lisp")),
+    // ---- Optionals ----
+    // Ordered by their real dependency edges (verified for #56):
+    // optimizer-vau -> rules, match -> rules, call-graph -> guard,
+    // types -> protocols. Everything here loads after the module system.
     (
-        "21-cl-compat.lisp",
-        include_str!("../lib/21-cl-compat.lisp"),
+        "11-optimizer-vau.lisp",
+        include_str!("../lib/11-optimizer-vau.lisp"),
     ),
+    (
+        "19-call-graph.lisp",
+        include_str!("../lib/19-call-graph.lisp"),
+    ),
+    ("07-shell.lisp", include_str!("../lib/07-shell.lisp")),
+    ("09-lisp15.lisp", include_str!("../lib/09-lisp15.lisp")),
+    ("10-testing.lisp", include_str!("../lib/10-testing.lisp")),
     ("22-guard.lisp", include_str!("../lib/22-guard.lisp")),
     ("23-match.lisp", include_str!("../lib/23-match.lisp")),
     ("24-rules.lisp", include_str!("../lib/24-rules.lisp")),
@@ -2982,7 +2995,6 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         "26-instrument.lisp",
         include_str!("../lib/26-instrument.lisp"),
     ),
-    ("27-modules.lisp", include_str!("../lib/27-modules.lisp")),
     ("28-types.lisp", include_str!("../lib/28-types.lisp")),
     (
         "29-protocols.lisp",
