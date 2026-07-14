@@ -1,5 +1,16 @@
 # v0.3.0 — unreleased
 
+## Fuzz battery off the default path (dev tooling)
+
+`tests/brutal_correctness.rs` — the randomized JIT differential/metamorphic
+fuzz battery (nine batches, tens of thousands of random programs, minutes in
+debug) — is now gated behind a non-default `fuzz` cargo feature. Plain
+`cargo test` compiles it to nothing and skips it entirely; the ship gauntlet
+(`scripts/gauntlet.sh`) and CI run `--features fuzz` in **release**, where the
+same battery is seconds. `BRUTAL=1` still scales every batch to its deep
+sweep. This takes the single biggest tax off day-to-day and agent iteration
+with no loss of ship-gate coverage.
+
 ## Gauntlet speed (dev tooling)
 
 `scripts/gauntlet.sh` runs the authoritative verification in **release**
