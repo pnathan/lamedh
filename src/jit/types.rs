@@ -456,6 +456,42 @@ pub enum Core {
     /// A statement sequence: evaluate each in order (for side effects such as
     /// `store`), yielding the last. Non-empty by construction.
     Seq(Vec<Core>),
+    /// A unary floating-point intrinsic over a `float64` argument. The op
+    /// determines the math and the result representation (see [`FUnOp`]).
+    FUnary(FUnOp, Box<Core>),
+}
+
+/// Unary floating-point intrinsics that lower to native code. Each takes one
+/// `float64` argument. The result is `float64` for the transcendentals and
+/// `int64` for the rounding family (matching the evaluator, whose `floor`/
+/// `ceiling`/`truncate` return an integer). Only ops whose native lowering is
+/// bit-identical to the evaluator's Rust implementation appear here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FUnOp {
+    /// `sqrt`: `fsqrt` instruction; `float64 -> float64`.
+    Sqrt,
+    /// `floor`: `floor` instruction then saturating `f64 as i64`; `-> int64`.
+    Floor,
+    /// `ceiling`: `ceil` instruction then saturating `f64 as i64`; `-> int64`.
+    Ceil,
+    /// `truncate`: `trunc` instruction then saturating `f64 as i64`; `-> int64`.
+    Trunc,
+}
+
+impl FUnOp {
+    /// Apply the op to an `f64`, returning the result as a raw 64-bit word
+    /// (float bits for `float64` results, the integer value for `int64`
+    /// results). This is the single source of truth the Core interpreter uses,
+    /// and it mirrors exactly what the native lowering emits.
+    pub fn apply_word(self, x: f64) -> u64 {
+        match self {
+            FUnOp::Sqrt => x.sqrt().to_bits(),
+            // `as i64` is saturating in Rust (matches Cranelift `fcvt_to_sint_sat`).
+            FUnOp::Floor => x.floor() as i64 as u64,
+            FUnOp::Ceil => x.ceil() as i64 as u64,
+            FUnOp::Trunc => x.trunc() as i64 as u64,
+        }
+    }
 }
 
 /// Public mirror of `NumTy` so [`Core`] can derive `Debug`/`Clone` cleanly.

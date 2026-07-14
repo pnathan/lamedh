@@ -173,6 +173,26 @@ impl Cx<'_> {
                     "FETCH" | "AREF" => self.elab_fetch(args, scope, max),
                     "STORE" | "ASET" => self.elab_store(args, scope, max),
                     "ARRAY-LENGTH*" => self.elab_array_len(args, scope, max),
+                    // Unary float intrinsics ("fix the language"): compile to
+                    // native. Codegen-only (`!checking`) so checking keeps the
+                    // permissive declared schemes from lib/28-types.lisp (arg
+                    // `any`); in codegen the arg must be concrete `float64` or
+                    // the function stays interpreted. `sqrt` yields `float64`;
+                    // `floor`/`ceiling`/`truncate` yield `int64` (like the
+                    // evaluator). `round` and the transcendentals need a libm
+                    // trampoline and are handled separately.
+                    "SQRT" if !self.checking => {
+                        self.elab_funary(FUnOp::Sqrt, Ty::Float64, args, scope, max)
+                    }
+                    "FLOOR" if !self.checking => {
+                        self.elab_funary(FUnOp::Floor, Ty::Int64, args, scope, max)
+                    }
+                    "CEILING" if !self.checking => {
+                        self.elab_funary(FUnOp::Ceil, Ty::Int64, args, scope, max)
+                    }
+                    "TRUNCATE" if !self.checking => {
+                        self.elab_funary(FUnOp::Trunc, Ty::Int64, args, scope, max)
+                    }
                     // Checker-only forms (#162): list/pair processing + `quote`/
                     // `cond`/`when` whose `elab_*` emit only a placeholder
                     // `Core::LitI(0)` for type purposes — they typecheck untyped
@@ -1659,6 +1679,28 @@ impl Cx<'_> {
             _ => Ty::Any,
         };
         Ok((Core::LitI(0), ty))
+    }
+
+    /// A unary float intrinsic `(op x)`: the argument must unify with
+    /// `float64`, the result type is `result` (float64 or int64 per op). If the
+    /// argument is not concretely float (e.g. an int-typed expression), the
+    /// unify fails and the whole function falls back to interpreted — the
+    /// argument is never silently coerced.
+    fn elab_funary(
+        &self,
+        op: FUnOp,
+        result: Ty,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`{op:?}` expects 1 argument, got {}", args.len()));
+        }
+        let (arg_core, arg_ty) = self.elab(&args[0], scope, max)?;
+        self.unify(&arg_ty, &Ty::Float64)
+            .map_err(|e| format!("float intrinsic argument must be float64: {e}"))?;
+        Ok((Core::FUnary(op, Box::new(arg_core)), result))
     }
 
     pub(super) fn elab_body(
