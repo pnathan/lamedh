@@ -170,13 +170,13 @@ fn destructuring_bind_success_and_error() {
 fn sgrep_finds_all_matching_subforms() {
     let e = env();
     let out = eval_line(
-        "(length (sgrep '(setq ?v ?e) '(progn (setq a 1) (if x (setq b (setq c 2))))))",
+        "(length (match:sgrep '(setq ?v ?e) '(progn (setq a 1) (if x (setq b (setq c 2))))))",
         &e,
     );
     assert_eq!(out, "3", "must find nested setqs too");
     // Bindings ride along with each hit.
     let out = eval_line(
-        "(cdr (assoc '?v (cdr (car (sgrep '(setq ?v ?e) '(setq a 1))))))",
+        "(cdr (assoc '?v (cdr (car (match:sgrep '(setq ?v ?e) '(setq a 1))))))",
         &e,
     );
     assert_eq!(out, "A");
@@ -185,7 +185,7 @@ fn sgrep_finds_all_matching_subforms() {
 #[test]
 fn sgrep_fn_searches_function_source() {
     let e = env();
-    let out = eval_line("(length (sgrep-fn '(car ?x) 'cadr))", &e);
+    let out = eval_line("(length (match:sgrep-fn '(car ?x) 'cadr))", &e);
     assert_eq!(out, "1", "cadr is (car (cdr x)) — one car call");
 }
 
@@ -197,18 +197,21 @@ fn rewrite_is_bottom_up_and_loop_safe() {
     // Innermost-first: nested matches inside a binding are transformed.
     assert_eq!(
         eval_line(
-            "(rewrite '(plus ?a ?b) '(+ ?a ?b) '(f (plus 1 (plus 2 3))))",
+            "(match:rewrite '(plus ?a ?b) '(+ ?a ?b) '(f (plus 1 (plus 2 3))))",
             &e
         ),
         "(F (+ 1 (+ 2 3)))"
     );
     // Identity template must not loop.
     assert_eq!(
-        eval_line("(rewrite '(?f ??args) '(?f ??args) '(a (b c)))", &e),
+        eval_line("(match:rewrite '(?f ??args) '(?f ??args) '(a (b c)))", &e),
         "(A (B C))"
     );
     // Atoms and dotted tails are rewritten too.
-    assert_eq!(eval_line("(rewrite 'x 'y '(x (x . x)))", &e), "(Y (Y . Y))");
+    assert_eq!(
+        eval_line("(match:rewrite 'x 'y '(x (x . x)))", &e),
+        "(Y (Y . Y))"
+    );
 }
 
 #[test]
@@ -245,7 +248,7 @@ fn rewrite_as_code_transform_end_to_end() {
     let e = env();
     // The homoiconic loop: rewrite code, then run it.
     let out = eval_line(
-        "(eval (rewrite '(double ?x) '(* 2 ?x) '(+ (double 10) (double 11))))",
+        "(eval (match:rewrite '(double ?x) '(* 2 ?x) '(+ (double 10) (double 11))))",
         &e,
     );
     assert_eq!(out, "42");
@@ -257,7 +260,7 @@ fn rewrite_as_code_transform_end_to_end() {
 fn sgrep_source_reports_line_and_column() {
     let e = env();
     let out = eval_line(
-        "(sgrep-source '(setq ?v ?e)
+        "(match:sgrep-source '(setq ?v ?e)
            \"(defun a () (setq x 1))\n(defun b ()\n  (when t (setq y 2)))\")",
         &e,
     );
@@ -272,7 +275,7 @@ fn sgrep_hits_destructure_with_match_itself() {
     let e = env();
     // The pattern language consuming its own output.
     let out = eval_line(
-        "(match (car (sgrep-source '(setq ?v ?e) \"(setq z 9)\"))
+        "(match (car (match:sgrep-source '(setq ?v ?e) \"(setq z 9)\"))
            ((?line ?col ?form ?bs) (list ?line ?col (cdr (assoc '?v ?bs)))))",
         &e,
     );
@@ -298,7 +301,7 @@ fn sgrep_file_greps_real_source_with_capability() {
     e.enable_feature("READ-FS");
     // Every hit anchors a (defun name ...) with its line number.
     let out = eval_line(
-        "(let ((hits (sgrep-file '(defun ?name ??rest) \"lib/01-list.lisp\")))
+        "(let ((hits (match:sgrep-file '(defun ?name ??rest) \"lib/01-list.lisp\")))
            (list (> (length hits) 5)
                  (match (car hits) ((?line ?col ?form ?bs) (> ?line 0)))))",
         &e,
@@ -307,7 +310,7 @@ fn sgrep_file_greps_real_source_with_capability() {
     // And without the capability, a clean gated error.
     let e2 = env();
     let out = eval_line(
-        "(handler-case (sgrep-file '(defun ?n ??r) \"lib/01-list.lisp\")
+        "(handler-case (match:sgrep-file '(defun ?n ??r) \"lib/01-list.lisp\")
            (error (er) 'gated))",
         &e2,
     );

@@ -247,37 +247,11 @@ Signals an error when the pattern does not match."
 ;;; itself and, recursively, every element of every proper-or-dotted list
 ;;; (elements, not tails — code subforms).
 
-(defun sgrep (pattern form)
-  "All subforms of FORM matching PATTERN, as a list of (subform . bindings)
-pairs, in depth-first source order. See PAT-MATCH for pattern syntax."
-  (reverse ($sgrep-walk pattern form nil)))
-
-(defun $sgrep-walk (pattern form acc)
-  (let* ((r (pat-match pattern form))
-         (acc2 (if (match-fail-p r) acc (cons (cons form r) acc))))
-    ($sgrep-descend pattern form acc2)))
-
-(defun $sgrep-descend (pattern form acc)
-  (cond ((not (consp form)) acc)
-        (t (let ((acc2 ($sgrep-walk pattern (car form) acc))
-                 (tail (cdr form)))
-             (cond ((consp tail) ($sgrep-descend pattern tail acc2))
-                   ((null tail) acc2)
-                   ;; Dotted tail: visit the atom.
-                   (t ($sgrep-walk pattern tail acc2)))))))
-
-(defun sgrep-fn (pattern name)
-  "SGREP over the source of the function bound to symbol NAME (via
-SEE-SOURCE) — search a definition the way you would grep a file."
-  (sgrep pattern (see-source name)))
-
 ;;; ------------------------------------------------------------------
-;;; REWRITE — structural transformation.
-;;;
-;;; (rewrite PATTERN TEMPLATE FORM): every subform matching PATTERN is
-;;; replaced by TEMPLATE instantiated with the match's bindings (?X inserts
-;;; the binding; ??XS splices it). Top-down, single pass: replacements are
-;;; not re-visited, unmatched conses are rewritten element-wise.
+;;; INSTANTIATE — the reconstruct half of the matcher engine, the
+;;; counterpart to PAT-MATCH. Stays FLAT (like PAT-MATCH): other libraries
+;;; build on it directly (e.g. lib/24-rules.lisp instantiates rule
+;;; templates), and REWRITE below uses it too.
 
 (defun instantiate (template bindings)
   "TEMPLATE with every bound pattern variable replaced by its binding;
@@ -300,66 +274,103 @@ segment variables (??XS) splice their sublists into the enclosing list."
     (t (cons (instantiate (car template) bindings)
              ($match-instantiate-list (cdr template) bindings)))))
 
-(defun rewrite (pattern template form)
-  "FORM with every PATTERN-matching subform replaced by TEMPLATE
+;;; ------------------------------------------------------------------
+;;; The tool surfaces — SGREP (structural search, #171) and REWRITE
+;;; (structural transformation) — are namespaced under the MATCH module
+;;; (issue #56): call them MATCH:SGREP, MATCH:SGREP-FN, MATCH:SGREP-SOURCE,
+;;; MATCH:SGREP-FILE, MATCH:REWRITE. The matcher ENGINE above (PAT-MATCH,
+;;; MATCH, DESTRUCTURING-BIND, INSTANTIATE, MATCH-FAIL-P) stays flat — MATCH
+;;; and DESTRUCTURING-BIND are language forms, and the rest are engine
+;;; primitives other code builds on directly. Those flat names are not
+;;; module-local, so WITH-MODULE leaves the calls to them below untouched.
+
+(require 'modules)
+(defmodule match
+  (:export sgrep sgrep-fn sgrep-source sgrep-file rewrite))
+
+(with-module match
+
+  (defun sgrep (pattern form)
+    "All subforms of FORM matching PATTERN, as a list of (subform . bindings)
+pairs, in depth-first source order. See PAT-MATCH for pattern syntax."
+    (reverse ($sgrep-walk pattern form nil)))
+
+  (defun $sgrep-walk (pattern form acc)
+    (let* ((r (pat-match pattern form))
+           (acc2 (if (match-fail-p r) acc (cons (cons form r) acc))))
+      ($sgrep-descend pattern form acc2)))
+
+  (defun $sgrep-descend (pattern form acc)
+    (cond ((not (consp form)) acc)
+          (t (let ((acc2 ($sgrep-walk pattern (car form) acc))
+                   (tail (cdr form)))
+               (cond ((consp tail) ($sgrep-descend pattern tail acc2))
+                     ((null tail) acc2)
+                     ;; Dotted tail: visit the atom.
+                     (t ($sgrep-walk pattern tail acc2)))))))
+
+  (defun sgrep-fn (pattern name)
+    "SGREP over the source of the function bound to symbol NAME (via
+SEE-SOURCE) — search a definition the way you would grep a file."
+    (sgrep pattern (see-source name)))
+
+  ;; REWRITE — structural transformation. (rewrite PATTERN TEMPLATE FORM):
+  ;; every subform matching PATTERN is replaced by TEMPLATE instantiated
+  ;; with the match's bindings (?X inserts the binding; ??XS splices it).
+  (defun rewrite (pattern template form)
+    "FORM with every PATTERN-matching subform replaced by TEMPLATE
 instantiated with that match's bindings. Bottom-up (innermost-first),
 single pass: children are rewritten before their parent is matched, so
 nested matches inside a binding are already transformed when they are
 carried into the template — but an instantiated replacement is not
 re-searched at its own node, so a template may mention the pattern's own
 shape without looping."
-  (let* ((rebuilt (if (consp form)
-                      (cons (rewrite pattern template (car form))
-                            ($rewrite-cdr pattern template (cdr form)))
-                      form))
-         (r (pat-match pattern rebuilt)))
-    (if (match-fail-p r)
-        rebuilt
-        (instantiate template r))))
+    (let* ((rebuilt (if (consp form)
+                        (cons (rewrite pattern template (car form))
+                              ($rewrite-cdr pattern template (cdr form)))
+                        form))
+           (r (pat-match pattern rebuilt)))
+      (if (match-fail-p r)
+          rebuilt
+          (instantiate template r))))
 
-(defun $rewrite-cdr (pattern template tail)
-  ;; Rewrite the elements of a list tail without matching the tail itself
-  ;; as a whole (subFORMS are elements, matching SGREP's notion).
-  (cond ((null tail) nil)
-        ((consp tail)
-         (cons (rewrite pattern template (car tail))
-               ($rewrite-cdr pattern template (cdr tail))))
-        (t (rewrite pattern template tail))))
+  (defun $rewrite-cdr (pattern template tail)
+    ;; Rewrite the elements of a list tail without matching the tail itself
+    ;; as a whole (subFORMS are elements, matching SGREP's notion).
+    (cond ((null tail) nil)
+          ((consp tail)
+           (cons (rewrite pattern template (car tail))
+                 ($rewrite-cdr pattern template (cdr tail))))
+          (t (rewrite pattern template tail))))
 
-;;; ------------------------------------------------------------------
-;;; Positioned structural search (issue #171 phase 2a): SGREP over whole
-;;; source texts and files, each hit carrying the 1-based line/column of
-;;; its top-level form. (Sub-form positions await reader spans on values —
-;;; phase 2b; the top-level anchor is the jump-to-definition 80%.)
-;;;
-;;; Hit shape: (LINE COL SUBFORM BINDINGS) — destructures nicely with the
-;;; pattern language itself:
-;;;   (match hit ((?line ?col ?form ?bs) ...))
-
-(defun sgrep-source (pattern src)
-  "All PATTERN matches in the source text SRC, as (line col subform
+  ;; Positioned structural search (issue #171 phase 2a): SGREP over whole
+  ;; source texts and files, each hit carrying the 1-based line/column of
+  ;; its top-level form. Hit shape: (LINE COL SUBFORM BINDINGS).
+  (defun sgrep-source (pattern src)
+    "All PATTERN matches in the source text SRC, as (line col subform
 bindings) hits in file order. Line/column anchor the enclosing top-level
 form (1-based)."
-  ($sgrep-positioned pattern (read-all-positioned src)))
+    ($sgrep-positioned pattern (read-all-positioned src)))
 
-(defun $sgrep-positioned (pattern triples)
-  (cond ((null triples) nil)
-        (t (let* ((triple (car triples))
-                  (form (car triple))
-                  (line (car (cdr triple)))
-                  (col (car (cdr (cdr triple)))))
-             (append
-              (mapcar (lambda (hit)
-                        (list line col (car hit) (cdr hit)))
-                      (sgrep pattern form))
-              ($sgrep-positioned pattern (cdr triples)))))))
+  (defun $sgrep-positioned (pattern triples)
+    (cond ((null triples) nil)
+          (t (let* ((triple (car triples))
+                    (form (car triple))
+                    (line (car (cdr triple)))
+                    (col (car (cdr (cdr triple)))))
+               (append
+                (mapcar (lambda (hit)
+                          (list line col (car hit) (cdr hit)))
+                        (sgrep pattern form))
+                ($sgrep-positioned pattern (cdr triples)))))))
 
-(defun sgrep-file (pattern path)
-  "SGREP-SOURCE over the file at PATH (requires the READ-FS capability),
+  (defun sgrep-file (pattern path)
+    "SGREP-SOURCE over the file at PATH (requires the READ-FS capability),
 returning (line col subform bindings) hits."
-  (sgrep-source pattern (read-file path)))
+    (sgrep-source pattern (read-file path))))
 
 ;;; REQUIRE-ABLE (issue #256): `(require 'match)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
-(provide 'match)
+(provide 'match '(match:sgrep match:sgrep-fn match:sgrep-source
+                  match:sgrep-file match:rewrite))

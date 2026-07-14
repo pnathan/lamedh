@@ -70,6 +70,22 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## modules: sgrep/rewrite tools move under the `match` namespace (#56)
+
+The structural search-and-rewrite tools in `lib/23-match.lisp` are now
+qualified under the `match` module: `match:sgrep`, `match:sgrep-fn`,
+`match:sgrep-source`, `match:sgrep-file`, `match:rewrite`. The matcher
+**engine stays flat** — `pat-match`, `match`, `destructuring-bind`,
+`instantiate`, `match-fail-p` are unchanged: `match`/`destructuring-bind`
+are language forms, and `pat-match`/`instantiate` are the deconstruct/
+reconstruct engine primitives other libraries build on directly (e.g.
+`lib/24-rules.lisp` uses flat `pat-match`/`instantiate` and is unaffected).
+Only the clearly tool-shaped `#171` search/rewrite surfaces are namespaced.
+`instantiate` was moved up beside the engine so the tool functions form one
+`with-module` block; the flat engine names they call are not module-local,
+so `with-module` leaves those calls untouched. **Behavior change**: call
+the tools qualified (`match:sgrep …`) or `(import match)`.
+
 ## modules: register the flat optional libraries as modules (#56)
 
 Eleven optional libraries whose names are deliberately kept flat —
