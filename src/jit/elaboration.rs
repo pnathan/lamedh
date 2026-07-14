@@ -159,15 +159,25 @@ impl Cx<'_> {
                     "NOT" => self.elab_not(args, scope, max),
                     "AND" | "OR" => self.elab_logic(&head, args, scope, max),
                     "IF" => self.elab_if(args, scope, max),
-                    "LET-TYPED" => self.elab_let(args, scope, max),
+                    // `let`/`progn` compile natively (issue: "fix the language"):
+                    // `elab_let` emits a real `Core::Let` and `elab_body` a real
+                    // `Core::Seq`, the same nodes `LET-TYPED` already lowers, so a
+                    // typed body using ordinary `let`/`progn` reaches the native
+                    // tier instead of stalling at CHECKED. `LET-TYPED` stays as the
+                    // explicit-annotation spelling; it and `LET` share `elab_let`.
+                    "LET" | "LET-TYPED" => self.elab_let(args, scope, max),
+                    "PROGN" => self.elab_body(args, scope, max),
                     "CHAR-CODE" => self.elab_char_code(args, scope, max),
                     "CODE-CHAR" => self.elab_code_char(args, scope, max),
                     "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
                     "FETCH" | "AREF" => self.elab_fetch(args, scope, max),
                     "STORE" | "ASET" => self.elab_store(args, scope, max),
                     "ARRAY-LENGTH*" => self.elab_array_len(args, scope, max),
-                    // Checker-only forms (#162): list/pair processing + the
-                    // untyped `let`/`progn`/`quote` that real `defun` bodies use.
+                    // Checker-only forms (#162): list/pair processing + `quote`/
+                    // `cond`/`when` whose `elab_*` emit only a placeholder
+                    // `Core::LitI(0)` for type purposes — they typecheck untyped
+                    // `defun` bodies but must NOT reach codegen (they would
+                    // miscompile to literal 0), so they stay gated on `checking`.
                     "CONS" if self.checking => self.elab_cons(args, scope, max),
                     "CAR" | "FIRST" if self.checking => self.elab_car(args, scope, max),
                     "CDR" | "REST" if self.checking => self.elab_cdr(args, scope, max),
@@ -186,8 +196,6 @@ impl Cx<'_> {
                         self.elab_mono_variadic(args, scope, max, Ty::Int64, "bitwise/gcd")
                     }
                     "MIN" | "MAX" if self.checking => self.elab_min_max(args, scope, max),
-                    "LET" if self.checking => self.elab_let(args, scope, max),
-                    "PROGN" if self.checking => self.elab_body(args, scope, max),
                     "QUOTE" if self.checking => self.elab_quote(args),
                     "COND" if self.checking => self.elab_cond(args, scope, max),
                     "VARIANT-CASE" if self.checking => self.elab_variant_case(args, scope, max),
