@@ -379,6 +379,12 @@ pub(super) fn apply_math_lib(
             want(1, "sqrt")?;
             Ok(LispVal::Float(as_f64(&args[0], "sqrt")?.sqrt()))
         }
+        BuiltinFunc::Float => {
+            // Int -> float conversion; identity on a float. `as_f64` accepts
+            // both, so this is just "reinterpret the number as float64".
+            want(1, "float")?;
+            Ok(LispVal::Float(as_f64(&args[0], "float")?))
+        }
         BuiltinFunc::Sin => {
             want(1, "sin")?;
             Ok(LispVal::Float(as_f64(&args[0], "sin")?.sin()))

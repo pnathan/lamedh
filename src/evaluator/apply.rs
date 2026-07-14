@@ -57,6 +57,7 @@ pub(super) fn apply(
             BuiltinFunc::Concat | BuiltinFunc::Index => apply_string_op(builtin, args),
             BuiltinFunc::Sort => apply_sort(args, env),
             BuiltinFunc::Sqrt
+            | BuiltinFunc::Float
             | BuiltinFunc::Sin
             | BuiltinFunc::Cos
             | BuiltinFunc::Tan

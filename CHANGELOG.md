@@ -70,6 +70,19 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## io/jit: `(float x)` int→float conversion, compiled
+
+New `float` builtin: int→float conversion (identity on a float) — the
+explicit numeric crossing the strict typed island needs, since `+`/`-`/`*`/
+`/` deliberately don't coerce int and float (issue #324). It compiles to
+native via a new `Core::IntToFloat` node (`fcvt_from_sint`; `i64 as f64` in
+the Core interpreter). This unblocks the common `fract` idiom
+`(- x (float (floor x)))` — `floor` returns `int64`, so the conversion is
+what lets it subtract from a `float64`. A value-noise hash
+`(let ((v (* (sin …) k))) (- v (float (floor v))))` now reaches
+`TIER . COMPILED`, bit-identical to the interpreter. Soundness-gated by the
+differential fuzzer.
+
 ## jit: `sin`/`cos`/`tan`/`exp`/`round` compile to native (libm trampoline)
 
 The transcendental float intrinsics `sin`, `cos`, `tan`, `exp`, and the

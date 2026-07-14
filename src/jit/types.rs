@@ -459,6 +459,11 @@ pub enum Core {
     /// A unary floating-point intrinsic over a `float64` argument. The op
     /// determines the math and the result representation (see [`FUnOp`]).
     FUnary(FUnOp, Box<Core>),
+    /// `(float x)` on an `int64` argument: widen to `float64` (`fcvt_from_sint`
+    /// natively / `i64 as f64` in the interpreter). `(float x)` on a value that
+    /// is already `float64` needs no node — it elaborates to the argument
+    /// unchanged.
+    IntToFloat(Box<Core>),
 }
 
 /// Unary floating-point intrinsics that lower to native code. Each takes one

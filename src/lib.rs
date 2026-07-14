@@ -653,6 +653,9 @@ pub enum BuiltinFunc {
     Sort,
     // Math library (f64 transcendentals, float->int rounding, i64 integer math)
     Sqrt,
+    /// `(float x)` — int→float conversion (identity on a float). The explicit
+    /// crossing the strict typed island needs, since `+`/`-`/… don't coerce.
+    Float,
     Sin,
     Cos,
     Tan,
