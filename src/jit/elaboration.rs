@@ -211,6 +211,21 @@ impl Cx<'_> {
                         self.elab_funary(FUnOp::Round, Ty::Int64, args, scope, max)
                     }
                     "FLOAT" if !self.checking => self.elab_float(args, scope, max),
+                    // Bitwise ops on int64 ("fix the language"): compile to
+                    // native. Variadic AND/OR/XOR fold into nested `Bin`s;
+                    // `ash` compiles only for a compile-time in-range constant
+                    // shift (folded to a left/right shift). Codegen-only so
+                    // checking keeps the declared/variadic schemes.
+                    "LOGAND" if !self.checking => {
+                        self.elab_bitwise(BinOp::BitAnd, -1, args, scope, max)
+                    }
+                    "LOGIOR" if !self.checking => {
+                        self.elab_bitwise(BinOp::BitOr, 0, args, scope, max)
+                    }
+                    "LOGXOR" if !self.checking => {
+                        self.elab_bitwise(BinOp::BitXor, 0, args, scope, max)
+                    }
+                    "ASH" if !self.checking => self.elab_ash(args, scope, max),
                     // Checker-only forms (#162): list/pair processing + `quote`/
                     // `cond`/`when` whose `elab_*` emit only a placeholder
                     // `Core::LitI(0)` for type purposes — they typecheck untyped
@@ -1741,6 +1756,87 @@ impl Cx<'_> {
             other => Err(format!(
                 "`float` needs a concrete int64 or float64 argument, got {other:?}"
             )),
+        }
+    }
+
+    /// Variadic bitwise fold (`logand`/`logior`/`logxor`): every argument must
+    /// be `int64`; fold left into nested `Bin`s. Zero args yields the op's
+    /// identity element (`-1` for AND, `0` for OR/XOR), matching the evaluator.
+    fn elab_bitwise(
+        &self,
+        op: BinOp,
+        identity: i64,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.is_empty() {
+            return Ok((Core::LitI(identity), Ty::Int64));
+        }
+        let (mut acc, t0) = self.elab(&args[0], scope, max)?;
+        self.unify(&t0, &Ty::Int64)
+            .map_err(|e| format!("bitwise op argument must be int64: {e}"))?;
+        for a in &args[1..] {
+            let (c, t) = self.elab(a, scope, max)?;
+            self.unify(&t, &Ty::Int64)
+                .map_err(|e| format!("bitwise op argument must be int64: {e}"))?;
+            acc = Core::Bin(NumKind::I, op, Box::new(acc), Box::new(c));
+        }
+        Ok((acc, Ty::Int64))
+    }
+
+    /// `(ash n k)` — arithmetic shift. Compiles only when `k` is a compile-time
+    /// integer constant in `-63..=63`: a positive `k` folds to a left shift, a
+    /// negative to an arithmetic right shift by `-k`, `0` is the identity. A
+    /// runtime or out-of-range shift is not compiled (the evaluator's `ash`
+    /// masks/overflows/sign-fills past 63 — semantics the constant path sidesteps
+    /// entirely), so the function stays interpreted.
+    fn elab_ash(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!("`ash` expects 2 arguments, got {}", args.len()));
+        }
+        let (n_core, n_ty) = self.elab(&args[0], scope, max)?;
+        self.unify(&n_ty, &Ty::Int64)
+            .map_err(|e| format!("`ash` value must be int64: {e}"))?;
+        let k = match &args[1] {
+            LispVal::Number(k) => *k,
+            _ => {
+                return Err(
+                    "`ash` shift must be a compile-time integer constant to compile".to_string(),
+                );
+            }
+        };
+        if k == 0 {
+            Ok((n_core, Ty::Int64))
+        } else if (1..=63).contains(&k) {
+            Ok((
+                Core::Bin(
+                    NumKind::I,
+                    BinOp::Shl,
+                    Box::new(n_core),
+                    Box::new(Core::LitI(k)),
+                ),
+                Ty::Int64,
+            ))
+        } else if (-63..=-1).contains(&k) {
+            Ok((
+                Core::Bin(
+                    NumKind::I,
+                    BinOp::AShr,
+                    Box::new(n_core),
+                    Box::new(Core::LitI(-k)),
+                ),
+                Ty::Int64,
+            ))
+        } else {
+            Err(format!(
+                "`ash` shift {k} outside the compilable range -63..=63"
+            ))
         }
     }
 

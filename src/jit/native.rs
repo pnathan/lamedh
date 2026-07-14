@@ -890,6 +890,14 @@ impl Emitter<'_, '_, '_> {
                 // div-by-zero → 0; MIN/-1 → wrapping MIN for div, exact 0 for mod
                 self.b.ins().select(is_zero, zero, result)
             }
+            BinOp::BitAnd => self.b.ins().band(x, y),
+            BinOp::BitOr => self.b.ins().bor(x, y),
+            BinOp::BitXor => self.b.ins().bxor(x, y),
+            // `y` is a constant in 1..=63 (the elaborator only emits shifts for a
+            // literal in-range `ash`), so Cranelift's shift-amount masking never
+            // engages and this matches the evaluator's in-range `ash` exactly.
+            BinOp::Shl => self.b.ins().ishl(x, y),
+            BinOp::AShr => self.b.ins().sshr(x, y),
         }
     }
 
@@ -908,6 +916,9 @@ impl Emitter<'_, '_, '_> {
             BinOp::Mul => self.b.ins().fmul(xf, yf),
             BinOp::Div => self.b.ins().fdiv(xf, yf),
             BinOp::Mod => self.b.ins().fdiv(xf, yf), // unreachable: float mod is rejected
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::AShr => {
+                unreachable!("bitwise/shift ops are int64-only")
+            }
         };
         self.as_i(rf)
     }

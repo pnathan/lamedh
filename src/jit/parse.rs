@@ -13,6 +13,12 @@ pub(super) fn bin_mnemonic(k: NumKind, op: BinOp) -> &'static str {
         (BinOp::Div, false) => "fdiv",
         (BinOp::Mod, true) => "imod",
         (BinOp::Mod, false) => "fmod",
+        // Bitwise/shift ops are int64-only (no float form).
+        (BinOp::BitAnd, _) => "iand",
+        (BinOp::BitOr, _) => "ior",
+        (BinOp::BitXor, _) => "ixor",
+        (BinOp::Shl, _) => "ishl",
+        (BinOp::AShr, _) => "isshr",
     }
 }
 

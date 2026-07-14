@@ -404,6 +404,15 @@ pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
                 x.checked_rem_euclid(y).unwrap_or(0)
             }
         }
+        // Pure bitwise: exact match to the evaluator's i64 ops, no flags.
+        BinOp::BitAnd => x & y,
+        BinOp::BitOr => x | y,
+        BinOp::BitXor => x ^ y,
+        // Shifts: `y` is a compile-time constant in 1..=63 (the elaborator only
+        // emits these for a literal in-range `ash`), so neither masks nor
+        // overflows, matching the evaluator's in-range `ash`.
+        BinOp::Shl => x.wrapping_shl(y as u32),
+        BinOp::AShr => x >> (y as u32),
     }
 }
 
@@ -414,6 +423,9 @@ pub(super) fn float_bin(op: BinOp, x: f64, y: f64) -> f64 {
         BinOp::Mul => x * y,
         BinOp::Div => x / y,
         BinOp::Mod => x % y,
+        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::AShr => {
+            unreachable!("bitwise/shift ops are int64-only")
+        }
     }
 }
 

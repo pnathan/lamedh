@@ -70,6 +70,21 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: bitwise ops compile to native (`logand`/`logior`/`logxor`/`ash`)
+
+The int64 bitwise operators now compile. `logand`/`logior`/`logxor` are
+variadic and fold to nested native `band`/`bor`/`bxor` (empty call → the
+op's identity, `-1`/`0`/`0`, like the evaluator). `ash` compiles when its
+shift is a **compile-time constant in `-63..=63`**: a positive shift folds
+to a left shift, a negative to an arithmetic right shift by its magnitude,
+`0` is the identity. A runtime or out-of-range shift stays interpreted —
+the evaluator's `ash` masks / overflows / sign-fills past 63, edge cases the
+constant path sidesteps rather than mis-lowering. This lets checksum-style
+code — `(logxor (ash crc -8) table-entry)`, `(logand (ash n -8) 255)` —
+reach `TIER . COMPILED`, bit-identical to the interpreter. New `BinOp`
+variants; codegen-only so checking keeps the declared/variadic schemes.
+Soundness-gated by the differential fuzzer.
+
 ## io/jit: `(float x)` int→float conversion, compiled
 
 New `float` builtin: int→float conversion (identity on a float) — the

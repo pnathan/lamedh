@@ -402,6 +402,17 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// Bitwise AND/OR/XOR on int64 (`logand`/`logior`/`logxor`).
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// Left shift `x << y` (`ash` with a positive constant); the right operand
+    /// is always a compile-time constant in `1..=63`, so it never masks or
+    /// overflows.
+    Shl,
+    /// Arithmetic right shift `x >> y` (`ash` with a negative constant); right
+    /// operand a compile-time constant in `1..=63`.
+    AShr,
 }
 
 #[derive(Clone, Copy, Debug)]
