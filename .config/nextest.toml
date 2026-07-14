@@ -1,0 +1,30 @@
+# cargo-nextest configuration.
+#
+# nextest is an OPTIONAL faster local test runner (`cargo nextest run`). It
+# schedules one process per test with full cross-binary parallelism, so it
+# runs the suite meaningfully faster than `cargo test` (which serializes test
+# binaries). The authoritative ship gate is still `scripts/gauntlet.sh`
+# (release, default + no-default-features + fuzz + clippy) — nextest is for
+# fast local iteration, not a replacement for the gauntlet.
+#
+# Stack: tests that build a stdlib environment need more than libtest's
+# ~2 MiB thread stack; `.cargo/config.toml` sets RUST_MIN_STACK = 128 MiB via
+# [env], which nextest inherits (verified — the stdlib-loading suites pass
+# under nextest without SIGABRT).
+#
+# nextest does NOT run doctests; run those separately with `cargo test --doc`.
+
+[profile.default]
+# Surface (don't kill) any test slower than this, so a monolithic test can't
+# silently become the suite's tall pole again (the #58 lesson: test_examples
+# was one 209s test looping 51 programs; it is now one test per program).
+slow-timeout = { period = "90s" }
+# Show the slow-test list in the final summary.
+final-status-level = "slow"
+
+[profile.ci]
+# For automation: run everything, report all failures, retry a flaky test
+# once before believing it.
+fail-fast = false
+retries = 1
+slow-timeout = { period = "120s" }
