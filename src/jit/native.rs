@@ -560,6 +560,12 @@ impl Emitter<'_, '_, '_> {
                 };
                 Emitted::Value(r)
             }
+            Core::IntToFloat(a) => {
+                // `(float int)`: widen an int64 word to a float64 word.
+                let v = self.emit_value(a);
+                let f = self.b.ins().fcvt_from_sint(types::F64, v);
+                Emitted::Value(self.as_i(f))
+            }
             Core::ArrayNew(n) => {
                 let n = self.emit_value(n);
                 // Pass the signed length through unchanged: `jit_alloc`

@@ -1133,6 +1133,7 @@ impl Environment {
         // Math library (implemented in Rust: f64 transcendentals, float->int
         // rounding, i64 integer math)
         env.set("SQRT".to_string(), LispVal::Builtin(BuiltinFunc::Sqrt));
+        env.set("FLOAT".to_string(), LispVal::Builtin(BuiltinFunc::Float));
         env.set("SIN".to_string(), LispVal::Builtin(BuiltinFunc::Sin));
         env.set("COS".to_string(), LispVal::Builtin(BuiltinFunc::Cos));
         env.set("TAN".to_string(), LispVal::Builtin(BuiltinFunc::Tan));

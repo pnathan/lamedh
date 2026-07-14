@@ -634,6 +634,7 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         }
         Core::ToChar(a) => ctx.to_char(as_i(eval_core_nontail(a, env, ctx))),
         Core::FUnary(op, a) => op.apply_word(as_f(eval_core_nontail(a, env, ctx))),
+        Core::IntToFloat(a) => from_f(as_i(eval_core_nontail(a, env, ctx)) as f64),
         Core::ArrayNew(n) => {
             let len = as_i(eval_core_nontail(n, env, ctx));
             ctx.alloc_buffer_signed(len) as u64
@@ -809,6 +810,10 @@ pub(super) fn eval_core_traced(
             let v = eval_core_traced(a, env, ctx, depth + 1, log);
             step!("funary", op.apply_word(as_f(v)), NO_SLOT, NO_CALLEE)
         }
+        Core::IntToFloat(a) => {
+            let v = eval_core_traced(a, env, ctx, depth + 1, log);
+            step!("i2f", from_f(as_i(v) as f64), NO_SLOT, NO_CALLEE)
+        }
         Core::ArrayNew(n) => {
             let len = as_i(eval_core_traced(n, env, ctx, depth + 1, log));
             step!(
@@ -884,7 +889,9 @@ pub(super) fn eval_core_traced(
 pub fn core_node_count(core: &Core) -> usize {
     1 + match core {
         Core::LitI(_) | Core::LitF(_) | Core::Var(_) => 0,
-        Core::Not(a) | Core::ToChar(a) | Core::FUnary(_, a) => core_node_count(a),
+        Core::Not(a) | Core::ToChar(a) | Core::FUnary(_, a) | Core::IntToFloat(a) => {
+            core_node_count(a)
+        }
         Core::Bin(_, _, a, b)
         | Core::Cmp(_, _, a, b)
         | Core::And(a, b)
@@ -915,7 +922,9 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
                 Err(format!("Var slot {i} out of bounds (n_slots={n_slots})"))
             }
         }
-        Core::Not(a) | Core::ToChar(a) | Core::FUnary(_, a) => verify_core(a, n_slots, n_funcs),
+        Core::Not(a) | Core::ToChar(a) | Core::FUnary(_, a) | Core::IntToFloat(a) => {
+            verify_core(a, n_slots, n_funcs)
+        }
         Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) | Core::And(a, b) | Core::Or(a, b) => {
             verify_core(a, n_slots, n_funcs)?;
             verify_core(b, n_slots, n_funcs)
@@ -1069,6 +1078,10 @@ pub fn compile(core: &Core) -> Compiled {
             let op = *op;
             let ca = compile(a);
             Rc::new(move |e, c| op.apply_word(as_f(ca(e, c))))
+        }
+        Core::IntToFloat(a) => {
+            let ca = compile(a);
+            Rc::new(move |e, c| from_f(as_i(ca(e, c)) as f64))
         }
         Core::ArrayNew(n) => {
             let cn = compile(n);

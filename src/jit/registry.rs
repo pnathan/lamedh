@@ -1602,6 +1602,10 @@ impl Jit {
                 self.dis_emit(a, dst, out, reg, lab);
                 out.push(format!("    {dst} = fun  {op:?} {dst}"));
             }
+            Core::IntToFloat(a) => {
+                self.dis_emit(a, dst, out, reg, lab);
+                out.push(format!("    {dst} = i2f  {dst}"));
+            }
             Core::Not(a) => {
                 self.dis_emit(a, dst, out, reg, lab);
                 out.push(format!("    {dst} = not  {dst}"));

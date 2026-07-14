@@ -210,6 +210,7 @@ impl Cx<'_> {
                     "ROUND" if !self.checking => {
                         self.elab_funary(FUnOp::Round, Ty::Int64, args, scope, max)
                     }
+                    "FLOAT" if !self.checking => self.elab_float(args, scope, max),
                     // Checker-only forms (#162): list/pair processing + `quote`/
                     // `cond`/`when` whose `elab_*` emit only a placeholder
                     // `Core::LitI(0)` for type purposes — they typecheck untyped
@@ -1718,6 +1719,29 @@ impl Cx<'_> {
         self.unify(&arg_ty, &Ty::Float64)
             .map_err(|e| format!("float intrinsic argument must be float64: {e}"))?;
         Ok((Core::FUnary(op, Box::new(arg_core)), result))
+    }
+
+    /// `(float x)`: int→float conversion, identity on a float. The argument's
+    /// resolved kind decides: a `float64` argument elaborates to itself (no
+    /// node); an `int64` argument gets an `IntToFloat` widening; anything else
+    /// (unresolved/`any`) cannot be compiled, so the function stays interpreted.
+    fn elab_float(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`float` expects 1 argument, got {}", args.len()));
+        }
+        let (arg_core, arg_ty) = self.elab(&args[0], scope, max)?;
+        match self.walk(&arg_ty) {
+            Ty::Float64 => Ok((arg_core, Ty::Float64)),
+            Ty::Int64 => Ok((Core::IntToFloat(Box::new(arg_core)), Ty::Float64)),
+            other => Err(format!(
+                "`float` needs a concrete int64 or float64 argument, got {other:?}"
+            )),
+        }
     }
 
     pub(super) fn elab_body(

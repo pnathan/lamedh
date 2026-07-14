@@ -63,7 +63,7 @@
 ;;; ---- math: known results, gradual arguments where ints coerce -------------
 
 (mapc (lambda (f) (declare-type! f '(-> (any) float64)))
-      '(sqrt sin cos tan exp log))
+      '(sqrt sin cos tan exp log float))
 (mapc (lambda (f) (declare-type! f '(-> (any) int64)))
       '(floor ceiling round truncate))
 (declare-type! 'isqrt '(-> (int64) int64))
