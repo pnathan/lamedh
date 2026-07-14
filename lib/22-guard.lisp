@@ -265,4 +265,12 @@ the child's error in the parent on failure."
 ;;; REQUIRE-ABLE (issue #256): `(require 'guard)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The guard/fence
+;;; and capability-process vocabulary stays FLAT (language-defining forms);
+;;; this DEFMODULE only records metadata -- no WITH-MODULE body rewrite.
+(require 'modules)
+(defmodule guard
+  (:export fuel-remaining require-capability capabilities-effective
+           sandboxed capabilities-needed capabilities-needed-form
+           spawn spawn* spawn-value spawn-error-p await))
 (provide 'guard)

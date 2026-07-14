@@ -88,4 +88,11 @@
 ;;; REQUIRE-ABLE (issue #256): `(require 'lisp15)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The Lisp 1.5
+;;; appendix names stay FLAT (compat-by-design: `map`, `search`, `prop` are
+;;; how 1.5 source spells them); this DEFMODULE only records metadata --
+;;; there is no WITH-MODULE body rewrite and nothing to import.
+(require 'modules)
+(defmodule lisp15
+  (:export pair attrib prop flag remflag map-tails search recip select))
 (provide 'lisp15)

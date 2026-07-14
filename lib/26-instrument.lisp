@@ -104,4 +104,10 @@ SET, not the quoting CSET macro)."
 ;;; REQUIRE-ABLE (issue #256): `(require 'instrument)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The instrumentation
+;;; vocabulary stays FLAT (`trace`/`time`/`untrace`/`step-count` are a debug
+;;; DSL, ergonomically flat); this DEFMODULE only records metadata.
+(require 'modules)
+(defmodule instrument
+  (:export step-count time trace untrace))
 (provide 'instrument)

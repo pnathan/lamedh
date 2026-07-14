@@ -71,4 +71,11 @@
 ;;; REQUIRE-ABLE (issue #256): `(require 'types)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). This file is a
+;;; DATA module -- it populates the type table via DECLARE-TYPE axioms and
+;;; defines no public functions of its own -- so its export set is empty;
+;;; the DEFMODULE records that `types` is a module.
+(require 'modules)
+(defmodule types
+  (:export))
 (provide 'types)

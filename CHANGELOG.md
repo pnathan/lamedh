@@ -70,6 +70,25 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## modules: register the flat optional libraries as modules (#56)
+
+Eleven optional libraries whose names are deliberately kept flat —
+`lisp15`, `testing`, `optimizer-vau`, `call-graph`, `guard`, `rules`,
+`variants`, `instrument`, `types`, `protocols`, `help-data` — now each
+carry a `(defmodule NAME (:export ...))` declaration for introspection
+and registration. This is **metadata only**: there is no `with-module`
+body rewrite and nothing is imported, so every name stays exactly where
+it was (`deftest`, `defvariant`, `defprotocol`, `trace`, `attrib` … are
+all still flat) and no caller changes. The gain is uniform module
+introspection: `(module-p 'testing)` → `T`, `(module-exports 'variants)`,
+`(module-requires 'guard)`, alongside the fully-qualified modules
+(`shell`, and the #253 modules). These libraries stay flat by design —
+they are language-defining forms (variants, protocols, guard) or
+ergonomically-flat DSLs (the `testing` assertions, the `instrument`
+debug verbs, the Lisp 1.5 compat names) — so registration, not
+qualification, is the right treatment. `types` and `help-data` are data
+modules (type-table axioms / help database) with empty export sets.
+
 ## modules: shell helpers move under the `shell` namespace (#56)
 
 `lib/07-shell.lisp` is now the `shell` module (`defmodule shell`, built on

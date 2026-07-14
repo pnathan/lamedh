@@ -228,4 +228,13 @@
 ;;; REQUIRE-ABLE (issue #256): `(require 'call-graph)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The query API
+;;; stays FLAT: `$cg-pending` and the update hook are referenced by the
+;;; kernel (special_forms.rs) and the DEFUN macro (lib/00-core.lisp), so
+;;; the whole surface is pinned flat. This DEFMODULE only records metadata.
+(require 'modules)
+(defmodule call-graph
+  (:export call-graph-callees call-graph-callers call-graph-has-p
+           call-graph-all-known call-graph-add! call-graph-add-many!
+           defun-update-call-graph! cg-flush-pending!))
 (provide 'call-graph)

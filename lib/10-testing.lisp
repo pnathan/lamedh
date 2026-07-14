@@ -104,4 +104,13 @@ A buggy test must not take down the whole run (issue #241)."
 ;;; REQUIRE-ABLE (issue #256): `(require 'testing)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The xUnit
+;;; vocabulary stays FLAT (an assertion DSL is ergonomically flat inside
+;;; test files); this DEFMODULE only records metadata -- no WITH-MODULE
+;;; body rewrite, nothing to import.
+(require 'modules)
+(defmodule testing
+  (:export test-pass test-fail check assert-true assert-false assert-nil
+           assert-equal assert-eq tests-remove deftest run-one-test
+           run-test-list reset-tests clear-tests run-tests))
 (provide 'testing)

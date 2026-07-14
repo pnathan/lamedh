@@ -4329,4 +4329,11 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 ;;; Done loading help data. Keep stdlib loading silent so CLI -s output is
 ;;; machine-readable and benchmark harnesses can parse stdout directly.
 
+;;; Registered as a module for introspection (issue #56). This is a DATA
+;;; module -- it populates the help database via REGISTER-DOC and defines
+;;; no public functions of its own -- so its export set is empty; the
+;;; DEFMODULE records that `help-data` is a module.
+(require 'modules)
+(defmodule help-data
+  (:export))
 (provide 'help-data)
