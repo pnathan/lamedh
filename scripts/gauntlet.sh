@@ -20,6 +20,7 @@
 # A ship is authorized iff the verdict file contains exactly:
 #   DEFAULT-GREEN
 #   NDF-GREEN
+#   FUZZ-GREEN
 #   CLIPPY-GREEN
 #
 # Extra feature suites (e.g. `--features net-tls`) are the caller's job to
@@ -35,6 +36,13 @@ cargo test --release > "$LOGDIR/gauntlet-default.log" 2>&1 && echo DEFAULT-GREEN
 
 echo "gauntlet: --no-default-features (release)..."
 cargo test --release --no-default-features > "$LOGDIR/gauntlet-ndf.log" 2>&1 && echo NDF-GREEN >> "$VERDICT"
+
+echo "gauntlet: fuzz battery (release)..."
+# The randomized JIT differential/metamorphic battery lives behind the `fuzz`
+# feature so it never taxes plain `cargo test`. The ship gate runs it — in
+# release, where minutes of debug fuzz become seconds. Set BRUTAL=1 in the
+# environment for the deep sweep (CI / release checks).
+cargo test --release --features fuzz --test brutal_correctness > "$LOGDIR/gauntlet-fuzz.log" 2>&1 && echo FUZZ-GREEN >> "$VERDICT"
 
 echo "gauntlet: clippy..."
 cargo clippy --workspace --all-targets > "$LOGDIR/gauntlet-clippy.log" 2>&1 && echo CLIPPY-GREEN >> "$VERDICT"

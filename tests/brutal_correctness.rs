@@ -1,3 +1,9 @@
+// Gated OFF by default (see the `fuzz` feature in Cargo.toml): this whole
+// binary is a minutes-long randomized fuzz battery. `cargo test` compiles it
+// to nothing; `cargo test --features fuzz` (the ship gauntlet + CI, in
+// release) runs it. `BRUTAL=1` still scales every batch to its deep sweep.
+#![cfg(feature = "fuzz")]
+
 //! # Brutal correctness suite
 //!
 //! A ruthless, randomized **differential + metamorphic** correctness harness for

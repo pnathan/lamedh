@@ -43,6 +43,14 @@ arc-val = []
 # that flag is implemented; for now values cross thread boundaries via printer/
 # reader serialisation so no external dependencies are required.
 concurrency = []
+# The randomized JIT differential/metamorphic fuzz battery
+# (`tests/brutal_correctness.rs`) is gated OFF by default: it is minutes of
+# random-program tier-agreement checking that has no place taxing every
+# `cargo test`. Dev/agent iteration runs without it; the authoritative ship
+# gauntlet (`scripts/gauntlet.sh`) and CI run `--features fuzz` in release
+# (where the same battery is seconds, not minutes). `BRUTAL=1` still scales
+# every batch up to its deep sweep.
+fuzz = []
 
 [workspace]
 members = ["cli"]
