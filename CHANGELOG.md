@@ -1,5 +1,16 @@
 # v0.3.0 — unreleased
 
+## Gauntlet speed (dev tooling)
+
+`scripts/gauntlet.sh` runs the authoritative verification in **release**
+(the `test_examples` and `brutal_correctness` suites are execution-bound —
+release runs them several times faster than debug, repaying the one-time
+compile) and writes an explicit verdict file the caller gates ship on.
+`brutal_correctness`'s default smoke sweep dropped 4_000 → 1_200 random
+programs (`BRUTAL=1` still runs the 50_000-program deep sweep;
+`BRUTAL_PROGRAMS` overrides either default). No behavior change to the
+interpreter — verification only.
+
 condensation
 
 Everything from the v0.2.0 tag to here. The headline: **one record

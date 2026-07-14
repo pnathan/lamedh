@@ -722,7 +722,12 @@ fn brutal_differential_random_programs() {
     // stack just like the real interpreter does.
     lamedh::with_large_stack(|| {
         let brutal = std::env::var("BRUTAL").is_ok();
-        let n_programs = env_usize("BRUTAL_PROGRAMS", if brutal { 50_000 } else { 4_000 });
+        // Default is a SMOKE differential — enough random programs to catch a
+        // gross tier disagreement on every `cargo test`, small enough to keep
+        // the gauntlet fast (this suite is execution-bound; 4_000 programs was
+        // ~5.5 min in debug). The deep sweep (millions of cases) is BRUTAL=1,
+        // for CI / release checks. BRUTAL_PROGRAMS overrides either way.
+        let n_programs = env_usize("BRUTAL_PROGRAMS", if brutal { 50_000 } else { 1_200 });
         let n_inputs = env_usize("BRUTAL_INPUTS", if brutal { 64 } else { 32 });
         let base_seed = env_usize("BRUTAL_SEED", 0xC0FFEE) as u64;
 
