@@ -93,11 +93,14 @@ first, one order (0.3 regularity)."
   "Number of elements of LST satisfying PRED."
   (length (filter pred lst)))
 
+(defun $copy-list*-aux (lst acc)
+  (if (consp lst)
+      ($copy-list*-aux (cdr lst) (cons (car lst) acc))
+      (reverse-aux acc lst)))
+
 (defun copy-list* (lst)
   "Return a fresh copy of the spine of LST."
-  (if (consp lst)
-      (cons (car lst) (copy-list* (cdr lst)))
-      lst))
+  ($copy-list*-aux lst nil))
 
 (defun list-length* (lst)
   "CL alias for LENGTH on lists."
