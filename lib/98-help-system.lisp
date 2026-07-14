@@ -339,4 +339,15 @@
 ;;; REQUIRE-ABLE (issue #256): `(require 'help-system)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
+;;; Registered as a module for introspection (issue #56). The help surface
+;;; stays FLAT: `help`/`apropos` are REPL UX, and `register-doc`/
+;;; `register-category` are the documentation-registration API called across
+;;; the whole codebase (every lib/99-help-data.lisp entry) -- qualifying
+;;; them would be a repo-wide break for no gain. This DEFMODULE only records
+;;; metadata -- no with-module body rewrite, nothing imported.
+(require 'modules)
+(defmodule help-system
+  (:export help help-overview help-symbol help-search apropos
+           register-doc register-category get-doc doc-get doc-set
+           make-doc-entry list-categories list-category display-doc))
 (provide 'help-system)
