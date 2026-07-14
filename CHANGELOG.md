@@ -70,6 +70,25 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## io: `read-file-section` decodes strictly — no more silent lossy text coercion (#359)
+
+`read-file-section` decoded its bytes with `from_utf8_lossy`, silently
+substituting U+FFFD for any non-UTF-8 byte — exactly the implicit lossy
+text coercion epic #253's design rules out (text must cross the byte
+boundary explicitly). It now decodes **strictly**: invalid UTF-8 signals a
+descriptive error naming the offending byte offset, mirroring
+`text:utf8->string`. Two explicit opt-ins replace the old silent behavior:
+`read-file-section-lossy` (U+FFFD substitution, like
+`text:utf8->string-lossy`) and `read-file-section-bytes` (the raw bytes as
+an `Array<Char>`, to cross the text boundary yourself via the `text:` /
+codec substrate). Both are READ-FS-gated like their sibling. `read-file`
+(whole-file) already errored on invalid UTF-8 via `read_to_string`, and
+`read-file-byte` already returned a raw integer — neither was ever lossy,
+so neither changed. **Behavior change**: code that relied on
+`read-file-section` silently tolerating non-UTF-8 input must now call
+`read-file-section-lossy` (same result) or `-bytes` (raw). Tests:
+`tests/test_read_file_section.rs`.
+
 ## stdlib: tail-recursive Prelude list/string builders — no more eval-frame overflow on ordinary-sized input (#361)
 
 `string->list`, `filter` (the LIST fallback under the protocol), `take`,

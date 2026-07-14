@@ -107,7 +107,8 @@ every enclosing WITH-CAPABILITIES fence."
 ;; manifests join it with the call graph.
 (setq $guard-gated-builtins
       '((load-file READ-FS) (read-file READ-FS) (read-file-byte READ-FS)
-        (read-file-section READ-FS) (file-exists-p READ-FS)
+        (read-file-section READ-FS) (read-file-section-lossy READ-FS)
+        (read-file-section-bytes READ-FS) (file-exists-p READ-FS)
         (directory-p READ-FS) (file-p READ-FS) (file-readable-p READ-FS)
         (file-writable-p READ-FS) (file-executable-p READ-FS)
         (file-size READ-FS) (directory-files READ-FS) (file-newer-p READ-FS)

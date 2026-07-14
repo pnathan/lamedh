@@ -995,6 +995,14 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ReadFileSection),
         );
         env.set(
+            "READ-FILE-SECTION-LOSSY".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFileSectionLossy),
+        );
+        env.set(
+            "READ-FILE-SECTION-BYTES".to_string(),
+            LispVal::Builtin(BuiltinFunc::ReadFileSectionBytes),
+        );
+        env.set(
             "WRITE-FILE".to_string(),
             LispVal::Builtin(BuiltinFunc::WriteFile),
         );
