@@ -493,6 +493,56 @@ unsafe fn field_set(base: u64, idx: usize, val: u64) {
     unsafe { *(base as *mut u64).add(idx + 1) = val }
 }
 
+/// Shared scalar reference implementation of [`Core::ArrayMap2`]: `out[i] =
+/// a[i] OP b[i]` for `i` in `0..min(len out, len a, len b)`. This is the
+/// interpreter-side parity reference the native SIMD lowering
+/// (`native.rs::emit_array_map2`) must agree with bit-for-bit — elementwise
+/// ops have no reduction/reassociation, so a plain scalar loop and a 2-lane
+/// vector loop (plus scalar tail) necessarily produce the same result
+/// per-index. Integer arithmetic is wrapping (no overflow flag: see
+/// [`Core::ArrayMap2`]'s doc comment for why).
+///
+/// # Safety
+/// `base_out`/`base_a`/`base_b` must each be a live buffer pointer from
+/// [`Ctx::alloc_buffer`]/[`Ctx::alloc_buffer_signed`].
+#[inline]
+unsafe fn array_map2(op: BinOp, kind: NumKind, base_out: u64, base_a: u64, base_b: u64) {
+    let pa = base_a as *const u64;
+    let pb = base_b as *const u64;
+    let po = base_out as *mut u64;
+    let len_a = unsafe { *pa } as i64;
+    let len_b = unsafe { *pb } as i64;
+    let len_o = unsafe { *po } as i64;
+    let min_len = len_a.min(len_b).min(len_o).max(0);
+    for i in 0..min_len as usize {
+        let x = unsafe { *pa.add(i + 1) };
+        let y = unsafe { *pb.add(i + 1) };
+        let r = match kind {
+            NumKind::I => {
+                let (xi, yi) = (as_i(x), as_i(y));
+                let ri = match op {
+                    BinOp::Add => xi.wrapping_add(yi),
+                    BinOp::Sub => xi.wrapping_sub(yi),
+                    BinOp::Mul => xi.wrapping_mul(yi),
+                    _ => unreachable!("ArrayMap2 only ever carries Add/Sub/Mul"),
+                };
+                from_i(ri)
+            }
+            NumKind::F => {
+                let (xf, yf) = (as_f(x), as_f(y));
+                let rf = match op {
+                    BinOp::Add => xf + yf,
+                    BinOp::Sub => xf - yf,
+                    BinOp::Mul => xf * yf,
+                    _ => unreachable!("ArrayMap2 only ever carries Add/Sub/Mul"),
+                };
+                from_f(rf)
+            }
+        };
+        unsafe { *po.add(i + 1) = r };
+    }
+}
+
 /// Evaluate `core` in **tail position** of the function identified by
 /// `self_id`. A `Core::Call(id, ..)` reached here with `id == self_id` is a
 /// **self tail call** (issue #133 Tier 1): instead of recursing through
@@ -666,6 +716,15 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         Core::ArrayLen(a) => {
             let base = eval_core_nontail(a, env, ctx);
             unsafe { *(base as *const u64) }
+        }
+        Core::ArrayMap2(op, kind, out, a, b) => {
+            // Evaluate `out`/`a`/`b` left to right (matches the elaborator's
+            // argument order and the native backend's evaluation order).
+            let base_out = eval_core_nontail(out, env, ctx);
+            let base_a = eval_core_nontail(a, env, ctx);
+            let base_b = eval_core_nontail(b, env, ctx);
+            unsafe { array_map2(*op, *kind, base_out, base_a, base_b) };
+            base_out
         }
         Core::StructNew(inits) => {
             let vals: Vec<u64> = inits
@@ -861,6 +920,13 @@ pub(super) fn eval_core_traced(
                 NO_CALLEE
             )
         }
+        Core::ArrayMap2(op, kind, out, a, b) => {
+            let base_out = eval_core_traced(out, env, ctx, depth + 1, log);
+            let base_a = eval_core_traced(a, env, ctx, depth + 1, log);
+            let base_b = eval_core_traced(b, env, ctx, depth + 1, log);
+            unsafe { array_map2(*op, *kind, base_out, base_a, base_b) };
+            step!("arraymap2", base_out, NO_SLOT, NO_CALLEE)
+        }
         Core::StructNew(inits) => {
             let vals: Vec<u64> = inits
                 .iter()
@@ -915,7 +981,9 @@ pub fn core_node_count(core: &Core) -> usize {
         }
         Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) => core_node_count(a),
         Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) => core_node_count(a) + core_node_count(b),
-        Core::ArraySet(a, b, c) => core_node_count(a) + core_node_count(b) + core_node_count(c),
+        Core::ArraySet(a, b, c) | Core::ArrayMap2(_, _, a, b, c) => {
+            core_node_count(a) + core_node_count(b) + core_node_count(c)
+        }
     }
 }
 
@@ -969,7 +1037,7 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
             verify_core(a, n_slots, n_funcs)?;
             verify_core(b, n_slots, n_funcs)
         }
-        Core::ArraySet(a, b, c) => {
+        Core::ArraySet(a, b, c) | Core::ArrayMap2(_, _, a, b, c) => {
             verify_core(a, n_slots, n_funcs)?;
             verify_core(b, n_slots, n_funcs)?;
             verify_core(c, n_slots, n_funcs)
@@ -1125,6 +1193,17 @@ pub fn compile(core: &Core) -> Compiled {
             Rc::new(move |e, c| {
                 let base = ca(e, c);
                 unsafe { *(base as *const u64) }
+            })
+        }
+        Core::ArrayMap2(op, kind, out, a, b) => {
+            let (op, kind) = (*op, *kind);
+            let (co, ca, cb) = (compile(out), compile(a), compile(b));
+            Rc::new(move |e, c| {
+                let base_out = co(e, c);
+                let base_a = ca(e, c);
+                let base_b = cb(e, c);
+                unsafe { array_map2(op, kind, base_out, base_a, base_b) };
+                base_out
             })
         }
         Core::StructNew(inits) => {

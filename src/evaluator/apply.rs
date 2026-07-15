@@ -1709,6 +1709,75 @@ pub(super) fn apply(
                     )))
                 }
             }
+            // Elementwise SIMD array ops (issue: JIT SIMD array-op family):
+            // out-param, wrapping, iterating min(len out, len a, len b). This
+            // is the tree-walker's reference implementation — the typed JIT
+            // compiles the same semantics to a vectorized native loop
+            // (`Core::ArrayMap2`) and a scalar Core-interpreter fallback
+            // (`src/jit/runtime.rs::array_map2`); all three must agree
+            // bit-for-bit (elementwise ops have no reduction/reassociation).
+            BuiltinFunc::ArrayAddBang | BuiltinFunc::ArraySubBang | BuiltinFunc::ArrayMulBang => {
+                let name = match builtin {
+                    BuiltinFunc::ArrayAddBang => "array-add!",
+                    BuiltinFunc::ArraySubBang => "array-sub!",
+                    _ => "array-mul!",
+                };
+                if args.len() != 3 {
+                    return Err(LispError::Generic(format!(
+                        "{name}: takes exactly three arguments (out a b)"
+                    )));
+                }
+                let (out, a, b) = match (&args[0], &args[1], &args[2]) {
+                    (LispVal::Array(o), LispVal::Array(a), LispVal::Array(b)) => (o, a, b),
+                    _ => {
+                        return Err(LispError::Generic(format!(
+                            "{name}: all three arguments must be arrays"
+                        )));
+                    }
+                };
+                let min_len = out
+                    .borrow()
+                    .len()
+                    .min(a.borrow().len())
+                    .min(b.borrow().len());
+                for i in 0..min_len {
+                    // Short-lived borrows, one statement each: `out` may
+                    // alias `a` and/or `b` (e.g. `(array-add! v v w)`), and
+                    // each element only ever depends on its OWN index, so
+                    // reading both operands before writing `out[i]` is
+                    // sufficient — no need to hold any borrow across the
+                    // whole loop.
+                    let x = a.borrow()[i].clone();
+                    let y = b.borrow()[i].clone();
+                    let r = match (&x, &y) {
+                        (LispVal::Number(xi), LispVal::Number(yi)) => {
+                            let ri = match builtin {
+                                BuiltinFunc::ArrayAddBang => xi.wrapping_add(*yi),
+                                BuiltinFunc::ArraySubBang => xi.wrapping_sub(*yi),
+                                _ => xi.wrapping_mul(*yi),
+                            };
+                            LispVal::Number(ri)
+                        }
+                        (LispVal::Float(xf), LispVal::Float(yf)) => {
+                            let rf = match builtin {
+                                BuiltinFunc::ArrayAddBang => xf + yf,
+                                BuiltinFunc::ArraySubBang => xf - yf,
+                                _ => xf * yf,
+                            };
+                            LispVal::Float(rf)
+                        }
+                        _ => {
+                            return Err(LispError::Generic(format!(
+                                "{name}: elements at index {i} are not the same numeric type ({} vs {})",
+                                err_val(&x),
+                                err_val(&y)
+                            )));
+                        }
+                    };
+                    out.borrow_mut()[i] = r;
+                }
+                Ok(args[0].clone())
+            }
             BuiltinFunc::Length => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
