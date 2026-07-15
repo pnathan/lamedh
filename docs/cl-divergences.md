@@ -113,4 +113,4 @@ Kernel-style **fexprs and `vau`** (unevaluated-argument operatives), an
 `record-ref`, `record-with`), **sum types** (`defvariant`,
 `variant-case`, Option/Result), **capability sandboxing** (file, shell,
 and IO access are off by default), and **fuel-bounded evaluation**
-(`with-fuel`). See the [manual](manual/README.md).
+(`with-fuel`). See the [manual](manual/index.md).

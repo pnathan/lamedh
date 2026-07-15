@@ -335,7 +335,7 @@ pub(super) fn body_forms(body: &LispVal) -> Vec<LispVal> {
     if let LispVal::Cons { car, cdr } = body
         && let LispVal::Symbol(s) = &**car
         && s.borrow().name == "PROGN"
-        && let Ok(forms) = list_to_vec(cdr)
+        && let Ok(forms) = list_to_vec_ctx(cdr, "PROGN body")
     {
         return forms;
     }
@@ -386,7 +386,7 @@ pub(super) fn reconstruct_source(val: &LispVal, env: &Shared<Environment>) -> Op
 pub(super) fn render_form_tree(form: &LispVal, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     if let LispVal::Cons { .. } = form {
-        match list_to_vec(form) {
+        match list_to_vec_ctx(form, "form tree") {
             Ok(items) if items.iter().any(|i| matches!(i, LispVal::Cons { .. })) => {
                 out.push_str(&format!("{pad}(\n"));
                 for it in &items {

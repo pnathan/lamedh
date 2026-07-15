@@ -2,7 +2,7 @@
 
 This reference section documents Lamedh's data types, syntax, and forms
 with exact signatures and return values.  For worked examples and design
-rationale, see the [manual](manual/README.md).
+rationale, see the [manual](manual/index.md).
 
 ## 1.1 Overview
 

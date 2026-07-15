@@ -333,4 +333,4 @@ x  ; => 2
 ## See Also
 
 - [Special Forms Chapter](special_forms.md) - Detailed documentation
-- [Function Index](appendix_function_index.md) - All functions
+- [Function Index](generated-function-index.md) - All functions
