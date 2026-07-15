@@ -1117,6 +1117,22 @@ impl Environment {
             "ARRAY-LENGTH*".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayLength),
         );
+        // Elementwise SIMD array ops: the typed JIT compiles these to a
+        // vectorized native loop (`Core::ArrayMap2`); this registration is
+        // the tree-walker's own (scalar, wrapping) reference implementation,
+        // reached when the call is interpreted rather than compiled.
+        env.set(
+            "ARRAY-ADD!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayAddBang),
+        );
+        env.set(
+            "ARRAY-SUB!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArraySubBang),
+        );
+        env.set(
+            "ARRAY-MUL!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayMulBang),
+        );
         env.set("$LENGTH".to_string(), LispVal::Builtin(BuiltinFunc::Length));
         env.set(
             "$LIST->ARRAY".to_string(),

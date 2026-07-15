@@ -475,6 +475,21 @@ pub enum Core {
     /// is already `float64` needs no node — it elaborates to the argument
     /// unchanged.
     IntToFloat(Box<Core>),
+    /// `(array-add!/-sub!/-mul! out a b)`: elementwise binary op over three
+    /// `(array T)` values of the SAME element type `T` (`int64`/`float64`),
+    /// out-param, iterating `min(len out, len a, len b)`. Mutates `out` in
+    /// place and evaluates to `out`'s buffer pointer. Integer arithmetic is
+    /// **wrapping** and never sets `OVERFLOW` — a vector `iadd`/`isub`/`imul`
+    /// cannot set a per-lane flag, so the whole family is defined as wrapping
+    /// (matching `wrapping_add`/`wrapping_sub`/`wrapping_mul`) rather than
+    /// have the scalar tail disagree with the vectorized body. `op` is
+    /// reused from [`BinOp`] (only `Add`/`Sub`/`Mul` are ever constructed
+    /// here); `NumKind` selects int64 vs. float64 lowering. The native
+    /// backend lowers this to a 2-lane SIMD loop (`I64X2`/`F64X2`) plus a
+    /// scalar tail for an odd final element; the Core interpreter and the
+    /// closure backend use a plain scalar loop — elementwise ops have no
+    /// reduction/reassociation, so all three executors agree bit-for-bit.
+    ArrayMap2(BinOp, NumKind, Box<Core>, Box<Core>, Box<Core>),
 }
 
 /// Unary floating-point intrinsics that lower to native code. Each takes one

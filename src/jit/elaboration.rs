@@ -226,6 +226,21 @@ impl Cx<'_> {
                         self.elab_bitwise(BinOp::BitXor, 0, args, scope, max)
                     }
                     "ASH" if !self.checking => self.elab_ash(args, scope, max),
+                    // Elementwise SIMD array ops ("fix the language"):
+                    // out-param, wrapping, min-length elementwise `+`/`-`/`*`
+                    // over two same-typed arrays. Codegen-only: the element
+                    // type must resolve to a concrete int64/float64 or the
+                    // whole function stays interpreted (same discipline as
+                    // the bitwise/float-intrinsic forms above).
+                    "ARRAY-ADD!" if !self.checking => {
+                        self.elab_array_map2(BinOp::Add, args, scope, max)
+                    }
+                    "ARRAY-SUB!" if !self.checking => {
+                        self.elab_array_map2(BinOp::Sub, args, scope, max)
+                    }
+                    "ARRAY-MUL!" if !self.checking => {
+                        self.elab_array_map2(BinOp::Mul, args, scope, max)
+                    }
                     // Checker-only forms (#162): list/pair processing + `quote`/
                     // `cond`/`when` whose `elab_*` emit only a placeholder
                     // `Core::LitI(0)` for type purposes — they typecheck untyped
@@ -1253,6 +1268,69 @@ impl Cx<'_> {
             ));
         }
         Ok((Core::ArrayLen(Box::new(a)), Ty::Int64))
+    }
+
+    /// `(array-add!/-sub!/-mul! out a b)` : (array α) (array α) (array α) ->
+    /// (array α), α ∈ {int64, float64}. All three arrays must unify to the
+    /// SAME element type; the op iterates `min(len out, len a, len b)`,
+    /// wrapping (int) or ordinary (float) elementwise arithmetic, mutating
+    /// `out` in place. Codegen-only: `α` must resolve to a concrete
+    /// `int64`/`float64` here (not just unify — [`Self::resolve`] forces it),
+    /// or this returns `Err` and the whole function falls back to
+    /// interpreted, exactly like [`Self::elab_float`]/[`Self::elab_ash`]
+    /// never silently coercing an unresolved/`any` operand.
+    fn elab_array_map2(
+        &self,
+        op: BinOp,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 3 {
+            return Err(format!(
+                "array op expects 3 args (out a b), got {}",
+                args.len()
+            ));
+        }
+        let (out, tout) = self.elab(&args[0], scope, max)?;
+        let (a, ta) = self.elab(&args[1], scope, max)?;
+        let (b, tb) = self.elab(&args[2], scope, max)?;
+        let elem = self.fresh();
+        let arr_ty = Ty::Array(Box::new(elem.clone()));
+        if self.unify(&tout, &arr_ty).is_err() {
+            return Err(format!(
+                "array op `out` must be an array, got {:?}",
+                self.walk(&tout)
+            ));
+        }
+        if self.unify(&ta, &arr_ty).is_err() {
+            return Err(format!(
+                "array op `a` must be an array of the same element type as `out`, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        if self.unify(&tb, &arr_ty).is_err() {
+            return Err(format!(
+                "array op `b` must be an array of the same element type as `out`, got {:?}",
+                self.walk(&tb)
+            ));
+        }
+        let elem_ty = self
+            .resolve(&elem)
+            .map_err(|e| format!("array op: cannot infer element type: {e}"))?;
+        let kind = match elem_ty {
+            Ty::Int64 => NumKind::I,
+            Ty::Float64 => NumKind::F,
+            other => {
+                return Err(format!(
+                    "array op element type must resolve to int64 or float64, got {other:?}"
+                ));
+            }
+        };
+        Ok((
+            Core::ArrayMap2(op, kind, Box::new(out), Box::new(a), Box::new(b)),
+            Ty::Array(Box::new(elem_ty)),
+        ))
     }
 
     // --- checker-only list/pair forms (#162) -------------------------------

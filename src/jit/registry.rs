@@ -1694,6 +1694,17 @@ impl Jit {
                 self.dis_emit(a, &t, out, reg, lab);
                 out.push(format!("    {dst} = ldlen {t}"));
             }
+            Core::ArrayMap2(op, k, o, a, b) => {
+                let (to, ta, tb) = (fresh(reg), fresh(reg), fresh(reg));
+                self.dis_emit(o, &to, out, reg, lab);
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(b, &tb, out, reg, lab);
+                out.push(format!(
+                    "    v{} {to}[i], {ta}[i], {tb}[i]   ; simd elementwise, i in 0..min(len)",
+                    bin_mnemonic(*k, *op)
+                ));
+                out.push(format!("    {dst} = mov {to}"));
+            }
             Core::StructNew(inits) => {
                 let mut regs = Vec::with_capacity(inits.len());
                 for c in inits {

@@ -614,6 +614,11 @@ pub enum BuiltinFunc {
     ArrayFetch,
     ArrayStore,
     ArrayLength,
+    // Elementwise SIMD-in-the-typed-JIT array ops (out-param, wrapping):
+    // the interpreter-side / tree-walker reference for `Core::ArrayMap2`.
+    ArrayAddBang,
+    ArraySubBang,
+    ArrayMulBang,
     Length,
     ListToArray,
     ArrayToList,
