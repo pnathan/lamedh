@@ -226,6 +226,22 @@ impl Cx<'_> {
                         self.elab_bitwise(BinOp::BitXor, 0, args, scope, max)
                     }
                     "ASH" if !self.checking => self.elab_ash(args, scope, max),
+                    // `abs`/`min`/`max` compile by DESUGARING to `if`+comparison
+                    // (already-compilable Core), exactly mirroring their Lisp
+                    // definitions in lib/05-math.lisp — `(abs x)` = `(if (< x 0)
+                    // (- x) x)`, `(max a b)` = `(if (> a b) a b)`, `(min a b)` =
+                    // `(if (< a b) a b)`. This is comparison-select, NOT the FP
+                    // fmin/fmax/fabs instructions, so it matches the evaluator's
+                    // exact -0.0/NaN behaviour (e.g. `(abs -0.0)` stays `-0.0`).
+                    // int64 and float64. min/max only for the 2-arg case; a
+                    // different arity falls through to the interpreted variadic.
+                    "ABS" if !self.checking => self.elab_abs(args, scope, max),
+                    "MIN" if !self.checking => {
+                        self.elab_min_max_compiled(CmpOp::Lt, args, scope, max)
+                    }
+                    "MAX" if !self.checking => {
+                        self.elab_min_max_compiled(CmpOp::Gt, args, scope, max)
+                    }
                     // Elementwise SIMD array ops ("fix the language"):
                     // out-param, wrapping, min-length elementwise `+`/`-`/`*`
                     // over two same-typed arrays. Codegen-only: the element
@@ -1977,6 +1993,68 @@ impl Cx<'_> {
                 "`ash` shift {k} outside the compilable range -63..=63"
             ))
         }
+    }
+
+    /// `(abs x)` → `(if (< x 0) (- x) x)` over `int64`/`float64`, as compilable
+    /// Core. `Core::LitI(0)` is the zero for both kinds (all-zero bits bitcast
+    /// to `+0.0`). Comparison-select, so `(abs -0.0)` = `-0.0` and `(abs NaN)`
+    /// = `NaN` unchanged, matching the evaluator (unlike an `fabs` instruction).
+    /// `x` is a pure typed expression, so evaluating it in the test and both
+    /// branches is value-correct (recomputed, not observably different).
+    fn elab_abs(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`abs` expects 1 argument, got {}", args.len()));
+        }
+        let (xc, tx) = self.elab(&args[0], scope, max)?;
+        let rt = self
+            .resolve(&tx)
+            .map_err(|_| "`abs`: cannot infer operand type".to_string())?;
+        let num = rt
+            .as_num()
+            .ok_or_else(|| format!("`abs` expects a numeric operand, got {rt:?}"))?;
+        let k: NumKind = num.into();
+        let cond = Core::Cmp(k, CmpOp::Lt, Box::new(xc.clone()), Box::new(Core::LitI(0)));
+        let neg = Core::Bin(k, BinOp::Sub, Box::new(Core::LitI(0)), Box::new(xc.clone()));
+        Ok((Core::If(Box::new(cond), Box::new(neg), Box::new(xc)), rt))
+    }
+
+    /// `(max a b)` → `(if (> a b) a b)`, `(min a b)` → `(if (< a b) a b)` over a
+    /// shared `int64`/`float64` type, as compilable Core (`cmp` = `Gt` for max,
+    /// `Lt` for min). Only the 2-argument form; other arities return `Err` and
+    /// fall through to the interpreted variadic `min`/`max`. Comparison-select,
+    /// matching the evaluator's `-0.0`/NaN behaviour exactly.
+    fn elab_min_max_compiled(
+        &self,
+        cmp: CmpOp,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!(
+                "compiled min/max takes exactly 2 arguments (got {}); \
+                 other arities stay interpreted",
+                args.len()
+            ));
+        }
+        let (ac, ta) = self.elab(&args[0], scope, max)?;
+        let (bc, tb) = self.elab(&args[1], scope, max)?;
+        self.unify(&ta, &tb)
+            .map_err(|e| format!("min/max operands disagree: {e}"))?;
+        let rt = self
+            .resolve(&ta)
+            .map_err(|_| "min/max: cannot infer operand type".to_string())?;
+        let num = rt
+            .as_num()
+            .ok_or_else(|| format!("min/max expects numeric operands, got {rt:?}"))?;
+        let k: NumKind = num.into();
+        let cond = Core::Cmp(k, cmp, Box::new(ac.clone()), Box::new(bc.clone()));
+        Ok((Core::If(Box::new(cond), Box::new(ac), Box::new(bc)), rt))
     }
 
     pub(super) fn elab_body(

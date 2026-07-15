@@ -70,6 +70,20 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: `abs`/`min`/`max` compile to native (comparison-select desugar)
+
+`abs`, and the 2-argument `min`/`max`, now compile in a `defun-typed` body
+for `int64` and `float64`. They desugar to already-compilable Core —
+`(abs x)` → `(if (< x 0) (- x) x)`, `(max a b)` → `(if (> a b) a b)`,
+`(min a b)` → `(if (< a b) a b)` — exactly mirroring their `lib/05-math.lisp`
+definitions. This is **comparison-select, not the FP `fmin`/`fmax`/`fabs`
+instructions**, so it matches the evaluator's `-0.0`/NaN behaviour bit-for-bit
+(e.g. `(abs -0.0)` stays `-0.0`; `fabs` would give `+0.0`). No new kernel
+machinery — purely an elaboration change. Previously `abs`/`min`/`max` on a
+`float64` did not compile at all (the Lisp `abs` compares against integer `0`,
+and `min`/`max` are variadic `&rest` functions). Variadic `min`/`max` (other
+than 2 args) stay interpreted. Fuzzer-verified.
+
 ## jit: SIMD-vectorized integer array reductions (`array-sum`/`array-dot`)
 
 The reduction half of the array-op family the elementwise ops
