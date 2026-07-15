@@ -59,7 +59,7 @@ Individual category pages (hand-written with additional context):
 - [Appendix C: Known Limitations](appendix_limitations.md)
 - [Appendix D: Differences from Lisp 1.5](appendix_differences.md)
 - [Appendix E: Divergences from Common Lisp](cl-divergences.md) - One page for CL reflexes
-- [Roadmap To 1.0](roadmap_1_0.md) - Release gates while the version remains on `0.2.x`
+- [Roadmap To 1.0](roadmap_1_0.md) - Release gates while the version remains on `0.3.x`
 
 ---
 
@@ -96,11 +96,11 @@ Throughout this manual:
 
 This reference manual documents **Lamedh** (Hebrew letter "Lamed", ל), a Lisp 1.5 implementation written in Rust. Lamedh aims to provide a faithful implementation of classic Lisp 1.5 semantics with modern extensions.
 
-The manual is organized in the style of the [Common Lisp HyperSpec](http://www.lispworks.com/documentation/HyperSpec/Front/), providing comprehensive documentation for all language features.
+The manual is organized in the style of the [Common Lisp HyperSpec](http://www.lispworks.com/documentation/HyperSpec/Front/).
 
 ### Version
 
-This documentation covers Lamedh 0.2.x as of June 2026.
+This documentation covers Lamedh 0.3.x as of July 2026.
 
 ---
 
@@ -132,5 +132,3 @@ To add documentation for a new function:
 ```
 
 ---
-
-*Lamedh - Where ancient wisdom meets modern implementation*

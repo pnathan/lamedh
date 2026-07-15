@@ -1,0 +1,13 @@
+[book]
+title = "Lamedh — A Lisp 1.5 in Rust"
+authors = ["Paul Nathan"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "coal"
+git-repository-url = "https://github.com/pnathan/lamedh"

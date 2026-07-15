@@ -78,7 +78,9 @@ fence, or NIL when no fence is active."
   "The capability set effective RIGHT NOW: host-granted builtins (already
 mask-aware — FEATURE-ENABLED-P consults the dynamic fence) plus registered
 custom capabilities filtered through the same mask."
-  (let ((all '(READ-FS CREATE-FS TEMP-FS SHELL IO))
+  (let ((all '(READ-FS CREATE-FS TEMP-FS SHELL IO
+               NET-DNS NET-CONNECT NET-LISTEN
+               OS-ENV OS-ENV-WRITE OS-PROCESS OS-SIGNAL))
         (held nil))
     (dolist (c all (append (reverse held)
                            (filter #'capability-mask-allows-p

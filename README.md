@@ -47,8 +47,10 @@ Cranelift when the default `jit` feature is enabled.
 - **Embeddable runtime**: the `lamedh` crate exposes `Environment`,
   `eval_str()`, `eval_all()`, `load_file()`, and `LispValExtension`.
 - **Sandboxed capabilities**: filesystem, shell, temp files, stdin, and
-  networking (DNS/TCP/UDP) are off by default unless the host or CLI
-  grants a capability, plus a Rust-only policy hook to scope a granted
+  networking (DNS/TCP/UDP) are on by default in the CLI; use `--sandbox`
+  for a locked-down session, or grant individual capabilities with `-c`.
+  The library API keeps them off by default; embedders call
+  `env.enable_feature(...)`.  A Rust-only policy hook can scope a granted
   networking capability to specific hosts/ports.
 
 ## Quick Start
@@ -218,7 +220,7 @@ Ordinary functions can also be analyzed and optimized opportunistically:
 ```lisp
 (jit-optimize
   (defun dbl (n) (+ n n)))
-; => "DBL : (-> (int64) int64)  [native]"
+; => "DBL : (forall (a) (-> (a) a))  [checked, dynamic]"
 
 (dbl 21)
 ; => 42
@@ -248,8 +250,8 @@ cycles are reported as errors.
 
 ## Local Benchmark Note
 
-The current Fibonacci comparison is from one run on the maintainer's local
-laptop, so treat it as a machine-local snapshot rather than a portable claim.
+The current Fibonacci comparison is from one run on one machine, so treat
+it as a machine-local snapshot rather than a portable claim.
 For `n=30`, `RUN_MS=1000`, `WARMUP_MS=100`, the warm typed native path measured
 about 14.6 ms for `Lamedh-JIT` and 15.8 ms for `Lamedh-OptJIT`, compared with
 2.7 ms C, 9.1 ms SBCL, 154.7 ms Ruby, and 243.8 ms Python. The local toolchain
@@ -263,11 +265,17 @@ read as the same performance tier within run noise.
 
 ## Embedding
 
-```rust
-use lamedh::{LispError, LispVal, eval_str};
-use lamedh::environment::Environment;
+`LispVal` holds an `Rc` internally, so it isn't `Send` — and
+`with_large_stack` requires its closure's return type to be
+`Send + 'static` because it runs on a spawned thread. Do the Lisp-side
+work (creating the environment, evaluating, and reading back the result)
+entirely inside the closure, and return a plain `Send` type such as
+`String`:
 
-fn run_script(src: String) -> Result<LispVal, LispError> {
+```rust
+use lamedh::{LispVal, environment::Environment, eval_str};
+
+fn run_script(src: String) -> Result<String, String> {
     lamedh::with_large_stack(move || {
         let env = Environment::with_stdlib();
 
@@ -278,6 +286,8 @@ fn run_script(src: String) -> Result<LispVal, LispError> {
         });
 
         eval_str(&src, &env)
+            .map(|v| lamedh::printer::print(&v))
+            .map_err(|e| e.to_string())
     })
 }
 ```

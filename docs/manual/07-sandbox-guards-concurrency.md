@@ -4,8 +4,9 @@ Lamedh runs untrusted or semi-trusted Lisp code as a first-class use case:
 agent-generated programs, user scripts, plugin logic. Chapter 7 covers the
 three mechanisms that make that safe:
 
-- **Capabilities** — host-granted permission bits that gate filesystem,
-  shell, and stdin access. Off by default.
+- **Capabilities** — permission bits that gate filesystem, shell, and
+  stdin access. On by default in the CLI; off by default in the library
+  API (the host grants them explicitly).
 - **Guard fences** — kernel special forms giving dynamic-extent
   attenuation of capabilities (`with-capabilities`) and execution budget
   (`with-fuel`), composable and monotone (they can only narrow, never
@@ -20,13 +21,15 @@ command line, including the `--capability` flags.
 
 ## 7.1 The Sandbox Model
 
-By default, a fresh Lamedh interpreter can do arithmetic, build data
-structures, define functions — anything that stays inside the Lisp heap.
-It cannot touch the filesystem, run a shell command, or read from stdin.
-Those are host capabilities, and the host (the CLI, or your embedding Rust
-code) must grant them explicitly.
+The CLI enables all capabilities by default, so `lamedh` out of the box
+can read/write files, run shell commands, and do everything else.  Pass
+`--sandbox` to start with nothing granted, then add back individual
+capabilities with `--capability`.
 
-There are eight capabilities:
+When embedding the library, a fresh `Environment` has all capabilities
+off; the host grants them with `env.enable_feature(...)`.
+
+There are twelve capabilities:
 
 | Capability  | Gates |
 |-------------|-------|
@@ -38,6 +41,10 @@ There are eight capabilities:
 | `NET-DNS`   | Explicit hostname resolution: `net:resolve` (Chapter 13) |
 | `NET-CONNECT` | Outbound TCP/UDP connections: `tcp:connect`, `udp:connect!`, `udp:send-to` (Chapter 13) |
 | `NET-LISTEN` | Binding/listening for inbound traffic: `tcp:listen`, `udp:bind` (Chapter 13) |
+| `OS-ENV`    | Reading process identity/environment (Chapter 14) |
+| `OS-ENV-WRITE` | Mutating process identity/environment (Chapter 14) |
+| `OS-PROCESS` | Spawning and managing child processes (Chapter 14) |
+| `OS-SIGNAL` | Signaling a PID not held as an owned child handle (Chapter 14) |
 
 `rename-file` needs *both* `READ-FS` and `CREATE-FS` — renaming observes
 whether the source path exists (via its error behavior), so it needs read
@@ -53,52 +60,47 @@ way too — see Chapter 13 for the full networking story, including a
 Rust-only host policy hook that scopes a granted networking capability to
 specific hosts/ports.
 
-Try a gated operation with nothing granted:
+With all defaults (capabilities on), gated operations just work:
 
 ```console
 $ target/debug/lamedh -s '(read-file "/etc/hostname")'
-Error: READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)
-```
-
-Grant it and the same call succeeds:
-
-```console
-$ target/debug/lamedh --capability READ-FS -s '(read-file "/etc/hostname")'
 ; => "elrond\n"
-```
-
-`--capability` is repeatable, so a script that both reads and writes needs
-both flags:
-
-```console
-$ target/debug/lamedh --capability CREATE-FS --capability READ-FS \
-    -s '(progn (write-file "/tmp/lamedh-demo.txt" "hi") (read-file "/tmp/lamedh-demo.txt"))'
-; => "hi"
-```
-
-`TEMP-FS` and `SHELL` behave the same way — denied by default, granted by
-flag:
-
-```console
-$ target/debug/lamedh -s '(make-temp-file "prefix")'
-Error: TEMP-FS capability is not enabled (grant it via --capability TEMP-FS or the host API)
-
-$ target/debug/lamedh --capability TEMP-FS -s '(make-temp-file "prefix")'
-; => "/tmp/prefix-1551459-0"
 
 $ target/debug/lamedh -s '(shell "echo hi")'
-Error: SHELL capability is not enabled (grant it via --capability SHELL or the host API)
-
-$ target/debug/lamedh --capability SHELL -s '(shell "echo hi")'
 ; => (0 "hi\n" "")
 ```
 
 `(shell cmd)` returns a three-element list: `(exit-code stdout stderr)`.
 
-`IO` gates `read`, which consumes stdin:
+In sandbox mode, gated operations are denied until explicitly granted:
 
 ```console
-$ target/debug/lamedh -s '(read)'
+$ target/debug/lamedh --sandbox -s '(read-file "/etc/hostname")'
+Error: READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)
+
+$ target/debug/lamedh --sandbox --capability READ-FS -s '(read-file "/etc/hostname")'
+; => "elrond\n"
+```
+
+`--capability` is repeatable, so a sandboxed script that both reads and
+writes needs both flags:
+
+```console
+$ target/debug/lamedh --sandbox --capability CREATE-FS --capability READ-FS \
+    -s '(progn (write-file "/tmp/lamedh-demo.txt" "hi") (read-file "/tmp/lamedh-demo.txt"))'
+; => "hi"
+```
+
+More sandbox-mode examples:
+
+```console
+$ target/debug/lamedh --sandbox -s '(make-temp-file "prefix")'
+Error: TEMP-FS capability is not enabled (grant it via --capability TEMP-FS or the host API)
+
+$ target/debug/lamedh --sandbox --capability TEMP-FS -s '(make-temp-file "prefix")'
+; => "/tmp/prefix-1551459-0"
+
+$ target/debug/lamedh --sandbox -s '(read)'
 Error: IO capability is not enabled (grant it via --capability IO or the host API)
 ```
 
@@ -129,7 +131,7 @@ flat with `(import shell)`.
 pull a field out of a raw result:
 
 ```console
-$ target/debug/lamedh --capability SHELL \
+$ target/debug/lamedh \
     -s '(let ((r (shell "echo x"))) (list (shell:shell-exit-code r) (shell:shell-stdout r) (shell:shell-ok-p r)))'
 ; => (0 "x\n" T)
 ```
@@ -139,10 +141,10 @@ returns just its stdout, signaling a Lisp error if the exit code is
 non-zero.
 
 ```console
-$ target/debug/lamedh --capability SHELL -s '(shell:sh "echo hello-from-sh")'
+$ target/debug/lamedh -s '(shell:sh "echo hello-from-sh")'
 ; => "hello-from-sh\n"
 
-$ target/debug/lamedh --capability SHELL -s '(shell:sh "exit 3")'
+$ target/debug/lamedh -s '(shell:sh "exit 3")'
 Error: shell command failed: exit 3
 ```
 
@@ -180,17 +182,20 @@ live set from inside (or outside) a fence:
 
 ```console
 $ target/debug/lamedh -s '(capabilities-effective)'
+; => (CREATE-FS IO NET-CONNECT NET-DNS NET-LISTEN OS-ENV OS-ENV-WRITE OS-PROCESS OS-SIGNAL READ-FS SHELL TEMP-FS)
+
+$ target/debug/lamedh --sandbox -s '(capabilities-effective)'
 ; => ()
 
-$ target/debug/lamedh --capability READ-FS --capability SHELL -s '(capabilities-effective)'
+$ target/debug/lamedh --sandbox --capability READ-FS --capability SHELL -s '(capabilities-effective)'
 ; => (READ-FS SHELL)
 ```
 
-Narrowing in action — the host grants both `READ-FS` and `CREATE-FS`, the
+Narrowing in action — the CLI grants all capabilities by default, the
 fence asks for only `READ-FS`:
 
 ```console
-$ target/debug/lamedh --capability READ-FS --capability CREATE-FS \
+$ target/debug/lamedh \
     -s "(with-capabilities '(READ-FS) (capabilities-effective))"
 ; => (READ-FS)
 ```
@@ -199,7 +204,7 @@ A gated operation outside the fence's set is denied, with a kernel-level
 error naming the capability that was attenuated away:
 
 ```console
-$ target/debug/lamedh --capability READ-FS --capability CREATE-FS \
+$ target/debug/lamedh \
     -s "(with-capabilities '(READ-FS) (write-file \"/tmp/x\" \"y\"))"
 Error: capability denied: CREATE-FS (attenuated by an enclosing fence)
 ```
@@ -215,7 +220,7 @@ you, and a narrower fence nested inside a wider one cannot be undone by a
 later, wider `with-capabilities` inside it:
 
 ```console
-$ target/debug/lamedh -s "(with-capabilities '(SHELL) (capabilities-effective))"
+$ target/debug/lamedh --sandbox -s "(with-capabilities '(SHELL) (capabilities-effective))"
 ; => ()
 ```
 
@@ -227,7 +232,7 @@ fence's body, a helper function defined *outside* a fence and called from
 defined, only where it's executing:
 
 ```console
-$ target/debug/lamedh --capability READ-FS \
+$ target/debug/lamedh \
     -s "(progn (defun outer-read (p) (read-file p))
                (with-capabilities '() (handler-case (outer-read \"/etc/hostname\") (error (er) 'denied))))"
 ; => DENIED
@@ -243,10 +248,10 @@ consult the same live mask, so any of them gives a consistent answer from
 inside or outside a fence:
 
 ```console
-$ target/debug/lamedh --capability READ-FS -s '(feature-enabled-p "READ-FS")'
+$ target/debug/lamedh -s '(feature-enabled-p "READ-FS")'
 ; => T
 
-$ target/debug/lamedh --capability READ-FS -s "(with-capabilities '() (feature-enabled-p \"READ-FS\"))"
+$ target/debug/lamedh -s "(with-capabilities '() (feature-enabled-p \"READ-FS\"))"
 ; => ()
 ```
 
@@ -266,7 +271,7 @@ inside `(with-capabilities '() ...)` and returned carries no memory of that
 fence once `with-capabilities` has returned:
 
 ```console
-$ target/debug/lamedh --capability READ-FS \
+$ target/debug/lamedh \
     -s "(let ((f (with-capabilities '() (lambda () (read-file \"/etc/hostname\")))))
           (funcall f))"
 ; => "elrond\n"
@@ -429,7 +434,7 @@ mechanism.
 results:
 
 ```console
-$ target/debug/lamedh --capability READ-FS \
+$ target/debug/lamedh \
     -s "(with-fuel 1000 (with-capabilities '() (handler-case (read-file \"/etc/hostname\") (error (er) 'denied))))"
 ; => DENIED
 ```
@@ -438,7 +443,7 @@ $ target/debug/lamedh --capability READ-FS \
 (cap...)) form...)`, either key optional.
 
 ```console
-$ target/debug/lamedh --capability READ-FS \
+$ target/debug/lamedh \
     -s "(sandboxed (:fuel 1000 :capabilities (READ-FS)) (list (fuel-remaining) (capabilities-effective)))"
 ; => (994 (READ-FS))
 
@@ -476,7 +481,7 @@ executes on every path. It's meant to drive a *minimal* fence: infer the
 manifest, then grant exactly that:
 
 ```console
-$ target/debug/lamedh --capability READ-FS --capability CREATE-FS \
+$ target/debug/lamedh \
     -s "(progn (defun probe (p) (file-exists-p p))
                (with-capabilities (capabilities-needed 'probe)
                  (list (probe \"/etc/hostname\")
@@ -525,17 +530,18 @@ set — requesting a capability the parent doesn't hold yields an empty
 grant for it, not an error:
 
 ```console
-$ target/debug/lamedh -s "(spawn-value (spawn (:capabilities (SHELL)) (capabilities-effective)))"
+$ target/debug/lamedh --sandbox -s "(spawn-value (spawn (:capabilities (SHELL)) (capabilities-effective)))"
 ; => (:OK ())
 ```
 
 A `with-capabilities` fence around the `spawn` call is a hard ceiling on
 what the child can request, even if the host process holds more. Here the
-host has both `READ-FS` and `SHELL`, but the fence narrows to `READ-FS`
-first, so the child's request for `SHELL` is denied too:
+host has both `READ-FS` and `SHELL` (and everything else, on by
+default), but the fence narrows to `READ-FS` first, so the child's
+request for `SHELL` is denied too:
 
 ```console
-$ target/debug/lamedh --capability READ-FS --capability SHELL \
+$ target/debug/lamedh \
     -s "(with-capabilities '(READ-FS) (spawn-value (spawn (:capabilities (READ-FS SHELL)) (capabilities-effective))))"
 ; => (:OK (READ-FS))
 ```

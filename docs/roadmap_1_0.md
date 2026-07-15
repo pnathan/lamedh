@@ -1,7 +1,7 @@
 # Roadmap To 1.0
 
-Lamedh remains on the `0.2.x` version line while the 1.0 release gates are
-closed. The goal of this ramp is not more surface area; it is making the
+Lamedh remains on the `0.3.x` version line while the 1.0 release gates are
+closed. The goal is not more surface area; it is making the
 existing language predictable, documented, and supportable.
 
 ## Release Gates
@@ -24,12 +24,12 @@ existing language predictable, documented, and supportable.
 
 - Common Lisp packages and reader package syntax
 - Common Lisp streams and `WITH-OPEN-FILE`
-- A full condition/restart system
+- A condition-class hierarchy (the current system has one condition kind)
 - Hygienic macro facilities beyond `GENSYM`
 - General local mutual recursion via a separate `LABELS` form
 
 ## Version Policy
 
-Keep package versions at `0.2.x` while these gates are being closed. Cut 1.0
+Keep package versions at `0.3.x` while these gates are being closed. Cut 1.0
 only after the release checklist is passing and the remaining limitations are
 documented as intentional non-goals or explicit post-1.0 work.

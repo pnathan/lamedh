@@ -186,10 +186,23 @@ filename — this is why the standard library itself uses numeric
 filename prefixes (`00-core.lisp`, `01-list.lisp`, ...) to control load
 order:
 
+```lisp
+;; mylib/00-first.lisp
+(def *loaded-first* t)
+
+;; mylib/01-greet.lisp
+(defun greet-lib () (concat "loaded" "-from-dir"))
+```
+
 ```bash
 $ lamedh -i mylib/ -s "(list *loaded-first* (greet-lib))"
 (T "loaded-from-dir")
 ```
+
+(A `defun` body that is a single string literal is treated as a
+docstring, not a return value — `(defun greet-lib () "loaded-from-dir")`
+would compile fine but `(greet-lib)` would return `NIL`. Use an
+expression like `(concat ...)` when the body needs to produce a string.)
 
 In batch modes (a script path or `-s`), a failed `-i` load is fatal — the
 process exits with status 1, so CI and agent pipelines can trust the exit
@@ -198,30 +211,44 @@ session still starts.
 
 ## 1.7 Capabilities and the Sandbox
 
-Lamedh treats filesystem access, shell execution, and blocking stdin
-reads as capabilities that must be granted explicitly — a fresh
-interpreter can't touch any of them. Calling a gated builtin without the
-right capability fails with an error instead of doing anything:
+Lamedh gates filesystem access, shell execution, blocking stdin reads,
+networking, and OS/process operations behind capabilities. The `lamedh`
+CLI grants all of them by default, so a gated builtin just works out of
+the box:
 
 ```bash
 $ lamedh -s '(read-file "data.txt")'
-Error: READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)
-```
-
-Grant capabilities on the command line with `--capability` (or the short
-form `-c`), repeatable, case-insensitive:
-
-```bash
-$ lamedh --capability READ-FS -s '(read-file "data.txt")'
 "hello file contents\n"
 ```
 
+Pass `--sandbox` to start with nothing granted; a gated builtin then
+fails with an error instead of doing anything:
+
+```bash
+$ lamedh --sandbox -s '(read-file "data.txt")'
+Error: READ-FS capability is not enabled (grant it via --capability READ-FS or the host API)
+```
+
+Grant individual capabilities back on the command line with
+`--capability` (or the short form `-c`), repeatable, case-insensitive:
+
+```bash
+$ lamedh --sandbox --capability READ-FS -s '(read-file "data.txt")'
+"hello file contents\n"
+```
+
+This CLI default is a developer-tool convenience, not the library's
+behavior: a fresh `Environment` embedded in host Rust code still has
+every capability off by default, and the host must grant them
+explicitly with `env.enable_feature(...)`.
+
 The known capability names are `READ-FS`, `CREATE-FS`, `TEMP-FS`,
-`SHELL`, `IO`, `NET-DNS`, `NET-CONNECT`, and `NET-LISTEN`. Chapter 7
-covers the full capability model, including how to grant capabilities
-from embedding Rust code and how attenuated capability sets propagate to
-spawned interpreter threads; Chapter 13 covers the three networking
-capabilities specifically.
+`SHELL`, `IO`, `NET-DNS`, `NET-CONNECT`, `NET-LISTEN`, `OS-ENV`,
+`OS-ENV-WRITE`, `OS-PROCESS`, and `OS-SIGNAL`. Chapter 7 covers the full
+capability model, including how to grant capabilities from embedding
+Rust code and how attenuated capability sets propagate to spawned
+interpreter threads; Chapter 13 covers the three networking capabilities
+specifically, and Chapter 14 covers the four OS/process capabilities.
 
 ## 1.8 Case: Symbols Are Uppercase
 

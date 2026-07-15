@@ -35,7 +35,7 @@ sender, with no connection-acceptance step to gate separately the way TCP
 has one — so binding is "inbound traffic" authority regardless of intent.
 
 ```console
-$ target/debug/lamedh -s "(net:resolve \"localhost\")"
+$ target/debug/lamedh --sandbox -s "(net:resolve \"localhost\")"
 Error: NET-DNS capability is not enabled (grant it via --capability NET-DNS or the host API)
   in: NET:RESOLVE
 ```
@@ -45,7 +45,7 @@ others — and every one is attenuated by `with-capabilities` fences exactly
 like every other host builtin (Chapter 7 §7.1):
 
 ```console
-$ target/debug/lamedh --capability NET-CONNECT -s "(with-capabilities '() (tcp-connect* \"127.0.0.1\" 1 100))"
+$ target/debug/lamedh -s "(with-capabilities '() (tcp-connect* \"127.0.0.1\" 1 100))"
 Error: capability denied: NET-CONNECT (attenuated by an enclosing fence)
 ```
 
@@ -67,7 +67,7 @@ there is no Lisp-facing API for it by design.
 prints and compares like any other record:
 
 ```console
-$ target/debug/lamedh --capability NET-DNS -s "(net:resolve \"localhost\")"
+$ target/debug/lamedh -s "(net:resolve \"localhost\")"
 (#S(NET:ADDRESS :IPV6 "::1" 0) #S(NET:ADDRESS :IPV4 "127.0.0.1" 0))
 ```
 
@@ -89,7 +89,7 @@ was tested on.
 capability of their own:
 
 ```console
-$ target/debug/lamedh --capability NET-LISTEN -s "(let ((l (tcp:listen \"127.0.0.1\" 0))) (net:address->string (tcp:local-addr l)))"
+$ target/debug/lamedh -s "(let ((l (tcp:listen \"127.0.0.1\" 0))) (net:address->string (tcp:local-addr l)))"
 "127.0.0.1:35515"
 ```
 
@@ -100,7 +100,7 @@ A malformed or unresolvable host signals a structured `:DNS` error rather
 than a bare string, so callers can dispatch on it (§13.5):
 
 ```console
-$ target/debug/lamedh --capability NET-DNS -s "(handler-case (net:resolve \"\") (error (e) (error-data e)))"
+$ target/debug/lamedh -s "(handler-case (net:resolve \"\") (error (e) (error-data e)))"
 ((:OPERATION . "resolve") (:CATEGORY . :DNS) (:HOST . "") (:PORT . 0) (:OS-ERROR . "failed to lookup address information: Name or service not known"))
 ```
 
@@ -122,7 +122,7 @@ so `connect` then `accept` (in either order relative to each other, as
 long as `listen` came first) never deadlocks on loopback:
 
 ```console
-$ target/debug/lamedh --capability NET-LISTEN --capability NET-CONNECT -s "(progn
+$ target/debug/lamedh -s "(progn
     (let* ((l (tcp:listen \"127.0.0.1\" 0))
            (port (net:address-port (tcp:local-addr l))))
       (let ((c (tcp:connect \"127.0.0.1\" port)))
@@ -177,7 +177,7 @@ datagram and returns a 3-element list `(bytes peer-address
 possibly-truncated-p)`.
 
 ```console
-$ target/debug/lamedh --capability NET-LISTEN --capability NET-CONNECT -s "(progn
+$ target/debug/lamedh -s "(progn
     (let* ((a (udp:bind \"127.0.0.1\" 0))
            (b (udp:bind \"127.0.0.1\" 0))
            (a-port (net:address-port (udp:local-addr a))))
@@ -277,7 +277,7 @@ are plain alists; headers are `MIME`'s ordered `(name . value)` list
 (repeats preserved, lookup case-insensitive — Chapter 12's conventions).
 
 ```console
-$ target/debug/lamedh --capability NET-CONNECT
+$ target/debug/lamedh
 > (require 'http)
 HTTP
 > (def r (http:get "http://127.0.0.1:8080/hello"))
@@ -396,7 +396,7 @@ default feature set** — build with `cargo build --features net-tls` (or
 `cargo run --features net-tls`, `cargo test --features net-tls`) to use it.
 The default build's behavior and dependency tree are unchanged: nothing
 here pulls in `rustls`/`webpki-roots`/`rustls-pemfile` unless you ask for
-this feature. Backed by `rustls` (owner ruling, #364/#365: not
+this feature. Backed by `rustls` (#364/#365: not
 `native-tls`, so nothing links system OpenSSL/SChannel/SecureTransport),
 with the `ring` crypto provider (not `aws-lc-rs`: no cmake/nasm build-tool
 requirement).
@@ -437,7 +437,7 @@ blocking forever — this is "handshake timeout via the underlying socket's
 read/write timeouts."
 
 ```console
-$ target/debug/lamedh --capability NET-LISTEN --capability NET-CONNECT --capability READ-FS
+$ target/debug/lamedh
 > (require 'tls)
 TLS
 > (def listener (tcp:listen "127.0.0.1" 0))
@@ -471,7 +471,7 @@ independent gate the host must explicitly widen. Lisp code alone can never
 disable verification, no matter what it calls.
 
 ```console
-$ target/debug/lamedh --capability NET-CONNECT -s "(tls:connect-insecure! \"127.0.0.1\" 1)"
+$ target/debug/lamedh -s "(tls:connect-insecure! \"127.0.0.1\" 1)"
 Error: tls-wrap-client-insecure*: POLICY-DENIED: tls:connect-insecure! requires host opt-in (Environment::set_allow_insecure_tls) -- Lisp code alone cannot disable certificate verification
   in: TLS:CONNECT-INSECURE!
 ```
@@ -496,7 +496,7 @@ Server-side wrapping mirrors the client: `cert` may be a full chain
 client-certificate authentication is requested.
 
 ```console
-$ target/debug/lamedh --capability NET-LISTEN --capability READ-FS
+$ target/debug/lamedh
 > (require 'tls)
 TLS
 > (let* ((accepted (tcp:accept my-listener))
