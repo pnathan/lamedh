@@ -70,6 +70,24 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: SIMD-vectorized elementwise array ops (`array-add!`/`-sub!`/`-mul!`)
+
+A first array-op family for optimizing programmers: `(array-add! out a b)`,
+`(array-sub! out a b)`, `(array-mul! out a b)` — elementwise, out-param
+(writes into a preallocated `out`, returns it), over `(array int64)` /
+`(array float64)`, iterating the minimum of the three lengths. In a
+`defun-typed` body they compile to a **SIMD loop**: a 2-lane `I64X2`/`F64X2`
+vector body (which Cranelift lowers to SSE on x86-64 and NEON on aarch64)
+plus a scalar tail for an odd final element. Semantics are **wrapping** and
+flag-free — a bulk op sets no per-element OVERFLOW; a vector `iadd` is
+two's-complement wraparound by construction. Because SIMD lanes are
+independent (no reduction/reassociation), results are bit-identical to a
+scalar loop for both int and float — verified across all three tiers
+(native Cranelift, Core interpreter, tracing interpreter). Allocating/sugar
+variants and reductions (`array-sum`/`array-dot`) come later. New
+`Core::ArrayMap2` node; codegen-only elaboration. (Built via a Sonnet
+subagent; supervisor-verified + gauntlet-gated.)
+
 ## jit: bitwise ops compile to native (`logand`/`logior`/`logxor`/`ash`)
 
 The int64 bitwise operators now compile. `logand`/`logior`/`logxor` are
