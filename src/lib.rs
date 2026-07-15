@@ -628,6 +628,13 @@ pub enum BuiltinFunc {
     ListToArray,
     ArrayToList,
     Arrayp,
+    // Flat typed arrays (issue: JIT zero-copy array membrane): a
+    // `LispVal::TypedArray` stores its elements as raw `u64` words from the
+    // start, in the same header-prefixed layout as the JIT's call-arena
+    // buffers, so a typed function can take the pointer directly instead of
+    // copying element-by-element on every call.
+    MakeTypedArray,
+    TypedArrayp,
     Extensionp,
     ExtensionTypeName,
     // Lisp 1.5 EVCON
@@ -1377,6 +1384,16 @@ pub enum LispVal {
     /// A 0-indexed mutable vector (Lisp 1.5 `array`).  Created by `(array n)`;
     /// accessed with `(fetch a i)` / `(store a i v)`.
     Array(Shared<SharedCell<Vec<LispVal>>>),
+    /// A flat typed array: elements stored as raw `u64` words in the same
+    /// header-prefixed `[len, e0, e1, …]` layout the typed JIT's call-arena
+    /// buffers use (see `jit::runtime::Ctx::alloc_buffer`), with a declared
+    /// element type. Created by `(typed-array n elem-type)` or returned by a
+    /// typed function; accessed with `aref`/`aset` alongside `LispVal::Array`.
+    /// Passing one to a typed function whose parameter's array element type
+    /// matches lets the JIT membrane hand the native call the buffer's raw
+    /// pointer directly instead of copying (`jit::Value::TypedArray`) — the
+    /// point of this variant existing separately from `Array`.
+    TypedArray(Shared<TypedArrayObj>),
     /// A typed, nominal struct value crossing the typed membrane.
     Struct(Shared<StructObj>),
     /// A host-defined extension value.  Use [`LispVal::ext`] to construct.
@@ -2539,6 +2556,100 @@ pub struct StructObj {
     pub fields: Vec<LispVal>,
 }
 
+/// Element type tag for a [`LispVal::TypedArray`] / `jit::Value::TypedArray`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ElemTy {
+    Int64,
+    Float64,
+}
+
+impl fmt::Display for ElemTy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ElemTy::Int64 => write!(f, "int64"),
+            ElemTy::Float64 => write!(f, "float64"),
+        }
+    }
+}
+
+/// The payload of a [`LispVal::TypedArray`]: a flat array of raw `u64`
+/// words, laid out `[len, e0, e1, …]` — identical to the typed JIT's
+/// call-arena array buffers (`jit::runtime::Ctx::alloc_buffer`) — with a
+/// declared element type. Because the layout already matches, a typed
+/// function whose parameter's array element type agrees with `elem` can take
+/// a raw pointer into `data` directly rather than copying element-by-element
+/// (see `jit::Value::TypedArray` and `jit::types::Value::to_word`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedArrayObj {
+    pub elem: ElemTy,
+    /// `data[0]` is the element count; `data[1..]` are the elements, each one
+    /// `u64` word wide (an `i64` reinterpreted as bits for `Int64`, or
+    /// `f64::to_bits` for `Float64`).
+    pub data: SharedCell<Vec<u64>>,
+}
+
+impl TypedArrayObj {
+    /// Allocate a new zero-initialized typed array of `n` elements.
+    pub fn new(elem: ElemTy, n: usize) -> Self {
+        let mut data = vec![0u64; n + 1];
+        data[0] = n as u64;
+        TypedArrayObj {
+            elem,
+            data: SharedCell::new(data),
+        }
+    }
+
+    /// Number of elements (the header word), not counting the header itself.
+    pub fn len(&self) -> usize {
+        self.data.borrow()[0] as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Read element `idx`, boxed as a `LispVal` per `self.elem`. `None` if
+    /// `idx` is out of bounds.
+    pub fn get(&self, idx: usize) -> Option<LispVal> {
+        let data = self.data.borrow();
+        let len = data[0] as usize;
+        if idx >= len {
+            return None;
+        }
+        let w = data[idx + 1];
+        Some(match self.elem {
+            ElemTy::Int64 => LispVal::Number(w as i64),
+            ElemTy::Float64 => LispVal::Float(f64::from_bits(w)),
+        })
+    }
+
+    /// Store `val` at `idx`, converting per `self.elem`. Returns `Err` if
+    /// `idx` is out of bounds or `val` is not the right scalar type.
+    pub fn set(&self, idx: usize, val: &LispVal) -> Result<(), String> {
+        let word = match (self.elem, val) {
+            (ElemTy::Int64, LispVal::Number(n)) => *n as u64,
+            (ElemTy::Float64, LispVal::Float(f)) => f.to_bits(),
+            (ElemTy::Float64, LispVal::Number(n)) => (*n as f64).to_bits(),
+            _ => {
+                return Err(format!(
+                    "typed array of {}: cannot store {}",
+                    self.elem,
+                    crate::printer::print(val)
+                ));
+            }
+        };
+        let mut data = self.data.borrow_mut();
+        let len = data[0] as usize;
+        if idx >= len {
+            return Err(format!(
+                "typed array: index {idx} out of bounds (length {len})"
+            ));
+        }
+        data[idx + 1] = word;
+        Ok(())
+    }
+}
+
 impl LispVal {
     /// Wrap a host value implementing [`LispValExtension`] into a `LispVal`.
     pub fn ext<T: LispValExtension + 'static>(v: T) -> Self {
@@ -2565,6 +2676,9 @@ impl fmt::Debug for LispVal {
             LispVal::Native(_) => write!(f, "Native(...)"),
             LispVal::Environment(_) => write!(f, "Environment(...)"),
             LispVal::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
+            LispVal::TypedArray(a) => {
+                write!(f, "TypedArray(elem={:?}, len={})", a.elem, a.len())
+            }
             LispVal::Struct(s) => write!(f, "Struct(type={}, fields={:?})", s.type_name, s.fields),
             LispVal::Extension(e) => write!(f, "Extension({})", e.type_name()),
             LispVal::Error(e) => write!(f, "Error({:?}, {:?})", e.message, e.data),
@@ -2601,6 +2715,7 @@ impl Clone for LispVal {
             LispVal::Native(f) => LispVal::Native(f.clone()),
             LispVal::Environment(e) => LispVal::Environment(e.clone()),
             LispVal::Array(a) => LispVal::Array(a.clone()),
+            LispVal::TypedArray(a) => LispVal::TypedArray(a.clone()),
             LispVal::Struct(s) => LispVal::Struct(s.clone()),
             LispVal::Extension(e) => LispVal::Extension(e.clone()),
             LispVal::Error(e) => LispVal::Error(e.clone()),
@@ -2655,6 +2770,7 @@ impl PartialEq for LispVal {
             (LispVal::Native(a), LispVal::Native(b)) => Shared::ptr_eq(a, b),
             (LispVal::Environment(a), LispVal::Environment(b)) => Shared::ptr_eq(a, b),
             (LispVal::Array(a), LispVal::Array(b)) => Shared::ptr_eq(a, b),
+            (LispVal::TypedArray(a), LispVal::TypedArray(b)) => Shared::ptr_eq(a, b),
             (LispVal::Struct(a), LispVal::Struct(b)) => {
                 a.type_name == b.type_name && a.fields == b.fields
             }
@@ -2701,6 +2817,9 @@ impl Hash for LispVal {
                 Shared::as_ptr(e).hash(state);
             }
             LispVal::Array(a) => {
+                Shared::as_ptr(a).hash(state);
+            }
+            LispVal::TypedArray(a) => {
                 Shared::as_ptr(a).hash(state);
             }
             LispVal::Struct(s) => {

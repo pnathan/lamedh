@@ -413,6 +413,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         | LispVal::Native(_)
         | LispVal::Environment(_)
         | LispVal::Array(_)
+        | LispVal::TypedArray(_)
         | LispVal::Struct(_)
         | LispVal::Extension(_)
         | LispVal::Error(_)

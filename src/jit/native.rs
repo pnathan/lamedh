@@ -21,7 +21,7 @@
 //! parameters) so the lowering does not depend on the block-argument API, which
 //! has churned across Cranelift releases.
 
-use super::{BinOp, CmpOp, Core, Ctx, NumKind};
+use super::{BinOp, CmpOp, Core, Ctx, NumKind, allocation_escapes};
 use core::ffi::c_void;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -34,6 +34,17 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 
 /// The native calling convention for a compiled typed function.
 type NativeEntry = unsafe extern "C" fn(*const u64, *const c_void) -> u64;
+
+/// Element/field-count ceiling for stack-allocating a `Core::Let`-bound
+/// `Core::ArrayNew`/`Core::StructNew` buffer directly on this call frame
+/// (jit/core-loops stack-allocation follow-up) instead of the arena. Purely a
+/// frame-size guard against an unbounded `StackSlot` for some large constant
+/// size — above it, the allocation just takes the ordinary arena path, same
+/// as any non-constant-size or escaping allocation. Well above realistic
+/// temporary sizes (a handful of loop-local accumulator/scratch elements)
+/// while keeping the added stack frame small relative to the interpreter's
+/// existing large-stack budget.
+const MAX_STACK_ALLOC_ELEMENTS: i64 = 4096;
 
 /// A finalized native edition. Owns its `JITModule`, whose `Drop` frees the
 /// executable memory — so keeping this alive (e.g. behind an `Rc` that an
@@ -505,7 +516,10 @@ impl Emitter<'_, '_, '_> {
                 self.branch_merge(cond, |s| s.emit(t, tail), |s| s.emit(e, tail))
             }
             Core::Let(slot, init, body) => {
-                let v = self.emit_value(init);
+                let v = match self.try_stack_alloc(*slot, init, body) {
+                    Some(v) => v,
+                    None => self.emit_value(init),
+                };
                 self.b
                     .ins()
                     .stack_store(v, self.env_slot, (*slot * 8) as i32);
@@ -940,6 +954,81 @@ impl Emitter<'_, '_, '_> {
     fn alloc(&mut self, len: Value) -> Value {
         let call = self.b.ins().call(self.alloc_ref, &[self.ctx_ptr, len]);
         self.b.inst_results(call)[0]
+    }
+
+    /// Try to lower a `Core::Let(slot, init, body)` allocation directly onto
+    /// a Cranelift `StackSlot` instead of the arena (jit/core-loops
+    /// stack-allocation follow-up). Returns `Some(pointer word)` only when
+    /// `init` is a constant-size `Core::ArrayNew(Core::LitI(n))` (`n` within
+    /// `0..=MAX_STACK_ALLOC_ELEMENTS`) or a `Core::StructNew(fields)` (whose
+    /// size is always constant — its field count), AND `slot` provably does
+    /// not escape `body` per [`allocation_escapes`]. Otherwise returns `None`,
+    /// meaning: fall back to the ordinary `self.emit_value(init)` arena path
+    /// unchanged. This is purely an allocation-strategy choice — identical
+    /// buffer layout and contents either way — never a semantic one.
+    fn try_stack_alloc(&mut self, slot: usize, init: &Core, body: &Core) -> Option<Value> {
+        match init {
+            Core::ArrayNew(n) => {
+                let Core::LitI(n) = n.as_ref() else {
+                    return None;
+                };
+                if *n < 0 || *n > MAX_STACK_ALLOC_ELEMENTS {
+                    return None;
+                }
+                if allocation_escapes(body, slot) {
+                    return None;
+                }
+                Some(self.stack_alloc_buffer(*n, &[]))
+            }
+            Core::StructNew(fields) => {
+                if fields.len() as i64 > MAX_STACK_ALLOC_ELEMENTS {
+                    return None;
+                }
+                if allocation_escapes(body, slot) {
+                    return None;
+                }
+                // Evaluate the field values *before* claiming the stack slot
+                // (matches the arena `Core::StructNew` arm's own evaluation
+                // order: every field is computed left-to-right first, then
+                // written into the freshly allocated buffer).
+                let vals: Vec<Value> = fields.iter().map(|c| self.emit_value(c)).collect();
+                Some(self.stack_alloc_buffer(vals.len() as i64, &vals))
+            }
+            _ => None,
+        }
+    }
+
+    /// Allocate a `[len, e0, e1, …]`-layout buffer of `n` elements on this
+    /// call frame's Cranelift stack — the exact same header-prefixed `u64`
+    /// layout `Ctx::alloc_buffer` gives an arena buffer, so every consumer
+    /// (`ArrayGet`/`ArraySet`/`ArrayLen`/`FieldGet`/`FieldSet`, all of which
+    /// just `load`/`store` through the returned address) needs no
+    /// stack-vs-arena special-casing. `vals`, if non-empty, are stored into
+    /// elements `0..vals.len()` (the `StructNew` case, whose fields are
+    /// already computed); otherwise every element is zero-initialized (the
+    /// `ArrayNew` case, matching `Ctx::alloc_buffer`'s `vec![0u64; n + 1]`).
+    /// Returns the buffer's address as a plain word — exactly what
+    /// `self.alloc` returns for the arena path.
+    fn stack_alloc_buffer(&mut self, n: i64, vals: &[Value]) -> Value {
+        let bytes = ((n as u32) + 1) * 8;
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            bytes,
+            3,
+        ));
+        let len_val = self.iconst(n);
+        self.b.ins().stack_store(len_val, slot, 0);
+        if vals.is_empty() {
+            let zero = self.iconst(0);
+            for i in 0..n {
+                self.b.ins().stack_store(zero, slot, ((i + 1) * 8) as i32);
+            }
+        } else {
+            for (i, v) in vals.iter().enumerate() {
+                self.b.ins().stack_store(*v, slot, ((i + 1) * 8) as i32);
+            }
+        }
+        self.b.ins().stack_addr(self.ptr, slot, 0)
     }
 
     /// Address of element `idx` in buffer `base`: `base + 8*(idx+1)`.

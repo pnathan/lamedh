@@ -137,6 +137,16 @@ pub(super) fn is_flat_scalar_array(t: &Ty) -> bool {
     )
 }
 
+/// Whether a [`crate::ElemTy`] (the element type a [`LispVal::TypedArray`]
+/// was created with) agrees with a compileable array element [`Ty`] — the
+/// gate for the zero-copy membrane path in [`Value::to_word`].
+pub fn elem_ty_matches(elem: crate::ElemTy, ty: &Ty) -> bool {
+    matches!(
+        (elem, ty),
+        (crate::ElemTy::Int64, Ty::Int64) | (crate::ElemTy::Float64, Ty::Float64)
+    )
+}
+
 /// A struct type definition: an ordered list of `(field-name, field-type)`. Two
 /// struct types are equal iff they have the same name and field layout; the
 /// `Rc` keeps clones cheap and identity stable.
@@ -270,6 +280,15 @@ pub enum Value {
     Array(Vec<Value>),
     /// A struct, materialized as its field [`Value`]s in declaration order.
     Struct(Vec<Value>),
+    /// A flat typed array (`LispVal::TypedArray`) crossing the membrane as a
+    /// parameter. Unlike [`Value::Array`], this is not copied out of the
+    /// caller's storage: `data` already uses the same `[len, e0, e1, …]`
+    /// layout as a call-arena array buffer, so [`Value::to_word`] hands the
+    /// native call a pointer straight into it when the element type matches
+    /// (see `to_word`'s `TypedArray` arm) — no copy in, and no write-back
+    /// needed on return since any in-place `store`/`aset` the callee performs
+    /// already lands in the caller's own buffer.
+    TypedArray(Shared<TypedArrayObj>),
 }
 
 /// Result of a call that also reports post-call array write-back (issue
@@ -308,6 +327,18 @@ impl Value {
                     unsafe { *buf.add(i + 1) = w };
                 }
                 Ok(buf as u64)
+            }
+            // Zero-copy membrane (issue: JIT TypedArray): `ta.data` is
+            // already `[len, e0, e1, …]`, the exact layout `alloc_buffer`
+            // produces, so when the element type matches the parameter's
+            // declared element type the native call can read/write the
+            // caller's own buffer directly — no arena copy in, no
+            // write-back copy out. A mismatched element type is a genuine
+            // type error (e.g. passing a `float64` typed array where
+            // `(array int64)` is declared): fall through to the generic
+            // mismatch error below rather than silently reinterpreting bits.
+            (Value::TypedArray(ta), Ty::Array(elem)) if elem_ty_matches(ta.elem, elem) => {
+                Ok(ta.data.borrow_mut().as_mut_ptr() as u64)
             }
             (Value::Struct(fields), Ty::Struct(def)) => {
                 if fields.len() != def.fields.len() {
@@ -699,6 +730,93 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
         }
         Core::ArraySum(a) => core_may_mutate_slot(a, slot),
         Core::ArrayDot(a, b) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot),
+    }
+}
+
+/// Escape analysis for a `Core::Let(slot, Core::ArrayNew(_) | Core::StructNew(_),
+/// body)` allocation (jit/core-loops stack-allocation follow-up): does the
+/// value bound to `slot` ever leave `body` — passed to another function,
+/// returned, or stored into another slot that might itself escape? `core`
+/// is the let-binding's `body` (the allocation's whole lexical scope).
+///
+/// A `true` result is always sound (over-approximating is fine — the worst
+/// case is a redundant arena allocation, never a wrong answer); `false`
+/// licenses replacing that arena allocation with a Cranelift `StackSlot`
+/// local to this call frame, since the pointer provably never outlives it.
+///
+/// Deliberately simple (see [`core_may_mutate_slot`] for the same philosophy
+/// applied to a different question): `Core::Var(slot)` is allowed to appear
+/// ONLY as the direct base/target argument of `Core::ArrayGet`,
+/// `Core::ArraySet`, `Core::ArrayLen`, `Core::FieldGet`, or `Core::FieldSet`
+/// — the five forms that merely read/write through the pointer without ever
+/// copying it anywhere else. Any other appearance — a call argument, the
+/// value returned from `body`, the source of an `Assign` to some other slot,
+/// an `ArrayMap2` operand (in *any* of its three positions, including the
+/// out-param — `ArrayMap2` mutates through the pointer like the exempted
+/// forms, but isn't one of them, so it is conservatively treated as an
+/// escape), … — counts as an escape. No alias tracking is attempted (same
+/// caveat as `core_may_mutate_slot`): e.g. `(let ((b a)) (aref b 0))` is
+/// invisible to this pass and reads as an escape of `a` (a bare `Var(a-slot)`
+/// as a `Let` initializer is not one of the five exempt forms), which is
+/// sound (just conservative) since this pass makes no claim about `b`.
+pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
+    match core {
+        Core::LitI(_) | Core::LitF(_) => false,
+        Core::Var(s) => *s == slot,
+        Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) => {
+            allocation_escapes(a, slot) || allocation_escapes(b, slot)
+        }
+        Core::Not(a) => allocation_escapes(a, slot),
+        Core::And(a, b) | Core::Or(a, b) => {
+            allocation_escapes(a, slot) || allocation_escapes(b, slot)
+        }
+        Core::If(c, t, e) => {
+            allocation_escapes(c, slot)
+                || allocation_escapes(t, slot)
+                || allocation_escapes(e, slot)
+        }
+        Core::Let(_, v, body) => allocation_escapes(v, slot) || allocation_escapes(body, slot),
+        Core::Call(_, args) => args.iter().any(|a| allocation_escapes(a, slot)),
+        Core::ToChar(a) => allocation_escapes(a, slot),
+        Core::ArrayNew(n) => allocation_escapes(n, slot),
+        Core::ArrayGet(a, i) => {
+            (!is_var_slot(a, slot) && allocation_escapes(a, slot)) || allocation_escapes(i, slot)
+        }
+        Core::ArraySet(a, i, v) => {
+            (!is_var_slot(a, slot) && allocation_escapes(a, slot))
+                || allocation_escapes(i, slot)
+                || allocation_escapes(v, slot)
+        }
+        Core::ArrayLen(a) => !is_var_slot(a, slot) && allocation_escapes(a, slot),
+        Core::StructNew(fields) => fields.iter().any(|f| allocation_escapes(f, slot)),
+        Core::FieldGet(s, _) => !is_var_slot(s, slot) && allocation_escapes(s, slot),
+        Core::FieldSet(s, _, v) => {
+            (!is_var_slot(s, slot) && allocation_escapes(s, slot)) || allocation_escapes(v, slot)
+        }
+        Core::Seq(items) => items.iter().any(|i| allocation_escapes(i, slot)),
+        Core::Assign(_, v) => allocation_escapes(v, slot),
+        Core::While(c, b) => allocation_escapes(c, slot) || allocation_escapes(b, slot),
+        Core::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            allocation_escapes(start, slot)
+                || allocation_escapes(end, slot)
+                || allocation_escapes(step, slot)
+                || allocation_escapes(body, slot)
+        }
+        Core::FUnary(_, a) => allocation_escapes(a, slot),
+        Core::IntToFloat(a) => allocation_escapes(a, slot),
+        Core::ArrayMap2(_, _, o, a, b) => {
+            allocation_escapes(o, slot)
+                || allocation_escapes(a, slot)
+                || allocation_escapes(b, slot)
+        }
+        Core::ArraySum(a) => allocation_escapes(a, slot),
+        Core::ArrayDot(a, b) => allocation_escapes(a, slot) || allocation_escapes(b, slot),
     }
 }
 

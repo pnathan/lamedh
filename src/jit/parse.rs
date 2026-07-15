@@ -140,6 +140,15 @@ pub(super) fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
             LispVal::String(s) if matches!(**elem, Ty::Char) => {
                 Ok(Value::Array(s.bytes().map(Value::Char).collect()))
             }
+            // Zero-copy: see `Value::to_word`'s `TypedArray` arm.
+            LispVal::TypedArray(ta) if elem_ty_matches(ta.elem, elem) => {
+                Ok(Value::TypedArray(ta.clone()))
+            }
+            LispVal::TypedArray(ta) => Err(format!(
+                "expected array of {}, got typed array of {}",
+                ty_name(elem),
+                ta.elem
+            )),
             LispVal::Array(a) => {
                 let mut out = Vec::new();
                 for it in a.borrow().iter() {
@@ -214,6 +223,10 @@ pub(super) fn value_to_lispval(v: &Value, ty: &Ty) -> LispVal {
             })),
             _ => LispVal::Nil,
         },
+        // `from_word` never rebuilds a `TypedArray` (it always produces a
+        // plain `Value::Array`), but round-trip it rather than asserting
+        // unreachable in case a future caller constructs one directly.
+        Value::TypedArray(ta) => LispVal::TypedArray(ta.clone()),
     }
 }
 

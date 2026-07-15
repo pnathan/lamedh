@@ -1157,6 +1157,21 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::ArrayToList),
         );
 
+        // Flat typed arrays (issue: JIT zero-copy array membrane): a
+        // `(typed-array n elem-type)` array stores elements as raw `u64`
+        // words from creation, in the same layout as the JIT's call-arena
+        // buffers, so it can cross into a typed function without a copy
+        // when the element types agree. `aref`/`aset`/`array-length*`/
+        // `length`/`arrayp` all accept it alongside a plain `array`.
+        env.set(
+            "TYPED-ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeTypedArray),
+        );
+        env.set(
+            "TYPED-ARRAY-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::TypedArrayp),
+        );
+
         // Sorting (stable, non-destructive; takes a comparator predicate)
         env.set("SORT".to_string(), LispVal::Builtin(BuiltinFunc::Sort));
 
@@ -2823,7 +2838,7 @@ impl Environment {
 /// so it can reach `SharedState`'s and `SymbolTable`'s private fields.
 mod worldfork {
     use super::*;
-    use crate::{Code, ErrorObj, Fexpr, Lambda, Macro, StructObj, Vau};
+    use crate::{Code, ErrorObj, Fexpr, Lambda, Macro, StructObj, TypedArrayObj, Vau};
 
     /// Memo map keyed by prototype allocation address, using the crate's
     /// fast integer hasher — the copier does one lookup+insert per copied
@@ -2844,6 +2859,7 @@ mod worldfork {
         codes: PtrMap<Shared<Code>>,
         tables: PtrMap<Shared<SharedCell<HashMap<LispVal, LispVal>>>>,
         arrays: PtrMap<Shared<SharedCell<Vec<LispVal>>>>,
+        typed_arrays: PtrMap<Shared<TypedArrayObj>>,
     }
 
     impl WorldCopier {
@@ -2859,6 +2875,7 @@ mod worldfork {
                 codes: PtrMap::with_capacity_and_hasher(1 << 15, Default::default()),
                 arrays: PtrMap::default(),
                 tables: PtrMap::default(),
+                typed_arrays: PtrMap::default(),
             }
         }
 
@@ -3184,6 +3201,19 @@ mod worldfork {
                             new_arr.borrow_mut().push(copied);
                         }
                         LispVal::Array(new_arr)
+                    }
+                }
+                LispVal::TypedArray(a) => {
+                    let key = Shared::as_ptr(a) as usize;
+                    if let Some(hit) = self.typed_arrays.get(&key) {
+                        LispVal::TypedArray(hit.clone())
+                    } else {
+                        let new_arr = Shared::new(TypedArrayObj {
+                            elem: a.elem,
+                            data: SharedCell::new(a.data.borrow().clone()),
+                        });
+                        self.typed_arrays.insert(key, new_arr.clone());
+                        LispVal::TypedArray(new_arr)
                     }
                 }
                 LispVal::Struct(s) => {

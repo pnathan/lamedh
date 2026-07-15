@@ -505,13 +505,19 @@ fn apply_array_writeback(
                     crate::jit::Value::Char(b) => LispVal::Char(b),
                     // Excluded by `is_flat_scalar_array`: only scalar
                     // elements reach a flat array's write-back.
-                    crate::jit::Value::Array(_) | crate::jit::Value::Struct(_) => {
+                    crate::jit::Value::Array(_)
+                    | crate::jit::Value::Struct(_)
+                    | crate::jit::Value::TypedArray(_) => {
                         unreachable!("flat scalar array write-back produced a compound element")
                     }
                 })
                 .collect();
             *rc.borrow_mut() = new_items;
         }
+        // A `LispVal::TypedArray` argument was passed to the native call as a
+        // raw pointer into its own buffer (`Value::to_word`'s `TypedArray`
+        // arm) — the callee's `store`/`aset` already mutated it in place, so
+        // (unlike `LispVal::Array` above) no copy-back is needed here.
     }
 }
 
@@ -776,6 +782,18 @@ pub(super) fn lispval_to_typed(
             LispVal::String(s) if matches!(**elem, Ty::Char) => {
                 Ok(Value::Array(s.bytes().map(Value::Char).collect()))
             }
+            // Zero-copy path: a `LispVal::TypedArray` whose element type
+            // matches crosses as `Value::TypedArray`, letting
+            // `Value::to_word` hand the native call a pointer straight into
+            // its own buffer instead of copying element-by-element.
+            LispVal::TypedArray(ta) if crate::jit::elem_ty_matches(ta.elem, elem) => {
+                Ok(Value::TypedArray(ta.clone()))
+            }
+            LispVal::TypedArray(ta) => Err(format!(
+                "expected array of {}, got typed array of {}",
+                crate::jit::ty_name(elem),
+                ta.elem
+            )),
             LispVal::Array(a) => {
                 let items = a.borrow();
                 let mut out = Vec::with_capacity(items.len());
@@ -877,6 +895,11 @@ pub(super) fn typed_to_lispval(
             }
             _ => LispVal::Nil,
         },
+        // `from_word` never produces this on a return path (it always
+        // rebuilds a plain `Value::Array`), but it can flow through as a
+        // pass-through argument value in other call shapes, so round-trip it
+        // rather than asserting unreachable.
+        Value::TypedArray(ta) => LispVal::TypedArray(ta),
     }
 }
 

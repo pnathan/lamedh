@@ -1553,6 +1553,16 @@ impl Jit {
             .zip(tys.iter())
             .enumerate()
             .map(|(i, (w, ty))| {
+                // A `Value::TypedArray` argument crossed the membrane as a
+                // raw pointer into its own buffer (`Value::to_word`'s
+                // `TypedArray` arm), so any in-place mutation already landed
+                // there directly — skip the copy-out `call_lisp`'s
+                // `LispVal::Array` write-back loop would otherwise perform
+                // for nothing (it only matches `LispVal::Array`/`Value::Array`
+                // pairs, never `TypedArray`, so the entry is dead weight).
+                if matches!(args[i], Value::TypedArray(_)) {
+                    return None;
+                }
                 let mutates = may_mutate.get(i).copied().unwrap_or(true);
                 (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty))
             })
@@ -1598,13 +1608,17 @@ impl Jit {
                         Value::Float(f) => LispVal::Float(f),
                         Value::Bool(b) => LispVal::Number(b as i64),
                         Value::Char(b) => LispVal::Char(b),
-                        Value::Array(_) | Value::Struct(_) => {
+                        Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) => {
                             unreachable!("flat scalar array write-back produced a compound element")
                         }
                     })
                     .collect();
                 *rc.borrow_mut() = new_items;
             }
+            // A `LispVal::TypedArray` argument crossed as a raw pointer into
+            // its own buffer (`Value::to_word`'s `TypedArray` arm) — the
+            // callee's `store`/`aset` already mutated it in place, so
+            // (unlike `LispVal::Array` above) there is nothing to copy back.
         }
         Ok(value_to_lispval(&result, &ret))
     }
