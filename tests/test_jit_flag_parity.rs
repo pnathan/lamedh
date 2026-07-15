@@ -186,3 +186,56 @@ fn overflow_flag_parity_before_div_error() {
     );
     assert!(ev_flag, "evaluator must keep the OVERFLOW flag set");
 }
+
+#[test]
+fn for_overflow_break_does_not_set_overflow_flag() {
+    // A FOR loop whose counter overflows on increment silently breaks
+    // (special_forms.rs::eval_for's checked_add contract) rather than
+    // setting OVERFLOW like ordinary `+` does — in every typed-JIT edition,
+    // matching the plain-evaluator `for` special form.
+    let (ev_val, ev_flag) = run_evaluator(&format!(
+        "(let ((acc 0)) (for (i {MAX} {MAX} 1) (setq acc (+ acc 1))) acc)"
+    ));
+    let (ty_val, ty_flag) = run_typed(
+        &[&format!(
+            "(defun-typed (tfor int64) () \
+               (let-typed ((acc int64 0)) (for (i {MAX} {MAX} 1) (setq acc (+ acc 1))) acc))"
+        )],
+        "(tfor)",
+    );
+    assert_eq!(ev_val, ty_val, "for-overflow-break value parity");
+    assert_eq!(
+        ev_val, "1",
+        "exactly one iteration should run before the overflow break"
+    );
+    assert_eq!(
+        ev_flag, ty_flag,
+        "OVERFLOW flag parity on for-loop overflow break"
+    );
+    assert!(
+        !ev_flag,
+        "the evaluator's for must not set OVERFLOW on a checked_add break"
+    );
+    assert!(
+        !ty_flag,
+        "the typed for must not set OVERFLOW on a checked_add break either"
+    );
+}
+
+#[test]
+fn for_zero_step_errors_in_both_worlds() {
+    let (ev_val, _) = run_evaluator("(let ((acc 0)) (for (i 1 5 0) (setq acc (+ acc i))) acc)");
+    let (ty_val, _) = run_typed(
+        &["(defun-typed (tfor int64) () \
+             (let-typed ((acc int64 0)) (for (i 1 5 0) (setq acc (+ acc i))) acc))"],
+        "(tfor)",
+    );
+    assert!(
+        ev_val.contains("step must be non-zero"),
+        "evaluator zero-step for must error, got: {ev_val}"
+    );
+    assert!(
+        ty_val.contains("step must be non-zero"),
+        "typed zero-step for must error identically, got: {ty_val}"
+    );
+}

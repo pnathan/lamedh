@@ -467,6 +467,28 @@ pub enum Core {
     /// A statement sequence: evaluate each in order (for side effects such as
     /// `store`), yielding the last. Non-empty by construction.
     Seq(Vec<Core>),
+    /// `(setq var val)` on a local slot: store the value word into the
+    /// slot and evaluate to the stored word. Only elaborated for local
+    /// variables (params and let-bindings); dynamic/global setq stays
+    /// in the tree-walker.
+    Assign(usize, Box<Core>),
+    /// `(while test body)`: evaluate TEST; if truthy (nonzero), evaluate
+    /// BODY for side effects, then loop. Evaluates to 0 (NIL). Statement
+    /// node — legal only in discarded position (non-tail Seq element).
+    While(Box<Core>, Box<Core>),
+    /// `(for (var start end [step]) body...)`: evaluate START, END, STEP
+    /// once; iterate VAR from START to END (inclusive) by STEP. Direction
+    /// determined by sign of STEP. STEP=0 is an error. Overflow on the
+    /// counter breaks the loop without setting the OVERFLOW flag (matching
+    /// the tree-walker contract at special_forms.rs:106-126). Evaluates
+    /// to 0 (NIL). Statement node.
+    For {
+        slot: usize,
+        start: Box<Core>,
+        end: Box<Core>,
+        step: Box<Core>,
+        body: Box<Core>,
+    },
     /// A unary floating-point intrinsic over a `float64` argument. The op
     /// determines the math and the result representation (see [`FUnOp`]).
     FUnary(FUnOp, Box<Core>),

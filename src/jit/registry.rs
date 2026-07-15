@@ -1749,6 +1749,54 @@ impl Jit {
                     self.dis_emit(f, dst, out, reg, lab);
                 }
             }
+            Core::Assign(slot, val) => {
+                let tv = fresh(reg);
+                self.dis_emit(val, &tv, out, reg, lab);
+                out.push(format!("    st   slot{slot}, {tv}        ; setq"));
+                out.push(format!("    {dst} = mov {tv}"));
+            }
+            Core::While(test, body) => {
+                let l_top = fresh_lab(lab, "while_top");
+                let l_end = fresh_lab(lab, "while_end");
+                out.push(format!("{l_top}:"));
+                let tc = fresh(reg);
+                self.dis_emit(test, &tc, out, reg, lab);
+                out.push(format!("    brz  {tc}, {l_end}"));
+                let tb = fresh(reg);
+                self.dis_emit(body, &tb, out, reg, lab);
+                out.push(format!("    br   {l_top}"));
+                out.push(format!("{l_end}:"));
+                out.push(format!("    {dst} = li   0        ; while yields nil"));
+            }
+            Core::For {
+                slot,
+                start,
+                end,
+                step,
+                body,
+            } => {
+                let ts = fresh(reg);
+                self.dis_emit(start, &ts, out, reg, lab);
+                out.push(format!("    st   slot{slot}, {ts}"));
+                let te = fresh(reg);
+                self.dis_emit(end, &te, out, reg, lab);
+                let tstep = fresh(reg);
+                self.dis_emit(step, &tstep, out, reg, lab);
+                let l_top = fresh_lab(lab, "for_top");
+                let l_end = fresh_lab(lab, "for_end");
+                out.push(format!("{l_top}:"));
+                out.push(format!(
+                    "    brdone slot{slot}, {te}, {tstep}, {l_end}   ; step=0 errors, inclusive bound by sign(step)"
+                ));
+                let tb = fresh(reg);
+                self.dis_emit(body, &tb, out, reg, lab);
+                out.push(format!(
+                    "    inc  slot{slot}, {tstep}, {l_end}     ; overflow breaks (no OVERFLOW flag)"
+                ));
+                out.push(format!("    br   {l_top}"));
+                out.push(format!("{l_end}:"));
+                out.push(format!("    {dst} = li   0        ; for yields nil"));
+            }
         }
     }
 }

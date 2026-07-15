@@ -167,6 +167,13 @@ impl Cx<'_> {
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
                     "LET" | "LET-TYPED" => self.elab_let(args, scope, max),
                     "PROGN" => self.elab_body(args, scope, max),
+                    // `setq`/`while`/`for` compile natively when they only touch
+                    // local slots (params/let-bindings) — codegen-only so
+                    // checking (which never runs this Core) keeps whatever
+                    // gradual/declared handling these forms already had.
+                    "SETQ" if !self.checking => self.elab_setq(args, scope, max),
+                    "WHILE" if !self.checking => self.elab_while(args, scope, max),
+                    "FOR" if !self.checking => self.elab_for(args, scope, max),
                     "CHAR-CODE" => self.elab_char_code(args, scope, max),
                     "CODE-CHAR" => self.elab_code_char(args, scope, max),
                     "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
@@ -719,6 +726,120 @@ impl Cx<'_> {
             acc = Core::Let(slot, Box::new(init_core), Box::new(acc));
         }
         Ok((acc, body_ty))
+    }
+
+    /// `(setq var val)` on a local slot (param or `let`-binding): store the
+    /// value word into the slot and evaluate to the stored word. `setq` on
+    /// anything else (a dynamic/global) is not local and stays in the
+    /// tree-walker — the whole function falls back to interpreted rather than
+    /// misroute a dynamic assignment through a nonexistent slot.
+    fn elab_setq(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err("setq in typed code takes exactly 2 arguments".to_string());
+        }
+        let name = match &args[0] {
+            LispVal::Symbol(s) => s.borrow().name.clone(),
+            _ => return Err("setq: first argument must be a symbol".to_string()),
+        };
+        let slot = scope.iter().rposition(|(n, _)| *n == name).ok_or_else(|| {
+            format!("setq: variable {name} is not a local binding (only local setq is compileable)")
+        })?;
+        let slot_ty = scope[slot].1.clone();
+        let (val_core, val_ty) = self.elab(&args[1], scope, max)?;
+        self.unify(&slot_ty, &val_ty)
+            .map_err(|e| format!("setq {name}: type mismatch: {e}"))?;
+        Ok((Core::Assign(slot, Box::new(val_core)), val_ty))
+    }
+
+    /// `(while test body...)`: evaluate TEST; while truthy, evaluate BODY for
+    /// side effects, then loop. Always evaluates to `0` (NIL) — typed as
+    /// `int64` since the typed island has no dedicated unit/NIL type and the
+    /// result is always discarded (WHILE is a statement, legal only in
+    /// non-tail/discarded position).
+    fn elab_while(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() < 2 {
+            return Err("while requires a test and at least one body form".to_string());
+        }
+        let (test_core, test_ty) = self.elab(&args[0], scope, max)?;
+        // The test may be a comparison (bool) or a plain int64 truthy/falsy
+        // value; accept either.
+        if self.unify(&test_ty, &Ty::Bool).is_err() {
+            self.unify(&test_ty, &Ty::Int64)
+                .map_err(|_| "while: test must be bool or int64".to_string())?;
+        }
+        let (body_core, _) = self.elab_body(&args[1..], scope, max)?;
+        Ok((
+            Core::While(Box::new(test_core), Box::new(body_core)),
+            Ty::Int64,
+        ))
+    }
+
+    /// `(for (var start end [step]) body...)`: evaluate START/END/STEP once,
+    /// in the OUTER scope (the loop variable is not yet bound — matches the
+    /// tree-walker, `special_forms.rs::eval_for`), then bind VAR to a fresh
+    /// slot and iterate it from START to END inclusive by STEP (default 1).
+    /// Always evaluates to `0` (NIL), typed `int64` for the same reason as
+    /// `while`.
+    fn elab_for(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() < 2 {
+            return Err("for requires a spec list (var start end [step]) and a body".to_string());
+        }
+        let spec = list_to_vec(&args[0]);
+        if spec.len() != 3 && spec.len() != 4 {
+            return Err("for spec must be (var start end [step])".to_string());
+        }
+        let var_name = match &spec[0] {
+            LispVal::Symbol(s) => s.borrow().name.clone(),
+            _ => return Err("for: loop variable must be a symbol".to_string()),
+        };
+
+        let (start_core, start_ty) = self.elab(&spec[1], scope, max)?;
+        self.unify(&start_ty, &Ty::Int64)
+            .map_err(|_| "for: start must be int64".to_string())?;
+        let (end_core, end_ty) = self.elab(&spec[2], scope, max)?;
+        self.unify(&end_ty, &Ty::Int64)
+            .map_err(|_| "for: end must be int64".to_string())?;
+        let step_core = if spec.len() == 4 {
+            let (step_core, step_ty) = self.elab(&spec[3], scope, max)?;
+            self.unify(&step_ty, &Ty::Int64)
+                .map_err(|_| "for: step must be int64".to_string())?;
+            step_core
+        } else {
+            Core::LitI(1)
+        };
+
+        let saved = scope.len();
+        let slot = scope.len();
+        scope.push((var_name, Ty::Int64));
+        *max = (*max).max(scope.len());
+        let (body_core, _) = self.elab_body(&args[1..], scope, max)?;
+        scope.truncate(saved);
+
+        Ok((
+            Core::For {
+                slot,
+                start: Box::new(start_core),
+                end: Box::new(end_core),
+                step: Box::new(step_core),
+                body: Box::new(body_core),
+            },
+            Ty::Int64,
+        ))
     }
 
     /// `(append l1 ... ln)` : every argument `(list a)`, result `(list a)`.

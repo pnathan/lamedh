@@ -414,6 +414,108 @@ fn if_branches() {
     assert_eq!(agree(&j, "sign", &[i(4)]), i(1));
 }
 
+// --- setq/while/for (loops & mutation) --------------------------------------
+
+#[test]
+fn setq_mutates_local_slot() {
+    let j = build(&[
+        "(defun-typed (f int64) ((x int64)) (let-typed ((y int64 x)) (setq y (+ y 1)) y))",
+    ]);
+    assert_eq!(agree(&j, "f", &[i(5)]), i(6));
+}
+
+#[test]
+fn setq_on_param_updates_it_for_rest_of_body() {
+    let j = build(&["(defun-typed (f int64) ((x int64)) (progn (setq x (* x 2)) (+ x 1)))"]);
+    assert_eq!(agree(&j, "f", &[i(5)]), i(11));
+}
+
+#[test]
+fn setq_unbound_variable_is_a_define_error() {
+    let e = def_err("(defun-typed (f int64) ((x int64)) (setq y 1))");
+    assert!(e.contains("not a local binding"), "unexpected error: {e}");
+}
+
+#[test]
+fn while_loop_accumulates() {
+    let j = build(&["(defun-typed (count-while int64) ((n int64)) \
+           (let-typed ((i int64 0) (acc int64 0)) \
+             (while (< i n) (setq acc (+ acc i)) (setq i (+ i 1))) acc))"]);
+    assert_eq!(agree(&j, "count-while", &[i(10)]), i(45));
+    assert_eq!(agree(&j, "count-while", &[i(0)]), i(0));
+    assert_eq!(agree(&j, "count-while", &[i(1)]), i(0));
+}
+
+#[test]
+fn while_false_test_never_runs_body() {
+    let j = build(&["(defun-typed (f int64) ((n int64)) \
+           (let-typed ((acc int64 0)) (while (> 0 1) (setq acc 999)) acc))"]);
+    assert_eq!(agree(&j, "f", &[i(1)]), i(0));
+}
+
+#[test]
+fn for_ascending_sums_inclusive() {
+    let j = build(&["(defun-typed (sum-to int64) ((n int64)) \
+           (let-typed ((acc int64 0)) (for (i 1 n) (setq acc (+ acc i))) acc))"]);
+    assert_eq!(agree(&j, "sum-to", &[i(100)]), i(5050));
+    assert_eq!(agree(&j, "sum-to", &[i(1)]), i(1));
+    // start > end: zero iterations.
+    assert_eq!(agree(&j, "sum-to", &[i(0)]), i(0));
+}
+
+#[test]
+fn for_descending_with_negative_step() {
+    let j = build(&["(defun-typed (down int64) ((n int64)) \
+           (let-typed ((acc int64 0)) (for (i n 1 -1) (setq acc (+ acc i))) acc))"]);
+    assert_eq!(agree(&j, "down", &[i(5)]), i(15));
+}
+
+#[test]
+fn for_custom_step_counts_iterations() {
+    let j = build(&["(defun-typed (evens int64) ((n int64)) \
+           (let-typed ((acc int64 0)) (for (i 0 n 2) (setq acc (+ acc 1))) acc))"]);
+    // 0, 2, 4, 6, 8, 10 inclusive -> 6 iterations.
+    assert_eq!(agree(&j, "evens", &[i(10)]), i(6));
+}
+
+#[test]
+fn for_zero_step_errors_in_every_edition() {
+    let j = build(&["(defun-typed (f int64) ((n int64)) \
+           (let-typed ((acc int64 0)) (for (i 1 n 0) (setq acc (+ acc i))) acc))"]);
+    j.compile_all();
+    assert_eq!(
+        j.call("f", &[i(5)]).unwrap_err(),
+        "for step must be non-zero"
+    );
+    j.deoptimize_all();
+    assert_eq!(
+        j.call("f", &[i(5)]).unwrap_err(),
+        "for step must be non-zero"
+    );
+    j.compile_all();
+}
+
+#[test]
+fn for_loop_var_is_scoped_to_the_body() {
+    // The loop variable's slot can be reused by a later let binding without
+    // interference, proving `for` truncates its scope on exit.
+    let j = build(&["(defun-typed (f int64) ((n int64)) \
+           (progn (for (i 1 n) i) (let-typed ((z int64 42)) z)))"]);
+    assert_eq!(agree(&j, "f", &[i(3)]), i(42));
+}
+
+#[test]
+fn for_overflow_breaks_the_loop() {
+    // A step that overflows i64 on the first increment stops the loop after
+    // exactly one iteration (special_forms.rs::eval_for's checked_add
+    // contract) rather than panicking or wrapping into an infinite loop.
+    let j = build(&["(defun-typed (f int64) () \
+           (let-typed ((acc int64 0)) \
+             (for (i 9223372036854775807 9223372036854775807 1) (setq acc (+ acc 1))) \
+             acc))"]);
+    assert_eq!(agree(&j, "f", &[]), i(1));
+}
+
 // --- let-typed -------------------------------------------------------------
 
 #[test]

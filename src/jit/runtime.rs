@@ -353,6 +353,21 @@ pub(crate) unsafe extern "C" fn jit_exit_call(ctx: *const core::ffi::c_void) {
     ctx.exit_call();
 }
 
+/// Host trampoline the native edition calls from the zero-step arm of a
+/// `Core::For` loop: records the tree-walker's own "for step must be
+/// non-zero" error (`special_forms.rs::eval_for`) on `Ctx` so the membrane
+/// raises it after the call returns. The native code still skips the loop
+/// entirely; this only records the error.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_for_step_zero(ctx: *const core::ffi::c_void) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.set_pending_error("for step must be non-zero".to_string());
+}
+
 pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
     match op {
         BinOp::Add => match x.checked_add(y) {
@@ -811,6 +826,52 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             }
             r
         }
+        Core::Assign(slot, val) => {
+            let v = eval_core_nontail(val, env, ctx);
+            env[*slot] = v;
+            v
+        }
+        Core::While(test, body) => {
+            while eval_core_nontail(test, env, ctx) != 0 {
+                eval_core_nontail(body, env, ctx);
+            }
+            0
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            // Evaluate the bounds once, up front — matches the tree-walker
+            // (`special_forms.rs::eval_for`): the loop variable is not yet
+            // bound while START/END/STEP are evaluated.
+            let s = as_i(eval_core_nontail(start, env, ctx));
+            let e = as_i(eval_core_nontail(end, env, ctx));
+            let st = as_i(eval_core_nontail(step, env, ctx));
+            if st == 0 {
+                // Matches the tree-walker's "for step must be non-zero" error.
+                ctx.set_pending_error("for step must be non-zero".to_string());
+                return 0;
+            }
+            let mut i = s;
+            loop {
+                // Inclusive bound; direction depends on the sign of step.
+                if (st > 0 && i > e) || (st < 0 && i < e) {
+                    break;
+                }
+                env[*slot] = from_i(i);
+                eval_core_nontail(body, env, ctx);
+                // Guard against overflow so a runaway step can't panic or
+                // silently wrap into an infinite loop (no OVERFLOW flag).
+                match i.checked_add(st) {
+                    Some(n) => i = n,
+                    None => break,
+                }
+            }
+            0
+        }
     }
 }
 
@@ -1036,6 +1097,45 @@ pub(super) fn eval_core_traced(
             }
             step!("seq", r, NO_SLOT, NO_CALLEE)
         }
+        Core::Assign(slot, val) => {
+            let v = eval_core_traced(val, env, ctx, depth + 1, log);
+            env[*slot] = v;
+            step!("assign", v, *slot, NO_CALLEE)
+        }
+        Core::While(test, body) => {
+            while eval_core_traced(test, env, ctx, depth + 1, log) != 0 {
+                eval_core_traced(body, env, ctx, depth + 1, log);
+            }
+            step!("while", 0, NO_SLOT, NO_CALLEE)
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step: step_expr,
+            body,
+        } => {
+            let s = as_i(eval_core_traced(start, env, ctx, depth + 1, log));
+            let e = as_i(eval_core_traced(end, env, ctx, depth + 1, log));
+            let st = as_i(eval_core_traced(step_expr, env, ctx, depth + 1, log));
+            if st == 0 {
+                ctx.set_pending_error("for step must be non-zero".to_string());
+            } else {
+                let mut i = s;
+                loop {
+                    if (st > 0 && i > e) || (st < 0 && i < e) {
+                        break;
+                    }
+                    env[*slot] = from_i(i);
+                    eval_core_traced(body, env, ctx, depth + 1, log);
+                    match i.checked_add(st) {
+                        Some(n) => i = n,
+                        None => break,
+                    }
+                }
+            }
+            step!("for", 0, *slot, NO_CALLEE)
+        }
     }
 }
 
@@ -1063,6 +1163,20 @@ pub fn core_node_count(core: &Core) -> usize {
         }
         Core::ArraySet(a, b, c) | Core::ArrayMap2(_, _, a, b, c) => {
             core_node_count(a) + core_node_count(b) + core_node_count(c)
+        }
+        Core::Assign(_, v) => core_node_count(v),
+        Core::While(t, b) => core_node_count(t) + core_node_count(b),
+        Core::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            core_node_count(start)
+                + core_node_count(end)
+                + core_node_count(step)
+                + core_node_count(body)
         }
     }
 }
@@ -1133,6 +1247,33 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
                 verify_core(c, n_slots, n_funcs)?;
             }
             Ok(())
+        }
+        Core::Assign(slot, v) => {
+            if *slot >= n_slots {
+                return Err(format!(
+                    "Assign slot {slot} out of bounds (n_slots={n_slots})"
+                ));
+            }
+            verify_core(v, n_slots, n_funcs)
+        }
+        Core::While(t, b) => {
+            verify_core(t, n_slots, n_funcs)?;
+            verify_core(b, n_slots, n_funcs)
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            if *slot >= n_slots {
+                return Err(format!("For slot {slot} out of bounds (n_slots={n_slots})"));
+            }
+            verify_core(start, n_slots, n_funcs)?;
+            verify_core(end, n_slots, n_funcs)?;
+            verify_core(step, n_slots, n_funcs)?;
+            verify_core(body, n_slots, n_funcs)
         }
     }
 }
@@ -1336,6 +1477,56 @@ pub fn compile(core: &Core) -> Compiled {
                     r = cf(e, c);
                 }
                 r
+            })
+        }
+        Core::Assign(slot, val) => {
+            let (slot, cv) = (*slot, compile(val));
+            Rc::new(move |e, c| {
+                let v = cv(e, c);
+                e[slot] = v;
+                v
+            })
+        }
+        Core::While(test, body) => {
+            let (ct, cb) = (compile(test), compile(body));
+            Rc::new(move |e, c| {
+                while ct(e, c) != 0 {
+                    cb(e, c);
+                }
+                0
+            })
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            let slot = *slot;
+            let (cs, ce, cstep, cbody) =
+                (compile(start), compile(end), compile(step), compile(body));
+            Rc::new(move |e, c| {
+                let s = as_i(cs(e, c));
+                let end = as_i(ce(e, c));
+                let st = as_i(cstep(e, c));
+                if st == 0 {
+                    c.set_pending_error("for step must be non-zero".to_string());
+                    return 0;
+                }
+                let mut i = s;
+                loop {
+                    if (st > 0 && i > end) || (st < 0 && i < end) {
+                        break;
+                    }
+                    e[slot] = from_i(i);
+                    cbody(e, c);
+                    match i.checked_add(st) {
+                        Some(n) => i = n,
+                        None => break,
+                    }
+                }
+                0
             })
         }
     }

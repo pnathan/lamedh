@@ -149,6 +149,7 @@ pub fn compile_native(
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
+    jb.symbol("jit_for_step_zero", super::jit_for_step_zero as *const u8);
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
 
@@ -243,6 +244,16 @@ pub fn compile_native(
         .declare_function("jit_exit_call", Linkage::Import, &xsig)
         .map_err(|e| e.to_string())?;
 
+    // Imported FOR zero-step error reporter: (ctx) -> (). Called from the
+    // zero-step arm of a `Core::For` loop to record the tree-walker's own
+    // "for step must be non-zero" error on `Ctx`; the native code skips the
+    // loop entirely (matching `special_forms.rs::eval_for`).
+    let mut fzsig = module.make_signature();
+    fzsig.params.push(AbiParam::new(ptr));
+    let for_step_zero_id = module
+        .declare_function("jit_for_step_zero", Linkage::Import, &fzsig)
+        .map_err(|e| e.to_string())?;
+
     // The function we are building: (args*, ctx*) -> u64.
     let mut ctx_codegen = module.make_context();
     ctx_codegen.func.signature.params.push(AbiParam::new(ptr));
@@ -264,6 +275,7 @@ pub fn compile_native(
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
+        let for_step_zero_ref = module.declare_func_in_func(for_step_zero_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
 
         let entry = b.create_block();
@@ -311,6 +323,7 @@ pub fn compile_native(
             ftrans_ref,
             enter_call_ref,
             exit_call_ref,
+            for_step_zero_ref,
             callee_sig,
             cell_addrs,
             param_counts,
@@ -374,6 +387,10 @@ struct Emitter<'a, 'b, 'c> {
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
     exit_call_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_for_step_zero`]: records the tree-walker's "for
+    /// step must be non-zero" error on `Ctx` from the zero-step arm of a
+    /// `Core::For` loop.
+    for_step_zero_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
     /// Expected parameter count for each callee, parallel to `cell_addrs`.
@@ -673,7 +690,136 @@ impl Emitter<'_, '_, '_> {
                 }
                 None => Emitted::Value(self.iconst(0)),
             },
+            Core::Assign(slot, val) => {
+                let v = self.emit_value(val);
+                self.b
+                    .ins()
+                    .stack_store(v, self.env_slot, (*slot * 8) as i32);
+                Emitted::Value(v)
+            }
+            Core::While(test, body) => Emitted::Value(self.emit_while(test, body)),
+            Core::For {
+                slot,
+                start,
+                end,
+                step,
+                body,
+            } => Emitted::Value(self.emit_for(*slot, start, end, step, body)),
         }
+    }
+
+    /// Lower [`Core::While`]: a header/body/exit block triple, re-testing
+    /// TEST at the top of every iteration. `header` has two predecessors (the
+    /// initial fall-through and the body's back edge) so it is sealed only
+    /// once both are known, exactly mirroring the discipline `compile_native`
+    /// uses for the self-tail-call loop header. Always yields `0` (NIL) — a
+    /// statement node, legal only in discarded position.
+    fn emit_while(&mut self, test: &Core, body: &Core) -> Value {
+        let header = self.b.create_block();
+        let body_b = self.b.create_block();
+        let exit_b = self.b.create_block();
+
+        self.b.ins().jump(header, &[]);
+
+        self.b.switch_to_block(header);
+        // Not sealed yet: the back edge from `body_b` is the second
+        // predecessor and hasn't been emitted yet.
+        let cond = self.emit_value(test);
+        let condb = self.truthy(cond);
+        self.b.ins().brif(condb, body_b, &[], exit_b, &[]);
+
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b); // single predecessor: header's brif
+        self.emit_value(body);
+        self.b.ins().jump(header, &[]);
+        self.b.seal_block(header); // both predecessors known now
+
+        self.b.switch_to_block(exit_b);
+        self.b.seal_block(exit_b); // single predecessor: header's brif
+        self.iconst(0)
+    }
+
+    /// Lower [`Core::For`]: evaluate START/END/STEP once, check STEP != 0
+    /// (recording the tree-walker's "for step must be non-zero" error via the
+    /// [`super::jit_for_step_zero`] trampoline and skipping the loop
+    /// otherwise), then iterate the counter — stored in `env_slot` at `slot`
+    /// so nested `Var(slot)` reads inside `body` see each value — from START
+    /// to END inclusive by STEP, direction by STEP's sign. The increment is
+    /// overflow-checked (`sadd_overflow`, mirroring `int_bin`'s `Add`) but,
+    /// unlike ordinary `+`, an overflow here silently breaks the loop instead
+    /// of setting the `OVERFLOW` flag — matching the tree-walker's
+    /// `checked_add` guard (`special_forms.rs::eval_for`). Always yields `0`.
+    fn emit_for(
+        &mut self,
+        slot: usize,
+        start: &Core,
+        end: &Core,
+        step: &Core,
+        body: &Core,
+    ) -> Value {
+        let s = self.emit_value(start);
+        let e = self.emit_value(end);
+        let st = self.emit_value(step);
+        let off = (slot * 8) as i32;
+
+        let zero = self.iconst(0);
+        let is_zero = self.b.ins().icmp(IntCC::Equal, st, zero);
+        let ok_b = self.b.create_block();
+        let skip_b = self.b.create_block();
+        let done_b = self.b.create_block();
+        self.b.ins().brif(is_zero, skip_b, &[], ok_b, &[]);
+
+        self.b.switch_to_block(skip_b);
+        self.b.seal_block(skip_b); // single predecessor: the is_zero brif
+        self.b.ins().call(self.for_step_zero_ref, &[self.ctx_ptr]);
+        self.b.ins().jump(done_b, &[]);
+
+        self.b.switch_to_block(ok_b);
+        self.b.seal_block(ok_b); // single predecessor: the is_zero brif
+        self.b.ins().stack_store(s, self.env_slot, off);
+
+        let header = self.b.create_block();
+        let body_b = self.b.create_block();
+        let after_b = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+
+        self.b.switch_to_block(header);
+        // Not sealed yet: `body_b`'s no-overflow back edge is the second
+        // predecessor and hasn't been emitted yet.
+        let i_val = self.b.ins().stack_load(types::I64, self.env_slot, off);
+        // Inclusive bound; direction depends on the sign of step.
+        let cmp_asc = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, i_val, e);
+        let cmp_desc = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i_val, e);
+        let step_pos = self.b.ins().icmp(IntCC::SignedGreaterThan, st, zero);
+        let in_range = self.b.ins().select(step_pos, cmp_asc, cmp_desc);
+        self.b.ins().brif(in_range, body_b, &[], after_b, &[]);
+
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b); // single predecessor: header's brif
+        self.emit_value(body);
+        let i_val2 = self.b.ins().stack_load(types::I64, self.env_slot, off);
+        let (next, overflow) = self.b.ins().sadd_overflow(i_val2, st);
+        // Guard against overflow so a runaway step can't panic or silently
+        // wrap into an infinite loop — no OVERFLOW flag (unlike ordinary `+`).
+        let no_of_b = self.b.create_block();
+        self.b.ins().brif(overflow, after_b, &[], no_of_b, &[]);
+
+        self.b.switch_to_block(no_of_b);
+        self.b.seal_block(no_of_b); // single predecessor: body_b's brif
+        self.b.ins().stack_store(next, self.env_slot, off);
+        self.b.ins().jump(header, &[]);
+        self.b.seal_block(header); // both predecessors known now
+
+        self.b.switch_to_block(after_b);
+        // Two predecessors — header's in-range-false arm and body_b's
+        // overflow arm — both known now.
+        self.b.seal_block(after_b);
+        self.b.ins().jump(done_b, &[]);
+
+        self.b.switch_to_block(done_b);
+        // Two predecessors — skip_b and after_b — both known now.
+        self.b.seal_block(done_b);
+        self.iconst(0)
     }
 
     /// Evaluate `core` and normalize to the boolean word `(value != 0)`,
