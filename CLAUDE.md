@@ -20,7 +20,8 @@ This repository is a Cargo workspace with two primary crates:
 - **Build**: `cargo build`
 - **Build without the default Cranelift JIT backend**: `cargo build --no-default-features`
 - **Run REPL**: `cargo run`
-- **Run REPL with sandbox capabilities**: `cargo run -- --capability READ-FS --capability SHELL`
+- **Run REPL in sandbox mode** (all capabilities off): `cargo run -- --sandbox`
+- **Run REPL in sandbox mode with specific capabilities**: `cargo run -- --sandbox --capability READ-FS --capability SHELL`
 - **Load file(s) or directories before REPL/batch execution**: `cargo run -- -i <file-or-dir>` (repeatable)
 - **Execute s-expression(s)**: `cargo run -- -s "<expression>"`
 - **Run script with arguments**: `cargo run -- path/to/script.lisp arg1 arg2`
@@ -68,7 +69,7 @@ The tree-walking evaluator uses large Rust stack frames for non-tail calls. Entr
 
 ## CLI Behavior
 
-`cli/src/main.rs` starts with `Environment::with_stdlib_fresh()` (one environment per process, so the per-thread prototype cache would only add overhead; identical result), grants any `--capability/-c` flags, binds script arguments as `*ARGV*`, loads each `-i` path, then chooses script mode, `-s` batch mode, or the REPL.
+`cli/src/main.rs` starts with `Environment::with_stdlib_fresh()` (one environment per process, so the per-thread prototype cache would only add overhead; identical result), enables all capabilities by default (use `--sandbox` for none), grants any additional `--capability/-c` flags, binds script arguments as `*ARGV*`, loads each `-i` path, then chooses script mode, `-s` batch mode, or the REPL.
 
 Important CLI semantics:
 
@@ -82,7 +83,7 @@ Important CLI semantics:
 
 ## Sandboxing and Capabilities
 
-Potentially dangerous host capabilities are disabled by default. Enable them explicitly in host code with `env.enable_feature(...)` or in the CLI with `--capability`:
+The CLI enables all capabilities by default (use `--sandbox` for a locked-down session).  The library API keeps them off by default; enable them explicitly in host code with `env.enable_feature(...)`:
 
 - `READ-FS`: read-only filesystem operations.
 - `CREATE-FS`: filesystem mutations.

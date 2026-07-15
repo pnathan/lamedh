@@ -182,9 +182,17 @@ struct Args {
     /// SHELL, IO, NET-DNS, NET-CONNECT, NET-LISTEN, OS-ENV, OS-ENV-WRITE,
     /// OS-PROCESS, OS-SIGNAL.  Capability names are case-insensitive.
     ///
-    /// Example: `lamedh --capability READ-FS --capability SHELL`
+    /// By default all capabilities are enabled.  Use `--sandbox` to start
+    /// with none, then grant individual ones with `-c`.
+    ///
+    /// Example: `lamedh --sandbox --capability READ-FS --capability SHELL`
     #[arg(long = "capability", short = 'c', action = clap::ArgAction::Append)]
     capabilities: Vec<String>,
+
+    /// Start with all capabilities disabled (sandboxed).  Individual
+    /// capabilities can still be granted with `--capability`.
+    #[arg(long)]
+    sandbox: bool,
 
     /// Script file to run, followed by arguments for the script.  The
     /// arguments are exposed to Lisp as the list *ARGV* (strings).  The
@@ -253,7 +261,27 @@ fn run(args: Args) {
     // the process. The result is identical either way.
     let env = Environment::with_stdlib_fresh();
 
-    // Grant capabilities requested on the command line.
+    // By default every capability is on — the CLI is a developer tool, not
+    // a sandbox.  `--sandbox` reverts to all-off, and `-c` can then grant
+    // individual ones back.
+    if !args.sandbox {
+        for cap in &[
+            "READ-FS",
+            "CREATE-FS",
+            "TEMP-FS",
+            "SHELL",
+            "IO",
+            "NET-DNS",
+            "NET-CONNECT",
+            "NET-LISTEN",
+            "OS-ENV",
+            "OS-ENV-WRITE",
+            "OS-PROCESS",
+            "OS-SIGNAL",
+        ] {
+            env.enable_feature(cap);
+        }
+    }
     for cap in &args.capabilities {
         env.enable_feature(&cap.to_uppercase());
     }

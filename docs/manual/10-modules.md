@@ -6,7 +6,7 @@ stored under one flat global namespace as `M:SYMBOL` — there is no new
 lookup machinery, no per-module environment, nothing an existing tool
 (`describe`, `see-source`, the call graph, `spawn`) needs to know about
 specially. `:` is an ordinary, non-initial symbol constituent, so
-`GEOMETRY:AREA` is a ordinary symbol you can also just write directly,
+`GEOMETRY:AREA` is an ordinary symbol you can also just write directly,
 with or without ever calling `import`.
 
 This chapter covers `defmodule` and `with-module` (declaring a module and
@@ -308,7 +308,7 @@ And the ceiling: a module capability never reaches into kernel-enforced
 territory, fence or no fence —
 
 ```console
-$ target/debug/lamedh -s "(progn
+$ target/debug/lamedh --sandbox -s "(progn
       (defmodule geometry (:export area) (:provides FAST-MATH))
       (handler-case (read-file \"/etc/hostname\") (error (er) 'denied)))"
 ; => DENIED
@@ -362,7 +362,7 @@ discipline: whether and when that source runs at all.
 once** per environment:
 
 ```console
-$ target/debug/lamedh -s "(progn (require 'shell) (shell:sh \"echo hi\"))" --capability SHELL
+$ target/debug/lamedh -s "(progn (require 'shell) (shell:sh \"echo hi\"))"
 ; => "hi\n"
 ```
 

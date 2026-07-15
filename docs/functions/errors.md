@@ -1,146 +1,181 @@
 # Error Handling
 
-This chapter documents error handling mechanisms in Lamedh.
+Lamedh has a three-layer condition system: signaling (`error`), catching
+(`errorset`, `handler-case`, `catch`/`throw`, `unwind-protect`), and
+restarts (`restart-case`, `handler-bind`).  See
+[Chapter 6](../manual/06-conditions-and-restarts.md) of the manual for
+worked examples and the design rationale.
+
+This page documents each form's signature and return value.
 
 ---
 
-## Overview
+## Signaling
 
-Lamedh provides simple error handling:
+### ERROR
 
-- `ERROR` - Raise an error
-- `ERRORSET` - Catch errors from an expression
+**Syntax:**
+- `(error)` — signal with message `"Error"`
+- `(error message)` — signal with the given message
+- `(error message data)` — signal with message and one attached data value
+- `(error err-value)` — re-signal an existing error value unchanged
 
-```lisp
-;; Raise an error
-(error "Something went wrong")
-
-;; Catch potential errors
-(errorset '(/ 10 0))    ; => NIL (error caught)
-(errorset '(/ 10 2))    ; => (5) (success)
-```
-
----
-
-## ERROR
-
-**Syntax:** `(error message)`
-
-Raises an error with the given message.
+Raises a condition and unwinds to the nearest handler.  Never returns.
 
 ```lisp
 (error "Invalid input")
 ;; Error: Invalid input
 
-(error (concat "Cannot process: " x))
+(error "bad key" '(:code 42))
+;; Error: bad key   — data: (:CODE 42)
 ```
 
-**Arguments:**
-- `message` - Any value (typically a string)
+### MAKE-ERROR
 
-**Returns:** Never returns; signals an error
+**Syntax:** `(make-error message data)`
 
-**Example - Validation:**
+Builds a first-class error value *without* signaling it.
+
 ```lisp
-(defun divide (a b)
-  (if (zerop b)
-      (error "Division by zero")
-      (/ a b)))
+(make-error "oops" (list 1 2 3))
+; => #<error "oops" (1 2 3)>
+```
 
-(divide 10 2)    ; => 5
-(divide 10 0)    ; Error: Division by zero
+### ERROR-P
+
+**Syntax:** `(error-p value)`
+
+Returns `T` if `value` is an error value, `()` otherwise.
+
+### ERROR-MESSAGE / ERROR-DATA
+
+**Syntax:** `(error-message err)`, `(error-data err)`
+
+Read the message string or data payload from an error value.
+
+```lisp
+(handler-case (error "bad input" (list :code 42))
+  (error (e) (list (error-message e) (error-data e))))
+; => ("bad input" (:CODE 42))
 ```
 
 ---
 
-## ERRORSET
+## Catching
+
+### ERRORSET
 
 **Syntax:** `(errorset form)`
 
-Evaluates a form, catching any errors. Returns a list containing the result on success, or NIL on error.
+The original Lisp 1.5 primitive.  Evaluates a *quoted* form and traps
+errors.  Returns a one-element list on success, `()` on error.
 
 ```lisp
 (errorset '(+ 1 2))         ; => (3)
-(errorset '(/ 1 0))         ; => NIL
-(errorset '(error "oops"))  ; => NIL
-(errorset '(car nil))       ; => (NIL)
+(errorset '(/ 1 0))         ; => ()
+(errorset '(error "oops"))  ; => ()
+(errorset 'nil)             ; => (())
 ```
 
-**Arguments:**
-- `form` - A quoted expression to evaluate
+The wrapper list makes `NIL` results distinguishable from failure.
 
-**Returns:**
-- `(result)` - Single-element list on success
-- `NIL` - On any error
+### HANDLER-CASE
 
-**Note:** The form must be quoted because ERRORSET needs the unevaluated expression.
+**Syntax:** `(handler-case expr (error (var) body...))`
+
+Evaluates `expr`.  If it signals a condition, binds the error value to
+`var` and runs `body`.  The handler runs *after* unwinding.
+
+```lisp
+(handler-case (/ 10 0)
+  (error (e) (list 'caught (error-message e))))
+; => (CAUGHT "division by zero")
+```
+
+### CATCH / THROW
+
+**Syntax:** `(catch tag body...)`, `(throw tag value)`
+
+Non-local exit by tag.  `catch` evaluates `body` normally unless a
+`throw` with a matching tag (compared by `eq`) unwinds to it.
+
+```lisp
+(catch 'done
+  (progn
+    (throw 'done 42)
+    (error "unreachable")))
+; => 42
+```
+
+### UNWIND-PROTECT
+
+**Syntax:** `(unwind-protect protected-form cleanup...)`
+
+Evaluates `protected-form`, then evaluates `cleanup` forms whether
+`protected-form` returned normally or unwound.
+
+```lisp
+(unwind-protect
+    (error "boom")
+  (princ "cleanup ran"))
+;; prints "cleanup ran", then re-raises the error
+```
+
+### IGNORE-ERRORS
+
+**Syntax:** `(ignore-errors body...)`
+
+Evaluates `body` inside an implicit `errorset`.  Returns the result on
+success, `()` on error.  Defined in `lib/22-guard.lisp`.
+
+```lisp
+(ignore-errors (/ 1 0))    ; => ()
+(ignore-errors (+ 1 2))    ; => 3
+```
 
 ---
 
-## Error Handling Patterns
+## Restarts
 
-### Safe Function Calls
+Restarts let a handler choose a named recovery instead of just catching
+and giving up.  They are built in pure Lisp (`lib/16-conditions.lisp`)
+on top of `handler-case` and dynamic variables.
 
-```lisp
-(defun safe-divide (a b)
-  "Divide A by B, returning NIL on error."
-  (let ((result (errorset (list '/ a b))))
-    (if result
-        (car result)
-        nil)))
+### RESTART-CASE
 
-(safe-divide 10 2)    ; => 5
-(safe-divide 10 0)    ; => NIL
-```
+**Syntax:** `(restart-case expr (restart-name (var...) body...)...)`
 
-### Default on Error
+Evaluates `expr` with the named restarts established.  If a handler
+invokes one, its body runs and the result is returned from
+`restart-case`.
 
 ```lisp
-(defun get-or-default (expr default)
-  "Evaluate EXPR; return DEFAULT if error."
-  (let ((result (errorset expr)))
-    (if result
-        (car result)
-        default)))
-
-(get-or-default '(/ 10 2) 0)    ; => 5
-(get-or-default '(/ 10 0) 0)    ; => 0
+(handler-bind
+    ((error (lambda (e)
+              (invoke-restart 'use-value 0))))
+  (restart-case (/ 10 0)
+    (use-value (v) v)))
+; => 0
 ```
 
-### Error Recovery
+### HANDLER-BIND
 
-```lisp
-(defun try-operations (ops)
-  "Try each operation; return first successful result."
-  (if (null ops)
-      (error "All operations failed")
-      (let ((result (errorset (car ops))))
-        (if result
-            (car result)
-            (try-operations (cdr ops))))))
+**Syntax:** `(handler-bind ((type handler-fn)...) body...)`
 
-(try-operations '((/ 1 0) (/ 2 0) (/ 6 2)))
-; => 3 (third operation succeeds)
-```
+Like `handler-case` but the handler runs *before* unwinding.  The
+handler can inspect the condition and invoke a restart, or decline by
+re-signaling with `(error e)`.
 
-### Conditional Error
+### INVOKE-RESTART
 
-```lisp
-(defun require-positive (n)
-  "Error if N is not positive."
-  (if (not (plusp n))
-      (error "Expected positive number")
-      n))
+**Syntax:** `(invoke-restart name arg...)`
 
-(require-positive 5)     ; => 5
-(require-positive -3)    ; Error: Expected positive number
-```
+Transfers control to the restart named `name`, passing `arg...` to its
+body.
 
 ---
 
 ## Common Error Conditions
-
-Lamedh raises errors for:
 
 | Condition | Example |
 |-----------|---------|
@@ -150,123 +185,10 @@ Lamedh raises errors for:
 | Arity error | `(car 1 2 3)` |
 | File not found | `(load-file "missing.lisp")` |
 | Invalid argument | `(nth -1 '(a b))` |
-
----
-
-## Debugging Techniques
-
-### Print Before Error
-
-```lisp
-(defun debug-divide (a b)
-  (princ "Dividing ")
-  (prin1 a)
-  (princ " by ")
-  (prin1 b)
-  (terpri)
-  (/ a b))
-```
-
-### Trace Results
-
-```lisp
-(defun trace-result (label expr)
-  "Evaluate EXPR, print LABEL and result."
-  (let ((result (errorset expr)))
-    (princ label)
-    (princ ": ")
-    (if result
-        (prin1 (car result))
-        (princ "ERROR"))
-    (terpri)
-    (if result (car result) nil)))
-```
-
-### Assert
-
-```lisp
-(defun assert (condition message)
-  "Error if CONDITION is false."
-  (if (not condition)
-      (error message)
-      t))
-
-(assert (> x 0) "x must be positive")
-```
-
----
-
-## Limitations
-
-Lamedh's error handling is basic:
-
-**Not Available:**
-- Exception types/classes
-- Stack traces
-- CATCH/THROW
-- UNWIND-PROTECT
-- Restarts/conditions
-- Error inheritance
-
-**Available:**
-- Raise errors with message
-- Catch any error (no discrimination)
-- Check success/failure
-
----
-
-## Examples
-
-### Safe File Loading
-
-```lisp
-(defun try-load (filename)
-  "Try to load file; print message on failure."
-  (if (errorset (list 'load-file filename))
-      (progn
-        (princ "Loaded: ")
-        (princ filename)
-        (terpri)
-        t)
-      (progn
-        (princ "Failed: ")
-        (princ filename)
-        (terpri)
-        nil)))
-```
-
-### Retry Logic
-
-```lisp
-(defun retry (n form)
-  "Try FORM up to N times."
-  (if (zerop n)
-      (error "Retry limit exceeded")
-      (let ((result (errorset form)))
-        (if result
-            (car result)
-            (retry (- n 1) form)))))
-```
-
-### Validation Chain
-
-```lisp
-(defun validate-input (x)
-  (cond ((not (numberp x))
-         (error "Must be a number"))
-        ((minusp x)
-         (error "Must be non-negative"))
-        ((> x 100)
-         (error "Must be <= 100"))
-        (t x)))
-
-(validate-input 50)     ; => 50
-(validate-input "hi")   ; Error: Must be a number
-(validate-input -5)     ; Error: Must be non-negative
-```
+| Capability denied | `(shell "ls")` without `SHELL` |
 
 ---
 
 **See Also:**
-- [I/O Functions](io.md) - File loading errors
-- [Special Forms](../special_forms.md) - Control flow
+- [Chapter 6: Conditions and Restarts](../manual/06-conditions-and-restarts.md) — full tutorial
+- [Special Forms](../special_forms.md) — `handler-case`, `catch`, `throw`, `unwind-protect`

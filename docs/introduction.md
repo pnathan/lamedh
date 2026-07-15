@@ -1,5 +1,9 @@
 # Chapter 1: Introduction
 
+This reference section documents Lamedh's data types, syntax, and forms
+with exact signatures and return values.  For worked examples and design
+rationale, see the [manual](manual/README.md).
+
 ## 1.1 Overview
 
 Lamedh (Hebrew: ל, pronounced "LAH-med") is an implementation of Lisp 1.5 written in Rust. It provides a complete Lisp programming environment including:
@@ -28,7 +32,7 @@ Lamedh is not yet a 1.0 production Lisp system. It does not provide:
 
 - Full Common Lisp or Scheme compatibility
 - A mature debugger with step/trace integration
-- Packages, streams, or a full condition/restart system
+- Packages or streams
 - Broad compiler optimization for ordinary dynamic code
 
 ## 1.4 Language Family

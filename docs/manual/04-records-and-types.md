@@ -701,7 +701,7 @@ lamedh -s '(list (result-or (ok 1) 99) (result-or (err "bad") 99))'
 ```
 
 ```lisp
-lamedh -s '(unwrap-result (result-then (ok 2) (lambda (v) (ok (* v 10)))))'
+lamedh -s '(unwrap-result (result-then (lambda (v) (ok (* v 10))) (ok 2)))'
 ; => 20
 ```
 
@@ -1060,7 +1060,7 @@ Three resolutions from one definition:
 Define your own with `defprotocol` + `definstance`; `defprotocol` captures
 any prior binding of the name as the fallback instance, which is how the
 kernel's `length` kept everything it already handled. The shipped
-protocols are `length`, `map`, `for-each`, `ref`, `put!`, and `copy`.
+protocols are `length`, `map`, `for-each`, `filter`, `ref`, `put!`, and `copy`.
 Argument order follows Common Lisp: higher-order functions take the
 FUNCTION first (`(map fn coll)`, like `mapcar`), access operations take
 the collection first (`(ref coll k)`, like `aref`/`elt`). A protocol

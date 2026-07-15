@@ -1,43 +1,17 @@
-name: Rust CI
+name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test (default features)
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@stable
-    # Build every target (lib, bins, integration tests, examples) so nothing is
-    # left uncompiled, then run the entire workspace test suite — unit,
-    # integration, the Lisp suite, and doctests.
-    - name: Build (all targets)
-      run: cargo build --workspace --all-targets --verbose
-    - name: Test (whole workspace, incl. doctests)
-      run: cargo test --workspace --verbose
-
-  test-jit:
-    name: Test (jit feature)
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@stable
-    # Exercises the optional native (Cranelift) backend for the typed JIT.
-    - name: Build (jit, all targets)
-      run: cargo build --workspace --all-targets --features jit --verbose
-    - name: Test (jit, whole workspace)
-      run: cargo test --workspace --features jit --verbose
-
-  lint:
-    name: Format + Clippy
+  check:
+    name: Test + Lint
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -46,7 +20,7 @@ jobs:
         components: rustfmt, clippy
     - name: Format check
       run: cargo fmt --all --check
-    - name: Clippy (default, warnings = errors)
+    - name: Clippy
       run: cargo clippy --workspace --all-targets -- -D warnings
-    - name: Clippy (jit, warnings = errors)
-      run: cargo clippy --workspace --all-targets --features jit -- -D warnings
+    - name: Test
+      run: cargo test --workspace

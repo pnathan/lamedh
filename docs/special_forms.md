@@ -497,19 +497,22 @@ Returns the function value of a symbol. Used when passing functions as arguments
 (mapcar (function (lambda (x) (* x 2))) '(1 2 3))
 ```
 
-**Note:** `#'` is Common Lisp syntax; Lamedh uses explicit `(function ...)`.
+**Note:** Both forms work. The reader expands `#'name` into `(function name)`
+at parse time, so `#'car` and `(function car)` are equivalent.
 
 ---
 
 ## 6.17 DEFINE
 
-**Syntax:** `(define ((name1 (params1) body1) ...))`
+**Syntax:** `(define ((name1 value-expr1) ...))`
 
-Defines multiple functions at once (Lisp 1.5 style).
+Defines multiple names at once (Lisp 1.5 style): a list of `(name
+value-expr)` pairs, each a 2-element list. `value-expr` is evaluated, so
+a function definition needs an explicit `lambda`.
 
 ```lisp
-(define ((double (x) (* x 2))
-         (triple (x) (* x 3))))
+(define ((double (lambda (x) (* x 2)))
+         (triple (lambda (x) (* x 3)))))
 
 (double 5)   ; => 10
 (triple 5)   ; => 15
