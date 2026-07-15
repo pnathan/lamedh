@@ -675,7 +675,7 @@ pub(super) fn apply_new_list_ops(
             let list = &args[1];
 
             // Build a new list without the first occurrence of item
-            let items = list_to_vec(list)?;
+            let items = list_to_vec_ctx(list, "EFFACE")?;
             let mut found = false;
             let result: Vec<LispVal> = items
                 .into_iter()
@@ -939,7 +939,7 @@ pub(super) fn apply_function_ops(
                 && let LispVal::Symbol(s) = &**car
                 && let Some(LispVal::Macro(m)) = env.get(&s.borrow().name)
             {
-                let macro_args = list_to_vec(cdr)?;
+                let macro_args = list_to_vec_ctx(cdr, "MACROEXPAND")?;
                 return expand_macro(&m, &macro_args, env);
             }
             // Not a macro call, return as-is

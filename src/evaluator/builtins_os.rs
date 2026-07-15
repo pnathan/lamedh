@@ -107,7 +107,7 @@ fn expect_bool(args: &[LispVal], i: usize, _who: &str) -> Result<bool, LispError
 
 fn expect_string_list(args: &[LispVal], i: usize, who: &str) -> Result<Vec<String>, LispError> {
     let list = args.get(i).cloned().unwrap_or(LispVal::Nil);
-    let items = list_to_vec(&list)?;
+    let items = list_to_vec_ctx(&list, &who.to_uppercase())?;
     items
         .into_iter()
         .map(|v| match v {
@@ -129,7 +129,7 @@ fn expect_string_alist(
     who: &str,
 ) -> Result<Vec<(String, String)>, LispError> {
     let list = args.get(i).cloned().unwrap_or(LispVal::Nil);
-    let items = list_to_vec(&list)?;
+    let items = list_to_vec_ctx(&list, &who.to_uppercase())?;
     items
         .into_iter()
         .map(|v| match v {

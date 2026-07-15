@@ -292,6 +292,10 @@ impl Drop for DepthGuard {
 
 // Helper function to convert a Lisp list (Cons chain) to a Rust Vec.
 pub(super) fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
+    list_to_vec_ctx(list, "")
+}
+
+pub(super) fn list_to_vec_ctx(list: &LispVal, context: &str) -> Result<Vec<LispVal>, LispError> {
     let mut vec = Vec::new();
     let mut current = list;
     while let LispVal::Cons { car, cdr } = current {
@@ -299,8 +303,13 @@ pub(super) fn list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, LispError> {
         current = cdr;
     }
     if *current != LispVal::Nil {
+        let ctx = if context.is_empty() {
+            format!("; form: {}", err_val(list))
+        } else {
+            format!(" (in {context}); form: {}", err_val(list))
+        };
         return Err(LispError::Generic(format!(
-            "list_to_vec: not a proper list, got tail {}",
+            "not a proper list: dotted pair ending in {}{ctx}",
             err_val(current)
         )));
     }

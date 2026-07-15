@@ -841,6 +841,19 @@ pub enum BuiltinFunc {
     /// mechanical and runs over every AST node of every `with-module` body,
     /// which made the interpreted walk the dominant cost of loading large
     /// module files.
+    // Regex primitives (lib/44-regex.lisp)
+    RegexCompile,
+    RegexP,
+    RegexPattern,
+    RegexEscape,
+    RegexIsMatch,
+    RegexFind,
+    RegexFindAll,
+    RegexCaptures,
+    RegexCapturesNamed,
+    RegexReplace,
+    RegexReplaceAll,
+    RegexSplit,
     SexprRename,
     #[cfg(feature = "concurrency")]
     CloneInterpreter,
@@ -2903,6 +2916,12 @@ impl LispVal {
 
     /// Collect a proper Lisp list into a Vec, or return an error if not a list.
     pub fn as_list_vec(&self) -> Result<Vec<LispVal>, LispError> {
+        self.as_list_vec_ctx("")
+    }
+
+    /// Like [`as_list_vec`] but includes `context` in the error message so
+    /// the user can tell *what* expected a proper list.
+    pub fn as_list_vec_ctx(&self, context: &str) -> Result<Vec<LispVal>, LispError> {
         let mut result = Vec::new();
         let mut current = self;
         loop {
@@ -2913,8 +2932,20 @@ impl LispVal {
                     current = cdr;
                 }
                 other => {
+                    let form_str = printer::print(self);
+                    let form_truncated = if form_str.chars().count() > 60 {
+                        let head: String = form_str.chars().take(57).collect();
+                        format!("{head}...")
+                    } else {
+                        form_str
+                    };
+                    let ctx = if context.is_empty() {
+                        format!("; form: {form_truncated}")
+                    } else {
+                        format!(" (in {context}); form: {form_truncated}")
+                    };
                     return Err(LispError::Generic(format!(
-                        "not a proper list: dotted pair ending in {}",
+                        "not a proper list: dotted pair ending in {}{ctx}",
                         err_val_display(other)
                     )));
                 }
@@ -3027,6 +3058,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("41-os.lisp", include_str!("../lib/41-os.lisp")),
     ("42-os-linux.lisp", include_str!("../lib/42-os-linux.lisp")),
     ("43-tls.lisp", include_str!("../lib/43-tls.lisp")),
+    ("44-regex.lisp", include_str!("../lib/44-regex.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -3201,6 +3233,11 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         include_str!("../lib/42-os-linux.lisp"),
     ),
     ("TLS", "43-tls.lisp", include_str!("../lib/43-tls.lisp")),
+    (
+        "REGEX",
+        "44-regex.lisp",
+        include_str!("../lib/44-regex.lisp"),
+    ),
     (
         "DOC-RENDERER",
         "97-doc-renderer.lisp",

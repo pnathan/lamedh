@@ -160,6 +160,18 @@ pub(super) fn apply(
             | BuiltinFunc::TlsPeerCertificates
             | BuiltinFunc::TlsPeerCertificateSummary
             | BuiltinFunc::TlsSniHostname => apply_tls_op(builtin, args, env),
+            BuiltinFunc::RegexCompile
+            | BuiltinFunc::RegexP
+            | BuiltinFunc::RegexPattern
+            | BuiltinFunc::RegexEscape
+            | BuiltinFunc::RegexIsMatch
+            | BuiltinFunc::RegexFind
+            | BuiltinFunc::RegexFindAll
+            | BuiltinFunc::RegexCaptures
+            | BuiltinFunc::RegexCapturesNamed
+            | BuiltinFunc::RegexReplace
+            | BuiltinFunc::RegexReplaceAll
+            | BuiltinFunc::RegexSplit => builtins_regex::apply_regex_op(builtin, args, env),
             BuiltinFunc::OsArgs
             | BuiltinFunc::OsExecutablePath
             | BuiltinFunc::OsCwd

@@ -59,6 +59,7 @@ mod builtins_extra;
 mod builtins_net;
 mod builtins_os;
 mod builtins_ports;
+mod builtins_regex;
 mod builtins_tail;
 mod builtins_tls;
 mod compile;

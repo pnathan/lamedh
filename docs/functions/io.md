@@ -322,5 +322,5 @@ cargo run -- -i myconfig.lisp -i main.lisp
 ---
 
 **See Also:**
-- [File I/O Details](../file_io.md)
+- [Ports and Binary I/O](../manual/11-ports-and-io.md)
 - [Error Handling](errors.md)

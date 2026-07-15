@@ -44,14 +44,14 @@ fn progn_wrap(forms: &[LispVal], env: &Shared<Environment>) -> LispVal {
 /// overwrites the slot at the top of each pass. `FOR` always returns `NIL`.
 #[inline(never)]
 pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoStep, LispError> {
-    let args = list_to_vec(rest)?;
+    let args = list_to_vec_ctx(rest, "FOR")?;
     if args.is_empty() {
         return Ok(TcoStep::Done(Err(LispError::Generic(
             "for requires a spec list (var start end [step]) and a body".to_string(),
         ))));
     }
 
-    let spec = list_to_vec(&args[0])?;
+    let spec = list_to_vec_ctx(&args[0], "FOR spec")?;
     if spec.len() != 3 && spec.len() != 4 {
         return Ok(TcoStep::Done(Err(LispError::Generic(
             "for spec must be (var start end [step])".to_string(),
@@ -141,7 +141,7 @@ pub(super) fn eval_while(rest: &LispVal, env: &Shared<Environment>) -> Result<Tc
         cdr: body_list,
     } = rest
     {
-        let body_forms = list_to_vec(body_list)?;
+        let body_forms = list_to_vec_ctx(body_list, "WHILE body")?;
         loop {
             let test = eval(cond_expr, env)?;
             if !is_truthy(&test) {
@@ -173,7 +173,7 @@ pub(super) fn apply_unevaluated(
     env: &Shared<Environment>,
 ) -> Result<TcoStep, LispError> {
     if let LispVal::Macro(m) = func {
-        let args_list = list_to_vec(rest)?;
+        let args_list = list_to_vec_ctx(rest, "MACRO")?;
         let expanded = expand_macro(m, &args_list, env)?;
         return Ok(TcoStep::TailCall(expanded, env.clone()));
     }
@@ -205,7 +205,7 @@ pub(super) fn apply_unevaluated(
                 new_env.set_id(id, rest.clone());
             }
         } else {
-            let unevaluated_args = list_to_vec(rest)?;
+            let unevaluated_args = list_to_vec_ctx(rest, "FEXPR")?;
             if unevaluated_args.len() != fexpr.params.len() {
                 return Ok(TcoStep::Done(Err(LispError::Generic(format!(
                     "fexpr expected {} arguments, got {}",
@@ -572,7 +572,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     }
                     SpecialForm::And => {
                         let mut last_val = LispVal::Symbol(env.intern_symbol("T"));
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "AND")?;
                         for form in forms {
                             last_val = eval(&form, env)?;
                             if !is_truthy(&last_val) {
@@ -582,7 +582,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         Ok(TcoStep::Done(Ok(last_val)))
                     }
                     SpecialForm::Or => {
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "OR")?;
                         for form in forms {
                             let v = eval(&form, env)?;
                             if is_truthy(&v) {
@@ -596,7 +596,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // always evaluate the CLEANUP forms (even if BODY errors
                         // or performs a non-local exit), then propagate BODY's
                         // result or error.
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "UNWIND-PROTECT")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "unwind-protect requires a body form".to_string(),
@@ -613,7 +613,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // (catch tag body...) — establish a catch point for TAG
                         // (evaluated). A (throw TAG value) with an EQUAL tag
                         // unwinds to here and yields VALUE.
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "CATCH")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "catch requires a tag".to_string(),
@@ -643,7 +643,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     }
                     SpecialForm::Throw => {
                         // (throw tag value) — non-local exit to the matching CATCH.
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "THROW")?;
                         if forms.len() != 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "throw requires exactly two arguments: (throw tag value)"
@@ -660,7 +660,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     SpecialForm::Block => {
                         // (block name body...) — NAME is an unevaluated symbol.
                         // A (return-from name value) inside BODY unwinds here.
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "BLOCK")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "block requires a name".to_string(),
@@ -694,7 +694,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     }
                     SpecialForm::ReturnFrom => {
                         // (return-from name [value]) — NAME unevaluated.
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "RETURN-FROM")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "return-from requires a block name".to_string(),
@@ -723,7 +723,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // Evaluate EXPR; on a trapped error bind VAR to the
                         // condition value (a LispVal::Error) and run the handler.
                         // Control-flow signals propagate untrapped.
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "HANDLER-CASE")?;
                         if forms.len() != 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "handler-case takes an expression and one (error (var) ...) clause"
@@ -749,13 +749,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             Err(other) => return Ok(TcoStep::Done(Err(other))),
                         };
                         {
-                            let clause = list_to_vec(&forms[1])?;
+                            let clause = list_to_vec_ctx(&forms[1], "HANDLER-CASE clause")?;
                             if clause.len() < 2 {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "handler-case clause must be (error (var) body...)".to_string(),
                                 ))));
                             }
-                            let var_list = list_to_vec(&clause[1])?;
+                            let var_list = list_to_vec_ctx(&clause[1], "HANDLER-CASE vars")?;
                             let handler_env = Environment::new_child(env);
                             if let Some(LispVal::Symbol(s)) = var_list.first() {
                                 handler_env.set(s.borrow().name.clone(), condition);
@@ -768,7 +768,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                     }
                     SpecialForm::Def => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "DEF")?;
                         if args.len() != 2 && args.len() != 3 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "def takes two or three arguments".to_string(),
@@ -801,7 +801,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                     }
                     SpecialForm::Defdynamic => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "DEFDYNAMIC")?;
                         if args.len() < 2 || args.len() > 3 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "defdynamic requires 2 or 3 arguments: (defdynamic symbol value [docstring])"
@@ -865,7 +865,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             cdr: body_list,
                         } = &**rest
                         {
-                            let body_exprs = list_to_vec(body_list)?;
+                            let body_exprs = list_to_vec_ctx(body_list, "LAMBDA body")?;
                             let final_body = if body_exprs.len() == 1 {
                                 body_exprs[0].clone()
                             } else {
@@ -879,7 +879,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         ))))
                     }
                     SpecialForm::Function => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "FUNCTION")?;
                         if args.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "FUNCTION takes exactly one argument".to_string(),
@@ -899,7 +899,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 cdr: body_list,
                             } = &**lambda_body
                         {
-                            let body_exprs = list_to_vec(body_list)?;
+                            let body_exprs = list_to_vec_ctx(body_list, "LAMBDA body")?;
                             let final_body = if body_exprs.len() == 1 {
                                 body_exprs[0].clone()
                             } else {
@@ -939,7 +939,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         ))))
                     }
                     SpecialForm::Label => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "LABEL")?;
                         if args.len() != 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "LABEL requires a name and an expression".to_string(),
@@ -992,7 +992,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                     }
                     SpecialForm::Define => {
-                        let defs = list_to_vec(rest)?;
+                        let defs = list_to_vec_ctx(rest, "DEFINE")?;
                         if defs.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "DEFINE takes a list of definitions".to_string(),
@@ -1007,10 +1007,10 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             }
                             _ => defs[0].clone(),
                         };
-                        let def_list = list_to_vec(&def_list_val)?;
+                        let def_list = list_to_vec_ctx(&def_list_val, "DEFINE definitions")?;
                         let mut defined_names = vec![];
                         for def in def_list {
-                            let def_pair = list_to_vec(&def)?;
+                            let def_pair = list_to_vec_ctx(&def, "DEFINE pair")?;
                             if def_pair.len() != 2 {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "Each definition must be a pair of name and value".to_string(),
@@ -1034,7 +1034,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     SpecialForm::Defexpr | SpecialForm::Defmacro => {
                         let is_defexpr = matches!(sf_tag, Some(SpecialForm::Defexpr));
                         let form_name = if is_defexpr { "DEFEXPR" } else { "DEFMACRO" };
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, form_name)?;
                         if args.len() < 3 || args.len() > 4 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(format!(
                                 "{} takes three or four arguments",
@@ -1082,7 +1082,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     // Lisp-callable way to widen either state — the save/
                     // restore happens in this Rust frame only.
                     SpecialForm::WithFuel => {
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "WITH-FUEL")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "with-fuel requires a budget and body".to_string(),
@@ -1121,7 +1121,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         Ok(TcoStep::Done(result))
                     }
                     SpecialForm::WithCapabilities => {
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "WITH-CAPABILITIES")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "with-capabilities requires a capability list and body".to_string(),
@@ -1231,7 +1231,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // (the inner form is evaluated and its result symbol is
                         // optimized). Distinct from the Lisp-layer `optimize`,
                         // which rewrites a quoted *form*.
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "JIT-OPTIMIZE")?;
                         let sym = match args.first() {
                             Some(LispVal::Symbol(s)) => Some(s.clone()),
                             Some(form) => match eval(form, env)? {
@@ -1273,7 +1273,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         //   up), fall back to evaluating `expr`; if it yields a symbol,
                         //   do a function lookup on that.  This makes
                         //   `(check-type (defun id (x) x))` work as before.
-                        let cargs = list_to_vec(rest)?;
+                        let cargs = list_to_vec_ctx(rest, "CHECK-TYPE")?;
                         let arg = cargs.first();
                         let msg = match arg {
                             // Bare symbol → function lookup
@@ -1346,7 +1346,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         }
                     }
                     SpecialForm::Progn => {
-                        let forms = list_to_vec(rest)?;
+                        let forms = list_to_vec_ctx(rest, "PROGN")?;
                         if forms.is_empty() {
                             return Ok(TcoStep::Done(Ok(LispVal::Nil)));
                         }
@@ -1412,14 +1412,14 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         Ok(TcoStep::Done(Ok(last_val)))
                     }
                     SpecialForm::Prog => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "PROG")?;
                         if args.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "PROG requires at least a var list".to_string(),
                             ))));
                         }
 
-                        let var_list = list_to_vec(&args[0])?;
+                        let var_list = list_to_vec_ctx(&args[0], "PROG variables")?;
                         let body = &args[1..];
 
                         let prog_env = Environment::new_child(env);
@@ -1499,7 +1499,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         Ok(TcoStep::Done(result))
                     }
                     SpecialForm::Return => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "RETURN")?;
                         if args.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "RETURN takes exactly one argument".to_string(),
@@ -1509,7 +1509,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         Ok(TcoStep::Done(Err(LispError::Return(Box::new(retval)))))
                     }
                     SpecialForm::Go => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "GO")?;
                         if args.len() != 1 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "GO takes exactly one argument".to_string(),
@@ -1526,20 +1526,20 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     SpecialForm::For => eval_for(rest, env),
                     SpecialForm::While => eval_while(rest, env),
                     SpecialForm::Let => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "LET")?;
                         if args.len() < 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "let requires a binding list and at least one body form"
                                     .to_string(),
                             ))));
                         }
-                        let bindings_vec = list_to_vec(&args[0])?;
+                        let bindings_vec = list_to_vec_ctx(&args[0], "LET bindings")?;
                         let body = wrap_body_forms(&args[1..], env);
 
                         let mut params = vec![];
                         let mut arg_exprs = vec![];
                         for binding in bindings_vec {
-                            let pair = list_to_vec(&binding)?;
+                            let pair = list_to_vec_ctx(&binding, "LET binding")?;
                             if pair.len() != 2 {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let binding must be a pair".to_string(),
@@ -1595,20 +1595,20 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                     // bindings in the same let* that reference a just-bound
                     // dynamic variable see the newly installed symbol-cell value.
                     SpecialForm::LetStar => {
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "LET*")?;
                         if args.len() < 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "let* requires a binding list and at least one body form"
                                     .to_string(),
                             ))));
                         }
-                        let bindings_vec = list_to_vec(&args[0])?;
+                        let bindings_vec = list_to_vec_ctx(&args[0], "LET* bindings")?;
                         let body = wrap_body_forms(&args[1..], env);
 
                         let let_env = Environment::new_child(env);
                         let mut dynamic_guards: Vec<DynamicBinding> = Vec::new();
                         for binding in bindings_vec {
-                            let pair = list_to_vec(&binding)?;
+                            let pair = list_to_vec_ctx(&binding, "LET* binding")?;
                             if pair.len() != 2 {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let* binding must be a pair".to_string(),
@@ -1645,7 +1645,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // yields a Macro *value* (the symmetric completion of
                         // LAMBDA→Lambda and VAU→Vau). This is what lets `macrolet`
                         // live entirely in the Lisp layer as a let-over-constructor.
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "MACRO")?;
                         if args.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "macro requires a parameter list".to_string(),
@@ -1658,7 +1658,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // Anonymous fexpr constructor: `(fexpr (params...) body...)`
                         // yields a Fexpr value (symmetric with MACRO/VAU). Backs the
                         // Lisp-layer `fexprlet`.
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "FEXPR")?;
                         if args.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "fexpr requires a parameter list".to_string(),
@@ -1671,13 +1671,13 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // (vau (operands-param env-param) body...)
                         // operands-param receives the unevaluated operand list;
                         // env-param receives the caller's environment.
-                        let args = list_to_vec(rest)?;
+                        let args = list_to_vec_ctx(rest, "VAU")?;
                         if args.is_empty() {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau requires at least a parameter list".to_string(),
                             ))));
                         }
-                        let param_list = list_to_vec(&args[0])?;
+                        let param_list = list_to_vec_ctx(&args[0], "VAU params")?;
                         if param_list.len() != 2 {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau parameter list must have exactly two symbols: (operands-param env-param)".to_string(),
@@ -1821,7 +1821,7 @@ fn parse_star_params(
                 };
             if !is_single_flat_param {
                 // Classic arglist: this one list holds every parameter.
-                for elem in list_to_vec(item)? {
+                for elem in list_to_vec_ctx(item, "DEFUN* arglist")? {
                     params.push(classic_arglist_param(&elem)?);
                 }
                 return Ok((params, i + 1));
@@ -1895,7 +1895,7 @@ pub(super) fn eval_defun_star(
     rest: &LispVal,
     env: &Shared<Environment>,
 ) -> Result<TcoStep, LispError> {
-    let items = list_to_vec(rest)?;
+    let items = list_to_vec_ctx(rest, "DEFUN*")?;
     if items.is_empty() {
         return Err(LispError::Generic("defun*: missing name".to_string()));
     }

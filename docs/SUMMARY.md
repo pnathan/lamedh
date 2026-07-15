@@ -2,8 +2,12 @@
 
 [Introduction](index.md)
 
+- [Overview](introduction.md)
+- [Quick Start](getting_started.md)
+
 # The Manual
 
+- [About the Manual](manual/index.md)
 - [Getting Started](manual/01-getting-started.md)
 - [Language Basics](manual/02-language-basics.md)
 - [Data Structures](manual/03-data-structures.md)

@@ -23,7 +23,7 @@ pub(super) fn apply_apply(
     }?;
 
     let mut unpacked_args: Vec<LispVal> = args[1..args.len() - 1].to_vec();
-    match list_to_vec(arg_list) {
+    match list_to_vec_ctx(arg_list, "APPLY") {
         Ok(vec) => unpacked_args.extend(vec),
         Err(_) => {
             return Err(LispError::Generic(format!(
@@ -824,7 +824,7 @@ pub(super) fn apply_sort(
             "sort requires exactly two arguments: (sort list comparator)".to_string(),
         ));
     }
-    let mut items = list_to_vec(&args[0])?;
+    let mut items = list_to_vec_ctx(&args[0], "SORT")?;
     // Resolve a symbol comparator to its function value, like funcall does.
     let cmp = match &args[1] {
         LispVal::Symbol(s) => env.get(&s.borrow().name).ok_or_else(|| {
