@@ -1583,6 +1583,56 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::OsLinuxReadlink),
         );
 
+        // Regex primitives (lib/44-regex.lisp)
+        env.set(
+            "REGEX-COMPILE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexCompile),
+        );
+        env.set(
+            "REGEX-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexP),
+        );
+        env.set(
+            "REGEX-PATTERN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexPattern),
+        );
+        env.set(
+            "REGEX-ESCAPE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexEscape),
+        );
+        env.set(
+            "REGEX-IS-MATCH*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexIsMatch),
+        );
+        env.set(
+            "REGEX-FIND*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexFind),
+        );
+        env.set(
+            "REGEX-FIND-ALL*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexFindAll),
+        );
+        env.set(
+            "REGEX-CAPTURES*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexCaptures),
+        );
+        env.set(
+            "REGEX-CAPTURES-NAMED*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexCapturesNamed),
+        );
+        env.set(
+            "REGEX-REPLACE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexReplace),
+        );
+        env.set(
+            "REGEX-REPLACE-ALL*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexReplaceAll),
+        );
+        env.set(
+            "REGEX-SPLIT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::RegexSplit),
+        );
+
         // Introspection
         env.set(
             "DESCRIBE".to_string(),
