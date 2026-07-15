@@ -68,17 +68,18 @@ fn test_register_fn_recursive_scan() {
         });
         env.register_fn("ACTIONABLE-ACTOR-DESC", |args, _env| {
             if let LispVal::String(id) = &args[0]
-                && id == "wolf-1" {
-                    let kind = LispVal::Cons {
-                        car: Shared::new(LispVal::String("kind".to_string())),
-                        cdr: Shared::new(LispVal::String("talk".to_string())),
-                    };
-                    let label = LispVal::Cons {
-                        car: Shared::new(LispVal::String("label".to_string())),
-                        cdr: Shared::new(LispVal::String("Talk".to_string())),
-                    };
-                    return Ok(LispVal::list(vec![kind, label]));
-                }
+                && id == "wolf-1"
+            {
+                let kind = LispVal::Cons {
+                    car: Shared::new(LispVal::String("kind".to_string())),
+                    cdr: Shared::new(LispVal::String("talk".to_string())),
+                };
+                let label = LispVal::Cons {
+                    car: Shared::new(LispVal::String("label".to_string())),
+                    cdr: Shared::new(LispVal::String("Talk".to_string())),
+                };
+                return Ok(LispVal::list(vec![kind, label]));
+            }
             Ok(LispVal::Nil)
         });
 

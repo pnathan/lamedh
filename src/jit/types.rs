@@ -622,6 +622,86 @@ impl FUnOp {
     }
 }
 
+/// True when `c` is exactly the variable reference for `slot` (the fast
+/// structural check `core_may_mutate_slot` uses to spot a direct write
+/// through a parameter, as opposed to a write reached only through some
+/// other expression that merely *reads* the slot).
+fn is_var_slot(c: &Core, slot: usize) -> bool {
+    matches!(c, Core::Var(s) if *s == slot)
+}
+
+/// Static may-mutate analysis over the elaborated [`Core`] IR (issue #216
+/// follow-up): does any reachable subterm of `core` write through the local
+/// `slot`? A "write" is a direct [`Core::ArraySet`]/[`Core::ArrayMap2`]
+/// out-param/[`Core::FieldSet`] whose target is *exactly* `Core::Var(slot)`
+/// — not merely an expression that reads it. This is deliberately
+/// conservative: it does not attempt alias tracking (e.g. `(let ((b a)) (store
+/// b i v))` is invisible to this pass, since `b`, not `a`, is the direct
+/// target), so a `false` result is a sound guarantee of no write, while a
+/// `true` result may over-approximate. Used by the registry to skip the
+/// post-call write-back copy for array parameters a function provably never
+/// mutates — the worst case for a wrong `true` is a harmless redundant copy,
+/// never a correctness bug.
+pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
+    match core {
+        Core::LitI(_) | Core::LitF(_) | Core::Var(_) => false,
+        Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) => {
+            core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot)
+        }
+        Core::Not(a) => core_may_mutate_slot(a, slot),
+        Core::And(a, b) | Core::Or(a, b) => {
+            core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot)
+        }
+        Core::If(c, t, e) => {
+            core_may_mutate_slot(c, slot)
+                || core_may_mutate_slot(t, slot)
+                || core_may_mutate_slot(e, slot)
+        }
+        Core::Let(_, v, body) => core_may_mutate_slot(v, slot) || core_may_mutate_slot(body, slot),
+        Core::Call(_, args) => args.iter().any(|a| core_may_mutate_slot(a, slot)),
+        Core::ToChar(a) => core_may_mutate_slot(a, slot),
+        Core::ArrayNew(n) => core_may_mutate_slot(n, slot),
+        Core::ArrayGet(a, i) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(i, slot),
+        Core::ArraySet(a, i, v) => {
+            is_var_slot(a, slot)
+                || core_may_mutate_slot(a, slot)
+                || core_may_mutate_slot(i, slot)
+                || core_may_mutate_slot(v, slot)
+        }
+        Core::ArrayLen(a) => core_may_mutate_slot(a, slot),
+        Core::StructNew(fields) => fields.iter().any(|f| core_may_mutate_slot(f, slot)),
+        Core::FieldGet(s, _) => core_may_mutate_slot(s, slot),
+        Core::FieldSet(s, _, v) => {
+            is_var_slot(s, slot) || core_may_mutate_slot(s, slot) || core_may_mutate_slot(v, slot)
+        }
+        Core::Seq(items) => items.iter().any(|i| core_may_mutate_slot(i, slot)),
+        Core::Assign(_, v) => core_may_mutate_slot(v, slot),
+        Core::While(c, b) => core_may_mutate_slot(c, slot) || core_may_mutate_slot(b, slot),
+        Core::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            core_may_mutate_slot(start, slot)
+                || core_may_mutate_slot(end, slot)
+                || core_may_mutate_slot(step, slot)
+                || core_may_mutate_slot(body, slot)
+        }
+        Core::FUnary(_, a) => core_may_mutate_slot(a, slot),
+        Core::IntToFloat(a) => core_may_mutate_slot(a, slot),
+        Core::ArrayMap2(_, _, out, a, b) => {
+            is_var_slot(out, slot)
+                || core_may_mutate_slot(out, slot)
+                || core_may_mutate_slot(a, slot)
+                || core_may_mutate_slot(b, slot)
+        }
+        Core::ArraySum(a) => core_may_mutate_slot(a, slot),
+        Core::ArrayDot(a, b) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot),
+    }
+}
+
 /// Public mirror of `NumTy` so [`Core`] can derive `Debug`/`Clone` cleanly.
 #[derive(Clone, Copy, Debug)]
 pub enum NumKind {
@@ -634,5 +714,229 @@ impl From<NumTy> for NumKind {
             NumTy::I => NumKind::I,
             NumTy::F => NumKind::F,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Core-level inlining (jit/core-loops): splice a small, non-recursive,
+// already-defined callee's body directly into a caller's Core tree at
+// `compile_now` time, so the callee's `call_indirect`/`Ctx::call` overhead
+// disappears at that call site entirely. The eligibility decision (budget,
+// recursion) lives in `registry.rs`; this is the pure tree transform.
+// ---------------------------------------------------------------------------
+
+/// Splice every callee in `registry` into `core` wherever it is referenced by
+/// a `Core::Call(id, args)` node. `registry` entries are `(callee_id,
+/// callee_core, callee_n_slots)`, where `callee_n_slots` is the callee's own
+/// total frame size (`TypedFn::n_slots`) — every slot its body can reference
+/// lies in `0..callee_n_slots` (parameters *and* any of its own `let`/`for`
+/// locals), so that many fresh slots are reserved per inlined call site (not
+/// just its parameter count) to keep every reference collision-free against
+/// the caller's existing slots and against other inlined call sites.
+///
+/// Each inlined call site becomes a chain of `Core::Let` bindings — one per
+/// argument, evaluated in order exactly as a real call would — around the
+/// callee's own body with every slot reference shifted into the fresh range.
+/// Everything else is walked and copied structurally unchanged.
+///
+/// Only ONE level of inlining is performed: a `Call` node that appears
+/// *inside* a spliced-in callee body is left as an ordinary call — its own
+/// callee is never looked up in `registry` again during this pass (avoids
+/// inlining into an already-inlined body; deeper inlining, if ever wanted,
+/// falls out of the callee's *own* `compile_now` inlining its own callees
+/// before this function's next (re)compile).
+///
+/// Returns the transformed tree together with the first slot number *not*
+/// used anywhere in it — i.e. the caller's new required `n_slots` (never
+/// smaller than `slot_base`, since a caller with nothing to inline gets its
+/// tree back unchanged and `slot_base` echoed).
+pub fn inline_calls(
+    core: &Core,
+    registry: &[(usize, &Core, usize)],
+    slot_base: usize,
+) -> (Core, usize) {
+    let mut next = slot_base;
+    let out = inline_xform(core, 0, registry, true, &mut next);
+    (out, next)
+}
+
+/// The recursive worker behind [`inline_calls`]. `shift` is added to every
+/// slot index encountered (nonzero only while walking a just-spliced callee
+/// body, to relocate its local slot numbering into the fresh range reserved
+/// for it). `allow_inline` gates whether a `Call` node may itself be spliced
+/// — `false` while walking inside an already-spliced callee body, enforcing
+/// the one-level-only rule.
+fn inline_xform(
+    core: &Core,
+    shift: usize,
+    registry: &[(usize, &Core, usize)],
+    allow_inline: bool,
+    next: &mut usize,
+) -> Core {
+    match core {
+        Core::LitI(n) => Core::LitI(*n),
+        Core::LitF(f) => Core::LitF(*f),
+        Core::Var(i) => Core::Var(i + shift),
+        Core::Not(a) => Core::Not(Box::new(inline_xform(
+            a,
+            shift,
+            registry,
+            allow_inline,
+            next,
+        ))),
+        Core::ToChar(a) => Core::ToChar(Box::new(inline_xform(
+            a,
+            shift,
+            registry,
+            allow_inline,
+            next,
+        ))),
+        Core::FUnary(op, a) => Core::FUnary(
+            *op,
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+        ),
+        Core::IntToFloat(a) => Core::IntToFloat(Box::new(inline_xform(
+            a,
+            shift,
+            registry,
+            allow_inline,
+            next,
+        ))),
+        Core::Bin(k, op, a, b) => Core::Bin(
+            *k,
+            *op,
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::Cmp(k, op, a, b) => Core::Cmp(
+            *k,
+            *op,
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::And(a, b) => Core::And(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::Or(a, b) => Core::Or(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::If(c, t, e) => Core::If(
+            Box::new(inline_xform(c, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(t, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(e, shift, registry, allow_inline, next)),
+        ),
+        Core::Let(slot, v, body) => Core::Let(
+            slot + shift,
+            Box::new(inline_xform(v, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(body, shift, registry, allow_inline, next)),
+        ),
+        Core::Call(id, args) => {
+            let new_args: Vec<Core> = args
+                .iter()
+                .map(|a| inline_xform(a, shift, registry, allow_inline, next))
+                .collect();
+            if allow_inline {
+                if let Some(entry) = registry.iter().find(|e| e.0 == *id) {
+                    let (_, callee_core, callee_slots) = *entry;
+                    let base = *next;
+                    *next += callee_slots;
+                    // The spliced body's own slots (and any deeper calls it
+                    // makes) are relocated by `base`; `allow_inline: false`
+                    // enforces the one-level-only rule.
+                    let inlined_body = inline_xform(callee_core, base, registry, false, next);
+                    let mut wrapped = inlined_body;
+                    for (i, a) in new_args.into_iter().enumerate().rev() {
+                        wrapped = Core::Let(base + i, Box::new(a), Box::new(wrapped));
+                    }
+                    return wrapped;
+                }
+            }
+            Core::Call(*id, new_args)
+        }
+        Core::ArrayNew(a) => Core::ArrayNew(Box::new(inline_xform(
+            a,
+            shift,
+            registry,
+            allow_inline,
+            next,
+        ))),
+        Core::ArrayGet(a, b) => Core::ArrayGet(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::ArraySet(a, b, c) => Core::ArraySet(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(c, shift, registry, allow_inline, next)),
+        ),
+        Core::ArrayLen(a) => Core::ArrayLen(Box::new(inline_xform(
+            a,
+            shift,
+            registry,
+            allow_inline,
+            next,
+        ))),
+        Core::StructNew(items) => Core::StructNew(
+            items
+                .iter()
+                .map(|c| inline_xform(c, shift, registry, allow_inline, next))
+                .collect(),
+        ),
+        Core::FieldGet(s, idx) => Core::FieldGet(
+            Box::new(inline_xform(s, shift, registry, allow_inline, next)),
+            *idx,
+        ),
+        Core::FieldSet(s, idx, v) => Core::FieldSet(
+            Box::new(inline_xform(s, shift, registry, allow_inline, next)),
+            *idx,
+            Box::new(inline_xform(v, shift, registry, allow_inline, next)),
+        ),
+        Core::Seq(items) => Core::Seq(
+            items
+                .iter()
+                .map(|c| inline_xform(c, shift, registry, allow_inline, next))
+                .collect(),
+        ),
+        Core::Assign(slot, v) => Core::Assign(
+            slot + shift,
+            Box::new(inline_xform(v, shift, registry, allow_inline, next)),
+        ),
+        Core::While(t, b) => Core::While(
+            Box::new(inline_xform(t, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => Core::For {
+            slot: slot + shift,
+            start: Box::new(inline_xform(start, shift, registry, allow_inline, next)),
+            end: Box::new(inline_xform(end, shift, registry, allow_inline, next)),
+            step: Box::new(inline_xform(step, shift, registry, allow_inline, next)),
+            body: Box::new(inline_xform(body, shift, registry, allow_inline, next)),
+        },
+        Core::ArrayMap2(op, k, o, a, b) => Core::ArrayMap2(
+            *op,
+            *k,
+            Box::new(inline_xform(o, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::ArraySum(a) => Core::ArraySum(Box::new(inline_xform(
+            a,
+            shift,
+            registry,
+            allow_inline,
+            next,
+        ))),
+        Core::ArrayDot(a, b) => Core::ArrayDot(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
     }
 }
