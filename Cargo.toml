@@ -99,4 +99,5 @@ exclude = [
     "benchmarks/fibonacci/rust",
     "benchmarks/loops/rust",
     "benchmarks/levenshtein/rust",
+    "benchmarks/realistic/rust",
 ]
