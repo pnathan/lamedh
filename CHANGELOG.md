@@ -70,6 +70,24 @@ definition form** over one type story — records, sums, HM generics,
 guards, processes, patterns, modules, and the checker meeting in one
 language. Sections below, roughly newest first.
 
+## jit: SIMD-vectorized integer array reductions (`array-sum`/`array-dot`)
+
+The reduction half of the array-op family the elementwise ops
+(`array-add!`/`-sub!`/`-mul!`) promised: `(array-sum a)` (wrapping sum of
+every element) and `(array-dot a b)` (wrapping sum over `min(len a, len b)`
+of `a[i]*b[i]`, each product wrapping too), both `(array int64)` **only** —
+float reduction reorders rounding and needs a reassociation policy this
+family does not attempt. In a `defun-typed` body both compile to a 2-lane
+`I64X2` vector accumulator loop plus a horizontal `extractlane`/`iadd`
+reduction of the two lanes and a scalar tail for an odd final element.
+Soundness rests on one fact: **wrapping int64 addition is associative**
+(`(a+b)+c ≡ a+(b+c) mod 2^64`), so a pairwise/multi-lane vector reduction is
+**bit-identical** to a sequential left-fold — verified across all three
+tiers (native Cranelift, Core interpreter, tracing interpreter), including
+MAX+MAX wraparound landing in both the vectorized body and the scalar tail.
+New `Core::ArraySum`/`Core::ArrayDot` nodes; codegen-only elaboration,
+int64-only by construction (no float overload exists to fall back to).
+
 ## jit: SIMD-vectorized elementwise array ops (`array-add!`/`-sub!`/`-mul!`)
 
 A first array-op family for optimizing programmers: `(array-add! out a b)`,

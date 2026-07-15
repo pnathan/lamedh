@@ -1705,6 +1705,21 @@ impl Jit {
                 ));
                 out.push(format!("    {dst} = mov {to}"));
             }
+            Core::ArraySum(a) => {
+                let t = fresh(reg);
+                self.dis_emit(a, &t, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = vsum {t}[i]   ; simd reduce (wrapping), i in 0..len"
+                ));
+            }
+            Core::ArrayDot(a, b) => {
+                let (ta, tb) = (fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(b, &tb, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = vdot {ta}[i], {tb}[i]   ; simd reduce (wrapping), i in 0..min(len)"
+                ));
+            }
             Core::StructNew(inits) => {
                 let mut regs = Vec::with_capacity(inits.len());
                 for c in inits {
