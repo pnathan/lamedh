@@ -619,6 +619,11 @@ pub enum BuiltinFunc {
     ArrayAddBang,
     ArraySubBang,
     ArrayMulBang,
+    // SIMD-in-the-typed-JIT integer array reductions (wrapping, int64-only):
+    // the interpreter-side / tree-walker reference for `Core::ArraySum`/
+    // `Core::ArrayDot`.
+    ArraySum,
+    ArrayDot,
     Length,
     ListToArray,
     ArrayToList,

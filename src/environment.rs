@@ -1133,6 +1133,20 @@ impl Environment {
             "ARRAY-MUL!".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayMulBang),
         );
+        // SIMD integer array reductions: the typed JIT compiles these to a
+        // vectorized native loop (`Core::ArraySum`/`Core::ArrayDot`); this
+        // registration is the tree-walker's own (scalar, wrapping) reference
+        // implementation, reached when the call is interpreted rather than
+        // compiled. Wrapping int64 addition is associative, so the SIMD
+        // reduction and this sequential fold agree bit-for-bit.
+        env.set(
+            "ARRAY-SUM".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArraySum),
+        );
+        env.set(
+            "ARRAY-DOT".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayDot),
+        );
         env.set("$LENGTH".to_string(), LispVal::Builtin(BuiltinFunc::Length));
         env.set(
             "$LIST->ARRAY".to_string(),

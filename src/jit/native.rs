@@ -627,6 +627,15 @@ impl Emitter<'_, '_, '_> {
                 let base_b = self.emit_value(b);
                 Emitted::Value(self.emit_array_map2(*op, *kind, base_out, base_a, base_b))
             }
+            Core::ArraySum(a) => {
+                let base_a = self.emit_value(a);
+                Emitted::Value(self.emit_array_sum(base_a))
+            }
+            Core::ArrayDot(a, b) => {
+                let base_a = self.emit_value(a);
+                let base_b = self.emit_value(b);
+                Emitted::Value(self.emit_array_dot(base_a, base_b))
+            }
             Core::StructNew(inits) => {
                 let vals: Vec<Value> = inits.iter().map(|c| self.emit_value(c)).collect();
                 let n = self.iconst(vals.len() as i64);
@@ -1066,6 +1075,171 @@ impl Emitter<'_, '_, '_> {
                 self.as_i(rf)
             }
         }
+    }
+
+    /// Lower [`Core::ArraySum`]: wrapping sum of every `int64` element of
+    /// `a`, as a 2-lane `I64X2` accumulator loop plus a horizontal reduction
+    /// and a scalar tail for an odd final element. Sound because wrapping
+    /// int64 addition is associative — see [`Core::ArraySum`]'s doc comment.
+    ///
+    /// Loop shape mirrors [`Self::emit_array_map2`]: block params carry the
+    /// induction variable `i` AND the running `I64X2` accumulator (the
+    /// vector-lane analogue of accumulating a scalar in a block param).
+    /// `elem_addr`/`MemFlagsData` usage (unaligned+notrap for the vector
+    /// path, trusted for the always-8-byte-aligned scalar tail) is identical
+    /// to [`Self::emit_array_map2`]'s.
+    fn emit_array_sum(&mut self, base_a: Value) -> Value {
+        let trusted = MemFlagsData::trusted();
+        let unaligned = MemFlagsData::new().with_notrap();
+
+        let len_a = self.b.ins().load(types::I64, trusted, base_a, 0);
+        // Largest even n <= len_a (clears the low bit) — see
+        // `emit_array_map2`'s identical `vec_end` computation.
+        let vec_end = self.b.ins().band_imm(len_a, -2i64);
+
+        let zero = self.iconst(0);
+        let zero_vec = self.b.ins().splat(types::I64X2, zero);
+
+        // --- vectorized loop: i = 0, 2, 4, ... while i < vec_end ---------
+        let loop_b = self.b.create_block();
+        self.b.append_block_param(loop_b, types::I64); // i
+        self.b.append_block_param(loop_b, types::I64X2); // running accumulator
+        self.b
+            .ins()
+            .jump(loop_b, &[BlockArg::from(zero), BlockArg::from(zero_vec)]);
+
+        self.b.switch_to_block(loop_b);
+        // Not sealed yet: the back edge from `body_b` (below) is the loop's
+        // second predecessor and hasn't been emitted yet.
+        let i = self.b.block_params(loop_b)[0];
+        let acc_in = self.b.block_params(loop_b)[1];
+        let cont = self.b.ins().icmp(IntCC::SignedLessThan, i, vec_end);
+        let body_b = self.b.create_block();
+        let after_vec_b = self.b.create_block();
+        self.b.ins().brif(cont, body_b, &[], after_vec_b, &[]);
+
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b); // single predecessor: loop_b, known now
+        let addr_a = self.elem_addr(base_a, i);
+        let va = self.b.ins().load(types::I64X2, unaligned, addr_a, 0);
+        let acc_out = self.b.ins().iadd(acc_in, va);
+        let next_i = self.b.ins().iadd_imm(i, 2);
+        self.b
+            .ins()
+            .jump(loop_b, &[BlockArg::from(next_i), BlockArg::from(acc_out)]);
+        self.b.seal_block(loop_b); // both predecessors known now
+
+        self.b.switch_to_block(after_vec_b);
+        self.b.seal_block(after_vec_b); // single predecessor: loop_b's brif
+        // Horizontal reduce: `acc_in` here is loop_b's accumulator block
+        // param at loop exit (a value dominating `after_vec_b`, usable
+        // directly without re-passing it through a block arg — same
+        // dominance-based visibility `emit_array_map2` relies on for
+        // `vec_end`). Lane 0 + lane 1 is the whole reduction for a 2-lane
+        // vector.
+        let lane0 = self.b.ins().extractlane(acc_in, 0u8);
+        let lane1 = self.b.ins().extractlane(acc_in, 1u8);
+        let vec_sum = self.b.ins().iadd(lane0, lane1);
+
+        // --- scalar tail: one more element iff len_a is odd -------------
+        let has_tail = self.b.ins().icmp(IntCC::NotEqual, len_a, vec_end);
+        let tail_b = self.b.create_block();
+        let done_b = self.b.create_block();
+        self.b.append_block_param(done_b, types::I64); // final sum
+        self.b
+            .ins()
+            .brif(has_tail, tail_b, &[], done_b, &[BlockArg::from(vec_sum)]);
+
+        self.b.switch_to_block(tail_b);
+        self.b.seal_block(tail_b); // single predecessor: after_vec_b's brif
+        let addr_a_s = self.elem_addr(base_a, vec_end);
+        let sa = self.b.ins().load(types::I64, trusted, addr_a_s, 0);
+        let tail_sum = self.b.ins().iadd(vec_sum, sa);
+        self.b.ins().jump(done_b, &[BlockArg::from(tail_sum)]);
+
+        self.b.switch_to_block(done_b);
+        // Two predecessors: tail_b's jump (just emitted) and after_vec_b's
+        // brif else-arm (emitted above) — both known now.
+        self.b.seal_block(done_b);
+        self.b.block_params(done_b)[0]
+    }
+
+    /// Lower [`Core::ArrayDot`]: wrapping sum over `i in 0..min(len a, len
+    /// b)` of `a[i] * b[i]`, as a 2-lane `I64X2` accumulator loop (`imul` the
+    /// loaded vectors, `iadd` into the accumulator) plus the same horizontal
+    /// reduction and scalar tail as [`Self::emit_array_sum`]. Sound because
+    /// wrapping int64 multiply-then-add is associative in the running sum —
+    /// see [`Core::ArrayDot`]'s doc comment.
+    fn emit_array_dot(&mut self, base_a: Value, base_b: Value) -> Value {
+        let trusted = MemFlagsData::trusted();
+        let unaligned = MemFlagsData::new().with_notrap();
+
+        let len_a = self.b.ins().load(types::I64, trusted, base_a, 0);
+        let len_b = self.b.ins().load(types::I64, trusted, base_b, 0);
+        let min_len = self.b.ins().smin(len_a, len_b);
+        let vec_end = self.b.ins().band_imm(min_len, -2i64);
+
+        let zero = self.iconst(0);
+        let zero_vec = self.b.ins().splat(types::I64X2, zero);
+
+        // --- vectorized loop: i = 0, 2, 4, ... while i < vec_end ---------
+        let loop_b = self.b.create_block();
+        self.b.append_block_param(loop_b, types::I64); // i
+        self.b.append_block_param(loop_b, types::I64X2); // running accumulator
+        self.b
+            .ins()
+            .jump(loop_b, &[BlockArg::from(zero), BlockArg::from(zero_vec)]);
+
+        self.b.switch_to_block(loop_b);
+        let i = self.b.block_params(loop_b)[0];
+        let acc_in = self.b.block_params(loop_b)[1];
+        let cont = self.b.ins().icmp(IntCC::SignedLessThan, i, vec_end);
+        let body_b = self.b.create_block();
+        let after_vec_b = self.b.create_block();
+        self.b.ins().brif(cont, body_b, &[], after_vec_b, &[]);
+
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b);
+        let addr_a = self.elem_addr(base_a, i);
+        let addr_b = self.elem_addr(base_b, i);
+        let va = self.b.ins().load(types::I64X2, unaligned, addr_a, 0);
+        let vb = self.b.ins().load(types::I64X2, unaligned, addr_b, 0);
+        let vp = self.b.ins().imul(va, vb);
+        let acc_out = self.b.ins().iadd(acc_in, vp);
+        let next_i = self.b.ins().iadd_imm(i, 2);
+        self.b
+            .ins()
+            .jump(loop_b, &[BlockArg::from(next_i), BlockArg::from(acc_out)]);
+        self.b.seal_block(loop_b);
+
+        self.b.switch_to_block(after_vec_b);
+        self.b.seal_block(after_vec_b);
+        let lane0 = self.b.ins().extractlane(acc_in, 0u8);
+        let lane1 = self.b.ins().extractlane(acc_in, 1u8);
+        let vec_sum = self.b.ins().iadd(lane0, lane1);
+
+        // --- scalar tail: one more element iff min_len is odd -----------
+        let has_tail = self.b.ins().icmp(IntCC::NotEqual, min_len, vec_end);
+        let tail_b = self.b.create_block();
+        let done_b = self.b.create_block();
+        self.b.append_block_param(done_b, types::I64);
+        self.b
+            .ins()
+            .brif(has_tail, tail_b, &[], done_b, &[BlockArg::from(vec_sum)]);
+
+        self.b.switch_to_block(tail_b);
+        self.b.seal_block(tail_b);
+        let addr_a_s = self.elem_addr(base_a, vec_end);
+        let addr_b_s = self.elem_addr(base_b, vec_end);
+        let sa = self.b.ins().load(types::I64, trusted, addr_a_s, 0);
+        let sb = self.b.ins().load(types::I64, trusted, addr_b_s, 0);
+        let sp = self.b.ins().imul(sa, sb);
+        let tail_sum = self.b.ins().iadd(vec_sum, sp);
+        self.b.ins().jump(done_b, &[BlockArg::from(tail_sum)]);
+
+        self.b.switch_to_block(done_b);
+        self.b.seal_block(done_b);
+        self.b.block_params(done_b)[0]
     }
 
     /// Evaluate `then`/`else` into a result stack slot and reload — avoids

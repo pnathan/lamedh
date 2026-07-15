@@ -543,6 +543,54 @@ unsafe fn array_map2(op: BinOp, kind: NumKind, base_out: u64, base_a: u64, base_
     }
 }
 
+/// Shared scalar reference implementation of [`Core::ArraySum`]: wrapping
+/// sum of `a[0..len_a]`. This is the interpreter-side parity reference the
+/// native SIMD lowering (`native.rs::Emitter::emit_array_sum`) must agree
+/// with bit-for-bit — wrapping int64 addition is associative, so a
+/// sequential left-fold and a 2-lane vector-accumulator-plus-horizontal-
+/// reduce necessarily produce the same result (see [`Core::ArraySum`]'s doc
+/// comment).
+///
+/// # Safety
+/// `base_a` must be a live buffer pointer from
+/// [`Ctx::alloc_buffer`]/[`Ctx::alloc_buffer_signed`].
+#[inline]
+unsafe fn array_sum(base_a: u64) -> i64 {
+    let pa = base_a as *const u64;
+    let len_a = (unsafe { *pa } as i64).max(0);
+    let mut acc: i64 = 0;
+    for i in 0..len_a as usize {
+        let x = as_i(unsafe { *pa.add(i + 1) });
+        acc = acc.wrapping_add(x);
+    }
+    acc
+}
+
+/// Shared scalar reference implementation of [`Core::ArrayDot`]: wrapping
+/// sum over `i in 0..min(len a, len b)` of `a[i] * b[i]` (each product
+/// wraps, the running sum wraps). Parity reference for
+/// `native.rs::Emitter::emit_array_dot` — same associativity argument as
+/// [`array_sum`].
+///
+/// # Safety
+/// `base_a`/`base_b` must each be a live buffer pointer from
+/// [`Ctx::alloc_buffer`]/[`Ctx::alloc_buffer_signed`].
+#[inline]
+unsafe fn array_dot(base_a: u64, base_b: u64) -> i64 {
+    let pa = base_a as *const u64;
+    let pb = base_b as *const u64;
+    let len_a = unsafe { *pa } as i64;
+    let len_b = unsafe { *pb } as i64;
+    let min_len = len_a.min(len_b).max(0);
+    let mut acc: i64 = 0;
+    for i in 0..min_len as usize {
+        let x = as_i(unsafe { *pa.add(i + 1) });
+        let y = as_i(unsafe { *pb.add(i + 1) });
+        acc = acc.wrapping_add(x.wrapping_mul(y));
+    }
+    acc
+}
+
 /// Evaluate `core` in **tail position** of the function identified by
 /// `self_id`. A `Core::Call(id, ..)` reached here with `id == self_id` is a
 /// **self tail call** (issue #133 Tier 1): instead of recursing through
@@ -725,6 +773,15 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             let base_b = eval_core_nontail(b, env, ctx);
             unsafe { array_map2(*op, *kind, base_out, base_a, base_b) };
             base_out
+        }
+        Core::ArraySum(a) => {
+            let base_a = eval_core_nontail(a, env, ctx);
+            from_i(unsafe { array_sum(base_a) })
+        }
+        Core::ArrayDot(a, b) => {
+            let base_a = eval_core_nontail(a, env, ctx);
+            let base_b = eval_core_nontail(b, env, ctx);
+            from_i(unsafe { array_dot(base_a, base_b) })
         }
         Core::StructNew(inits) => {
             let vals: Vec<u64> = inits
@@ -927,6 +984,25 @@ pub(super) fn eval_core_traced(
             unsafe { array_map2(*op, *kind, base_out, base_a, base_b) };
             step!("arraymap2", base_out, NO_SLOT, NO_CALLEE)
         }
+        Core::ArraySum(a) => {
+            let base_a = eval_core_traced(a, env, ctx, depth + 1, log);
+            step!(
+                "arraysum",
+                from_i(unsafe { array_sum(base_a) }),
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
+        Core::ArrayDot(a, b) => {
+            let base_a = eval_core_traced(a, env, ctx, depth + 1, log);
+            let base_b = eval_core_traced(b, env, ctx, depth + 1, log);
+            step!(
+                "arraydot",
+                from_i(unsafe { array_dot(base_a, base_b) }),
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
         Core::StructNew(inits) => {
             let vals: Vec<u64> = inits
                 .iter()
@@ -979,8 +1055,12 @@ pub fn core_node_count(core: &Core) -> usize {
         Core::Call(_, args) | Core::StructNew(args) | Core::Seq(args) => {
             args.iter().map(core_node_count).sum()
         }
-        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) => core_node_count(a),
-        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) => core_node_count(a) + core_node_count(b),
+        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) | Core::ArraySum(a) => {
+            core_node_count(a)
+        }
+        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) | Core::ArrayDot(a, b) => {
+            core_node_count(a) + core_node_count(b)
+        }
         Core::ArraySet(a, b, c) | Core::ArrayMap2(_, _, a, b, c) => {
             core_node_count(a) + core_node_count(b) + core_node_count(c)
         }
@@ -1030,10 +1110,10 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
             }
             Ok(())
         }
-        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) => {
+        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) | Core::ArraySum(a) => {
             verify_core(a, n_slots, n_funcs)
         }
-        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) => {
+        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) | Core::ArrayDot(a, b) => {
             verify_core(a, n_slots, n_funcs)?;
             verify_core(b, n_slots, n_funcs)
         }
@@ -1204,6 +1284,21 @@ pub fn compile(core: &Core) -> Compiled {
                 let base_b = cb(e, c);
                 unsafe { array_map2(op, kind, base_out, base_a, base_b) };
                 base_out
+            })
+        }
+        Core::ArraySum(a) => {
+            let ca = compile(a);
+            Rc::new(move |e, c| {
+                let base_a = ca(e, c);
+                from_i(unsafe { array_sum(base_a) })
+            })
+        }
+        Core::ArrayDot(a, b) => {
+            let (ca, cb) = (compile(a), compile(b));
+            Rc::new(move |e, c| {
+                let base_a = ca(e, c);
+                let base_b = cb(e, c);
+                from_i(unsafe { array_dot(base_a, base_b) })
             })
         }
         Core::StructNew(inits) => {

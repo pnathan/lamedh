@@ -1778,6 +1778,80 @@ pub(super) fn apply(
                 }
                 Ok(args[0].clone())
             }
+            // SIMD integer array reductions (issue: JIT SIMD reductions):
+            // wrapping, int64-only. This is the tree-walker's reference
+            // implementation — the typed JIT compiles the same semantics to
+            // a vectorized native SIMD reduction (`Core::ArraySum`/
+            // `Core::ArrayDot`) and a scalar Core-interpreter fallback
+            // (`src/jit/runtime.rs::array_sum`/`array_dot`). Wrapping int64
+            // addition is associative, so a sequential left-fold here agrees
+            // bit-for-bit with a vectorized pairwise reduction — see
+            // `Core::ArraySum`'s doc comment for the full argument. Float
+            // reduction is deliberately NOT supported: it would reorder
+            // rounding and needs a reassociation policy we haven't set.
+            BuiltinFunc::ArraySum => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "array-sum: takes exactly one argument".to_string(),
+                    ));
+                }
+                let a = match &args[0] {
+                    LispVal::Array(a) => a,
+                    _ => {
+                        return Err(LispError::Generic(format!(
+                            "array-sum: argument must be an array, got {}",
+                            err_val(&args[0])
+                        )));
+                    }
+                };
+                let mut acc: i64 = 0;
+                for v in a.borrow().iter() {
+                    match v {
+                        LispVal::Number(n) => acc = acc.wrapping_add(*n),
+                        _ => {
+                            return Err(LispError::Generic(format!(
+                                "array-sum: elements must be int64, got {}",
+                                err_val(v)
+                            )));
+                        }
+                    }
+                }
+                Ok(LispVal::Number(acc))
+            }
+            BuiltinFunc::ArrayDot => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "array-dot: takes exactly two arguments".to_string(),
+                    ));
+                }
+                let (a, b) = match (&args[0], &args[1]) {
+                    (LispVal::Array(a), LispVal::Array(b)) => (a, b),
+                    _ => {
+                        return Err(LispError::Generic(
+                            "array-dot: both arguments must be arrays".to_string(),
+                        ));
+                    }
+                };
+                let ab = a.borrow();
+                let bb = b.borrow();
+                let min_len = ab.len().min(bb.len());
+                let mut acc: i64 = 0;
+                for i in 0..min_len {
+                    match (&ab[i], &bb[i]) {
+                        (LispVal::Number(xi), LispVal::Number(yi)) => {
+                            acc = acc.wrapping_add(xi.wrapping_mul(*yi));
+                        }
+                        (x, y) => {
+                            return Err(LispError::Generic(format!(
+                                "array-dot: elements at index {i} are not both int64 ({} vs {})",
+                                err_val(x),
+                                err_val(y)
+                            )));
+                        }
+                    }
+                }
+                Ok(LispVal::Number(acc))
+            }
             BuiltinFunc::Length => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(

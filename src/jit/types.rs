@@ -490,6 +490,31 @@ pub enum Core {
     /// closure backend use a plain scalar loop — elementwise ops have no
     /// reduction/reassociation, so all three executors agree bit-for-bit.
     ArrayMap2(BinOp, NumKind, Box<Core>, Box<Core>, Box<Core>),
+    /// `(array-sum a)`: **wrapping** sum of every `int64` element of `a`.
+    /// int64-only (unlike [`Core::ArrayMap2`]) — float reduction reorders
+    /// rounding and needs a reassociation policy this intrinsic does not
+    /// attempt, so `array-sum` never elaborates over `(array float64)`.
+    /// Wrapping int64 addition is **associative**
+    /// (`(a+b)+c ≡ a+(b+c) mod 2^64`), so a multi-lane vector reduction (a
+    /// 2-lane SIMD accumulator plus a horizontal add of its lanes) is
+    /// **bit-identical** to a sequential left-fold — that is what lets the
+    /// native backend use a vector accumulator and still match
+    /// [`super::runtime`]'s scalar reference exactly. The native backend
+    /// lowers this to a 2-lane `I64X2` accumulator loop (`splat(0)` seed,
+    /// `iadd` per iteration) plus a horizontal `extractlane`/`iadd` reduction
+    /// and a scalar tail for an odd final element.
+    ArraySum(Box<Core>),
+    /// `(array-dot a b)`: **wrapping** sum over `i in 0..min(len a, len b)`
+    /// of `a[i] * b[i]` — each product wraps, and the running sum wraps.
+    /// int64-only, same reason as [`Core::ArraySum`]. Both the per-lane
+    /// `imul` and the `iadd` accumulation are wrapping two's-complement
+    /// arithmetic, and wrapping addition is associative (see
+    /// [`Core::ArraySum`]'s doc comment), so a vectorized (SIMD multiply +
+    /// pairwise-add reduction) evaluation is bit-identical to the sequential
+    /// scalar fold. The native backend lowers this like [`Core::ArraySum`]
+    /// but with an `imul` of the two loaded vectors feeding the accumulator
+    /// each iteration.
+    ArrayDot(Box<Core>, Box<Core>),
 }
 
 /// Unary floating-point intrinsics that lower to native code. Each takes one

@@ -241,6 +241,13 @@ impl Cx<'_> {
                     "ARRAY-MUL!" if !self.checking => {
                         self.elab_array_map2(BinOp::Mul, args, scope, max)
                     }
+                    // SIMD integer array reductions: wrapping, int64-only
+                    // (float reduction reorders rounding and needs a
+                    // reassociation policy we haven't set — see
+                    // `Core::ArraySum`'s doc comment). Codegen-only, same
+                    // discipline as the elementwise family above.
+                    "ARRAY-SUM" if !self.checking => self.elab_array_sum(args, scope, max),
+                    "ARRAY-DOT" if !self.checking => self.elab_array_dot(args, scope, max),
                     // Checker-only forms (#162): list/pair processing + `quote`/
                     // `cond`/`when` whose `elab_*` emit only a placeholder
                     // `Core::LitI(0)` for type purposes — they typecheck untyped
@@ -1331,6 +1338,60 @@ impl Cx<'_> {
             Core::ArrayMap2(op, kind, Box::new(out), Box::new(a), Box::new(b)),
             Ty::Array(Box::new(elem_ty)),
         ))
+    }
+
+    /// `(array-sum a)` : (array int64) -> int64. Wrapping sum of every
+    /// element. int64-only by design (see [`Core::ArraySum`]'s doc comment
+    /// for why float is out of scope) — unlike [`Self::elab_array_map2`],
+    /// there is no element-type inference here: `a` must unify directly with
+    /// `(array int64)`, or this returns `Err` and the whole function falls
+    /// back to interpreted.
+    fn elab_array_sum(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 1 {
+            return Err(format!("`array-sum` expects 1 arg, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        if self.unify(&ta, &Ty::Array(Box::new(Ty::Int64))).is_err() {
+            return Err(format!(
+                "`array-sum` expects an (array int64) argument, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        Ok((Core::ArraySum(Box::new(a)), Ty::Int64))
+    }
+
+    /// `(array-dot a b)` : (array int64) (array int64) -> int64. Wrapping sum
+    /// over `i in 0..min(len a, len b)` of `a[i] * b[i]`. int64-only, same
+    /// reasoning as [`Self::elab_array_sum`].
+    fn elab_array_dot(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!("`array-dot` expects 2 args, got {}", args.len()));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        let (b, tb) = self.elab(&args[1], scope, max)?;
+        if self.unify(&ta, &Ty::Array(Box::new(Ty::Int64))).is_err() {
+            return Err(format!(
+                "`array-dot` expects (array int64) as its first argument, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        if self.unify(&tb, &Ty::Array(Box::new(Ty::Int64))).is_err() {
+            return Err(format!(
+                "`array-dot` expects (array int64) as its second argument, got {:?}",
+                self.walk(&tb)
+            ));
+        }
+        Ok((Core::ArrayDot(Box::new(a), Box::new(b)), Ty::Int64))
     }
 
     // --- checker-only list/pair forms (#162) -------------------------------
