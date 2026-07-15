@@ -4,6 +4,9 @@ version = "0.3.0"
 edition = "2024"
 description = "REPL and command-line driver for the Lamedh Lisp 1.5 interpreter"
 license = "AGPL-3.0-only"
+repository = "https://github.com/pnathan/lamedh"
+homepage = "https://github.com/pnathan/lamedh"
+documentation = "https://pnathan.github.io/lamedh/"
 
 # Produce a binary called `lamedh` (the crate is `lamedh-cli`).
 [[bin]]
