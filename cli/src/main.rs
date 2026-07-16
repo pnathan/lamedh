@@ -68,6 +68,7 @@
 //! ```
 
 use clap::Parser;
+use lamedh::check;
 use lamedh::{Shared, environment::Environment, eval_all, load_directory, load_file, printer};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -194,6 +195,20 @@ struct Args {
     #[arg(long)]
     sandbox: bool,
 
+    /// Statically check the given file(s) without executing them: report
+    /// parse errors, unbound function calls (with did-you-mean / CL-ism
+    /// guidance), and provable arity mismatches.  Exit 0 if clean, 1 if there
+    /// are warnings, 2 if a file failed to parse or read.  The files to check
+    /// are the positional arguments; `--check` with no files is an error.
+    #[arg(long)]
+    check: bool,
+
+    /// Output format for `--check` diagnostics: `human` (default) writes
+    /// `file:LINE: severity: message`; `sexpr` writes one readable
+    /// s-expression per finding (see docs/check.md for the schema).
+    #[arg(long = "error-format", value_name = "FORMAT", default_value = "human")]
+    error_format: String,
+
     /// Script file to run, followed by arguments for the script.  The
     /// arguments are exposed to Lisp as the list *ARGV* (strings).  The
     /// process exits after the script finishes; use (exit n) to set the
@@ -251,7 +266,40 @@ fn warn_on_overflow(env: &Environment, had_overflow: bool) {
     }
 }
 
+/// Static-check mode (`--check`): verify files without executing them, print
+/// diagnostics in the requested format, and exit with the check exit code.
+/// Never returns.
+fn run_check(args: &Args) -> ! {
+    let sexpr = match args.error_format.as_str() {
+        "human" => false,
+        "sexpr" => true,
+        other => {
+            eprintln!("error: unknown --error-format '{other}' (expected 'human' or 'sexpr')");
+            std::process::exit(2);
+        }
+    };
+    if args.script.is_empty() {
+        eprintln!("error: --check requires one or more files to check");
+        std::process::exit(2);
+    }
+    let findings = check::check_paths(&args.script);
+    for f in &findings {
+        if sexpr {
+            println!("{}", f.to_sexpr());
+        } else {
+            println!("{}", f.to_human());
+        }
+    }
+    std::process::exit(check::exit_code(&findings));
+}
+
 fn run(args: Args) {
+    // Static-check mode short-circuits everything else: it neither loads -i
+    // files nor starts a REPL, and it builds its own throwaway environment.
+    if args.check {
+        run_check(&args);
+    }
+
     // Use the embedded stdlib so the interpreter is self-contained. A lib/
     // directory on disk can still override or extend it via -i.
     //

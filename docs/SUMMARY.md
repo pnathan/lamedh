@@ -31,6 +31,10 @@
 - [Special Forms](special_forms.md)
 - [Standard Library](standard_library.md)
 
+# Tooling
+
+- [Static Checking (`lamedh --check`)](check.md)
+
 # Functions Dictionary
 
 - [Complete Function Reference](generated-reference.md)
