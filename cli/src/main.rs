@@ -81,6 +81,18 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
 use std::fs;
 
+mod mcp;
+
+/// Arm this thread's kernel fuel budget for the next top-level execution unit,
+/// or disarm it. Reuses the existing `WITH-FUEL` kernel counter (issue #284):
+/// every trampoline step charges one unit and exhaustion raises a catchable
+/// `fuel exhausted` error. Called before each script run / `-s` expression /
+/// REPL line when `--fuel` is set. Arming fuel disables the native JIT for the
+/// metered unit (a documented no-compile-under-fuel consequence of #284).
+fn arm_fuel(fuel: Option<u64>) {
+    lamedh::evaluator::set_kernel_fuel(fuel);
+}
+
 /// A character that ends a Lisp token: whitespace or a reader special char.
 /// Used both to find the token under the cursor and to reject symbol names
 /// that could not be re-typed as a single token.
@@ -234,6 +246,24 @@ struct Args {
     /// is an error.
     #[arg(long)]
     test: bool,
+
+    /// Run as a Model Context Protocol (MCP) server over stdio: read
+    /// newline-delimited JSON-RPC 2.0 requests on stdin and write responses on
+    /// stdout, driving one persistent interpreter environment. Unlike the
+    /// interactive CLI, `--mcp` starts fully sandboxed (all capabilities OFF)
+    /// because it evaluates untrusted, agent-generated code; grant specific
+    /// capabilities with `--capability`. See docs/mcp.md.
+    #[arg(long)]
+    mcp: bool,
+
+    /// Per-execution step budget (kernel fuel): a backstop so runaway code
+    /// terminates with a `fuel exhausted` error instead of hanging. Applies
+    /// per top-level execution unit — a script run, each `-s` expression, or
+    /// each REPL line. In `--mcp` mode it applies per tool call and defaults
+    /// to a generous 100000000 even without this flag. Arming fuel disables
+    /// the native JIT for that unit (see docs).
+    #[arg(long, value_name = "N")]
+    fuel: Option<u64>,
 
     /// Script file to run, followed by arguments for the script.  The
     /// arguments are exposed to Lisp as the list *ARGV* (strings).  The
@@ -481,6 +511,13 @@ fn run(args: Args) {
         run_test(&args);
     }
 
+    // MCP server mode: one persistent, sandboxed-by-default environment driven
+    // over stdio. Handles its own capability grants and per-call fuel; never
+    // returns (it runs its own read/dispatch loop until stdin closes).
+    if args.mcp {
+        mcp::run_mcp(&args);
+    }
+
     // Use the embedded stdlib so the interpreter is self-contained. A lib/
     // directory on disk can still override or extend it via -i.
     //
@@ -513,8 +550,10 @@ fn run(args: Args) {
         }
     }
 
-    // Run a positional script file, then exit.
+    // Run a positional script file, then exit. The whole script run is one
+    // execution unit, so arm the fuel budget once around the load (issue #284).
     if let Some(script_path) = script {
+        arm_fuel(args.fuel);
         let had_overflow = env.flag_set("OVERFLOW");
         if let Err(e) = load_file(&script_path, &env) {
             eprintln!("{}", lamedh::format_error_with_backtrace(&e, &env));
@@ -527,6 +566,9 @@ fn run(args: Args) {
     // Execute s-expression(s) from -s flags (repeatable, shared env).
     if !args.s.is_empty() {
         for sexp in &args.s {
+            // Each -s expression is its own execution unit: re-arm fuel so a
+            // budget is not shared across them.
+            arm_fuel(args.fuel);
             let had_overflow = env.flag_set("OVERFLOW");
             match eval_all(sexp, &env) {
                 Ok(results) => {
@@ -604,6 +646,8 @@ fn run(args: Args) {
                 if let Some(ref path) = history_path {
                     let _ = rl.save_history(path);
                 }
+                // Each accepted REPL line is one execution unit.
+                arm_fuel(args.fuel);
                 let had_overflow = env.flag_set("OVERFLOW");
                 match eval_all(&input, &env) {
                     Ok(results) => {

@@ -36,6 +36,7 @@
 - [Static Checking (`lamedh --check`)](check.md)
 - [Canonical Formatting (`lamedh --fmt`)](fmt.md)
 - [Test Runner (`lamedh --test`)](testing-cli.md)
+- [MCP Server (`lamedh --mcp`)](mcp.md)
 
 # Functions Dictionary
 
