@@ -77,6 +77,21 @@ pub enum Ty {
     Any,
 }
 
+/// Which execution tier a registered typed function will actually run on
+/// (the `compiled-p` introspection builtin, "loud type inference"): the best
+/// available edition, since with the default `jit` feature a function that
+/// has a native edition also keeps its closure edition around (see
+/// [`super::registry::TypedFn`]'s `compiled`/`native` fields) but `invoke`
+/// always prefers native when present.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tier {
+    /// A Cranelift-compiled native edition exists (`jit` feature only).
+    Native,
+    /// Only the portable closure edition exists — either the `jit` feature
+    /// is disabled, or Cranelift codegen failed and compilation fell back.
+    Closure,
+}
+
 /// Outcome of [`Jit::analyze_untyped`] (#162 stage 4): the checker's verdict for
 /// an un-annotated function, and whether a native edition was installed.
 pub enum Analysis {

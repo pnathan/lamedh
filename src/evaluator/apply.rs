@@ -630,7 +630,10 @@ pub(super) fn apply(
             | BuiltinFunc::ExplainCompile
             | BuiltinFunc::ReadString
             | BuiltinFunc::DeclareType
-            | BuiltinFunc::Disassemble => apply_introspection(builtin, args, env),
+            | BuiltinFunc::Disassemble
+            | BuiltinFunc::Signature
+            | BuiltinFunc::CompiledP
+            | BuiltinFunc::WhyNotTyped => apply_introspection(builtin, args, env),
 
             // String/Symbol operations
             BuiltinFunc::Explode
