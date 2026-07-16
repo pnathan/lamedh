@@ -867,7 +867,7 @@
     (cons 'DESCRIPTION "Recommended default function definition form. Tries HM type inference automatically and compiles a native typed edition when the body is a fully-inferable typed island; otherwise falls back transparently to an ordinary lambda. Params may be classic ((a b)), flat bare (a b), or typed ((x int64)); an optional bare type keyword after the params pins the return type, and any unspecified type is inferred. Emits a note on stderr when types were inferred and compiled.")
     (cons 'EXAMPLES '(((defun* sq (x) (* x x)) sq)
                       ((defun* add (x int64) (y int64) (+ x y)) add)))
-    (cons 'SEE-ALSO '(defun defun-typed defun-typed-opt check-type lambda))))
+    (cons 'SEE-ALSO '(defun defun-typed defun-typed-opt check-type lambda signature compiled-p why-not-typed))))
 
 (register-doc 'defmacro
   (list
@@ -4321,6 +4321,42 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'RETURNS "T (the listing is printed to stdout)")
     (cons 'EXAMPLES '(((disassemble 'fact) T)))
     (cons 'SEE-ALSO '(describe see-source defun-typed))))
+
+(register-doc 'signature
+  (list
+    (cons 'NAME 'signature)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(signature 'sym)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Loud type inference (companion to DEFUN*'s silent fallback): the inferred type signature of a typed function as a readable sexpr, e.g. (INT64 INT64 -> INT64). NIL for an untyped function — a plain lambda, a DEFUN*/DEFUN-TYPED whose registry entry has been shadowed by a later plain redefinition, or a name that was never typed at all.")
+    (cons 'ARGS '((sym "A quoted symbol naming a function")))
+    (cons 'RETURNS "A signature sexpr, or NIL")
+    (cons 'EXAMPLES '(((progn (defun* add (x int64) (y int64) (+ x y)) (signature 'add)) (INT64 INT64 -> INT64))))
+    (cons 'SEE-ALSO '(compiled-p why-not-typed defun* explain-compile))))
+
+(register-doc 'compiled-p
+  (list
+    (cons 'NAME 'compiled-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(compiled-p 'sym)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Loud type inference: the execution tier a typed function will actually run on. NATIVE when a Cranelift native edition exists (the jit feature only), CLOSURE when only the portable closure edition does (always true for a typed function when the jit feature is disabled, and possible even with it enabled if native codegen fell back), or NIL for a plain interpreted function / unknown name.")
+    (cons 'ARGS '((sym "A quoted symbol naming a function")))
+    (cons 'RETURNS "NATIVE, CLOSURE, or NIL")
+    (cons 'EXAMPLES '(((progn (defun* add (x int64) (y int64) (+ x y)) (compiled-p 'add)) NATIVE)))
+    (cons 'SEE-ALSO '(signature why-not-typed defun* disassemble))))
+
+(register-doc 'why-not-typed
+  (list
+    (cons 'NAME 'why-not-typed)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(why-not-typed 'sym)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the concrete inference-failure reason recorded at the fallback site — e.g. which expression or operand defeated typing — not just a generic \"inference failed\". NIL if the function is currently typed, or was never a DEFUN* candidate. The reason is cleared automatically the next time DEFUN* (re)defines the same name and succeeds.")
+    (cons 'ARGS '((sym "A quoted symbol naming a function")))
+    (cons 'RETURNS "A reason string, or NIL")
+    (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "call to unknown function `CONS`")))
+    (cons 'SEE-ALSO '(signature compiled-p defun* explain-compile))))
 
 (register-category 'introspection
   "Inspecting registered definitions and compiled code"

@@ -505,13 +505,19 @@ fn apply_array_writeback(
                     crate::jit::Value::Char(b) => LispVal::Char(b),
                     // Excluded by `is_flat_scalar_array`: only scalar
                     // elements reach a flat array's write-back.
-                    crate::jit::Value::Array(_) | crate::jit::Value::Struct(_) => {
+                    crate::jit::Value::Array(_)
+                    | crate::jit::Value::Struct(_)
+                    | crate::jit::Value::TypedArray(_) => {
                         unreachable!("flat scalar array write-back produced a compound element")
                     }
                 })
                 .collect();
             *rc.borrow_mut() = new_items;
         }
+        // A `LispVal::TypedArray` argument was passed to the native call as a
+        // raw pointer into its own buffer (`Value::to_word`'s `TypedArray`
+        // arm) — the callee's `store`/`aset` already mutated it in place, so
+        // (unlike `LispVal::Array` above) no copy-back is needed here.
     }
 }
 
@@ -776,6 +782,18 @@ pub(super) fn lispval_to_typed(
             LispVal::String(s) if matches!(**elem, Ty::Char) => {
                 Ok(Value::Array(s.bytes().map(Value::Char).collect()))
             }
+            // Zero-copy path: a `LispVal::TypedArray` whose element type
+            // matches crosses as `Value::TypedArray`, letting
+            // `Value::to_word` hand the native call a pointer straight into
+            // its own buffer instead of copying element-by-element.
+            LispVal::TypedArray(ta) if crate::jit::elem_ty_matches(ta.elem, elem) => {
+                Ok(Value::TypedArray(ta.clone()))
+            }
+            LispVal::TypedArray(ta) => Err(format!(
+                "expected array of {}, got typed array of {}",
+                crate::jit::ty_name(elem),
+                ta.elem
+            )),
             LispVal::Array(a) => {
                 let items = a.borrow();
                 let mut out = Vec::with_capacity(items.len());
@@ -877,6 +895,11 @@ pub(super) fn typed_to_lispval(
             }
             _ => LispVal::Nil,
         },
+        // `from_word` never produces this on a return path (it always
+        // rebuilds a plain `Value::Array`), but it can flow through as a
+        // pass-through argument value in other call shapes, so round-trip it
+        // rather than asserting unreachable.
+        Value::TypedArray(ta) => LispVal::TypedArray(ta),
     }
 }
 
@@ -1018,5 +1041,82 @@ pub(super) fn see_type_form(name: &str, env: &Shared<Environment>) -> LispVal {
             sym("DYNAMIC"),
             LispVal::String("variadic or not a plain lambda".to_string()),
         ]),
+    }
+}
+
+/// The plist key `defun*` records an inference-failure reason under (loud
+/// type inference): set on a fallback-to-lambda, cleared on a successful
+/// typed (re)definition. See `eval_defun_star`.
+pub(super) const WHY_NOT_TYPED_KEY: &str = "why-not-typed";
+
+/// `(signature 'fn)` — the inferred type signature of a typed function as a
+/// readable sexpr, e.g. `(INT64 INT64 -> INT64)`; `NIL` for an untyped
+/// function (a plain lambda, or no such function at all). Loud type
+/// inference (#134 follow-up): the live value-cell binding is authoritative,
+/// exactly like `check_function`/`see_type_form` — a typed registry entry
+/// left behind by an earlier `defun*`/`defun-typed` that was since
+/// overwritten with a plain lambda must not be reported as still typed.
+pub(super) fn signature_form(name: &str, env: &Shared<Environment>) -> LispVal {
+    let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
+    if live_is_plain_lambda {
+        return LispVal::Nil;
+    }
+    match env.jit_named_signature(name) {
+        Some((params, ret)) => {
+            let args = params
+                .iter()
+                .map(|(_, t)| crate::jit::ty_name(t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let sig = if args.is_empty() {
+                format!("(-> {})", crate::jit::ty_name(&ret))
+            } else {
+                format!("({args} -> {})", crate::jit::ty_name(&ret))
+            };
+            crate::reader::read(&sig, env).unwrap_or(LispVal::Nil)
+        }
+        None => LispVal::Nil,
+    }
+}
+
+/// `(compiled-p 'fn)` — the execution tier that will actually run: `NATIVE`
+/// if a Cranelift native edition exists (`jit` feature only), `CLOSURE` if
+/// only the portable closure edition does, `NIL` for a plain interpreted
+/// function or a name with no typed registration at all. Same live-binding
+/// authority rule as `signature_form`.
+pub(super) fn compiled_p_form(name: &str, env: &Shared<Environment>) -> LispVal {
+    let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
+    if live_is_plain_lambda {
+        return LispVal::Nil;
+    }
+    match env.jit_tier(name) {
+        Some(crate::jit::Tier::Native) => LispVal::Symbol(env.intern_symbol("NATIVE")),
+        Some(crate::jit::Tier::Closure) => LispVal::Symbol(env.intern_symbol("CLOSURE")),
+        None => LispVal::Nil,
+    }
+}
+
+/// `(why-not-typed 'fn)` — for a `defun*` that fell back to an untyped
+/// lambda, the recorded inference-failure reason (a string); `NIL` if the
+/// function is currently typed, or was never a `defun*` candidate (the
+/// reason is only ever recorded by `eval_defun_star`'s fallback branch, and
+/// cleared on a subsequent successful typed (re)definition).
+pub(super) fn why_not_typed_form(name: &str, env: &Shared<Environment>) -> LispVal {
+    // If the live binding is currently typed, there is nothing to explain —
+    // even if a stale reason happens to still be sitting in the plist (e.g.
+    // installed by `defun-typed`/`jit-optimize` rather than `defun*` after an
+    // earlier `defun*` failure for the same name).
+    let live_is_plain_lambda = matches!(env.get(name), Some(LispVal::Lambda(_)));
+    if !live_is_plain_lambda && env.jit_named_signature(name).is_some() {
+        return LispVal::Nil;
+    }
+    match env
+        .intern_symbol(name)
+        .borrow()
+        .plist
+        .get(WHY_NOT_TYPED_KEY)
+    {
+        Some(LispVal::String(s)) => LispVal::String(s.clone()),
+        _ => LispVal::Nil,
     }
 }

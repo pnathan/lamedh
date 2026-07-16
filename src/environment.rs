@@ -890,6 +890,18 @@ impl Environment {
             "DECLARE-TYPE!".to_string(),
             LispVal::Builtin(BuiltinFunc::DeclareType),
         );
+        env.set(
+            "SIGNATURE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Signature),
+        );
+        env.set(
+            "COMPILED-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::CompiledP),
+        );
+        env.set(
+            "WHY-NOT-TYPED".to_string(),
+            LispVal::Builtin(BuiltinFunc::WhyNotTyped),
+        );
         // Kernel fuel (issue #284 Phase 2). WITH-FUEL fences shadow the
         // setter inside guarded code; hosts and top-level scripts may use it
         // directly.
@@ -1155,6 +1167,21 @@ impl Environment {
         env.set(
             "$ARRAY->LIST".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayToList),
+        );
+
+        // Flat typed arrays (issue: JIT zero-copy array membrane): a
+        // `(typed-array n elem-type)` array stores elements as raw `u64`
+        // words from creation, in the same layout as the JIT's call-arena
+        // buffers, so it can cross into a typed function without a copy
+        // when the element types agree. `aref`/`aset`/`array-length*`/
+        // `length`/`arrayp` all accept it alongside a plain `array`.
+        env.set(
+            "TYPED-ARRAY".to_string(),
+            LispVal::Builtin(BuiltinFunc::MakeTypedArray),
+        );
+        env.set(
+            "TYPED-ARRAY-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::TypedArrayp),
         );
 
         // Sorting (stable, non-destructive; takes a comparator predicate)
@@ -1871,6 +1898,28 @@ impl Environment {
         self.get(name).is_some()
     }
 
+    /// Return the names of every symbol that is actually **bound** (has a
+    /// value visible from this environment — a global value-cell binding, a
+    /// local frame binding, or a dynamic binding), as opposed to merely
+    /// interned.
+    ///
+    /// Used to build did-you-mean suggestions on unbound-symbol errors (see
+    /// [`crate::teaching_errors`]): suggesting an interned-but-unbound name
+    /// (e.g. a symbol that only ever appeared as quoted data) would be
+    /// useless noise. This is an O(n) scan over the symbol table plus one
+    /// `resolve()` per symbol, which is only acceptable because callers only
+    /// reach it on the (cold) error-construction path.
+    pub fn bound_symbol_names(&self) -> Vec<String> {
+        self.shared
+            .symbols
+            .borrow()
+            .all_symbols()
+            .iter()
+            .filter(|sym| self.resolve(sym).is_some())
+            .map(|sym| sym.borrow().name.clone())
+            .collect()
+    }
+
     /// `true` if this is the root (global) frame, whose variable storage is the
     /// per-symbol value cells rather than a `HashMap`.
     #[inline]
@@ -2272,6 +2321,13 @@ impl Environment {
     pub fn jit_is_compiled(&self, name: &str) -> Option<bool> {
         let jit = self.shared.jit.borrow();
         jit.get(name).map(|f| f.is_compiled())
+    }
+
+    /// The execution tier a registered typed function will actually run on
+    /// (`NATIVE`/`CLOSURE`) — the `compiled-p` introspection builtin's
+    /// back-end. `None` if no defined typed function by that name exists.
+    pub fn jit_tier(&self, name: &str) -> Option<crate::jit::Tier> {
+        self.shared.jit.borrow().tier(name)
     }
 
     /// Render the typed-core IR of a registered ("jotted") function as a
@@ -2823,7 +2879,7 @@ impl Environment {
 /// so it can reach `SharedState`'s and `SymbolTable`'s private fields.
 mod worldfork {
     use super::*;
-    use crate::{Code, ErrorObj, Fexpr, Lambda, Macro, StructObj, Vau};
+    use crate::{Code, ErrorObj, Fexpr, Lambda, Macro, StructObj, TypedArrayObj, Vau};
 
     /// Memo map keyed by prototype allocation address, using the crate's
     /// fast integer hasher — the copier does one lookup+insert per copied
@@ -2844,6 +2900,7 @@ mod worldfork {
         codes: PtrMap<Shared<Code>>,
         tables: PtrMap<Shared<SharedCell<HashMap<LispVal, LispVal>>>>,
         arrays: PtrMap<Shared<SharedCell<Vec<LispVal>>>>,
+        typed_arrays: PtrMap<Shared<TypedArrayObj>>,
     }
 
     impl WorldCopier {
@@ -2859,6 +2916,7 @@ mod worldfork {
                 codes: PtrMap::with_capacity_and_hasher(1 << 15, Default::default()),
                 arrays: PtrMap::default(),
                 tables: PtrMap::default(),
+                typed_arrays: PtrMap::default(),
             }
         }
 
@@ -3184,6 +3242,19 @@ mod worldfork {
                             new_arr.borrow_mut().push(copied);
                         }
                         LispVal::Array(new_arr)
+                    }
+                }
+                LispVal::TypedArray(a) => {
+                    let key = Shared::as_ptr(a) as usize;
+                    if let Some(hit) = self.typed_arrays.get(&key) {
+                        LispVal::TypedArray(hit.clone())
+                    } else {
+                        let new_arr = Shared::new(TypedArrayObj {
+                            elem: a.elem,
+                            data: SharedCell::new(a.data.borrow().clone()),
+                        });
+                        self.typed_arrays.insert(key, new_arr.clone());
+                        LispVal::TypedArray(new_arr)
                     }
                 }
                 LispVal::Struct(s) => {

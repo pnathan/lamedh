@@ -1,6 +1,6 @@
 [package]
 name = "lamedh-cli"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "REPL and command-line driver for the Lamedh Lisp 1.5 interpreter"
 license = "AGPL-3.0-only"
@@ -19,6 +19,7 @@ lamedh = { path = "..", default-features = false }
 rustyline = "14.0.0"
 clap = { version = "4.5.4", features = ["derive"] }
 dirs = "6"
+serde_json = "1"
 
 [features]
 default = ["jit"]

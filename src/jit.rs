@@ -49,7 +49,7 @@
 //! Integer arithmetic wraps and integer `/`,`mod` by zero yield `0` (no panics);
 //! this diverges from the checked tree-walker and is revisited with #67.
 
-use crate::{LispVal, Shared, SharedCell, StructObj};
+use crate::{LispVal, Shared, SharedCell, StructObj, TypedArrayObj};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -74,8 +74,8 @@ use self::types::*;
 pub use self::registry::{Jit, TypedFn};
 pub use self::runtime::{TraceStep, core_node_count, verify_core};
 pub use self::types::{
-    Analysis, BinOp, CmpOp, Core, JitFlags, NumKind, StructDef, Ty, Value, WritebackResult,
-    is_compileable, ty_name,
+    Analysis, BinOp, CmpOp, Core, JitFlags, NumKind, StructDef, Tier, Ty, Value, WritebackResult,
+    elem_ty_matches, is_compileable, ty_name,
 };
 
 /// Try to parse a surface type form without a struct registry — handles scalar

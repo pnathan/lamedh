@@ -1,3 +1,121 @@
+# v0.4.0 — 2026-07-16
+
+The 0.4.0 arc: more of the typed JIT's surface compiles to native code,
+error messages teach the language back to whoever hits them, and the CLI
+grew a matching set of agent-facing tools (`--check`, `--fmt`/`--fmt-check`,
+`--test`, `--mcp`, `--fuel`) plus a cloud-gated ship gauntlet.
+
+## JIT: native loops, TypedArray membrane, inlining, stack allocation,
+## array-of-records (#412)
+
+`Core::Assign`/`Core::While`/`Core::For` join the typed JIT IR — `setq` on
+local slots, native loops with branch-on-zero tests, and bounded iteration
+with overflow-checked, silently-breaking increment (matching the
+tree-walker contract) — executed identically across the Core interpreter,
+closure compiler, and Cranelift backend (bit-for-bit differential tests).
+Stacked on top, in the same arc:
+
+- **May-mutate write-back analysis**: read-only array parameters skip the
+  O(n) copy-back, eliminating overhead for read-heavy typed functions.
+- **Core-level inlining**: small (<30 nodes), non-recursive, already-
+  defined callees are spliced into the caller's Core body at compile time,
+  with dependent-invalidation tracking so redefining an inlinee
+  recompiles every inliner.
+- **`LispVal::TypedArray`**: a flat `u64` buffer with a declared element
+  type (`int64`/`float64`); a zero-copy membrane passes the raw buffer
+  pointer straight into a matching typed function instead of copying, so
+  mutations are shared in place. New builtins `typed-array`/`typed-array-p`.
+- **Stack allocation**: escape analysis stack-allocates constant-size,
+  non-escaping `Core::ArrayNew`/`StructNew` results via a Cranelift
+  `StackSlot` instead of the arena.
+- **Contiguous array-of-records**: `(array (struct ...))` with all-scalar
+  fields stores elements inline with stride-based addressing
+  (`ArrayNewStride`/`ArraySetStride`/`InlineFieldGet`/`InlineFieldSet`);
+  the elaborator fuses accessor/constructor calls on array elements into
+  fused loads/stores when a whole-tree safety analysis proves every use
+  is safe, falling back to the general layout on any escape.
+
+Measured (release, best-of-N): Levenshtein 10k `6673 ms → 74 ms` (~90x,
+faster than SBCL on the same machine); a realistic 10-rep workload
+`48 ms → 22 ms` (2.2x).
+
+## Teaching errors: did-you-mean + Common-Lisp-ism guidance (#413)
+
+Lamedh has ~zero LLM training-data presence, so error messages double as
+in-context documentation. Unbound-symbol / undefined-function errors now
+carry two mechanisms (`src/teaching_errors.rs`): a Levenshtein did-you-mean
+list over *actually bound* symbols (up to 3 suggestions), and a small
+verified table of well-known Common Lisp forms Lamedh deliberately lacks
+(`LOOP`, `DEFSTRUCT`, `DEFCLASS`, `DEFMETHOD`, `DEFGENERIC`, `DEFCONSTANT`,
+`MULTIPLE-VALUE-BIND`, `VALUES`, `WITH-OPEN-FILE`), each paired with the
+real replacement — CL-ism guidance takes precedence when both would fire.
+
+## Loud type inference: `signature` / `compiled-p` / `why-not-typed` (#414)
+
+`defun*` silently fell back to a plain lambda on inference failure, with no
+way to ask why from Lisp. Three new introspection builtins make the typed
+JIT's decisions observable: `(signature 'fn)` (the inferred type as a
+readable sexpr, or `nil`), `(compiled-p 'fn)` (`NATIVE`, `CLOSURE`, or
+`nil` — the tier that will actually run), and `(why-not-typed 'fn)` (the
+concrete inference-failure reason for a `defun*` that fell back).
+
+## Cloud gauntlet CI + clippy `-D warnings` everywhere (#415)
+
+`rust.yml` now mirrors `scripts/gauntlet.sh` as four parallel jobs
+(DEFAULT release, `--no-default-features`, `--features fuzz`, fmt+clippy)
+with per-job caches, so PRs merge-gate in Actions instead of on a laptop.
+Clippy warnings are errors in the gauntlet script, the documented lint
+command, and the CI lint job alike — one policy, three places.
+
+## `lamedh --check`: static verification without execution (#416)
+
+Parses and lints `.lisp` files without running them: parse errors,
+unbound-operator calls (with teaching-errors did-you-mean/CL-ism
+guidance), and provable arity mismatches on file-defined functions and
+plain stdlib lambdas. Zero-false-positive contract verified over the
+whole `lib/`, `examples/`, and `benchmarks/` corpus. Exit 0 clean / 1
+warnings / 2 parse-or-read failure; `--error-format=sexpr` for
+machine-readable findings. Docs: `docs/check.md`.
+
+## `lamedh --fmt`/`--fmt-check` and `lamedh --test` (#417)
+
+A conservative canonical formatter (`src/fmt.rs`) that only rewrites
+indentation and incidental whitespace — never token reflow, never
+string/char/comment content — validated for idempotence and
+meaning-preservation over the whole `lib/` corpus. `lamedh --test` is a
+machine-readable runner over `deftest`-registered tests: human `FAIL name:
+message` lines plus a `test result: N passed; M failed` summary, or
+`--error-format=sexpr` findings mirroring `--check`'s schema.
+
+## `lamedh --mcp` and `lamedh --fuel` (#418)
+
+`--mcp` runs Lamedh as a Model Context Protocol server over stdio
+(newline-delimited JSON-RPC 2.0) against one persistent interpreter:
+`eval` (fuel-fenced), `check`, `doc`, `apropos`, `run-tests` (fresh
+scratch world), `introspect`. Sandboxed by default (all capabilities off)
+since it evaluates untrusted, agent-generated code; `--capability` grants
+specific ones back. `--fuel N` arms the existing `WITH-FUEL` kernel step
+budget per top-level execution unit (script run / `-s` expression / REPL
+line), so runaway generated code terminates instead of hanging; arming
+fuel disables the native JIT for the metered unit. Docs: `docs/mcp.md`.
+
+## `llms.txt`: the generated LLM reference
+
+A single dense file (~70 KB) for models and agents to read once and write
+competent Lamedh immediately: syntax/semantic gotchas, a Common-Lisp-
+divergence cheat sheet, the whole `HELP-DB` standard library as one line
+per function (signature + description, generated live from the built
+interpreter via `lib/97-doc-renderer.lisp`'s `render-llms-index`), and ten
+worked examples (records/row polymorphism, protocols, pattern matching,
+sum types, conditions/restarts, the typed JIT, modules, regex, testing,
+`--mcp`) each verified with `lamedh --check` and an actual run.
+`scripts/generate-llms-txt.sh` (wired into `scripts/generate-docs.sh`)
+regenerates it from `docs/llms-txt-template.md` plus the live index and
+`src/lib.rs`'s module table, so it can never hand-drift from the
+interpreter; `tests/test_llms_txt.rs` guards the 100 KB budget. Checked in
+at the repo root and mirrored at `docs/llms.txt` for GitHub Pages, linked
+from `docs/llms.md`.
+
 # v0.3.0 — unreleased
 
 ## Fuzz battery off the default path (dev tooling)

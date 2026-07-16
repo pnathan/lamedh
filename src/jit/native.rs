@@ -21,7 +21,7 @@
 //! parameters) so the lowering does not depend on the block-argument API, which
 //! has churned across Cranelift releases.
 
-use super::{BinOp, CmpOp, Core, Ctx, NumKind};
+use super::{BinOp, CmpOp, Core, Ctx, NumKind, allocation_escapes};
 use core::ffi::c_void;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -34,6 +34,17 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 
 /// The native calling convention for a compiled typed function.
 type NativeEntry = unsafe extern "C" fn(*const u64, *const c_void) -> u64;
+
+/// Element/field-count ceiling for stack-allocating a `Core::Let`-bound
+/// `Core::ArrayNew`/`Core::StructNew` buffer directly on this call frame
+/// (jit/core-loops stack-allocation follow-up) instead of the arena. Purely a
+/// frame-size guard against an unbounded `StackSlot` for some large constant
+/// size — above it, the allocation just takes the ordinary arena path, same
+/// as any non-constant-size or escaping allocation. Well above realistic
+/// temporary sizes (a handful of loop-local accumulator/scratch elements)
+/// while keeping the added stack frame small relative to the interpreter's
+/// existing large-stack budget.
+const MAX_STACK_ALLOC_ELEMENTS: i64 = 4096;
 
 /// A finalized native edition. Owns its `JITModule`, whose `Drop` frees the
 /// executable memory — so keeping this alive (e.g. behind an `Rc` that an
@@ -144,11 +155,13 @@ pub fn compile_native(
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
+    jb.symbol("jit_alloc_stride", super::jit_alloc_stride as *const u8);
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
     jb.symbol("jit_bad_char", super::jit_bad_char as *const u8);
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
+    jb.symbol("jit_for_step_zero", super::jit_for_step_zero as *const u8);
     let mut module = JITModule::new(jb);
     let ptr = module.target_config().pointer_type();
 
@@ -187,6 +200,17 @@ pub fn compile_native(
     asig.returns.push(AbiParam::new(ptr));
     let alloc_id = module
         .declare_function("jit_alloc", Linkage::Import, &asig)
+        .map_err(|e| e.to_string())?;
+
+    // Imported inline (array-of-structs) allocator (jit/core-loops follow-
+    // up): (ctx, n, stride) -> *mut u64. See `Core::ArrayNewStride`.
+    let mut asig_stride = module.make_signature();
+    asig_stride.params.push(AbiParam::new(ptr));
+    asig_stride.params.push(AbiParam::new(types::I64));
+    asig_stride.params.push(AbiParam::new(types::I64));
+    asig_stride.returns.push(AbiParam::new(ptr));
+    let alloc_stride_id = module
+        .declare_function("jit_alloc_stride", Linkage::Import, &asig_stride)
         .map_err(|e| e.to_string())?;
 
     // Imported out-of-bounds index reporter (issue #282): (ctx, idx, len,
@@ -243,6 +267,16 @@ pub fn compile_native(
         .declare_function("jit_exit_call", Linkage::Import, &xsig)
         .map_err(|e| e.to_string())?;
 
+    // Imported FOR zero-step error reporter: (ctx) -> (). Called from the
+    // zero-step arm of a `Core::For` loop to record the tree-walker's own
+    // "for step must be non-zero" error on `Ctx`; the native code skips the
+    // loop entirely (matching `special_forms.rs::eval_for`).
+    let mut fzsig = module.make_signature();
+    fzsig.params.push(AbiParam::new(ptr));
+    let for_step_zero_id = module
+        .declare_function("jit_for_step_zero", Linkage::Import, &fzsig)
+        .map_err(|e| e.to_string())?;
+
     // The function we are building: (args*, ctx*) -> u64.
     let mut ctx_codegen = module.make_context();
     ctx_codegen.func.signature.params.push(AbiParam::new(ptr));
@@ -259,11 +293,13 @@ pub fn compile_native(
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
         let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
+        let alloc_stride_ref = module.declare_func_in_func(alloc_stride_id, b.func);
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
         let bad_char_ref = module.declare_func_in_func(bad_char_id, b.func);
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
+        let for_step_zero_ref = module.declare_func_in_func(for_step_zero_id, b.func);
         let callee_sig = b.import_signature(callee_sig);
 
         let entry = b.create_block();
@@ -306,11 +342,13 @@ pub fn compile_native(
             tramp_ref,
             pending_tail_ref,
             alloc_ref,
+            alloc_stride_ref,
             array_oob_ref,
             bad_char_ref,
             ftrans_ref,
             enter_call_ref,
             exit_call_ref,
+            for_step_zero_ref,
             callee_sig,
             cell_addrs,
             param_counts,
@@ -360,6 +398,10 @@ struct Emitter<'a, 'b, 'c> {
     /// cross-function tail call on `Ctx` instead of performing it natively.
     pending_tail_ref: cranelift_codegen::ir::FuncRef,
     alloc_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_alloc_stride`] (jit/core-loops array-of-structs
+    /// follow-up): the inline (contiguous array-of-structs) allocator,
+    /// called from the `Core::ArrayNewStride` arm.
+    alloc_stride_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_array_oob`] (issue #282): records the evaluator's
     /// index error on `Ctx` from the out-of-bounds arm of a guarded
     /// `FETCH`/`STORE`.
@@ -374,6 +416,10 @@ struct Emitter<'a, 'b, 'c> {
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
     exit_call_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_for_step_zero`]: records the tree-walker's "for
+    /// step must be non-zero" error on `Ctx` from the zero-step arm of a
+    /// `Core::For` loop.
+    for_step_zero_ref: cranelift_codegen::ir::FuncRef,
     callee_sig: SigRef,
     cell_addrs: &'c [usize],
     /// Expected parameter count for each callee, parallel to `cell_addrs`.
@@ -488,7 +534,10 @@ impl Emitter<'_, '_, '_> {
                 self.branch_merge(cond, |s| s.emit(t, tail), |s| s.emit(e, tail))
             }
             Core::Let(slot, init, body) => {
-                let v = self.emit_value(init);
+                let v = match self.try_stack_alloc(*slot, init, body) {
+                    Some(v) => v,
+                    None => self.emit_value(init),
+                };
                 self.b
                     .ins()
                     .stack_store(v, self.env_slot, (*slot * 8) as i32);
@@ -636,6 +685,70 @@ impl Emitter<'_, '_, '_> {
                 let base_b = self.emit_value(b);
                 Emitted::Value(self.emit_array_dot(base_a, base_b))
             }
+            Core::ArrayNewStride(n, stride) => {
+                let n = self.emit_value(n);
+                Emitted::Value(self.alloc_stride(n, *stride))
+            }
+            Core::InlineFieldGet(a, i, field, stride) => {
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let in_range = self.in_bounds(base, idx);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        let addr = s.inline_field_addr(base, idx, *stride, *field);
+                        s.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0)
+                    },
+                    |s| {
+                        // Out of bounds: record the evaluator's index error
+                        // (issue #282), then substitute 0, matching `ArrayGet`.
+                        s.record_oob(base, idx, false);
+                        s.iconst(0)
+                    },
+                ))
+            }
+            Core::InlineFieldSet(a, i, field, stride, v) => {
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let val = self.emit_value(v);
+                let in_range = self.in_bounds(base, idx);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        let addr = s.inline_field_addr(base, idx, *stride, *field);
+                        s.b.ins().store(MemFlagsData::trusted(), val, addr, 0);
+                        val
+                    },
+                    |s| {
+                        // Out of bounds: record the index error; the store is
+                        // a no-op, return `val` as before, matching `ArraySet`.
+                        s.record_oob(base, idx, true);
+                        val
+                    },
+                ))
+            }
+            Core::ArraySetStride(a, i, stride, fields) => {
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let vals: Vec<Value> = fields.iter().map(|f| self.emit_value(f)).collect();
+                let in_range = self.in_bounds(base, idx);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        for (k, v) in vals.iter().enumerate() {
+                            let addr = s.inline_field_addr(base, idx, *stride, k);
+                            s.b.ins().store(MemFlagsData::trusted(), *v, addr, 0);
+                        }
+                        s.iconst(0)
+                    },
+                    |s| {
+                        // Out of bounds: record the index error; every field
+                        // store is skipped, matching `ArraySet`'s no-op.
+                        s.record_oob(base, idx, true);
+                        s.iconst(0)
+                    },
+                ))
+            }
             Core::StructNew(inits) => {
                 let vals: Vec<Value> = inits.iter().map(|c| self.emit_value(c)).collect();
                 let n = self.iconst(vals.len() as i64);
@@ -673,7 +786,136 @@ impl Emitter<'_, '_, '_> {
                 }
                 None => Emitted::Value(self.iconst(0)),
             },
+            Core::Assign(slot, val) => {
+                let v = self.emit_value(val);
+                self.b
+                    .ins()
+                    .stack_store(v, self.env_slot, (*slot * 8) as i32);
+                Emitted::Value(v)
+            }
+            Core::While(test, body) => Emitted::Value(self.emit_while(test, body)),
+            Core::For {
+                slot,
+                start,
+                end,
+                step,
+                body,
+            } => Emitted::Value(self.emit_for(*slot, start, end, step, body)),
         }
+    }
+
+    /// Lower [`Core::While`]: a header/body/exit block triple, re-testing
+    /// TEST at the top of every iteration. `header` has two predecessors (the
+    /// initial fall-through and the body's back edge) so it is sealed only
+    /// once both are known, exactly mirroring the discipline `compile_native`
+    /// uses for the self-tail-call loop header. Always yields `0` (NIL) — a
+    /// statement node, legal only in discarded position.
+    fn emit_while(&mut self, test: &Core, body: &Core) -> Value {
+        let header = self.b.create_block();
+        let body_b = self.b.create_block();
+        let exit_b = self.b.create_block();
+
+        self.b.ins().jump(header, &[]);
+
+        self.b.switch_to_block(header);
+        // Not sealed yet: the back edge from `body_b` is the second
+        // predecessor and hasn't been emitted yet.
+        let cond = self.emit_value(test);
+        let condb = self.truthy(cond);
+        self.b.ins().brif(condb, body_b, &[], exit_b, &[]);
+
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b); // single predecessor: header's brif
+        self.emit_value(body);
+        self.b.ins().jump(header, &[]);
+        self.b.seal_block(header); // both predecessors known now
+
+        self.b.switch_to_block(exit_b);
+        self.b.seal_block(exit_b); // single predecessor: header's brif
+        self.iconst(0)
+    }
+
+    /// Lower [`Core::For`]: evaluate START/END/STEP once, check STEP != 0
+    /// (recording the tree-walker's "for step must be non-zero" error via the
+    /// [`super::jit_for_step_zero`] trampoline and skipping the loop
+    /// otherwise), then iterate the counter — stored in `env_slot` at `slot`
+    /// so nested `Var(slot)` reads inside `body` see each value — from START
+    /// to END inclusive by STEP, direction by STEP's sign. The increment is
+    /// overflow-checked (`sadd_overflow`, mirroring `int_bin`'s `Add`) but,
+    /// unlike ordinary `+`, an overflow here silently breaks the loop instead
+    /// of setting the `OVERFLOW` flag — matching the tree-walker's
+    /// `checked_add` guard (`special_forms.rs::eval_for`). Always yields `0`.
+    fn emit_for(
+        &mut self,
+        slot: usize,
+        start: &Core,
+        end: &Core,
+        step: &Core,
+        body: &Core,
+    ) -> Value {
+        let s = self.emit_value(start);
+        let e = self.emit_value(end);
+        let st = self.emit_value(step);
+        let off = (slot * 8) as i32;
+
+        let zero = self.iconst(0);
+        let is_zero = self.b.ins().icmp(IntCC::Equal, st, zero);
+        let ok_b = self.b.create_block();
+        let skip_b = self.b.create_block();
+        let done_b = self.b.create_block();
+        self.b.ins().brif(is_zero, skip_b, &[], ok_b, &[]);
+
+        self.b.switch_to_block(skip_b);
+        self.b.seal_block(skip_b); // single predecessor: the is_zero brif
+        self.b.ins().call(self.for_step_zero_ref, &[self.ctx_ptr]);
+        self.b.ins().jump(done_b, &[]);
+
+        self.b.switch_to_block(ok_b);
+        self.b.seal_block(ok_b); // single predecessor: the is_zero brif
+        self.b.ins().stack_store(s, self.env_slot, off);
+
+        let header = self.b.create_block();
+        let body_b = self.b.create_block();
+        let after_b = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+
+        self.b.switch_to_block(header);
+        // Not sealed yet: `body_b`'s no-overflow back edge is the second
+        // predecessor and hasn't been emitted yet.
+        let i_val = self.b.ins().stack_load(types::I64, self.env_slot, off);
+        // Inclusive bound; direction depends on the sign of step.
+        let cmp_asc = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, i_val, e);
+        let cmp_desc = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i_val, e);
+        let step_pos = self.b.ins().icmp(IntCC::SignedGreaterThan, st, zero);
+        let in_range = self.b.ins().select(step_pos, cmp_asc, cmp_desc);
+        self.b.ins().brif(in_range, body_b, &[], after_b, &[]);
+
+        self.b.switch_to_block(body_b);
+        self.b.seal_block(body_b); // single predecessor: header's brif
+        self.emit_value(body);
+        let i_val2 = self.b.ins().stack_load(types::I64, self.env_slot, off);
+        let (next, overflow) = self.b.ins().sadd_overflow(i_val2, st);
+        // Guard against overflow so a runaway step can't panic or silently
+        // wrap into an infinite loop — no OVERFLOW flag (unlike ordinary `+`).
+        let no_of_b = self.b.create_block();
+        self.b.ins().brif(overflow, after_b, &[], no_of_b, &[]);
+
+        self.b.switch_to_block(no_of_b);
+        self.b.seal_block(no_of_b); // single predecessor: body_b's brif
+        self.b.ins().stack_store(next, self.env_slot, off);
+        self.b.ins().jump(header, &[]);
+        self.b.seal_block(header); // both predecessors known now
+
+        self.b.switch_to_block(after_b);
+        // Two predecessors — header's in-range-false arm and body_b's
+        // overflow arm — both known now.
+        self.b.seal_block(after_b);
+        self.b.ins().jump(done_b, &[]);
+
+        self.b.switch_to_block(done_b);
+        // Two predecessors — skip_b and after_b — both known now.
+        self.b.seal_block(done_b);
+        self.iconst(0)
     }
 
     /// Evaluate `core` and normalize to the boolean word `(value != 0)`,
@@ -794,6 +1036,105 @@ impl Emitter<'_, '_, '_> {
     fn alloc(&mut self, len: Value) -> Value {
         let call = self.b.ins().call(self.alloc_ref, &[self.ctx_ptr, len]);
         self.b.inst_results(call)[0]
+    }
+
+    /// Try to lower a `Core::Let(slot, init, body)` allocation directly onto
+    /// a Cranelift `StackSlot` instead of the arena (jit/core-loops
+    /// stack-allocation follow-up). Returns `Some(pointer word)` only when
+    /// `init` is a constant-size `Core::ArrayNew(Core::LitI(n))` (`n` within
+    /// `0..=MAX_STACK_ALLOC_ELEMENTS`) or a `Core::StructNew(fields)` (whose
+    /// size is always constant — its field count), AND `slot` provably does
+    /// not escape `body` per [`allocation_escapes`]. Otherwise returns `None`,
+    /// meaning: fall back to the ordinary `self.emit_value(init)` arena path
+    /// unchanged. This is purely an allocation-strategy choice — identical
+    /// buffer layout and contents either way — never a semantic one.
+    fn try_stack_alloc(&mut self, slot: usize, init: &Core, body: &Core) -> Option<Value> {
+        match init {
+            Core::ArrayNew(n) => {
+                let Core::LitI(n) = n.as_ref() else {
+                    return None;
+                };
+                if *n < 0 || *n > MAX_STACK_ALLOC_ELEMENTS {
+                    return None;
+                }
+                if allocation_escapes(body, slot) {
+                    return None;
+                }
+                Some(self.stack_alloc_buffer(*n, &[]))
+            }
+            Core::StructNew(fields) => {
+                if fields.len() as i64 > MAX_STACK_ALLOC_ELEMENTS {
+                    return None;
+                }
+                if allocation_escapes(body, slot) {
+                    return None;
+                }
+                // Evaluate the field values *before* claiming the stack slot
+                // (matches the arena `Core::StructNew` arm's own evaluation
+                // order: every field is computed left-to-right first, then
+                // written into the freshly allocated buffer).
+                let vals: Vec<Value> = fields.iter().map(|c| self.emit_value(c)).collect();
+                Some(self.stack_alloc_buffer(vals.len() as i64, &vals))
+            }
+            _ => None,
+        }
+    }
+
+    /// Allocate a `[len, e0, e1, …]`-layout buffer of `n` elements on this
+    /// call frame's Cranelift stack — the exact same header-prefixed `u64`
+    /// layout `Ctx::alloc_buffer` gives an arena buffer, so every consumer
+    /// (`ArrayGet`/`ArraySet`/`ArrayLen`/`FieldGet`/`FieldSet`, all of which
+    /// just `load`/`store` through the returned address) needs no
+    /// stack-vs-arena special-casing. `vals`, if non-empty, are stored into
+    /// elements `0..vals.len()` (the `StructNew` case, whose fields are
+    /// already computed); otherwise every element is zero-initialized (the
+    /// `ArrayNew` case, matching `Ctx::alloc_buffer`'s `vec![0u64; n + 1]`).
+    /// Returns the buffer's address as a plain word — exactly what
+    /// `self.alloc` returns for the arena path.
+    fn stack_alloc_buffer(&mut self, n: i64, vals: &[Value]) -> Value {
+        let bytes = ((n as u32) + 1) * 8;
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            bytes,
+            3,
+        ));
+        let len_val = self.iconst(n);
+        self.b.ins().stack_store(len_val, slot, 0);
+        if vals.is_empty() {
+            let zero = self.iconst(0);
+            for i in 0..n {
+                self.b.ins().stack_store(zero, slot, ((i + 1) * 8) as i32);
+            }
+        } else {
+            for (i, v) in vals.iter().enumerate() {
+                self.b.ins().stack_store(*v, slot, ((i + 1) * 8) as i32);
+            }
+        }
+        self.b.ins().stack_addr(self.ptr, slot, 0)
+    }
+
+    /// Call the host allocator for an inline (contiguous array-of-structs)
+    /// buffer of `n` elements, `stride` words each (jit/core-loops follow-
+    /// up, [`Core::ArrayNewStride`]); returns the header pointer as an `I64`
+    /// word.
+    fn alloc_stride(&mut self, n: Value, stride: usize) -> Value {
+        let stride_v = self.iconst(stride as i64);
+        let call = self
+            .b
+            .ins()
+            .call(self.alloc_stride_ref, &[self.ctx_ptr, n, stride_v]);
+        self.b.inst_results(call)[0]
+    }
+
+    /// Address of `field` of inline element `idx` in a `stride`-word-per-
+    /// element buffer (jit/core-loops follow-up): `base + 8*(1 + idx*stride
+    /// + field)`. Used by [`Core::InlineFieldGet`]/[`Core::InlineFieldSet`]/
+    /// [`Core::ArraySetStride`].
+    fn inline_field_addr(&mut self, base: Value, idx: Value, stride: usize, field: usize) -> Value {
+        let scaled = self.b.ins().imul_imm(idx, stride as i64);
+        let words = self.b.ins().iadd_imm(scaled, (1 + field) as i64);
+        let byte_off = self.b.ins().imul_imm(words, 8);
+        self.b.ins().iadd(base, byte_off)
     }
 
     /// Address of element `idx` in buffer `base`: `base + 8*(idx+1)`.

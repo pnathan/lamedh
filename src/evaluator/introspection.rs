@@ -68,6 +68,54 @@ pub(super) fn apply_introspection(
             };
             Ok(explain_compile_form(&name, env))
         }
+        BuiltinFunc::Signature => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "signature requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "signature requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(signature_form(&name, env))
+        }
+        BuiltinFunc::CompiledP => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "compiled-p requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "compiled-p requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(compiled_p_form(&name, env))
+        }
+        BuiltinFunc::WhyNotTyped => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "why-not-typed requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "why-not-typed requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(why_not_typed_form(&name, env))
+        }
         BuiltinFunc::ReadString => {
             // (read-string "text") — parse TEXT and return the list of forms it
             // contains. Pure (no I/O): the inverse of PRINC-TO-STRING for code.
@@ -219,6 +267,7 @@ pub(super) fn describe_kind(val: &LispVal) -> &'static str {
         LispVal::Nil => "bound to NIL (the empty list / false)",
         LispVal::HashTable(_) => "bound to a hash table",
         LispVal::Array(_) => "bound to an array",
+        LispVal::TypedArray(_) => "bound to a typed array",
         LispVal::Struct(_) => "bound to a typed struct",
         LispVal::Environment(_) => "bound to an environment",
         LispVal::Error(_) => "bound to an error/condition object",
@@ -252,6 +301,11 @@ pub(super) fn push_value_detail(out: &mut String, val: &LispVal) {
         )),
         LispVal::Error(e) => out.push_str(&format!("  Message: {}\n", e.message)),
         LispVal::Array(a) => out.push_str(&format!("  Length: {}\n", a.borrow().len())),
+        LispVal::TypedArray(a) => out.push_str(&format!(
+            "  Element type: {}\n  Length: {}\n",
+            a.elem,
+            a.len()
+        )),
         LispVal::Struct(s) => out.push_str(&format!(
             "  Type: {}\n  Fields: {}\n",
             s.type_name,

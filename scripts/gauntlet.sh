@@ -44,8 +44,8 @@ echo "gauntlet: fuzz battery (release)..."
 # environment for the deep sweep (CI / release checks).
 cargo test --release --features fuzz --test brutal_correctness > "$LOGDIR/gauntlet-fuzz.log" 2>&1 && echo FUZZ-GREEN >> "$VERDICT"
 
-echo "gauntlet: clippy..."
-cargo clippy --workspace --all-targets > "$LOGDIR/gauntlet-clippy.log" 2>&1 && echo CLIPPY-GREEN >> "$VERDICT"
+echo "gauntlet: clippy (warnings are errors)..."
+cargo clippy --workspace --all-targets -- -D warnings > "$LOGDIR/gauntlet-clippy.log" 2>&1 && echo CLIPPY-GREEN >> "$VERDICT"
 
 echo "gauntlet: fmt..."
 cargo fmt --all

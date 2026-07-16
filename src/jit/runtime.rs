@@ -186,6 +186,44 @@ impl Ctx<'_> {
         self.alloc_buffer(n as usize)
     }
 
+    /// [`Ctx::alloc_buffer`]'s counterpart for the inline (contiguous
+    /// array-of-structs) layout (jit/core-loops follow-up, [`Core::ArrayNewStride`]):
+    /// allocate `n*stride + 1` words — `n` inline `stride`-word elements
+    /// plus the header — but the header word is still the *element* count
+    /// `n` (not the total word count), matching `alloc_buffer`'s contract so
+    /// `ArrayLen` needs no special-casing for this layout. A negative `n`
+    /// records the same "non-negative integer" error as
+    /// [`Ctx::alloc_buffer_signed`]; an `n*stride` overflow or over-the-cap
+    /// size records the same over-limit error as [`Ctx::alloc_buffer`] —
+    /// both fall back to a zero-length allocation so every bounds-checked
+    /// access downstream stays memory-safe.
+    pub(super) fn alloc_buffer_stride(&self, n: i64, stride: usize) -> *mut u64 {
+        if n < 0 {
+            self.set_pending_error(format!(
+                "ARRAY: size must be a non-negative integer, got {n}"
+            ));
+            return self.alloc_buffer(0);
+        }
+        const MAX_ELEMENTS: usize = 16 * 1024 * 1024; // matches Ctx::alloc_buffer's cap
+        let total_words = (n as usize)
+            .checked_mul(stride)
+            .and_then(|w| w.checked_add(1));
+        let total_words = match total_words {
+            Some(w) if (n as usize) <= MAX_ELEMENTS => w,
+            _ => {
+                self.set_pending_error(format!(
+                    "array: size {n} exceeds maximum of {MAX_ELEMENTS}"
+                ));
+                return self.alloc_buffer(0);
+            }
+        };
+        let mut buf = vec![0u64; total_words].into_boxed_slice();
+        buf[0] = n as u64;
+        let ptr = buf.as_mut_ptr();
+        self.arena.borrow_mut().push(buf);
+        ptr
+    }
+
     /// Record the evaluator's own out-of-range array-index error for a
     /// bounds-check that failed on `FETCH`/`STORE` (issue #282). The typed
     /// tiers used to bounds-check and then silently substitute (fetch → 0,
@@ -276,6 +314,21 @@ pub(crate) unsafe extern "C" fn jit_alloc(ctx: *const core::ffi::c_void, n: u64)
     ctx.alloc_buffer_signed(n as i64)
 }
 
+/// [`jit_alloc`]'s counterpart for the inline (contiguous array-of-structs)
+/// layout ([`Core::ArrayNewStride`]): allocate an `n`-element buffer of
+/// `stride` words each and return its header pointer.
+///
+/// # Safety: as [`jit_alloc`].
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_alloc_stride(
+    ctx: *const core::ffi::c_void,
+    n: u64,
+    stride: u64,
+) -> *mut u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.alloc_buffer_stride(n as i64, stride as usize)
+}
+
 /// Host trampoline the native edition calls from the out-of-bounds arm of a
 /// guarded `FETCH`/`STORE` (issue #282): records the evaluator's own index
 /// error on `Ctx` so the membrane raises it after the call returns, mirroring
@@ -351,6 +404,21 @@ pub(crate) unsafe extern "C" fn jit_enter_call(ctx: *const core::ffi::c_void) ->
 pub(crate) unsafe extern "C" fn jit_exit_call(ctx: *const core::ffi::c_void) {
     let ctx = unsafe { &*(ctx as *const Ctx) };
     ctx.exit_call();
+}
+
+/// Host trampoline the native edition calls from the zero-step arm of a
+/// `Core::For` loop: records the tree-walker's own "for step must be
+/// non-zero" error (`special_forms.rs::eval_for`) on `Ctx` so the membrane
+/// raises it after the call returns. The native code still skips the loop
+/// entirely; this only records the error.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_for_step_zero(ctx: *const core::ffi::c_void) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.set_pending_error("for step must be non-zero".to_string());
 }
 
 pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
@@ -491,6 +559,75 @@ unsafe fn field_get(base: u64, idx: usize) -> u64 {
 #[inline]
 unsafe fn field_set(base: u64, idx: usize, val: u64) {
     unsafe { *(base as *mut u64).add(idx + 1) = val }
+}
+
+/// Bounds-checked load of `field` of inline element `elem_idx` of an
+/// [`Ctx::alloc_buffer_stride`] buffer ([`Core::InlineFieldGet`]): the
+/// element-count header at word 0 still bounds `elem_idx` exactly like
+/// [`buf_get`]'s `idx`; out of range records the evaluator's index error and
+/// substitutes `0`.
+///
+/// # Safety: `base` must be a live buffer pointer from [`Ctx::alloc_buffer_stride`].
+#[inline]
+unsafe fn inline_field_get(
+    base: u64,
+    elem_idx: i64,
+    field: usize,
+    stride: usize,
+    ctx: &Ctx,
+) -> u64 {
+    let p = base as *const u64;
+    let len = unsafe { *p } as i64;
+    if elem_idx < 0 || elem_idx >= len {
+        ctx.record_index_error(elem_idx, len, false);
+        0
+    } else {
+        let word = 1 + elem_idx as usize * stride + field;
+        unsafe { *p.add(word) }
+    }
+}
+
+/// [`inline_field_get`]'s store counterpart ([`Core::InlineFieldSet`]).
+///
+/// # Safety: as [`inline_field_get`].
+#[inline]
+unsafe fn inline_field_set(
+    base: u64,
+    elem_idx: i64,
+    field: usize,
+    stride: usize,
+    val: u64,
+    ctx: &Ctx,
+) {
+    let p = base as *mut u64;
+    let len = unsafe { *p } as i64;
+    if elem_idx < 0 || elem_idx >= len {
+        ctx.record_index_error(elem_idx, len, true);
+    } else {
+        let word = 1 + elem_idx as usize * stride + field;
+        unsafe { *p.add(word) = val }
+    }
+}
+
+/// Bounds-checked, in-place initialization of every field of inline element
+/// `elem_idx` of an [`Ctx::alloc_buffer_stride`] buffer ([`Core::ArraySetStride`]):
+/// stores `vals[k]` at word `1 + elem_idx*stride + k` for each `k`.
+/// Out-of-range `elem_idx` records the evaluator's index error and is a
+/// no-op, matching [`buf_set`].
+///
+/// # Safety: `base` must be a live buffer pointer from [`Ctx::alloc_buffer_stride`].
+#[inline]
+unsafe fn array_set_stride(base: u64, elem_idx: i64, stride: usize, vals: &[u64], ctx: &Ctx) {
+    let p = base as *mut u64;
+    let len = unsafe { *p } as i64;
+    if elem_idx < 0 || elem_idx >= len {
+        ctx.record_index_error(elem_idx, len, true);
+    } else {
+        let base_word = 1 + elem_idx as usize * stride;
+        for (k, v) in vals.iter().enumerate() {
+            unsafe { *p.add(base_word + k) = *v };
+        }
+    }
 }
 
 /// Shared scalar reference implementation of [`Core::ArrayMap2`]: `out[i] =
@@ -783,6 +920,32 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             let base_b = eval_core_nontail(b, env, ctx);
             from_i(unsafe { array_dot(base_a, base_b) })
         }
+        Core::ArrayNewStride(n, stride) => {
+            let len = as_i(eval_core_nontail(n, env, ctx));
+            ctx.alloc_buffer_stride(len, *stride) as u64
+        }
+        Core::ArraySetStride(a, i, stride, fields) => {
+            let base = eval_core_nontail(a, env, ctx);
+            let idx = as_i(eval_core_nontail(i, env, ctx));
+            let vals: Vec<u64> = fields
+                .iter()
+                .map(|f| eval_core_nontail(f, env, ctx))
+                .collect();
+            unsafe { array_set_stride(base, idx, *stride, &vals, ctx) };
+            0
+        }
+        Core::InlineFieldGet(a, i, field, stride) => {
+            let base = eval_core_nontail(a, env, ctx);
+            let idx = as_i(eval_core_nontail(i, env, ctx));
+            unsafe { inline_field_get(base, idx, *field, *stride, ctx) }
+        }
+        Core::InlineFieldSet(a, i, field, stride, v) => {
+            let base = eval_core_nontail(a, env, ctx);
+            let idx = as_i(eval_core_nontail(i, env, ctx));
+            let val = eval_core_nontail(v, env, ctx);
+            unsafe { inline_field_set(base, idx, *field, *stride, val, ctx) };
+            val
+        }
         Core::StructNew(inits) => {
             let vals: Vec<u64> = inits
                 .iter()
@@ -810,6 +973,52 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
                 r = eval_core_nontail(f, env, ctx);
             }
             r
+        }
+        Core::Assign(slot, val) => {
+            let v = eval_core_nontail(val, env, ctx);
+            env[*slot] = v;
+            v
+        }
+        Core::While(test, body) => {
+            while eval_core_nontail(test, env, ctx) != 0 {
+                eval_core_nontail(body, env, ctx);
+            }
+            0
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            // Evaluate the bounds once, up front — matches the tree-walker
+            // (`special_forms.rs::eval_for`): the loop variable is not yet
+            // bound while START/END/STEP are evaluated.
+            let s = as_i(eval_core_nontail(start, env, ctx));
+            let e = as_i(eval_core_nontail(end, env, ctx));
+            let st = as_i(eval_core_nontail(step, env, ctx));
+            if st == 0 {
+                // Matches the tree-walker's "for step must be non-zero" error.
+                ctx.set_pending_error("for step must be non-zero".to_string());
+                return 0;
+            }
+            let mut i = s;
+            loop {
+                // Inclusive bound; direction depends on the sign of step.
+                if (st > 0 && i > e) || (st < 0 && i < e) {
+                    break;
+                }
+                env[*slot] = from_i(i);
+                eval_core_nontail(body, env, ctx);
+                // Guard against overflow so a runaway step can't panic or
+                // silently wrap into an infinite loop (no OVERFLOW flag).
+                match i.checked_add(st) {
+                    Some(n) => i = n,
+                    None => break,
+                }
+            }
+            0
         }
     }
 }
@@ -1003,6 +1212,42 @@ pub(super) fn eval_core_traced(
                 NO_CALLEE
             )
         }
+        Core::ArrayNewStride(n, stride) => {
+            let len = as_i(eval_core_traced(n, env, ctx, depth + 1, log));
+            step!(
+                "arraynewstride",
+                ctx.alloc_buffer_stride(len, *stride) as u64,
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
+        Core::ArraySetStride(a, i, stride, fields) => {
+            let base = eval_core_traced(a, env, ctx, depth + 1, log);
+            let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
+            let vals: Vec<u64> = fields
+                .iter()
+                .map(|f| eval_core_traced(f, env, ctx, depth + 1, log))
+                .collect();
+            unsafe { array_set_stride(base, idx, *stride, &vals, ctx) };
+            step!("arraysetstride", 0, NO_SLOT, NO_CALLEE)
+        }
+        Core::InlineFieldGet(a, i, field, stride) => {
+            let base = eval_core_traced(a, env, ctx, depth + 1, log);
+            let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
+            step!(
+                "inlinefieldget",
+                unsafe { inline_field_get(base, idx, *field, *stride, ctx) },
+                NO_SLOT,
+                NO_CALLEE
+            )
+        }
+        Core::InlineFieldSet(a, i, field, stride, v) => {
+            let base = eval_core_traced(a, env, ctx, depth + 1, log);
+            let idx = as_i(eval_core_traced(i, env, ctx, depth + 1, log));
+            let val = eval_core_traced(v, env, ctx, depth + 1, log);
+            unsafe { inline_field_set(base, idx, *field, *stride, val, ctx) };
+            step!("inlinefieldset", val, NO_SLOT, NO_CALLEE)
+        }
         Core::StructNew(inits) => {
             let vals: Vec<u64> = inits
                 .iter()
@@ -1036,6 +1281,45 @@ pub(super) fn eval_core_traced(
             }
             step!("seq", r, NO_SLOT, NO_CALLEE)
         }
+        Core::Assign(slot, val) => {
+            let v = eval_core_traced(val, env, ctx, depth + 1, log);
+            env[*slot] = v;
+            step!("assign", v, *slot, NO_CALLEE)
+        }
+        Core::While(test, body) => {
+            while eval_core_traced(test, env, ctx, depth + 1, log) != 0 {
+                eval_core_traced(body, env, ctx, depth + 1, log);
+            }
+            step!("while", 0, NO_SLOT, NO_CALLEE)
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step: step_expr,
+            body,
+        } => {
+            let s = as_i(eval_core_traced(start, env, ctx, depth + 1, log));
+            let e = as_i(eval_core_traced(end, env, ctx, depth + 1, log));
+            let st = as_i(eval_core_traced(step_expr, env, ctx, depth + 1, log));
+            if st == 0 {
+                ctx.set_pending_error("for step must be non-zero".to_string());
+            } else {
+                let mut i = s;
+                loop {
+                    if (st > 0 && i > e) || (st < 0 && i < e) {
+                        break;
+                    }
+                    env[*slot] = from_i(i);
+                    eval_core_traced(body, env, ctx, depth + 1, log);
+                    match i.checked_add(st) {
+                        Some(n) => i = n,
+                        None => break,
+                    }
+                }
+            }
+            step!("for", 0, *slot, NO_CALLEE)
+        }
     }
 }
 
@@ -1063,6 +1347,30 @@ pub fn core_node_count(core: &Core) -> usize {
         }
         Core::ArraySet(a, b, c) | Core::ArrayMap2(_, _, a, b, c) => {
             core_node_count(a) + core_node_count(b) + core_node_count(c)
+        }
+        Core::Assign(_, v) => core_node_count(v),
+        Core::While(t, b) => core_node_count(t) + core_node_count(b),
+        Core::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            core_node_count(start)
+                + core_node_count(end)
+                + core_node_count(step)
+                + core_node_count(body)
+        }
+        Core::ArrayNewStride(n, _) => core_node_count(n),
+        Core::InlineFieldGet(a, i, _, _) => core_node_count(a) + core_node_count(i),
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            core_node_count(a) + core_node_count(i) + core_node_count(v)
+        }
+        Core::ArraySetStride(a, i, _, fields) => {
+            core_node_count(a)
+                + core_node_count(i)
+                + fields.iter().map(core_node_count).sum::<usize>()
         }
     }
 }
@@ -1131,6 +1439,51 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
         Core::Seq(forms) => {
             for c in forms {
                 verify_core(c, n_slots, n_funcs)?;
+            }
+            Ok(())
+        }
+        Core::Assign(slot, v) => {
+            if *slot >= n_slots {
+                return Err(format!(
+                    "Assign slot {slot} out of bounds (n_slots={n_slots})"
+                ));
+            }
+            verify_core(v, n_slots, n_funcs)
+        }
+        Core::While(t, b) => {
+            verify_core(t, n_slots, n_funcs)?;
+            verify_core(b, n_slots, n_funcs)
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            if *slot >= n_slots {
+                return Err(format!("For slot {slot} out of bounds (n_slots={n_slots})"));
+            }
+            verify_core(start, n_slots, n_funcs)?;
+            verify_core(end, n_slots, n_funcs)?;
+            verify_core(step, n_slots, n_funcs)?;
+            verify_core(body, n_slots, n_funcs)
+        }
+        Core::ArrayNewStride(n, _) => verify_core(n, n_slots, n_funcs),
+        Core::InlineFieldGet(a, i, _, _) => {
+            verify_core(a, n_slots, n_funcs)?;
+            verify_core(i, n_slots, n_funcs)
+        }
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            verify_core(a, n_slots, n_funcs)?;
+            verify_core(i, n_slots, n_funcs)?;
+            verify_core(v, n_slots, n_funcs)
+        }
+        Core::ArraySetStride(a, i, _, fields) => {
+            verify_core(a, n_slots, n_funcs)?;
+            verify_core(i, n_slots, n_funcs)?;
+            for f in fields {
+                verify_core(f, n_slots, n_funcs)?;
             }
             Ok(())
         }
@@ -1301,6 +1654,42 @@ pub fn compile(core: &Core) -> Compiled {
                 from_i(unsafe { array_dot(base_a, base_b) })
             })
         }
+        Core::ArrayNewStride(n, stride) => {
+            let (cn, stride) = (compile(n), *stride);
+            Rc::new(move |e, c| {
+                let len = as_i(cn(e, c));
+                c.alloc_buffer_stride(len, stride) as u64
+            })
+        }
+        Core::ArraySetStride(a, i, stride, fields) => {
+            let (ca, ci, stride) = (compile(a), compile(i), *stride);
+            let cfields: Vec<Compiled> = fields.iter().map(compile).collect();
+            Rc::new(move |e, c| {
+                let base = ca(e, c);
+                let idx = as_i(ci(e, c));
+                let vals: Vec<u64> = cfields.iter().map(|cf| cf(e, c)).collect();
+                unsafe { array_set_stride(base, idx, stride, &vals, c) };
+                0
+            })
+        }
+        Core::InlineFieldGet(a, i, field, stride) => {
+            let (ca, ci, field, stride) = (compile(a), compile(i), *field, *stride);
+            Rc::new(move |e, c| {
+                let base = ca(e, c);
+                let idx = as_i(ci(e, c));
+                unsafe { inline_field_get(base, idx, field, stride, c) }
+            })
+        }
+        Core::InlineFieldSet(a, i, field, stride, v) => {
+            let (ca, ci, field, stride, cv) = (compile(a), compile(i), *field, *stride, compile(v));
+            Rc::new(move |e, c| {
+                let base = ca(e, c);
+                let idx = as_i(ci(e, c));
+                let val = cv(e, c);
+                unsafe { inline_field_set(base, idx, field, stride, val, c) };
+                val
+            })
+        }
         Core::StructNew(inits) => {
             let cinits: Vec<Compiled> = inits.iter().map(compile).collect();
             Rc::new(move |e, c| {
@@ -1336,6 +1725,56 @@ pub fn compile(core: &Core) -> Compiled {
                     r = cf(e, c);
                 }
                 r
+            })
+        }
+        Core::Assign(slot, val) => {
+            let (slot, cv) = (*slot, compile(val));
+            Rc::new(move |e, c| {
+                let v = cv(e, c);
+                e[slot] = v;
+                v
+            })
+        }
+        Core::While(test, body) => {
+            let (ct, cb) = (compile(test), compile(body));
+            Rc::new(move |e, c| {
+                while ct(e, c) != 0 {
+                    cb(e, c);
+                }
+                0
+            })
+        }
+        Core::For {
+            slot,
+            start,
+            end,
+            step,
+            body,
+        } => {
+            let slot = *slot;
+            let (cs, ce, cstep, cbody) =
+                (compile(start), compile(end), compile(step), compile(body));
+            Rc::new(move |e, c| {
+                let s = as_i(cs(e, c));
+                let end = as_i(ce(e, c));
+                let st = as_i(cstep(e, c));
+                if st == 0 {
+                    c.set_pending_error("for step must be non-zero".to_string());
+                    return 0;
+                }
+                let mut i = s;
+                loop {
+                    if (st > 0 && i > end) || (st < 0 && i < end) {
+                        break;
+                    }
+                    e[slot] = from_i(i);
+                    cbody(e, c);
+                    match i.checked_add(st) {
+                        Some(n) => i = n,
+                        None => break,
+                    }
+                }
+                0
             })
         }
     }

@@ -42,27 +42,43 @@ fn test_register_fn_recursive_scan() {
         });
         env.register_fn("ACTOR-POS", |_args, _env| Ok(LispVal::list([0.0f64, 0.0])));
         env.register_fn("DISTANCE", |args, _env| {
-            let x1 = match &args[0] { LispVal::Float(f) => *f, LispVal::Number(n) => *n as f64, _ => 0.0 };
-            let y1 = match &args[1] { LispVal::Float(f) => *f, LispVal::Number(n) => *n as f64, _ => 0.0 };
-            let x2 = match &args[2] { LispVal::Float(f) => *f, LispVal::Number(n) => *n as f64, _ => 0.0 };
-            let y2 = match &args[3] { LispVal::Float(f) => *f, LispVal::Number(n) => *n as f64, _ => 0.0 };
+            let x1 = match &args[0] {
+                LispVal::Float(f) => *f,
+                LispVal::Number(n) => *n as f64,
+                _ => 0.0,
+            };
+            let y1 = match &args[1] {
+                LispVal::Float(f) => *f,
+                LispVal::Number(n) => *n as f64,
+                _ => 0.0,
+            };
+            let x2 = match &args[2] {
+                LispVal::Float(f) => *f,
+                LispVal::Number(n) => *n as f64,
+                _ => 0.0,
+            };
+            let y2 = match &args[3] {
+                LispVal::Float(f) => *f,
+                LispVal::Number(n) => *n as f64,
+                _ => 0.0,
+            };
             let dx = x1 - x2;
             let dy = y1 - y2;
             Ok(LispVal::Float((dx * dx + dy * dy).sqrt()))
         });
         env.register_fn("ACTIONABLE-ACTOR-DESC", |args, _env| {
-            if let LispVal::String(id) = &args[0] {
-                if id == "wolf-1" {
-                    let kind = LispVal::Cons {
-                        car: Shared::new(LispVal::String("kind".to_string())),
-                        cdr: Shared::new(LispVal::String("talk".to_string())),
-                    };
-                    let label = LispVal::Cons {
-                        car: Shared::new(LispVal::String("label".to_string())),
-                        cdr: Shared::new(LispVal::String("Talk".to_string())),
-                    };
-                    return Ok(LispVal::list(vec![kind, label]));
-                }
+            if let LispVal::String(id) = &args[0]
+                && id == "wolf-1"
+            {
+                let kind = LispVal::Cons {
+                    car: Shared::new(LispVal::String("kind".to_string())),
+                    cdr: Shared::new(LispVal::String("talk".to_string())),
+                };
+                let label = LispVal::Cons {
+                    car: Shared::new(LispVal::String("label".to_string())),
+                    cdr: Shared::new(LispVal::String("Talk".to_string())),
+                };
+                return Ok(LispVal::list(vec![kind, label]));
             }
             Ok(LispVal::Nil)
         });

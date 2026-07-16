@@ -250,7 +250,38 @@ Rust code and how attenuated capability sets propagate to spawned
 interpreter threads; Chapter 13 covers the three networking capabilities
 specifically, and Chapter 14 covers the four OS/process capabilities.
 
-## 1.8 Case: Symbols Are Uppercase
+## 1.8 Bounding Runaway Code: `--fuel`
+
+`--fuel N` arms a per-execution step budget (kernel *fuel*, reusing the
+`WITH-FUEL` machinery from Chapter 7). Every evaluation step charges one
+unit; when the budget is spent the current execution stops with a
+catchable `fuel exhausted` error instead of hanging. It applies per
+top-level execution unit — a whole script run, each `-s` expression, or
+each REPL line — and is re-armed fresh for each unit:
+
+```bash
+$ lamedh --fuel 300000 -s "(defun loop (n) (loop (+ n 1))) (loop 0)"
+Error: fuel exhausted (kernel step budget)
+  in: LOOP
+$ echo $?
+1
+```
+
+In the batch modes (`-s` and script) an exhausted budget exits nonzero,
+so CI and agent pipelines can trust the exit code. Without the flag no
+budget is armed and code runs unmetered. Arming fuel disables the native
+JIT for the metered unit (a documented no-compile consequence of the
+fuel machinery); this affects speed, never results. `--fuel` is a
+runaway-code backstop, not a security boundary — see Chapter 7 for the
+narrow-only `WITH-FUEL` fence and the MCP server (below) for the
+hardened, per-tool-call variant.
+
+The Model Context Protocol server, [`lamedh --mcp`](../mcp.md), builds on
+both `--fuel` and the capability model: it starts fully sandboxed and
+meters every tool call, so an agent can drive a live interpreter over
+stdio without hanging or escaping the sandbox.
+
+## 1.9 Case: Symbols Are Uppercase
 
 The reader upcases symbols as it interns them, matching Lisp 1.5
 convention. `foo`, `Foo`, and `FOO` all name the same symbol:
@@ -284,7 +315,7 @@ GREET
 "hi"
 ```
 
-## 1.9 A First Session
+## 1.10 A First Session
 
 Putting it together, a REPL session defining and using a function:
 

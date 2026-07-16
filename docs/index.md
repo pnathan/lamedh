@@ -18,6 +18,10 @@ From the REPL, use the built-in help system:
 
 The help system reads from the Lisp documentation database in `lib/99-help-data.lisp`.
 
+Working with an LLM or coding agent? Point it at the dense single-file
+reference instead: [`llms.txt`](llms.md) (raw:
+<https://pnathan.github.io/lamedh/llms.txt>).
+
 ---
 
 ## Table of Contents

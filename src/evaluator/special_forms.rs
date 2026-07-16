@@ -377,7 +377,12 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
             // the symbol's value cell directly (no hash, no chain walk), locals
             // walk their frames. Only the cold unbound path formats the name.
             let value = env.resolve(s).ok_or_else(|| {
-                LispError::Generic(format!("Unbound variable: {}", s.borrow().name))
+                let name = s.borrow().name.clone();
+                let suffix = crate::teaching_errors::teaching_suffix(
+                    &name,
+                    env.bound_symbol_names().into_iter(),
+                );
+                LispError::Generic(format!("Unbound variable: {name}{suffix}"))
             })?;
 
             // Compatibility path for values explicitly bound to a LABEL form.
@@ -413,6 +418,7 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         | LispVal::Native(_)
         | LispVal::Environment(_)
         | LispVal::Array(_)
+        | LispVal::TypedArray(_)
         | LispVal::Struct(_)
         | LispVal::Extension(_)
         | LispVal::Error(_)
@@ -912,10 +918,12 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // Case 2: Argument is a symbol bound to a function
                         if let LispVal::Symbol(s) = arg {
                             let func = env.get(&s.borrow().name).ok_or_else(|| {
-                                LispError::Generic(format!(
-                                    "Undefined function: {}",
-                                    s.borrow().name
-                                ))
+                                let name = s.borrow().name.clone();
+                                let suffix = crate::teaching_errors::teaching_suffix(
+                                    &name,
+                                    env.bound_symbol_names().into_iter(),
+                                );
+                                LispError::Generic(format!("Undefined function: {name}{suffix}"))
                             })?;
 
                             match func {
@@ -1963,6 +1971,9 @@ pub(super) fn eval_defun_star(
             // Invalidation hooks: clear cached purity verdict and
             // stale call-graph entry so analyses stay sound (#230).
             sym.borrow_mut().plist.remove("pure-checked");
+            // Loud type inference: a prior fallback's recorded reason no
+            // longer applies once this (re)definition typed successfully.
+            sym.borrow_mut().plist.remove(WHY_NOT_TYPED_KEY);
             invalidate_call_graph(&name, env);
             if had_unspecified {
                 eprintln!("; defun* {name} : {sig}  [compiled]");
@@ -1994,6 +2005,16 @@ pub(super) fn eval_defun_star(
                     .insert("docstring".to_string(), LispVal::String(doc));
             }
             sym.borrow_mut().plist.remove("pure-checked");
+            // Loud type inference (#134 follow-up): always record the
+            // concrete inference-failure reason — previously this was
+            // discarded silently unless the user had supplied type hints (the
+            // `eprintln!` below is unchanged, still hint-gated, but
+            // `why-not-typed` must report the reason for *every* fallback,
+            // hinted or not).
+            sym.borrow_mut().plist.insert(
+                WHY_NOT_TYPED_KEY.to_string(),
+                LispVal::String(reason.clone()),
+            );
             invalidate_call_graph(&name, env);
             if had_hints {
                 eprintln!("; defun* {name}: could not compile ({reason}); using untyped lambda");

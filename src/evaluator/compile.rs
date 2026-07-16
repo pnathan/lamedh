@@ -607,7 +607,12 @@ pub(super) fn exec_step(
             let value = match value {
                 Some(v) => v,
                 None => env.resolve(sym).ok_or_else(|| {
-                    LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
+                    let name = sym.borrow().name.clone();
+                    let suffix = crate::teaching_errors::teaching_suffix(
+                        &name,
+                        env.bound_symbol_names().into_iter(),
+                    );
+                    LispError::Generic(format!("unbound variable: {name}{suffix}"))
                 })?,
             };
             Ok(TcoStep::Done(Ok(value)))
@@ -615,7 +620,12 @@ pub(super) fn exec_step(
 
         Code::Var(sym) => {
             let value = env.resolve(sym).ok_or_else(|| {
-                LispError::Generic(format!("unbound variable: {}", sym.borrow().name))
+                let name = sym.borrow().name.clone();
+                let suffix = crate::teaching_errors::teaching_suffix(
+                    &name,
+                    env.bound_symbol_names().into_iter(),
+                );
+                LispError::Generic(format!("unbound variable: {name}{suffix}"))
             })?;
             Ok(TcoStep::Done(Ok(value)))
         }

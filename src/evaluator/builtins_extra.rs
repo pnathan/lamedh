@@ -893,7 +893,8 @@ pub(super) fn apply_type_predicates(
                 | LispVal::Vau(_)
         ),
         BuiltinFunc::Macrop => matches!(arg, LispVal::Macro(_)),
-        BuiltinFunc::Arrayp => matches!(arg, LispVal::Array(_)),
+        BuiltinFunc::Arrayp => matches!(arg, LispVal::Array(_) | LispVal::TypedArray(_)),
+        BuiltinFunc::TypedArrayp => matches!(arg, LispVal::TypedArray(_)),
         BuiltinFunc::Extensionp => matches!(arg, LispVal::Extension(_)),
         _ => return Err(LispError::Generic("Not a type predicate".to_string())),
     };
