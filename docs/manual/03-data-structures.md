@@ -85,6 +85,34 @@ primitives (`array` / `fetch` / `store` / `array-length*`):
 Growable vectors (push/pop-style resizing) are intentionally out of scope;
 arrays are fixed-size once created.
 
+### Typed arrays
+
+A plain `array` holds boxed `LispVal`s — any element can be any type. A
+**typed array** instead holds unboxed numbers in a flat buffer, declared as
+`int64` or `float64` at creation:
+
+```
+(let ((a (typed-array 3 'int64)))
+  (store a 0 7)
+  (fetch a 0))
+; => 7
+
+(typed-array-p (typed-array 4 'float64))
+; => T
+```
+
+`fetch`/`store`/`aref`/`aset`/`array-length*` behave identically to a plain
+array, and `arrayp` is `T` for a typed array (use `typed-array-p` for the
+narrow test). The difference is the representation, and it only matters at
+the typed JIT boundary. A typed array's buffer has the same layout the JIT
+uses for its own `(array int64)`/`(array float64)` parameters, so passing one
+to a natively compiled function that expects a matching element type crosses
+the membrane **by pointer, with no copy** — the callee's in-place writes are
+visible to the caller afterward. A plain array crossing the same boundary is
+copied in and copied back. Chapter 9 covers the membrane; reach for a typed
+array when you are feeding a large numeric buffer to compiled code and want
+to avoid the per-call copy.
+
 ## Hash Tables
 
 Hash tables map arbitrary keys (compared with `equal`) to values. Create one

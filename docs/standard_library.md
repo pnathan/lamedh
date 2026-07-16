@@ -6,28 +6,61 @@ This chapter documents the Lamedh standard library, which is loaded automaticall
 
 ## Overview
 
-The standard library provides essential functions and macros that extend the built-in functionality. Files are loaded in alphabetical order:
+The standard library provides essential functions and macros that extend the
+built-in functionality. Files are loaded in numeric-prefix order. The Prelude
+(the stable general-purpose vocabulary) loads unconditionally; the optional
+modules are also loaded by the CLI's `with_stdlib()`, but an embedder using
+`with_prelude()` pulls them in on demand with `require` (see
+[Modules](manual/10-modules.md)). `src/lib.rs`'s crate-level doc comment holds
+the authoritative File/Tier/Requirable-as/Key-functions table.
 
 | File | Contents |
 |------|----------|
-| `00-core.lisp` | `DEFUN` macro |
-| `01-list.lisp` | List utilities |
+| `00-core.lisp` | `DEFUN`, `DEFUN*`, `CSET`, `CSETQ` |
+| `01-list.lisp` | List utilities (`APPEND`, `MEMBER`, `LENGTH`, `REVERSE`, `PAIRLIS`) |
 | `02-cxr.lisp` | CAR/CDR compositions |
 | `03-meta.lisp` | `DOCUMENTATION` |
-| `04-predicates.lisp` | `EQUAL` |
+| `04-predicates.lisp` | `EQUAL` and predicates |
 | `05-math.lisp` | Math utilities |
-| `07-shell.lisp` | Shell result helpers |
+| `06-require.lisp` | `REQUIRE`/`PROVIDE` load-once library discipline |
+| `07-shell.lisp` | Shell result helpers (needs `SHELL`) |
 | `08-vau.lisp` | Kernel-style vau derived forms |
 | `09-lisp15.lisp` | Lisp 1.5 appendix functions |
-| `10-testing.lisp` | xUnit-style testing helpers |
-| `11-optimizer-vau.lisp` | Lisp-level optimizer wrappers |
+| `10-testing.lisp` | xUnit-style testing helpers (`DEFTEST`) |
+| `11-optimizer-vau.lisp` | Source optimizer passes |
 | `12-control.lisp` | Control-flow helpers |
 | `13-functional.lisp` | Functional utilities |
 | `14-strings.lisp` | String utilities |
 | `15-sets-hash.lisp` | Set/hash helpers |
-| `16-conditions.lisp` | Condition helpers |
+| `16-conditions.lisp` | Condition/restart helpers |
 | `17-arrays.lisp` | Array utilities |
-| `18-format.lisp` | `FORMAT` subset |
+| `18-format.lisp` | `FORMAT` subset, `READ-LINE`, `WITH-OUTPUT-TO-STRING` |
+| `19-call-graph.lisp` | Call graph analysis |
+| `20-condensation.lisp` | `DEFRECORD`, derivations, the change plane |
+| `21-cl-compat.lisp` | `SETF`, `PUSH`, `POP`, `INCF`, `SUBSEQ`, `ELT` |
+| `22-guard.lisp` | Guard fences: `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED` |
+| `23-match.lisp` | Pattern matching: `MATCH`, `DESTRUCTURING-BIND`, `REWRITE` |
+| `24-rules.lisp` | The rulebook optimizer (`DEFRULE`, `APPLY-RULES`) |
+| `25-variants.lisp` | Sum types: `DEFVARIANT`, `VARIANT-CASE`, Option/Result |
+| `26-instrument.lisp` | `TRACE`, `TIME`, `STEP-COUNT` |
+| `27-modules.lisp` | `DEFMODULE`, `WITH-MODULE`, `IMPORT` |
+| `28-types.lisp` | Declared type table |
+| `29-protocols.lisp` | Typed protocols: `DEFPROTOCOL`, `DEFINSTANCE`, conformance |
+| `30-text.lisp` | UTF-8 ↔ `Array<Char>` (`TEXT` module) |
+| `31-ports.lisp` | `PORTS` byte-stream module |
+| `32-base64.lisp` | Base64 codec |
+| `33-hex.lisp` | Hex codec |
+| `34-url.lisp` | URL encoding/parsing |
+| `35-json.lisp` | JSON codec |
+| `36-mime.lisp` | MIME helpers |
+| `37-net.lisp` | DNS/address helpers (`NET`) |
+| `38-tcp.lisp` | TCP sockets (`TCP`) |
+| `39-udp.lisp` | UDP sockets (`UDP`) |
+| `40-http.lisp` | HTTP client (`HTTP`) |
+| `41-os.lisp` | OS/process/env integration (`OS`) |
+| `42-os-linux.lisp` | Linux-specific OS helpers |
+| `43-tls.lisp` | TLS sockets (`TLS`) |
+| `44-regex.lisp` | Regular expressions, RE2 semantics (`REGEX`) |
 | `97-doc-renderer.lisp` | Help renderer |
 | `98-help-system.lisp` | `(HELP ...)` interface |
 | `99-help-data.lisp` | Structured help database |

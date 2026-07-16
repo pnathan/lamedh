@@ -123,6 +123,16 @@ Concretely:
     variables; `cond` / `if` / `and` / `or` / `progn` / `when` / `unless` /
     `setq` / `block` / `catch` / `throw` / `unwind-protect` are walked as plain
     expressions.
+  * **Modules are understood** (`defmodule` / `with-module` / `import`). A
+    `defmodule`'s `:export` list is recorded; a `with-module` body is descended
+    with the module context pushed, so its definitions are collected under
+    their qualified `MODULE:NAME` spelling and a bare operator inside the body
+    resolves as `MODULE:operator` before being called unbound — mirroring
+    `with-module`'s runtime rewrite. `(import M)` folds `M`'s exports into the
+    known unqualified names. If a module named by `import` cannot have its
+    exports enumerated (an unknown or computed module name), the checker goes
+    **permissive** for the rest of that file, suppressing further
+    unbound-function findings rather than risking a false positive.
 * For an operator that is a **known macro or operative** (`vau`/fexpr) not on
   that whitelist, the checker does **not** descend into the call — a macro body
   can bind or introduce arbitrary names. This loses coverage but never invents

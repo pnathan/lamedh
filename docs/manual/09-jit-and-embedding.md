@@ -169,11 +169,79 @@ Calling `(explain-compile 'plain)` again returns the identical alist, and
 `plain` is still the plain, uncompiled lambda it started as — `explain-compile`
 reports eligibility, `jit-optimize` (§9.4) is what installs it.
 
+### The one-shot trio: `signature`, `compiled-p`, `why-not-typed`
+
+`see-type` and `explain-compile` return structured verdicts you pattern-match
+on. For the common interactive question — *I wrote a `defun*`; did it
+compile, and if not, why?* — three builtins added in 0.4.0 answer directly,
+each taking one quoted symbol:
+
+- `(signature 'fn)` — the inferred type as a readable sexpr, or `nil` for an
+  untyped function.
+- `(compiled-p 'fn)` — the tier it will actually run on: `NATIVE`, `CLOSURE`,
+  or `nil` (a plain interpreted function). Under `--no-default-features` a
+  typed function is always `CLOSURE`.
+- `(why-not-typed 'fn)` — for a `defun*` that fell back to a plain lambda, the
+  concrete inference-failure reason recorded at the fallback site, or `nil` if
+  the function is currently typed.
+
+The workflow: define with `defun*`, check `compiled-p`, and if it came back
+`nil` ask `why-not-typed` for the reason, then add the annotation it points
+at.
+
+```lisp
+(defun* add ((x int64) (y int64)) (+ x y))
+(compiled-p 'add)
+; => NATIVE
+(signature 'add)
+; => (INT64 INT64 -> INT64)
+
+(defun* mk (a b) (cons a b))
+(compiled-p 'mk)
+; => ()
+(why-not-typed 'mk)
+; => "call to unknown function `CONS`"
+```
+
+`mk` builds a cons, which has no unboxed layout, so `defun*` silently kept it
+a plain lambda; `why-not-typed` names exactly what defeated inference. These
+three answer the same questions `see-type`/`explain-compile` do, in a form
+meant for a quick REPL check rather than programmatic dispatch.
+
 ## 9.4 What Compiles and What Doesn't
 
 The typed island covers **monomorphic scalar and array code**: integers,
-floats, chars, and arrays of those, with arithmetic, comparisons, `if`,
-`let`, and self/mutual recursion. It does not cover:
+floats, chars, and arrays of those, with arithmetic, comparisons, bitwise
+ops, the float intrinsics (`sqrt`, `floor`, `sin`, …), `if`, `let`,
+sequencing, and self/mutual recursion. As of 0.4.0 it also compiles
+**imperative loops** natively — `while`, `for` (bounded, inclusive), and
+`setq` on a local slot — so a counting loop with a mutable accumulator runs
+as a native loop with a branch-on-zero test rather than falling back to the
+tree-walker. A `setq` targeting a dynamic or global variable still can't
+compile (that whole function stays interpreted); loop `for` counter overflow
+silently breaks the loop, matching the tree-walker.
+
+Several 0.4.0 codegen improvements apply underneath, with no source change
+and no effect on results — they only make qualifying functions faster:
+
+- **Inlining.** A small (under 30 Core nodes), non-recursive, already-defined
+  callee is spliced into its caller at compile time; redefining the callee
+  recompiles every inliner.
+- **Stack allocation.** A constant-size array or struct (up to 4096 elements)
+  that provably does not escape the function is allocated on the native stack
+  instead of the call arena.
+- **Contiguous array-of-records.** An `(array Struct)` whose struct has only
+  scalar fields is stored inline with stride addressing, so `(field (aref a
+  i))` is one index calculation rather than a pointer chase — when a
+  whole-body safety analysis proves every use is safe, falling back to the
+  general layout otherwise.
+- **Write-back elision.** A typed array parameter the function provably never
+  writes through skips the O(n) copy-back at the membrane.
+- **Zero-copy typed arrays.** A `typed-array` (Chapter 3) whose element type
+  matches the parameter crosses the membrane by pointer, with no copy in and
+  no copy out, so in-place writes are shared with the caller.
+
+It does not cover:
 
 - **Lists.** `car`/`cdr`/`cons` and anything built on them stay `CHECKED`
   and tree-walked — `od-first` above is the example. Lists have no fixed
@@ -395,7 +463,7 @@ scripting or extension layer. The minimal `Cargo.toml`:
 
 ```toml
 [dependencies]
-lamedh = "0.3"
+lamedh = "0.4"
 ```
 
 That pulls in the default features (`jit` — Cranelift — and `concurrency` —
@@ -403,7 +471,7 @@ channels, `spawn`). To skip Cranelift in your host, same as §9.8:
 
 ```toml
 [dependencies]
-lamedh = { version = "0.3", default-features = false }
+lamedh = { version = "0.4", default-features = false }
 ```
 
 There's also an `arc-val` feature that swaps every `Rc`/`RefCell` in
@@ -545,5 +613,5 @@ how the evaluator, environment, and JIT are actually implemented in Rust —
 see `docs/architecture.md` and `docs/typed-jit-design.md` in the repo. For
 what's in flight, the issue tracker and `CHANGELOG.md` are the sources of
 truth; behavior documented here was verified against the interpreter it
-describes, at version 0.3.0.
+describes, at version 0.4.0.
 </content>

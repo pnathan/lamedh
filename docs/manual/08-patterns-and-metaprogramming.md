@@ -444,3 +444,40 @@ silently blends an unproven definition into "verified."
 tools rather than holding a live REPL image: edit the file, run
 `check-file!`, and `condense-diff` two reports to see exactly what an edit
 changed in the type story.
+
+## 8.6 Regular Expressions
+
+The pattern language above matches s-expression *structure*. For matching
+*text*, `lib/44-regex.lisp` wraps Rust's `regex` crate (RE2 semantics:
+guaranteed linear-time matching, Unicode-aware, no backreferences or
+lookaround). It is an optional module — `(require 'regex)` — and needs no
+capability, since matching is pure and cannot run away even on an untrusted
+pattern.
+
+Every function takes either a compiled regex (from `regex:compile`) or a raw
+pattern string; hoist `regex:compile` out of a loop when reusing a pattern.
+A match is reported as a `(TEXT START END)` triple whose indices are
+character offsets, end-exclusive — the same convention as `substring`.
+
+```lisp
+(require 'regex)
+
+(regex:match-p "^\\d+$" "12345")
+; => T
+
+(regex:find-all "\\w+" "one two three")
+; => (("one" 0 3) ("two" 4 7) ("three" 8 13))
+
+(regex:replace-all "\\s+" "a   b  c" "_")
+; => "a_b_c"
+
+(let ((re (regex:compile "(?P<user>\\w+)@(?P<host>\\w+)")))
+  (regex:named-groups re "alice@example"))
+; => (("user" "alice" 0 5) ("host" "example" 6 13))
+```
+
+The twelve functions are `compile`, `regex-p`, `pattern`, `escape`,
+`match-p`, `find`, `find-all`, `groups`, `named-groups`, `replace`,
+`replace-all`, and `split`. `import` them for unqualified names, or call
+them `regex:`-qualified. See the [generated reference](../generated-reference.md)
+for each one's full signature and semantics.

@@ -175,6 +175,47 @@ body.
 
 ---
 
+## Teaching Errors: Did-You-Mean and CL-ism Guidance
+
+Lamedh has almost no presence in LLM training data, so unbound-symbol and
+undefined-function errors carry extra guidance (`src/teaching_errors.rs`) —
+the same machinery `lamedh --check` uses. Two mechanisms fire, and a CL-ism
+redirect takes precedence over a spelling suggestion when both would apply.
+
+**Did-you-mean.** For an unbound name, a Levenshtein search over the symbols
+*actually bound* in the environment (not merely interned) appends up to three
+suggestions. The distance threshold scales with name length: names of two
+characters or fewer get no suggestions (too noisy), length-3 names allow
+distance 1, and names of four or more allow distance 2.
+
+```lisp
+(lenght '(a b c))
+;; Error: Unbound variable: LENGHT — did you mean LENGTH?
+```
+
+**Common-Lisp-ism guidance.** A small fixed table maps well-known Common Lisp
+forms Lamedh deliberately lacks to their real replacement:
+
+| CL form | Guidance |
+|---|---|
+| `LOOP` | use `DOTIMES`, `WHILE`, or `MAP` |
+| `DEFSTRUCT` | removed in 0.3 — use `DEFRECORD` |
+| `DEFCLASS` | use `DEFPROTOCOL` and `DEFINSTANCE` |
+| `DEFMETHOD` | use `DEFINSTANCE` (with `DEFPROTOCOL`) |
+| `DEFGENERIC` | use `DEFPROTOCOL` |
+| `DEFCONSTANT` | use `DEF` (Lamedh has no separate constant-binding form) |
+| `MULTIPLE-VALUE-BIND` | Lamedh has no multiple return values — return a `LIST` and use `DESTRUCTURING-BIND` |
+| `VALUES` | Lamedh has no multiple return values — return a `LIST` directly |
+| `WITH-OPEN-FILE` | use `WITH-OPEN-PORT` |
+
+```lisp
+(loop for x in '(1 2 3) collect x)
+;; Error: Unbound variable: LOOP is Common Lisp, not Lamedh — use DOTIMES, WHILE, or MAP
+```
+
+The guidance appears wherever these errors surface: at runtime, and in
+`lamedh --check`'s static findings (see [Static Checking](../check.md)).
+
 ## Common Error Conditions
 
 | Condition | Example |
