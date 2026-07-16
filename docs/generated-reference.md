@@ -7,6 +7,7 @@ Auto-generated from Lisp documentation database.
 ## Categories
 
 - INTROSPECTION - Inspecting registered definitions and compiled code
+- REGEX - Regular expressions (RE2 semantics; lib/44-regex.lisp)
 - FLAGS - Global condition/signal flags
 - ENVIRONMENTS - First-class environment objects
 - MODULES - REQUIRE/PROVIDE load-once library loading (issue #256)
@@ -22,7 +23,8 @@ Auto-generated from Lisp documentation database.
 - SPECIAL-FORMS - Special forms and macros
 - OS-LINUX - Typed Linux file metadata and symlinks (OS-LINUX module, lib/42-os-linux.lisp, issue #260); READ-FS capability
 - OS - Process identity/environment, time, randomness, and process spawn/control (OS module, lib/41-os.lisp, issue #260); OS-ENV/OS-ENV-WRITE/OS-PROCESS/OS-SIGNAL capabilities
-- HTTP - HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)
+- HTTP - HTTP/1.1 client and server (http:// always, https:// with the net-tls cargo feature -- issue #365)
+- TLS - TLS client/server wrap of a connected TCP port (TLS module, lib/43-tls.lisp, issue #365); off-by-default net-tls cargo feature, rustls/ring
 - UDP - UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
 - TCP - TCP connect/bind/listen/accept over binary ports (TCP module, lib/38-tcp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
 - NET - Addresses and DNS resolution (NET module, lib/37-net.lisp, issue #258); NET-DNS capability
@@ -123,6 +125,285 @@ Print the typed-core pseudo-assembly of a jotted (defun-typed) function: the typ
 Returns the docstring for a symbol.
 
 **See also:** GETP, HELP
+
+---
+
+### SIGNATURE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(signature 'sym)`
+
+Loud type inference (companion to DEFUN*'s silent fallback): the inferred type signature of a typed function as a readable sexpr, e.g. (INT64 INT64 -> INT64). NIL for an untyped function — a plain lambda, a DEFUN*/DEFUN-TYPED whose registry entry has been shadowed by a later plain redefinition, or a name that was never typed at all.
+
+**Arguments:**
+- `SYM` - A quoted symbol naming a function
+
+**Returns:** A signature sexpr, or NIL
+
+**Examples:**
+```lisp
+(PROGN (DEFUN* ADD (X INT64) (Y INT64) (+ X Y)) (SIGNATURE (QUOTE ADD)))  ; => (INT64 INT64 -> INT64)
+```
+
+**See also:** COMPILED-P, WHY-NOT-TYPED, DEFUN*, EXPLAIN-COMPILE
+
+---
+
+### COMPILED-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(compiled-p 'sym)`
+
+Loud type inference: the execution tier a typed function will actually run on. NATIVE when a Cranelift native edition exists (the jit feature only), CLOSURE when only the portable closure edition does (always true for a typed function when the jit feature is disabled, and possible even with it enabled if native codegen fell back), or NIL for a plain interpreted function / unknown name.
+
+**Arguments:**
+- `SYM` - A quoted symbol naming a function
+
+**Returns:** NATIVE, CLOSURE, or NIL
+
+**Examples:**
+```lisp
+(PROGN (DEFUN* ADD (X INT64) (Y INT64) (+ X Y)) (COMPILED-P (QUOTE ADD)))  ; => NATIVE
+```
+
+**See also:** SIGNATURE, WHY-NOT-TYPED, DEFUN*, DISASSEMBLE
+
+---
+
+### WHY-NOT-TYPED
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(why-not-typed 'sym)`
+
+Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the concrete inference-failure reason recorded at the fallback site — e.g. which expression or operand defeated typing — not just a generic "inference failed". NIL if the function is currently typed, or was never a DEFUN* candidate. The reason is cleared automatically the next time DEFUN* (re)defines the same name and succeeds.
+
+**Arguments:**
+- `SYM` - A quoted symbol naming a function
+
+**Returns:** A reason string, or NIL
+
+**Examples:**
+```lisp
+(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "call to unknown function `CONS`"
+```
+
+**See also:** SIGNATURE, COMPILED-P, DEFUN*, EXPLAIN-COMPILE
+
+---
+
+# REGEX Functions
+
+Regular expressions (RE2 semantics; lib/44-regex.lisp)
+
+---
+
+### REGEX:COMPILE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:compile pattern)`
+
+Compiles PATTERN (a string) into a reusable compiled-regex object; signals a descriptive error on invalid syntax. Hoist out of loops: functions that take a regex also accept a raw pattern string, but that recompiles on every call.
+
+**Examples:**
+```lisp
+(REGEX:REGEX-P (REGEX:COMPILE "a+"))  ; => T
+```
+
+**See also:** REGEX:REGEX-P, REGEX:PATTERN, REGEX:MATCH-P
+
+---
+
+### REGEX:REGEX-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:regex-p x)`
+
+Returns T if X is a compiled regex object (from REGEX:COMPILE), NIL otherwise.
+
+**Examples:**
+```lisp
+(REGEX:REGEX-P (REGEX:COMPILE "a+"))  ; => T
+(REGEX:REGEX-P "a+")  ; => ()
+```
+
+**See also:** REGEX:COMPILE, REGEX:PATTERN
+
+---
+
+### REGEX:PATTERN
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:pattern re)`
+
+Returns the source pattern string of a compiled regex RE.
+
+**Examples:**
+```lisp
+(REGEX:PATTERN (REGEX:COMPILE "a+"))  ; => "a+"
+```
+
+**See also:** REGEX:COMPILE
+
+---
+
+### REGEX:ESCAPE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:escape s)`
+
+Returns a copy of S with every regex metacharacter backslash-escaped, so the result matches S literally when used as a pattern.
+
+**Examples:**
+```lisp
+(REGEX:MATCH-P (REGEX:ESCAPE "a.b") "a.b")  ; => T
+```
+
+**See also:** REGEX:COMPILE, REGEX:MATCH-P
+
+---
+
+### REGEX:MATCH-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:match-p re s)`
+
+Returns T if RE matches anywhere in S (search semantics), NIL otherwise. Anchor with ^...$ for a full-string match. RE may be a compiled regex or a pattern string.
+
+**Examples:**
+```lisp
+(REGEX:MATCH-P "^a+$" "aaa")  ; => T
+(REGEX:MATCH-P "^a+$" "aab")  ; => ()
+```
+
+**See also:** REGEX:FIND, REGEX:FIND-ALL
+
+---
+
+### REGEX:FIND
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:find re s &optional start)`
+
+Returns the first match of RE in S at or after character index START (default 0) as a (TEXT START END) triple, or NIL if there is none.
+
+**Examples:**
+```lisp
+(REGEX:FIND "b" "abcb" 2)  ; => ("b" 3 4)
+(REGEX:FIND "z" "abc")  ; => ()
+```
+
+**See also:** REGEX:FIND-ALL, REGEX:MATCH-P, REGEX:GROUPS
+
+---
+
+### REGEX:FIND-ALL
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:find-all re s)`
+
+Returns a list of every non-overlapping match of RE in S, left to right, each a (TEXT START END) triple; NIL if there are none.
+
+**Examples:**
+```lisp
+(REGEX:FIND-ALL "a." "axby az")  ; => (("ax" 0 2) ("az" 5 7))
+```
+
+**See also:** REGEX:FIND, REGEX:SPLIT
+
+---
+
+### REGEX:GROUPS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:groups re s)`
+
+First match of RE in S with capture groups: NIL if no match, else a list whose element 0 is the whole-match (TEXT START END) triple and whose element I is capture group I's triple — or NIL for a group that did not participate.
+
+**Examples:**
+```lisp
+(REGEX:GROUPS "(a)(b)" "ab")  ; => (("ab" 0 2) ("a" 0 1) ("b" 1 2))
+```
+
+**See also:** REGEX:NAMED-GROUPS, REGEX:FIND
+
+---
+
+### REGEX:NAMED-GROUPS
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:named-groups re s)`
+
+First match of RE in S with named capture groups: NIL if no match, else an alist of (NAME-STRING . (TEXT START END)); a named group that did not participate has NIL as its cdr. Name groups with (?P<name>...) or (?<name>...).
+
+**Examples:**
+```lisp
+(REGEX:NAMED-GROUPS "(?P<x>a)" "a")  ; => (("x" "a" 0 1))
+```
+
+**See also:** REGEX:GROUPS
+
+---
+
+### REGEX:REPLACE
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:replace re s replacement)`
+
+Returns a new string with the first match of RE in S replaced by REPLACEMENT, a template string in which $1/$2 and ${name} expand to captures and $$ is a literal dollar sign. Returns S unchanged if RE does not match.
+
+**Examples:**
+```lisp
+(REGEX:REPLACE "a" "aaa" "X")  ; => "Xaa"
+```
+
+**See also:** REGEX:REPLACE-ALL
+
+---
+
+### REGEX:REPLACE-ALL
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:replace-all re s replacement)`
+
+Returns a new string with every match of RE in S replaced by REPLACEMENT (same template syntax as REGEX:REPLACE).
+
+**Examples:**
+```lisp
+(REGEX:REPLACE-ALL "\\d+" "a1b22" "#")  ; => "a#b#"
+```
+
+**See also:** REGEX:REPLACE
+
+---
+
+### REGEX:SPLIT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(regex:split re s &optional limit)`
+
+Splits S on matches of RE, returning a list of the pieces between matches. With LIMIT, returns at most LIMIT pieces, the last holding the unsplit remainder. Adjacent delimiters yield empty strings.
+
+**Examples:**
+```lisp
+(REGEX:SPLIT "," "a,b,c")  ; => ("a" "b" "c")
+```
+
+**See also:** REGEX:FIND-ALL
 
 ---
 
@@ -450,9 +731,33 @@ Reads a single byte at byte offset from the file at path. Returns the byte value
 
 **Syntax:** `(read-file-section path offset len)`
 
-Reads up to len bytes starting at byte offset from the file at path. Returns the bytes as a string (lossily decoded from UTF-8; non-UTF-8 bytes become replacement characters). Returns a shorter string if fewer than len bytes are available. Requires the READ-FS capability.
+Reads up to len bytes starting at byte offset from the file at path and decodes them as UTF-8 STRICTLY: invalid bytes signal an error (naming the offending byte offset) rather than being silently coerced. Returns a shorter string if fewer than len bytes are available. Use READ-FILE-SECTION-LOSSY for replacement-character decoding, or READ-FILE-SECTION-BYTES for the raw bytes. Requires the READ-FS capability.
 
-**See also:** READ-FILE, READ-FILE-BYTE, WRITE-FILE, FEATURE-ENABLED-P
+**See also:** READ-FILE-SECTION-LOSSY, READ-FILE-SECTION-BYTES, READ-FILE, READ-FILE-BYTE, WRITE-FILE, FEATURE-ENABLED-P
+
+---
+
+### READ-FILE-SECTION-LOSSY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(read-file-section-lossy path offset len)`
+
+Like READ-FILE-SECTION but decodes UTF-8 lossily: invalid bytes become the U+FFFD replacement character instead of signaling an error. The explicit opt-in to lossy decoding, mirroring TEXT:UTF8->STRING-LOSSY. Requires the READ-FS capability.
+
+**See also:** READ-FILE-SECTION, READ-FILE-SECTION-BYTES, FEATURE-ENABLED-P
+
+---
+
+### READ-FILE-SECTION-BYTES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(read-file-section-bytes path offset len)`
+
+Reads up to len bytes starting at byte offset from the file at path and returns them as an Array of bytes (Array<Char>), with no text decoding. Cross the text boundary yourself with TEXT:UTF8->STRING / TEXT:UTF8->STRING-LOSSY, or feed the bytes to a codec (BASE64, HEX, JSON, ...). Returns a shorter array if fewer than len bytes are available. Requires the READ-FS capability.
+
+**See also:** READ-FILE-SECTION, READ-FILE-SECTION-LOSSY, FEATURE-ENABLED-P
 
 ---
 
@@ -848,6 +1153,47 @@ Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL other
 ```
 
 **See also:** ARRAY, ARRAY-LENGTH*, EXTENSION-P
+
+---
+
+### TYPED-ARRAY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(typed-array n elem-type)`
+
+Creates a flat, zero-initialised typed array of n elements whose element type is 'int64 or 'float64. Unlike a plain ARRAY (a vector of boxed LispVals), a typed array is a raw u64 buffer laid out exactly like the typed JIT's own array buffers, so passing it to a typed function whose parameter's element type matches crosses the native membrane by pointer with no copy in or out — the callee's in-place STORE/ASET mutations are visible to the caller. FETCH/STORE/AREF/ASET/ARRAY-LENGTH* work on it the same as on a plain array. n is capped at 16M elements; elem-type must be the symbol 'int64 or 'float64.
+
+**Arguments:**
+- `N` - A non-negative element count
+- `ELEM-TYPE` - The symbol 'int64 or 'float64
+
+**Returns:** A new typed array
+
+**Examples:**
+```lisp
+(LET ((A (TYPED-ARRAY 3 (QUOTE INT64)))) (STORE A 0 7) (FETCH A 0))  ; => 7
+```
+
+**See also:** TYPED-ARRAY-P, ARRAY, FETCH, STORE, ARRAY-LENGTH*
+
+---
+
+### TYPED-ARRAY-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(typed-array-p x)`
+
+Returns T if x is a typed array (created with TYPED-ARRAY); NIL otherwise. Note ARRAYP is also T for a typed array, since it is an array; TYPED-ARRAY-P is the narrow test for the flat-buffer representation specifically.
+
+**Examples:**
+```lisp
+(TYPED-ARRAY-P (TYPED-ARRAY 3 (QUOTE FLOAT64)))  ; => T
+(TYPED-ARRAY-P (ARRAY 3))  ; => ()
+```
+
+**See also:** TYPED-ARRAY, ARRAYP
 
 ---
 
@@ -1827,7 +2173,7 @@ Recommended default function definition form. Tries HM type inference automatica
 (DEFUN* ADD (X INT64) (Y INT64) (+ X Y))  ; => ADD
 ```
 
-**See also:** DEFUN, DEFUN-TYPED, DEFUN-TYPED-OPT, CHECK-TYPE, LAMBDA
+**See also:** DEFUN, DEFUN-TYPED, DEFUN-TYPED-OPT, CHECK-TYPE, LAMBDA, SIGNATURE, COMPILED-P, WHY-NOT-TYPED
 
 ---
 
@@ -2468,7 +2814,7 @@ Sends signal-name (a typed name, e.g. :term, :kill, :hup, :int, :usr1, :usr2, :q
 
 # HTTP Functions
 
-HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)
+HTTP/1.1 client and server (http:// always, https:// with the net-tls cargo feature -- issue #365)
 
 ---
 
@@ -2476,9 +2822,9 @@ HTTP/1.1 client and server (plaintext http:// only; TLS pending issue #365)
 
 **Type:** `FUNCTION`
 
-**Syntax:** `(http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count)`
+**Syntax:** `(http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count extra-roots)`
 
-Performs an HTTP/1.1 request over plaintext http:// (https:// is a structured :HTTPS-UNSUPPORTED error pending the TLS ruling, issue #365). Requires NET-CONNECT (via tcp:connect; HTTP adds no capability of its own). :HEADERS is an ordered (name . value) list (repeats preserved); :BODY is NIL, a String, an Array<Char>, or a readable PORTS port (streamed via chunked transfer-encoding). Follows 301/302/303/307/308 redirects by default, hop-capped, stripping credentials cross-origin. Returns a response alist whose :BODY is an UNREAD framing-aware body stream.
+Performs an HTTP/1.1 request. http:// always; https:// too when the net-tls cargo feature is compiled in (:extra-roots forwards to tls:connect for a private/throwaway CA) -- otherwise https:// is a structured :HTTPS-UNSUPPORTED error naming the net-tls feature (issue #365). Requires NET-CONNECT (via tcp:connect; HTTP adds no capability of its own). :HEADERS is an ordered (name . value) list (repeats preserved); :BODY is NIL, a String, an Array<Char>, or a readable PORTS port (streamed via chunked transfer-encoding). Follows 301/302/303/307/308 redirects by default, hop-capped, stripping credentials cross-origin, never crossing schemes silently. Returns a response alist whose :BODY is an UNREAD framing-aware body stream.
 
 **See also:** HTTP:GET, HTTP:POST, HTTP:RESPONSE-STATUS, HTTP:RESPONSE-BODY, HTTP:COLLECT-STRING
 
@@ -2577,6 +2923,132 @@ Serves HTTP/1.1 on a tcp:listen listener (NET-LISTEN gates the listen; HTTP adds
 Builds a response alist for an http:serve handler: STATUS integer, :HEADERS an ordered (name . value) list, :BODY NIL/String/Array<Char>/readable PORTS port (a port streams out chunked; Content-Length is set automatically otherwise), :REASON defaulting to http:default-reason. The handler-side request accessors are http:request-method, -target, -path, -query, -headers, -header, -body (a streaming body, Content-Length and chunked framing both), -version, and -peer-addr.
 
 **See also:** HTTP:SERVE, HTTP:DEFAULT-REASON, HTTP:REQUEST-BODY
+
+---
+
+# TLS Functions
+
+TLS client/server wrap of a connected TCP port (TLS module, lib/43-tls.lisp, issue #365); off-by-default net-tls cargo feature, rustls/ring
+
+---
+
+### TLS:AVAILABLE-P
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:available-p)`
+
+T if this build of lamedh was compiled with the net-tls cargo feature (rustls); NIL otherwise. Every tls:* name is bound either way -- with the feature off, every other tls:* operation signals a structured :TLS-UNAVAILABLE error instead of doing any work.
+
+**See also:** TLS:CONNECT, TLS:WRAP-CLIENT
+
+---
+
+### TLS:CONNECT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:connect host port &key connect-timeout-ms handshake-timeout-ms alpn extra-roots)`
+
+tcp:connect + tls:wrap-client sugar: connects to host:port then TLS-wraps the result, :hostname defaulting to host (used for SNI and certificate verification). Verification is on by default against the default (webpki-roots) root store plus :extra-roots (a list of PEM sources: String paths, READ-FS-gated, or Array<Char> bytes). :handshake-timeout-ms bounds the handshake via the underlying TCP port's read/write timeouts. Returns an ordinary PORTS port.
+
+**See also:** TLS:WRAP-CLIENT, TLS:CONNECT-INSECURE!, TLS:ALPN-PROTOCOL, TLS:PEER-CERTIFICATES
+
+---
+
+### TLS:CONNECT-INSECURE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:connect-insecure! host port &key connect-timeout-ms handshake-timeout-ms alpn)`
+
+Like tls:connect, but skips certificate-chain verification entirely -- the only Lisp-facing way to do so. ALWAYS signals a structured :POLICY-DENIED error unless the embedding host has separately opted in via Environment::set_allow_insecure_tls (Rust-only, default false) -- Lisp code alone can never disable verification.
+
+**See also:** TLS:CONNECT, TLS:WRAP-CLIENT-INSECURE!
+
+---
+
+### TLS:WRAP-CLIENT
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:wrap-client port &key hostname alpn extra-roots)`
+
+Wraps port -- an already-connected tcp:connect PORT -- as a TLS client, performing the handshake now (blocking). Consumes port (it becomes CLOSED); returns a new PORTS port. :hostname is required (SNI + certificate verification). See tls:connect for the connect+wrap sugar.
+
+**See also:** TLS:CONNECT, TLS:WRAP-CLIENT-INSECURE!, TLS:WRAP-SERVER
+
+---
+
+### TLS:WRAP-CLIENT-INSECURE!
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:wrap-client-insecure! port &key hostname alpn)`
+
+Like tls:wrap-client, but skips certificate verification -- denied by default (:POLICY-DENIED) unless the host opted in via Environment::set_allow_insecure_tls. See tls:connect-insecure! for the connect+wrap sugar.
+
+**See also:** TLS:WRAP-CLIENT, TLS:CONNECT-INSECURE!
+
+---
+
+### TLS:WRAP-SERVER
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:wrap-server port cert key &key alpn)`
+
+Wraps port -- an already-accepted tcp:accept PORT -- as a TLS server, performing the handshake now (blocking). Consumes port (it becomes CLOSED); returns a new PORTS port. cert/key are each a PEM source (String path, READ-FS-gated, or Array<Char> bytes); cert may be a full chain, leaf first. No client-certificate authentication is requested.
+
+**See also:** TLS:WRAP-CLIENT, TCP:ACCEPT
+
+---
+
+### TLS:ALPN-PROTOCOL
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:alpn-protocol port)`
+
+The ALPN protocol negotiated on TLS port (a String), or NIL if none was negotiated.
+
+**See also:** TLS:CONNECT, TLS:WRAP-SERVER
+
+---
+
+### TLS:PEER-CERTIFICATES
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:peer-certificates port)`
+
+The peer's certificate chain on TLS port, leaf first, as a list of Array<Char> raw DER bytes -- or NIL if none presented. No X.509 parser is part of this dependency ruling, so these are opaque DER bytes, not parsed fields; see tls:peer-certificate-summary for structural (unparsed) data.
+
+**See also:** TLS:PEER-CERTIFICATE-SUMMARY
+
+---
+
+### TLS:PEER-CERTIFICATE-SUMMARY
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:peer-certificate-summary port)`
+
+A structural summary alist for TLS port's peer certificate chain: ((:count . N) (:leaf-der-length . M) (:leaf-der . bytes)), or NIL if none presented. No parsed subject/issuer/expiry fields -- see tls:peer-certificates for the full raw DER chain.
+
+**See also:** TLS:PEER-CERTIFICATES
+
+---
+
+### TLS:SNI-HOSTNAME
+
+**Type:** `FUNCTION`
+
+**Syntax:** `(tls:sni-hostname port)`
+
+The SNI hostname a TLS client offered when connecting to server-side port, or NIL if none was sent (or port is a client-side TLS port).
+
+**See also:** TLS:WRAP-SERVER
 
 ---
 

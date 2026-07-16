@@ -3,7 +3,7 @@
 Lamedh (ל, "Lamed") is an embeddable Lisp 1.5 interpreter written in Rust:
 a small kernel, a mostly-Lisp standard library, gradual types with a
 row-polymorphic checker and a native compilation tier, and a sandbox that
-is closed by default. This manual covers the language as of version 0.3.0.
+is closed by default. This manual covers the language as of version 0.4.0.
 
 | Chapter | Covers |
 |---|---|

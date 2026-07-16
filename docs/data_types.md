@@ -12,6 +12,7 @@ LispVal
 │   ├── Symbol
 │   ├── Number (i64)
 │   ├── Float (f64)
+│   ├── Char (u8, 0-255)
 │   ├── String
 │   └── Nil
 ├── Cons (car, cdr)
@@ -19,8 +20,14 @@ LispVal
 │   ├── Lambda
 │   ├── Fexpr
 │   ├── Macro
+│   ├── Vau
 │   └── Builtin
-└── HashTable
+├── Array           (boxed LispVal vector)
+├── TypedArray      (flat int64/float64 buffer)
+├── Struct          (defrecord / defstruct-typed instance)
+├── HashTable
+├── Error           (first-class condition value)
+└── Environment
 ```
 
 ---
@@ -357,7 +364,7 @@ Mutable key-value stores.
 (set-bang my-table "name" "Alice")
 (gethash my-table "name")    ; => "Alice"
 (keys my-table)              ; => ("name")
-(delete-key my-table "name")
+(remhash my-table "name")
 ```
 
 ### 3.8.3 Key Types
@@ -401,6 +408,54 @@ floating-point rounding can still make them surprising.
 (= 1 1.0)               ; => T
 (equal '(1 2) '(1 2))   ; => T
 ```
+
+---
+
+## 3.11 Arrays
+
+Fixed-size, mutable, zero-indexed vectors of boxed `LispVal`s. Create one
+with `ARRAY` (alias `MAKE-ARRAY`), read and write with `FETCH`/`STORE`
+(aliases `AREF`/`ASET`), query the size with `ARRAY-LENGTH*`, and test the
+type with `ARRAYP`.
+
+```lisp
+(let ((a (array 3)))
+  (store a 0 'x)          ; mutate in place, returns the stored value
+  (fetch a 0))            ; => X
+
+(array-length* (array 4)) ; => 4
+(arrayp (array 2))        ; => T
+```
+
+Out-of-bounds access signals an error rather than returning `NIL`. There is
+no array literal in the reader; build arrays with `ARRAY` or `LIST->ARRAY`.
+`defstruct-typed`/`defrecord` instances (`STRUCT`) are arrays internally, so
+`ARRAYP` is also `T` for them.
+
+## 3.12 Typed Arrays
+
+`TYPED-ARRAY` builds a flat buffer of unboxed `int64` or `float64` elements
+rather than a vector of boxed values:
+
+```lisp
+(typed-array 4 'int64)          ; => <typed-array:int64:4>
+(typed-array-p (typed-array 3 'float64))  ; => T
+```
+
+The element type is the symbol `'int64` or `'float64`; the size is capped at
+16M elements. `FETCH`/`STORE`/`AREF`/`ASET`/`ARRAY-LENGTH*` work exactly as
+on a plain array, and `ARRAYP` is `T` (use `TYPED-ARRAY-P` for the narrow
+test).
+
+The point of a typed array is its memory layout: it is a raw `[len, e0, e1,
+…]` `u64` buffer identical to what the typed JIT allocates for its own array
+parameters. When a typed array is passed to a natively compiled function
+whose parameter's element type matches, it crosses the JIT membrane **by
+pointer with no copy** — in-place `STORE`/`ASET` writes the callee performs
+are visible to the caller. A plain `ARRAY` crossing the same membrane is
+copied in and (if the parameter may be mutated) copied back out. See
+[The Typed JIT and Embedding](manual/09-jit-and-embedding.md) for the
+membrane semantics.
 
 ---
 

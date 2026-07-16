@@ -1,6 +1,6 @@
 # Roadmap To 1.0
 
-Lamedh remains on the `0.3.x` version line while the 1.0 release gates are
+Lamedh remains on the `0.4.x` version line while the 1.0 release gates are
 closed. The goal is not more surface area; it is making the
 existing language predictable, documented, and supportable.
 
@@ -18,7 +18,10 @@ existing language predictable, documented, and supportable.
   rustdoc should agree with current behavior.
 - **Verification:** `cargo test --workspace`, `cargo test --workspace
   --no-default-features`, clippy, rustdoc, and benchmark smoke checks should be
-  clean before a release candidate.
+  clean before a release candidate. As of 0.4.0 the ship gate is
+  `scripts/gauntlet.sh` (release, `--no-default-features`, `--features fuzz`,
+  clippy `-D warnings`), mirrored as a parallel CI verdict matrix
+  (`rust.yml`), so PRs merge-gate in Actions rather than on a laptop.
 
 ## Deferred Past 1.0 Unless Needed
 
@@ -30,6 +33,6 @@ existing language predictable, documented, and supportable.
 
 ## Version Policy
 
-Keep package versions at `0.3.x` while these gates are being closed. Cut 1.0
+Keep package versions at `0.4.x` while these gates are being closed. Cut 1.0
 only after the release checklist is passing and the remaining limitations are
 documented as intentional non-goals or explicit post-1.0 work.

@@ -295,6 +295,53 @@ cross-function) route through the registry by id, not back through the evaluator
 The one boundary not yet exposed in surface syntax is a *forward declaration* (for
 REPL-level mutual recursion); it exists in the Rust API as `Jit::declare`.
 
+### 0.4.0: native loops, inlining, stack allocation, array-of-records, typed arrays (#412)
+
+The 0.4.0 arc widened the compiled surface and added layout/allocation
+optimizations. All are executed identically across the Core interpreter,
+closure compiler, and Cranelift backend (bit-for-bit differential tests).
+
+- **Native loops and local assignment.** New `Core` nodes `Assign`, `While`,
+  and `For` (`src/jit/types.rs`, elaborated in `src/jit/elaboration.rs`:
+  `elab_setq`/`elab_while`/`elab_for`). `setq` compiles only when its target
+  is a local slot (param/`let` binding); a dynamic/global target keeps the
+  whole function interpreted. `for` is inclusive and bounded; counter overflow
+  breaks the loop **without** setting `OVERFLOW`, matching the tree-walker.
+  Both loop forms evaluate to `0`/`NIL` (statement nodes).
+- **Core-level inlining** (`src/jit/registry.rs`, `TypedFn::inline_candidates`).
+  A callee is spliced into the caller at compile time only when it is under
+  `INLINE_NODE_BUDGET` (30 Core nodes), already defined, not a self-call, and
+  neither directly nor transitively recursive with the caller. An `inlined_from`
+  set drives dependent invalidation: redefining an inlinee recompiles every
+  inliner (`recompile_inline_dependents`).
+- **Stack allocation** (`src/jit/native.rs`, `try_stack_alloc`). A
+  `Let`-bound `ArrayNew(LitI n)` with `n` in `0..=4096`, or a `StructNew`
+  whose field count is `<= 4096`, is allocated in a Cranelift `StackSlot`
+  instead of the call arena when `allocation_escapes` (`types.rs`) proves the
+  slot is used only as the direct base/target of array/field get/set/len — any
+  other appearance (call argument, return, assignment source, `ArrayMap2`
+  operand) is an escape and forces the arena path.
+- **Contiguous array-of-records** (`ArrayNewStride`/`ArraySetStride`/
+  `InlineFieldGet`/`InlineFieldSet`). An `(array Struct)` whose struct has only
+  scalar fields (`StructDef::stride()` is `Some`) is laid out inline,
+  `stride` words per element. The elaborator (`try_stride_binding`,
+  `stride_walk`) fuses `(store a i (make-Struct …))` and `(field (aref a i))`
+  into stride loads/stores only when every reachable use of the bound array is
+  a recognized safe pattern; any unrecognized use leaves both cores on the
+  general one-pointer-per-element layout.
+- **May-mutate write-back elision** (`TypedFn::may_mutate`,
+  `recompute_may_mutate`). A flat scalar-array parameter the body provably
+  never writes through skips the post-call copy-out at the membrane
+  (`call_with_array_writeback`). Conservative: a spurious `true` only costs a
+  redundant copy.
+- **`LispVal::TypedArray` zero-copy membrane** (`Value::TypedArray`,
+  `types.rs` `to_word`). A typed array whose declared element type matches the
+  parameter's array element type (`elem_ty_matches`) passes its raw
+  `[len, e0, …]` buffer pointer straight into the native call — no copy in, and
+  no write-back out, so in-place mutations are shared with the caller. A
+  mismatched element type does not match this arm and is rejected at the
+  membrane rather than reinterpreted. Builtins `typed-array`/`typed-array-p`.
+
 ## 5. The spike
 
 Smallest thing that proves the whole thesis end to end. See

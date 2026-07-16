@@ -281,7 +281,31 @@ both `--fuel` and the capability model: it starts fully sandboxed and
 meters every tool call, so an agent can drive a live interpreter over
 stdio without hanging or escaping the sandbox.
 
-## 1.9 Case: Symbols Are Uppercase
+## 1.9 Checking, Formatting, and Testing Files
+
+Beyond the REPL and script runner, the `lamedh` binary carries a set of
+agent-facing subcommands that operate on `.lisp` files without a full run.
+Each has its own reference page:
+
+- **`lamedh --check file.lisp ...`** statically verifies files without
+  executing them — parse errors, calls to unbound operators (with
+  did-you-mean / CL-ism guidance), and provable arity mismatches. Exit 0
+  clean, 1 warnings, 2 parse/read failure. See [Static
+  Checking](../check.md).
+- **`lamedh --fmt file.lisp ...`** rewrites files to a canonical
+  indentation in place (never reflowing tokens or touching string/comment
+  content); **`--fmt-check`** reports which files would change without
+  writing. See [Canonical Formatting](../fmt.md).
+- **`lamedh --test file.lisp ...`** loads the files and runs every
+  `deftest`-registered test, printing `FAIL name: message` lines and a
+  `test result: N passed; M failed` summary. Exit 0 all-passed, 1 any
+  failure. See [Test Runner](../testing-cli.md).
+- **`lamedh --mcp`** runs the interpreter as an MCP server (§1.8, above).
+
+`--check` and `--test` accept `--error-format=sexpr` for machine-readable
+findings instead of the default human lines — the format an agent parses.
+
+## 1.10 Case: Symbols Are Uppercase
 
 The reader upcases symbols as it interns them, matching Lisp 1.5
 convention. `foo`, `Foo`, and `FOO` all name the same symbol:
@@ -315,7 +339,7 @@ GREET
 "hi"
 ```
 
-## 1.10 A First Session
+## 1.11 A First Session
 
 Putting it together, a REPL session defining and using a function:
 
