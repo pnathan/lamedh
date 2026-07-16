@@ -27,6 +27,19 @@ lib.rs ────────── Public API: types, constants, embed-facing
 
 The CLI crate (`cli/src/main.rs`) sits on top of the library and adds argument parsing (clap) and line editing (rustyline).
 
+Beyond the five core modules, the library carries the typed JIT under
+`src/jit/` (`elaboration.rs`, `native.rs`, `registry.rs`, `runtime.rs`,
+`types.rs`, `infer.rs`, `parse.rs`) and a set of agent-facing and
+diagnostic modules added since v0.3.0:
+
+| Module | Purpose |
+|--------|---------|
+| `src/teaching_errors.rs` | Did-you-mean (Levenshtein over bound names) and Common-Lisp-ism guidance appended to unbound-symbol / undefined-function errors. |
+| `src/check.rs` | Static verification for `lamedh --check` — parse, unbound-operator, and arity linting without executing the file. |
+| `src/fmt.rs` | The canonical formatter for `lamedh --fmt`/`--fmt-check` — indentation/whitespace only, meaning-preserving. |
+| `src/test_runner.rs` | The `deftest` runner behind `lamedh --test`, producing human or sexpr findings. |
+| `cli/src/mcp.rs` | The `lamedh --mcp` Model Context Protocol server (JSON-RPC 2.0 over stdio) driving one persistent, sandboxed interpreter. |
+
 ---
 
 ## The Data Model (`src/lib.rs`)
@@ -52,9 +65,16 @@ pub enum LispVal {
     Native(Rc<NativeFn>),
     Environment(Rc<Environment>),
     Array(Rc<RefCell<Vec<LispVal>>>),
+    TypedArray(Shared<TypedArrayObj>),   // flat int64/float64 buffer (JIT membrane)
+    Struct(Shared<StructObj>),           // defrecord / defstruct-typed instance
+    Char(u8),
+    Error(Rc<ErrorObj>),                 // first-class condition value
     Extension(Rc<dyn LispValExtension>),
 }
 ```
+
+(Abbreviated — see `src/lib.rs` for the exact, current variant set. `Vau`
+and the typed-JIT-related variants also live on this enum.)
 
 **Key design decisions:**
 

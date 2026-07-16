@@ -12,8 +12,12 @@ Lamedh (Hebrew: ל, pronounced "LAH-med") is an implementation of Lisp 1.5 writt
 - File loading and evaluation
 - A standard library of common functions
 - Macro and fexpr support
-- Hash tables and property lists
-- A typed checker/JIT path for monomorphic typed code islands
+- Hash tables, property lists, arrays, and typed arrays
+- A typed checker/JIT path for monomorphic typed code islands — including
+  native loops, records, and arrays under the default Cranelift backend
+- Agent-facing CLI tooling: static checking (`--check`), canonical
+  formatting (`--fmt`), a test runner (`--test`), and an MCP server
+  (`--mcp`)
 
 ## 1.2 History and Goals
 

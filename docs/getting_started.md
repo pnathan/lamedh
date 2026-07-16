@@ -64,10 +64,39 @@ cargo run -- -i mylib/
 
 # Execute a single expression
 cargo run -- -s "(+ 1 2)"
+
+# Start with all capabilities off; grant individual ones back with -c
+cargo run -- --sandbox --capability READ-FS -s '(read-file "data.txt")'
+
+# Bound runaway code with a per-execution step budget
+cargo run -- --fuel 300000 script.lisp
 ```
 
 Scripts may start with a `#!` shebang line, and `(exit n)` sets the process
 exit code — `(exit (if (run-tests) 0 1))` makes test files CI-ready.
+
+### Tooling subcommands
+
+The binary also carries agent-facing subcommands that operate on files
+without a normal run. Each has a dedicated reference page:
+
+```bash
+# Static check without executing (parse + unbound/arity lint)
+cargo run -- --check file.lisp
+
+# Canonical formatting: rewrite in place, or --fmt-check to report only
+cargo run -- --fmt file.lisp
+
+# Run every deftest-registered test in the given files
+cargo run -- --test tests/
+
+# Serve as a Model Context Protocol server over stdio (sandboxed)
+cargo run -- --mcp
+```
+
+`--check` and `--test` take `--error-format=sexpr` for machine-readable
+output. See [Static Checking](check.md), [Canonical Formatting](fmt.md),
+[Test Runner](testing-cli.md), and [MCP Server](mcp.md).
 
 ## 2.4 Your First Program
 

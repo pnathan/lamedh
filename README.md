@@ -43,7 +43,16 @@ Cranelift when the default `jit` feature is enabled.
   including polymorphic and list-shaped functions that are not compileable.
 - **Typed compilation**: `DEFUN-TYPED` registers typed functions that run through
   the typed interpreter or native Cranelift backend, depending on features and
-  compileability.
+  compileability. The 0.4.0 native backend also compiles imperative loops
+  (`while`/`for`/local `setq`), records, and arrays, with Core-level inlining,
+  stack allocation of non-escaping aggregates, and a zero-copy `typed-array`
+  membrane.
+- **Agent-facing tooling**: the `lamedh` binary carries `--check` (static
+  verification without execution), `--fmt`/`--fmt-check` (canonical
+  formatting), `--test` (a `deftest` runner), `--mcp` (a sandboxed Model
+  Context Protocol server over stdio), and `--fuel` (a runaway-code step
+  budget). `--check`/`--test` emit `--error-format=sexpr` for machine
+  consumption.
 - **Embeddable runtime**: the `lamedh` crate exposes `Environment`,
   `eval_str()`, `eval_all()`, `load_file()`, and `LispValExtension`.
 - **Sandboxed capabilities**: filesystem, shell, temp files, stdin, and
@@ -336,6 +345,9 @@ The generated reference docs come from `lib/99-help-data.lisp`:
 - [Topic Docs](docs/index.md)
 - [1.0 Roadmap](docs/roadmap_1_0.md)
 - [Typed JIT Design](docs/typed-jit-design.md)
+- Tooling: [`--check`](docs/check.md), [`--fmt`](docs/fmt.md),
+  [`--test`](docs/testing-cli.md), [`--mcp`](docs/mcp.md),
+  [`llms.txt`](docs/llms.md)
 
 ## License
 

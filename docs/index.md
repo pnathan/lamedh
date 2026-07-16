@@ -57,13 +57,22 @@ Individual category pages (hand-written with additional context):
 ### Part V: Standard Library
 7. [Standard Library](standard_library.md) - Functions defined in `lib/`
 
-### Part VI: Appendices
+### Part VI: Tooling
+
+Agent-facing CLI subcommands that operate on files without a normal run:
+- [Static Checking (`lamedh --check`)](check.md)
+- [Canonical Formatting (`lamedh --fmt`)](fmt.md)
+- [Test Runner (`lamedh --test`)](testing-cli.md)
+- [MCP Server (`lamedh --mcp`)](mcp.md)
+- [LLM Reference (`llms.txt`)](llms.md)
+
+### Part VII: Appendices
 - [Appendix A: Generated Function Index](generated-function-index.md) - Alphabetical listing
 - [Appendix B: Complete Special Form Index](appendix_special_forms_index.md)
 - [Appendix C: Known Limitations](appendix_limitations.md)
 - [Appendix D: Differences from Lisp 1.5](appendix_differences.md)
 - [Appendix E: Divergences from Common Lisp](cl-divergences.md) - One page for CL reflexes
-- [Roadmap To 1.0](roadmap_1_0.md) - Release gates while the version remains on `0.3.x`
+- [Roadmap To 1.0](roadmap_1_0.md) - Release gates while the version remains on `0.4.x`
 
 ---
 
@@ -104,7 +113,7 @@ The manual is organized in the style of the [Common Lisp HyperSpec](http://www.l
 
 ### Version
 
-This documentation covers Lamedh 0.3.x as of July 2026.
+This documentation covers Lamedh 0.4.x as of July 2026.
 
 ---
 
