@@ -70,6 +70,11 @@ mod introspection;
 mod quasiquote;
 mod special_forms;
 
+// The static checker (src/check.rs) mirrors `defun*`'s auto-detected
+// parameter grammar; exporting the evaluator's own parser keeps the two
+// permanently in agreement.
+pub(crate) use self::special_forms::parse_star_params;
+
 #[cfg(feature = "concurrency")]
 mod builtins_concurrency;
 

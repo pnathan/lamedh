@@ -1804,7 +1804,7 @@ fn classic_arglist_param(item: &LispVal) -> Result<StarParam, LispError> {
 /// Returns the params and the index of the first post-parameter item (where the
 /// optional return-type / body begins). Handles classic arglists, flat bare
 /// symbols, and flat typed groups (see the module comment above).
-fn parse_star_params(
+pub(crate) fn parse_star_params(
     items: &[LispVal],
     start: usize,
 ) -> Result<(Vec<StarParam>, usize), LispError> {

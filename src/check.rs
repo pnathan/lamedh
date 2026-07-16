@@ -323,6 +323,86 @@ fn arity_from_params(params: &[LispVal]) -> FnArity {
     }
 }
 
+/// Parse a `DEFUN*` form's item vector (`items[0]` = the `DEFUN*` head,
+/// `items[1]` = the name) with the evaluator's own auto-detecting grammar —
+/// classic arglist, flat bare (`x y`), or flat typed (`(x int64) (y int64)`)
+/// parameters, optional docstring, optional bare return-type keyword.
+///
+/// Returns the parameter names (including any `&`-markers a classic arglist
+/// carried) and the index of the first body form within `items`. `None` for
+/// a malformed form (the runtime rejects it too) — callers then record the
+/// name only and skip body descent, staying conservative.
+///
+/// Delegating to [`crate::evaluator::parse_star_params`] rather than
+/// re-implementing the shape detection is what keeps the checker's view of
+/// `defun*` permanently in agreement with the evaluator's: the flat typed
+/// spelling previously mis-read `(y int64)` as a *call* to `Y`, a false
+/// positive forbidden by this module's contract.
+fn defun_star_shape(items: &[LispVal]) -> Option<(Vec<String>, usize)> {
+    if items.len() < 3 {
+        return None;
+    }
+    // Mirror eval_defun_star: rest = everything after the DEFUN* head.
+    let rest = &items[1..];
+    let mut i = 1usize; // rest[0] is the name
+    if let Some(LispVal::String(_)) = rest.get(i) {
+        i += 1;
+    }
+    let (params, next) = crate::evaluator::parse_star_params(rest, i).ok()?;
+    let mut body = next;
+    if rest
+        .get(body)
+        .and_then(crate::jit::try_parse_ty_simple)
+        .is_some()
+    {
+        body += 1;
+    }
+    if body >= rest.len() {
+        return None; // no body forms: runtime error, nothing to lint
+    }
+    let names = params.into_iter().map(|(n, _)| n).collect();
+    Some((names, body + 1)) // +1: rest offset -> items offset
+}
+
+/// `FnArity` for a `defun*` parameter-name list (as produced by
+/// [`defun_star_shape`]): the same `&OPTIONAL`/`&REST` state machine as
+/// [`arity_from_params`], applied to bare names. Flat-style parameters are
+/// all required; classic arglists may carry `&`-markers through.
+fn star_arity(names: &[String]) -> FnArity {
+    #[derive(PartialEq)]
+    enum Mode {
+        Required,
+        Optional,
+        Tail,
+    }
+    let mut required = 0usize;
+    let mut optional = 0usize;
+    let mut unbounded = false;
+    let mut mode = Mode::Required;
+    for name in names {
+        match name.as_str() {
+            "&OPTIONAL" => mode = Mode::Optional,
+            "&KEY" | "&REST" | "&BODY" => {
+                unbounded = true;
+                mode = Mode::Tail;
+            }
+            _ => match mode {
+                Mode::Required => required += 1,
+                Mode::Optional => optional += 1,
+                Mode::Tail => {}
+            },
+        }
+    }
+    FnArity {
+        min: required,
+        max: if unbounded {
+            None
+        } else {
+            Some(required + optional)
+        },
+    }
+}
+
 /// Extract just the bound parameter *names* from a lambda-list (skipping the
 /// `&`-keywords; taking `car` of `(name default)` / `(name type)` entries).
 fn param_names(params: &[LispVal]) -> Vec<String> {
@@ -390,13 +470,25 @@ fn collect_defs(form: &LispVal, defs: &mut Definitions) {
 
     match op.as_str() {
         // Function-like definitions with a statically-knowable arity.
-        "DEFUN" | "DEFUN*" | "DEFUN-TYPED" => {
+        "DEFUN" | "DEFUN-TYPED" => {
             if items.len() >= 3
                 && let Some(name) = head_name(&items[1])
             {
                 defs.names.insert(name.clone());
                 if let Some(params) = as_vec(&items[2]) {
                     defs.functions.insert(name, arity_from_params(&params));
+                }
+            }
+        }
+        // `defun*` auto-detects its parameter spelling (classic arglist,
+        // flat bare, flat typed) — parse with the evaluator's own grammar.
+        "DEFUN*" => {
+            if items.len() >= 3
+                && let Some(name) = head_name(&items[1])
+            {
+                defs.names.insert(name.clone());
+                if let Some((pnames, _)) = defun_star_shape(&items) {
+                    defs.functions.insert(name, star_arity(&pnames));
                 }
             }
         }
@@ -577,7 +669,7 @@ fn collect_module_form_defs(module: &str, form: &LispVal, defs: &mut Definitions
     }
 
     match op.as_str() {
-        "DEFUN" | "DEFUN*" => {
+        "DEFUN" => {
             if items.len() >= 2
                 && let Some(name) = head_name(&items[1])
             {
@@ -587,6 +679,17 @@ fn collect_module_form_defs(module: &str, form: &LispVal, defs: &mut Definitions
                     && let Some(params) = as_vec(&items[2])
                 {
                     defs.functions.insert(qname, arity_from_params(&params));
+                }
+            }
+        }
+        "DEFUN*" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                let qname = module_qualify(module, &name);
+                defs.names.insert(qname.clone());
+                if let Some((pnames, _)) = defun_star_shape(&items) {
+                    defs.functions.insert(qname, star_arity(&pnames));
                 }
             }
         }
@@ -1081,9 +1184,27 @@ impl<'a> Linter<'a> {
                     }
                 }
             }
-            // Typed function definitions: like defun, params then body.
-            SpecialForm::DefunStar | SpecialForm::DefunTyped => {
+            // `defun-typed`: like defun, params then body.
+            SpecialForm::DefunTyped => {
                 self.walk_defun_like(items, locals, line, 2);
+            }
+            // `defun*`: parameter spelling is auto-detected (classic, flat
+            // bare, flat typed) — bind the parsed names and walk only the
+            // true body forms; a fixed params-at-[2] walk mis-read flat
+            // typed params like `(y int64)` as calls. Malformed forms get
+            // no descent (the runtime rejects them anyway).
+            SpecialForm::DefunStar => {
+                if let Some((pnames, body_start)) = defun_star_shape(items) {
+                    let mut inner = locals.clone();
+                    for n in pnames {
+                        if !n.starts_with('&') {
+                            inner.insert(n);
+                        }
+                    }
+                    for form in &items[body_start..] {
+                        self.walk_expr(form, &inner, line);
+                    }
+                }
             }
             // `(let ((n v) …) body…)` — values in outer scope.
             SpecialForm::Let => {
