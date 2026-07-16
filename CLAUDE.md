@@ -29,11 +29,11 @@ This repository is a Cargo workspace with two primary crates:
 - **Run a specific test**: `cargo test <test_name>`
 - **Faster local test runs**: `cargo nextest run` (optional; process-per-test with full cross-binary parallelism, faster than `cargo test`; `.config/nextest.toml` tunes it). It does **not** run doctests — add `cargo test --doc` when those matter.
 - **Ship gate (authoritative)**: `scripts/gauntlet.sh [verdict-file]` — release, default + `--no-default-features` + `--features fuzz` + clippy; a ship needs `DEFAULT-GREEN`/`NDF-GREEN`/`FUZZ-GREEN`/`CLIPPY-GREEN` in the verdict file. This, not a bare `cargo test`, is the merge gate.
-- **Lint**: `cargo clippy --workspace --all-targets`
+- **Lint**: `cargo clippy --workspace --all-targets -- -D warnings` (warnings are errors, matching CI and the gauntlet)
 - **Format**: `cargo fmt --all`
 - **Benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
 
-Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before every commit; treat a clean clippy run as part of "done".
+Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` before every commit; clippy warnings are errors — CI and the gauntlet both enforce `-D warnings`.
 
 ## Architecture
 
@@ -135,7 +135,7 @@ When changing behavior:
 - Add Lisp tests when the behavior belongs to the Lisp layer or stdlib.
 - Use `cargo test <name>` for tight iteration, then run `cargo test` before finishing.
 - Run `cargo fmt --all` before committing.
-- Run `cargo clippy --workspace --all-targets` when practical; note any environment-only failures.
+- Run `cargo clippy --workspace --all-targets -- -D warnings`; warnings are errors. Note any environment-only failures.
 
 ## Coding Conventions
 

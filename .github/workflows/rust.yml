@@ -1,5 +1,10 @@
 name: CI
 
+# The cloud gauntlet: the same four verdicts as scripts/gauntlet.sh
+# (DEFAULT / NDF / FUZZ / LINT), run as parallel jobs on GitHub-hosted
+# runners so a PR is merge-gated without occupying a laptop. Free on a
+# public repo. `gh pr checks <n> --watch` is the local way to wait on it.
+
 on:
   push:
     branches: ["main"]
@@ -10,17 +15,54 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: Test + Lint
+  default:
+    name: Gauntlet DEFAULT (release)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: default
+    - name: Test (release, default features)
+      run: cargo test --release --workspace
+
+  ndf:
+    name: Gauntlet NDF (release, no default features)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ndf
+    - name: Test (release, --no-default-features)
+      run: cargo test --release --no-default-features
+
+  fuzz:
+    name: Gauntlet FUZZ (release)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: fuzz
+    - name: Fuzz battery (release, --features fuzz)
+      run: cargo test --release --features fuzz --test brutal_correctness
+
+  lint:
+    name: Gauntlet LINT (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: lint
     - name: Format check
       run: cargo fmt --all --check
     - name: Clippy
       run: cargo clippy --workspace --all-targets -- -D warnings
-    - name: Test
-      run: cargo test --workspace

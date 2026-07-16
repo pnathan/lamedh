@@ -1129,21 +1129,19 @@ fn inline_xform(
                 .iter()
                 .map(|a| inline_xform(a, shift, registry, allow_inline, next))
                 .collect();
-            if allow_inline {
-                if let Some(entry) = registry.iter().find(|e| e.0 == *id) {
-                    let (_, callee_core, callee_slots) = *entry;
-                    let base = *next;
-                    *next += callee_slots;
-                    // The spliced body's own slots (and any deeper calls it
-                    // makes) are relocated by `base`; `allow_inline: false`
-                    // enforces the one-level-only rule.
-                    let inlined_body = inline_xform(callee_core, base, registry, false, next);
-                    let mut wrapped = inlined_body;
-                    for (i, a) in new_args.into_iter().enumerate().rev() {
-                        wrapped = Core::Let(base + i, Box::new(a), Box::new(wrapped));
-                    }
-                    return wrapped;
+            if allow_inline && let Some(entry) = registry.iter().find(|e| e.0 == *id) {
+                let (_, callee_core, callee_slots) = *entry;
+                let base = *next;
+                *next += callee_slots;
+                // The spliced body's own slots (and any deeper calls it
+                // makes) are relocated by `base`; `allow_inline: false`
+                // enforces the one-level-only rule.
+                let inlined_body = inline_xform(callee_core, base, registry, false, next);
+                let mut wrapped = inlined_body;
+                for (i, a) in new_args.into_iter().enumerate().rev() {
+                    wrapped = Core::Let(base + i, Box::new(a), Box::new(wrapped));
                 }
+                return wrapped;
             }
             Core::Call(*id, new_args)
         }
