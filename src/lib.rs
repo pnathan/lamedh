@@ -228,6 +228,7 @@
 //! capability, a host can configure disk directories `require` searches as a
 //! last resort (see [`environment::Environment::add_module_search_path`]).
 
+pub mod check;
 pub mod environment;
 pub mod evaluator;
 pub mod jit;
