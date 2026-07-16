@@ -2149,14 +2149,12 @@ fn inline_reaches(
         if id == target {
             return true;
         }
-        if visited.insert(id) {
-            if let Some(f) = funcs.get(id) {
-                if let Some(callee_core) = f.core.borrow().as_ref() {
-                    if inline_reaches(funcs, callee_core, target, visited) {
-                        return true;
-                    }
-                }
-            }
+        if visited.insert(id)
+            && let Some(f) = funcs.get(id)
+            && let Some(callee_core) = f.core.borrow().as_ref()
+            && inline_reaches(funcs, callee_core, target, visited)
+        {
+            return true;
         }
     }
     false
