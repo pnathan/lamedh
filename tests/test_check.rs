@@ -115,6 +115,14 @@ fn corpus_produces_zero_findings() {
             }
             let findings = check::check_sources_in(&env, &sources);
             for f in &findings {
+                // Builtins that exist only in feature-gated builds: a
+                // no-default-features interpreter genuinely lacks them, so
+                // the stdlib's references are correctly reported unbound
+                // there — real lint behavior, not a checker false positive.
+                #[cfg(not(feature = "concurrency"))]
+                if matches!(f.symbol.as_deref(), Some("SPAWN-THREAD" | "CHANNEL-RECV")) {
+                    continue;
+                }
                 report.push_str(&format!("[{label}] {}\n", f.to_human()));
                 n += 1;
             }
