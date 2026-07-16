@@ -754,7 +754,9 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
                 || core_may_mutate_slot(e, slot)
         }
         Core::Let(_, v, body) => core_may_mutate_slot(v, slot) || core_may_mutate_slot(body, slot),
-        Core::Call(_, args) => args.iter().any(|a| core_may_mutate_slot(a, slot)),
+        Core::Call(_, args) => args
+            .iter()
+            .any(|a| is_var_slot(a, slot) || core_may_mutate_slot(a, slot)),
         Core::ToChar(a) => core_may_mutate_slot(a, slot),
         Core::ArrayNew(n) => core_may_mutate_slot(n, slot),
         Core::ArrayGet(a, i) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(i, slot),
@@ -810,6 +812,68 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
                 || core_may_mutate_slot(a, slot)
                 || core_may_mutate_slot(i, slot)
                 || core_may_mutate_slot(v, slot)
+        }
+    }
+}
+
+/// Does `core` contain any `Core::Var(slot)` reference anywhere in its tree?
+/// Used to check whether a stride-rewrite candidate slot is referenced in a
+/// sibling `let` binding's initializer.
+pub fn core_references_slot(core: &Core, slot: usize) -> bool {
+    match core {
+        Core::Var(s) => *s == slot,
+        Core::LitI(_) | Core::LitF(_) => false,
+        Core::Bin(_, _, a, b)
+        | Core::Cmp(_, _, a, b)
+        | Core::And(a, b)
+        | Core::Or(a, b)
+        | Core::ArrayGet(a, b)
+        | Core::ArrayDot(a, b) => core_references_slot(a, slot) || core_references_slot(b, slot),
+        Core::If(c, t, e) | Core::ArraySet(c, t, e) | Core::ArrayMap2(_, _, c, t, e) => {
+            core_references_slot(c, slot)
+                || core_references_slot(t, slot)
+                || core_references_slot(e, slot)
+        }
+        Core::Not(a)
+        | Core::ToChar(a)
+        | Core::ArrayNew(a)
+        | Core::ArrayLen(a)
+        | Core::ArraySum(a)
+        | Core::FUnary(_, a)
+        | Core::IntToFloat(a)
+        | Core::ArrayNewStride(a, _) => core_references_slot(a, slot),
+        Core::Let(_, v, body) | Core::While(v, body) => {
+            core_references_slot(v, slot) || core_references_slot(body, slot)
+        }
+        Core::Assign(_, v) | Core::FieldGet(v, _) => core_references_slot(v, slot),
+        Core::FieldSet(s, _, v) => core_references_slot(s, slot) || core_references_slot(v, slot),
+        Core::Call(_, args) | Core::Seq(args) | Core::StructNew(args) => {
+            args.iter().any(|a| core_references_slot(a, slot))
+        }
+        Core::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            core_references_slot(start, slot)
+                || core_references_slot(end, slot)
+                || core_references_slot(step, slot)
+                || core_references_slot(body, slot)
+        }
+        Core::ArraySetStride(a, i, _, fields) => {
+            core_references_slot(a, slot)
+                || core_references_slot(i, slot)
+                || fields.iter().any(|f| core_references_slot(f, slot))
+        }
+        Core::InlineFieldGet(a, i, _, _) => {
+            core_references_slot(a, slot) || core_references_slot(i, slot)
+        }
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            core_references_slot(a, slot)
+                || core_references_slot(i, slot)
+                || core_references_slot(v, slot)
         }
     }
 }

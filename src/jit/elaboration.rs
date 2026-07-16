@@ -726,7 +726,21 @@ impl Cx<'_> {
         // `body_core` into the stride-based primitives. Purely a layout
         // optimization — `try_stride_binding` leaves both cores unchanged
         // whenever it can't prove every use safe (see `stride_walk`).
-        for (slot, init_core, ty) in writes.iter_mut() {
+        // Pre-compute which slots are referenced in later sibling inits,
+        // so the stride rewrite refuses to fuse when a sibling's init would
+        // read the array under the old (non-stride) layout.
+        let sibling_unsafe: Vec<bool> = (0..writes.len())
+            .map(|idx| {
+                let slot = writes[idx].0;
+                writes[idx + 1..]
+                    .iter()
+                    .any(|(_, sib_init, _)| core_references_slot(sib_init, slot))
+            })
+            .collect();
+        for (idx, (slot, init_core, ty)) in writes.iter_mut().enumerate() {
+            if sibling_unsafe[idx] {
+                continue;
+            }
             let taken = std::mem::replace(init_core, Core::LitI(0));
             let (new_init, new_body) = self.try_stride_binding(*slot, ty, taken, body_core);
             *init_core = new_init;
