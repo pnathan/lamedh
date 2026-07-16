@@ -250,13 +250,14 @@ cycles are reported as errors.
 
 ## Local Benchmark Note
 
-The current Fibonacci comparison is from one run on one machine, so treat
+The current Fibonacci comparison is best-of-5 on one machine, so treat
 it as a machine-local snapshot rather than a portable claim.
-For `n=30`, `RUN_MS=1000`, `WARMUP_MS=100`, the warm typed native path measured
-about 14.6 ms for `Lamedh-JIT` and 15.8 ms for `Lamedh-OptJIT`, compared with
-2.7 ms C, 9.1 ms SBCL, 154.7 ms Ruby, and 243.8 ms Python. The local toolchain
-versions were GCC 13.3.0, SBCL 2.2.9, Ruby 3.0.1, Python 3.12.3, and Lamedh
-0.2.0 with the default `jit` feature enabled.
+For `n=30`, the warm typed native path measured about 18 ms for
+`Lamedh-JIT` and 22 ms for `Lamedh-OptJIT`, compared with 2 ms C,
+6 ms Rust, 12 ms SBCL, 80 ms Ruby, and 226 ms Python. The local
+toolchain versions were GCC 13.3.0, Rust 1.96.0, SBCL 2.2.9,
+Ruby 3.0.1, Python 3.10.10, and Lamedh 0.3.1. See
+`benchmarks/benchmark-0.3.1.md` for the full multi-workload report.
 
 `Lamedh-OptJIT` uses `defun-typed-opt`: Lisp/vau source optimization first,
 then HM checking and native compilation. On this recursive Fibonacci workload,

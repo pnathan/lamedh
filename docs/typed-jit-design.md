@@ -324,7 +324,7 @@ direct typed→typed calls (policy (a)), then `float64`, then self-recursive loo
    redefinition/identity model with zero codegen risk. Pure refactor of how the
    evaluator resolves a call to a typed function.
 3. **Cranelift island** for monomorphic int functions (the spike) behind a
-   `jit` cargo feature. It is enabled by default in 0.2.x; use
+   `jit` cargo feature. It is enabled by default since 0.2.0; use
    `--no-default-features` to exercise the dependency-light typed checker path.
 4. **Widen** types and call forms; AArch64 falls out of Cranelift.
 5. **Membrane polish:** contract coercions as the universal trampoline; deopt at
