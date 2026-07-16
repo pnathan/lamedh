@@ -592,6 +592,13 @@ pub enum BuiltinFunc {
     SeeType,
     ReadString,
     DeclareType,
+    // Loud type inference (#134/#162 follow-up): make `defun*`'s silent
+    // typed/untyped fallback observable — the inferred signature, the
+    // execution tier that will actually run, and (for a `defun*` that fell
+    // back) the concrete inference-failure reason.
+    Signature,
+    CompiledP,
+    WhyNotTyped,
     // Kernel fuel (issue #284 Phase 2): per-thread step budget backstop.
     KernelFuelSet,
     KernelFuelRemaining,

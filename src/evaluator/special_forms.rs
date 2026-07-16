@@ -1971,6 +1971,9 @@ pub(super) fn eval_defun_star(
             // Invalidation hooks: clear cached purity verdict and
             // stale call-graph entry so analyses stay sound (#230).
             sym.borrow_mut().plist.remove("pure-checked");
+            // Loud type inference: a prior fallback's recorded reason no
+            // longer applies once this (re)definition typed successfully.
+            sym.borrow_mut().plist.remove(WHY_NOT_TYPED_KEY);
             invalidate_call_graph(&name, env);
             if had_unspecified {
                 eprintln!("; defun* {name} : {sig}  [compiled]");
@@ -2002,6 +2005,16 @@ pub(super) fn eval_defun_star(
                     .insert("docstring".to_string(), LispVal::String(doc));
             }
             sym.borrow_mut().plist.remove("pure-checked");
+            // Loud type inference (#134 follow-up): always record the
+            // concrete inference-failure reason — previously this was
+            // discarded silently unless the user had supplied type hints (the
+            // `eprintln!` below is unchanged, still hint-gated, but
+            // `why-not-typed` must report the reason for *every* fallback,
+            // hinted or not).
+            sym.borrow_mut().plist.insert(
+                WHY_NOT_TYPED_KEY.to_string(),
+                LispVal::String(reason.clone()),
+            );
             invalidate_call_graph(&name, env);
             if had_hints {
                 eprintln!("; defun* {name}: could not compile ({reason}); using untyped lambda");

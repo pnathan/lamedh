@@ -96,6 +96,13 @@ impl TypedFn {
     pub fn is_compiled(&self) -> bool {
         self.compiled.borrow().is_some()
     }
+    /// Whether a Cranelift native edition currently exists (`jit` feature
+    /// only; a redefinition or a failed codegen attempt clears it — see
+    /// `deoptimize`/`compile_now`).
+    #[cfg(feature = "jit")]
+    pub fn has_native(&self) -> bool {
+        self.native.borrow().is_some()
+    }
     pub fn is_defined(&self) -> bool {
         self.core.borrow().is_some()
     }
@@ -827,6 +834,30 @@ impl Jit {
         let id = self.id(name)?;
         let f = &self.funcs[id];
         Some((f.params.borrow().clone(), f.ret.borrow().clone()))
+    }
+
+    /// The execution tier a registered typed function will actually run on
+    /// (the `compiled-p` introspection builtin): `Some(Tier::Native)` when a
+    /// Cranelift edition exists, `Some(Tier::Closure)` when only the portable
+    /// closure edition does, `None` if `name` is not a defined typed function
+    /// (unregistered, or a forward `declare-typed` never given a body).
+    pub fn tier(&self, name: &str) -> Option<Tier> {
+        let id = self.id(name)?;
+        let f = &self.funcs[id];
+        if !f.is_defined() {
+            return None;
+        }
+        #[cfg(feature = "jit")]
+        {
+            if f.has_native() {
+                return Some(Tier::Native);
+            }
+        }
+        if f.is_compiled() {
+            Some(Tier::Closure)
+        } else {
+            None
+        }
     }
 
     /// Type-check and (eagerly) compile a `(defun-typed ...)` form. Returns the

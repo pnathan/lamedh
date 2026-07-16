@@ -68,6 +68,54 @@ pub(super) fn apply_introspection(
             };
             Ok(explain_compile_form(&name, env))
         }
+        BuiltinFunc::Signature => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "signature requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "signature requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(signature_form(&name, env))
+        }
+        BuiltinFunc::CompiledP => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "compiled-p requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "compiled-p requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(compiled_p_form(&name, env))
+        }
+        BuiltinFunc::WhyNotTyped => {
+            if args.len() != 1 {
+                return Err(LispError::Generic(
+                    "why-not-typed requires exactly one argument".to_string(),
+                ));
+            }
+            let name = match &args[0] {
+                LispVal::Symbol(s) => s.borrow().name.clone(),
+                other => {
+                    return Err(LispError::Generic(format!(
+                        "why-not-typed requires a symbol, got {other:?}"
+                    )));
+                }
+            };
+            Ok(why_not_typed_form(&name, env))
+        }
         BuiltinFunc::ReadString => {
             // (read-string "text") — parse TEXT and return the list of forms it
             // contains. Pure (no I/O): the inverse of PRINC-TO-STRING for code.

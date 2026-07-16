@@ -890,6 +890,18 @@ impl Environment {
             "DECLARE-TYPE!".to_string(),
             LispVal::Builtin(BuiltinFunc::DeclareType),
         );
+        env.set(
+            "SIGNATURE".to_string(),
+            LispVal::Builtin(BuiltinFunc::Signature),
+        );
+        env.set(
+            "COMPILED-P".to_string(),
+            LispVal::Builtin(BuiltinFunc::CompiledP),
+        );
+        env.set(
+            "WHY-NOT-TYPED".to_string(),
+            LispVal::Builtin(BuiltinFunc::WhyNotTyped),
+        );
         // Kernel fuel (issue #284 Phase 2). WITH-FUEL fences shadow the
         // setter inside guarded code; hosts and top-level scripts may use it
         // directly.
@@ -2309,6 +2321,13 @@ impl Environment {
     pub fn jit_is_compiled(&self, name: &str) -> Option<bool> {
         let jit = self.shared.jit.borrow();
         jit.get(name).map(|f| f.is_compiled())
+    }
+
+    /// The execution tier a registered typed function will actually run on
+    /// (`NATIVE`/`CLOSURE`) — the `compiled-p` introspection builtin's
+    /// back-end. `None` if no defined typed function by that name exists.
+    pub fn jit_tier(&self, name: &str) -> Option<crate::jit::Tier> {
+        self.shared.jit.borrow().tier(name)
     }
 
     /// Render the typed-core IR of a registered ("jotted") function as a
