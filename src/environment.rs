@@ -1886,6 +1886,28 @@ impl Environment {
         self.get(name).is_some()
     }
 
+    /// Return the names of every symbol that is actually **bound** (has a
+    /// value visible from this environment — a global value-cell binding, a
+    /// local frame binding, or a dynamic binding), as opposed to merely
+    /// interned.
+    ///
+    /// Used to build did-you-mean suggestions on unbound-symbol errors (see
+    /// [`crate::teaching_errors`]): suggesting an interned-but-unbound name
+    /// (e.g. a symbol that only ever appeared as quoted data) would be
+    /// useless noise. This is an O(n) scan over the symbol table plus one
+    /// `resolve()` per symbol, which is only acceptable because callers only
+    /// reach it on the (cold) error-construction path.
+    pub fn bound_symbol_names(&self) -> Vec<String> {
+        self.shared
+            .symbols
+            .borrow()
+            .all_symbols()
+            .iter()
+            .filter(|sym| self.resolve(sym).is_some())
+            .map(|sym| sym.borrow().name.clone())
+            .collect()
+    }
+
     /// `true` if this is the root (global) frame, whose variable storage is the
     /// per-symbol value cells rather than a `HashMap`.
     #[inline]
