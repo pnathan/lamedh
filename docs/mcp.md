@@ -121,7 +121,7 @@ A minimal session (requests you send, responses the server returns):
 
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"lamedh","version":"0.3.1"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"lamedh","version":"0.4.0"}}}
 → {"jsonrpc":"2.0","method":"notifications/initialized"}
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"source":"(setq x 5)"}}}
 ← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"5"}],"isError":false}}

@@ -1,0 +1,847 @@
+# Lamedh — LLM reference (llms.txt)
+
+Lamedh (ל) is an embeddable Lisp 1.5 interpreter written in Rust: a tree-
+walking evaluator with lexical closures, macros, fexprs, Kernel-style `vau`
+operatives, dynamic variables, capability sandboxing, hash tables, arrays,
+branded records, sum types, typed protocols, conditions/restarts, and an
+optional typed JIT (Cranelift) that compiles scalar/array-typed `defun`/
+`defun*` bodies to native code. Version 0.4.0. Source:
+https://github.com/pnathan/lamedh · Docs (mdBook):
+https://pnathan.github.io/lamedh/ · This file:
+https://pnathan.github.io/lamedh/llms.txt (also `llms.txt` at the repo
+root). Generated from the live interpreter's help database — do not hand-edit;
+regenerate with `scripts/generate-llms-txt.sh` (see `scripts/generate-docs.sh`).
+
+Lamedh has near-zero presence in LLM training data. Trust this file and the
+interpreter's own error messages (they carry did-you-mean and Common-Lisp-ism
+guidance) over prior assumptions about "how Lisp works here."
+
+## 1. Syntax & semantic gotchas
+
+- Symbols intern **UPPERCASE**. `(defun foo ...)` and `FOO` name the same
+  symbol; case only matters inside strings/chars.
+- `if` takes **exactly three** arguments — no implicit `nil` else branch.
+  Use `cond`/`when`/`unless` for that.
+- Character literals are `'c'` (C-style, single-quoted, `\n \t \\ \'`
+  escapes), **not** `#\c`. A char is a byte (0-255); multibyte text is a
+  string. Reader subtlety: `'a'` is a char, `'a` is a quoted symbol.
+- Integers are 64-bit and **wrap** (sets the `OVERFLOW` flag; no bignums).
+  `(/ 7 2)` truncates to `3`; `(/ 7.0 2)` → `3.5`. No `float`/`coerce` —
+  multiply by `1.0` to convert.
+- `sort`, `rplaca`, `rplacd` are **non-destructive** (return new
+  structure); `nreverse` is just `reverse`. Mutate via hash tables, arrays,
+  `setq`/`setf`/`push`/`pop`/`incf`/`decf` (all present).
+- Container access is **collection-first**: `(gethash table key)`,
+  `(aref array index)` — opposite of some CL reflexes. HOFs stay
+  function-first (`mapcar`, `filter`, `map`, `reduce`, `sort`).
+- Records: **`defrecord` is the one form** — `(defrecord Name (field
+  type)... [(:invariant expr...)] [(:derive equality|printer|lens ...)])`.
+  No `defstruct`/`defclass` (removed in 0.3). Values are immutable;
+  `record-with` returns an updated copy. `record-ref`/`record-with` are
+  row-polymorphic (work on any record with the named field, by brand or by
+  row type) — see Example 1 below.
+- Dispatch: **`defprotocol` + `definstance`** is the one dispatch system
+  (typed, dispatch-position-aware, fn-first HOFs like `map`/`length` are
+  protocols too). `implements-p`/`implements!` check conformance. No
+  CLOS, no `defgeneric`/`defmethod`.
+- `defun*` accepts optional per-parameter type hints — `(defun* f ((x
+  int64)) (* x x))` — and silently falls back to a plain (dynamic) lambda
+  when inference is ambiguous; `(signature 'f)`, `(compiled-p 'f)`, and
+  `(why-not-typed 'f)` introspect the result instead of guessing. Plain
+  `defun` parameters must be bare symbols (no type hints) but the checker
+  still attempts inference on the body — `see-type`/`explain-compile`
+  report `(TYPED ... COMPILED)`, `(CHECKED ...)`, or `DYNAMIC`.
+- Conditions are first-class values, not a class hierarchy: `(error msg
+  data)` signals; `handler-case`/`handler-bind`/`restart-case` catch.
+  Canonical restart shape: `restart-case` **wraps** a `handler-bind` that
+  wraps the risky call (restarts established *inside* the protected code
+  are already unwound by the time a `handler-bind` handler runs — see
+  Example 5).
+- Capability sandbox: the CLI enables every capability by default (use
+  `--sandbox` to start with none); the library API (`Environment::new`)
+  starts with none, enabled explicitly via `env.enable_feature("READ-FS")`
+  etc. `--mcp` is sandboxed by default regardless (untrusted code).
+- Matching: `match`/`pat-match`/`destructuring-bind` patterns are plain
+  cons structure — `(add ?a ?b)`, not `(list 'add ?a ?b)`. `?x` binds,
+  `??xs` is a segment var, `?_` is a wildcard/default clause.
+- `dump-docs`/`render-function-index-md`/`render-llms-index` (this file's
+  generator) all read `lib/99-help-data.lisp`'s `HELP-DB` at call time —
+  `(help 'name)` in the REPL is the same data, interactively.
+
+### Tooling one-liners
+
+- `lamedh --check file.lisp...` — static verify without executing: parse
+  errors, unbound-call did-you-mean/CL-ism hints, provable arity
+  mismatches. Exit 0 clean / 1 warnings / 2 parse-or-read failure. Add
+  `--error-format=sexpr` for machine-readable findings.
+- `lamedh --fmt file.lisp...` / `--fmt-check` — canonical formatter
+  (indentation/whitespace only, never reflows tokens or touches
+  string/char/comment content); `--fmt-check` reports without writing.
+- `lamedh --test file-or-dir...` — run every `deftest`-registered test;
+  `test result: N passed; M failed` summary, exit 0/1/2.
+- `lamedh --mcp [--capability X]...` — Model Context Protocol server over
+  stdio (JSON-RPC 2.0), one persistent environment, sandboxed by default.
+  Tools: `eval`, `check`, `doc`, `apropos`, `run-tests`, `introspect`. See
+  §4.10 below and `docs/mcp.md`.
+- `lamedh --fuel N` — kernel step budget backstop for one script/`-s`/REPL
+  line; arms `WITH-FUEL`, disables native JIT for the metered unit.
+- `lamedh -i file-or-dir` (repeatable, loads before REPL/`-s`), `-s
+  '(expr)'` (repeatable, one shared env), `-c/--capability NAME`
+  (repeatable), `script.lisp arg1 arg2` (batch mode, args in `*ARGV*`).
+
+### Coming from Common Lisp
+
+| CL reflex | Status in Lamedh |
+|---|---|
+| `loop`, `do` | absent — use `dotimes`, `dolist`, `while`, `for`, `mapcar`/`reduce`/`filter` |
+| `defstruct` | removed in 0.3 — use `defrecord` |
+| `defclass`/`defgeneric`/`defmethod` (CLOS) | absent — use `defrecord` + `defprotocol`/`definstance` |
+| `defconstant` | absent — use `def` (no separate constant form) |
+| `multiple-value-bind`, `values` | absent — return a `list` (or record) and use `destructuring-bind` |
+| `with-open-file` | absent — use `with-open-port` |
+| `labels` | absent — `flet`/`macrolet` exist; mutual local recursion needs top-level `defun` |
+| `eql`, `equalp` | absent — `eq` compares numbers/chars by value, `equal` is structural, `string=` for strings |
+| `#(1 2 3)` vectors | absent — `(make-array n init)`/`(array n)` + `aref`/`fetch`/`store` |
+| `type-of` | absent — `see-type` (checker verdict), predicates (`stringp` etc.), `record-brand` |
+| `setf`, `push`/`pop`, `incf`/`decf`, `subseq`, `elt` | present, work as expected |
+| `catch`/`throw`, `block`/`return-from`, `unwind-protect`, `prog`/`go` | present |
+| `#'`, `funcall`, `apply` with spread args | present (Lamedh is a Lisp-1: functions and values share one namespace, so `#'`/`funcall` are optional, not required) |
+
+Full detail: `docs/cl-divergences.md`. Full function reference (verbose,
+one entry per symbol): `docs/generated-reference.md`.
+
+## 2. Module map
+
+Every `.lisp` row below is embedded in the binary; `with_stdlib()` loads
+all of them, `with_prelude()` loads only Prelude rows, `(require 'name)`
+pulls in an optional one by its "Requirable as" name on a `with_prelude()`
+environment. Extracted from `src/lib.rs`'s doc comments (`scripts/generate-
+llms-txt.sh` re-extracts this table on every regeneration).
+
+| File | Tier | Requirable as | Key functions |
+|------|------|---------------|--------------|
+| `00-core.lisp` | Prelude | — | `DEFUN`, `PROG2`, `CSET`, `CSETQ` |
+| `01-list.lisp` | Prelude | — | `APPEND`, `MEMBER`, `LENGTH`, `REVERSE`, `PAIRLIS`, `NULL`, `NCONC`, `COPY`, `SASSOC`, `MAPC`, `MAPCON` |
+| `02-cxr.lisp` | Prelude | — | All 30 CAR/CDR compositions `CAAR`…`CDDDDR` |
+| `03-meta.lisp` | Prelude | — | `DOCUMENTATION` |
+| `04-predicates.lisp` | Prelude | — | `EQUAL` (structural equality) |
+| `05-math.lisp` | Prelude | — | `ONEP`, `MINUSP`, `ADD1`, `SUB1`, `MAX`, `MIN`, `ABS` |
+| `06-require.lisp` | Prelude | — | `REQUIRE`, `PROVIDE`, `REQUIRE-RELOAD`, `LOADED-MODULES`, `MODULE-INFO` |
+| `07-shell.lisp` | optional | `shell` | `SH`, `SHELL-STDOUT`, `SHELL-STDERR`, `SHELL-EXIT-CODE`, `SHELL-OK-P` |
+| `08-vau.lisp` | Prelude | — | Kernel-style derived forms: `$IF`, `$AND`, `$OR`, `$SEQUENCE` |
+| `09-lisp15.lisp` | optional | `lisp15` | Lisp 1.5 appendix A: `PAIR`, `ATTRIB`, `PROP`, `FLAG`, `REMFLAG`, `MAP`, `SEARCH`, `RECIP`, `SELECT`, `TRACE` |
+| `10-testing.lisp` | optional | `testing` | xUnit framework: `DEFTEST`, `ASSERT-EQUAL`, `ASSERT-TRUE`, `ASSERT-FALSE`, `ASSERT-NIL`, `RUN-TESTS`, `CLEAR-TESTS` |
+| `11-optimizer-vau.lisp` | optional | `optimizer-vau` | Source optimizer: `OPTIMIZE-FORM`, `$OPT` |
+| `12-control.lisp` … `18-format.lisp` | Prelude | — | Control flow, functional helpers, strings, sets/hash, conditions, arrays, `FORMAT` |
+| `19-call-graph.lisp` | optional | `call-graph` | Call-graph analysis: `$CALL-GRAPH`, `CALL-GRAPH-CALLEES`, `CALL-GRAPH-CALLERS` |
+| `20-condensation.lisp` | optional | `condensation` | Condensation: `DEFRECORD`/`DERIVE`, branded field access, sexpr change plane (`CONDENSE-DIFF`, `SEXPR-PATCH`, `EDIT!`) |
+| `21-cl-compat.lisp` | Prelude | — | Common Lisp compat: `SETF`, `PUSH`/`POP`, `INCF`/`DECF`, `REMOVE`, `SUBSEQ`, `ELT`, `DEFPARAMETER`, ... |
+| `22-guard.lisp` | optional | `guard` | Guard fences (#284) + capability processes (#140): `WITH-FUEL`, `WITH-CAPABILITIES`, `SANDBOXED`, `CAPABILITIES-NEEDED`, `SPAWN`/`SPAWN*`/`AWAIT` |
+| `23-match.lisp` | optional | `match` | Structural pattern language: `PAT-MATCH`, `MATCH`, `DESTRUCTURING-BIND`, `SGREP`/`SGREP-FN` (issue #171), `REWRITE`, `INSTANTIATE` |
+| `24-rules.lisp` | optional | `rules` | Rulebook optimizer: `DEFRULE`/`UNDEFRULE`/`LIST-RULES`/`APPLY-RULES` — optimization passes as pattern-language data |
+| `25-variants.lisp` | optional | `variants` | Sum types: `DEFVARIANT`, exhaustive `VARIANT-CASE`, Option, Result |
+| `26-instrument.lisp` | optional | `instrument` | `TRACE`/`UNTRACE`/`TIME`/`STEP-COUNT` (steps = the WITH-FUEL unit) |
+| `27-modules.lisp` | optional | `modules` | Namespacing: `DEFMODULE`/`WITH-MODULE`/`IMPORT`, `MODULE:SYMBOL` names, custom capabilities |
+| `28-types.lisp` | optional | `types` | The type table: verified declared schemes for builtins and stdlib functions |
+| `29-protocols.lisp` | optional | `protocols` | THE dispatch system: typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`, inference-selected instances) + conformance (`IMPLEMENTS!`/`IMPLEMENTS-P`) |
+| `30-text.lisp` | optional | `text` | Explicit String ↔ UTF-8 `Array<Char>` boundary: `TEXT:STRING->UTF8`, `TEXT:UTF8->STRING` |
+| `31-ports.lisp` | optional | `ports` | Synchronous binary ports: `PORTS:OPEN-INPUT`/`OPEN-OUTPUT`/`OPEN-APPEND`, `READ-BYTE!`/`READ-BYTES!`/`WRITE-BYTE!`/`WRITE-BYTES!`, `WITH-OPEN-PORT` |
+| `32-base64.lisp` | optional | `base64` | `BASE64:ENCODE`/`DECODE`: `Array<Char>` bytes <-> Base64 `String`, `:STANDARD`/`:URL` alphabets, explicit padding |
+| `33-hex.lisp` | optional | `hex` | `HEX:ENCODE`/`DECODE`: `Array<Char>` bytes <-> hexadecimal `String`, predictable-case encode, case-insensitive decode |
+| `34-url.lisp` | optional | `url` | `URL:ENCODE-PATH-SEGMENT`/`ENCODE-QUERY-COMPONENT`/`DECODE`, `URL:PARSE`/`BUILD`, `URL:PARSE-QUERY`/`BUILD-QUERY` |
+| `35-json.lisp` | optional | `json` | `JSON:PARSE`/`STRINGIFY`: object<->hash table, array<->`Array`, `true`/`false`/`null`<->`T`/`NIL`/`:NULL`, `JSON:NULL-P` |
+| `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
+| `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
+| `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
+| `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
+| `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
+
+## 3. Function index
+
+Dense, one line per `HELP-DB` entry: `NAME [tag] SIGNATURE -- description`.
+`[f]`=function, `[m]`=macro, `[s]`=special-form, `[v]`=variable. This is
+the subset of the standard library with a registered `HELP-DB` doc entry
+(`(help 'name)` in the REPL shows the full entry: args, return value,
+worked examples, see-also). Generated live from the built interpreter —
+see `lib/97-doc-renderer.lisp`'s `render-llms-index`. Modern-era forms not
+yet in `HELP-DB` (`defrecord`, `defprotocol`/`definstance`, `defvariant`/
+`variant-case`, `match`/`pat-match`, `defmodule`/`with-module`, guards/
+fuel/spawn, conditions/restarts, the CL-compat layer, `regex:*`) are
+covered by the module map above and the worked examples below instead —
+signatures for those are in `docs/manual/`.
+
+## ARITHMETIC -- Numeric operations
+* [f] (* number...) -- Returns the product of all arguments. With no arguments, returns 1.
++ [f] (+ number...) -- Returns the sum of all arguments. With no arguments, returns 0.
+- [f] (- number) or (- number number...) -- With one argument, returns negation. With multiple, subtracts rest from first.
+/ [f] (/ dividend divisor) -- Returns the quotient of two numbers. Integer division truncates toward zero.
+1+ [f] (1+ n) -- Returns n + 1. Common Lisp-style alias for ADD1.
+1- [f] (1- n) -- Returns n - 1. Common Lisp-style alias for SUB1.
+ABS [f] (abs n) -- Returns the absolute value of n.
+ADD1 [f] (add1 n) -- Returns n + 1. Same as (1+ n).
+CEILING [f] (ceiling n) -- Returns the smallest integer not less than n (rounds toward positive infinity). Returns an integer even whe...
+COS [f] (cos radians) -- Returns the cosine of an angle given in radians, as a float.
+DIFFERENCE [f] (difference number number...) -- Classic Lisp 1.5 name for -. With one argument returns negation; with more, subtracts rest from first.
+EQUAL-NUMBER [f] (equal-number a b) -- Alias for =. Returns T if a and b are numerically equal. Accepts both integers and floats.
+EXP [f] (exp n) -- Returns e (Euler's number) raised to the power n, as a float.
+EXPT [f] (expt base power) -- Returns base raised to the power.
+FLOAT-EQUAL [f] (float-equal a b) -- Returns T if a and b are exactly bit-equal as floating-point values. Unlike =, this correctly distinguishes...
+FLOAT-GREATERP [f] (float-greaterp a b) -- Returns T if a is strictly greater than b in floating-point comparison. Accepts floats and integers. Use > ...
+FLOAT-LESSP [f] (float-lessp a b) -- Returns T if a is strictly less than b in floating-point comparison. Accepts floats and integers. Use < for...
+FLOOR [f] (floor n) -- Returns the largest integer not greater than n (rounds toward negative infinity). Returns an integer even w...
+GCD [f] (gcd a b) -- Returns the greatest common divisor of integers a and b. Both arguments must be integers; sign is ignored.
+GREATERP [f] (greaterp a b) -- Classic Lisp 1.5 name for >. Returns T if a is strictly greater than b.
+ISQRT [f] (isqrt n) -- Returns the integer square root of n (the largest integer k such that k*k <= n). Requires a non-negative in...
+LCM [f] (lcm a b) -- Returns the least common multiple of integers a and b. Returns 0 if either argument is 0. Both arguments mu...
+LESSP [f] (lessp a b) -- Classic Lisp 1.5 name for <. Returns T if a is strictly less than b.
+LOG [f] (log x) or (log x base) -- With one argument returns the natural logarithm (ln) of x. With two arguments returns the logarithm of x in...
+MAX [f] (max number...) -- Returns the largest of its arguments.
+MIN [f] (min number...) -- Returns the smallest of its arguments.
+MOD [f] (mod x y) -- Returns x modulo y. Result has same sign as divisor.
+PLUS [f] (plus number...) -- Classic Lisp 1.5 name for +. Returns the sum of all arguments.
+QUOTIENT [f] (quotient dividend divisor) -- Classic Lisp 1.5 name for /. Returns the quotient; integer division truncates toward zero.
+RANDOM [f] (random n) -- Returns a random integer from 0 (inclusive) to n (exclusive).
+REMAINDER [f] (remainder dividend divisor) -- Returns the remainder of integer division.
+ROUND [f] (round n) -- Returns n rounded to the nearest integer. Ties round half away from zero (e.g. 0.5 rounds to 1, -0.5 rounds...
+SIGNUM [f] (signum n) -- Returns the sign of n: -1 for negative, 0 for zero, 1 for positive. Works on both integers (returns an inte...
+SIN [f] (sin radians) -- Returns the sine of an angle given in radians, as a float.
+SQRT [f] (sqrt n) -- Returns the square root of n as a float. For integer square roots use ISQRT.
+SUB1 [f] (sub1 n) -- Returns n - 1. Same as (1- n).
+TAN [f] (tan radians) -- Returns the tangent of an angle given in radians, as a float.
+TIMES [f] (times number...) -- Classic Lisp 1.5 name for *. Returns the product of all arguments.
+TRUNCATE [f] (truncate n) -- Returns n truncated toward zero (drops the fractional part). Returns an integer. Equivalent to (floor n) fo...
+
+## ARRAYS -- Mutable random-access arrays (Lisp 1.5 Appendix A)
+ARRAY [f] (array n) -- Creates and returns a new mutable array of n elements, all initialised to NIL. Lisp 1.5 Appendix A name; MA...
+ARRAY-FETCH* [f] (array-fetch* array index) -- Alias for FETCH. Returns the element of array at 0-based index. See FETCH for full documentation.
+ARRAY-LENGTH* [f] (array-length* array) -- Returns the number of elements in array as an integer. The valid index range is 0 to (array-length* array) ...
+ARRAY-STORE* [f] (array-store* array index value) -- Alias for STORE. Destructively sets the element at index. See STORE for full documentation.
+ARRAYP [f] (arrayp x) -- Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL otherwise. DEFSTRUCT instances a...
+FETCH [f] (fetch array index) -- Returns the element of array at 0-based integer index. Signals an error if index is out of bounds. Lisp 1.5...
+MAKE-ARRAY [f] (make-array n) -- Alias for ARRAY. Creates a mutable array of n NIL-initialised elements. See ARRAY for full documentation.
+STORE [f] (store array index value) -- Destructively sets the element of array at 0-based index to value. Returns the stored value. Signals an err...
+
+## BASE64 -- Base64 encode/decode over Array<Char> bytes (BASE64 module, lib/32-base64.lisp, issue #257)
+BASE64:DECODE [f] (base64:decode s &key (alphabet ':standard) (pad t)) -- Decodes s (a Base64 ASCII String, per :alphabet/:pad) into a fresh Array<Char> of the exact original bytes....
+BASE64:ENCODE [f] (base64:encode bytes &key (alphabet ':standard) (pad t)) -- Encodes bytes (an Array<Char>, elements Char or integer 0-255) as a Base64 ASCII String. :alphabet is :stan...
+
+## BITWISE -- Bitwise operations
+ASH [f] (ash n count) -- Arithmetic shift. Shifts n left by count bits (right when count is negative). Left shifts of 64 or more bit...
+LEFTSHIFT [f] (leftshift n count) -- Shifts bits left (positive count) or right (negative count).
+LOGAND [f] (logand integer...) -- Bitwise AND of all arguments.
+LOGNOT [f] (lognot integer) -- Bitwise complement (NOT).
+LOGXOR [f] (logxor integer...) -- Bitwise XOR of all arguments.
+ROT [f] (rot n count) -- Rotate bits of n left by count positions (64-bit rotation). count is reduced modulo 64, so (rot n 64) equal...
+
+## CAPABILITIES -- Capability feature flags and shell access
+FEATURE-ENABLED-P [f] (feature-enabled-p name) -- Returns T if the capability (feature) named name is currently enabled; returns NIL otherwise. Capability na...
+FEATURES [f] (features) -- Returns a sorted list of strings naming all currently-enabled capabilities. An empty list means no capabili...
+SHELL [f] (shell command) or (shell program arg...) -- Runs a shell command and returns a list (exit-code stdout stderr) as three values. With a single string arg...
+
+## ENVIRONMENTS -- First-class environment objects
+CURRENT-ENVIRONMENT [f] (current-environment) -- Returns a snapshot of all currently visible bindings as a hash table (symbol → value). Unlike THE-ENVIRONME...
+MAKE-ENVIRONMENT [f] (make-environment) or (make-environment parent-env) -- Creates a new first-class environment. With no arguments creates a fresh root environment pre-populated wit...
+THE-ENVIRONMENT [f] (the-environment) -- Returns the current lexical environment as a first-class Environment object. This is a live reference — any...
+
+## ERRORS -- Error handling
+ERROR [f] (error message) -- Raises an error with the given message.
+ERROR-DATA [f] (error-data error-val) -- Extracts the associated data from an error condition value. Returns NIL if no data was attached (i.e. MAKE-...
+ERROR-MESSAGE [f] (error-message error-val) -- Extracts the message string from an error condition value. Signals an error if the argument is not an error...
+ERROR-P [f] (error-p x) -- Returns T if x is an error condition value (created with MAKE-ERROR or captured by ERRORSET). Returns NIL f...
+ERRORSET [f] (errorset form) -- Evaluates form, catching errors. Returns (result) on success, NIL on error.
+MAKE-ERROR [f] (make-error message) or (make-error message data) -- Creates an error condition value with the given message string and optional data (any Lisp value). Error va...
+
+## FILESYSTEM -- File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)
+CHMOD [f] (chmod path mode) -- Changes the permissions of the file at path to mode. Mode may be an integer (the raw Unix mode value) or an...
+CREATE-DIRECTORY [f] (create-directory path) -- Creates the directory at path and all intermediate directories as needed (like mkdir -p). Returns T on succ...
+DELETE-FILE [f] (delete-file path) -- Deletes the regular file at path. Signals an error if the file does not exist or is a directory. Returns T ...
+DIRECTORY-FILES [f] (directory-files path) -- Returns a sorted list of filename strings (not full paths) for all entries in the directory at path. Includ...
+DIRECTORY-P [f] (directory-p path) -- Returns T if path names an existing directory; returns NIL otherwise. Requires the READ-FS capability.
+FILE-EXECUTABLE-P [f] (file-executable-p path) -- Returns T if the file at path has at least one executable permission bit set (Unix execute bit); returns NI...
+FILE-EXISTS-P [f] (file-exists-p path) -- Returns T if something (file, directory, symlink, etc.) exists at path; returns NIL otherwise. Requires the...
+FILE-NEWER-P [f] (file-newer-p path1 path2) -- Returns T if path1's modification time is strictly later than path2's modification time; returns NIL otherw...
+FILE-P [f] (file-p path) -- Returns T if path names an existing regular file (not a directory or special file); returns NIL otherwise. ...
+FILE-READABLE-P [f] (file-readable-p path) -- Returns T if the file at path can be opened for reading by the current process; returns NIL otherwise. Requ...
+FILE-SIZE [f] (file-size path) -- Returns the size of the file at path in bytes as an integer. Signals an error if the file does not exist or...
+FILE-WRITABLE-P [f] (file-writable-p path) -- Returns T if the file at path exists and is not marked read-only; returns NIL otherwise. Requires the READ-...
+MAKE-TEMP-DIRECTORY [f] (make-temp-directory) or (make-temp-directory prefix) -- Creates a new empty temporary directory and returns its path as a string. The optional prefix string is pre...
+MAKE-TEMP-FILE [f] (make-temp-file) or (make-temp-file prefix) -- Creates a new empty temporary file and returns its path as a string. The optional prefix string is prepende...
+READ-FILE [f] (read-file path) -- Reads the entire contents of the file at path as a UTF-8 string. Signals an error if the file does not exis...
+READ-FILE-BYTE [f] (read-file-byte path offset) -- Reads a single byte at byte offset from the file at path. Returns the byte value as an integer (0–255), or ...
+READ-FILE-SECTION [f] (read-file-section path offset len) -- Reads up to len bytes starting at byte offset from the file at path and decodes them as UTF-8 STRICTLY: inv...
+READ-FILE-SECTION-BYTES [f] (read-file-section-bytes path offset len) -- Reads up to len bytes starting at byte offset from the file at path and returns them as an Array of bytes (...
+READ-FILE-SECTION-LOSSY [f] (read-file-section-lossy path offset len) -- Like READ-FILE-SECTION but decodes UTF-8 lossily: invalid bytes become the U+FFFD replacement character ins...
+READ-SEXPR-FILE [f] (read-sexpr-file path) -- Reads path's full text (requires READ-FS) and parses it into a list of every top-level s-expression it cont...
+RENAME-FILE [f] (rename-file from to) -- Renames (or moves) the file or directory at from to to. On the same filesystem this is atomic; across files...
+WRITE-FILE [f] (write-file path content) -- Writes the string content to the file at path, replacing any existing content. Creates the file if it does ...
+WRITE-SEXPR-FILE [f] (write-sexpr-file path forms) -- Writes forms (a list of s-expressions) to path (requires CREATE-FS), one per line in readable (PRIN1) form;...
+
+## FLAGS -- Global condition/signal flags
+CLEAR-ALL-FLAGS [f] (clear-all-flags) -- Clears all global condition flags at once. Takes no arguments. Useful at the start of a test suite or compu...
+CLEAR-FLAG [f] (clear-flag name) -- Clears the global condition flag named name (a symbol or string), setting it to false. Has no effect if the...
+FLAG-SET-P [f] (flag-set-p name) -- Returns T if the global condition flag named name is currently set; returns NIL otherwise. The name may be ...
+SET-FLAG [f] (set-flag name) -- Sets the global condition flag named name (a symbol or string) to true. Condition flags are global boolean ...
+
+## HASH-TABLES -- Hash tables
+DELETE-KEY [f] (delete-key hash-table key) -- Compatibility alias for DELETE-KEY-BANG. Destructively removes key and its associated value from hash-table...
+DELETE-KEY-BANG [f] (delete-key-bang hash-table key) -- Destructively removes key and its associated value from hash-table. Returns T regardless of whether the key...
+GETHASH [f] (gethash hash-table key) -- Retrieves the value associated with key in hash-table. Returns NIL if the key is not present. Keys are comp...
+KEYS [f] (keys hash-table) -- Returns a list of all keys in hash-table.
+MAKE-HASH-TABLE [f] (make-hash-table) -- Creates and returns a new empty hash table.
+SET-BANG [f] (set-bang hash-table key value) -- Sets the value for key in hash-table. SETHASH is accepted as a compatibility alias.
+SETHASH [f] (sethash hash-table key value) -- Compatibility alias for SET-BANG. Sets the value for key in hash-table and returns T.
+
+## HEX -- Hexadecimal encode/decode over Array<Char> bytes (HEX module, lib/33-hex.lisp, issue #257)
+HEX:DECODE [f] (hex:decode s) -- Decodes s (a hexadecimal ASCII String, case-insensitive) into a fresh Array<Char> of the exact original byt...
+HEX:ENCODE [f] (hex:encode bytes &key (case ':lower)) -- Encodes bytes (an Array<Char>, elements Char or integer 0-255) as a hexadecimal ASCII String, two digits pe...
+
+## HTTP -- HTTP/1.1 client and server (http:// always, https:// with the net-tls cargo feature -- issue #365)
+HTTP:COLLECT-STRING [f] (http:collect-string stream &key max-bytes lossy) -- Collects an HTTP body stream to its end (bounded: default 10 MiB, error past :MAX-BYTES -- never unbounded ...
+HTTP:GET [f] (http:get url &key headers connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects) -- Ergonomic (http:request "GET" url ...). See http:request for every keyword and the capability/scheme rules.
+HTTP:POST [f] (http:post url &key body headers connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects) -- Ergonomic (http:request "POST" url :body body ...). See http:request for every keyword.
+HTTP:REQUEST [f] (http:request method url &key headers body connect-timeout-ms read-timeout-ms overall-timeout-ms max-redirects follow-redirects max-line-bytes max-header-count extra-roots) -- Performs an HTTP/1.1 request. http:// always; https:// too when the net-tls cargo feature is compiled in (:...
+HTTP:RESPOND [f] (http:respond status &key headers body reason) -- Builds a response alist for an http:serve handler: STATUS integer, :HEADERS an ordered (name . value) list,...
+HTTP:RESPONSE-BODY [f] (http:response-body response) -- The response's UNREAD body stream: framing-aware (Content-Length exact / chunked / read-to-close / no body ...
+HTTP:RESPONSE-STATUS [f] (http:response-status response) -- The integer status code of a client response alist. Companions: http:response-reason, http:response-version...
+HTTP:SERVE [f] (http:serve listener handler &key read-timeout-ms max-line-bytes max-header-count max-body-bytes on-error max-requests stop-p) -- Serves HTTP/1.1 on a tcp:listen listener (NET-LISTEN gates the listen; HTTP adds no capability). HANDLER: r...
+HTTP:STREAM-READ! [f] (http:stream-read! stream n) -- Reads up to N bytes from an HTTP body stream, honoring its message framing -- never reads past this message...
+
+## INTROSPECTION -- Inspecting registered definitions and compiled code
+DESCRIBE [f] (describe 'sym) -- Print a brief summary of what a symbol (or value) is: its kind, parameters/arity, value, any typed (JIT) si...
+DISASSEMBLE [f] (disassemble 'sym) -- Print the typed-core pseudo-assembly of a jotted (defun-typed) function: the typed IR lowered to a flat reg...
+DOCUMENTATION [f] (documentation symbol) -- Returns the docstring for a symbol.
+SEE-SOURCE [f] (see-source 'sym) or (see-source 'sym t) -- Reconstruct the source form the evaluator registered for an operative (lambda, fexpr, macro, vau). With no ...
+
+## IO -- Input/Output
+FORMAT [f] (format dest ctrl &rest args) -- CL-style format string rendering (issue #150, lib/18-format.lisp). DEST nil returns the formatted string; t...
+LOAD-FILE [f] (load-file filename) -- Loads and evaluates a Lisp source file. A loaded source file may include another file with a top-level (inc...
+PRIN1 [f] (prin1 object) -- Prints object in readable form (strings with quotes).
+PRINC [f] (princ object) -- Prints object without escaping (strings without quotes).
+PRINT [f] (print object...) -- Prints objects to standard output.
+READ [f] (read) -- Reads one S-expression from standard input.
+READ-LINE [f] (read-line &optional port) -- Reads one line of text (bytes up to but excluding a trailing newline, decoded as UTF-8 lossy) from PORT, or...
+SPACES [f] (spaces n) -- Prints n space characters to standard output without a trailing newline. Lisp 1.5 I/O primitive for column-...
+TERPRI [f] (terpri) -- Prints a newline character.
+WITH-OUTPUT-TO-STRING [m] (with-output-to-string (var) body...) -- Binds VAR to a fresh in-memory output port for BODY's dynamic extent (write to it with ports:write-string!,...
+
+## JSON -- JSON parse/stringify (JSON module, lib/35-json.lisp, issue #257)
+JSON:NULL-P [f] (json:null-p v) -- T if v is the JSON null marker :NULL that json:parse produces for a JSON null literal (never NIL, so it is ...
+JSON:PARSE [f] (json:parse s &key (max-depth 512) (on-integer-overflow ':error)) -- Parses JSON text s into a Lamedh value: object -> hash table (String keys, last-key-wins), array -> Array (...
+JSON:STRINGIFY [f] (json:stringify v &key (pretty nil) (indent 2)) -- Serializes Lamedh value v to a JSON text String — the exact inverse of json:parse's mapping. :pretty (defau...
+
+## LISTS -- List manipulation
+APPEND [f] (append list1 list2) -- Concatenates two lists.
+ASSOC [f] (assoc key alist) -- Searches an association list for a pair with matching key.
+CAR [f] (car list) -- Returns the first element of a list (the car of a cons cell).
+CDR [f] (cdr list) -- Returns the rest of a list (the cdr of a cons cell).
+CONS [f] (cons car cdr) -- Creates a new cons cell with the given car and cdr.
+EFFACE [f] (efface item list) -- Returns a new list with the first occurrence of item (tested by EQUAL) removed. If item does not appear, re...
+LAST [f] (last list) -- Returns the last cons cell of a list.
+LENGTH [f] (length list) -- Returns the number of elements in a list.
+LIST [f] (list item...) -- Creates a list from its arguments.
+MAPCAR [f] (mapcar function list) -- Applies function to each element of list, returns list of results.
+MAPLIST [f] (maplist function list) -- Applies function to successive tails of list.
+MEMBER [f] (member item list) -- Searches for item in list using EQUAL. Returns tail starting at match.
+NTH [f] (nth n list) -- Returns the nth element of a list (0-indexed).
+NTHCDR [f] (nthcdr n list) -- Returns the list after n applications of CDR. (nthcdr 0 list) returns list unchanged; (nthcdr 1 list) is CD...
+REVERSE [f] (reverse list) -- Returns a list with elements in reverse order.
+RPLACA [f] (rplaca cons new-car) -- Destructively replaces the CAR of a cons cell with new-car. Returns the modified cons cell. This is a mutat...
+RPLACD [f] (rplacd cons new-cdr) -- Destructively replaces the CDR of a cons cell with new-cdr. Returns the modified cons cell. This is a mutat...
+SORT [f] (sort list comparator) -- Returns a new list with the same elements as list, sorted according to comparator. The comparator must be a...
+SUBLIS [f] (sublis alist tree) -- Substitutes values from an association list into a tree. For each leaf in tree that matches a key in alist ...
+SUBST [f] (subst new old tree) -- Replaces all occurrences of old with new in tree.
+
+## META -- Metaprogramming
+APPLY [f] (apply function args) -- Applies function to a list of arguments.
+DEFUN-TYPED-OPT [VAU] (defun-typed-opt (name return-type) ((arg type) ...) body...) -- Optimizer-to-compiler bridge for typed functions. Receives a DEFUN-TYPED-shaped definition as source, runs ...
+DOCUMENTATION [f] (documentation symbol) -- Returns the docstring for a symbol.
+EVAL [f] (eval expression) -- Evaluates an expression.
+EVCON [f] (evcon clauses) or (evcon clauses environment) -- Classic Lisp 1.5 evaluator for COND-style clauses. Walks the list of (test value) pairs, evaluates each tes...
+EVLIS [f] (evlis list) or (evlis list environment) -- Evaluates each element of list in order and returns a new list of results. With one argument, uses the curr...
+FUNCALL [f] (funcall function arg...) -- Calls function with the given arguments.
+HELP [f] (help) or (help 'symbol) or (help :categories) -- Interactive help system. Use (help) for overview, (help 'symbol) for specific help.
+MACROEXPAND [f] (macroexpand form) -- Expands a macro call one level. If form is a list whose car names a macro, returns the fully expanded form....
+OPTIMIZE [f] (optimize form) -- Runs the source-level optimizer on form and returns the optimized Lisp expression without evaluating it. Th...
+
+## MIME -- Case-insensitive multi-value headers and Content-Type parse/build (MIME module, lib/36-mime.lisp, issue #257)
+MIME:BUILD-CONTENT-TYPE [f] (mime:build-content-type type subtype &optional parameters) -- Builds a Content-Type header value from type, subtype, and an optional PARAMETERS list of (name . value) co...
+MIME:CONTENT-TYPE-PARAMETER [f] (mime:content-type-parameter ct name) -- Case-insensitive lookup of parameter name's value in ct (as returned by mime:parse-content-type), or NIL if...
+MIME:HEADER-NAME= [f] (mime:header-name= a b) -- Case-insensitive header-name equality (Unicode default case fold; agrees with ASCII case-insensitive compar...
+MIME:HEADERS-ADD [f] (mime:headers-add headers name value) -- Returns a fresh headers list with (name . value) appended after headers. Never removes or collapses an exis...
+MIME:HEADERS-GET [f] (mime:headers-get headers name) -- The value of the first header in headers (a list of (name . value) conses) whose name matches name case-ins...
+MIME:HEADERS-GET-ALL [f] (mime:headers-get-all headers name) -- Every value in headers whose name matches name case-insensitively, in original order — the multi-value acce...
+MIME:HEADERS-NAMES [f] (mime:headers-names headers) -- The distinct header names in headers, each spelled the way it was first given, in first-seen order.
+MIME:HEADERS-REMOVE [f] (mime:headers-remove headers name) -- Returns a fresh headers list with every entry matching name (case-insensitive) removed.
+MIME:HEADERS-SET [f] (mime:headers-set headers name value) -- Returns a fresh headers list with every existing entry matching name (case-insensitive) removed and (name ....
+MIME:PARSE-CONTENT-TYPE [f] (mime:parse-content-type s) -- Parses a Content-Type header value s into an alist (TYPE . type-string) (SUBTYPE . subtype-string) (PARAMET...
+
+## MODULES -- REQUIRE/PROVIDE load-once library loading (issue #256)
+LOADED-MODULES [f] (loaded-modules) -- Returns all module names currently REQUIRE-loaded in this environment, in no particular order.
+MODULE-INFO [f] (module-info 'name) -- Returns an alist of diagnostic metadata REQUIRE tracks for NAME: STATE, SOURCE (an origin string such as "r...
+MODULE-STATE [f] (module-state 'name) -- Returns 'REQUIRE-LOADED, 'REQUIRE-LOADING, 'REQUIRE-UNLOADED, or NIL if NAME has never been REQUIREd, PROVI...
+PROVIDE [f] (provide 'name) or (provide 'name exports) -- Called from within a module's own source (as loaded by REQUIRE) to mark NAME complete; conventionally the m...
+REQUIRE [f] (require 'name) -- Loads module NAME (a symbol or string) at most once in this environment; returns NAME's canonical (uppercas...
+REQUIRE-RELOAD [f] (require-reload 'name) -- Development/debugging operation: forces NAME to be re-resolved and re-evaluated via REQUIRE's normal proced...
+
+## NET -- Addresses and DNS resolution (NET module, lib/37-net.lisp, issue #258); NET-DNS capability
+NET:ADDRESS [RECORD] (net:make-address family ip port) -- A DEFRECORD with fields FAMILY (:ipv4 or :ipv6), IP (a string, never bracketed), and PORT (an integer 0-655...
+NET:ADDRESS->STRING [f] (net:address->string addr) -- Formats addr as "ip:port", bracketing an IPv6 host (e.g. "[::1]:8080").
+NET:LOCAL-ADDR [f] (net:local-addr resource) -- The local NET:ADDRESS a connected TCP port or a TCP/UDP network handle is bound to. No capability required.
+NET:PEER-ADDR [f] (net:peer-addr port) -- The remote NET:ADDRESS a connected TCP port is connected to. No capability required.
+NET:RESOLVE [f] (net:resolve host) or (net:resolve host port) -- Resolves host (and optional service port, default 0) to an ordered list of NET:ADDRESS records via the syst...
+
+## OS -- Process identity/environment, time, randomness, and process spawn/control (OS module, lib/41-os.lisp, issue #260); OS-ENV/OS-ENV-WRITE/OS-PROCESS/OS-SIGNAL capabilities
+OS:ARGS [f] (os:args) -- The process's raw argv (including argv[0]) as a list of strings. Requires OS-ENV. Distinct from *ARGV*, whi...
+OS:CHDIR! [f] (os:chdir! path) -- Changes the process's current working directory to path (process-wide; affects every subsequent relative-pa...
+OS:CWD [f] (os:cwd) -- The process's current working directory, as a string. Requires OS-ENV.
+OS:ELAPSED-SECONDS [f] (os:elapsed-seconds start-nanos) -- Seconds elapsed since start-nanos (a prior os:monotonic-nanos reading), as a float. No capability required.
+OS:ENV-GET [f] (os:env-get name) -- The value of environment variable name, or NIL if unset. Requires OS-ENV.
+OS:ENV-LIST [f] (os:env-list) -- Every environment variable as an alist of (name . value) strings, sorted by name. Requires OS-ENV.
+OS:ENV-SET! [f] (os:env-set! name value) -- Sets environment variable name to value (process-wide). Requires OS-ENV-WRITE.
+OS:ENV-UNSET! [f] (os:env-unset! name) -- Removes environment variable name (process-wide); a no-op if already unset. Requires OS-ENV-WRITE.
+OS:EXECUTABLE-PATH [f] (os:executable-path) -- The absolute path to the currently running executable. Requires OS-ENV.
+OS:EXIT-CODE [f] (os:exit-code status) -- The :exit-code field of an exit-status alist, or NIL if the process was terminated by a signal. Companions:...
+OS:HOSTNAME [f] (os:hostname) -- This host's hostname. Requires OS-ENV. Linux-only; signals a structured :UNSUPPORTED-PLATFORM error elsewhere.
+OS:MAKE-PRNG [f] (os:make-prng seed) -- A fresh deterministic PRNG state seeded with seed (any integer). Distinct from the global time-seeded (rand...
+OS:MONOTONIC-NANOS [f] (os:monotonic-nanos) -- Nanoseconds elapsed since an arbitrary, process-local, never-goes-backward reference point -- not comparabl...
+OS:NOW [f] (os:now) -- Current wall-clock time since the Unix epoch, as (CONS seconds nanoseconds). No capability required.
+OS:NOW-UNIX [f] (os:now-unix) -- Current wall-clock time since the Unix epoch as a single float number of seconds. No capability required.
+OS:PID [f] (os:pid) -- This process's OS process ID. Requires OS-ENV.
+OS:PPID [f] (os:ppid) -- This process's parent process ID. Requires OS-ENV. Linux-only (std has no portable getppid()); signals a st...
+OS:PRNG-NEXT [f] (os:prng-next state) -- Advances PRNG state (from os:make-prng or a prior os:prng-next) one SplitMix64 step. Returns (CONS new-stat...
+OS:PROCESS-ALIVE-P [f] (os:process-alive-p handle) -- T unless handle has been reaped (by os:process-wait!/os:process-try-wait! or the Drop backstop).
+OS:PROCESS-HANDLE [f] (os:process-handle process) -- The OS:CHILD handle inside an os:spawn result alist. Companions: os:process-stdin, os:process-stdout, os:pr...
+OS:PROCESS-ID [f] (os:process-id handle) -- handle's OS PID. Retained (not NIL) even after the process has been reaped, for diagnostics/logging.
+OS:PROCESS-KILL! [f] (os:process-kill! handle) -- Sends SIGKILL to the child behind handle (hard, unignorable). Does NOT reap it -- call os:process-wait!/os:...
+OS:PROCESS-P [f] (os:process-p x) -- T if x is an OS:CHILD handle (as returned by os:process-handle).
+OS:PROCESS-TERMINATE! [f] (os:process-terminate! handle) -- Sends SIGTERM to the child behind handle (graceful; the child may ignore or handle it). Does NOT reap it. S...
+OS:PROCESS-TRY-WAIT! [f] (os:process-try-wait! handle) -- Non-blocking poll of handle: NIL if still running, else the same exit-status alist os:process-wait! returns...
+OS:PROCESS-WAIT! [f] (os:process-wait! handle) -- Blocks until the child behind handle exits, then reaps it. Returns an exit-status alist: ((:exit-code . n-o...
+OS:RANDOM-BYTES [f] (os:random-bytes n) -- N cryptographically secure random bytes from the OS entropy source (/dev/urandom on Linux) as a fresh Array...
+OS:RANDOM-DOUBLE [f] (os:random-double state) -- Like os:prng-next, but value is a float in [0.0, 1.0).
+OS:SIGNAL! [f] (os:signal! pid signal-name) -- Sends signal-name (a typed name, e.g. :term, :kill, :hup, :int, :usr1, :usr2, :quit, :cont, :stop, :chld, :...
+OS:SLEEP [f] (os:sleep ms) -- Blocks the calling thread for ms milliseconds. Always sleeps for at least the requested duration; no EINTR/...
+OS:SLEEP-SECONDS [f] (os:sleep-seconds secs) -- Blocks the calling thread for secs seconds (a float or integer). See os:sleep.
+OS:SPAWN [f] (os:spawn program &optional argv &key (inherit-env t) env cwd stdin stdout stderr) -- Spawns program (a path, never run through a shell -- argv is passed through literally, no interpolation) wi...
+
+## OS-LINUX -- Typed Linux file metadata and symlinks (OS-LINUX module, lib/42-os-linux.lisp, issue #260); READ-FS capability
+OS-LINUX:LSTAT [f] (os-linux:lstat path) -- Like os-linux:stat, but does not follow a trailing symlink (like lstat(2)) -- if path itself is a symlink, ...
+OS-LINUX:READLINK [f] (os-linux:readlink path) -- The target path points to, as a string, if path is a symlink. Requires READ-FS. Signals a structured :INVAL...
+OS-LINUX:STAT [f] (os-linux:stat path) -- path's metadata, following a trailing symlink (like stat(2)), as a typed alist: :size :mode :uid :gid :nlin...
+
+## PLISTS -- Property lists
+DEFLIST [f] (deflist pairs indicator) -- Bulk property setter: for each pair (symbol value) in pairs, sets the property named indicator on symbol to...
+DOCUMENTATION [f] (documentation symbol) -- Returns the docstring for a symbol.
+GET [f] (get symbol indicator) -- Retrieves a property from symbol's property list. Classic Lisp 1.5 name for GETP. Returns NIL if the indica...
+GETP [f] (getp symbol indicator) -- Retrieves a property from a symbol's property list.
+PLIST [f] (plist symbol) -- Returns the entire property list of a symbol.
+PUTP [f] (putp symbol indicator value) -- Sets a property on a symbol's property list.
+REMPROP [f] (remprop symbol indicator) -- Removes the property named indicator from symbol's property list. Returns T if the property was present and...
+
+## PORTS -- Synchronous binary I/O ports (PORTS module, lib/31-ports.lisp)
+PORTS:CLOSE! [f] (ports:close! port) -- Closes port. Idempotent: closing an already-closed port is a silent no-op, never an error.
+PORTS:FLUSH! [f] (ports:flush! port) -- Flushes any buffered writes on port.
+PORTS:INPUT-P [f] (ports:input-p port) -- T if port supports reading.
+PORTS:KIND [f] (ports:kind port) -- port's diagnostic resource kind, as a symbol: FILE, MEMORY, STDIN, STDOUT, or STDERR (or a host-registered ...
+PORTS:NAME [f] (ports:name port) -- port's diagnostic name (e.g. a file path, or "<stdin>").
+PORTS:OPEN-APPEND [f] (ports:open-append path) -- Opens path as a binary output port positioned at end-of-file, preserving existing contents. Requires the CR...
+PORTS:OPEN-INPUT [f] (ports:open-input path) -- Opens path as a binary input port. Requires the READ-FS capability.
+PORTS:OPEN-INPUT-BYTES [f] (ports:open-input-bytes bytes) -- Opens a binary input port reading from a private copy of bytes (an Array<Char>). No capability required.
+PORTS:OPEN-OUTPUT [f] (ports:open-output path) -- Opens path as a binary output port, truncating any existing contents (creating the file if needed). Require...
+PORTS:OPEN-OUTPUT-BYTES [f] (ports:open-output-bytes) -- Opens a binary output port that accumulates written bytes in memory; read them back with ports:output-conte...
+PORTS:OPEN-P [f] (ports:open-p port) -- T if port has not been closed.
+PORTS:OUTPUT-CONTENTS [f] (ports:output-contents port) -- Returns the bytes written so far to an open-output-bytes port, as a fresh Array<Char>.
+PORTS:OUTPUT-P [f] (ports:output-p port) -- T if port supports writing.
+PORTS:PORT-P [f] (ports:port-p v) -- T if v is a port (open or closed) of any kind.
+PORTS:POSITION [f] (ports:position port) -- The current byte offset in a seekable port. Signals an error on a non-seekable port. Qualified-only: delibe...
+PORTS:READ-ALL-BYTES! [f] (ports:read-all-bytes! port) -- Reads port to EOF, returning every remaining byte as a fresh Array<Char>.
+PORTS:READ-BYTE! [f] (ports:read-byte! port) -- Reads one byte from port as an integer 0-255, or NIL at EOF.
+PORTS:READ-BYTES! [f] (ports:read-bytes! port n) -- Reads up to n bytes from port into a fresh Array<Char>. May be shorter than n (including empty) at EOF or o...
+PORTS:READ-LINE! [f] (ports:read-line! port) -- Reads one line of text from port: bytes up to but excluding a trailing newline, decoded as UTF-8 (lossy). R...
+PORTS:READ-STRING! [f] (ports:read-string! port n) -- Reads up to n bytes from port and decodes them as UTF-8 (lossy), returning a STRING.
+PORTS:SEEK! [f] (ports:seek! port offset) -- Moves a seekable port to absolute byte offset from the start; returns the new position. Signals an error on...
+PORTS:SEEKABLE-P [f] (ports:seekable-p port) -- T if port supports ports:position/ports:seek!. Files and byte-array input ports are seekable; byte-array ou...
+PORTS:STDERR [f] (ports:stderr) -- The process's standard error as a binary output port. No capability required.
+PORTS:STDIN [f] (ports:stdin) -- The process's standard input as a binary input port. Requires the IO capability.
+PORTS:STDOUT [f] (ports:stdout) -- The process's standard output as a binary output port. No capability required.
+PORTS:WITH-OPEN-PORT [m] (ports:with-open-port (var port-expr) body...) -- Binds var to the value of port-expr (a port) for body's dynamic extent, unconditionally closing it afterwar...
+PORTS:WRITE-BYTE! [f] (ports:write-byte! port byte) -- Writes one byte (a Char or integer 0-255) to port.
+PORTS:WRITE-BYTES! [f] (ports:write-bytes! port bytes) -- Writes bytes (an Array<Char>) to port; returns the number of bytes actually written (may be less than the l...
+PORTS:WRITE-STRING! [f] (ports:write-string! port s) -- Writes string s to port as its exact UTF-8 bytes. Returns the number of bytes written.
+
+## PREDICATES -- Type and value predicates
+< [f] (< a b) -- Returns T if a is less than b.
+= [f] (= a b) -- Returns T if a and b are numerically equal.
+> [f] (> a b) -- Returns T if a is greater than b.
+ARRAYP [f] (arrayp x) -- Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL otherwise. DEFSTRUCT instances a...
+ATOM [f] (atom x) -- Returns T if x is not a cons cell (i.e., is an atom).
+BOUNDP [f] (boundp symbol) -- Returns T if symbol has a value binding.
+CHARP [f] (charp x) -- Returns T if x is a Char value (produced by a char literal like 'a'). NIL for integers, strings, and all ot...
+CONSP [f] (consp x) -- Returns T if x is a cons cell.
+EQ [f] (eq a b) -- Returns T if a and b are the same object (identity test).
+EQUAL [f] (equal a b) -- Returns T if a and b are structurally equivalent (recursive comparison).
+ERROR-P [f] (error-p x) -- Returns T if x is an error condition value (created with MAKE-ERROR or captured by ERRORSET). Returns NIL f...
+EVENP [f] (evenp n) -- Returns T if n is an even integer.
+EXTENSION-P [f] (extension-p x) -- Returns T if x is an opaque extension value — a host-language object that was injected into the Lisp enviro...
+FIXP [f] (fixp x) -- Returns T if x is a fixed-point (integer) number.
+FLOATP [f] (floatp x) -- Returns T if x is a floating-point number.
+FUNCTIONP [f] (functionp x) -- Returns T if x is a function (lambda, fexpr, or builtin).
+LISTP [f] (listp x) -- Returns T if x is a list (cons or NIL).
+MACROP [f] (macrop x) -- Returns T if x is a macro object, NIL otherwise.
+MINUSP [f] (minusp n) -- Returns T if n is negative (less than zero).
+NOT [f] (not x) -- Returns T if x is NIL, NIL otherwise.
+NULL [f] (null x) -- Returns T if x is NIL.
+NUMBERP [f] (numberp x) -- Returns T if x is a number (integer or float).
+ODDP [f] (oddp n) -- Returns T if n is an odd integer.
+PLUSP [f] (plusp n) -- Returns T if n is positive (greater than zero).
+STRINGP [f] (stringp x) -- Returns T if x is a string.
+SYMBOLP [f] (symbolp x) -- Returns T if x is a symbol.
+ZEROP [f] (zerop n) -- Returns T if n is zero.
+
+## SPECIAL-FORMS -- Special forms and macros
+AND [s] (and form...) -- Short-circuit AND. Returns first NIL or last value.
+COND [s] (cond (test form...)...) -- Multi-way conditional. Evaluates tests until one is true, then evaluates its forms.
+DEF [s] (def symbol value &optional docstring) -- Binds symbol to value in the current environment.
+DEFEXPR [s] (defexpr name (param...) [docstring] body) -- Defines a named FEXPR ("functional expression") — a function-like object that receives its arguments UNEVAL...
+DEFMACRO [s] (defmacro name (params...) body...) -- Defines a macro that transforms code before evaluation.
+DEFUN [m] (defun name (params...) &optional docstring body...) -- Defines a named function with optional docstring.
+DEFUN* [VAU] (defun* name [docstring] params... [return-type] body...) -- Recommended default function definition form. Tries HM type inference automatically and compiles a native t...
+FEXPR [s] (fexpr (params...) body...) -- Anonymous fexpr constructor: evaluates to a fexpr VALUE whose operands reach the body unevaluated (the fexp...
+FEXPRLET [m] (fexprlet ((name (params...) body...) ...) body...) -- Locally bind fexprs (unevaluated-argument operatives) for the extent of the body. Operands reach the body u...
+FLET [m] (flet ((name (params...) body...) ...) body...) -- Locally bind named functions (non-recursive) for the extent of the body. Parallel LET semantics: clauses do...
+IF [s] (if condition then-form else-form) -- Evaluates condition; if non-NIL, evaluates then-form, otherwise else-form.
+LAMBDA [s] (lambda (params...) body...) -- Creates an anonymous function (closure).
+LET [s] (let ((var val)...) body...) -- Creates local variable bindings for the duration of body.
+MACRO [s] (macro (params...) body...) -- Anonymous macro constructor: evaluates to a macro VALUE (the macro counterpart of LAMBDA). Because operator...
+MACROLET [m] (macrolet ((name (params...) body...) ...) body...) -- Locally bind macros for the extent of the body. Each clause is expanded at call sites like a DEFMACRO defin...
+OR [s] (or form...) -- Short-circuit OR. Returns first non-NIL value or NIL.
+PROG [s] (prog (vars...) statements...) -- Imperative block with local variables and labels for GO/RETURN.
+PROGN [s] (progn form...) -- Evaluates forms in sequence, returns last value.
+QUOTE [s] (quote expression) or 'expression -- Prevents evaluation and returns expression as data.
+SETQ [s] (setq symbol value) -- Assigns a new value to an existing variable.
+VAU [s] (vau (operands-param env-param) body...) -- Creates an anonymous VAU operative (also written $VAU following Kernel convention).  A vau operative is sim...
+VAULET [m] (vaulet ((name (operands env) body...) ...) body...) -- Locally bind vau operatives for the extent of the body. Each clause's OPERANDS receives the unevaluated ope...
+
+## STRINGS -- String operations
+CHAR-AT [f] (char-at s i) -- One-character access: the character at index i in s, as a one-character string. Unlike SUBSTRING, an out-of...
+CHAR-CODE [f] (char-code c) -- Returns the integer code point of c, where c is a Char value (from a literal like 'a') or a one-character s...
+CODE-CHAR [f] (code-char n) -- Returns a one-character string containing the character at code point n. The inverse of CHAR-CODE. Signals ...
+CONCAT [f] (concat string...) -- Concatenates all string arguments.
+EXPLODE [f] (explode atom) -- Converts an atom to a list of single-character symbols.
+GENSYM [f] (gensym) -- Generates a unique uninterned symbol.
+IMPLODE [f] (implode char-list) -- Converts a list of character symbols to an interned symbol.
+INDEX [f] (index string n) -- Returns the character at position n (0-indexed) as a string.
+INTERN [f] (intern string) -- Interns a string as a symbol in the global symbol table.
+MAKE-CHAR [f] (make-char n) -- Returns a Char value for integer code point n (0-255). The Char-producing complement of CODE-CHAR, which re...
+MAKE-STRING [f] (make-string n) or (make-string n char) -- Returns a fresh string of length n, every character char (a one-character string or code point; default spa...
+MAKNAM [f] (maknam char-list) -- Converts a list of character symbols or strings to an interned symbol. Identical to IMPLODE. Lisp 1.5 name ...
+NUMBER->STRING [f] (number->string n) -- Converts number n to its decimal string representation. Integers produce digit strings; floats produce Rust...
+PRIN1-TO-STRING [f] (prin1-to-string object) -- Returns the readable printed representation of object as a string, exactly as PRIN1 would print it to stdou...
+PRINC-TO-STRING [f] (princ-to-string object) -- Returns the human-readable printed representation of object as a string, exactly as PRINC would print it to...
+STRING->NUMBER [f] (string->number s) -- Parses string s as a number. Tries integer first, then float. Returns the parsed number on success, or NIL ...
+STRING-CAPITALIZE [f] (string-capitalize s) -- Returns s with its first character uppercased (ASCII) and the rest lowercased.
+STRING-CI-NE [f] (string-ci-ne a b) -- True if a and b do NOT have the same contents under Unicode case folding.
+STRING-CI< [f] (string-ci< a b) -- True if a is lexicographically before b under Unicode case folding.
+STRING-CI<= [f] (string-ci<= a b) -- Non-strict case-insensitive ordering: true unless a comes after b under Unicode case folding.
+STRING-CI= [f] (string-ci= a b) -- True if a and b have the same contents under Unicode default case folding (via STRING-CASEFOLD*: locale-ind...
+STRING-CI> [f] (string-ci> a b) -- True if a is lexicographically after b under Unicode case folding.
+STRING-CI>= [f] (string-ci>= a b) -- Non-strict case-insensitive ordering: true unless a comes before b under Unicode case folding.
+STRING-CONCAT [f] (string-concat &rest strs) -- Concatenates zero or more strings. A named alias for CONCAT.
+STRING-COUNT [f] (string-count s sub) -- Counts non-overlapping occurrences of non-empty sub in s; 0 if sub is empty or does not occur.
+STRING-EMPTY-P [f] (string-empty-p s) -- True if s has length zero.
+STRING-LAST-INDEX-OF [f] (string-last-index-of s sub) -- Returns the index of the LAST (rightmost) occurrence of non-empty sub in s, or NIL if sub does not occur (o...
+STRING-LENGTH* [f] (string-length* s) -- Returns the number of Unicode characters in string s (not bytes). This is the kernel primitive; the Lisp la...
+STRING-NE [f] (string-ne a b) -- True if strings a and b do NOT have the same contents. Case-sensitive. Named STRING-NE rather than CL's STR...
+STRING-REPLACE-ALL [f] (string-replace-all s old new) -- Replaces every (non-empty) occurrence of old in s with new. Alias for STRING-REPLACE, named to pair explici...
+STRING-REPLACE-FIRST [f] (string-replace-first s old new) -- Replaces only the first (non-empty) occurrence of old in s with new.
+STRING-REVERSE [f] (string-reverse s) -- Reverses s. A named entry point onto the generic REVERSE (which already works on strings).
+STRING-TRIM-LEFT [f] (string-trim-left s) -- Removes leading whitespace from s.
+STRING-TRIM-RIGHT [f] (string-trim-right s) -- Removes trailing whitespace from s.
+STRING< [f] (string< a b) -- True if string a is lexicographically (by code point) before string b. Case-sensitive. Same ordering as STR...
+STRING<= [f] (string<= a b) -- Non-strict case-sensitive ordering: true unless a comes lexicographically after b.
+STRING> [f] (string> a b) -- True if string a is lexicographically (by code point) after string b. Case-sensitive.
+STRING>= [f] (string>= a b) -- Non-strict case-sensitive ordering: true unless a comes lexicographically before b.
+SUBSTRING [f] (substring s start) or (substring s start end) -- Returns a substring of s from character index start (inclusive, 0-based) to end (exclusive). End defaults t...
+
+## TCP -- TCP connect/bind/listen/accept over binary ports (TCP module, lib/38-tcp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
+TCP:ACCEPT [f] (tcp:accept listener) -- Blocks until an inbound connection arrives on listener, returning (cons port peer-address) -- port is a dup...
+TCP:CLOSE-LISTENER! [f] (tcp:close-listener! listener) -- Closes listener. Idempotent, like ports:close!. Every subsequent tcp:accept on this listener errors immedia...
+TCP:CONNECT [f] (tcp:connect host port) or (tcp:connect host port timeout-ms) -- Connects to host:port over TCP, returning a duplex binary PORTS port -- every PORTS operation (read-byte!, ...
+TCP:LISTEN [f] (tcp:listen host port) or (tcp:listen host port backlog) -- Binds and listens on host:port for inbound TCP connections, returning a listener handle. Requires the NET-L...
+TCP:LISTENER-OPEN-P [f] (tcp:listener-open-p listener) -- T unless listener has been closed.
+TCP:LISTENER-P [f] (tcp:listener-p x) -- T if x is a TCP listener handle (as returned by tcp:listen).
+TCP:SET-READ-TIMEOUT! [f] (tcp:set-read-timeout! port ms) -- Sets port's read timeout in milliseconds; NIL blocks without a timeout (the default). A timed-out read sign...
+TCP:SET-WRITE-TIMEOUT! [f] (tcp:set-write-timeout! port ms) -- Sets port's write timeout in milliseconds; NIL blocks without a timeout (the default).
+TCP:SHUTDOWN! [f] (tcp:shutdown! port how) -- Shuts down port's read half, write half, or both (HOW: :read, :write, or :both) without closing it.
+
+## TEXT -- Explicit String <-> UTF-8 Array<Char> boundary (TEXT module, lib/30-text.lisp)
+TEXT:STRING->UTF8 [f] (text:string->utf8 s) -- Returns the exact UTF-8 bytes of string s as a fresh Array<Char> (an array whose every element is a Char by...
+TEXT:UTF8->STRING [f] (text:utf8->string bytes) -- Decodes bytes (an Array<Char>) as UTF-8 and returns the resulting STRING. Strict: signals a descriptive err...
+TEXT:UTF8->STRING-LOSSY [f] (text:utf8->string-lossy bytes) -- Decodes bytes (an Array<Char>) as UTF-8, substituting the Unicode replacement character (U+FFFD) for any in...
+
+## TLS -- TLS client/server wrap of a connected TCP port (TLS module, lib/43-tls.lisp, issue #365); off-by-default net-tls cargo feature, rustls/ring
+TLS:ALPN-PROTOCOL [f] (tls:alpn-protocol port) -- The ALPN protocol negotiated on TLS port (a String), or NIL if none was negotiated.
+TLS:AVAILABLE-P [f] (tls:available-p) -- T if this build of lamedh was compiled with the net-tls cargo feature (rustls); NIL otherwise. Every tls:* ...
+TLS:CONNECT [f] (tls:connect host port &key connect-timeout-ms handshake-timeout-ms alpn extra-roots) -- tcp:connect + tls:wrap-client sugar: connects to host:port then TLS-wraps the result, :hostname defaulting ...
+TLS:CONNECT-INSECURE! [f] (tls:connect-insecure! host port &key connect-timeout-ms handshake-timeout-ms alpn) -- Like tls:connect, but skips certificate-chain verification entirely -- the only Lisp-facing way to do so. A...
+TLS:PEER-CERTIFICATE-SUMMARY [f] (tls:peer-certificate-summary port) -- A structural summary alist for TLS port's peer certificate chain: ((:count . N) (:leaf-der-length . M) (:le...
+TLS:PEER-CERTIFICATES [f] (tls:peer-certificates port) -- The peer's certificate chain on TLS port, leaf first, as a list of Array<Char> raw DER bytes -- or NIL if n...
+TLS:SNI-HOSTNAME [f] (tls:sni-hostname port) -- The SNI hostname a TLS client offered when connecting to server-side port, or NIL if none was sent (or port...
+TLS:WRAP-CLIENT [f] (tls:wrap-client port &key hostname alpn extra-roots) -- Wraps port -- an already-connected tcp:connect PORT -- as a TLS client, performing the handshake now (block...
+TLS:WRAP-CLIENT-INSECURE! [f] (tls:wrap-client-insecure! port &key hostname alpn) -- Like tls:wrap-client, but skips certificate verification -- denied by default (:POLICY-DENIED) unless the h...
+TLS:WRAP-SERVER [f] (tls:wrap-server port cert key &key alpn) -- Wraps port -- an already-accepted tcp:accept PORT -- as a TLS server, performing the handshake now (blockin...
+
+## UDP -- UDP bind/send-to/receive-from datagram sockets (UDP module, lib/39-udp.lisp, issue #258); NET-CONNECT/NET-LISTEN capabilities
+UDP:BIND [f] (udp:bind host port) -- Binds a UDP socket to host:port (port 0 for an OS-assigned ephemeral port). Requires the NET-LISTEN capabil...
+UDP:CLOSE! [f] (udp:close! socket) -- Closes socket. Idempotent; every subsequent send/receive on socket errors immediately with a :CLOSED error.
+UDP:CONNECT! [f] (udp:connect! socket host port) -- Sets socket's default peer to host:port so udp:send/udp:receive-from can be used without repeating the addr...
+UDP:RECEIVE-FROM [f] (udp:receive-from socket maxlen) -- Blocks for one datagram of at most maxlen bytes, returning (list bytes peer-address possibly-truncated-p). ...
+UDP:SEND [f] (udp:send socket bytes) -- Sends bytes as one datagram to socket's connected peer (see udp:connect!).
+UDP:SEND-TO [f] (udp:send-to socket host port bytes) -- Sends bytes (an Array<Char>) as one datagram to host:port, returning the number of bytes sent. Requires the...
+UDP:SET-TIMEOUT! [f] (udp:set-timeout! socket ms) -- Sets socket's read and write timeout in milliseconds together; NIL blocks without a timeout (the default). ...
+UDP:SOCKET-OPEN-P [f] (udp:socket-open-p socket) -- T unless socket has been closed.
+UDP:SOCKET-P [f] (udp:socket-p x) -- T if x is a UDP socket handle (as returned by udp:bind).
+
+## URL -- URL parse/build, percent-encoding, and query-string parse/build (URL module, lib/34-url.lisp, issue #257)
+URL:BUILD [f] (url:build u) -- Builds a URL string from an alist u shaped like url:parse's result — the inverse of url:parse.
+URL:BUILD-QUERY [f] (url:build-query pairs) -- Builds a query string (without a leading "?") from pairs, a list of (key . value) conses, in the given orde...
+URL:DECODE [f] (url:decode s &key (lossy nil)) -- Percent-decodes s (produced by either encoder — decoding is context-free) back into the original Unicode ST...
+URL:DECODE-PATH-SEGMENT [f] (url:decode-path-segment s &key (lossy nil)) -- Alias for url:decode: percent-decoding is context-free, so this is identical to url:decode-query-component;...
+URL:DECODE-QUERY-COMPONENT [f] (url:decode-query-component s &key (lossy nil)) -- Alias for url:decode; see url:decode-path-segment.
+URL:ENCODE-PATH-SEGMENT [f] (url:encode-path-segment s) -- Percent-encodes s for use as one URL path segment: unreserved characters plus sub-delims and ":"/"@" stay l...
+URL:ENCODE-QUERY-COMPONENT [f] (url:encode-query-component s) -- Percent-encodes s for use as a query-string key or value: only unreserved characters stay literal; everythi...
+URL:FRAGMENT [f] (url:fragment u) -- The FRAGMENT field of a url:parse alist (raw text after "#", no leading delimiter), or NIL.
+URL:HOST [f] (url:host u) -- The HOST field of a url:parse alist (a bracketed IPv6 literal is kept as one unit), or NIL.
+URL:PARSE [f] (url:parse s) -- Parses URL string s into an alist with keys SCHEME, USERINFO, HOST, PORT, PATH, QUERY, FRAGMENT. All are NI...
+URL:PARSE-QUERY [f] (url:parse-query s) -- Parses query string s (without a leading "?") into a list of (key . value) conses, decoded via url:decode, ...
+URL:PATH [f] (url:path u) -- The PATH field of a url:parse alist (always a String, raw/still-encoded, possibly "").
+URL:PORT [f] (url:port u) -- The PORT field of a url:parse alist (a Number), or NIL.
+URL:QUERY [f] (url:query u) -- The QUERY field of a url:parse alist (raw text after "?", no leading delimiter), or NIL.
+URL:SCHEME [f] (url:scheme u) -- The SCHEME field of a url:parse alist, or NIL.
+URL:USERINFO [f] (url:userinfo u) -- The USERINFO field of a url:parse alist, or NIL.
+
+## OTHER -- Uncategorized
+AREF [f] (aref array index) -- Common-Lisp-style alias for FETCH. Returns the element of array at 0-based index. See FETCH for full docume...
+ASET [f] (aset array index value) -- Common-Lisp-style alias for STORE. Destructively sets the element at index. See STORE for full documentation.
+CHECK-TYPE [s] (check-type name-or-expression) -- Pure type-checking pass that never compiles. Given a function name (check-type f) or (check-type 'f) it rep...
+COMPILED-P [f] (compiled-p 'sym) -- Loud type inference: the execution tier a typed function will actually run on. NATIVE when a Cranelift nati...
+EXTENSION-TYPE [f] (extension-type x) -- Returns the type name string of extension value x (e.g. "MyRustType"). Signals an error if x is not an exte...
+LOGIOR [f] (logior integer...) -- Bitwise OR of all arguments.
+PUT [f] (put symbol indicator value) -- Alias for PUTP. Stores value under indicator on symbol's property list. The classic Lisp 1.5 spelling.
+SIGNATURE [f] (signature 'sym) -- Loud type inference (companion to DEFUN*'s silent fallback): the inferred type signature of a typed functio...
+WHY-NOT-TYPED [f] (why-not-typed 'sym) -- Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the concrete inference-failure reas...
+
+## 4. Worked examples
+
+Every example below was verified with `lamedh --check <file>` (zero
+findings) and by actually running it (`cargo run --release -q -- <file>`)
+against this build.
+
+### 4.1 Records + row polymorphism
+
+One function reads an `x` field from *any* record that has one — no
+interface declared, checker-inferred as `(forall (a b) (-> ((record ((x
+a)) b)) a))`.
+
+```lisp
+(defrecord point (x int64) (y int64))
+(defrecord box (x int64) (y int64) (w int64))
+
+(defun worth (r) (record-ref r 'x))
+
+(princ (list (worth (make-point 3 4)) (worth (make-box 1 2 9))))
+(terpri)
+(princ (record-with (make-point 3 4) 'x 99))
+(terpri)
+; => (3 1)
+; => #S(POINT 99 4)
+```
+
+### 4.2 Typed protocols
+
+`defprotocol` declares a dispatchable name; `definstance` supplies a typed
+implementation per record brand. `implements!` asserts a brand honors a
+set of protocols, or errors naming the gap.
+
+```lisp
+(defrecord goblin (name string) (hp int64))
+
+(defprotocol greet "a one-line greeting")
+(defprotocol damage "apply N damage, return the updated record")
+
+(definstance greet ((self goblin)) string
+  (concat (goblin-name self) " snarls."))
+
+(definstance damage ((self goblin) (n int64)) goblin
+  (record-with self 'hp (- (goblin-hp self) n)))
+
+(princ (greet (make-goblin "Grix" 10)))          ; => Grix snarls.
+(princ (goblin-hp (damage (make-goblin "Grix" 10) 3)))  ; => 7
+(princ (implements! 'goblin 'greet 'damage))
+; => ((GREET . INSTANCE) (DAMAGE . INSTANCE))
+```
+
+### 4.3 Structural pattern matching
+
+Patterns are plain cons structure: `?x` binds, `??xs` is a segment
+variable, `?_` is a wildcard/default clause, a bare atom matches
+literally (no `(list ...)` wrapper needed).
+
+```lisp
+(defun classify (form)
+  (match form
+    ((add ?a ?b) (+ ?a ?b))
+    ((neg ?a) (- 0 ?a))
+    ((?head . ?rest) (list 'unknown-op ?head (length ?rest)))
+    (?_ 'not-a-form)))
+
+(princ (classify '(add 3 4)))   ; => 7
+(princ (classify '(neg 5)))     ; => -5
+(princ (classify '(mul 2 3)))   ; => (UNKNOWN-OP MUL 2)
+
+(destructuring-bind (?a ?b . ?rest) (list 1 2 3 4)
+  (princ (list ?a ?b ?rest)))   ; => (1 2 (3 4))
+```
+
+### 4.4 Sum types
+
+`defvariant` + exhaustive `variant-case` (the checker requires every
+constructor covered, or an explicit `else`). The stdlib's `Option`/
+`Result` are ordinary `defvariant`s.
+
+```lisp
+(defvariant shape
+  (circle (r int64))
+  (rect (w int64) (h int64)))
+
+(defun area (s)
+  (variant-case s
+    (circle (r) (* 3 (* r r)))
+    (rect (w h) (* w h))))
+
+(princ (list (area (circle 3)) (area (rect 4 5))))  ; => (27 20)
+
+(princ (unwrap-or (option-map (lambda (x) (* x 2)) (some 5)) 0))  ; => 10
+(princ (unwrap-or (option-map (lambda (x) (* x 2)) (none)) 0))    ; => 0
+```
+
+### 4.5 Conditions and restarts
+
+Canonical shape: `restart-case` **wraps** a `handler-bind` that wraps the
+risky call — a restart established *inside* the protected code is already
+unwound by the time a `handler-bind` handler fires, so it must be
+established around the handler instead.
+
+```lisp
+(princ (handler-case (/ 1 0)
+         (error (e) (list 'caught (error-message e)))))
+; => (CAUGHT "Division by zero")
+
+(princ
+ (restart-case
+     (handler-bind ((error (lambda (e) (invoke-restart 'use-value 99))))
+       (error "bad input" (list :code 42)))
+   (use-value (v) v)))
+; => 99
+
+(princ (ignore-errors (/ 1 0)))   ; => ()  (ERRORSET-backed; no reason string)
+(princ (ignore-errors (+ 1 2)))   ; => 3
+```
+
+### 4.6 Arrays + `defun*` native compilation
+
+`defun*` with scalar/array type hints compiles straight to native
+Cranelift code — `see-type` reports `COMPILED`, not just `CHECKED`.
+
+```lisp
+(defun make-arr (lst)
+  (let ((a (array (length lst))) (i 0))
+    (mapcar (lambda (x) (progn (aset a i x) (setq i (+ i 1)))) lst)
+    a))
+
+(defun* array-sum ((a (array int64)) (n int64))
+  (let ((total 0) (i 0))
+    (while (< i n)
+      (setq total (+ total (aref a i)))
+      (setq i (+ i 1)))
+    total))
+
+(princ (see-type 'array-sum))
+; => (TYPED (-> ((ARRAY INT64) INT64) INT64) COMPILED)
+(princ (array-sum (make-arr (list 1 2 3 4 5)) 5))  ; => 15
+```
+
+### 4.7 Modules
+
+`defmodule` + `with-module` is a naming discipline over the flat global
+namespace (`with-module` stores definitions as `MODULE:SYMBOL`); `import`
+snapshots a module's exports into the caller's namespace. (Calls below go
+through `funcall` because `lamedh --check` — a static verifier that never
+executes the file — does not yet trace names `with-module`/`import`
+create at runtime; direct `geometry:area`/`area` calls work fine when the
+file actually runs.)
+
+```lisp
+(defmodule geometry (:export area))
+
+(with-module geometry
+  (defun helper (x) (* x 3))
+  (defun area (r) (helper (* r r))))
+
+(princ (funcall 'geometry:area 2))   ; => 12
+(import geometry)
+(princ (funcall 'area 3))            ; => 27
+```
+
+### 4.8 Regex
+
+The `regex:*` module (0.3.1); names are qualified (`regex:compile`, ...)
+or brought in with `(import regex)`.
+
+```lisp
+(let ((re (regex:compile "[0-9]+")))
+  (princ (regex:match-p re "order #42"))          ; => T
+  (princ (regex:find-all re "a1 b22 c333"))
+  ; => (("1" 1 2) ("22" 4 6) ("333" 8 11))
+  (princ (regex:replace-all re "a1 b22" "N")))     ; => aN bN
+```
+
+### 4.9 Testing with `deftest`
+
+```lisp
+(deftest add-works
+  (assert-equal (+ 1 2) 3))
+
+(deftest strings-concat
+  (assert-equal (concat "a" "b") "ab"))
+
+(princ (run-tests))
+; => (ASSERTIONS-PASSED 2 FAILED 0)
+; => ALL-TESTS-PASSED
+```
+
+Same suite from the shell: `lamedh --test file.lisp` prints `test result:
+2 passed; 0 failed` and exits 0.
+
+### 4.10 `--mcp`: driving Lamedh as an agent tool
+
+`lamedh --mcp` speaks newline-delimited JSON-RPC 2.0 over stdio against
+one persistent, sandboxed (all capabilities off by default) interpreter.
+A minimal session:
+
+```json
+→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"lamedh","version":"0.4.0"}}}
+→ {"jsonrpc":"2.0","method":"notifications/initialized"}
+→ {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"source":"(setq x 5)"}}}
+← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"5"}],"isError":false}}
+→ {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"eval","arguments":{"source":"(lenght nil)"}}}
+← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Error: Unbound variable: LENGHT — did you mean LENGTH?"}],"isError":true}}
+```
+
+Six tools: `eval` (fuel-fenced, persistent env), `check` (static, same
+findings as `--check`), `doc` (REPL `help` text for a symbol), `apropos`
+(substring symbol search), `run-tests` (fresh scratch env per call),
+`introspect` (`signature`+`compiled-p`+`why-not-typed` in one call). Grant
+capabilities with repeatable `--capability NAME` (`--sandbox` is a no-op —
+all-off is already the default). Full protocol/tool schema: `docs/mcp.md`.

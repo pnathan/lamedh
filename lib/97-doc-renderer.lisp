@@ -209,6 +209,99 @@
   "Dump all documentation to stdout in markdown format."
   (render-all-docs-md))
 
+;;; ------------------------------------------------------------------------
+;;; LLMS.TXT dense index (issue: docs/llms-txt)
+;;;
+;;; One line per HELP-DB entry: `NAME (TYPE) SYNTAX -- DESCRIPTION`, grouped
+;;; under a `## category` heading, categories and entries both alphabetized
+;;; for a stable diff across regenerations. Any HELP-DB entry that no
+;;; category claims (checked at generation time -- see the OTHER bucket
+;;; below) still gets a line, so this never silently drops a documented
+;;; symbol the way scraping generated-reference.md by hand would.
+;;; scripts/generate-llms-txt.sh calls this via `-s "(render-llms-index)"`
+;;; and splices the output into the llms.txt template.
+
+(defun llms-index-truncate (s limit)
+  "Cap string S to LIMIT chars, appending ... when truncated."
+  (if (and s (> (length s) limit))
+      (concat (substring s 0 (- limit 3)) "...")
+      s))
+
+(defun llms-index-one-line (s)
+  "Collapse embedded newlines/tabs to single spaces so a HELP-DB
+description prints on exactly one output line."
+  (if s
+      (string-replace-all (string-replace-all s "\n" " ") "\t" " ")
+      s))
+
+(defun llms-index-type-tag (type)
+  "Abbreviate a HELP-DB TYPE symbol to a short bracketed tag."
+  (cond
+    ((eq type 'FUNCTION) "[f]")
+    ((eq type 'MACRO) "[m]")
+    ((eq type 'SPECIAL-FORM) "[s]")
+    ((eq type 'VARIABLE) "[v]")
+    (t (concat "[" (prin1-to-string type) "]"))))
+
+(defun llms-index-line (name)
+  "Print one dense reference line for NAME's HELP-DB entry."
+  (let ((entry (get-doc name)))
+    (if entry
+        (let ((type (doc-get entry 'TYPE))
+              (syntax (doc-get entry 'SYNTAX))
+              (desc (doc-get entry 'DESCRIPTION)))
+          (progn
+            (princ (prin1-to-string name))
+            (princ " ")
+            (princ (llms-index-type-tag type))
+            (if syntax
+                (progn
+                  (princ " ")
+                  (princ (llms-index-one-line syntax)))
+                nil)
+            (if desc
+                (progn
+                  (princ " -- ")
+                  (princ (llms-index-truncate (llms-index-one-line desc) 110)))
+                nil)
+            (terpri)))
+        nil)))
+
+(defun llms-index-sorted-syms (syms)
+  "Alphabetize SYMS by printed name for stable output."
+  (sort syms
+        (lambda (a b)
+          (string-lessp (prin1-to-string a) (prin1-to-string b)))))
+
+(defun llms-index-category (cat)
+  "Print a `## name -- description` heading, then one line per symbol."
+  (progn
+    (princ "## ")
+    (princ (car cat))
+    (princ " -- ")
+    (princ (cadr cat))
+    (terpri)
+    (mapcar #'llms-index-line (llms-index-sorted-syms (caddr cat)))
+    (terpri)))
+
+(defun render-llms-index ()
+  "Dense, one-line-per-function reference of the whole HELP-DB, grouped by
+category, alphabetized. Used to generate the function-index section of
+llms.txt -- see scripts/generate-llms-txt.sh."
+  (let* ((cats (sort (list-categories)
+                      (lambda (a b)
+                        (string-lessp (prin1-to-string (car a))
+                                      (prin1-to-string (car b))))))
+         (categorized nil))
+    (progn
+      (mapcar (lambda (c) (setq categorized (append categorized (caddr c))))
+              cats)
+      (mapcar #'llms-index-category cats)
+      (let ((other (set-difference (keys HELP-DB) categorized)))
+        (if other
+            (llms-index-category (list 'other "Uncategorized" other))
+            nil)))))
+
 ;;; REQUIRE-ABLE (issue #256): `(require 'doc-renderer)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged. Its functions read the help database
@@ -223,5 +316,5 @@
 (defmodule doc-renderer
   (:export render-markdown-header render-markdown-code render-doc-entry-md
            render-category-md render-all-docs-md render-function-index-md
-           dump-docs))
+           dump-docs render-llms-index))
 (provide 'doc-renderer)
