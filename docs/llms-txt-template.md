@@ -280,11 +280,7 @@ Cranelift code — `see-type` reports `COMPILED`, not just `CHECKED`.
 
 `defmodule` + `with-module` is a naming discipline over the flat global
 namespace (`with-module` stores definitions as `MODULE:SYMBOL`); `import`
-snapshots a module's exports into the caller's namespace. (Calls below go
-through `funcall` because `lamedh --check` — a static verifier that never
-executes the file — does not yet trace names `with-module`/`import`
-create at runtime; direct `geometry:area`/`area` calls work fine when the
-file actually runs.)
+snapshots a module's exports into the caller's namespace.
 
 ```lisp
 (defmodule geometry (:export area))
@@ -293,9 +289,9 @@ file actually runs.)
   (defun helper (x) (* x 3))
   (defun area (r) (helper (* r r))))
 
-(princ (funcall 'geometry:area 2))   ; => 12
+(princ (geometry:area 2))   ; => 12
 (import geometry)
-(princ (funcall 'area 3))            ; => 27
+(princ (area 3))            ; => 27
 ```
 
 ### 4.8 Regex

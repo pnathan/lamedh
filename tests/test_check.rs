@@ -215,6 +215,114 @@ fn parse_error_reports_position_and_severity() {
     });
 }
 
+// --- module names (import / with-module) ------------------------------
+
+#[test]
+fn import_of_stdlib_module_binds_exported_name() {
+    lamedh::with_large_stack(|| {
+        // SHELL exports SHELL-OK-P (lib/07-shell.lisp); after `(import shell)`
+        // it must be callable unqualified with no finding, even though the
+        // checker never evaluates the file — it reads SHELL's live
+        // "module.exports" plist entry from the stdlib environment.
+        let f = check::check_sources(&[(
+            "import.lisp".to_string(),
+            "(import shell)\n(defun f (cmd) (shell-ok-p cmd))\n".to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn with_module_body_local_call_is_ok() {
+    lamedh::with_large_stack(|| {
+        // A with-module body calling its own (not-yet-qualified-in-source)
+        // definition must not be flagged: with-module rewrites the reference
+        // to GEOMETRY:AREA at runtime, so this is a real, bound call.
+        let f = check::check_sources(&[(
+            "wm.lisp".to_string(),
+            "(with-module geometry\n  \
+               (defun area (r) (* 3 (* r r)))\n  \
+               (defun helper (x) (area x)))\n"
+                .to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn qualified_call_after_with_module_body_is_ok() {
+    lamedh::with_large_stack(|| {
+        // GEOMETRY:AREA is always available after the body, per
+        // lib/27-modules.lisp's header comment — no import needed.
+        let f = check::check_sources(&[(
+            "wm.lisp".to_string(),
+            "(with-module geometry\n  (defun area (r) (* 3 (* r r))))\n\
+             (defun caller () (geometry:area 2))\n"
+                .to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn unqualified_call_after_with_module_body_without_import_is_unbound() {
+    lamedh::with_large_stack(|| {
+        // Verified against the real interpreter: `(with-module geometry
+        // (defun area ...))` followed by a bare `(area 2)` with no
+        // `(import geometry)` genuinely raises "Unbound variable: AREA" at
+        // runtime (with-module only binds the qualified name). The checker
+        // must agree — this is a real bug, not a false positive to suppress.
+        let f = check::check_sources(&[(
+            "wm.lisp".to_string(),
+            "(with-module geometry\n  (defun area (r) (* 3 (* r r))))\n\
+             (defun caller () (area 2))\n"
+                .to_string(),
+        )]);
+        let uf = f
+            .iter()
+            .find(|f| f.symbol.as_deref() == Some("AREA"))
+            .expect("bare AREA should be flagged unbound");
+        assert_eq!(uf.kind, FindingKind::UnboundFunction);
+    });
+}
+
+#[test]
+fn import_of_unknown_module_suppresses_conservatively() {
+    lamedh::with_large_stack(|| {
+        // A module the checker cannot enumerate exports for (not declared
+        // anywhere in the checked corpus, not a live stdlib module): we
+        // cannot know what names this import binds, so go permissive for the
+        // rest of the file rather than risk a false positive on a
+        // legitimately-imported name.
+        let f = check::check_sources(&[(
+            "unknown-import.lisp".to_string(),
+            "(import totally-unknown-module-xyz)\n\
+             (defun f () (some-name-the-unknown-module-might-export 1))\n"
+                .to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn typo_inside_with_module_body_is_still_caught() {
+    lamedh::with_large_stack(|| {
+        // Body-descent is new exposure (with-module bodies used to be
+        // opaque), but it must not come at the cost of missing genuine typos
+        // inside the body: AERA (misspelled AREA) resolves neither plainly
+        // nor as GEOMETRY:AERA.
+        let f = check::check_sources(&[(
+            "wm-typo.lisp".to_string(),
+            "(with-module geometry\n  (defun area (r) (aera r)))\n".to_string(),
+        )]);
+        let uf = f
+            .iter()
+            .find(|f| f.symbol.as_deref() == Some("AERA"))
+            .expect("AERA typo should be flagged unbound");
+        assert_eq!(uf.kind, FindingKind::UnboundFunction);
+    });
+}
+
 #[test]
 fn sexpr_schema_is_stable() {
     lamedh::with_large_stack(|| {
