@@ -190,6 +190,13 @@ struct Definitions {
     /// Base names of records/variants/constructors, for prefix suppression of
     /// their generated accessors/predicates/validators/lenses.
     record_like: Vec<String>,
+    /// Modules seen via `defmodule` or `with-module` anywhere in the checked
+    /// corpus, mapped to their declared `:export` list (empty when the module
+    /// was only ever seen via `with-module`, never an explicit `defmodule`
+    /// with an `:export` clause). Presence of a key means the module is
+    /// *known*; used to resolve `(import M)` and to distinguish a real
+    /// (if export-less) module from an unresolvable/computed one.
+    file_modules: HashMap<String, Vec<String>>,
 }
 
 impl Definitions {
@@ -199,7 +206,31 @@ impl Definitions {
             functions: HashMap::new(),
             opaque: HashSet::new(),
             record_like: Vec::new(),
+            file_modules: HashMap::new(),
         }
+    }
+
+    /// The export list for `module`, or `None` if the module is unknown to
+    /// both the checked corpus and the live stdlib environment (an
+    /// unresolvable/computed module name — the caller should treat this
+    /// conservatively). Checked corpus declarations (`defmodule`/
+    /// `with-module`) take precedence; otherwise falls back to the live
+    /// environment's `"module.exports"` plist entry, which is populated for
+    /// every stdlib module (`SHELL`, `MATCH`, `TEXT`, …) since `with_stdlib`
+    /// actually runs the real `defmodule`/`with-module` forms.
+    fn module_exports(&self, module: &str, env: &Shared<Environment>) -> Option<Vec<String>> {
+        if let Some(exports) = self.file_modules.get(module) {
+            return Some(exports.clone());
+        }
+        let sym = env.intern_symbol(module);
+        let raw = sym.borrow().plist.get("module.exports").cloned()?;
+        Some(
+            as_vec(&raw)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|v| sym_name(&v))
+                .collect(),
+        )
     }
 
     /// `true` when `name` matches a generated member of some collected record
@@ -380,11 +411,45 @@ fn collect_defs(form: &LispVal, defs: &mut Definitions) {
         }
         // Plain value / variable bindings.
         "DEF" | "DEFINE" | "DEFDYNAMIC" | "DEFVAR" | "DEFPARAMETER" | "DEFCONSTANT" | "DEFLAW"
-        | "DEFTEST" | "DEFPROTOCOL" | "DEFINSTANCE" | "DEFMODULE" | "DEFRULE" | "EXAMPLE" => {
+        | "DEFTEST" | "DEFPROTOCOL" | "DEFINSTANCE" | "DEFRULE" | "EXAMPLE" => {
             if items.len() >= 2
                 && let Some(name) = head_name(&items[1])
             {
                 defs.names.insert(name);
+            }
+        }
+        // `(defmodule NAME (:export a b…) [(:requires …)] [(:provides …)])`:
+        // records NAME's export list for `import` resolution (see
+        // `Definitions::module_exports`). Overwrites on redefinition, same as
+        // the runtime's `putp` — order-independent since pass 1 always runs
+        // to completion before imports are resolved.
+        "DEFMODULE" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                defs.names.insert(name.clone());
+                let mut exports = Vec::new();
+                for section in &items[2..] {
+                    if let Some(parts) = as_vec(section)
+                        && parts.first().and_then(sym_name).as_deref() == Some(":EXPORT")
+                    {
+                        exports = parts[1..].iter().filter_map(sym_name).collect();
+                        break;
+                    }
+                }
+                defs.file_modules.insert(name, exports);
+            }
+        }
+        // `(with-module NAME form…)`: every definition in the body is stored
+        // as NAME:D at runtime (see lib/27-modules.lisp). Collect those
+        // qualified names too, and mark NAME as a known module (even with no
+        // explicit `defmodule`, matching with-module's auto-declare).
+        "WITH-MODULE" => {
+            if items.len() >= 2
+                && let Some(module) = head_name(&items[1])
+            {
+                defs.file_modules.entry(module.clone()).or_default();
+                collect_module_body_defs(&module, &items[2..], defs);
             }
         }
         // Records: make-N, N-p, validate-N, N-field per field, plus N itself.
@@ -450,6 +515,189 @@ fn collect_defs(form: &LispVal, defs: &mut Definitions) {
     }
 }
 
+/// The def-heads `with-module` actually renames (mirrors
+/// `lib/27-modules.lisp`'s `$module-def-heads` exactly). Anything else
+/// appearing in a `with-module` body is left un-renamed at runtime — it
+/// defines a plain, unqualified global, so it must be collected the ordinary
+/// (unqualified) way via [`collect_defs`].
+fn is_module_def_head(op: &str) -> bool {
+    matches!(
+        op,
+        "DEFUN"
+            | "DEFUN*"
+            | "DEFMACRO"
+            | "DEFEXPR"
+            | "DEFVAU"
+            | "DEF"
+            | "DEFDYNAMIC"
+            | "DEFRECORD"
+            | "DEFVARIANT"
+    )
+}
+
+/// The qualified (`MODULE:NAME`) spelling of a local name, matching
+/// `$module-qualify` in `lib/27-modules.lisp`.
+fn module_qualify(module: &str, name: &str) -> String {
+    format!("{module}:{name}")
+}
+
+/// Collect the qualified names a `with-module` body defines (see
+/// `lib/27-modules.lisp`'s `WITH-MODULE`/`$module-collect-defs`) into `defs`.
+fn collect_module_body_defs(module: &str, body: &[LispVal], defs: &mut Definitions) {
+    for form in body {
+        collect_module_form_defs(module, form, defs);
+    }
+}
+
+/// Collect the qualified name(s) one `with-module` body form defines. Forms
+/// whose head is not one of `$module-def-heads` are **not** renamed by
+/// `with-module` at runtime, so they fall back to ordinary (unqualified)
+/// [`collect_defs`] handling — including its own `PROGN` flattening.
+fn collect_module_form_defs(module: &str, form: &LispVal, defs: &mut Definitions) {
+    let Some(items) = as_vec(form) else { return };
+    if items.is_empty() {
+        return;
+    }
+    let Some(op) = sym_name(&items[0]) else {
+        return;
+    };
+    let head_name = |v: &LispVal| -> Option<String> {
+        match v {
+            LispVal::Symbol(_) => sym_name(v),
+            LispVal::Cons { car, .. } => sym_name(car),
+            _ => None,
+        }
+    };
+
+    if !is_module_def_head(&op) {
+        // Not renamed by with-module: defined bare, exactly as if this form
+        // had appeared at ordinary top level (including PROGN flattening).
+        collect_defs(form, defs);
+        return;
+    }
+
+    match op.as_str() {
+        "DEFUN" | "DEFUN*" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                let qname = module_qualify(module, &name);
+                defs.names.insert(qname.clone());
+                if items.len() >= 3
+                    && let Some(params) = as_vec(&items[2])
+                {
+                    defs.functions.insert(qname, arity_from_params(&params));
+                }
+            }
+        }
+        "DEFMACRO" | "DEFEXPR" | "DEFVAU" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                let qname = module_qualify(module, &name);
+                defs.names.insert(qname.clone());
+                defs.opaque.insert(qname);
+            }
+        }
+        "DEF" | "DEFDYNAMIC" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                defs.names.insert(module_qualify(module, &name));
+            }
+        }
+        // Records: qualify the record's own name (`qname`), then rely on
+        // `Definitions::is_record_member` (via `record_like`) for the
+        // brand-qualified generated family (MAKE-{qname}, {qname}-P,
+        // {qname}-field, VALIDATE-{qname}, …) — same trick the plain
+        // top-level DEFRECORD arm above uses. The runtime *also* creates a
+        // "uniform" alias (MODULE:MAKE-NAME rather than MAKE-MODULE:NAME)
+        // for prefix-style names (record-generated puts the module qualifier
+        // on the outside there); suffix-style names coincide either way, so
+        // only the prefix forms need an explicit second spelling.
+        "DEFRECORD" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                let qname = module_qualify(module, &name);
+                defs.names.insert(qname.clone());
+                defs.record_like.push(qname);
+                defs.names.insert(format!("{module}:MAKE-{name}"));
+                defs.names.insert(format!("{module}:VALIDATE-{name}"));
+                defs.names.insert(format!("{module}:PLIST->{name}"));
+                defs.names.insert(format!("{module}:{name}->PLIST"));
+            }
+        }
+        // Variants: constructors are bare (no MAKE- prefix), so their
+        // qualified spelling IS the brand-qualified spelling — no separate
+        // uniform alias needed. `record_like` again covers the generated
+        // suffix family (ctor-P, ctor-field) per constructor.
+        "DEFVARIANT" => {
+            if items.len() >= 2
+                && let Some(name) = head_name(&items[1])
+            {
+                let qname = module_qualify(module, &name);
+                defs.names.insert(qname.clone());
+                defs.record_like.push(qname);
+                for spec in &items[2..] {
+                    let Some(ctor) = head_name(spec) else {
+                        continue;
+                    };
+                    let qctor = module_qualify(module, &ctor);
+                    defs.names.insert(qctor.clone());
+                    defs.record_like.push(qctor);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Pass 1b: resolve `(import M)` forms once every `defmodule`/`with-module`
+/// declaration in the corpus has been collected (so imports can reference
+/// modules defined later in this file, or in another checked file). A
+/// resolvable import's exported names become known unqualified names,
+/// exactly like the runtime's global (un-qualified) bindings.
+///
+/// Unresolvable imports (an unknown module, or a non-symbol module argument
+/// such as a computed name) are **not** an error here — [`Linter::walk_import`]
+/// handles the conservative fallback (suppressing unbound-function reports
+/// for the rest of that file) at lint time, since that's a lint-time,
+/// per-file concern, not a definition.
+fn collect_imports_from_form(form: &LispVal, defs: &mut Definitions, env: &Shared<Environment>) {
+    let Some(items) = as_vec(form) else { return };
+    if items.is_empty() {
+        return;
+    }
+    let Some(op) = sym_name(&items[0]) else {
+        return;
+    };
+    match op.as_str() {
+        "IMPORT" => {
+            if let Some(module) = items.get(1).and_then(sym_name)
+                && let Some(exports) = defs.module_exports(&module, env)
+            {
+                for name in exports {
+                    defs.names.insert(name);
+                }
+            }
+        }
+        // Imports can appear inside PROGN or (less commonly) a with-module
+        // body; descend the same way collect_defs does.
+        "PROGN" => {
+            for sub in &items[1..] {
+                collect_imports_from_form(sub, defs, env);
+            }
+        }
+        "WITH-MODULE" => {
+            for sub in &items[2..] {
+                collect_imports_from_form(sub, defs, env);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pass 2: lint
 // ---------------------------------------------------------------------------
@@ -473,10 +721,25 @@ struct Linter<'a> {
     suggest_pool: Vec<String>,
     file: &'a str,
     findings: Vec<Finding>,
+    /// The stack of `with-module` names we are currently descending through
+    /// (innermost last). Non-empty while walking a `with-module` body;
+    /// `classify_operator` consults `.last()` to retry an unresolved bare
+    /// operator as `MODULE:OP` before giving up.
+    module_stack: Vec<String>,
+    /// Set once this file's walk has passed an `(import M)` for an M we
+    /// cannot resolve (an unknown module, or a non-symbol/computed module
+    /// argument). From that point on, unbound-function findings are
+    /// suppressed for the rest of *this file* — the same conservative
+    /// "silence when we can't enumerate definitions" contract the checker
+    /// already applies elsewhere (e.g. opaque macro/operative bodies).
+    permissive: bool,
 }
 
 impl<'a> Linter<'a> {
     fn push(&mut self, line: usize, kind: FindingKind, symbol: Option<String>, message: String) {
+        if self.permissive && kind == FindingKind::UnboundFunction {
+            return;
+        }
         self.findings.push(Finding {
             file: self.file.to_string(),
             line,
@@ -542,6 +805,14 @@ impl<'a> Linter<'a> {
                 // Macro/operative body: never descend (arbitrary bindings).
                 return;
             }
+            "WITH-MODULE" => {
+                self.walk_with_module(&items, locals, line);
+                return;
+            }
+            "IMPORT" => {
+                self.walk_import(&items);
+                return;
+            }
             _ if is_transparent_macro(&op) => {
                 for it in &items[1..] {
                     self.walk_expr(it, locals, line);
@@ -589,9 +860,63 @@ impl<'a> Linter<'a> {
         }
     }
 
+    /// `(with-module NAME form…)`: descend the body with `NAME` pushed onto
+    /// `module_stack`, so an operator that fails plain resolution gets a
+    /// second try as `NAME:operator` (see `classify_operator`). A non-symbol
+    /// module name (shouldn't happen — `with-module`'s first argument is
+    /// unevaluated in source) is walked with no module context, matching
+    /// this checker's usual "stay silent, don't invent structure" fallback.
+    fn walk_with_module(&mut self, items: &[LispVal], locals: &HashSet<String>, line: usize) {
+        let Some(module) = items.get(1).and_then(sym_name) else {
+            return;
+        };
+        self.module_stack.push(module);
+        for form in &items[2..] {
+            self.walk_expr(form, locals, line);
+        }
+        self.module_stack.pop();
+    }
+
+    /// `(import M)`: if `M` isn't a symbol, or names a module we cannot
+    /// enumerate exports for (unknown to both the checked corpus and the
+    /// live stdlib environment), we cannot know what names this import binds
+    /// — go permissive for the rest of the file rather than risk flagging a
+    /// legitimately-imported name as unbound. Resolvable imports need no
+    /// action here: their exported names were already folded into
+    /// `defs.names` during pass 1 (`collect_imports_from_form`).
+    fn walk_import(&mut self, items: &[LispVal]) {
+        let resolved = items
+            .get(1)
+            .and_then(sym_name)
+            .is_some_and(|module| self.defs.module_exports(&module, self.env).is_some());
+        if !resolved {
+            self.permissive = true;
+        }
+    }
+
     /// Classify an operator symbol that is neither an ignored declaration nor a
-    /// recognised special/definition form.
+    /// recognised special/definition form. Inside a `with-module` body (see
+    /// `walk_with_module`), an operator that plain resolution cannot place is
+    /// retried as `MODULE:operator` before falling back to unbound — mirroring
+    /// `with-module`'s reference-qualifying rewrite at runtime.
     fn classify_operator(&self, op: &str, locals: &HashSet<String>) -> OpClass {
+        if locals.contains(op) {
+            // A locally-bound value used as an operator: a call, unknown arity.
+            return OpClass::Descend(None);
+        }
+        if let Some(module) = self.module_stack.last() {
+            let qualified = module_qualify(module, op);
+            match self.classify_operator_named(&qualified, locals) {
+                OpClass::Unbound => {}
+                other => return other,
+            }
+        }
+        self.classify_operator_named(op, locals)
+    }
+
+    /// The actual classification logic for one exact operator spelling (no
+    /// module-qualification retry — see [`Self::classify_operator`]).
+    fn classify_operator_named(&self, op: &str, locals: &HashSet<String>) -> OpClass {
         if locals.contains(op) {
             // A locally-bound value used as an operator: a call, unknown arity.
             return OpClass::Descend(None);
@@ -967,11 +1292,21 @@ pub fn check_sources_in(env: &Shared<Environment>, sources: &[(String, String)])
         parsed.push((file.clone(), forms));
     }
 
-    // Pass 1: collect all definitions across all files.
+    // Pass 1: collect all definitions across all files (including qualified
+    // with-module bodies and defmodule export lists).
     let mut defs = Definitions::new();
     for (_file, forms) in &parsed {
         for (form, _line) in forms {
             collect_defs(form, &mut defs);
+        }
+    }
+
+    // Pass 1b: resolve `import` forms now that every defmodule/with-module in
+    // the corpus is known — order- and file-independent, same as ordinary
+    // forward references.
+    for (_file, forms) in &parsed {
+        for (form, _line) in forms {
+            collect_imports_from_form(form, &mut defs, env);
         }
     }
 
@@ -988,6 +1323,8 @@ pub fn check_sources_in(env: &Shared<Environment>, sources: &[(String, String)])
             suggest_pool: suggest_pool.clone(),
             file,
             findings: Vec::new(),
+            module_stack: Vec::new(),
+            permissive: false,
         };
         for (form, line) in forms {
             linter.walk_toplevel(form, *line);
