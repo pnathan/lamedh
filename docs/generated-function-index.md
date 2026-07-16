@@ -41,6 +41,7 @@
 | `CLEAR-ALL-FLAGS` | FUNCTION | FLAGS |
 | `CLEAR-FLAG` | FUNCTION | FLAGS |
 | `CODE-CHAR` | FUNCTION | STRINGS |
+| `COMPILED-P` | FUNCTION | INTROSPECTION |
 | `CONCAT` | FUNCTION | STRINGS |
 | `COND` | SPECIAL-FORM | SPECIAL-FORMS |
 | `CONS` | FUNCTION | LISTS |
@@ -278,8 +279,22 @@
 | `READ-FILE` | FUNCTION | FILESYSTEM |
 | `READ-FILE-BYTE` | FUNCTION | FILESYSTEM |
 | `READ-FILE-SECTION` | FUNCTION | FILESYSTEM |
+| `READ-FILE-SECTION-BYTES` | FUNCTION | FILESYSTEM |
+| `READ-FILE-SECTION-LOSSY` | FUNCTION | FILESYSTEM |
 | `READ-LINE` | FUNCTION | IO |
 | `READ-SEXPR-FILE` | FUNCTION | FILESYSTEM |
+| `REGEX:COMPILE` | FUNCTION | REGEX |
+| `REGEX:ESCAPE` | FUNCTION | REGEX |
+| `REGEX:FIND` | FUNCTION | REGEX |
+| `REGEX:FIND-ALL` | FUNCTION | REGEX |
+| `REGEX:GROUPS` | FUNCTION | REGEX |
+| `REGEX:MATCH-P` | FUNCTION | REGEX |
+| `REGEX:NAMED-GROUPS` | FUNCTION | REGEX |
+| `REGEX:PATTERN` | FUNCTION | REGEX |
+| `REGEX:REGEX-P` | FUNCTION | REGEX |
+| `REGEX:REPLACE` | FUNCTION | REGEX |
+| `REGEX:REPLACE-ALL` | FUNCTION | REGEX |
+| `REGEX:SPLIT` | FUNCTION | REGEX |
 | `REMAINDER` | FUNCTION | ARITHMETIC |
 | `REMPROP` | FUNCTION | PLISTS |
 | `RENAME-FILE` | FUNCTION | FILESYSTEM |
@@ -296,6 +311,7 @@
 | `SETHASH` | FUNCTION | HASH-TABLES |
 | `SETQ` | SPECIAL-FORM | SPECIAL-FORMS |
 | `SHELL` | FUNCTION | CAPABILITIES |
+| `SIGNATURE` | FUNCTION | INTROSPECTION |
 | `SIGNUM` | FUNCTION | ARITHMETIC |
 | `SIN` | FUNCTION | ARITHMETIC |
 | `SORT` | FUNCTION | LISTS |
@@ -347,7 +363,19 @@
 | `TEXT:UTF8->STRING-LOSSY` | FUNCTION | TEXT |
 | `THE-ENVIRONMENT` | FUNCTION | ENVIRONMENTS |
 | `TIMES` | FUNCTION | ARITHMETIC |
+| `TLS:ALPN-PROTOCOL` | FUNCTION | TLS |
+| `TLS:AVAILABLE-P` | FUNCTION | TLS |
+| `TLS:CONNECT` | FUNCTION | TLS |
+| `TLS:CONNECT-INSECURE!` | FUNCTION | TLS |
+| `TLS:PEER-CERTIFICATE-SUMMARY` | FUNCTION | TLS |
+| `TLS:PEER-CERTIFICATES` | FUNCTION | TLS |
+| `TLS:SNI-HOSTNAME` | FUNCTION | TLS |
+| `TLS:WRAP-CLIENT` | FUNCTION | TLS |
+| `TLS:WRAP-CLIENT-INSECURE!` | FUNCTION | TLS |
+| `TLS:WRAP-SERVER` | FUNCTION | TLS |
 | `TRUNCATE` | FUNCTION | ARITHMETIC |
+| `TYPED-ARRAY` | FUNCTION | ARRAYS |
+| `TYPED-ARRAY-P` | FUNCTION | ARRAYS |
 | `UDP:BIND` | FUNCTION | UDP |
 | `UDP:CLOSE!` | FUNCTION | UDP |
 | `UDP:CONNECT!` | FUNCTION | UDP |
@@ -375,8 +403,9 @@
 | `URL:USERINFO` | FUNCTION | URL |
 | `VAU` | SPECIAL-FORM | SPECIAL-FORMS |
 | `VAULET` | MACRO | SPECIAL-FORMS |
+| `WHY-NOT-TYPED` | FUNCTION | INTROSPECTION |
 | `WITH-OUTPUT-TO-STRING` | MACRO | IO |
 | `WRITE-FILE` | FUNCTION | FILESYSTEM |
 | `WRITE-SEXPR-FILE` | FUNCTION | FILESYSTEM |
 | `ZEROP` | FUNCTION | PREDICATES |
-(() () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () ())
+(() () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () () ())

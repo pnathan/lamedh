@@ -2760,6 +2760,30 @@ The classic Lisp 1.5 spelling.")
                        ((arrayp '(1 2 3)) nil)))
     (cons 'SEE-ALSO '(array array-length* extension-p))))
 
+(register-doc 'typed-array
+  (list
+    (cons 'NAME 'typed-array)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(typed-array n elem-type)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Creates a flat, zero-initialised typed array of n elements whose element type is 'int64 or 'float64. Unlike a plain ARRAY (a vector of boxed LispVals), a typed array is a raw u64 buffer laid out exactly like the typed JIT's own array buffers, so passing it to a typed function whose parameter's element type matches crosses the native membrane by pointer with no copy in or out — the callee's in-place STORE/ASET mutations are visible to the caller. FETCH/STORE/AREF/ASET/ARRAY-LENGTH* work on it the same as on a plain array. n is capped at 16M elements; elem-type must be the symbol 'int64 or 'float64.")
+    (cons 'ARGS '((n "A non-negative element count")
+                   (elem-type "The symbol 'int64 or 'float64")))
+    (cons 'RETURNS "A new typed array")
+    (cons 'EXAMPLES '(((let ((a (typed-array 3 'int64))) (store a 0 7) (fetch a 0)) 7)))
+    (cons 'SEE-ALSO '(typed-array-p array fetch store array-length*))))
+
+(register-doc 'typed-array-p
+  (list
+    (cons 'NAME 'typed-array-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(typed-array-p x)")
+    (cons 'CATEGORY 'arrays)
+    (cons 'DESCRIPTION "Returns T if x is a typed array (created with TYPED-ARRAY); NIL otherwise. Note ARRAYP is also T for a typed array, since it is an array; TYPED-ARRAY-P is the narrow test for the flat-buffer representation specifically.")
+    (cons 'EXAMPLES '(((typed-array-p (typed-array 3 'float64)) t)
+                       ((typed-array-p (array 3)) nil)))
+    (cons 'SEE-ALSO '(typed-array arrayp))))
+
 ;;; ============================================================
 ;;; TYPE PREDICATES (EXTENDED)
 ;;; ============================================================
@@ -4252,7 +4276,8 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'arrays
   "Mutable random-access arrays (Lisp 1.5 Appendix A)"
-  '(array make-array fetch array-fetch* store array-store* array-length* arrayp))
+  '(array make-array fetch array-fetch* store array-store* array-length* arrayp
+    typed-array typed-array-p))
 
 (register-category 'filesystem
   "File system I/O (requires READ-FS / CREATE-FS / TEMP-FS capability)"
@@ -4358,9 +4383,148 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "call to unknown function `CONS`")))
     (cons 'SEE-ALSO '(signature compiled-p defun* explain-compile))))
 
+;;; ============================================================
+;;; REGEX MODULE (lib/44-regex.lisp)
+;;; ============================================================
+;;; RE2 semantics (Rust `regex` crate): guaranteed linear time,
+;;; Unicode-aware, no backreferences or lookaround. No capability
+;;; required. Every function taking a regex also accepts a raw pattern
+;;; string (compiled per call). Match triples are (TEXT START END) with
+;;; character indices, end-exclusive, compatible with SUBSTRING. Call
+;;; qualified, or (import regex) to use the names unqualified.
+
+(register-doc 'regex:compile
+  (list
+    (cons 'NAME 'regex:compile)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:compile pattern)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Compiles PATTERN (a string) into a reusable compiled-regex object; signals a descriptive error on invalid syntax. Hoist out of loops: functions that take a regex also accept a raw pattern string, but that recompiles on every call.")
+    (cons 'EXAMPLES '(((regex:regex-p (regex:compile "a+")) t)))
+    (cons 'SEE-ALSO '(regex:regex-p regex:pattern regex:match-p))))
+
+(register-doc 'regex:regex-p
+  (list
+    (cons 'NAME 'regex:regex-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:regex-p x)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns T if X is a compiled regex object (from REGEX:COMPILE), NIL otherwise.")
+    (cons 'EXAMPLES '(((regex:regex-p (regex:compile "a+")) t)
+                       ((regex:regex-p "a+") nil)))
+    (cons 'SEE-ALSO '(regex:compile regex:pattern))))
+
+(register-doc 'regex:pattern
+  (list
+    (cons 'NAME 'regex:pattern)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:pattern re)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns the source pattern string of a compiled regex RE.")
+    (cons 'EXAMPLES '(((regex:pattern (regex:compile "a+")) "a+")))
+    (cons 'SEE-ALSO '(regex:compile))))
+
+(register-doc 'regex:escape
+  (list
+    (cons 'NAME 'regex:escape)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:escape s)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns a copy of S with every regex metacharacter backslash-escaped, so the result matches S literally when used as a pattern.")
+    (cons 'EXAMPLES '(((regex:match-p (regex:escape "a.b") "a.b") t)))
+    (cons 'SEE-ALSO '(regex:compile regex:match-p))))
+
+(register-doc 'regex:match-p
+  (list
+    (cons 'NAME 'regex:match-p)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:match-p re s)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns T if RE matches anywhere in S (search semantics), NIL otherwise. Anchor with ^...$ for a full-string match. RE may be a compiled regex or a pattern string.")
+    (cons 'EXAMPLES '(((regex:match-p "^a+$" "aaa") t)
+                       ((regex:match-p "^a+$" "aab") nil)))
+    (cons 'SEE-ALSO '(regex:find regex:find-all))))
+
+(register-doc 'regex:find
+  (list
+    (cons 'NAME 'regex:find)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:find re s &optional start)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns the first match of RE in S at or after character index START (default 0) as a (TEXT START END) triple, or NIL if there is none.")
+    (cons 'EXAMPLES '(((regex:find "b" "abcb" 2) ("b" 3 4))
+                       ((regex:find "z" "abc") nil)))
+    (cons 'SEE-ALSO '(regex:find-all regex:match-p regex:groups))))
+
+(register-doc 'regex:find-all
+  (list
+    (cons 'NAME 'regex:find-all)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:find-all re s)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns a list of every non-overlapping match of RE in S, left to right, each a (TEXT START END) triple; NIL if there are none.")
+    (cons 'EXAMPLES '(((regex:find-all "a." "axby az") (("ax" 0 2) ("az" 5 7)))))
+    (cons 'SEE-ALSO '(regex:find regex:split))))
+
+(register-doc 'regex:groups
+  (list
+    (cons 'NAME 'regex:groups)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:groups re s)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "First match of RE in S with capture groups: NIL if no match, else a list whose element 0 is the whole-match (TEXT START END) triple and whose element I is capture group I's triple — or NIL for a group that did not participate.")
+    (cons 'EXAMPLES '(((regex:groups "(a)(b)" "ab") (("ab" 0 2) ("a" 0 1) ("b" 1 2)))))
+    (cons 'SEE-ALSO '(regex:named-groups regex:find))))
+
+(register-doc 'regex:named-groups
+  (list
+    (cons 'NAME 'regex:named-groups)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:named-groups re s)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "First match of RE in S with named capture groups: NIL if no match, else an alist of (NAME-STRING . (TEXT START END)); a named group that did not participate has NIL as its cdr. Name groups with (?P<name>...) or (?<name>...).")
+    (cons 'EXAMPLES '(((regex:named-groups "(?P<x>a)" "a") (("x" "a" 0 1)))))
+    (cons 'SEE-ALSO '(regex:groups))))
+
+(register-doc 'regex:replace
+  (list
+    (cons 'NAME 'regex:replace)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:replace re s replacement)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns a new string with the first match of RE in S replaced by REPLACEMENT, a template string in which $1/$2 and ${name} expand to captures and $$ is a literal dollar sign. Returns S unchanged if RE does not match.")
+    (cons 'EXAMPLES '(((regex:replace "a" "aaa" "X") "Xaa")))
+    (cons 'SEE-ALSO '(regex:replace-all))))
+
+(register-doc 'regex:replace-all
+  (list
+    (cons 'NAME 'regex:replace-all)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:replace-all re s replacement)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Returns a new string with every match of RE in S replaced by REPLACEMENT (same template syntax as REGEX:REPLACE).")
+    (cons 'EXAMPLES '(((regex:replace-all "\\d+" "a1b22" "#") "a#b#")))
+    (cons 'SEE-ALSO '(regex:replace))))
+
+(register-doc 'regex:split
+  (list
+    (cons 'NAME 'regex:split)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(regex:split re s &optional limit)")
+    (cons 'CATEGORY 'regex)
+    (cons 'DESCRIPTION "Splits S on matches of RE, returning a list of the pieces between matches. With LIMIT, returns at most LIMIT pieces, the last holding the unsplit remainder. Adjacent delimiters yield empty strings.")
+    (cons 'EXAMPLES '(((regex:split "," "a,b,c") ("a" "b" "c"))))
+    (cons 'SEE-ALSO '(regex:find-all))))
+
+(register-category 'regex
+  "Regular expressions (RE2 semantics; lib/44-regex.lisp)"
+  '(regex:compile regex:regex-p regex:pattern regex:escape regex:match-p
+    regex:find regex:find-all regex:groups regex:named-groups
+    regex:replace regex:replace-all regex:split))
+
 (register-category 'introspection
   "Inspecting registered definitions and compiled code"
-  '(describe see-source disassemble documentation))
+  '(describe see-source disassemble documentation signature compiled-p why-not-typed))
 
 ;;; Done loading help data. Keep stdlib loading silent so CLI -s output is
 ;;; machine-readable and benchmark harnesses can parse stdout directly.
