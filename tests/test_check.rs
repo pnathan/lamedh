@@ -344,3 +344,77 @@ fn sexpr_schema_is_stable() {
         }
     });
 }
+
+// ---------------------------------------------------------------------
+// defun* parameter spellings (evaluator grammar mirrored via
+// parse_star_params — the flat typed form previously mis-read `(y int64)`
+// as a call to Y, a forbidden false positive)
+// ---------------------------------------------------------------------
+
+#[test]
+fn defun_star_flat_typed_params_are_not_calls() {
+    lamedh::with_large_stack(|| {
+        let f = check::check_sources(&[(
+            "flat.lisp".to_string(),
+            "(defun* add (x int64) (y int64) (+ x y))\n(add 2 3)\n".to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn defun_star_flat_with_docstring_and_return_type() {
+    lamedh::with_large_stack(|| {
+        let f = check::check_sources(&[(
+            "flat2.lisp".to_string(),
+            "(defun* inc \"adds one\" (x int64) int64 (+ x 1))\n(inc 4)\n".to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn defun_star_flat_bare_params() {
+    lamedh::with_large_stack(|| {
+        let f = check::check_sources(&[(
+            "bare.lisp".to_string(),
+            "(defun* g x y (+ x y))\n(g 1 2)\n".to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn defun_star_classic_arglist_still_clean() {
+    lamedh::with_large_stack(|| {
+        let f = check::check_sources(&[(
+            "classic.lisp".to_string(),
+            "(defun* h ((x int64) (y int64)) (+ x y))\n(h 1 2)\n".to_string(),
+        )]);
+        assert!(f.is_empty(), "{f:?}");
+    });
+}
+
+#[test]
+fn defun_star_flat_arity_is_enforced() {
+    lamedh::with_large_stack(|| {
+        let f = check::check_sources(&[(
+            "arity.lisp".to_string(),
+            "(defun* add (x int64) (y int64) (+ x y))\n(add 1 2 3)\n".to_string(),
+        )]);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].to_human().contains("ADD"), "{}", f[0].to_human());
+    });
+}
+
+#[test]
+fn defun_star_flat_body_typo_still_caught() {
+    lamedh::with_large_stack(|| {
+        let f = check::check_sources(&[(
+            "typo.lisp".to_string(),
+            "(defun* f (xs int64) (revrse xs))\n".to_string(),
+        )]);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].to_human().contains("REVRSE"), "{}", f[0].to_human());
+    });
+}
