@@ -377,7 +377,12 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
             // the symbol's value cell directly (no hash, no chain walk), locals
             // walk their frames. Only the cold unbound path formats the name.
             let value = env.resolve(s).ok_or_else(|| {
-                LispError::Generic(format!("Unbound variable: {}", s.borrow().name))
+                let name = s.borrow().name.clone();
+                let suffix = crate::teaching_errors::teaching_suffix(
+                    &name,
+                    env.bound_symbol_names().into_iter(),
+                );
+                LispError::Generic(format!("Unbound variable: {name}{suffix}"))
             })?;
 
             // Compatibility path for values explicitly bound to a LABEL form.
@@ -913,10 +918,12 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // Case 2: Argument is a symbol bound to a function
                         if let LispVal::Symbol(s) = arg {
                             let func = env.get(&s.borrow().name).ok_or_else(|| {
-                                LispError::Generic(format!(
-                                    "Undefined function: {}",
-                                    s.borrow().name
-                                ))
+                                let name = s.borrow().name.clone();
+                                let suffix = crate::teaching_errors::teaching_suffix(
+                                    &name,
+                                    env.bound_symbol_names().into_iter(),
+                                );
+                                LispError::Generic(format!("Undefined function: {name}{suffix}"))
                             })?;
 
                             match func {

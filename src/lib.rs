@@ -234,6 +234,7 @@ pub mod jit;
 pub mod optimizer;
 pub mod printer;
 pub mod reader;
+pub mod teaching_errors;
 
 pub use evaluator::{DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, set_eval_depth_limit};
 

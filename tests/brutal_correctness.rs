@@ -689,7 +689,7 @@ fn args_to_ovals(args: &[Value]) -> Vec<OVal> {
             // ever does, keeping this mapping total.
             Value::Char(b) => OVal::I(*b as i64),
             // The generator emits only scalar argument types.
-            Value::Array(_) | Value::Struct(_) => {
+            Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) => {
                 unreachable!("generator emits only scalar arguments")
             }
         })
