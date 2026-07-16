@@ -37,6 +37,7 @@
 - [Canonical Formatting (`lamedh --fmt`)](fmt.md)
 - [Test Runner (`lamedh --test`)](testing-cli.md)
 - [MCP Server (`lamedh --mcp`)](mcp.md)
+- [LLM Reference (`llms.txt`)](llms.md)
 
 # Functions Dictionary
 
