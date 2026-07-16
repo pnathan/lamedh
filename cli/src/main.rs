@@ -69,7 +69,10 @@
 
 use clap::Parser;
 use lamedh::check;
-use lamedh::{Shared, environment::Environment, eval_all, load_directory, load_file, printer};
+use lamedh::{
+    Shared, environment::Environment, eval_all, formatter, load_directory, load_file, printer,
+    test_runner,
+};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -203,11 +206,34 @@ struct Args {
     #[arg(long)]
     check: bool,
 
-    /// Output format for `--check` diagnostics: `human` (default) writes
-    /// `file:LINE: severity: message`; `sexpr` writes one readable
-    /// s-expression per finding (see docs/check.md for the schema).
+    /// Output format for `--check`/`--test` diagnostics: `human` (default)
+    /// writes plain text; `sexpr` writes one readable s-expression per
+    /// finding/failing test (see docs/check.md and docs/testing-cli.md for
+    /// the schemas).
     #[arg(long = "error-format", value_name = "FORMAT", default_value = "human")]
     error_format: String,
+
+    /// Rewrite the given file(s) in place to canonical form and print one
+    /// line per file that changed. Exit 2 if a file cannot be read or
+    /// parsed. The files to format are the positional arguments.
+    #[arg(long)]
+    fmt: bool,
+
+    /// Like `--fmt` but writes nothing: prints one line per file that would
+    /// change and exits 1 if any would, 0 if every file is already
+    /// canonical. Exit 2 if a file cannot be read or parsed.
+    #[arg(long = "fmt-check")]
+    fmt_check: bool,
+
+    /// Run every test registered (via `deftest`) by loading the given
+    /// file(s)/directories, then report pass/fail. Directories load sorted
+    /// `*.lisp` files, same rule as `-i`. Prints one line per failing test,
+    /// then a `test result: N passed; M failed` summary line. Exit 0 if
+    /// every test passed, 1 if any failed, 2 on a load/parse failure. The
+    /// files to test are the positional arguments; `--test` with no files
+    /// is an error.
+    #[arg(long)]
+    test: bool,
 
     /// Script file to run, followed by arguments for the script.  The
     /// arguments are exposed to Lisp as the list *ARGV* (strings).  The
@@ -266,6 +292,154 @@ fn warn_on_overflow(env: &Environment, had_overflow: bool) {
     }
 }
 
+/// The capability names granted by default (everything). Shared by every
+/// mode that builds a "developer tool, not a sandbox" environment: plain
+/// batch/REPL mode and `--test` (script-mode semantics, since a test file is
+/// just another script). `--sandbox` reverts to none of these; `-c` then
+/// grants individual ones back on top.
+const DEFAULT_CAPABILITIES: &[&str] = &[
+    "READ-FS",
+    "CREATE-FS",
+    "TEMP-FS",
+    "SHELL",
+    "IO",
+    "NET-DNS",
+    "NET-CONNECT",
+    "NET-LISTEN",
+    "OS-ENV",
+    "OS-ENV-WRITE",
+    "OS-PROCESS",
+    "OS-SIGNAL",
+];
+
+/// Grant `args`' capabilities to `env`: every [`DEFAULT_CAPABILITIES`] unless
+/// `--sandbox` was passed, then any explicit `-c/--capability` flags on top.
+fn grant_capabilities(args: &Args, env: &Shared<Environment>) {
+    if !args.sandbox {
+        for cap in DEFAULT_CAPABILITIES {
+            env.enable_feature(cap);
+        }
+    }
+    for cap in &args.capabilities {
+        env.enable_feature(&cap.to_uppercase());
+    }
+}
+
+/// Quote a Rust string as a Lisp string literal (escaping `"` and `\`).
+/// Mirrors `check::sexpr_string` for `--test --error-format=sexpr` output.
+fn sexpr_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `--fmt` / `--fmt-check`: rewrite (or report on) each file's canonical
+/// form. Never returns.
+fn run_fmt(args: &Args, check_only: bool) -> ! {
+    let flag = if check_only { "--fmt-check" } else { "--fmt" };
+    if args.script.is_empty() {
+        eprintln!("error: {flag} requires one or more files");
+        std::process::exit(2);
+    }
+    // A minimal kernel is enough: formatting only needs the reader (to
+    // confirm the file parses, and to intern symbols along the way), never
+    // evaluation.
+    let env = Environment::new_with_builtins();
+    let mut changed = false;
+    let mut hard_error = false;
+    for path in &args.script {
+        let src = match fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{path}: cannot read file: {e}");
+                hard_error = true;
+                continue;
+            }
+        };
+        if let Err(e) = lamedh::reader::read_all(&src, &env) {
+            eprintln!("{path}: {e}");
+            hard_error = true;
+            continue;
+        }
+        let formatted = formatter::format_source(&src);
+        if formatted == src {
+            continue;
+        }
+        changed = true;
+        if !check_only && let Err(e) = fs::write(path, &formatted) {
+            eprintln!("{path}: cannot write file: {e}");
+            hard_error = true;
+            continue;
+        }
+        println!("{path}");
+    }
+    if hard_error {
+        std::process::exit(2);
+    }
+    std::process::exit(if check_only && changed { 1 } else { 0 });
+}
+
+/// `--test`: load the given files/directories, run every registered test,
+/// and report pass/fail. Never returns.
+fn run_test(args: &Args) -> ! {
+    let sexpr = match args.error_format.as_str() {
+        "human" => false,
+        "sexpr" => true,
+        other => {
+            eprintln!("error: unknown --error-format '{other}' (expected 'human' or 'sexpr')");
+            std::process::exit(2);
+        }
+    };
+    if args.script.is_empty() {
+        eprintln!("error: --test requires one or more files or directories");
+        std::process::exit(2);
+    }
+
+    // Script-mode semantics: a full stdlib world with every capability on
+    // (a test file is just another script), same as batch script/-s mode.
+    let env = Environment::with_stdlib_fresh();
+    grant_capabilities(args, &env);
+
+    for path in &args.script {
+        if !load_path(path, &env) {
+            std::process::exit(2);
+        }
+    }
+
+    let outcomes = match test_runner::run_registered_tests(&env) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{}", lamedh::format_error_with_backtrace(&e, &env));
+            std::process::exit(2);
+        }
+    };
+
+    let failed = outcomes.iter().filter(|o| !o.passed).count();
+    for o in outcomes.iter().filter(|o| !o.passed) {
+        let message = o.message.as_deref().unwrap_or("");
+        if sexpr {
+            println!(
+                "((test . {}) (status . fail) (message . {}))",
+                sexpr_string(&o.name),
+                sexpr_string(message),
+            );
+        } else {
+            println!("FAIL {}: {}", o.name, message);
+        }
+    }
+    let passed = outcomes.len() - failed;
+    println!("test result: {passed} passed; {failed} failed");
+    std::process::exit(if failed == 0 { 0 } else { 1 });
+}
+
 /// Static-check mode (`--check`): verify files without executing them, print
 /// diagnostics in the requested format, and exit with the check exit code.
 /// Never returns.
@@ -294,10 +468,17 @@ fn run_check(args: &Args) -> ! {
 }
 
 fn run(args: Args) {
-    // Static-check mode short-circuits everything else: it neither loads -i
-    // files nor starts a REPL, and it builds its own throwaway environment.
+    // Static-check, format, and test modes short-circuit everything else:
+    // none of them load -i files or start a REPL, and each builds its own
+    // environment sized to what it actually needs.
     if args.check {
         run_check(&args);
+    }
+    if args.fmt || args.fmt_check {
+        run_fmt(&args, args.fmt_check);
+    }
+    if args.test {
+        run_test(&args);
     }
 
     // Use the embedded stdlib so the interpreter is self-contained. A lib/
@@ -312,27 +493,7 @@ fn run(args: Args) {
     // By default every capability is on — the CLI is a developer tool, not
     // a sandbox.  `--sandbox` reverts to all-off, and `-c` can then grant
     // individual ones back.
-    if !args.sandbox {
-        for cap in &[
-            "READ-FS",
-            "CREATE-FS",
-            "TEMP-FS",
-            "SHELL",
-            "IO",
-            "NET-DNS",
-            "NET-CONNECT",
-            "NET-LISTEN",
-            "OS-ENV",
-            "OS-ENV-WRITE",
-            "OS-PROCESS",
-            "OS-SIGNAL",
-        ] {
-            env.enable_feature(cap);
-        }
-    }
-    for cap in &args.capabilities {
-        env.enable_feature(&cap.to_uppercase());
-    }
+    grant_capabilities(&args, &env);
 
     // Split the positional args into the script path and its arguments, and
     // expose the latter as *ARGV* (a list of strings; () when absent).
