@@ -245,8 +245,9 @@ fn with_stdlib_still_loads_every_optional_module_and_marks_it_loaded() {
     // Every OPTIONAL_MODULES row (src/lib.rs) — 19 pre-existing, the five
     // #257 codec modules (base64, hex, url, json, mime), the three #258
     // networking modules (net, tcp, udp), the #259 http module, the
-    // #260 os/os-linux modules, and the #365 tls module.
-    assert_eq!(line(&env, "(length (loaded-modules))"), "31");
+    // #260 os/os-linux modules, the #365 tls module, and the #408 regex
+    // module.
+    assert_eq!(line(&env, "(length (loaded-modules))"), "32");
 }
 
 #[test]

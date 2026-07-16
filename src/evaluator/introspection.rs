@@ -219,6 +219,7 @@ pub(super) fn describe_kind(val: &LispVal) -> &'static str {
         LispVal::Nil => "bound to NIL (the empty list / false)",
         LispVal::HashTable(_) => "bound to a hash table",
         LispVal::Array(_) => "bound to an array",
+        LispVal::TypedArray(_) => "bound to a typed array",
         LispVal::Struct(_) => "bound to a typed struct",
         LispVal::Environment(_) => "bound to an environment",
         LispVal::Error(_) => "bound to an error/condition object",
@@ -252,6 +253,11 @@ pub(super) fn push_value_detail(out: &mut String, val: &LispVal) {
         )),
         LispVal::Error(e) => out.push_str(&format!("  Message: {}\n", e.message)),
         LispVal::Array(a) => out.push_str(&format!("  Length: {}\n", a.borrow().len())),
+        LispVal::TypedArray(a) => out.push_str(&format!(
+            "  Element type: {}\n  Length: {}\n",
+            a.elem,
+            a.len()
+        )),
         LispVal::Struct(s) => out.push_str(&format!(
             "  Type: {}\n  Fields: {}\n",
             s.type_name,

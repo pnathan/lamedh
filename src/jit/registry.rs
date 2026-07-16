@@ -1,4 +1,6 @@
 use super::*;
+use std::collections::HashSet;
+
 // ---------------------------------------------------------------------------
 // The function cell.
 // ---------------------------------------------------------------------------
@@ -14,6 +16,19 @@ pub struct TypedFn {
     pub(super) params: RefCell<Vec<(String, Ty)>>,
     pub(super) ret: RefCell<Ty>,
     pub(super) core: RefCell<Option<Core>>,
+    /// Per-parameter may-mutate verdict (issue #216 follow-up), recomputed
+    /// whenever `core` is (re)installed: `may_mutate[i]` is `false` only when
+    /// `core_may_mutate_slot` proves slot `i` is never written through. The
+    /// membrane's write-back skips the post-call copy-out for a flat-scalar-
+    /// array parameter whose slot is `false` here — see `call_inner`.
+    pub(super) may_mutate: RefCell<Vec<bool>>,
+    /// Callee ids currently spliced into this function's own compiled
+    /// editions by Core-level inlining (jit/core-loops), recomputed on every
+    /// `compile_now`. Used only for dependent invalidation: when a function
+    /// in this set is redefined, this function's cached editions embed a now
+    /// stale copy of its old body and must be recompiled — see
+    /// `Jit::recompile_inline_dependents`.
+    pub(super) inlined_from: RefCell<HashSet<usize>>,
     pub(super) slots: Cell<usize>,
     pub(super) compiled: RefCell<Option<Compiled>>,
     /// Native (Cranelift) edition. Like `compiled`, a call pins (`Rc`-clones) it,
@@ -39,6 +54,7 @@ impl std::fmt::Debug for TypedFn {
             .field("defined", &self.core.borrow().is_some())
             .field("compiled", &self.compiled.borrow().is_some())
             .field("generation", &self.generation.get())
+            .field("inlined_from", &self.inlined_from.borrow())
             .finish()
     }
 }
@@ -52,6 +68,8 @@ impl TypedFn {
             params: RefCell::new(params),
             ret: RefCell::new(ret),
             core: RefCell::new(None),
+            may_mutate: RefCell::new(Vec::new()),
+            inlined_from: RefCell::new(HashSet::new()),
             slots: Cell::new(slots),
             compiled: RefCell::new(None),
             #[cfg(feature = "jit")]
@@ -93,41 +111,131 @@ impl TypedFn {
         self.core.borrow().clone()
     }
 
-    #[cfg_attr(not(feature = "jit"), allow(unused_variables))]
+    /// Recompute the per-parameter may-mutate verdicts (issue #216
+    /// follow-up) from the current `core`/`params`. Call this right after
+    /// installing a new `core` body (every definition site does). Absent a
+    /// body (a placeholder), every slot is conservatively `true`.
+    pub(super) fn recompute_may_mutate(&self) {
+        let n_params = self.params.borrow().len();
+        let core = self.core.borrow();
+        let mm = match core.as_ref() {
+            Some(c) => (0..n_params)
+                .map(|slot| core_may_mutate_slot(c, slot))
+                .collect(),
+            None => vec![true; n_params],
+        };
+        *self.may_mutate.borrow_mut() = mm;
+    }
+
+    /// Which callees directly referenced (anywhere, not just tail position)
+    /// by `core` are eligible for Core-level inlining into this function's
+    /// own compiled editions (jit/core-loops): already defined, under the
+    /// node-count budget, and not — transitively, through the static call
+    /// graph — recursive through themselves or back into this function. The
+    /// budget and recursion checks both walk `funcs[..].core`, i.e. the raw
+    /// (never already-inlined) source bodies, so this decision is unaffected
+    /// by any other function's own inlining.
+    fn inline_candidates(&self, core: &Core, funcs: &[Rc<TypedFn>]) -> HashSet<usize> {
+        const INLINE_NODE_BUDGET: usize = 30;
+        let mut called = HashSet::new();
+        inline_call_ids(core, &mut called);
+        called
+            .into_iter()
+            .filter(|&id| {
+                if id == self.id {
+                    return false; // a self-call is recursion, not inlining.
+                }
+                let Some(callee) = funcs.get(id) else {
+                    return false;
+                };
+                let Some(callee_core) = callee.core.borrow().clone() else {
+                    return false; // declared but not (yet) defined.
+                };
+                if core_node_count(&callee_core) >= INLINE_NODE_BUDGET {
+                    return false;
+                }
+                // Reject a callee that (transitively) calls itself — inlining
+                // it would just relocate its recursion, not remove any call
+                // overhead, and the loop-header optimization already owns
+                // that case. Also reject a callee that (transitively) calls
+                // back into `self` — inlining it would re-introduce a cycle
+                // this single-level pass is not designed to reason about.
+                let mut seen_self_recursion = HashSet::new();
+                if inline_reaches(funcs, &callee_core, id, &mut seen_self_recursion) {
+                    return false;
+                }
+                let mut seen_back_edge = HashSet::new();
+                if inline_reaches(funcs, &callee_core, self.id, &mut seen_back_edge) {
+                    return false;
+                }
+                true
+            })
+            .collect()
+    }
+
     pub(super) fn compile_now(&self, funcs: &[Rc<TypedFn>]) {
-        let c = self.core.borrow();
-        if let Some(core) = c.as_ref() {
-            *self.compiled.borrow_mut() = Some(compile_with_tco(core, self.id));
-            // With the `jit` feature, also build a native edition. If Cranelift
-            // codegen fails for any reason, fall back to the closure edition
-            // rather than failing the definition. The entry cell is updated so
-            // other compiled functions call this one's native code directly.
-            #[cfg(feature = "jit")]
-            {
-                let n_params = self.params.borrow().len();
-                let cell_addrs: Vec<usize> = funcs.iter().map(|f| f.entry_cell_addr()).collect();
-                let param_counts: Vec<usize> =
-                    funcs.iter().map(|f| f.params.borrow().len()).collect();
-                match native::compile_native(
-                    core,
-                    self.id,
-                    n_params,
-                    self.slots.get(),
-                    &cell_addrs,
-                    &param_counts,
-                ) {
-                    Ok(ed) => {
-                        self.entry.set(ed.entry_addr());
-                        *self.native.borrow_mut() = Some(Rc::new(ed));
-                    }
-                    Err(_) => {
-                        self.entry.set(0);
-                        *self.native.borrow_mut() = None;
-                    }
+        let core_owned = match self.core.borrow().as_ref() {
+            Some(core) => core.clone(),
+            None => return,
+        };
+
+        // Core-level inlining (jit/core-loops): splice small (< 30 Core
+        // nodes), already-defined, non-recursive callees' bodies directly
+        // into this function's own body before building either compiled
+        // edition, so a tiny helper's call overhead — an entry-cell
+        // `call_indirect`, or a `Ctx::call` re-entry for the closure edition
+        // — disappears entirely at its call sites. See `inline_candidates`
+        // and `inline_calls`.
+        let inline_ids = self.inline_candidates(&core_owned, funcs);
+        let (core, n_slots) = if inline_ids.is_empty() {
+            (core_owned, self.slots.get())
+        } else {
+            let owned_callees: Vec<(usize, Core, usize)> = inline_ids
+                .iter()
+                .filter_map(|&id| {
+                    let f = funcs.get(id)?;
+                    let callee_core = f.core.borrow().clone()?;
+                    Some((id, callee_core, f.slots.get()))
+                })
+                .collect();
+            let registry: Vec<(usize, &Core, usize)> = owned_callees
+                .iter()
+                .map(|(id, c, n)| (*id, c, *n))
+                .collect();
+            inline_calls(&core_owned, &registry, self.slots.get())
+        };
+        *self.inlined_from.borrow_mut() = inline_ids;
+        self.slots.set(n_slots);
+
+        *self.compiled.borrow_mut() = Some(compile_with_tco(&core, self.id));
+        // With the `jit` feature, also build a native edition. If Cranelift
+        // codegen fails for any reason, fall back to the closure edition
+        // rather than failing the definition. The entry cell is updated so
+        // other compiled functions call this one's native code directly.
+        #[cfg(feature = "jit")]
+        {
+            let n_params = self.params.borrow().len();
+            let cell_addrs: Vec<usize> = funcs.iter().map(|f| f.entry_cell_addr()).collect();
+            let param_counts: Vec<usize> = funcs.iter().map(|f| f.params.borrow().len()).collect();
+            match native::compile_native(
+                &core,
+                self.id,
+                n_params,
+                self.slots.get(),
+                &cell_addrs,
+                &param_counts,
+            ) {
+                Ok(ed) => {
+                    self.entry.set(ed.entry_addr());
+                    *self.native.borrow_mut() = Some(Rc::new(ed));
+                }
+                Err(_) => {
+                    self.entry.set(0);
+                    *self.native.borrow_mut() = None;
                 }
             }
-            self.generation.set(self.generation.get() + 1);
         }
+        self.generation.set(self.generation.get() + 1);
     }
 
     pub(super) fn deoptimize(&self) {
@@ -301,6 +409,8 @@ impl Jit {
                     params: RefCell::new(f.params.borrow().clone()),
                     ret: RefCell::new(f.ret.borrow().clone()),
                     core: RefCell::new(f.core.borrow().clone()),
+                    may_mutate: RefCell::new(f.may_mutate.borrow().clone()),
+                    inlined_from: RefCell::new(f.inlined_from.borrow().clone()),
                     slots: Cell::new(f.slots.get()),
                     compiled: RefCell::new(f.compiled.borrow().clone()),
                     #[cfg(feature = "jit")]
@@ -650,6 +760,26 @@ impl Jit {
         }
     }
 
+    /// Recompile every function whose compiled editions previously spliced
+    /// `id`'s body in via Core-level inlining (jit/core-loops): after `id` is
+    /// redefined (same arity, so `recompile_all_except` was not already
+    /// triggered), such a dependent's cached editions embed a now-stale copy
+    /// of `id`'s *old* core, so they must be rebuilt against the new one — or
+    /// simply stop inlining `id`, if it no longer qualifies (recursive, too
+    /// big, ...). Cheap in practice: only functions that actually inlined
+    /// `id` are recompiled, and single-level inlining means this never
+    /// cascades transitively (a function that inlined a caller of `id`, but
+    /// not `id` itself, kept an ordinary — still-correct — call to `id`).
+    fn recompile_inline_dependents(&self, id: usize) {
+        let funcs: Vec<Rc<TypedFn>> = self.funcs.to_vec();
+        for f in &funcs {
+            if f.id != id && f.core.borrow().is_some() && f.inlined_from.borrow().contains(&id) {
+                f.deoptimize();
+                f.compile_now(&funcs);
+            }
+        }
+    }
+
     /// Forward-declare a signature so mutually-recursive functions can reference
     /// each other before their bodies exist.
     pub fn declare(&mut self, name: &str, params: &[(&str, Ty)], ret: Ty) -> usize {
@@ -772,6 +902,7 @@ impl Jit {
         *f.ret.borrow_mut() = resolved_ret;
         f.slots.set(max_slots);
         *f.core.borrow_mut() = Some(core);
+        f.recompute_may_mutate();
         f.compile_now(&self.funcs);
         // If the arity changed on redefinition, every other compiled function may
         // have baked a now-wrong argument-buffer size for calls to this one.
@@ -779,6 +910,12 @@ impl Jit {
         // correctly-sized buffers (and correct direct-native entry pointers).
         if arity_changed {
             self.recompile_all_except(id);
+        } else {
+            // Same-arity redefinition: `recompile_all_except` above already
+            // covers every other function in the arity-changed case, but
+            // here only a function that had actually inlined this one's
+            // *old* body needs to be rebuilt (jit/core-loops).
+            self.recompile_inline_dependents(id);
         }
         Ok(id)
     }
@@ -797,9 +934,12 @@ impl Jit {
         let f = self.funcs[id].clone();
         f.slots.set(slots);
         *f.core.borrow_mut() = Some(core);
+        f.recompute_may_mutate();
         f.compile_now(&self.funcs);
         if arity_changed {
             self.recompile_all_except(id);
+        } else {
+            self.recompile_inline_dependents(id);
         }
         id
     }
@@ -884,6 +1024,7 @@ impl Jit {
                 *f.ret.borrow_mut() = resolved_ret;
                 f.slots.set(max_slots);
                 *f.core.borrow_mut() = Some(core);
+                f.recompute_may_mutate();
                 f.compile_now(&self.funcs);
                 Ok(new_id)
             }
@@ -1047,6 +1188,7 @@ impl Jit {
                 *f.ret.borrow_mut() = resolved_ret;
                 f.slots.set(max_slots);
                 *f.core.borrow_mut() = Some(core);
+                f.recompute_may_mutate();
                 f.compile_now(&self.funcs);
                 Ok((new_id, sig_str))
             }
@@ -1399,10 +1541,31 @@ impl Jit {
             div_by_zero: ctx.div_by_zero.get(),
         };
         let result = Value::from_word(w, &ret);
+        // Skip the write-back copy-out for a parameter the static may-mutate
+        // analysis (`core_may_mutate_slot`, computed at define-time into
+        // `f.may_mutate`) proves this function's body never writes through —
+        // e.g. a pure reader like `array-sum`. A missing entry (should not
+        // happen outside a bodyless placeholder) falls back to the old
+        // always-copy behavior, never a missed write-back.
+        let may_mutate = f.may_mutate.borrow();
         let updated = words
             .iter()
             .zip(tys.iter())
-            .map(|(w, ty)| is_flat_scalar_array(ty).then(|| Value::from_word(*w, ty)))
+            .enumerate()
+            .map(|(i, (w, ty))| {
+                // A `Value::TypedArray` argument crossed the membrane as a
+                // raw pointer into its own buffer (`Value::to_word`'s
+                // `TypedArray` arm), so any in-place mutation already landed
+                // there directly — skip the copy-out `call_lisp`'s
+                // `LispVal::Array` write-back loop would otherwise perform
+                // for nothing (it only matches `LispVal::Array`/`Value::Array`
+                // pairs, never `TypedArray`, so the entry is dead weight).
+                if matches!(args[i], Value::TypedArray(_)) {
+                    return None;
+                }
+                let mutates = may_mutate.get(i).copied().unwrap_or(true);
+                (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty))
+            })
             .collect();
         Ok((result, updated, flags))
     }
@@ -1445,13 +1608,17 @@ impl Jit {
                         Value::Float(f) => LispVal::Float(f),
                         Value::Bool(b) => LispVal::Number(b as i64),
                         Value::Char(b) => LispVal::Char(b),
-                        Value::Array(_) | Value::Struct(_) => {
+                        Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) => {
                             unreachable!("flat scalar array write-back produced a compound element")
                         }
                     })
                     .collect();
                 *rc.borrow_mut() = new_items;
             }
+            // A `LispVal::TypedArray` argument crossed as a raw pointer into
+            // its own buffer (`Value::to_word`'s `TypedArray` arm) — the
+            // callee's `store`/`aset` already mutated it in place, so
+            // (unlike `LispVal::Array` above) there is nothing to copy back.
         }
         Ok(value_to_lispval(&result, &ret))
     }
@@ -1720,6 +1887,49 @@ impl Jit {
                     "    {dst} = vdot {ta}[i], {tb}[i]   ; simd reduce (wrapping), i in 0..min(len)"
                 ));
             }
+            Core::ArrayNewStride(n, stride) => {
+                let t = fresh(reg);
+                self.dis_emit(n, &t, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = alloc {t} * {stride}        ; inline array-of-structs"
+                ));
+            }
+            Core::InlineFieldGet(a, i, field, stride) => {
+                let (ta, ti) = (fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = ldelemfld {ta}[{ti}].{field}   ; inline (stride={stride}, bounds-checked)"
+                ));
+            }
+            Core::InlineFieldSet(a, i, field, stride, v) => {
+                let (ta, ti, tv) = (fresh(reg), fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                self.dis_emit(v, &tv, out, reg, lab);
+                out.push(format!(
+                    "    stelemfld {ta}[{ti}].{field}, {tv}   ; inline (stride={stride}, bounds-checked)"
+                ));
+                out.push(format!("    {dst} = mov {tv}"));
+            }
+            Core::ArraySetStride(a, i, stride, fields) => {
+                let (ta, ti) = (fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                let mut regs = Vec::with_capacity(fields.len());
+                for f in fields {
+                    let t = fresh(reg);
+                    self.dis_emit(f, &t, out, reg, lab);
+                    regs.push(t);
+                }
+                out.push(format!(
+                    "    stelem {ta}[{ti}] = {{{}}}   ; inline (stride={stride}, bounds-checked)",
+                    regs.join(", ")
+                ));
+                out.push(format!(
+                    "    {dst} = li   0        ; inline store yields nil"
+                ));
+            }
             Core::StructNew(inits) => {
                 let mut regs = Vec::with_capacity(inits.len());
                 for c in inits {
@@ -1749,8 +1959,176 @@ impl Jit {
                     self.dis_emit(f, dst, out, reg, lab);
                 }
             }
+            Core::Assign(slot, val) => {
+                let tv = fresh(reg);
+                self.dis_emit(val, &tv, out, reg, lab);
+                out.push(format!("    st   slot{slot}, {tv}        ; setq"));
+                out.push(format!("    {dst} = mov {tv}"));
+            }
+            Core::While(test, body) => {
+                let l_top = fresh_lab(lab, "while_top");
+                let l_end = fresh_lab(lab, "while_end");
+                out.push(format!("{l_top}:"));
+                let tc = fresh(reg);
+                self.dis_emit(test, &tc, out, reg, lab);
+                out.push(format!("    brz  {tc}, {l_end}"));
+                let tb = fresh(reg);
+                self.dis_emit(body, &tb, out, reg, lab);
+                out.push(format!("    br   {l_top}"));
+                out.push(format!("{l_end}:"));
+                out.push(format!("    {dst} = li   0        ; while yields nil"));
+            }
+            Core::For {
+                slot,
+                start,
+                end,
+                step,
+                body,
+            } => {
+                let ts = fresh(reg);
+                self.dis_emit(start, &ts, out, reg, lab);
+                out.push(format!("    st   slot{slot}, {ts}"));
+                let te = fresh(reg);
+                self.dis_emit(end, &te, out, reg, lab);
+                let tstep = fresh(reg);
+                self.dis_emit(step, &tstep, out, reg, lab);
+                let l_top = fresh_lab(lab, "for_top");
+                let l_end = fresh_lab(lab, "for_end");
+                out.push(format!("{l_top}:"));
+                out.push(format!(
+                    "    brdone slot{slot}, {te}, {tstep}, {l_end}   ; step=0 errors, inclusive bound by sign(step)"
+                ));
+                let tb = fresh(reg);
+                self.dis_emit(body, &tb, out, reg, lab);
+                out.push(format!(
+                    "    inc  slot{slot}, {tstep}, {l_end}     ; overflow breaks (no OVERFLOW flag)"
+                ));
+                out.push(format!("    br   {l_top}"));
+                out.push(format!("{l_end}:"));
+                out.push(format!("    {dst} = li   0        ; for yields nil"));
+            }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Core-level inlining (jit/core-loops): static call-graph helpers backing
+// `TypedFn::inline_candidates`. Kept private and self-contained in this file
+// (rather than shared) so they have no cross-module coupling.
+// ---------------------------------------------------------------------------
+
+/// Collect every distinct callee id referenced anywhere in `core` (not just
+/// tail position, and without following into any callee's own body) — the
+/// direct-call set an inlining decision starts from.
+fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
+    match core {
+        Core::LitI(_) | Core::LitF(_) | Core::Var(_) => {}
+        Core::Not(a) | Core::ToChar(a) | Core::FUnary(_, a) | Core::IntToFloat(a) => {
+            inline_call_ids(a, out)
+        }
+        Core::Bin(_, _, a, b)
+        | Core::Cmp(_, _, a, b)
+        | Core::And(a, b)
+        | Core::Or(a, b)
+        | Core::Let(_, a, b) => {
+            inline_call_ids(a, out);
+            inline_call_ids(b, out);
+        }
+        Core::If(c, t, e) => {
+            inline_call_ids(c, out);
+            inline_call_ids(t, out);
+            inline_call_ids(e, out);
+        }
+        Core::Call(id, args) => {
+            out.insert(*id);
+            for a in args {
+                inline_call_ids(a, out);
+            }
+        }
+        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) | Core::ArraySum(a) => {
+            inline_call_ids(a, out)
+        }
+        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) | Core::ArrayDot(a, b) => {
+            inline_call_ids(a, out);
+            inline_call_ids(b, out);
+        }
+        Core::ArraySet(a, b, c) | Core::ArrayMap2(_, _, a, b, c) => {
+            inline_call_ids(a, out);
+            inline_call_ids(b, out);
+            inline_call_ids(c, out);
+        }
+        Core::StructNew(items) | Core::Seq(items) => {
+            for c in items {
+                inline_call_ids(c, out);
+            }
+        }
+        Core::Assign(_, v) => inline_call_ids(v, out),
+        Core::While(t, b) => {
+            inline_call_ids(t, out);
+            inline_call_ids(b, out);
+        }
+        Core::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            inline_call_ids(start, out);
+            inline_call_ids(end, out);
+            inline_call_ids(step, out);
+            inline_call_ids(body, out);
+        }
+        Core::ArrayNewStride(n, _) => inline_call_ids(n, out),
+        Core::InlineFieldGet(a, i, _, _) => {
+            inline_call_ids(a, out);
+            inline_call_ids(i, out);
+        }
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            inline_call_ids(a, out);
+            inline_call_ids(i, out);
+            inline_call_ids(v, out);
+        }
+        Core::ArraySetStride(a, i, _, fields) => {
+            inline_call_ids(a, out);
+            inline_call_ids(i, out);
+            for f in fields {
+                inline_call_ids(f, out);
+            }
+        }
+    }
+}
+
+/// Whether the static call graph reachable from `core` includes a call to
+/// `target`, following through already-defined callees' own (raw, never
+/// already-inlined) bodies. `visited` guards against looping forever around
+/// an existing cycle in that graph (ordinary mutual recursion). Used by
+/// `TypedFn::inline_candidates` to reject a callee that is itself recursive,
+/// or that would re-introduce a cycle back into the function being compiled
+/// — either way, unsafe or pointless for this single-level inlining pass.
+fn inline_reaches(
+    funcs: &[Rc<TypedFn>],
+    core: &Core,
+    target: usize,
+    visited: &mut HashSet<usize>,
+) -> bool {
+    let mut ids = HashSet::new();
+    inline_call_ids(core, &mut ids);
+    for id in ids {
+        if id == target {
+            return true;
+        }
+        if visited.insert(id) {
+            if let Some(f) = funcs.get(id) {
+                if let Some(callee_core) = f.core.borrow().as_ref() {
+                    if inline_reaches(funcs, callee_core, target, visited) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

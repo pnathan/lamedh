@@ -232,6 +232,7 @@ pub fn optimize(expr: &LispVal) -> LispVal {
         | LispVal::Native(_)
         | LispVal::Environment(_)
         | LispVal::Array(_)
+        | LispVal::TypedArray(_)
         | LispVal::Struct(_)
         | LispVal::Extension(_)
         | LispVal::Error(_)

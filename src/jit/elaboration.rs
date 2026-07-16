@@ -167,6 +167,13 @@ impl Cx<'_> {
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
                     "LET" | "LET-TYPED" => self.elab_let(args, scope, max),
                     "PROGN" => self.elab_body(args, scope, max),
+                    // `setq`/`while`/`for` compile natively when they only touch
+                    // local slots (params/let-bindings) — codegen-only so
+                    // checking (which never runs this Core) keeps whatever
+                    // gradual/declared handling these forms already had.
+                    "SETQ" if !self.checking => self.elab_setq(args, scope, max),
+                    "WHILE" if !self.checking => self.elab_while(args, scope, max),
+                    "FOR" if !self.checking => self.elab_for(args, scope, max),
                     "CHAR-CODE" => self.elab_char_code(args, scope, max),
                     "CODE-CHAR" => self.elab_code_char(args, scope, max),
                     "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
@@ -662,7 +669,7 @@ impl Cx<'_> {
             return Err("`let-typed` needs a body".to_string());
         }
         let saved = scope.len();
-        let mut writes: Vec<(usize, Core)> = Vec::with_capacity(bindings.len());
+        let mut writes: Vec<(usize, Core, Ty)> = Vec::with_capacity(bindings.len());
         for b in &bindings {
             let parts = list_to_vec(b);
             // Two binding shapes: `(name type init)` pins the type explicitly,
@@ -708,17 +715,235 @@ impl Cx<'_> {
                 }
             };
             let slot = scope.len();
-            scope.push((name, ty));
+            scope.push((name, ty.clone()));
             *max = (*max).max(scope.len());
-            writes.push((slot, init_core));
+            writes.push((slot, init_core, ty));
         }
-        let (body_core, body_ty) = self.elab_body(body, scope, max)?;
+        let (mut body_core, body_ty) = self.elab_body(body, scope, max)?;
+        // Array-of-structs inline layout (jit/core-loops follow-up): for each
+        // binding in this `let` whose (now fully-constrained-by-the-body)
+        // type is a scalar-fields struct array, try to fuse its uses in
+        // `body_core` into the stride-based primitives. Purely a layout
+        // optimization — `try_stride_binding` leaves both cores unchanged
+        // whenever it can't prove every use safe (see `stride_walk`).
+        // Pre-compute which slots are referenced in later sibling inits,
+        // so the stride rewrite refuses to fuse when a sibling's init would
+        // read the array under the old (non-stride) layout.
+        let sibling_unsafe: Vec<bool> = (0..writes.len())
+            .map(|idx| {
+                let slot = writes[idx].0;
+                writes[idx + 1..]
+                    .iter()
+                    .any(|(_, sib_init, _)| core_references_slot(sib_init, slot))
+            })
+            .collect();
+        for (idx, (slot, init_core, ty)) in writes.iter_mut().enumerate() {
+            if sibling_unsafe[idx] {
+                continue;
+            }
+            let taken = std::mem::replace(init_core, Core::LitI(0));
+            let (new_init, new_body) = self.try_stride_binding(*slot, ty, taken, body_core);
+            *init_core = new_init;
+            body_core = new_body;
+        }
         scope.truncate(saved);
         let mut acc = body_core;
-        for (slot, init_core) in writes.into_iter().rev() {
+        for (slot, init_core, _ty) in writes.into_iter().rev() {
             acc = Core::Let(slot, Box::new(init_core), Box::new(acc));
         }
         Ok((acc, body_ty))
+    }
+
+    /// Try to fuse a `let`-bound `(array Struct)` local (`slot`, of type
+    /// `ty`, initialized by `init_core`) into the inline (contiguous
+    /// array-of-structs) layout for `body_core` (jit/core-loops array-of-
+    /// structs follow-up). Returns `(init_core, body_core)` unchanged unless
+    /// ALL of the following hold, in which case it returns the rewritten
+    /// pair:
+    /// - `ty` (after [`Cx::resolve`], now that `body_core`'s own unifications
+    ///   have run) resolves to `Ty::Array(Ty::Struct(def))`;
+    /// - `def`'s fields are all scalar ([`StructDef::stride`] is `Some`);
+    /// - `init_core` is exactly `Core::ArrayNew(_)` — the ordinary `(array
+    ///   n)`/`(make-array n)` allocator, so upgrading it to
+    ///   `Core::ArrayNewStride` is a pure allocation-strategy swap;
+    /// - the struct's `MAKE-<Name>` constructor is a registered function
+    ///   (always true for a `defstruct-typed`-declared struct);
+    /// - every reachable use of `slot` in `body_core` matches a pattern
+    ///   [`stride_walk`] recognizes as safe under the inline layout.
+    fn try_stride_binding(
+        &self,
+        slot: usize,
+        ty: &Ty,
+        init_core: Core,
+        body_core: Core,
+    ) -> (Core, Core) {
+        // `walk` only resolves the *outer* variable, not a compound type's
+        // nested component (`Ty::Array`'s element) — `resolve` recurses, so
+        // it is the one that can actually observe "the element type turned
+        // out to be a struct" here. It is safe to call now (not just at the
+        // whole function's final signature resolve): `arr`'s element type
+        // can only ever be constrained by a `fetch`/`store` reached from
+        // THIS let's own `body`, since the binding is lexically scoped to
+        // it — every such constraint has already landed by the time
+        // `elab_body` returned. An `Err` here just means some other part of
+        // `body` never pinned it down (e.g. an unused/never-indexed array);
+        // leave the binding as the general layout, exactly as the final
+        // whole-function resolve would separately reject or accept it.
+        let Ok(resolved) = self.resolve(ty) else {
+            return (init_core, body_core);
+        };
+        let elem_def = match &resolved {
+            Ty::Array(elem) => match elem.as_ref() {
+                Ty::Struct(def) => def.clone(),
+                _ => return (init_core, body_core),
+            },
+            _ => return (init_core, body_core),
+        };
+        let n = match &init_core {
+            Core::ArrayNew(n) => n.clone(),
+            _ => return (init_core, body_core),
+        };
+        let Some(stride) = elem_def.stride() else {
+            return (init_core, body_core);
+        };
+        let Some(&ctor_id) = self.by_name.get(&format!("MAKE-{}", elem_def.name)) else {
+            return (init_core, body_core);
+        };
+        let mut getters = HashMap::new();
+        let mut setters = HashMap::new();
+        for (i, (fname, _)) in elem_def.fields.iter().enumerate() {
+            if let Some(&id) = self.by_name.get(&format!("{}-{fname}", elem_def.name)) {
+                getters.insert(id, i);
+            }
+            if let Some(&id) = self.by_name.get(&format!("SET-{}-{fname}", elem_def.name)) {
+                setters.insert(id, i);
+            }
+        }
+        let sc = StrideCtx {
+            slot,
+            stride,
+            ctor_id,
+            getters,
+            setters,
+        };
+        match stride_walk(&body_core, &sc, false) {
+            Ok(new_body) => (Core::ArrayNewStride(n, stride), new_body),
+            Err(()) => (init_core, body_core),
+        }
+    }
+
+    /// `(setq var val)` on a local slot (param or `let`-binding): store the
+    /// value word into the slot and evaluate to the stored word. `setq` on
+    /// anything else (a dynamic/global) is not local and stays in the
+    /// tree-walker — the whole function falls back to interpreted rather than
+    /// misroute a dynamic assignment through a nonexistent slot.
+    fn elab_setq(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err("setq in typed code takes exactly 2 arguments".to_string());
+        }
+        let name = match &args[0] {
+            LispVal::Symbol(s) => s.borrow().name.clone(),
+            _ => return Err("setq: first argument must be a symbol".to_string()),
+        };
+        let slot = scope.iter().rposition(|(n, _)| *n == name).ok_or_else(|| {
+            format!("setq: variable {name} is not a local binding (only local setq is compileable)")
+        })?;
+        let slot_ty = scope[slot].1.clone();
+        let (val_core, val_ty) = self.elab(&args[1], scope, max)?;
+        self.unify(&slot_ty, &val_ty)
+            .map_err(|e| format!("setq {name}: type mismatch: {e}"))?;
+        Ok((Core::Assign(slot, Box::new(val_core)), val_ty))
+    }
+
+    /// `(while test body...)`: evaluate TEST; while truthy, evaluate BODY for
+    /// side effects, then loop. Always evaluates to `0` (NIL) — typed as
+    /// `int64` since the typed island has no dedicated unit/NIL type and the
+    /// result is always discarded (WHILE is a statement, legal only in
+    /// non-tail/discarded position).
+    fn elab_while(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() < 2 {
+            return Err("while requires a test and at least one body form".to_string());
+        }
+        let (test_core, test_ty) = self.elab(&args[0], scope, max)?;
+        // The test may be a comparison (bool) or a plain int64 truthy/falsy
+        // value; accept either.
+        if self.unify(&test_ty, &Ty::Bool).is_err() {
+            self.unify(&test_ty, &Ty::Int64)
+                .map_err(|_| "while: test must be bool or int64".to_string())?;
+        }
+        let (body_core, _) = self.elab_body(&args[1..], scope, max)?;
+        Ok((
+            Core::While(Box::new(test_core), Box::new(body_core)),
+            Ty::Int64,
+        ))
+    }
+
+    /// `(for (var start end [step]) body...)`: evaluate START/END/STEP once,
+    /// in the OUTER scope (the loop variable is not yet bound — matches the
+    /// tree-walker, `special_forms.rs::eval_for`), then bind VAR to a fresh
+    /// slot and iterate it from START to END inclusive by STEP (default 1).
+    /// Always evaluates to `0` (NIL), typed `int64` for the same reason as
+    /// `while`.
+    fn elab_for(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() < 2 {
+            return Err("for requires a spec list (var start end [step]) and a body".to_string());
+        }
+        let spec = list_to_vec(&args[0]);
+        if spec.len() != 3 && spec.len() != 4 {
+            return Err("for spec must be (var start end [step])".to_string());
+        }
+        let var_name = match &spec[0] {
+            LispVal::Symbol(s) => s.borrow().name.clone(),
+            _ => return Err("for: loop variable must be a symbol".to_string()),
+        };
+
+        let (start_core, start_ty) = self.elab(&spec[1], scope, max)?;
+        self.unify(&start_ty, &Ty::Int64)
+            .map_err(|_| "for: start must be int64".to_string())?;
+        let (end_core, end_ty) = self.elab(&spec[2], scope, max)?;
+        self.unify(&end_ty, &Ty::Int64)
+            .map_err(|_| "for: end must be int64".to_string())?;
+        let step_core = if spec.len() == 4 {
+            let (step_core, step_ty) = self.elab(&spec[3], scope, max)?;
+            self.unify(&step_ty, &Ty::Int64)
+                .map_err(|_| "for: step must be int64".to_string())?;
+            step_core
+        } else {
+            Core::LitI(1)
+        };
+
+        let saved = scope.len();
+        let slot = scope.len();
+        scope.push((var_name, Ty::Int64));
+        *max = (*max).max(scope.len());
+        let (body_core, _) = self.elab_body(&args[1..], scope, max)?;
+        scope.truncate(saved);
+
+        Ok((
+            Core::For {
+                slot,
+                start: Box::new(start_core),
+                end: Box::new(end_core),
+                step: Box::new(step_core),
+                body: Box::new(body_core),
+            },
+            Ty::Int64,
+        ))
     }
 
     /// `(append l1 ... ln)` : every argument `(list a)`, result `(list a)`.

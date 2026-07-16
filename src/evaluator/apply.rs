@@ -451,6 +451,7 @@ pub(super) fn apply(
             | BuiltinFunc::Functionp
             | BuiltinFunc::Macrop
             | BuiltinFunc::Arrayp
+            | BuiltinFunc::TypedArrayp
             | BuiltinFunc::Extensionp => apply_type_predicates(builtin, args, env),
             BuiltinFunc::ExtensionTypeName => {
                 if args.len() != 1 {
@@ -1648,29 +1649,47 @@ pub(super) fn apply(
                         "fetch takes exactly two arguments".to_string(),
                     ));
                 }
-                if let LispVal::Array(a) = &args[0] {
-                    let idx = match &args[1] {
-                        LispVal::Number(n) if *n >= 0 => *n as usize,
-                        _ => {
+                match &args[0] {
+                    LispVal::Array(a) => {
+                        let idx = match &args[1] {
+                            LispVal::Number(n) if *n >= 0 => *n as usize,
+                            _ => {
+                                return Err(LispError::Generic(format!(
+                                    "FETCH: index must be a non-negative integer, got {}",
+                                    err_val(&args[1])
+                                )));
+                            }
+                        };
+                        let v = a.borrow();
+                        if idx >= v.len() {
                             return Err(LispError::Generic(format!(
-                                "FETCH: index must be a non-negative integer, got {}",
-                                err_val(&args[1])
+                                "fetch: index {idx} out of bounds (length {})",
+                                v.len()
                             )));
                         }
-                    };
-                    let v = a.borrow();
-                    if idx >= v.len() {
-                        return Err(LispError::Generic(format!(
-                            "fetch: index {idx} out of bounds (length {})",
-                            v.len()
-                        )));
+                        Ok(v[idx].clone())
                     }
-                    Ok(v[idx].clone())
-                } else {
-                    Err(LispError::Generic(format!(
+                    LispVal::TypedArray(a) => {
+                        let idx = match &args[1] {
+                            LispVal::Number(n) if *n >= 0 => *n as usize,
+                            _ => {
+                                return Err(LispError::Generic(format!(
+                                    "FETCH: index must be a non-negative integer, got {}",
+                                    err_val(&args[1])
+                                )));
+                            }
+                        };
+                        a.get(idx).ok_or_else(|| {
+                            LispError::Generic(format!(
+                                "fetch: index {idx} out of bounds (length {})",
+                                a.len()
+                            ))
+                        })
+                    }
+                    _ => Err(LispError::Generic(format!(
                         "FETCH: first argument must be an array, got {}",
                         err_val(&args[0])
-                    )))
+                    ))),
                 }
             }
             BuiltinFunc::ArrayStore => {
@@ -1679,31 +1698,46 @@ pub(super) fn apply(
                         "store takes exactly three arguments".to_string(),
                     ));
                 }
-                if let LispVal::Array(a) = &args[0] {
-                    let idx = match &args[1] {
-                        LispVal::Number(n) if *n >= 0 => *n as usize,
-                        _ => {
+                match &args[0] {
+                    LispVal::Array(a) => {
+                        let idx = match &args[1] {
+                            LispVal::Number(n) if *n >= 0 => *n as usize,
+                            _ => {
+                                return Err(LispError::Generic(format!(
+                                    "STORE: index must be a non-negative integer, got {}",
+                                    err_val(&args[1])
+                                )));
+                            }
+                        };
+                        let val = args[2].clone();
+                        let mut v = a.borrow_mut();
+                        if idx >= v.len() {
                             return Err(LispError::Generic(format!(
-                                "STORE: index must be a non-negative integer, got {}",
-                                err_val(&args[1])
+                                "store: index {idx} out of bounds (length {})",
+                                v.len()
                             )));
                         }
-                    };
-                    let val = args[2].clone();
-                    let mut v = a.borrow_mut();
-                    if idx >= v.len() {
-                        return Err(LispError::Generic(format!(
-                            "store: index {idx} out of bounds (length {})",
-                            v.len()
-                        )));
+                        v[idx] = val.clone();
+                        Ok(val)
                     }
-                    v[idx] = val.clone();
-                    Ok(val)
-                } else {
-                    Err(LispError::Generic(format!(
+                    LispVal::TypedArray(a) => {
+                        let idx = match &args[1] {
+                            LispVal::Number(n) if *n >= 0 => *n as usize,
+                            _ => {
+                                return Err(LispError::Generic(format!(
+                                    "STORE: index must be a non-negative integer, got {}",
+                                    err_val(&args[1])
+                                )));
+                            }
+                        };
+                        let val = args[2].clone();
+                        a.set(idx, &val).map_err(LispError::Generic)?;
+                        Ok(val)
+                    }
+                    _ => Err(LispError::Generic(format!(
                         "STORE: first argument must be an array, got {}",
                         err_val(&args[0])
-                    )))
+                    ))),
                 }
             }
             BuiltinFunc::ArrayLength => {
@@ -1712,14 +1746,56 @@ pub(super) fn apply(
                         "array-length* takes exactly one argument".to_string(),
                     ));
                 }
-                if let LispVal::Array(a) = &args[0] {
-                    Ok(LispVal::Number(a.borrow().len() as i64))
-                } else {
-                    Err(LispError::Generic(format!(
+                match &args[0] {
+                    LispVal::Array(a) => Ok(LispVal::Number(a.borrow().len() as i64)),
+                    LispVal::TypedArray(a) => Ok(LispVal::Number(a.len() as i64)),
+                    _ => Err(LispError::Generic(format!(
                         "ARRAY-LENGTH*: argument must be an array, got {}",
                         err_val(&args[0])
-                    )))
+                    ))),
                 }
+            }
+            BuiltinFunc::MakeTypedArray => {
+                if args.len() != 2 {
+                    return Err(LispError::Generic(
+                        "typed-array takes exactly two arguments (n elem-type)".to_string(),
+                    ));
+                }
+                const MAX_ARRAY: i64 = 16 * 1024 * 1024; // 16 M elements, matching MakeArray
+                let n = match &args[0] {
+                    LispVal::Number(n) if *n >= 0 && *n <= MAX_ARRAY => *n as usize,
+                    LispVal::Number(n) if *n > MAX_ARRAY => {
+                        return Err(LispError::Generic(format!(
+                            "typed-array: size {n} exceeds maximum of {MAX_ARRAY}"
+                        )));
+                    }
+                    _ => {
+                        return Err(LispError::Generic(format!(
+                            "TYPED-ARRAY: size must be a non-negative integer, got {}",
+                            err_val(&args[0])
+                        )));
+                    }
+                };
+                let elem = match &args[1] {
+                    LispVal::Symbol(s) => match s.borrow().name.as_str() {
+                        "INT64" => ElemTy::Int64,
+                        "FLOAT64" => ElemTy::Float64,
+                        other => {
+                            return Err(LispError::Generic(format!(
+                                "TYPED-ARRAY: unknown element type '{other}, expected 'int64 or 'float64"
+                            )));
+                        }
+                    },
+                    other => {
+                        return Err(LispError::Generic(format!(
+                            "TYPED-ARRAY: element type must be a symbol, got {}",
+                            err_val(other)
+                        )));
+                    }
+                };
+                Ok(LispVal::TypedArray(Shared::new(TypedArrayObj::new(
+                    elem, n,
+                ))))
             }
             // Elementwise SIMD array ops (issue: JIT SIMD array-op family):
             // out-param, wrapping, iterating min(len out, len a, len b). This
@@ -1875,6 +1951,7 @@ pub(super) fn apply(
                 match &args[0] {
                     LispVal::String(s) => Ok(LispVal::Number(s.chars().count() as i64)),
                     LispVal::Array(a) => Ok(LispVal::Number(a.borrow().len() as i64)),
+                    LispVal::TypedArray(a) => Ok(LispVal::Number(a.len() as i64)),
                     // 0.3 census: hash tables too — one LENGTH for every
                     // sized collection.
                     LispVal::HashTable(h) => Ok(LispVal::Number(h.borrow().len() as i64)),
@@ -1897,13 +1974,16 @@ pub(super) fn apply(
                         "array->list takes exactly one argument".to_string(),
                     ));
                 }
-                if let LispVal::Array(a) = &args[0] {
-                    Ok(vec_to_list(a.borrow().clone()))
-                } else {
-                    Err(LispError::Generic(format!(
+                match &args[0] {
+                    LispVal::Array(a) => Ok(vec_to_list(a.borrow().clone())),
+                    LispVal::TypedArray(a) => {
+                        let items: Vec<LispVal> = (0..a.len()).map(|i| a.get(i).unwrap()).collect();
+                        Ok(vec_to_list(items))
+                    }
+                    _ => Err(LispError::Generic(format!(
                         "ARRAY->LIST: argument must be an array, got {}",
                         err_val(&args[0])
-                    )))
+                    ))),
                 }
             }
 

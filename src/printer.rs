@@ -22,6 +22,7 @@
 //! | `Builtin` | `<builtin>` |
 //! | `HashTable` | `<hash-table>` |
 //! | `Array(n)` | `<array:n>` |
+//! | `TypedArray(n)` | `<typed-array:elem:n>` |
 //! | `Struct` | `#S(TYPE field...)` (round-trips via the reader) |
 //! | `Extension` | via [`crate::LispValExtension::display`] |
 //! | `Port` | `#<port:kind "name" open|closed>` |
@@ -95,6 +96,7 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Vau(_) => "<vau>".to_string(),
         LispVal::HashTable(_) => "<hash-table>".to_string(),
         LispVal::Array(a) => format!("<array:{}>", a.borrow().len()),
+        LispVal::TypedArray(a) => format!("<typed-array:{}:{}>", a.elem, a.len()),
         // Readable record syntax (issue #308 stage D): field values in
         // declaration order, each printed readably, so the output round-trips
         // through the reader's #S literal (spawn/channel serialization).
