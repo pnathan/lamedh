@@ -155,6 +155,7 @@ pub fn compile_native(
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
+    jb.symbol("jit_alloc_stride", super::jit_alloc_stride as *const u8);
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
     jb.symbol("jit_bad_char", super::jit_bad_char as *const u8);
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
@@ -199,6 +200,17 @@ pub fn compile_native(
     asig.returns.push(AbiParam::new(ptr));
     let alloc_id = module
         .declare_function("jit_alloc", Linkage::Import, &asig)
+        .map_err(|e| e.to_string())?;
+
+    // Imported inline (array-of-structs) allocator (jit/core-loops follow-
+    // up): (ctx, n, stride) -> *mut u64. See `Core::ArrayNewStride`.
+    let mut asig_stride = module.make_signature();
+    asig_stride.params.push(AbiParam::new(ptr));
+    asig_stride.params.push(AbiParam::new(types::I64));
+    asig_stride.params.push(AbiParam::new(types::I64));
+    asig_stride.returns.push(AbiParam::new(ptr));
+    let alloc_stride_id = module
+        .declare_function("jit_alloc_stride", Linkage::Import, &asig_stride)
         .map_err(|e| e.to_string())?;
 
     // Imported out-of-bounds index reporter (issue #282): (ctx, idx, len,
@@ -281,6 +293,7 @@ pub fn compile_native(
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
         let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
+        let alloc_stride_ref = module.declare_func_in_func(alloc_stride_id, b.func);
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
         let bad_char_ref = module.declare_func_in_func(bad_char_id, b.func);
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
@@ -329,6 +342,7 @@ pub fn compile_native(
             tramp_ref,
             pending_tail_ref,
             alloc_ref,
+            alloc_stride_ref,
             array_oob_ref,
             bad_char_ref,
             ftrans_ref,
@@ -384,6 +398,10 @@ struct Emitter<'a, 'b, 'c> {
     /// cross-function tail call on `Ctx` instead of performing it natively.
     pending_tail_ref: cranelift_codegen::ir::FuncRef,
     alloc_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_alloc_stride`] (jit/core-loops array-of-structs
+    /// follow-up): the inline (contiguous array-of-structs) allocator,
+    /// called from the `Core::ArrayNewStride` arm.
+    alloc_stride_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_array_oob`] (issue #282): records the evaluator's
     /// index error on `Ctx` from the out-of-bounds arm of a guarded
     /// `FETCH`/`STORE`.
@@ -666,6 +684,70 @@ impl Emitter<'_, '_, '_> {
                 let base_a = self.emit_value(a);
                 let base_b = self.emit_value(b);
                 Emitted::Value(self.emit_array_dot(base_a, base_b))
+            }
+            Core::ArrayNewStride(n, stride) => {
+                let n = self.emit_value(n);
+                Emitted::Value(self.alloc_stride(n, *stride))
+            }
+            Core::InlineFieldGet(a, i, field, stride) => {
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let in_range = self.in_bounds(base, idx);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        let addr = s.inline_field_addr(base, idx, *stride, *field);
+                        s.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0)
+                    },
+                    |s| {
+                        // Out of bounds: record the evaluator's index error
+                        // (issue #282), then substitute 0, matching `ArrayGet`.
+                        s.record_oob(base, idx, false);
+                        s.iconst(0)
+                    },
+                ))
+            }
+            Core::InlineFieldSet(a, i, field, stride, v) => {
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let val = self.emit_value(v);
+                let in_range = self.in_bounds(base, idx);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        let addr = s.inline_field_addr(base, idx, *stride, *field);
+                        s.b.ins().store(MemFlagsData::trusted(), val, addr, 0);
+                        val
+                    },
+                    |s| {
+                        // Out of bounds: record the index error; the store is
+                        // a no-op, return `val` as before, matching `ArraySet`.
+                        s.record_oob(base, idx, true);
+                        val
+                    },
+                ))
+            }
+            Core::ArraySetStride(a, i, stride, fields) => {
+                let base = self.emit_value(a);
+                let idx = self.emit_value(i);
+                let vals: Vec<Value> = fields.iter().map(|f| self.emit_value(f)).collect();
+                let in_range = self.in_bounds(base, idx);
+                Emitted::Value(self.branch_to_slot(
+                    in_range,
+                    |s| {
+                        for (k, v) in vals.iter().enumerate() {
+                            let addr = s.inline_field_addr(base, idx, *stride, k);
+                            s.b.ins().store(MemFlagsData::trusted(), *v, addr, 0);
+                        }
+                        s.iconst(0)
+                    },
+                    |s| {
+                        // Out of bounds: record the index error; every field
+                        // store is skipped, matching `ArraySet`'s no-op.
+                        s.record_oob(base, idx, true);
+                        s.iconst(0)
+                    },
+                ))
             }
             Core::StructNew(inits) => {
                 let vals: Vec<Value> = inits.iter().map(|c| self.emit_value(c)).collect();
@@ -1029,6 +1111,30 @@ impl Emitter<'_, '_, '_> {
             }
         }
         self.b.ins().stack_addr(self.ptr, slot, 0)
+    }
+
+    /// Call the host allocator for an inline (contiguous array-of-structs)
+    /// buffer of `n` elements, `stride` words each (jit/core-loops follow-
+    /// up, [`Core::ArrayNewStride`]); returns the header pointer as an `I64`
+    /// word.
+    fn alloc_stride(&mut self, n: Value, stride: usize) -> Value {
+        let stride_v = self.iconst(stride as i64);
+        let call = self
+            .b
+            .ins()
+            .call(self.alloc_stride_ref, &[self.ctx_ptr, n, stride_v]);
+        self.b.inst_results(call)[0]
+    }
+
+    /// Address of `field` of inline element `idx` in a `stride`-word-per-
+    /// element buffer (jit/core-loops follow-up): `base + 8*(1 + idx*stride
+    /// + field)`. Used by [`Core::InlineFieldGet`]/[`Core::InlineFieldSet`]/
+    /// [`Core::ArraySetStride`].
+    fn inline_field_addr(&mut self, base: Value, idx: Value, stride: usize, field: usize) -> Value {
+        let scaled = self.b.ins().imul_imm(idx, stride as i64);
+        let words = self.b.ins().iadd_imm(scaled, (1 + field) as i64);
+        let byte_off = self.b.ins().imul_imm(words, 8);
+        self.b.ins().iadd(base, byte_off)
     }
 
     /// Address of element `idx` in buffer `base`: `base + 8*(idx+1)`.

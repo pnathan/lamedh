@@ -156,6 +156,30 @@ pub struct StructDef {
     pub fields: Vec<(String, Ty)>,
 }
 
+impl StructDef {
+    /// Number of `u64` words one element occupies under the **inline**
+    /// (contiguous array-of-structs) layout for `(array Self)` — jit/
+    /// core-loops array-of-structs follow-up: `[len, e0f0, e0f1, …, e1f0,
+    /// e1f1, …]`, `stride` words per element, no per-element header or
+    /// pointer indirection. Only possible when every field is an unboxed
+    /// scalar word (`int64`/`float64`/`bool`/`char`) — a struct- or
+    /// array-valued field would itself need a header/pointer, which an
+    /// inline slot has no room for — in which case the stride is simply the
+    /// field count (one word each, in declaration order). `None` means this
+    /// struct's arrays must stay the general one-pointer-per-element layout.
+    pub fn stride(&self) -> Option<usize> {
+        if self
+            .fields
+            .iter()
+            .all(|(_, t)| matches!(t, Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char))
+        {
+            Some(self.fields.len())
+        } else {
+            None
+        }
+    }
+}
+
 /// A declared sum type: a closed set of constructor brands. Each constructor
 /// is itself a registered record (a [`StructDef`]); the variant is the
 /// checker-level union of those brands — a `CIRCLE` value unifies where a
@@ -568,6 +592,47 @@ pub enum Core {
     /// but with an `imul` of the two loaded vectors feeding the accumulator
     /// each iteration.
     ArrayDot(Box<Core>, Box<Core>),
+    /// `(array-new-stride n stride)`: allocate a flat array of `n` inline,
+    /// fixed-size (`stride`-word) elements — the contiguous array-of-structs
+    /// layout (jit/core-loops follow-up): `[n, e0f0, e0f1, …, e1f0, e1f1,
+    /// …]`, `stride` words per element, no per-element header or pointer
+    /// indirection. Header word 0 is the *element* count `n` (not the total
+    /// word count `n*stride`), matching every other buffer's `ArrayLen`
+    /// contract. Only ever elaborated by [`stride_walk`] (invoked from
+    /// `elab_let`) for a `let`-bound `(array Struct)` local whose struct is
+    /// all-scalar (see [`StructDef::stride`]) and every use of the binding
+    /// is a recognized safe pattern; [`Core::ArrayNew`] remains the general
+    /// case (and the fallback whenever any use isn't recognized).
+    ArrayNewStride(Box<Core>, usize),
+    /// `(array-set-stride a i stride f0 f1 …)`: bounds-checked, in-place
+    /// initialization of inline element `i` of an [`Core::ArrayNewStride`]
+    /// array — stores each field value directly at `a + 8*(1 + i*stride +
+    /// k)` for field `k`, with no intermediate struct buffer ever
+    /// allocated. Only ever produced by [`stride_walk`] as the fusion of
+    /// `(store a i (make-Struct f0 f1 …))` when `a` is exactly the inline-
+    /// array local being analyzed. Out-of-range `i` records the evaluator's
+    /// index error and is a no-op, matching [`Core::ArraySet`]. A
+    /// **statement** node (evaluates to `0`, like [`Core::While`]/
+    /// [`Core::For`]): there is no single word that could stand for "the
+    /// stored struct" under this layout, so [`stride_walk`] only ever fuses
+    /// a `store` whose own result is provably discarded (see its `discard`
+    /// parameter).
+    ArraySetStride(Box<Core>, Box<Core>, usize, Vec<Core>),
+    /// `(inline-field-get a i field stride)`: bounds-checked load of `field`
+    /// of inline element `i` of an [`Core::ArrayNewStride`] array — `*(a +
+    /// 8*(1 + i*stride + field))` — one load, no interior pointer ever
+    /// materializes as its own value. Only ever produced by [`stride_walk`]
+    /// as the fusion of a struct accessor call `(Struct-field (aref a i))`
+    /// when `a` is the inline-array local being analyzed. Out-of-range `i`
+    /// records the evaluator's index error and substitutes `0`, matching
+    /// [`Core::ArrayGet`].
+    InlineFieldGet(Box<Core>, Box<Core>, usize, usize),
+    /// `(inline-field-set a i field stride v)`: bounds-checked store of `v`
+    /// into `field` of inline element `i` — the fusion of a struct mutator
+    /// call `(set-Struct-field (aref a i) v)`. Evaluates to `v` (mirrors
+    /// [`Core::FieldSet`]); out-of-range `i` records the index error and is
+    /// a no-op.
+    InlineFieldSet(Box<Core>, Box<Core>, usize, usize, Box<Core>),
 }
 
 /// Unary floating-point intrinsics that lower to native code. Each takes one
@@ -730,6 +795,22 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
         }
         Core::ArraySum(a) => core_may_mutate_slot(a, slot),
         Core::ArrayDot(a, b) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot),
+        Core::ArrayNewStride(n, _) => core_may_mutate_slot(n, slot),
+        Core::ArraySetStride(a, i, _, fields) => {
+            is_var_slot(a, slot)
+                || core_may_mutate_slot(a, slot)
+                || core_may_mutate_slot(i, slot)
+                || fields.iter().any(|f| core_may_mutate_slot(f, slot))
+        }
+        Core::InlineFieldGet(a, i, _, _) => {
+            core_may_mutate_slot(a, slot) || core_may_mutate_slot(i, slot)
+        }
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            is_var_slot(a, slot)
+                || core_may_mutate_slot(a, slot)
+                || core_may_mutate_slot(i, slot)
+                || core_may_mutate_slot(v, slot)
+        }
     }
 }
 
@@ -817,6 +898,20 @@ pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
         }
         Core::ArraySum(a) => allocation_escapes(a, slot),
         Core::ArrayDot(a, b) => allocation_escapes(a, slot) || allocation_escapes(b, slot),
+        Core::ArrayNewStride(n, _) => allocation_escapes(n, slot),
+        Core::ArraySetStride(a, i, _, fields) => {
+            (!is_var_slot(a, slot) && allocation_escapes(a, slot))
+                || allocation_escapes(i, slot)
+                || fields.iter().any(|f| allocation_escapes(f, slot))
+        }
+        Core::InlineFieldGet(a, i, _, _) => {
+            (!is_var_slot(a, slot) && allocation_escapes(a, slot)) || allocation_escapes(i, slot)
+        }
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            (!is_var_slot(a, slot) && allocation_escapes(a, slot))
+                || allocation_escapes(i, slot)
+                || allocation_escapes(v, slot)
+        }
     }
 }
 
@@ -1056,5 +1151,311 @@ fn inline_xform(
             Box::new(inline_xform(a, shift, registry, allow_inline, next)),
             Box::new(inline_xform(b, shift, registry, allow_inline, next)),
         ),
+        Core::ArrayNewStride(n, stride) => Core::ArrayNewStride(
+            Box::new(inline_xform(n, shift, registry, allow_inline, next)),
+            *stride,
+        ),
+        Core::ArraySetStride(a, i, stride, fields) => Core::ArraySetStride(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(i, shift, registry, allow_inline, next)),
+            *stride,
+            fields
+                .iter()
+                .map(|f| inline_xform(f, shift, registry, allow_inline, next))
+                .collect(),
+        ),
+        Core::InlineFieldGet(a, i, field, stride) => Core::InlineFieldGet(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(i, shift, registry, allow_inline, next)),
+            *field,
+            *stride,
+        ),
+        Core::InlineFieldSet(a, i, field, stride, v) => Core::InlineFieldSet(
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(i, shift, registry, allow_inline, next)),
+            *field,
+            *stride,
+            Box::new(inline_xform(v, shift, registry, allow_inline, next)),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Array-of-structs inline layout (jit/core-loops follow-up): fuse a
+// `let`-bound `(array Struct)` local into the contiguous, stride-based
+// layout when every use of the binding is a statically recognized safe
+// pattern. See `elab_let` (elaboration.rs) for the call site.
+// ---------------------------------------------------------------------------
+
+/// Static context threaded through [`stride_walk`]: everything it needs to
+/// recognize a struct-array binding's accessor/mutator/constructor call
+/// sites by registry id.
+pub(super) struct StrideCtx {
+    /// The local slot holding the candidate inline-struct array.
+    pub slot: usize,
+    /// Words per element ([`StructDef::stride`]).
+    pub stride: usize,
+    /// Registry id of the struct's `MAKE-<Name>` constructor.
+    pub ctor_id: usize,
+    /// Registry id of each per-field accessor (`<Name>-<field>`) -> field index.
+    pub getters: HashMap<usize, usize>,
+    /// Registry id of each per-field mutator (`SET-<Name>-<field>`) -> field index.
+    pub setters: HashMap<usize, usize>,
+}
+
+/// Validate every reachable use of `sc.slot` in `core` and, where it matches
+/// a recognized safe pattern, rewrite it to the inline stride-based
+/// primitives; on the FIRST unrecognized use of `sc.slot`, abort the whole
+/// rewrite (`Err(())`) so the caller ([`super::elaboration::Cx::elab_let`])
+/// falls back to the ordinary, unchanged array layout for that binding —
+/// this is purely an optimization, so any doubt must resolve to "don't".
+///
+/// Recognized patterns (everywhere else `Var(sc.slot)` appears is a
+/// conservative abort, exactly as [`allocation_escapes`]'s philosophy):
+/// - `Core::ArrayLen(Var(slot))` — the header word is still the element
+///   count under the inline layout, so this needs no rewriting at all.
+/// - `Core::Call(getter_id, [ArrayGet(Var(slot), i)])`, where `getter_id` is
+///   a known per-field accessor of the struct — becomes
+///   `Core::InlineFieldGet`.
+/// - `Core::Call(setter_id, [ArrayGet(Var(slot), i), v])`, where `setter_id`
+///   is a known per-field mutator — becomes `Core::InlineFieldSet`.
+/// - `Core::ArraySet(Var(slot), i, Core::Call(ctor_id, fields))`, where
+///   `ctor_id` is the struct's own constructor, AND this particular `store`
+///   is in a **discarded** position (`discard` is `true`) — becomes
+///   `Core::ArraySetStride`. `discard` is `false` only where the node's own
+///   result could be observed (e.g. a `let` initializer, a call argument,
+///   the tail value of the binding's own body): under the inline layout
+///   there is no single word that can stand in for "the stored struct", so
+///   a `store` whose value might be read is left unfused — which the
+///   generic `ArraySet` arm below then rejects (since its target is
+///   `Var(slot)` and it isn't a bare recognized case), aborting the whole
+///   rewrite. `Core::While`/`Core::For` bodies and all but the last element
+///   of a `Core::Seq` are always discarding positions, matching those
+///   constructs' own "statement, value ignored" contracts elsewhere in this
+///   IR.
+///
+/// `sc.slot` reused by an unrelated *nested* (inner) `let`'s OWN
+/// already-stride-rewritten subtree is impossible here: nested lexical
+/// scopes only ever get strictly *larger* fresh slot numbers before they
+/// are ever visible to an enclosing rewrite (`Scope::truncate` only runs
+/// after `elab_let` returns up the call stack), so this function never
+/// walks into another rewrite pass's output for the *same* slot number —
+/// though it may walk into one for a *different* (inner) slot, which is
+/// simply structurally recursed through like any other subtree.
+pub(super) fn stride_walk(core: &Core, sc: &StrideCtx, discard: bool) -> Result<Core, ()> {
+    match core {
+        Core::LitI(n) => Ok(Core::LitI(*n)),
+        Core::LitF(f) => Ok(Core::LitF(*f)),
+        Core::Var(s) => {
+            if *s == sc.slot {
+                Err(())
+            } else {
+                Ok(Core::Var(*s))
+            }
+        }
+        Core::Bin(k, op, a, b) => Ok(Core::Bin(
+            *k,
+            *op,
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        Core::Cmp(k, op, a, b) => Ok(Core::Cmp(
+            *k,
+            *op,
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        Core::Not(a) => Ok(Core::Not(Box::new(stride_walk(a, sc, false)?))),
+        Core::And(a, b) => Ok(Core::And(
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        Core::Or(a, b) => Ok(Core::Or(
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        Core::If(c, t, e) => Ok(Core::If(
+            Box::new(stride_walk(c, sc, false)?),
+            Box::new(stride_walk(t, sc, discard)?),
+            Box::new(stride_walk(e, sc, discard)?),
+        )),
+        Core::Let(slot2, v, body) => Ok(Core::Let(
+            *slot2,
+            Box::new(stride_walk(v, sc, false)?),
+            Box::new(stride_walk(body, sc, discard)?),
+        )),
+        Core::Call(id, args) => {
+            if let Some(&field_idx) = sc.getters.get(id)
+                && let [Core::ArrayGet(base, idx)] = args.as_slice()
+                && is_var_slot(base, sc.slot)
+            {
+                let idx_c = stride_walk(idx, sc, false)?;
+                return Ok(Core::InlineFieldGet(
+                    Box::new(Core::Var(sc.slot)),
+                    Box::new(idx_c),
+                    field_idx,
+                    sc.stride,
+                ));
+            }
+            if let Some(&field_idx) = sc.setters.get(id)
+                && let [Core::ArrayGet(base, idx), val] = args.as_slice()
+                && is_var_slot(base, sc.slot)
+            {
+                let idx_c = stride_walk(idx, sc, false)?;
+                let val_c = stride_walk(val, sc, false)?;
+                return Ok(Core::InlineFieldSet(
+                    Box::new(Core::Var(sc.slot)),
+                    Box::new(idx_c),
+                    field_idx,
+                    sc.stride,
+                    Box::new(val_c),
+                ));
+            }
+            let mut new_args = Vec::with_capacity(args.len());
+            for a in args {
+                new_args.push(stride_walk(a, sc, false)?);
+            }
+            Ok(Core::Call(*id, new_args))
+        }
+        Core::ToChar(a) => Ok(Core::ToChar(Box::new(stride_walk(a, sc, false)?))),
+        Core::ArrayNew(n) => Ok(Core::ArrayNew(Box::new(stride_walk(n, sc, false)?))),
+        Core::ArrayGet(a, i) => {
+            if is_var_slot(a, sc.slot) {
+                return Err(());
+            }
+            Ok(Core::ArrayGet(
+                Box::new(stride_walk(a, sc, false)?),
+                Box::new(stride_walk(i, sc, false)?),
+            ))
+        }
+        Core::ArraySet(a, i, v) => {
+            if is_var_slot(a, sc.slot) {
+                if !discard {
+                    return Err(());
+                }
+                if let Core::Call(id, cargs) = v.as_ref()
+                    && *id == sc.ctor_id
+                {
+                    let idx_c = stride_walk(i, sc, false)?;
+                    let mut field_cores = Vec::with_capacity(cargs.len());
+                    for c in cargs {
+                        field_cores.push(stride_walk(c, sc, false)?);
+                    }
+                    return Ok(Core::ArraySetStride(
+                        Box::new(Core::Var(sc.slot)),
+                        Box::new(idx_c),
+                        sc.stride,
+                        field_cores,
+                    ));
+                }
+                return Err(());
+            }
+            Ok(Core::ArraySet(
+                Box::new(stride_walk(a, sc, false)?),
+                Box::new(stride_walk(i, sc, false)?),
+                Box::new(stride_walk(v, sc, false)?),
+            ))
+        }
+        Core::ArrayLen(a) => {
+            if is_var_slot(a, sc.slot) {
+                Ok(Core::ArrayLen(Box::new(Core::Var(sc.slot))))
+            } else {
+                Ok(Core::ArrayLen(Box::new(stride_walk(a, sc, false)?)))
+            }
+        }
+        Core::StructNew(fields) => {
+            let mut out = Vec::with_capacity(fields.len());
+            for f in fields {
+                out.push(stride_walk(f, sc, false)?);
+            }
+            Ok(Core::StructNew(out))
+        }
+        Core::FieldGet(s, idx) => Ok(Core::FieldGet(Box::new(stride_walk(s, sc, false)?), *idx)),
+        Core::FieldSet(s, idx, v) => Ok(Core::FieldSet(
+            Box::new(stride_walk(s, sc, false)?),
+            *idx,
+            Box::new(stride_walk(v, sc, false)?),
+        )),
+        Core::Seq(items) => {
+            let n = items.len();
+            let mut out = Vec::with_capacity(n);
+            for (i, it) in items.iter().enumerate() {
+                let d = if i + 1 == n { discard } else { true };
+                out.push(stride_walk(it, sc, d)?);
+            }
+            Ok(Core::Seq(out))
+        }
+        Core::Assign(slot2, v) => {
+            if *slot2 == sc.slot {
+                return Err(());
+            }
+            Ok(Core::Assign(*slot2, Box::new(stride_walk(v, sc, false)?)))
+        }
+        Core::While(t, b) => Ok(Core::While(
+            Box::new(stride_walk(t, sc, false)?),
+            Box::new(stride_walk(b, sc, true)?),
+        )),
+        Core::For {
+            slot: fslot,
+            start,
+            end,
+            step,
+            body,
+        } => Ok(Core::For {
+            slot: *fslot,
+            start: Box::new(stride_walk(start, sc, false)?),
+            end: Box::new(stride_walk(end, sc, false)?),
+            step: Box::new(stride_walk(step, sc, false)?),
+            body: Box::new(stride_walk(body, sc, true)?),
+        }),
+        Core::FUnary(op, a) => Ok(Core::FUnary(*op, Box::new(stride_walk(a, sc, false)?))),
+        Core::IntToFloat(a) => Ok(Core::IntToFloat(Box::new(stride_walk(a, sc, false)?))),
+        Core::ArrayMap2(op, k, o, a, b) => Ok(Core::ArrayMap2(
+            *op,
+            *k,
+            Box::new(stride_walk(o, sc, false)?),
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        Core::ArraySum(a) => Ok(Core::ArraySum(Box::new(stride_walk(a, sc, false)?))),
+        Core::ArrayDot(a, b) => Ok(Core::ArrayDot(
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        // Already-rewritten subtrees, from a nested (inner) let's own stride
+        // pass over a *different* (always strictly larger, see this
+        // function's doc comment) slot: structurally opaque as far as
+        // `sc.slot` is concerned, so just recurse.
+        Core::ArrayNewStride(n, stride) => Ok(Core::ArrayNewStride(
+            Box::new(stride_walk(n, sc, false)?),
+            *stride,
+        )),
+        Core::ArraySetStride(a, i, stride, fields) => {
+            let a2 = stride_walk(a, sc, false)?;
+            let i2 = stride_walk(i, sc, false)?;
+            let mut out = Vec::with_capacity(fields.len());
+            for f in fields {
+                out.push(stride_walk(f, sc, false)?);
+            }
+            Ok(Core::ArraySetStride(
+                Box::new(a2),
+                Box::new(i2),
+                *stride,
+                out,
+            ))
+        }
+        Core::InlineFieldGet(a, i, field, stride) => Ok(Core::InlineFieldGet(
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(i, sc, false)?),
+            *field,
+            *stride,
+        )),
+        Core::InlineFieldSet(a, i, field, stride, v) => Ok(Core::InlineFieldSet(
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(i, sc, false)?),
+            *field,
+            *stride,
+            Box::new(stride_walk(v, sc, false)?),
+        )),
     }
 }

@@ -1887,6 +1887,49 @@ impl Jit {
                     "    {dst} = vdot {ta}[i], {tb}[i]   ; simd reduce (wrapping), i in 0..min(len)"
                 ));
             }
+            Core::ArrayNewStride(n, stride) => {
+                let t = fresh(reg);
+                self.dis_emit(n, &t, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = alloc {t} * {stride}        ; inline array-of-structs"
+                ));
+            }
+            Core::InlineFieldGet(a, i, field, stride) => {
+                let (ta, ti) = (fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                out.push(format!(
+                    "    {dst} = ldelemfld {ta}[{ti}].{field}   ; inline (stride={stride}, bounds-checked)"
+                ));
+            }
+            Core::InlineFieldSet(a, i, field, stride, v) => {
+                let (ta, ti, tv) = (fresh(reg), fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                self.dis_emit(v, &tv, out, reg, lab);
+                out.push(format!(
+                    "    stelemfld {ta}[{ti}].{field}, {tv}   ; inline (stride={stride}, bounds-checked)"
+                ));
+                out.push(format!("    {dst} = mov {tv}"));
+            }
+            Core::ArraySetStride(a, i, stride, fields) => {
+                let (ta, ti) = (fresh(reg), fresh(reg));
+                self.dis_emit(a, &ta, out, reg, lab);
+                self.dis_emit(i, &ti, out, reg, lab);
+                let mut regs = Vec::with_capacity(fields.len());
+                for f in fields {
+                    let t = fresh(reg);
+                    self.dis_emit(f, &t, out, reg, lab);
+                    regs.push(t);
+                }
+                out.push(format!(
+                    "    stelem {ta}[{ti}] = {{{}}}   ; inline (stride={stride}, bounds-checked)",
+                    regs.join(", ")
+                ));
+                out.push(format!(
+                    "    {dst} = li   0        ; inline store yields nil"
+                ));
+            }
             Core::StructNew(inits) => {
                 let mut regs = Vec::with_capacity(inits.len());
                 for c in inits {
@@ -2035,6 +2078,23 @@ fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
             inline_call_ids(end, out);
             inline_call_ids(step, out);
             inline_call_ids(body, out);
+        }
+        Core::ArrayNewStride(n, _) => inline_call_ids(n, out),
+        Core::InlineFieldGet(a, i, _, _) => {
+            inline_call_ids(a, out);
+            inline_call_ids(i, out);
+        }
+        Core::InlineFieldSet(a, i, _, _, v) => {
+            inline_call_ids(a, out);
+            inline_call_ids(i, out);
+            inline_call_ids(v, out);
+        }
+        Core::ArraySetStride(a, i, _, fields) => {
+            inline_call_ids(a, out);
+            inline_call_ids(i, out);
+            for f in fields {
+                inline_call_ids(f, out);
+            }
         }
     }
 }

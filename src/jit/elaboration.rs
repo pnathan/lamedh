@@ -669,7 +669,7 @@ impl Cx<'_> {
             return Err("`let-typed` needs a body".to_string());
         }
         let saved = scope.len();
-        let mut writes: Vec<(usize, Core)> = Vec::with_capacity(bindings.len());
+        let mut writes: Vec<(usize, Core, Ty)> = Vec::with_capacity(bindings.len());
         for b in &bindings {
             let parts = list_to_vec(b);
             // Two binding shapes: `(name type init)` pins the type explicitly,
@@ -715,17 +715,107 @@ impl Cx<'_> {
                 }
             };
             let slot = scope.len();
-            scope.push((name, ty));
+            scope.push((name, ty.clone()));
             *max = (*max).max(scope.len());
-            writes.push((slot, init_core));
+            writes.push((slot, init_core, ty));
         }
-        let (body_core, body_ty) = self.elab_body(body, scope, max)?;
+        let (mut body_core, body_ty) = self.elab_body(body, scope, max)?;
+        // Array-of-structs inline layout (jit/core-loops follow-up): for each
+        // binding in this `let` whose (now fully-constrained-by-the-body)
+        // type is a scalar-fields struct array, try to fuse its uses in
+        // `body_core` into the stride-based primitives. Purely a layout
+        // optimization — `try_stride_binding` leaves both cores unchanged
+        // whenever it can't prove every use safe (see `stride_walk`).
+        for (slot, init_core, ty) in writes.iter_mut() {
+            let taken = std::mem::replace(init_core, Core::LitI(0));
+            let (new_init, new_body) = self.try_stride_binding(*slot, ty, taken, body_core);
+            *init_core = new_init;
+            body_core = new_body;
+        }
         scope.truncate(saved);
         let mut acc = body_core;
-        for (slot, init_core) in writes.into_iter().rev() {
+        for (slot, init_core, _ty) in writes.into_iter().rev() {
             acc = Core::Let(slot, Box::new(init_core), Box::new(acc));
         }
         Ok((acc, body_ty))
+    }
+
+    /// Try to fuse a `let`-bound `(array Struct)` local (`slot`, of type
+    /// `ty`, initialized by `init_core`) into the inline (contiguous
+    /// array-of-structs) layout for `body_core` (jit/core-loops array-of-
+    /// structs follow-up). Returns `(init_core, body_core)` unchanged unless
+    /// ALL of the following hold, in which case it returns the rewritten
+    /// pair:
+    /// - `ty` (after [`Cx::resolve`], now that `body_core`'s own unifications
+    ///   have run) resolves to `Ty::Array(Ty::Struct(def))`;
+    /// - `def`'s fields are all scalar ([`StructDef::stride`] is `Some`);
+    /// - `init_core` is exactly `Core::ArrayNew(_)` — the ordinary `(array
+    ///   n)`/`(make-array n)` allocator, so upgrading it to
+    ///   `Core::ArrayNewStride` is a pure allocation-strategy swap;
+    /// - the struct's `MAKE-<Name>` constructor is a registered function
+    ///   (always true for a `defstruct-typed`-declared struct);
+    /// - every reachable use of `slot` in `body_core` matches a pattern
+    ///   [`stride_walk`] recognizes as safe under the inline layout.
+    fn try_stride_binding(
+        &self,
+        slot: usize,
+        ty: &Ty,
+        init_core: Core,
+        body_core: Core,
+    ) -> (Core, Core) {
+        // `walk` only resolves the *outer* variable, not a compound type's
+        // nested component (`Ty::Array`'s element) — `resolve` recurses, so
+        // it is the one that can actually observe "the element type turned
+        // out to be a struct" here. It is safe to call now (not just at the
+        // whole function's final signature resolve): `arr`'s element type
+        // can only ever be constrained by a `fetch`/`store` reached from
+        // THIS let's own `body`, since the binding is lexically scoped to
+        // it — every such constraint has already landed by the time
+        // `elab_body` returned. An `Err` here just means some other part of
+        // `body` never pinned it down (e.g. an unused/never-indexed array);
+        // leave the binding as the general layout, exactly as the final
+        // whole-function resolve would separately reject or accept it.
+        let Ok(resolved) = self.resolve(ty) else {
+            return (init_core, body_core);
+        };
+        let elem_def = match &resolved {
+            Ty::Array(elem) => match elem.as_ref() {
+                Ty::Struct(def) => def.clone(),
+                _ => return (init_core, body_core),
+            },
+            _ => return (init_core, body_core),
+        };
+        let n = match &init_core {
+            Core::ArrayNew(n) => n.clone(),
+            _ => return (init_core, body_core),
+        };
+        let Some(stride) = elem_def.stride() else {
+            return (init_core, body_core);
+        };
+        let Some(&ctor_id) = self.by_name.get(&format!("MAKE-{}", elem_def.name)) else {
+            return (init_core, body_core);
+        };
+        let mut getters = HashMap::new();
+        let mut setters = HashMap::new();
+        for (i, (fname, _)) in elem_def.fields.iter().enumerate() {
+            if let Some(&id) = self.by_name.get(&format!("{}-{fname}", elem_def.name)) {
+                getters.insert(id, i);
+            }
+            if let Some(&id) = self.by_name.get(&format!("SET-{}-{fname}", elem_def.name)) {
+                setters.insert(id, i);
+            }
+        }
+        let sc = StrideCtx {
+            slot,
+            stride,
+            ctor_id,
+            getters,
+            setters,
+        };
+        match stride_walk(&body_core, &sc, false) {
+            Ok(new_body) => (Core::ArrayNewStride(n, stride), new_body),
+            Err(()) => (init_core, body_core),
+        }
     }
 
     /// `(setq var val)` on a local slot (param or `let`-binding): store the
