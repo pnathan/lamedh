@@ -34,6 +34,8 @@
 # Tooling
 
 - [Static Checking (`lamedh --check`)](check.md)
+- [Canonical Formatting (`lamedh --fmt`)](fmt.md)
+- [Test Runner (`lamedh --test`)](testing-cli.md)
 
 # Functions Dictionary
 

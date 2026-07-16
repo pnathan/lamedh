@@ -231,11 +231,17 @@
 pub mod check;
 pub mod environment;
 pub mod evaluator;
+// Named `formatter`, not `fmt`, to avoid colliding with the bare `fmt`
+// binding from `use std::fmt;` a few lines up (used throughout this file for
+// `Display`/`Debug` impls) — the file itself is still `src/fmt.rs`.
+#[path = "fmt.rs"]
+pub mod formatter;
 pub mod jit;
 pub mod optimizer;
 pub mod printer;
 pub mod reader;
 pub mod teaching_errors;
+pub mod test_runner;
 
 pub use evaluator::{DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, set_eval_depth_limit};
 

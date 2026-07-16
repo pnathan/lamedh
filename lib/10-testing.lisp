@@ -101,6 +101,27 @@ A buggy test must not take down the whole run (issue #241)."
       (print 'all-tests-passed))
   (zerop *test-fail*))
 
+(defun run-all-tests-detailed ()
+  "Run every registered test and return one (name status message) triple
+per test, in registration order. STATUS is the symbol PASS or FAIL;
+MESSAGE is NIL for a pass, or the most recently recorded failure/error
+description for a fail (a test can fail more than one assertion; this
+reports the last one, which is enough to point at the problem).
+
+Reuses RUN-ONE-TEST unchanged (so its error-trapping and the classic
+*test-pass*/*test-fail*/*test-failures* bookkeeping are exactly as
+before) and layers a per-test result on top by diffing *test-fail*
+around each run. Powers `lamedh --test`, the machine-readable test
+runner (see docs/testing-cli.md)."
+  (reset-tests)
+  (mapcar (lambda (entry)
+            (let ((fail-count-before *test-fail*))
+              (run-one-test entry)
+              (if (> *test-fail* fail-count-before)
+                  (list (car entry) 'fail (cdr (car *test-failures*)))
+                  (list (car entry) 'pass nil))))
+          (reverse *tests*)))
+
 ;;; REQUIRE-ABLE (issue #256): `(require 'testing)` on a with_prelude()
 ;;; environment loads exactly this file. with_stdlib() still loads it
 ;;; unconditionally, unchanged.
@@ -112,5 +133,6 @@ A buggy test must not take down the whole run (issue #241)."
 (defmodule testing
   (:export test-pass test-fail check assert-true assert-false assert-nil
            assert-equal assert-eq tests-remove deftest run-one-test
-           run-test-list reset-tests clear-tests run-tests))
+           run-test-list reset-tests clear-tests run-tests
+           run-all-tests-detailed))
 (provide 'testing)
