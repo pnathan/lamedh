@@ -177,6 +177,91 @@ is the general-purpose middle rung — it works for any callable, not just a
 typed/NATIVE `defun*` — where `jit_call` demands one. See
 `benchmarks/embedder/README.md` for the full ladder and current numbers.
 
+## Raw native entry points (leaf kernels)
+
+`jit_call` and the fast-call API still cross a *membrane* on every call: they
+box arguments into `LispVal`/`jit::Value`, type-check them against the
+signature, and re-box the result. For a per-sample host hot loop — marching
+cubes sampling a Lisp signed-distance function one point at a time — that
+per-call overhead dominates the arithmetic by ~40x (see rungs B2 vs B3 in
+`benchmarks/embedder`). When you cannot push the whole loop across the
+membrane, `native_entry` (issue #424, requires the `jit` feature) hands the
+host a raw pointer into the JIT-compiled machine code, called with no boxing,
+no membrane, and no dispatch:
+
+```rust
+use lamedh::native_entry;
+
+// (defun* sdf (x float64) (y float64) (z float64) float64
+//   (- (sqrt (+ (* x x) (* y y) (* z z))) 1.0))
+let sdf = native_entry("sdf", &env)?;      // extract once, outside the loop
+
+for (i, p) in grid_points.iter().enumerate() {
+    let d = sdf.call_f3(p.x, p.y, p.z);    // ~11 ns/sample — near-native
+    field[i] = d;
+}
+```
+
+`NativeFnHandle` exposes typed fast paths (`call_f3`, `call_f1`, `call_i1`,
+`call_i2`) and a generic `call_words(&[u64]) -> u64` escape hatch (encode each
+argument per `params()`: an `int64` as its own word, a `float64` via
+`f64::to_bits`, a `bool` as `0`/`1`; decode the result per `ret()`).
+
+Benchmarked on `benchmarks/embedder` (rung B2.5, 3-float sphere SDF):
+**~11 ns/sample** — a ~30x drop from the per-sample `jit_call` membrane and
+within ~1.8x of the whole-loop-native rung, sums bit-identical to Rust.
+
+### Snapshot semantics — safe across redefinition
+
+A handle pins the **specific native edition** current at extraction time (an
+`Arc` snapshot of the compiled code). Redefining the Lisp function does *not*
+invalidate or redirect the handle — it keeps running the edition it captured,
+so there is no dangling-pointer hazard. Re-extract to pick up a redefinition;
+`handle.generation()` compared against `env.jit_generation(name)` tells you
+when the live function has moved on and the handle is running an older
+snapshot:
+
+```rust
+if handle.generation() != env.jit_generation("sdf").unwrap() {
+    handle = native_entry("sdf", &env)?;   // pick up the redefinition
+}
+```
+
+### Leaf restriction (v1)
+
+Only **leaf kernels** are extractable in v1: functions whose compiled body
+performs no cross-function call. A leaf's native code never touches the
+call trampoline or the function table, which is what makes it safe to call
+from any thread with only a lightweight per-call context. Small callees
+usually *inline away* automatically (the common case for SDF kernels built
+from a few helpers), turning a call-graph into a leaf; when one doesn't,
+extraction fails with an error naming the surviving callees, and you can
+shrink or restructure it. The signature must also be raw scalars
+(`int64`/`float64`/`bool` parameters and return) — compound and boxed types
+cannot cross a raw entry.
+
+### Thread-safety
+
+`NativeFnHandle` is `Send + Sync`: cloning it and calling the same handle
+concurrently from many threads on disjoint inputs is sound (each call builds
+its own per-call context on its own stack). This is exactly the shape a
+parallel host loop — a rayon `par_iter` over grid points — wants.
+
+### Caveats: no flags, no fuel
+
+A raw-entry call trades the membrane's safety net for speed, so two behaviors
+differ from `jit_call`:
+
+- **Conditions are not propagated.** Integer overflow, division by zero, and
+  out-of-bounds/`code-char` errors are *not* raised into the Lisp condition
+  system. They are recorded per-thread and readable via
+  `handle.last_error()` after a call (which returns `Some(msg)` for the most
+  recent call on the current thread, `None` if it was clean) — checking it is
+  the host's responsibility. This mirrors the fuel caveat style in
+  `docs/mcp.md`.
+- **Unmetered.** Raw entries bypass fuel/step accounting entirely; there is
+  no interruption budget. Only extract kernels you trust to terminate.
+
 ## Value conversion
 
 ### Rust → Lisp (`From<T>`)

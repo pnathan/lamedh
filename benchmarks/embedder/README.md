@@ -47,15 +47,29 @@ rung for closing that gap without a typed signature.
 
 | rung | mechanism | ns/eval | vs Rust |
 |---|---|---|---|
+| rung | mechanism | ns/eval | vs Rust |
+|---|---|---|---|
 | B1 | interpreted loop + interpreted kernel | 2294 | 1032x |
 | B2 | Rust loop, per-sample `jit_call` into NATIVE kernel | 274 | 123x |
+| B2.5 | Rust loop, per-sample **raw native entry** (#424) | 10.9 | 3.8x |
 | B3 | whole loop compiled — ONE `jit_call` | 7.2 | 3.3x |
 | B4 | pure Rust loop | 2.2 | 1x |
 
 The lesson embedders need: **crossing the membrane per sample costs ~40x
 more than the work itself** (B2 vs B3). Push the loop across, not the
-samples. `#424`'s raw `fn(f64,f64,f64) -> f64` pointer is the missing rung —
-per-sample calls from host loops (marching cubes) at near-B3 economics.
+samples — or, when you can't (a host marching-cubes loop that samples a Lisp
+SDF one point at a time), extract a raw native entry point (#424): rung B2.5
+calls the compiled kernel's machine code directly with no boxing, no
+membrane, no dispatch. Measured 2026-07-17 (i7-9750H): **10.9 ns/eval**, a
+~30x drop from the per-sample `jit_call` membrane (B2, 332 ns on that run)
+and within ~1.8x of the whole-loop-native B3 (6.0 ns) — the missing per-
+sample rung, at near-B3 economics, with the sum still bit-identical to Rust.
+
+History on the B2.5 rung: introduced with #424 at 10.9 ns/eval — the raw
+`fn(f64,f64,f64) -> f64` snapshot handle. The residual gap to B3 is the
+per-call `Ctx` build + the indirect call the whole-loop edition amortizes
+away; the gap to B4 (pure Rust, 2.8 ns on that run) is that plus Cranelift's
+own codegen vs LTO'd Rust.
 
 ### C. Dot product, 100k f64 typed arrays (zero-copy membrane)
 

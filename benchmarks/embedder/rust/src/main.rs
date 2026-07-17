@@ -23,7 +23,9 @@ use std::time::Instant;
 
 use lamedh::environment::Environment;
 use lamedh::jit::Value;
-use lamedh::{LispVal, call_function, eval_all, eval_str, evaluator, fn_handle, reader};
+use lamedh::{
+    LispVal, call_function, eval_all, eval_str, evaluator, fn_handle, native_entry, reader,
+};
 
 fn time<F: FnMut()>(label: &str, iters: u64, mut f: F) -> f64 {
     // One warmup pass, then the measured run.
@@ -183,6 +185,19 @@ fn main() {
         let b2 = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
         println!("B2 per-sample jit_call into NATIVE defun*          {b2:>12.1} ns/eval   (sum {s:.1})");
 
+        // B2.5 (issue #424): a raw native entry point — extract the compiled
+        // SD-SPHERE-T once, then call its machine code directly per sample,
+        // with no boxing, no membrane, no dispatch. The per-sample rung a
+        // marching-cubes host loop actually wants.
+        let sdf = native_entry("SD-SPHERE-T", &env).expect("extract SD-SPHERE-T");
+        let t0 = Instant::now();
+        let mut s25 = 0.0;
+        for i in 0..n {
+            s25 += sdf.call_f3(black_box(0.001 * i as f64), 0.5, 0.25);
+        }
+        let b2_5 = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
+        println!("B2.5 per-sample raw native entry (#424)            {b2_5:>12.1} ns/eval   (sum {s25:.1})");
+
         let t0 = Instant::now();
         let v3 = env.jit_call("KERNEL-LOOP-T", &[Value::Int(n as i64)]).unwrap().unwrap();
         let b3 = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
@@ -196,9 +211,10 @@ fn main() {
         let b4 = t0.elapsed().as_secs_f64() * 1e9 / n as f64;
         println!("B4 pure Rust loop                                  {b4:>12.1} ns/eval   (sum {s4:.1})");
         println!(
-            "   ratios vs Rust: interp {:.0}x, per-sample-call {:.0}x, native-loop {:.1}x\n",
+            "   ratios vs Rust: interp {:.0}x, per-sample-call {:.0}x, raw-entry {:.1}x, native-loop {:.1}x\n",
             b1 / b4,
             b2 / b4,
+            b2_5 / b4,
             b3 / b4
         );
 

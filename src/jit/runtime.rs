@@ -297,6 +297,48 @@ impl Ctx<'_> {
     pub(super) fn take_pending_tail(&self) -> Option<(usize, Vec<u64>)> {
         self.pending_tail.borrow_mut().take()
     }
+
+    /// A `Ctx` for a *leaf* native call from a raw entry point (issue #424).
+    /// The function table is empty: a leaf's native code never performs a
+    /// cross-function call, so it never indexes `funcs` — the only `Ctx` state
+    /// it touches is the flag bytes (`overflow`/`div_by_zero`), the arena
+    /// allocator hook, and the out-of-bounds/`code-char` reporters, all of
+    /// which are self-contained per call. Built fresh on the caller's stack for
+    /// every raw-entry call, so calls from any thread are independent and need
+    /// no shared state.
+    #[cfg(feature = "jit")]
+    pub(super) fn leaf() -> Ctx<'static> {
+        Ctx {
+            funcs: &[],
+            arena: RefCell::new(Vec::new()),
+            pending_tail: RefCell::new(None),
+            overflow: Cell::new(false),
+            div_by_zero: Cell::new(false),
+            depth: Cell::new(0),
+            pending_error: RefCell::new(None),
+        }
+    }
+
+    /// Drain this call's error state into a single message, first-match wins,
+    /// mirroring the membrane's own ordering (`call_inner`): a reachable-error
+    /// condition (oversized allocation, out-of-bounds access, `code-char`
+    /// range) first, then integer overflow, then division by zero. `None` when
+    /// the call completed cleanly. Used by [`NativeFnHandle`](super::entry::NativeFnHandle)
+    /// to expose a `last_error()` after a raw-entry call, which — unlike the
+    /// membrane — does not propagate these to the Lisp condition system.
+    #[cfg(feature = "jit")]
+    pub(super) fn native_error(&self) -> Option<String> {
+        if let Some(msg) = self.pending_error.borrow_mut().take() {
+            return Some(msg);
+        }
+        if self.overflow.get() {
+            return Some("integer overflow".to_string());
+        }
+        if self.div_by_zero.get() {
+            return Some("division by zero".to_string());
+        }
+        None
+    }
 }
 
 /// Host trampoline for in-native array/struct allocation: allocate an

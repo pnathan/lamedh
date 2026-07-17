@@ -2349,6 +2349,28 @@ impl Environment {
         Some(jit.call(name, args))
     }
 
+    /// Extract a raw native entry point for a NATIVE leaf `defun*` kernel
+    /// (issue #424) — see [`crate::native_entry`] and
+    /// [`crate::jit::Jit::native_entry`]. The returned handle is an `Arc`
+    /// snapshot independent of this environment: it stays valid across
+    /// redefinition.
+    #[cfg(feature = "jit")]
+    pub fn jit_native_entry(
+        &self,
+        name: &str,
+    ) -> Result<crate::jit::entry::NativeFnHandle, String> {
+        self.shared.jit.borrow().native_entry(name)
+    }
+
+    /// The current generation counter of the typed function `name` (bumped on
+    /// every (re)compile), or `None` if no such typed function exists. Compare
+    /// against a [`NativeFnHandle`](crate::jit::entry::NativeFnHandle)'s
+    /// `generation()` to detect that a raw entry handle is running a stale
+    /// (pre-redefinition) snapshot.
+    pub fn jit_generation(&self, name: &str) -> Option<u64> {
+        self.shared.jit.borrow().get(name).map(|f| f.generation())
+    }
+
     /// Like [`Environment::jit_call`], but also reads back the post-call
     /// contents of any flat-scalar-array argument (issue #216), so the
     /// caller can write a mutation back into its own backing store — see

@@ -57,6 +57,9 @@ use std::rc::Rc;
 #[cfg(feature = "jit")]
 mod native;
 
+#[cfg(feature = "jit")]
+pub mod entry;
+
 mod elaboration;
 mod infer;
 mod parse;
