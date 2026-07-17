@@ -17,9 +17,14 @@
 //! redefined callee just updates its cell, and the cell address survives registry
 //! `Vec` growth (it is a heap `Box`).
 //!
-//! `if`/`and`/`or` use a per-node result stack slot (rather than block
-//! parameters) so the lowering does not depend on the block-argument API, which
-//! has churned across Cranelift releases.
+//! Local variables (parameters, `let` bindings, `for` counters) are lowered to
+//! cranelift-frontend SSA [`Variable`]s (`declare_var`/`def_var`/`use_var`),
+//! which perform proper SSA construction — inserting block parameters at CFG
+//! merge points automatically, so loop counters and accumulators stay in
+//! registers instead of paying a stack round-trip per touch. Every slot is a
+//! `u64` word (floats travel bit-cast), so every Variable is `types::I64`.
+//! `if`/`and`/`or` and bounds-checked-access merges pass their result as a
+//! single block parameter on the merge block.
 
 use super::{BinOp, CmpOp, Core, Ctx, NumKind, allocation_escapes};
 use core::ffi::c_void;
@@ -28,7 +33,7 @@ use cranelift_codegen::ir::{
     AbiParam, BlockArg, InstBuilder, MemFlagsData, SigRef, Signature, StackSlotData, StackSlotKind,
     Value, types,
 };
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 
@@ -351,27 +356,31 @@ pub fn compile_native(
         let args_ptr = b.block_params(entry)[0];
         let ctx_ptr = b.block_params(entry)[1];
 
-        // Local slot frame (params + let bindings).
-        let env_slot = b.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            (n_slots.max(1) * 8) as u32,
-            3,
-        ));
-        for i in 0..n_params {
+        // Local variables (params + let bindings + loop counters), lowered to
+        // cranelift-frontend SSA Variables. Every slot is a u64 word (floats
+        // bit-cast), so every Variable is I64. Declaring `n_slots` up front;
+        // slots never read before being written (let/for temporaries) simply
+        // never materialize. The incoming argument words are `def_var`ed here
+        // in the entry block, the first predecessor of the loop header.
+        let vars: Vec<Variable> = (0..n_slots).map(|_| b.declare_var(types::I64)).collect();
+        for (i, var) in vars.iter().enumerate().take(n_params) {
             let v = b.ins().load(
                 types::I64,
                 MemFlagsData::trusted(),
                 args_ptr,
                 (i * 8) as i32,
             );
-            b.ins().stack_store(v, env_slot, (i * 8) as i32);
+            b.def_var(*var, v);
         }
 
         // Loop header for self tail calls (issue #133 Tier 1): the prologue
         // falls through to it once; a self tail call elsewhere in the body
-        // stores its new argument values into `env_slot` and jumps back here
-        // instead of recursing. Not sealed until the whole body is emitted —
-        // every back-edge into it must be known first.
+        // `def_var`s its new argument values and jumps back here instead of
+        // recursing. Because the parameter Variables are redefined on that
+        // back edge, cranelift-frontend inserts the necessary block
+        // parameters at this header automatically when it is sealed — so the
+        // header must NOT be sealed until the whole body is emitted (every
+        // back-edge predecessor must be known first).
         let header = b.create_block();
         b.ins().jump(header, &[]);
         b.switch_to_block(header);
@@ -379,7 +388,7 @@ pub fn compile_native(
         let mut e = Emitter {
             b: &mut b,
             ptr,
-            env_slot,
+            vars,
             ctx_ptr,
             tramp_ref,
             pending_tail_ref,
@@ -436,7 +445,11 @@ pub fn compile_native(
 struct Emitter<'a, 'b, 'c> {
     b: &'a mut FunctionBuilder<'b>,
     ptr: types::Type,
-    env_slot: cranelift_codegen::ir::StackSlot,
+    /// SSA Variables for the local slot frame (params + `let` bindings + `for`
+    /// counters), indexed by Core slot number. All `types::I64`; floats travel
+    /// as bit-cast words. Reads are `use_var`, writes `def_var` — no stack
+    /// round-trip, so loop-carried state stays in registers.
+    vars: Vec<Variable>,
     ctx_ptr: Value,
     tramp_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`jit_resolve_pending_tail`]: drains a pending cross-function
@@ -479,9 +492,10 @@ struct Emitter<'a, 'b, 'c> {
     /// This function's own registry id — a `Call(id, ..)` reached in tail
     /// position with `id == self_id` is a self tail call (issue #133 Tier 1).
     self_id: usize,
-    /// The loop header block a self tail call jumps back to, after storing
-    /// its new argument values into `env_slot`. Not sealed until the whole
-    /// body has been emitted (every back-edge must be known first).
+    /// The loop header block a self tail call jumps back to, after `def_var`ing
+    /// its new argument values. Not sealed until the whole body has been
+    /// emitted (every back-edge must be known first, so cranelift-frontend can
+    /// insert the loop-carried parameter block params).
     header: cranelift_codegen::ir::Block,
 }
 
@@ -526,11 +540,7 @@ impl Emitter<'_, '_, '_> {
         match core {
             Core::LitI(n) => Emitted::Value(self.iconst(*n)),
             Core::LitF(f) => Emitted::Value(self.iconst(f.to_bits() as i64)),
-            Core::Var(i) => Emitted::Value(self.b.ins().stack_load(
-                types::I64,
-                self.env_slot,
-                (*i * 8) as i32,
-            )),
+            Core::Var(i) => Emitted::Value(self.b.use_var(self.vars[*i])),
             Core::Bin(k, op, a, b) => {
                 let (x, y) = (self.emit_value(a), self.emit_value(b));
                 Emitted::Value(match k {
@@ -587,9 +597,7 @@ impl Emitter<'_, '_, '_> {
                     Some(v) => v,
                     None => self.emit_value(init),
                 };
-                self.b
-                    .ins()
-                    .stack_store(v, self.env_slot, (*slot * 8) as i32);
+                self.b.def_var(self.vars[*slot], v);
                 self.emit(body, tail)
             }
             Core::Call(id, args) if tail && *id == self.self_id => self.emit_self_tail_call(args),
@@ -837,9 +845,7 @@ impl Emitter<'_, '_, '_> {
             },
             Core::Assign(slot, val) => {
                 let v = self.emit_value(val);
-                self.b
-                    .ins()
-                    .stack_store(v, self.env_slot, (*slot * 8) as i32);
+                self.b.def_var(self.vars[*slot], v);
                 Emitted::Value(v)
             }
             Core::While(test, body) => Emitted::Value(self.emit_while(test, body)),
@@ -887,8 +893,8 @@ impl Emitter<'_, '_, '_> {
     /// Lower [`Core::For`]: evaluate START/END/STEP once, check STEP != 0
     /// (recording the tree-walker's "for step must be non-zero" error via the
     /// [`super::jit_for_step_zero`] trampoline and skipping the loop
-    /// otherwise), then iterate the counter — stored in `env_slot` at `slot`
-    /// so nested `Var(slot)` reads inside `body` see each value — from START
+    /// otherwise), then iterate the counter — held in the SSA Variable for
+    /// `slot` so nested `Var(slot)` reads inside `body` see each value — from START
     /// to END inclusive by STEP, direction by STEP's sign. The increment is
     /// overflow-checked (`sadd_overflow`, mirroring `int_bin`'s `Add`) but,
     /// unlike ordinary `+`, an overflow here silently breaks the loop instead
@@ -905,7 +911,6 @@ impl Emitter<'_, '_, '_> {
         let s = self.emit_value(start);
         let e = self.emit_value(end);
         let st = self.emit_value(step);
-        let off = (slot * 8) as i32;
 
         let zero = self.iconst(0);
         let is_zero = self.b.ins().icmp(IntCC::Equal, st, zero);
@@ -921,7 +926,7 @@ impl Emitter<'_, '_, '_> {
 
         self.b.switch_to_block(ok_b);
         self.b.seal_block(ok_b); // single predecessor: the is_zero brif
-        self.b.ins().stack_store(s, self.env_slot, off);
+        self.b.def_var(self.vars[slot], s);
 
         let header = self.b.create_block();
         let body_b = self.b.create_block();
@@ -931,7 +936,7 @@ impl Emitter<'_, '_, '_> {
         self.b.switch_to_block(header);
         // Not sealed yet: `body_b`'s no-overflow back edge is the second
         // predecessor and hasn't been emitted yet.
-        let i_val = self.b.ins().stack_load(types::I64, self.env_slot, off);
+        let i_val = self.b.use_var(self.vars[slot]);
         // Inclusive bound; direction depends on the sign of step.
         let cmp_asc = self.b.ins().icmp(IntCC::SignedLessThanOrEqual, i_val, e);
         let cmp_desc = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, i_val, e);
@@ -942,7 +947,7 @@ impl Emitter<'_, '_, '_> {
         self.b.switch_to_block(body_b);
         self.b.seal_block(body_b); // single predecessor: header's brif
         self.emit_value(body);
-        let i_val2 = self.b.ins().stack_load(types::I64, self.env_slot, off);
+        let i_val2 = self.b.use_var(self.vars[slot]);
         let (next, overflow) = self.b.ins().sadd_overflow(i_val2, st);
         // Guard against overflow so a runaway step can't panic or silently
         // wrap into an infinite loop — no OVERFLOW flag (unlike ordinary `+`).
@@ -951,7 +956,7 @@ impl Emitter<'_, '_, '_> {
 
         self.b.switch_to_block(no_of_b);
         self.b.seal_block(no_of_b); // single predecessor: body_b's brif
-        self.b.ins().stack_store(next, self.env_slot, off);
+        self.b.def_var(self.vars[slot], next);
         self.b.ins().jump(header, &[]);
         self.b.seal_block(header); // both predecessors known now
 
@@ -984,14 +989,16 @@ impl Emitter<'_, '_, '_> {
     /// new argument value in the *current* env — before any parameter slot
     /// is overwritten, exactly mirroring `eval_core`'s parallel-assignment
     /// ordering, since a new argument may read an old parameter a sibling
-    /// argument is about to clobber (`(sum (- n 1) (+ acc n))`) — store them
-    /// into the parameter slots, then jump back to the loop header instead
-    /// of emitting a call. This terminates the current block; the caller
-    /// must not add further instructions to it.
+    /// argument is about to clobber (`(sum (- n 1) (+ acc n))`) — `def_var`
+    /// them into the parameter Variables, then jump back to the loop header
+    /// instead of emitting a call. cranelift-frontend threads these
+    /// redefinitions into the header's block parameters when it is sealed.
+    /// This terminates the current block; the caller must not add further
+    /// instructions to it.
     fn emit_self_tail_call(&mut self, args: &[Core]) -> Emitted {
         let vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
         for (i, v) in vals.iter().enumerate() {
-            self.b.ins().stack_store(*v, self.env_slot, (i * 8) as i32);
+            self.b.def_var(self.vars[i], *v);
         }
         self.b.ins().jump(self.header, &[]);
         Emitted::TailLooped
@@ -1030,15 +1037,17 @@ impl Emitter<'_, '_, '_> {
     }
 
     /// Evaluate a two-way branch, tail-aware. Mirrors [`Self::branch_to_slot`]
-    /// (store each branch's value into a shared stack slot and merge) but
-    /// skips the store+jump for a branch that already terminated its block
-    /// via [`Self::emit_self_tail_call`]'s jump to the loop header. If *both*
-    /// branches tail-loop, the merge block is unreachable — report the whole
-    /// node as tail-looping too rather than switching to a block with no
-    /// predecessors (`create_block` alone leaves it "pristine," which
-    /// `FunctionBuilder::finalize` explicitly exempts from the
-    /// sealed/filled check — verified against `cranelift-frontend`'s
-    /// `finalize()`, so an unused `merge_b` is sound to simply never visit).
+    /// (merge each branch's value through a single block parameter on
+    /// `merge_b`) but skips the jump for a branch that already terminated its
+    /// block via [`Self::emit_self_tail_call`]'s jump to the loop header. If
+    /// *both* branches tail-loop, the merge block is unreachable — report the
+    /// whole node as tail-looping too rather than switching to a block with no
+    /// predecessors. `merge_b` then keeps only its appended block parameter and
+    /// is never switched to, so it stays `BlockStatus::Empty` ("pristine" —
+    /// appending a block param does not change that status), which
+    /// `FunctionBuilder::finalize` explicitly exempts from the sealed/filled
+    /// check (verified against `cranelift-frontend`'s `finalize()`), so an
+    /// unused `merge_b` is sound to simply never visit.
     fn branch_merge(
         &mut self,
         cond: Value,
@@ -1048,9 +1057,7 @@ impl Emitter<'_, '_, '_> {
         let then_b = self.b.create_block();
         let else_b = self.b.create_block();
         let merge_b = self.b.create_block();
-        let res =
-            self.b
-                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let merge_param = self.b.append_block_param(merge_b, types::I64);
 
         self.b.ins().brif(cond, then_b, &[], else_b, &[]);
 
@@ -1058,8 +1065,7 @@ impl Emitter<'_, '_, '_> {
         self.b.seal_block(then_b);
         let tr = then_f(self);
         if let Emitted::Value(v) = tr {
-            self.b.ins().stack_store(v, res, 0);
-            self.b.ins().jump(merge_b, &[]);
+            self.b.ins().jump(merge_b, &[BlockArg::from(v)]);
         }
         // else: then's terminal block already ended with a jump to `header`.
 
@@ -1067,8 +1073,7 @@ impl Emitter<'_, '_, '_> {
         self.b.seal_block(else_b);
         let er = else_f(self);
         if let Emitted::Value(v) = er {
-            self.b.ins().stack_store(v, res, 0);
-            self.b.ins().jump(merge_b, &[]);
+            self.b.ins().jump(merge_b, &[BlockArg::from(v)]);
         }
 
         if matches!(tr, Emitted::TailLooped) && matches!(er, Emitted::TailLooped) {
@@ -1077,7 +1082,7 @@ impl Emitter<'_, '_, '_> {
 
         self.b.switch_to_block(merge_b);
         self.b.seal_block(merge_b);
-        Emitted::Value(self.b.ins().stack_load(types::I64, res, 0))
+        Emitted::Value(merge_param)
     }
 
     /// Call the host allocator for an `len`-element buffer; returns the header
@@ -1638,38 +1643,36 @@ impl Emitter<'_, '_, '_> {
         self.b.block_params(done_b)[0]
     }
 
-    /// Evaluate `then`/`else` into a result stack slot and reload — avoids
-    /// block-parameter API churn.
+    /// Evaluate `then`/`else` and merge their values through a single block
+    /// parameter on `merge_b`. Neither branch can tail-loop here (this variant
+    /// is only used for non-tail merges — bounds-checked accesses and
+    /// CODE-CHAR narrowing), so both always jump to the merge.
     fn branch_to_slot(
         &mut self,
         cond: Value,
         then_f: impl FnOnce(&mut Self) -> Value,
         else_f: impl FnOnce(&mut Self) -> Value,
     ) -> Value {
-        let res =
-            self.b
-                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
         let then_b = self.b.create_block();
         let else_b = self.b.create_block();
         let merge_b = self.b.create_block();
+        let merge_param = self.b.append_block_param(merge_b, types::I64);
 
         self.b.ins().brif(cond, then_b, &[], else_b, &[]);
 
         self.b.switch_to_block(then_b);
         self.b.seal_block(then_b);
         let tv = then_f(self);
-        self.b.ins().stack_store(tv, res, 0);
-        self.b.ins().jump(merge_b, &[]);
+        self.b.ins().jump(merge_b, &[BlockArg::from(tv)]);
 
         self.b.switch_to_block(else_b);
         self.b.seal_block(else_b);
         let ev = else_f(self);
-        self.b.ins().stack_store(ev, res, 0);
-        self.b.ins().jump(merge_b, &[]);
+        self.b.ins().jump(merge_b, &[BlockArg::from(ev)]);
 
         self.b.switch_to_block(merge_b);
         self.b.seal_block(merge_b);
-        self.b.ins().stack_load(types::I64, res, 0)
+        merge_param
     }
 
     /// Emit a non-tail call to typed function `id`, guarded by the depth
