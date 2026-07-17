@@ -437,6 +437,24 @@ impl SharedState {
     }
 }
 
+/// A pinned typed-function handle, created by
+/// [`Environment::jit_fn_handle`] and consumed by
+/// [`Environment::jit_call_handle`].
+///
+/// A *name* pin with a cached registry id: typed-function ids are NOT
+/// stable across redefinition (a redefine allocates a fresh id and repoints
+/// the name), so the handle caches the id together with the registry's
+/// definitions generation and re-resolves the name only when some typed
+/// function was (re)defined since. Steady-state cost over a raw id call is
+/// one integer compare; redefinition is picked up exactly like calling by
+/// name.
+#[derive(Debug, Clone)]
+pub struct JitFnHandle {
+    name: String,
+    id: Cell<usize>,
+    seen_generation: Cell<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Environment {
     parent: Option<Shared<Environment>>,
@@ -2345,8 +2363,43 @@ impl Environment {
         args: &[crate::jit::Value],
     ) -> Option<Result<crate::jit::Value, String>> {
         let jit = self.shared.jit.borrow();
-        jit.id(name)?;
-        Some(jit.call(name, args))
+        let id = jit.id(name)?;
+        Some(jit.call_by_id(id, args))
+    }
+
+    /// Pin a typed function for repeated membrane calls — the boxed-Value
+    /// sibling of [`Environment::jit_native_entry`] (which requires a NATIVE
+    /// leaf; this works for every typed function and follows redefinition).
+    /// `None` if no typed function by that name exists yet.
+    pub fn jit_fn_handle(&self, name: &str) -> Option<JitFnHandle> {
+        let jit = self.shared.jit.borrow();
+        let upper = name.to_uppercase();
+        jit.id(&upper).map(|id| JitFnHandle {
+            name: upper,
+            id: Cell::new(id),
+            seen_generation: Cell::new(jit.defs_generation()),
+        })
+    }
+
+    /// Call through a [`JitFnHandle`]: no name hash in steady state (one
+    /// integer compare validates the cached id; a (re)definition anywhere
+    /// triggers a re-resolve by name), and all-scalar signatures take
+    /// [`crate::jit::Jit::call_by_id`]'s allocation-free fast path.
+    pub fn jit_call_handle(
+        &self,
+        handle: &JitFnHandle,
+        args: &[crate::jit::Value],
+    ) -> Result<crate::jit::Value, String> {
+        let jit = self.shared.jit.borrow();
+        let generation = jit.defs_generation();
+        if handle.seen_generation.get() != generation {
+            let id = jit
+                .id(&handle.name)
+                .ok_or_else(|| format!("unknown function `{}`", handle.name))?;
+            handle.id.set(id);
+            handle.seen_generation.set(generation);
+        }
+        jit.call_by_id(handle.id.get(), args)
     }
 
     /// Extract a raw native entry point for a NATIVE leaf `defun*` kernel

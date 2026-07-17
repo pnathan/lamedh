@@ -399,6 +399,12 @@ impl TypedFn {
 pub struct Jit {
     pub(super) funcs: Vec<Rc<TypedFn>>,
     pub(super) by_name: HashMap<String, usize>,
+    /// Bumped on every `by_name` mutation (a definition or redefinition of
+    /// any typed function). Lets a pinned-id caller ([`Jit::call_by_id`]
+    /// via `Environment::jit_call_handle`) validate its cached id with one
+    /// integer compare instead of a name hash: ids are NOT stable across
+    /// redefinition (a redefine allocates a new id and repoints the name).
+    pub(super) defs_generation: Cell<u64>,
     /// Registered typed struct definitions, by (uppercased) name. A struct name
     /// is usable as a type in `defun-typed` signatures, and its accessor
     /// functions (`make-NAME`, `NAME-FIELD`, `set-NAME-FIELD`) are generated as
@@ -482,6 +488,7 @@ impl Jit {
         Some(Jit {
             funcs,
             by_name: self.by_name.clone(),
+            defs_generation: Cell::new(self.defs_generation.get()),
             structs: self.structs.clone(),
             protocol_instances: self.protocol_instances.clone(),
             protocol_dispatch: self.protocol_dispatch.clone(),
@@ -794,6 +801,7 @@ impl Jit {
                 ret,
             )));
             self.by_name.insert(name.to_string(), id);
+            self.defs_generation.set(self.defs_generation.get() + 1);
             (id, false)
         }
     }
@@ -1163,6 +1171,7 @@ impl Jit {
             param_tys.clone(),
             ret_var.clone(),
         )));
+        self.defs_generation.set(self.defs_generation.get() + 1);
         let prev = self.by_name.insert(name.to_string(), new_id);
 
         let mut scope: Scope = param_tys.clone();
@@ -1213,6 +1222,7 @@ impl Jit {
                 match prev {
                     Some(p) => {
                         self.by_name.insert(name.to_string(), p);
+                        self.defs_generation.set(self.defs_generation.get() + 1);
                     }
                     None => {
                         self.by_name.remove(name);
@@ -1249,6 +1259,7 @@ impl Jit {
             param_tys.clone(),
             ret_var.clone(),
         )));
+        self.defs_generation.set(self.defs_generation.get() + 1);
         let prev = self.by_name.insert(name.to_string(), new_id);
         let mut scope: Scope = param_tys.clone();
         let mut max_slots = scope.len();
@@ -1322,6 +1333,7 @@ impl Jit {
             param_tys.clone(),
             ret_var.clone(),
         )));
+        self.defs_generation.set(self.defs_generation.get() + 1);
         let prev = self.by_name.insert(name.to_string(), new_id);
 
         let mut scope: Scope = param_tys.clone();
@@ -1376,6 +1388,7 @@ impl Jit {
                 match prev {
                     Some(p) => {
                         self.by_name.insert(name.to_string(), p);
+                        self.defs_generation.set(self.defs_generation.get() + 1);
                     }
                     None => {
                         self.by_name.remove(name);
@@ -1417,6 +1430,7 @@ impl Jit {
             param_tys.clone(),
             ret_var.clone(),
         )));
+        self.defs_generation.set(self.defs_generation.get() + 1);
         let prev = self.by_name.insert(name.to_string(), new_id);
 
         let mut scope: Scope = param_tys.clone();
@@ -1625,6 +1639,11 @@ impl Jit {
         Ok(generated)
     }
 
+    /// Current definitions generation — see the field docs.
+    pub fn defs_generation(&self) -> u64 {
+        self.defs_generation.get()
+    }
+
     pub fn id(&self, name: &str) -> Option<usize> {
         // Names are case-normalized to uppercase (matching the reader), so
         // callers may use either case.
@@ -1656,6 +1675,67 @@ impl Jit {
     pub fn call(&self, name: &str, args: &[Value]) -> Result<Value, String> {
         Ok(self.call_inner(name, args)?.0)
     }
+
+    /// Call by pre-resolved id (see [`Jit::id`]) with an allocation-free fast
+    /// path for all-scalar signatures — the "Call Me Maybe" membrane rung
+    /// (issue #427). [`Jit::call`] pays a name-hash lookup, three heap
+    /// allocations (`words`, per-arg `Ty` clones, and the write-back vector —
+    /// built even when every parameter is a by-value scalar that cannot be
+    /// mutated), and a return-`Ty` clone on every call; for a one-float
+    /// NATIVE callee that bookkeeping was ~185 ns against an 11 ns raw entry.
+    /// Here scalar calls run with a stack word buffer, borrowed types, and no
+    /// write-back machinery. Anything non-scalar (or with more than
+    /// [`Self::FAST_ARGS`] parameters) falls back to the full membrane,
+    /// preserving exact array-write-back semantics.
+    ///
+    /// The id stays valid across redefinition (ids are stable); arity/type
+    /// validation happens against the LIVE signature on every call, so a
+    /// handle held across a redefinition behaves exactly like calling by
+    /// name.
+    pub fn call_by_id(&self, id: usize, args: &[Value]) -> Result<Value, String> {
+        let f = self
+            .funcs
+            .get(id)
+            .ok_or_else(|| format!("unknown typed function id {id}"))?;
+        if !f.is_defined() {
+            return Err(format!("{}: declared but not defined", f.name));
+        }
+        {
+            let params = f.params.borrow();
+            if args.len() != params.len() {
+                return Err(format!(
+                    "{}: expected {} args, got {}",
+                    f.name,
+                    params.len(),
+                    args.len()
+                ));
+            }
+            let all_scalar = args.len() <= Self::FAST_ARGS
+                && params
+                    .iter()
+                    .all(|(_, t)| matches!(t, Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char));
+            if all_scalar {
+                let ctx = self.ctx();
+                let mut words = [0u64; Self::FAST_ARGS];
+                for (i, (a, (_, ty))) in args.iter().zip(params.iter()).enumerate() {
+                    words[i] = a.to_word(ty, &ctx)?;
+                }
+                let ret = f.ret.borrow();
+                drop(params);
+                let w = f.invoke(&words[..args.len()], &ctx);
+                if let Some(msg) = ctx.pending_error.borrow_mut().take() {
+                    return Err(msg);
+                }
+                return Ok(Value::from_word(w, &ret));
+            }
+        }
+        // Compound signature: the full membrane (write-back and all).
+        let name = f.name.clone();
+        Ok(self.call_inner(&name, args)?.0)
+    }
+
+    /// Scalar fast-path argument cap for [`Jit::call_by_id`]'s stack buffer.
+    pub const FAST_ARGS: usize = 8;
 
     /// Like [`Jit::call`], but also reads back the post-call contents of any
     /// flat-scalar-array argument (issue #216: `LispVal::Array` has interior
