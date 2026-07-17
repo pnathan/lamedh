@@ -134,6 +134,31 @@ unsafe extern "C" fn jit_set_pending_tail(
     ctx.set_pending_tail(id as usize, slice);
 }
 
+/// Resolve a pending cross-function tail call left behind by a *direct*
+/// native→native call. `emit_cross_tail_call`'s contract is that the
+/// Rust-level dispatch loop drains the pending cell — but a direct native
+/// call site returns straight into native code, so without this hook the
+/// pending call would survive until the top-level `TypedFn::invoke` loop
+/// and its result would *replace* the outer function's own return value
+/// (found by the brutal differential fuzzer the moment float functions
+/// started compiling natively; small repros hide it because the inliner
+/// splices small callees away). Called after every direct native call:
+/// returns `raw` untouched when nothing is pending, else dispatches the
+/// deferred chain and returns its final result.
+///
+/// # Safety
+/// Called only from Cranelift-generated code; `ctx` is the pointer threaded
+/// from the entry.
+unsafe extern "C" fn jit_resolve_pending_tail(ctx: *const c_void, raw: u64) -> u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    match ctx.take_pending_tail() {
+        None => raw,
+        // `invoke` drives the trampoline until no pending call remains, so
+        // arbitrarily long deferred chains resolve here in O(1) stack.
+        Some((id, tail_args)) => ctx.funcs[id].invoke(&tail_args, ctx),
+    }
+}
+
 /// Compile `core` (a function body with `n_params` parameters and `n_slots`
 /// total local slots) to a native edition.
 ///
@@ -151,9 +176,13 @@ pub fn compile_native(
     cell_addrs: &[usize],
     param_counts: &[usize],
 ) -> Result<NativeEdition, String> {
-    let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| e.to_string())?;
+    let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| format!("{e:?}"))?;
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
+    jb.symbol(
+        "jit_resolve_pending_tail",
+        jit_resolve_pending_tail as *const u8,
+    );
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
     jb.symbol("jit_alloc_stride", super::jit_alloc_stride as *const u8);
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
@@ -180,7 +209,7 @@ pub fn compile_native(
     tsig.returns.push(AbiParam::new(types::I64));
     let tramp_id = module
         .declare_function("jit_trampoline", Linkage::Import, &tsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported cross-function tail-call trampoline signature (issue #133
     // Tier 2a): (ctx, id, args*, argc) -> (), no return value.
@@ -189,9 +218,18 @@ pub fn compile_native(
     ptsig.params.push(AbiParam::new(types::I64));
     ptsig.params.push(AbiParam::new(ptr));
     ptsig.params.push(AbiParam::new(types::I64));
+    // Resolver signature: (ctx, raw_result) -> u64.
+    let mut rptsig = module.make_signature();
+    rptsig.params.push(AbiParam::new(ptr));
+    rptsig.params.push(AbiParam::new(types::I64));
+    rptsig.returns.push(AbiParam::new(types::I64));
+    let resolve_pending_id = module
+        .declare_function("jit_resolve_pending_tail", Linkage::Import, &rptsig)
+        .map_err(|e| format!("{e:?}"))?;
+
     let pending_tail_id = module
         .declare_function("jit_set_pending_tail", Linkage::Import, &ptsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported allocator: (ctx, n) -> *mut u64, for array/struct allocation.
     let mut asig = module.make_signature();
@@ -200,7 +238,7 @@ pub fn compile_native(
     asig.returns.push(AbiParam::new(ptr));
     let alloc_id = module
         .declare_function("jit_alloc", Linkage::Import, &asig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported inline (array-of-structs) allocator (jit/core-loops follow-
     // up): (ctx, n, stride) -> *mut u64. See `Core::ArrayNewStride`.
@@ -211,7 +249,7 @@ pub fn compile_native(
     asig_stride.returns.push(AbiParam::new(ptr));
     let alloc_stride_id = module
         .declare_function("jit_alloc_stride", Linkage::Import, &asig_stride)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported out-of-bounds index reporter (issue #282): (ctx, idx, len,
     // is_store) -> (). Called from the else-arm of a guarded FETCH/STORE to
@@ -224,7 +262,7 @@ pub fn compile_native(
     oobsig.params.push(AbiParam::new(types::I64));
     let array_oob_id = module
         .declare_function("jit_array_oob", Linkage::Import, &oobsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported CODE-CHAR range reporter (issue #281): (ctx, n) -> (). Called
     // from the out-of-range arm of a CODE-CHAR narrowing to record the
@@ -235,7 +273,7 @@ pub fn compile_native(
     bcsig.params.push(AbiParam::new(types::I64));
     let bad_char_id = module
         .declare_function("jit_bad_char", Linkage::Import, &bcsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported libm float-intrinsic trampoline (`sin`/`cos`/`tan`/`exp`/
     // `round`): (opcode, x) -> result word. Pure math, no `Ctx`.
@@ -245,7 +283,7 @@ pub fn compile_native(
     ftsig.returns.push(AbiParam::new(types::I64));
     let ftrans_id = module
         .declare_function("jit_ftrans", Linkage::Import, &ftsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported non-tail-call depth guard (issue #271): `jit_enter_call`
     // (ctx) -> bool-as-i64 (nonzero = ok, depth bumped; zero = at the cap, a
@@ -259,13 +297,13 @@ pub fn compile_native(
     esig.returns.push(AbiParam::new(types::I64));
     let enter_call_id = module
         .declare_function("jit_enter_call", Linkage::Import, &esig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     let mut xsig = module.make_signature();
     xsig.params.push(AbiParam::new(ptr));
     let exit_call_id = module
         .declare_function("jit_exit_call", Linkage::Import, &xsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // Imported FOR zero-step error reporter: (ctx) -> (). Called from the
     // zero-step arm of a `Core::For` loop to record the tree-walker's own
@@ -275,7 +313,7 @@ pub fn compile_native(
     fzsig.params.push(AbiParam::new(ptr));
     let for_step_zero_id = module
         .declare_function("jit_for_step_zero", Linkage::Import, &fzsig)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
 
     // The function we are building: (args*, ctx*) -> u64.
     let mut ctx_codegen = module.make_context();
@@ -292,6 +330,7 @@ pub fn compile_native(
         let mut b = FunctionBuilder::new(&mut ctx_codegen.func, &mut fbctx);
         let tramp_ref = module.declare_func_in_func(tramp_id, b.func);
         let pending_tail_ref = module.declare_func_in_func(pending_tail_id, b.func);
+        let resolve_pending_ref = module.declare_func_in_func(resolve_pending_id, b.func);
         let alloc_ref = module.declare_func_in_func(alloc_id, b.func);
         let alloc_stride_ref = module.declare_func_in_func(alloc_stride_id, b.func);
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
@@ -341,6 +380,7 @@ pub fn compile_native(
             ctx_ptr,
             tramp_ref,
             pending_tail_ref,
+            resolve_pending_ref,
             alloc_ref,
             alloc_stride_ref,
             array_oob_ref,
@@ -373,12 +413,14 @@ pub fn compile_native(
 
     let func_id = module
         .declare_function("typed_fn", Linkage::Export, &ctx_codegen.func.signature)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
     module
         .define_function(func_id, &mut ctx_codegen)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e:?}"))?;
     module.clear_context(&mut ctx_codegen);
-    module.finalize_definitions().map_err(|e| e.to_string())?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("{e:?}"))?;
 
     let code = module.get_finalized_function(func_id);
     let entry = unsafe { std::mem::transmute::<*const u8, NativeEntry>(code) };
@@ -394,6 +436,10 @@ struct Emitter<'a, 'b, 'c> {
     env_slot: cranelift_codegen::ir::StackSlot,
     ctx_ptr: Value,
     tramp_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`jit_resolve_pending_tail`]: drains a pending cross-function
+    /// tail call left by a direct native callee, so the deferred result can
+    /// never replace this function's own return value.
+    resolve_pending_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`jit_set_pending_tail`] (issue #133 Tier 2a): records a
     /// cross-function tail call on `Ctx` instead of performing it natively.
     pending_tail_ref: cranelift_codegen::ir::FuncRef,
@@ -1257,11 +1303,17 @@ impl Emitter<'_, '_, '_> {
         }
     }
 
+    // The verifier accepts ONLY endianness flags on `bitcast` — `trusted()`
+    // (notrap|aligned) fails verification, which silently killed the native
+    // edition of every function whose Core touches an i64<->f64 word cast
+    // (all-float signatures ran CLOSURE forever while ints went NATIVE).
     fn as_f(&mut self, w: Value) -> Value {
-        self.b.ins().bitcast(types::F64, MemFlagsData::trusted(), w)
+        let little = MemFlagsData::new().with_endianness(cranelift_codegen::ir::Endianness::Little);
+        self.b.ins().bitcast(types::F64, little, w)
     }
     fn as_i(&mut self, f: Value) -> Value {
-        self.b.ins().bitcast(types::I64, MemFlagsData::trusted(), f)
+        let little = MemFlagsData::new().with_endianness(cranelift_codegen::ir::Endianness::Little);
+        self.b.ins().bitcast(types::I64, little, f)
     }
 
     fn float_bin(&mut self, op: BinOp, x: Value, y: Value) -> Value {
@@ -1670,7 +1722,18 @@ impl Emitter<'_, '_, '_> {
         self.b.seal_block(call_b);
         let call_result = self.emit_call_unguarded(id, argc, buf_addr);
         self.b.ins().call(self.exit_call_ref, &[self.ctx_ptr]);
-        self.b.ins().stack_store(call_result, outer_res, 0);
+        // A direct native callee that ended in a cross-function tail call
+        // returned only a placeholder and parked the real call in the ctx
+        // pending cell; resolve it HERE so it can never leak upward and
+        // replace this function's own result at the top-level invoke loop.
+        let resolved = {
+            let rc = self
+                .b
+                .ins()
+                .call(self.resolve_pending_ref, &[self.ctx_ptr, call_result]);
+            self.b.inst_results(rc)[0]
+        };
+        self.b.ins().stack_store(resolved, outer_res, 0);
         self.b.ins().jump(outer_merge_b, &[]);
 
         self.b.switch_to_block(outer_merge_b);

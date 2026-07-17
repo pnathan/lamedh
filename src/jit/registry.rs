@@ -236,7 +236,15 @@ impl TypedFn {
                     self.entry.set(ed.entry_addr());
                     *self.native.borrow_mut() = Some(Rc::new(ed));
                 }
-                Err(_) => {
+                Err(e) => {
+                    // Never silent: a typed-checked function that fails
+                    // native codegen is a bug (the closure edition keeps
+                    // things running, but a silent fallback hid the float
+                    // bitcast regression for a full release).
+                    eprintln!(
+                        "; {}: native codegen failed ({e}); using closure edition",
+                        self.name
+                    );
                     self.entry.set(0);
                     *self.native.borrow_mut() = None;
                 }
