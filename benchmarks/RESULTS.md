@@ -180,3 +180,36 @@ python3 ./fibonacci/lisp/benchmark.py 1000 100 20
 - [ ] Implement bytecode compiler for performance improvement
 - [ ] Create performance regression tracking
 - [ ] Compare against other Lisp implementations (SBCL, Racket, Clojure)
+
+## Lua comparison (2026-07-17, i7-9750H, lamedh 9b6713d, thermal-guarded)
+
+Lua is the embeddable-language standard, so this is the head-to-head that
+matters for hosts choosing a scripting layer. PUC Lua 5.4.6 and LuaJIT
+2.1 ran in an Alpine 3.20 container (CPU-bound; container overhead nil):
+
+    docker run --rm -v $PWD/benchmarks:/b alpine:3.20 sh -c \
+      "apk add --no-cache lua5.4 luajit && lua5.4 /b/levenshtein/lua/levenshtein.lua && ..."
+
+| benchmark | lua5.4 | LuaJIT | Lamedh interpreted | Lamedh compiled | Rust/C ref |
+|---|---|---|---|---|---|
+| Levenshtein ×10k (kitten/sitting) | 94.6 ms | 11.7 ms | 6612 ms | **22.9 ms** (typed arrays) | — |
+| fib(30), warm mean | 79.6 ms | 10.5 ms | — | **26.8 ms** | ~2 ms (C, historical) |
+| realistic ×10 (six-part mixed) | 33.7 ms | 5.5 ms | — | 43.3 ms (3/6 parts typed) | — |
+| SDF kernel, ns/eval | 72.1 | 6.5 | 4278 | **6.7** | 3.1 (Rust) |
+| dot product, ns/elem | 23.5 | 1.4 | — | 4.0 | 1.4 (Rust) |
+
+Checksums/results agree across all implementations.
+
+Reading:
+- **Against PUC Lua 5.4** (what most engines actually embed): compiled
+  Lamedh wins every numeric benchmark by 3–10x. The tree-walking
+  interpreter loses badly (bytecode VM vs tree-walker, ~45–70x on
+  Levenshtein) — the design bet is that hot code compiles.
+- **Against LuaJIT**: the SDF kernel is a tie (6.7 vs 6.5 ns). LuaJIT
+  leads ~2x on Levenshtein and fib — its traces skip bounds checks and
+  overflow bookkeeping that Lamedh still pays per operation (#436 bounds
+  hoisting, #438 guard elision target exactly this) — and reaches
+  Rust-equal SIMD on the dot reduction. The mixed workload is LuaJIT's
+  biggest lead (8x) because Lamedh's hash-table and record paths run
+  interpreted: tables are LuaJIT-compilable, Lamedh hash tables are not
+  typed-tier-eligible today.
