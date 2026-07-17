@@ -71,7 +71,7 @@ fn main() {
             (defun* kernel-loop-t (n int64) float64
               (let ((acc 0.0) (i 0))
                 (while (< i n)
-                  (setq acc (+ acc (sd-sphere-t (* 0.001 (* 1.0 i)) 0.5 0.25)))
+                  (setq acc (+ acc (sd-sphere-t (* 0.001 (float i)) 0.5 0.25)))
                   (setq i (+ i 1)))
                 acc))
 
@@ -85,7 +85,7 @@ fn main() {
             (defun* fill-t (a (array float64)) (b (array float64)) (n int64) int64
               (let ((i 0))
                 (while (< i n)
-                  (aset a i (* 0.5 (* 1.0 i)))
+                  (aset a i (* 0.5 (float i)))
                   (aset b i 2.0)
                   (setq i (+ i 1)))
                 i))
