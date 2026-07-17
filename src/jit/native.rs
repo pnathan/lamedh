@@ -176,7 +176,10 @@ pub fn compile_native(
     cell_addrs: &[usize],
     param_counts: &[usize],
 ) -> Result<NativeEdition, String> {
-    let mut jb = JITBuilder::new(default_libcall_names()).map_err(|e| format!("{e:?}"))?;
+    // opt_level defaults to "none" — turn on Cranelift's egraph optimizer
+    // (measured on the embedder bench: see benchmarks/embedder/README.md).
+    let mut jb = JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names())
+        .map_err(|e| format!("{e:?}"))?;
     jb.symbol("jit_trampoline", jit_trampoline as *const u8);
     jb.symbol("jit_set_pending_tail", jit_set_pending_tail as *const u8);
     jb.symbol(
