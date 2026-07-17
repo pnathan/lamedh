@@ -1228,15 +1228,30 @@ impl Emitter<'_, '_, '_> {
         self.b.ins().band(ge0, lt)
     }
 
-    /// Set a flag byte in `Ctx` to 1 (branchless OR into the existing value).
+    /// Set a flag byte in `Ctx` to 1 when `flag_i8` is true.
+    ///
+    /// Emitted as a *cold-branch* store, not a branchless read-modify-write:
+    /// the old `load|or|store` cost three memory ops on the same `Ctx` line
+    /// per wrapping-checkable arithmetic op — the dominant per-iteration tax
+    /// in hot integer loops once locals moved to SSA registers (#435). The
+    /// common no-overflow path now costs one predictable not-taken branch
+    /// and touches no memory; the OR-accumulate semantics are unchanged
+    /// (the flag only ever transitions 0 → 1).
     fn set_ctx_flag(&mut self, offset: usize, flag_i8: Value) {
+        let cold = self.b.create_block();
+        let cont = self.b.create_block();
+        self.b.set_cold_block(cold);
+        self.b.ins().brif(flag_i8, cold, &[], cont, &[]);
+
+        self.b.switch_to_block(cold);
+        self.b.seal_block(cold);
         let addr = self.b.ins().iadd_imm(self.ctx_ptr, offset as i64);
-        let old = self
-            .b
-            .ins()
-            .load(types::I8, MemFlagsData::trusted(), addr, 0);
-        let new = self.b.ins().bor(old, flag_i8);
-        self.b.ins().store(MemFlagsData::trusted(), new, addr, 0);
+        let one = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().store(MemFlagsData::trusted(), one, addr, 0);
+        self.b.ins().jump(cont, &[]);
+
+        self.b.switch_to_block(cont);
+        self.b.seal_block(cont);
     }
 
     fn int_bin(&mut self, op: BinOp, x: Value, y: Value) -> Value {
