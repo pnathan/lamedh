@@ -26,11 +26,22 @@ original baseline run; the ratios in the history are the current truth.
 |---|---|---|---|
 | A1 | `eval_str` (string + parse + eval — what embedders do today) | 1987 | 904x |
 | A2 | pre-parsed form, `evaluator::eval` | 562 | 256x |
+| A2.5 | `call_function` (fast-call API, #423) | 532 | 250x |
+| A2.6 | `FnHandle::call` (fast-call API, pinned symbol, #423) | 481 | 226x |
 | A3 | `jit_call` into a NATIVE `defun*` | 215 | 98x |
 | A4 | pure Rust function | 2.2 | 1x |
 
-`#423`'s `call_function`/`FnHandle` targets the A2→A3 gap without requiring
-a typed signature; `#424`'s raw entry pointer targets single-digit ns.
+`#424`'s raw entry pointer targets single-digit ns.
+
+History on the A rung: `#423` landed `call_function`/`FnHandle` (A2.5/A2.6
+above, measured 2026-07-17) — skipping the reader/printer alone drops the
+trivial-tick call from ~2000ns to ~530/~480ns, a ~3.8-4.2x win over
+`eval_str` with no typed signature required. That number sits right next to
+A2 (pre-parsed + `evaluator::eval`, 562ns), confirming fast-call's own
+overhead (name resolution + `apply`) is close to zero — the A2.5→A3 gap is
+the interpreted-vs-NATIVE-compiled *callee* cost, not anything left on the
+table by the fast-call API itself. `#424`'s raw entry pointer remains the
+rung for closing that gap without a typed signature.
 
 ### B. Sphere-SDF kernel, 1M evaluations — where the membrane bites
 

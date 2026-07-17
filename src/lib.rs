@@ -3563,6 +3563,107 @@ pub fn eval_all(src: &str, env: &Shared<Environment>) -> Result<Vec<LispVal>, Li
         .collect()
 }
 
+/// Host fast-call API (issue #423): invoke a Lisp function directly from Rust
+/// without building source text or driving the reader/printer.
+///
+/// `name` is case-normalized (uppercased, matching how the reader interns
+/// symbols) and resolved to its **current** binding in `env`; `args` are
+/// applied as already-evaluated values. Compare [`eval_str`], which for a
+/// call like this must build a source string, run the full reader, evaluate,
+/// then (if the caller also prints) run the printer — `call_function` skips
+/// all of that and reuses the exact application path `(funcall name
+/// args...)` would take, including any TCO trampolining inside the callee's
+/// body. Measured on `benchmarks/embedder`: ~4x faster than `eval_str` for a
+/// trivial call (the A1→A2.5 rungs; see that benchmark's README for the full
+/// ladder, including where a typed/NATIVE `defun*` via `jit_call` lands).
+///
+/// `MACRO`/`VAU`/`FEXPR` values are rejected with a clear error: their
+/// calling convention takes *unevaluated* argument forms (raw ASTs, not
+/// values), and this API has no source text to give them unevaluated — call
+/// them via [`eval_str`]/[`eval_all`] instead.
+///
+/// As with `eval_str`, running this under [`with_large_stack`] (so deep
+/// non-tail recursion in the callee doesn't overflow the native stack) is
+/// the caller's responsibility.
+///
+/// For repeated calls to the same name, prefer [`fn_handle`] +
+/// [`FnHandle::call`] to skip the name lookup on every call.
+pub fn call_function(
+    name: &str,
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    let upper = name.to_uppercase();
+    let func = env
+        .get(&upper)
+        .ok_or_else(|| unbound_fn_error(&upper, env))?;
+    evaluator::apply_evaluated(&upper, &func, args, env)
+}
+
+/// A pinned function name (issue #423), created by [`fn_handle`]. Repeated
+/// [`FnHandle::call`]s skip the string hash/intern that [`call_function`]
+/// pays on every call.
+///
+/// A handle pins the **name**, not the value bound to it at creation time —
+/// it is a name pin, not a closure pin. `call` re-resolves the symbol's live
+/// binding on every call, so redefining the function between calls (e.g.
+/// reloading a script, or a REPL redefinition) is picked up automatically.
+///
+/// Creating a handle for a name with no current binding fails immediately at
+/// [`fn_handle`] (early failure — a typo is caught at setup time, e.g. once
+/// per level load, rather than silently deferred to the first frame of a
+/// game loop). If the name becomes bound later, that failed call has not
+/// produced a handle to retry with; call [`fn_handle`] again once the name
+/// is bound.
+#[derive(Debug, Clone)]
+pub struct FnHandle {
+    symbol: Shared<SharedCell<Symbol>>,
+    name: String,
+}
+
+/// Create a [`FnHandle`] pinning `name` (case-normalized: uppercased) in
+/// `env`. Errors if `name` has no current binding in `env` — see
+/// [`FnHandle`]'s docs for why creation, not `call`, is where unbound names
+/// are caught.
+pub fn fn_handle(name: &str, env: &Shared<Environment>) -> Result<FnHandle, LispError> {
+    let upper = name.to_uppercase();
+    let symbol = env.intern_symbol(&upper);
+    if env.resolve(&symbol).is_none() {
+        return Err(unbound_fn_error(&upper, env));
+    }
+    Ok(FnHandle {
+        symbol,
+        name: upper,
+    })
+}
+
+impl FnHandle {
+    /// Apply this handle's function to `args`, re-resolving the live binding
+    /// in `env` first (see [`FnHandle`]'s docs on redefinition).
+    ///
+    /// `env` need not be the exact environment `fn_handle` was created from:
+    /// resolution falls back to a name-based lookup in `env`'s own symbol
+    /// table when the pinned symbol is foreign to it — the same
+    /// cross-namespace path [`Environment::resolve`] already uses for
+    /// first-class environments.
+    pub fn call(&self, args: &[LispVal], env: &Shared<Environment>) -> Result<LispVal, LispError> {
+        let func = env
+            .resolve(&self.symbol)
+            .ok_or_else(|| unbound_fn_error(&self.name, env))?;
+        evaluator::apply_evaluated(&self.name, &func, args, env)
+    }
+}
+
+/// Shared `"Unbound variable: ..."` error construction for [`call_function`]
+/// and [`fn_handle`]/[`FnHandle::call`], routed through the same
+/// did-you-mean/CL-ism teaching suffix as the evaluator's own unbound-symbol
+/// error (`teaching_errors::teaching_suffix`) so fast-call errors read
+/// identically to the equivalent `eval_str` failure.
+fn unbound_fn_error(name: &str, env: &Shared<Environment>) -> LispError {
+    let suffix = teaching_errors::teaching_suffix(name, env.bound_symbol_names().into_iter());
+    LispError::Generic(format!("Unbound variable: {name}{suffix}"))
+}
+
 /// Evaluate a single line for REPL display, returning a printable string.
 ///
 /// This is a thin wrapper over [`eval_str`] for use in the REPL; host code

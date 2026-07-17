@@ -109,6 +109,74 @@ let vals: Vec<LispVal> = eval_all("(def x 1) (+ x 2)", &env)?;
 
 Both functions return `Err(LispError::Generic(msg))` on parse or runtime errors.
 
+## Fast-calling a function
+
+`eval_str`/`eval_all` pay for a string build, a full reader parse, and
+evaluation on every call. For a host loop that calls the same Lisp function
+every frame (an ECS tick, a physics step, an AI decision function), that
+parse cost is pure overhead — the call site doesn't change shape, only the
+argument values do. `call_function` and `FnHandle` skip the reader (and the
+printer — both return a typed `LispVal`, not a string) and apply the
+function to already-evaluated `LispVal` arguments directly.
+
+Before, one `eval_str` per frame:
+
+```rust
+for frame in 0..n_frames {
+    let dt = 0.016_666;
+    // Builds a string, re-parses "(level-tick ...)" from scratch, every frame.
+    let src = format!("(level-tick {dt:.6})");
+    eval_str(&src, &env)?;
+}
+```
+
+After, resolve the callee once outside the loop, then call it directly:
+
+```rust
+use lamedh::{fn_handle, LispVal};
+
+let tick = fn_handle("level-tick", &env)?;   // interns + resolves LEVEL-TICK once
+for frame in 0..n_frames {
+    let dt = 0.016_666;
+    tick.call(&[LispVal::Float(dt)], &env)?;  // no string, no parse
+}
+```
+
+`fn_handle` pins the *name*, not the function value bound to it at creation
+time — `call` re-resolves the symbol's live binding on every call, so a
+redefinition between calls (hot-reloading a script, a REPL edit) is picked
+up. Creating a handle for a name with no current binding fails immediately,
+at `fn_handle`, rather than on the first `call`.
+
+For a one-off call where paying the name lookup each time is fine, skip the
+handle:
+
+```rust
+use lamedh::call_function;
+
+let result = call_function("level-tick", &[LispVal::Float(0.016_666)], &env)?;
+```
+
+Both functions resolve `name` case-normalized (uppercased, matching how the
+reader interns symbols) and work for any callable `funcall` accepts —
+builtins, lambdas (interpreted or compiled), and typed `defun*`/`defun-typed`
+natives. `MACRO`/`VAU`/`FEXPR` values are rejected with an error: their
+calling convention takes unevaluated argument forms, which this API — given
+only `LispVal`s and no source text — cannot supply; go through
+`eval_str`/`eval_all` for those. As with `eval_str`, running under
+`with_large_stack` is the caller's responsibility if the callee may recurse
+deeply.
+
+Benchmarked on `benchmarks/embedder` (trivial one-arg tick function, per
+call): `eval_str` ~2000ns, `call_function` ~530ns, `FnHandle::call` ~480ns,
+vs ~540ns for a pre-parsed form run through `evaluator::eval` directly (so
+fast-call's win over `eval_str` is almost entirely the string-build + parse
+it skips — the rest is the interpreted callee's own cost) and ~190ns for a
+typed-registry `jit_call` into a NATIVE `defun*`. `call_function`/`FnHandle`
+is the general-purpose middle rung — it works for any callable, not just a
+typed/NATIVE `defun*` — where `jit_call` demands one. See
+`benchmarks/embedder/README.md` for the full ladder and current numbers.
+
 ## Value conversion
 
 ### Rust → Lisp (`From<T>`)
