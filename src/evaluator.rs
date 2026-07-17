@@ -104,3 +104,36 @@ pub use self::core::{
     set_kernel_fuel,
 };
 pub use self::functions::eval;
+
+/// Crate-internal entry point for the host fast-call API (issue #423):
+/// [`crate::call_function`]/[`crate::FnHandle::call`] in `lib.rs`. Applies an
+/// already-resolved `func` to already-evaluated `args`, reusing the exact
+/// application path `(funcall func args...)` takes — [`apply`], in
+/// `evaluator::apply` — including driving any TCO trampolining inside the
+/// callee's body to completion (a `Lambda` body's own tail calls loop inside
+/// `apply`'s `eval` call; this function does not re-implement any of that).
+///
+/// Rejects `Macro`/`Vau`/`Fexpr`: their calling convention takes
+/// *unevaluated* argument forms (they receive ASTs and choose what to
+/// evaluate), which a fast-call API — given only already-evaluated
+/// [`LispVal`]s and no source text — cannot supply. `name` is the lookup
+/// name the caller resolved `func` from, used only for this error message.
+pub(crate) fn apply_evaluated(
+    name: &str,
+    func: &LispVal,
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    let kind = match func {
+        LispVal::Macro(_) => Some("a macro"),
+        LispVal::Vau(_) => Some("an operative (VAU)"),
+        LispVal::Fexpr(_) => Some("a fexpr"),
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        return Err(LispError::Generic(format!(
+            "{name} is {kind}; fast-call passes evaluated arguments — use eval"
+        )));
+    }
+    apply(func, args, env)
+}

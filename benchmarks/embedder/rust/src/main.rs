@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use lamedh::environment::Environment;
 use lamedh::jit::Value;
-use lamedh::{eval_all, eval_str, evaluator, reader};
+use lamedh::{LispVal, call_function, eval_all, eval_str, evaluator, fn_handle, reader};
 
 fn time<F: FnMut()>(label: &str, iters: u64, mut f: F) -> f64 {
     // One warmup pass, then the measured run.
@@ -115,6 +115,29 @@ fn main() {
         let a2 = time("A2 pre-parsed form, evaluator::eval", 200_000, || {
             black_box(evaluator::eval(&form, &env).unwrap());
         });
+        // A2.5 (issue #423): the fast-call API — no reader, no printer, works
+        // for any callable (not just a typed/NATIVE `defun*`). This calls the
+        // same plain interpreted TICK as A1/A2, so the gap to A2 measures
+        // exactly the string-build + parse cost `call_function` skips.
+        let a2_5 = time(
+            "A2.5 call_function (fast-call API, name lookup + apply)",
+            500_000,
+            || {
+                black_box(call_function("TICK", &[LispVal::Float(0.016_666)], &env).unwrap());
+            },
+        );
+        let tick_handle = fn_handle("TICK", &env).unwrap();
+        let a2_6 = time(
+            "A2.6 FnHandle::call (fast-call API, pinned symbol)",
+            500_000,
+            || {
+                black_box(
+                    tick_handle
+                        .call(&[LispVal::Float(0.016_666)], &env)
+                        .unwrap(),
+                );
+            },
+        );
         let a3 = time("A3 typed registry jit_call (NATIVE defun*)", 2_000_000, || {
             black_box(env.jit_call("TICK-T", &[Value::Float(0.016_666)]).unwrap().unwrap());
         });
@@ -123,9 +146,11 @@ fn main() {
             acc = black_box(acc + 0.016_666);
         });
         println!(
-            "   ratios vs Rust: eval_str {:.0}x, preparsed {:.0}x, jit_call {:.0}x\n",
+            "   ratios vs Rust: eval_str {:.0}x, preparsed {:.0}x, call_function {:.0}x, FnHandle {:.0}x, jit_call {:.0}x\n",
             a1 / a4,
             a2 / a4,
+            a2_5 / a4,
+            a2_6 / a4,
             a3 / a4
         );
 
