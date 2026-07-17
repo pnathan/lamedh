@@ -1,5 +1,7 @@
 use super::*;
 use std::collections::HashSet;
+#[cfg(feature = "jit")]
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // The function cell.
@@ -31,11 +33,17 @@ pub struct TypedFn {
     pub(super) inlined_from: RefCell<HashSet<usize>>,
     pub(super) slots: Cell<usize>,
     pub(super) compiled: RefCell<Option<Compiled>>,
-    /// Native (Cranelift) edition. Like `compiled`, a call pins (`Rc`-clones) it,
-    /// so a redefinition that swaps it out keeps the old code mapped until
+    /// Native (Cranelift) edition. Like `compiled`, a call pins (`Arc`-clones)
+    /// it, so a redefinition that swaps it out keeps the old code mapped until
     /// in-flight callers return (the `NativeEdition` owns its `JITModule`).
+    ///
+    /// Stored behind an `Arc` (not `Rc`) so a raw native-entry handle
+    /// (`Jit::native_entry`, issue #424) can pin a *specific* edition and call
+    /// it from any thread: the handle snapshot outlives redefinition and never
+    /// touches this cell again. See `NativeEdition`'s `Send`/`Sync` audit in
+    /// `native.rs`.
     #[cfg(feature = "jit")]
-    pub(super) native: RefCell<Option<Rc<native::NativeEdition>>>,
+    pub(super) native: RefCell<Option<Arc<native::NativeEdition>>>,
     /// Stable heap word holding this function's current native entry pointer (or
     /// `0`). Other compiled functions bake this cell's *address* and load it to
     /// make direct calls; it is updated on (re)compile and cleared on deopt. A
@@ -180,6 +188,58 @@ impl TypedFn {
             .collect()
     }
 
+    /// Build the *inlined* body this function's compiled editions are generated
+    /// from: splice small (< 30 Core nodes), already-defined, non-recursive
+    /// callees' bodies directly into `core` (one level only — see
+    /// [`inline_calls`]). Returns the transformed core, its slot count, and the
+    /// set of callee ids that were spliced in. Pure — mutates no `self` state,
+    /// so it is reused for a read-only structural check (`native_residual_calls`)
+    /// as well as by `compile_now`, guaranteeing the leaf check reasons about
+    /// the *exact* body the native edition was compiled from.
+    fn inlined_body(&self, core: &Core, funcs: &[Rc<TypedFn>]) -> (Core, usize, HashSet<usize>) {
+        let inline_ids = self.inline_candidates(core, funcs);
+        if inline_ids.is_empty() {
+            return (core.clone(), self.slots.get(), inline_ids);
+        }
+        let owned_callees: Vec<(usize, Core, usize)> = inline_ids
+            .iter()
+            .filter_map(|&id| {
+                let f = funcs.get(id)?;
+                let callee_core = f.core.borrow().clone()?;
+                Some((id, callee_core, f.slots.get()))
+            })
+            .collect();
+        let registry: Vec<(usize, &Core, usize)> = owned_callees
+            .iter()
+            .map(|(id, c, n)| (*id, c, *n))
+            .collect();
+        let (out, n_slots) = inline_calls(core, &registry, self.slots.get());
+        (out, n_slots, inline_ids)
+    }
+
+    /// The distinct callee ids that survive as real `Core::Call` nodes in this
+    /// function's compiled (inlined) native body — empty exactly when the native
+    /// edition is a *leaf* (issue #424): its machine code never touches the
+    /// entry cells, the host trampoline, or the pending-tail machinery, so it can
+    /// be invoked from a raw entry point with only a per-call [`Ctx`] for flags/
+    /// arena/error reporting. Recomputes the same inlining `compile_now` did, so
+    /// the answer matches the actual native code (a redefinition always
+    /// recompiles inline dependents, keeping `core`/`funcs` in step with the
+    /// current native edition).
+    #[cfg(feature = "jit")]
+    fn native_residual_calls(&self, funcs: &[Rc<TypedFn>]) -> Vec<usize> {
+        let core = match self.core.borrow().as_ref() {
+            Some(c) => c.clone(),
+            None => return Vec::new(),
+        };
+        let (inlined, _slots, _ids) = self.inlined_body(&core, funcs);
+        let mut set = HashSet::new();
+        inline_call_ids(&inlined, &mut set);
+        let mut ids: Vec<usize> = set.into_iter().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub(super) fn compile_now(&self, funcs: &[Rc<TypedFn>]) {
         let core_owned = match self.core.borrow().as_ref() {
             Some(core) => core.clone(),
@@ -193,24 +253,7 @@ impl TypedFn {
         // `call_indirect`, or a `Ctx::call` re-entry for the closure edition
         // — disappears entirely at its call sites. See `inline_candidates`
         // and `inline_calls`.
-        let inline_ids = self.inline_candidates(&core_owned, funcs);
-        let (core, n_slots) = if inline_ids.is_empty() {
-            (core_owned, self.slots.get())
-        } else {
-            let owned_callees: Vec<(usize, Core, usize)> = inline_ids
-                .iter()
-                .filter_map(|&id| {
-                    let f = funcs.get(id)?;
-                    let callee_core = f.core.borrow().clone()?;
-                    Some((id, callee_core, f.slots.get()))
-                })
-                .collect();
-            let registry: Vec<(usize, &Core, usize)> = owned_callees
-                .iter()
-                .map(|(id, c, n)| (*id, c, *n))
-                .collect();
-            inline_calls(&core_owned, &registry, self.slots.get())
-        };
+        let (core, n_slots, inline_ids) = self.inlined_body(&core_owned, funcs);
         *self.inlined_from.borrow_mut() = inline_ids;
         self.slots.set(n_slots);
 
@@ -234,7 +277,7 @@ impl TypedFn {
             ) {
                 Ok(ed) => {
                     self.entry.set(ed.entry_addr());
-                    *self.native.borrow_mut() = Some(Rc::new(ed));
+                    *self.native.borrow_mut() = Some(Arc::new(ed));
                 }
                 Err(e) => {
                     // Never silent: a typed-checked function that fails
@@ -866,6 +909,104 @@ impl Jit {
         } else {
             None
         }
+    }
+
+    /// Extract a raw native entry point for a NATIVE leaf `defun*` kernel
+    /// (issue #424): a [`NativeFnHandle`](super::entry::NativeFnHandle) that
+    /// calls the JIT-compiled machine code directly, with no boxing, no membrane
+    /// type-conversion, and no dispatch, for per-sample host hot loops.
+    ///
+    /// The handle pins the *specific* native edition current at extraction time
+    /// (an `Arc` snapshot): a later redefinition neither invalidates nor
+    /// redirects it — it keeps running the snapshot, and the host re-extracts
+    /// when it cares (compare [`NativeFnHandle::generation`](super::entry::NativeFnHandle::generation)
+    /// against [`Jit::generation`]). This is what makes the raw pointer safe to
+    /// hold across redefinition.
+    ///
+    /// Extraction fails (with a message naming the reason) when:
+    /// - `name` is not a defined typed function;
+    /// - any parameter or the return type is not a raw scalar
+    ///   (`int64`/`float64`/`bool`) — compound and boxed types cannot cross a
+    ///   raw entry;
+    /// - the function has no native edition (it runs on the closure tier);
+    /// - the function is **not a leaf**: its compiled body still contains a
+    ///   cross-function call (the error names the callees). Only leaf kernels
+    ///   are extractable in v1 — a leaf's native code never touches the entry
+    ///   cells, the trampoline, or the pending-tail machinery, so it runs with
+    ///   only a per-call [`Ctx`] for flags/arena/error reporting and is safe to
+    ///   call from any thread. A small callee often inlines away automatically,
+    ///   turning a call-graph into a leaf; if not, shrink or restructure it.
+    #[cfg(feature = "jit")]
+    pub fn native_entry(&self, name: &str) -> Result<super::entry::NativeFnHandle, String> {
+        let id = self
+            .id(name)
+            .ok_or_else(|| format!("native-entry: no typed function named `{name}`"))?;
+        let f = &self.funcs[id];
+        if !f.is_defined() {
+            return Err(format!(
+                "native-entry: `{}` is declared but not defined",
+                f.name
+            ));
+        }
+
+        // Signature must be all raw scalars (int64/float64/bool) — the shape a
+        // raw entry point can pass and return without boxing.
+        let mut ptys = Vec::with_capacity(f.params.borrow().len());
+        for (pname, ty) in f.params.borrow().iter() {
+            let nt = super::entry::NativeTy::from_ty(ty).ok_or_else(|| {
+                format!(
+                    "native-entry: `{}` parameter `{}` has type `{}`, which is not a raw scalar (int64/float64/bool); only scalar leaf kernels can be extracted",
+                    f.name,
+                    pname,
+                    ty_name(ty)
+                )
+            })?;
+            ptys.push(nt);
+        }
+        let ret = super::entry::NativeTy::from_ty(&f.ret.borrow()).ok_or_else(|| {
+            format!(
+                "native-entry: `{}` returns `{}`, which is not a raw scalar (int64/float64/bool); only scalar leaf kernels can be extracted",
+                f.name,
+                ty_name(&f.ret.borrow())
+            )
+        })?;
+
+        // A native edition must exist (a closure-tier function has none).
+        let edition = f.native.borrow().clone().ok_or_else(|| {
+            format!(
+                "native-entry: `{}` has no native edition (it runs on the closure tier); only NATIVE-tier defun* kernels can be extracted",
+                f.name
+            )
+        })?;
+
+        // Leaf restriction (v1): reject anything whose compiled body still
+        // performs a cross-function call, naming the callees.
+        let residual = f.native_residual_calls(&self.funcs);
+        if !residual.is_empty() {
+            let names: Vec<String> = residual
+                .iter()
+                .map(|&cid| {
+                    self.funcs
+                        .get(cid)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| format!("#{cid}"))
+                })
+                .collect();
+            return Err(format!(
+                "native-entry: `{}` is not a leaf kernel — its compiled code calls: {}. Only leaf kernels (no cross-function calls) can be extracted in v1; a small callee may inline automatically, so try shrinking it or restructuring `{}` not to call it",
+                f.name,
+                names.join(", "),
+                f.name
+            ));
+        }
+
+        Ok(super::entry::NativeFnHandle::new(
+            f.name.clone(),
+            edition,
+            ptys,
+            ret,
+            f.generation.get(),
+        ))
     }
 
     /// Type-check and (eagerly) compile a `(defun-typed ...)` form. Returns the

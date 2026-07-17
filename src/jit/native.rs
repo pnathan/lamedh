@@ -52,13 +52,40 @@ type NativeEntry = unsafe extern "C" fn(*const u64, *const c_void) -> u64;
 const MAX_STACK_ALLOC_ELEMENTS: i64 = 4096;
 
 /// A finalized native edition. Owns its `JITModule`, whose `Drop` frees the
-/// executable memory — so keeping this alive (e.g. behind an `Rc` that an
+/// executable memory — so keeping this alive (e.g. behind an `Arc` that an
 /// in-flight call has cloned) keeps the code mapped.
 pub struct NativeEdition {
     // Field order matters for drop: `entry` is a pointer into `module`'s code.
     entry: NativeEntry,
     _module: JITModule,
 }
+
+// SAFETY (issue #424 raw native entry): a `NativeEdition` is shared across
+// threads (behind an `Arc`) and called concurrently from a `NativeFnHandle`.
+// This is sound for the two — and only two — operations performed on a
+// `NativeEdition` after it is constructed:
+//
+//  1. `call` (the `entry` fn pointer). After `finalize_definitions`, `entry`
+//     points into immutable, read-execute code memory. Invoking it reads only
+//     that finalized code and the caller-supplied per-call `Ctx` (each call
+//     builds its own on its own stack — `Ctx::leaf`); it never dereferences
+//     `_module`. The `JITModule`'s one non-`Sync` field is `symbols:
+//     RefCell<..>`, touched exclusively during *compilation*/relocation, which
+//     completed before any handle could exist — so concurrent calls never race
+//     on it. Cranelift's own memory provider is `+ Send` (`Box<dyn
+//     JITMemoryProvider + Send>`), and the finalized code pages are immutable.
+//
+//  2. `Drop` → `JITModule`'s drop frees (unmaps) the code memory. It runs
+//     exactly once, when the last `Arc` reference is dropped — at which point,
+//     by `Arc`'s refcount guarantee, no other reference exists and no call can
+//     be in flight. `munmap` is thread-agnostic.
+//
+// No other `JITModule` method is reachable through a `NativeEdition` (its
+// `_module` field is private and never exposed), so the `RefCell`/`!Sync`
+// interior is unreachable post-finalize. Moving across threads (`Send`) and
+// sharing (`Sync`) are therefore both sound for this restricted API surface.
+unsafe impl Send for NativeEdition {}
+unsafe impl Sync for NativeEdition {}
 
 impl std::fmt::Debug for NativeEdition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

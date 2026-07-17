@@ -3654,6 +3654,35 @@ impl FnHandle {
     }
 }
 
+/// Extract a raw native entry point for a NATIVE leaf `defun*` kernel
+/// (issue #424): a [`NativeFnHandle`](jit::entry::NativeFnHandle) that invokes
+/// the JIT-compiled machine code directly — no boxing, no membrane
+/// type-conversion, no dispatch — for a per-sample host hot loop (e.g. marching
+/// cubes over a Lisp SDF).
+///
+/// `name` is case-normalized (uppercased) and resolved in `env`'s typed-JIT
+/// registry. The returned handle pins the *specific* native edition current at
+/// extraction time (an `Arc` snapshot): a later redefinition of the Lisp
+/// function neither invalidates nor redirects it — it keeps running the
+/// snapshot, and the host re-extracts (and can compare
+/// [`NativeFnHandle::generation`](jit::entry::NativeFnHandle::generation)
+/// against [`Environment::jit_generation`]) when it cares.
+///
+/// Extraction is restricted to **leaf** kernels with a **raw-scalar**
+/// signature (`int64`/`float64`/`bool` params and return); see
+/// [`jit::Jit::native_entry`] for the exact rules and error messages. A
+/// raw-entry call is **unmetered** (no fuel) and does **not** propagate
+/// `OVERFLOW`/`DIV0`/index conditions into the Lisp condition system — check
+/// [`NativeFnHandle::last_error`](jit::entry::NativeFnHandle::last_error) after
+/// a call instead.
+#[cfg(feature = "jit")]
+pub fn native_entry(
+    name: &str,
+    env: &Shared<Environment>,
+) -> Result<jit::entry::NativeFnHandle, String> {
+    env.jit_native_entry(name)
+}
+
 /// Shared `"Unbound variable: ..."` error construction for [`call_function`]
 /// and [`fn_handle`]/[`FnHandle::call`], routed through the same
 /// did-you-mean/CL-ism teaching suffix as the evaluator's own unbound-symbol
