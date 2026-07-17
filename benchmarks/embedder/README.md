@@ -13,7 +13,12 @@ cargo build --release
 ./target/release/embedder-bench
 ```
 
-## Numbers (i7-9750H, 2026-07-17, lamedh a3e7313 — post float-native fix #429)
+## Numbers (i7-9750H, 2026-07-17, post #429 + #434 + #435)
+
+History on the B3 rung (whole-loop native SDF vs Rust): 3.3x at baseline →
+2.8x with the Cranelift optimizer on (#434) → 2.2x with SSA locals (#435) →
+**2.0x** with cold-branch overflow-flag stores. Table below reflects the
+original baseline run; the ratios in the history are the current truth.
 
 ### A. Call overhead — trivial tick fn, the game-loop pattern
 
