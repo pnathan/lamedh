@@ -100,4 +100,5 @@ exclude = [
     "benchmarks/loops/rust",
     "benchmarks/levenshtein/rust",
     "benchmarks/realistic/rust",
+    "benchmarks/embedder/rust",
 ]

@@ -1,0 +1,15 @@
+[package]
+name = "embedder-bench"
+version = "0.1.0"
+edition = "2024"
+
+# The 0.5 "Call Me Maybe" acceptance benchmark (epic #427): per-call cost of a
+# host talking to an embedded Lamedh image, rung by rung, against pure Rust.
+# Excluded from the workspace like every benchmarks/*/rust crate.
+
+[dependencies]
+lamedh = { path = "../../.." }
+
+[profile.release]
+lto = true
+codegen-units = 1
