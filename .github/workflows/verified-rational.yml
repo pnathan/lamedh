@@ -1,0 +1,84 @@
+# CI for the standalone `verified-rational` crate.
+#
+# This crate is excluded from the lamedh workspace, so it is not covered by the
+# repository's main rust.yml. Two independent gates run on every change:
+#
+#   build  -- the crate compiles, tests, and lints under plain rustc
+#   verify -- the same sources verify under Verus with zero errors
+#
+# Both must pass. A green `cargo test` on its own proves nothing about the
+# proofs, and a green `verus` run on its own proves nothing about the binary
+# anyone actually ships.
+name: verified-rational
+
+on:
+  push:
+    paths:
+      - 'verified-rational/**'
+      - '.github/workflows/verified-rational.yml'
+  pull_request:
+    paths:
+      - 'verified-rational/**'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: verified-rational
+
+jobs:
+  build:
+    name: build / test / lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        run: rustup toolchain install stable --component clippy --profile minimal
+
+      - name: Build
+        run: cargo build --all-features
+
+      - name: Test
+        run: cargo test --all-features
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: No LGPL in the distributable dependency tree
+        run: ./scripts/check-no-lgpl.sh
+
+  verify:
+    name: verus
+    runs-on: ubuntu-latest
+    env:
+      # Pinned so a verifier change never silently turns a proof green or red.
+      VERUS_RELEASE: 'release/0.2026.07.27.31579f0'
+      VERUS_VERSION: '0.2026.07.27.31579f0'
+      # The toolchain the pinned Verus release is built against.
+      VERUS_TOOLCHAIN: '1.97.1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Verus toolchain
+        run: |
+          rustup toolchain install "$VERUS_TOOLCHAIN" \
+            --component rustc-dev,llvm-tools,rust-std,rustfmt \
+            --profile minimal
+
+      - name: Download the pinned Verus release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/verus"
+          gh release download "$VERUS_RELEASE" \
+            --repo verus-lang/verus \
+            --pattern '*x86-linux.zip' \
+            --dir "$RUNNER_TEMP/verus"
+          unzip -q "$RUNNER_TEMP"/verus/*.zip -d "$RUNNER_TEMP/verus"
+          find "$RUNNER_TEMP/verus" -name verus -type f -exec chmod +x {} \;
+
+      - name: Verify
+        run: |
+          VERUS="$(find "$RUNNER_TEMP/verus" -name verus -type f | head -n1)"
+          echo "using $VERUS"
+          VERUS="$VERUS" ./scripts/verify.sh

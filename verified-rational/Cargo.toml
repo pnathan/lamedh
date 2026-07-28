@@ -1,0 +1,56 @@
+# Standalone: deliberately not a member of the lamedh workspace, so the
+# interpreter's build, test and gauntlet runs are untouched by this crate's
+# dependency tree.
+[workspace]
+
+[package]
+name = "verified-rational"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Exact-with-verified-rounding bounded rational arithmetic, machine-checked with Verus"
+# NOTE: inherited from the host repository. The consuming fusion engine's stated
+# requirement is static linking into proprietary binaries (the reason
+# malachite-q's LGPL-3.0 was a blocker); AGPL is *more* restrictive than LGPL
+# for that use case. The repository owner should pick a permissive license
+# (MIT/Apache-2.0) before this crate is used that way. See README.md.
+license = "AGPL-3.0-only"
+repository = "https://github.com/pnathan/lamedh"
+publish = false
+
+[lib]
+name = "verified_rational"
+path = "src/lib.rs"
+
+[dependencies]
+# Verus support crates. These are ordinary crates.io dependencies: `cargo build`
+# compiles the crate with plain rustc (the `verus!` macro erases all ghost code),
+# while `verus` re-reads the same sources with the ghost code kept.
+vstd = "0.0.0-2026-07-27-0206"
+verus_builtin = "0.0.0-2026-07-27-0206"
+verus_builtin_macros = "0.0.0-2026-07-27-0206"
+
+serde = { version = "1", optional = true, default-features = false, features = [
+    "derive",
+] }
+
+[dev-dependencies]
+# ORACLE ONLY. malachite-q is LGPL-3.0-only, which is exactly why it cannot be a
+# real dependency (see README). It is confined to the differential test harness
+# and never enters the distributed dependency tree; `scripts/check-no-lgpl.sh`
+# enforces that mechanically.
+malachite-q = "0.10"
+malachite-base = "0.10"
+serde_json = "1"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[profile.test]
+opt-level = 2
+
+# `verus_keep_ghost` is set by the `verus` driver when it re-reads these sources
+# with the ghost code kept. Under plain rustc it is simply absent.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_keep_ghost)'] }

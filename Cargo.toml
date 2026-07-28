@@ -93,9 +93,15 @@ fuzz = []
 [workspace]
 members = ["cli"]
 default-members = [".", "cli"]
-# Benchmark comparison crates are standalone; they are built directly by
-# benchmarks/run_benchmarks.sh and are not part of this workspace.
+# Standalone crates built by their own toolchains, kept out of the interpreter
+# workspace so that `cargo build`/`cargo test`/`scripts/gauntlet.sh` at the repo
+# root are completely unaffected by them:
+#
+#   * benchmark comparison crates -- built directly by benchmarks/run_benchmarks.sh
+#   * verified-rational -- a Verus-verified rational arithmetic crate with its
+#     own (vstd/malachite) dependency tree; see verified-rational/README.md
 exclude = [
+    "verified-rational",
     "benchmarks/fibonacci/rust",
     "benchmarks/loops/rust",
     "benchmarks/levenshtein/rust",
