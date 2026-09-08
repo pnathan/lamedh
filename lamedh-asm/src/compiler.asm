@@ -79,6 +79,12 @@ extern float_sub
 extern float_mul
 extern float_div
 extern float_lt
+extern make_array
+extern array_ref
+extern array_set
+extern array_length_tagged
+extern hash_code_tagged
+extern mod_tagged
 extern emit_jl
 extern emit_load_stack_arg
 
@@ -116,6 +122,12 @@ kw_fsub:     db "F-"
 kw_fmul:     db "F*"
 kw_fdiv:     db "F/"
 kw_flt:      db "F<"
+kw_make_array:   db "MAKE-ARRAY"
+kw_array_ref:    db "ARRAY-REF"
+kw_array_set:    db "ARRAY-SET"
+kw_array_length: db "ARRAY-LENGTH"
+kw_hash_code:    db "HASH-CODE"
+kw_mod:          db "MOD"
 kw_rest:   db "&REST"
 
 section .data
@@ -587,6 +599,43 @@ compile_binary_hostcall:
     call emit_mov_reg_imm64                                   ; target: rax = host fn addr
     mov dil, REG_RAX
     call emit_call_reg                                          ; call -> rax = result
+    pop r12
+    pop rbx
+    ret
+
+; compile_ternary_hostcall(rdi=arg1 form, rsi=arg2 form, rdx=arg3 form,
+; rcx=host fn address). Host convention rdi=arg1,rsi=arg2,rdx=arg3
+; (matches array_set's own signature) — the same shape as
+; compile_binary_hostcall, one argument deeper.
+compile_ternary_hostcall:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rsi                          ; arg2 form
+    mov r12, rdx                            ; arg3 form
+    mov r13, rcx                              ; host fn addr
+    call compile_form                            ; arg1 -> rax
+    mov dil, REG_RAX
+    call emit_push_reg                              ; save arg1
+    mov rdi, rbx
+    call compile_form                                  ; arg2 -> rax
+    mov dil, REG_RAX
+    call emit_push_reg                                    ; save arg2
+    mov rdi, r12
+    call compile_form                                        ; arg3 -> rax
+    mov dil, REG_RDX
+    mov sil, REG_RAX
+    call emit_mov_rr                                            ; target: rdx = arg3
+    mov dil, REG_RSI
+    call emit_pop_reg                                              ; target: rsi = arg2
+    mov dil, REG_RDI
+    call emit_pop_reg                                                ; target: rdi = arg1
+    mov rsi, r13
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                                            ; target: rax = host fn addr
+    mov dil, REG_RAX
+    call emit_call_reg                                                   ; call -> rax = result
+    pop r13
     pop r12
     pop rbx
     ret
@@ -2284,6 +2333,115 @@ compile_form:
     jmp .out
 
 .not_float_binop:
+    mov rdi, r12
+    mov rsi, kw_make_array
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_make_array
+    mov rdi, r13
+    call car
+    lea rsi, [rel make_array]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_make_array:
+    mov rdi, r12
+    mov rsi, kw_array_length
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_array_length
+    mov rdi, r13
+    call car
+    lea rsi, [rel array_length_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_array_length:
+    mov rdi, r12
+    mov rsi, kw_hash_code
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_hash_code
+    mov rdi, r13
+    call car
+    lea rsi, [rel hash_code_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_hash_code:
+    mov rdi, r12
+    mov rsi, kw_array_ref
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_array_ref
+    mov rdi, r13
+    call car                            ; array form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; index form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel array_ref]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_array_ref:
+    mov rdi, r12
+    mov rsi, kw_mod
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_mod
+    mov rdi, r13
+    call car                            ; a form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; b form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel mod_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_mod:
+    mov rdi, r12
+    mov rsi, kw_array_set
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_array_set
+    mov rdi, r13
+    call car                            ; array form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rbx, rax                          ; (index-form val-form)
+    mov rdi, rbx
+    call car                                ; index form
+    push rax
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call car                                  ; val form
+    mov rdx, rax
+    pop rsi                                     ; index form
+    pop rdi                                       ; array form
+    lea rcx, [rel array_set]
+    call compile_ternary_hostcall
+    jmp .out
+
+.not_array_set:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1

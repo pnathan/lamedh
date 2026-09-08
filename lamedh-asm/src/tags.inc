@@ -36,6 +36,7 @@
 %define HDR_CLOSURE     2     ; [8 native-code-ptr][8 nargs][8 nfree][8*nfree captured]
 %define HDR_STRING      3     ; [8 len][len bytes, padded]
 %define HDR_FLOAT       4     ; [8 bytes: one IEEE754 double]
+%define HDR_ARRAY       5     ; [8 len][len*8 bytes: tagged slots]
 
 ; fixnum <-> machine-integer conversion
 %macro TO_FIXNUM 1        ; reg <- (reg << 2), tag 00 is already 0 after shift

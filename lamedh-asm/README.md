@@ -47,7 +47,7 @@ One 64-bit word per value; the low 2 bits are a tag (`src/tags.inc`):
 |------|-----------|---------|
 | `00` | fixnum    | bits 63:2, a signed 62-bit integer |
 | `01` | cons      | bits 63:2 (shifted) address a 16-byte `[car\|cdr]` cell |
-| `10` | heapobj   | address of a header word naming the object's kind (symbol, closure, string, float) |
+| `10` | heapobj   | address of a header word naming the object's kind (symbol, closure, string, float, array) |
 | `11` | immediate | `NIL`, `TRUE`, `FALSE`, `UNBOUND`, `EOF` |
 
 Fixnum arithmetic runs directly on the tagged (shifted-left-by-2)
@@ -66,8 +66,9 @@ programs this stage targets.
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
-  `FD-READ`, and `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<` — see "The kernel
-  surface" below.
+  `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
+  `ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`/`HASH-CODE`/`MOD` — see "The
+  kernel surface" below.
 - String and float literals (`"..."`, `3.14`) read as heapobjs
   (`HDR_STRING`, `HDR_FLOAT`) and are self-evaluating, exactly like a
   fixnum literal — no compiler change was needed for that part, since
@@ -193,19 +194,38 @@ specifically to test where the line falls:
   name would inline these; a real function call per float operation is
   the cost of not yet teaching `codegen.asm` about XMM registers at
   all (see Roadmap).
+- **`MAKE-ARRAY`/`ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`** are a fixed-
+  length, index-addressable slot vector (`HDR_ARRAY`, `arrays.asm`) —
+  and `ARRAY-SET` is the **first primitive in this kernel that mutates
+  a heap value after creation**. Every value type before it either
+  can't be rewritten at all (fixnums, immediates) or is captured/read
+  but never mutated in place (a closure's captured values are copied by
+  value at creation; a cons built by `CONS` is never `RPLACD`'d).
+  Scoped as narrowly as that one capability: no grow/shrink, no bounds
+  check (v0 — see limits below).
+- **`HASH-CODE`/`MOD`** round out the small extra kernel surface a
+  *real* hash table needs beyond plain list processing: `HASH-CODE`
+  returns a stable, always-non-negative fixnum for a fixnum (its own
+  magnitude) or any heapobj (its own heap address — stable since
+  nothing here relocates), letting different key *values* land in
+  different buckets without needing structural hashing; `MOD` is
+  ordinary integer remainder, which nothing so far exposed (`compile_binop`
+  only ever grew `+ - * < =`).
 - **Hash tables are not a kernel primitive at all** — the concrete
-  demonstration issue #452's kernel/library boundary was framed around.
-  `HT-EMPTY`/`HT-SET`/`HT-GET`/`HT-ASSOC`/`HT-HAS-KEY`
-  (`tests/cases/020_hashtable.asm`) are four small `DEFINE`s built from
-  nothing but `CONS`/`CAR`/`CDR`/`EQ`/`NULLP`/`IF` — the exact same
-  primitives exposed for this purpose above, with zero new kernel
-  surface. It's a persistent (not mutated-in-place) alist: `HT-SET`
-  conses a new `(key . val)` pair onto the *front* of the table rather
-  than rewriting a cell, returning a new table and leaving the old one
-  intact — not a design preference, but what falls out of not having a
-  `RPLACD`/`SET-CDR!` primitive to mutate an existing cons with (this
-  project captures and reads heap values everywhere, but doesn't yet
-  mutate one after creation). A real key comparison would need
+  demonstration issue #452's kernel/library boundary was framed around,
+  and still isn't one even with real, expected-O(1) performance.
+  `HT-MAKE`/`HT-SET!`/`HT-GET`/`HT-HAS-KEY`/`HT-BUCKET-ASSOC`/
+  `HT-BUCKET-REMOVE` (`tests/cases/022_hashtable_array.asm`) are six
+  small `DEFINE`s: a fixed-size `MAKE-ARRAY` bucket table, each bucket
+  a short `CONS`-built alist chain, `HASH-CODE`+`MOD` picking the
+  bucket, `ARRAY-SET` mutating that one bucket slot on `HT-SET!`. Only
+  the four primitives above are new kernel surface; the hashing/
+  bucketing/chaining *policy* is all library code, exactly like the
+  persistent alist version it replaces
+  (`tests/cases/020_hashtable.asm`, kept as-is: a smaller, purely
+  functional alternative when mutation isn't wanted). No resizing (a
+  fixed 61-bucket table — a real implementation would grow it as load
+  increases); no key removal; a real key comparison would need
   `EQUAL`-style structural equality to support string/list keys, not
   just `EQ`'s pointer identity — fine for the symbol/fixnum keys this
   library is tested with, a real limit for anything else.
@@ -226,8 +246,18 @@ at runtime.
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
-- No garbage collector. No bignums, hash tables, vectors, `vau`,
-  first-class conditions, or dynamic variables yet.
+- No garbage collector. No bignums, `vau`, first-class conditions, or
+  dynamic variables yet.
+- Arrays are fixed-size at creation (`MAKE-ARRAY` doesn't grow/shrink)
+  and `ARRAY-REF`/`ARRAY-SET` do no bounds checking — an out-of-range
+  index reads or writes adjacent heap memory rather than raising
+  anything. `ARRAY-SET` is also the only mutation primitive in this
+  kernel; nothing else (a cons, a closure's captured values) can be
+  rewritten after creation.
+- The array-backed hash table (`HT-MAKE` et al.) is a fixed 61-bucket
+  table with no resizing, no key removal, and `EQ`-only key comparison
+  (symbol/fixnum keys hash well; a string or list key would need
+  `EQUAL`-style structural equality this kernel doesn't have).
 - Strings are immutable byte buffers only: no `STRING-REF`,
   `STRING-APPEND`, `SUBSTRING`, or any string-building primitive yet —
   just reader literals, `STRING-LENGTH`, and `PRINT`. Escapes are
@@ -363,18 +393,19 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   operation; mixed fixnum/float arithmetic; `FLOAT<=`/`FLOAT>`/
   `FLOAT>=`/`FLOAT=`; a real (shortest round-trip or scientific-
   notation) float printer instead of fixed 6-decimal-place formatting.
-- Bignums, arrays, `vau`, dynamic variables — the rest of the Lisp 1.5
-  + extensions surface the Rust interpreter (`../src`) already
+- Bignums, `vau`, dynamic variables — the rest of the Lisp 1.5 +
+  extensions surface the Rust interpreter (`../src`) already
   implements. `DEFMACRO` existing means most of `lib/08-vau.lisp`'s
   derived forms and the CL-compat layer are now just a matter of
   writing them, not extending the compiler; with `CATCH`/`THROW` also
   in place, so are `BLOCK`/`RETURN-FROM` and a first
   `HANDLER-CASE`-shaped condition system.
-- A `RPLACD`/`SET-CDR!`-style mutation primitive, so the hash table
-  library (see "kernel surface" above) can rewrite a binding in place
-  instead of consing a new persistent table on every `HT-SET`; `EQUAL`-
-  style structural equality, so it can take string/list keys, not just
-  `EQ`-comparable ones.
+- A resizable hash table (grow the bucket array and rehash past some
+  load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD`-style
+  cons mutation now that `ARRAY-SET` has established the pattern;
+  `EQUAL`-style structural equality, so the hash table (and `EQ`-only
+  callers generally) can take string/list keys, not just
+  pointer-identity-comparable ones.
 - String mutation/building primitives (`STRING-REF`, `STRING-APPEND`,
   `SUBSTRING`) and a real `FORMAT` built on top of `PRINT`/`FD-WRITE`
   and variadic args.
