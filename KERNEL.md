@@ -167,7 +167,14 @@ Part IV) for every value built from primitive data, with these exact rules:
   printed forms are not currently re-readable** by Part II's float grammar
   (which requires digits on both sides of a literal `.`); this is a known
   round-trip gap in the reference implementation, not a rule to conform to
-  — a host is free to close it, but is not required to reproduce it.
+  — a host is free to close it, but is not required to reproduce it. The
+  `e`/`E` checks are presently dead code on the reference implementation:
+  Rust's default `f64`-to-string conversion never produces scientific
+  notation, so a very large or very small float prints as a long run of
+  plain decimal digits (still syntactically readable by Part II's grammar,
+  just unwieldy) rather than as `1e300`-style notation. A host is free to
+  use scientific notation for extreme magnitudes instead, as long as Part
+  II's float grammar (extended to accept it) can read it back.
 - A `Char` prints as `'x'`, escaping `\n \t \r \\ \' \0` exactly as the
   reader's character-literal grammar expects, and printing every other
   byte raw.
@@ -192,9 +199,14 @@ Part IV) for every value built from primitive data, with these exact rules:
 ## Part IV — Data model: types, equality, and truth
 
 **The primitive types** are: `Nil` (the empty list, doubling as boolean
-false), symbols, fixnums, floats, characters, strings, cons cells, hash
-tables, and arrays. §V covers numeric detail; this section covers identity,
-equality, and truth for all of them.
+false), symbols, fixnums, floats, characters, strings, and cons cells —
+plus a longer tail of compound and host-facing types (hash tables, arrays,
+environments, closures, records, first-class conditions, and opaque
+handles for ports/network/processes) whose equality rules differ enough
+from each other that they get their own treatment below rather than being
+folded into "compound types compare the obvious way." Part V covers
+numeric detail; this section covers identity, equality, and truth for all
+of them.
 
 **`NIL` is not a symbol.** `()` and the token `NIL` are the same value, a
 distinct `Nil` type with no symbol behind it — not "the symbol NIL, which
@@ -278,6 +290,39 @@ cars are (recursively) `EQUAL` and their cdrs are (recursively) `EQUAL`.
 between them is false by the type-mismatch case, and `EQUAL` inherits that
 at the leaf. A host must not "helpfully" make `(equal 5 5.0)` true.
 
+**Compound types not listed above — hash tables, arrays, environments,
+closures, records, first-class error/condition values, and any host-native
+handle (a port, a network or process handle) — are still atoms under
+`EQ`'s cons-exclusion rule (they are simply not cons cells), and each has
+its own equality rule rather than one uniform "compound values are never
+equal" fallback. A host must reproduce which rule applies to which type,
+not assume they all behave like cons cells or all behave like fixnums:**
+
+- **Hash tables, arrays, environments, and any opaque host handle (ports,
+  network handles, process handles) compare by identity** — two of these
+  are `EQ`/`EQUAL` exactly when they are the same underlying object, never
+  merely when they hold equal contents. A host must not make two
+  separately constructed, content-identical hash tables or arrays
+  `EQUAL`; that is observably different from the reference.
+- **Records (`#S(...)` values, `DEFRECORD` instances) compare
+  structurally** — by type name and field values, recursively — not by
+  identity. Two independently constructed records of the same type with
+  equal fields **are** `EQUAL` (and `EQ`, under the cons-exclusion rule
+  above, since a record is not a cons cell). This is the opposite rule
+  from hash tables and arrays, deliberately: a host must not "fix" this
+  into identity comparison on the theory that records are compound
+  mutable-ish structures like hash tables — they are specified to behave
+  as value types for equality purposes.
+- **A first-class condition/error value compares structurally** on its
+  message and data fields, the same value-type treatment as records.
+- **Closures (lambdas) compare structurally on their parameter list, rest
+  parameter, and body, but by identity on their captured environment** —
+  two closures are equal only if they'd behave identically *and* close
+  over the literal same environment object, not merely an
+  environment with equal-looking bindings. Fexprs, macros, and `VAU`
+  values follow the same shape (structural on their defining parts,
+  identity on the closure environment).
+
 ## Part V — The numeric tower
 
 **Contagion.** Any float operand, in any position, promotes an entire
@@ -308,7 +353,7 @@ conventions, both required exactly as specified:**
 - The one integer-overflow-representable division case (dividend equal to
   the minimum representable fixnum, divisor `-1`) is a numeric-precision
   concern, not a sign-convention concern — see the overflow axis in Part
-  XI. Note as an observed reference-implementation quirk, **not** a rule to
+  XII. Note as an observed reference-implementation quirk, **not** a rule to
   reproduce: `MOD`'s handling of this same edge case silently substitutes
   `0` without raising the overflow signal that `/` and `REMAINDER` raise
   for the equivalent case. A host is free to make `MOD` raise the same
@@ -383,11 +428,48 @@ is a native crash.
 
 **`SETQ` resolves its target with a specific precedence, and creates a
 new binding rather than erroring when the target is unbound:**
-1. If the symbol has ever been declared dynamic (Part VI, dynamic
-   variables, below), `SETQ` writes the symbol's single global dynamic
-   cell unconditionally — this wins outright over any lexical binding of
-   the same name that happens to be in scope, without even consulting the
-   lexical environment chain.
+1. If the symbol has ever been declared dynamic (see the dynamic-variables
+   paragraph below), `SETQ` writes the symbol's single global dynamic
+   cell unconditionally. Read together with that paragraph, this is not
+   "`SETQ` overrides an existing lexical shadow": once a symbol is
+   declared dynamic, `LET`, lambda parameters, and every other binding
+   form stop creating an ordinary lexical frame slot for that name at all
+   — they install a new *dynamic* binding instead (the same shallow-binding
+   mechanism the paragraph below describes), exactly as declaring a
+   variable `special` does in Common Lisp. So there is no separate lexical
+   binding for `SETQ`'s rule to skip past; there is only ever the one
+   dynamic cell, and every binding form and every `SETQ` for that name
+   agree on addressing it. `(let ((x 1)) (setq x 2) x)` evaluates to `2`
+   whether or not `x` is dynamic — if `x` is dynamic, the `LET` installed
+   a fresh dynamic binding holding `1` before `SETQ` changed it to `2`; if
+   not, ordinary lexical rules apply and give the same answer by the usual
+   route.
+
+   **A sharper, genuinely surprising consequence, confirmed directly
+   against the resolution code rather than assumed: declaring a symbol
+   dynamic is retroactive and global, with no way back.** Variable lookup
+   (`Environment::resolve`) checks the symbol's `is_dynamic` flag fresh on
+   *every* reference, not once at the binding site that created a frame
+   for it. So the moment any code, anywhere in a running program, declares
+   `x` dynamic, every existing lexical frame slot named `x` — however long
+   it has been live, in however many already-executing closures, created
+   long before the declaration ran — becomes permanently unreachable for
+   both reads and `SETQ`: every subsequent reference to `x`, from any of
+   those closures, redirects to the one global dynamic cell instead, as
+   if the declaration had been in effect from the start. Because symbols
+   are interned globally, this is not scoped to a file or a module: one
+   `(defdynamic x)` anywhere makes *every* `x` in the entire running
+   program dynamic, retroactively, with no corresponding "undeclare"
+   operation to undo it. This matches how `(proclaim '(special x))`
+   behaves in Common Lisp (also global, also effectively one-way in
+   practice) — a CL programmer will find this familiar; a programmer
+   coming from Scheme or from Lisp 1.5 itself, where variables are
+   lexical by default and nothing is named globally-dynamic after the
+   fact, will not. A host must reproduce this exact retroactive, global,
+   one-way behavior — it is not latitude Part XII grants, and getting it
+   wrong (e.g. by scoping a dynamic declaration to a module, or by having
+   already-live closures keep their lexical slots) is a conformance
+   failure, not a reasonable interpretation.
 2. Otherwise, `SETQ` walks the lexical environment chain outward from the
    call site and updates the first frame where the symbol is already
    bound.
@@ -456,16 +538,18 @@ unwind correctly no matter how control leaves their scope.
 The forms named and given exact semantics in Part VI — `QUOTE`, `IF`,
 `LAMBDA`, `LET`/`LET*`, `PROGN`, `COND`, `SETQ`, `VAU`, `DEFEXPR`,
 `DEFMACRO`, `CATCH`/`THROW`, `BLOCK`/`RETURN-FROM`, `HANDLER-CASE` (Part
-VIII), and dynamic-variable declaration — are the special forms a host
+VIII), and `DEFDYNAMIC` (the dynamic-variable declaration primitive
+itself — `DEFVAR` is the same primitive under an alias, not a separate
+library-level form built on top of it) — are the special forms a host
 must give exactly this behavior to, whether it implements each one as a
 true kernel primitive or derives it from a smaller set (Part XII covers
 which specific forms are eligible for that latitude, and which are not).
 Every other named construct `lib/*.lisp` uses — `AND`, `OR`, `WHEN`,
-`UNLESS`, `DO`, the CL-compat layer, `DEFUN`, `DEFVAR`/`DEFDYNAMIC` sugar
-— is already, in the reference implementation itself, ordinary library
-code built from this list plus the primitives of Parts II–VI; a host that
-gets this list right and loads `lib/*.lisp` unmodified gets those forms
-for free and does not need its own account of their semantics here.
+`UNLESS`, `DO`, the CL-compat layer, `DEFUN` — is already, in the
+reference implementation itself, ordinary library code built from this
+list plus the primitives of Parts II–VI; a host that gets this list right
+and loads `lib/*.lisp` unmodified gets those forms for free and does not
+need its own account of their semantics here.
 
 ## Part VIII — The condition system
 
