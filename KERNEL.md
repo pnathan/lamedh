@@ -138,7 +138,7 @@ e)`; `,@`*e* → `(UNQUOTE-SPLICING e)`; `#'`*e* → `(FUNCTION e)`.
 
 **What is grammar-minimal versus library-extensible.** Decimal integers,
 symbols (both classes), strings, proper and dotted lists, `NIL`/`T`, and
-the quote family are the load-bearing minimum — `lib/*.lisp` cannot be
+the quote family are the required minimum — `lib/*.lisp` cannot be
 written without them. Octal/hex-suffix and radix-prefix integers, floats,
 block comments, character literals, keyword/earmuff symbol sugar, and
 `#S(...)` records are each a layered extension: a host may implement them
@@ -529,7 +529,7 @@ and *leaving* that form — by any means, including a `THROW` or
 before control passes further out. This restore-on-every-exit-path
 guarantee, including non-local exits and including exits that unwind
 through several accumulated dynamic bindings made across a chain of tail
-calls, is load-bearing: `lib/*.lisp`'s condition-handling layer
+calls, is required: `lib/*.lisp`'s condition-handling layer
 (`lib/16-conditions.lisp`) is written assuming dynamic bindings always
 unwind correctly no matter how control leaves their scope.
 
@@ -604,15 +604,59 @@ process/environment, network) must sit behind a capability system a host
 enforces at the primitive call site — not merely as bookkeeping.
 
 This document specifies the *shape* of the primitive — an operation that
-consults a named, per-environment capability set before acting — not the
-enforcement mechanism, the exact capability names, or which operations are
-gated by which name. The Rust reference's current names (`READ-FS`,
-`CREATE-FS`, `TEMP-FS`, `SHELL`, `IO`, plus `NET-*`/`OS-*`) are a reasonable
-default for a conformant host to adopt verbatim, but adopting them is not
-itself the conformance requirement; *enforcing something* at the call site
-is. A host that defines the capability names as inert labels queried by no
-primitive (as filed against the SBCL port in issue #455) does not conform
-to this section, regardless of what `lib/22-guard.lisp` layers on top.
+consults a named capability set before acting — not the enforcement
+mechanism, the exact capability names, or which operations are gated by
+which name. The Rust reference's current names (`READ-FS`, `CREATE-FS`,
+`TEMP-FS`, `SHELL`, `IO`, plus `NET-*`/`OS-*`) are a reasonable default for
+a conformant host to adopt verbatim, but adopting them is not itself the
+conformance requirement; *enforcing something* at the call site is. A host
+that defines the capability names as inert labels queried by no primitive
+does not conform to this section, regardless of what `lib/22-guard.lisp`
+layers on top.
+
+**A gated operation attempted without permission signals an ordinary,
+`HANDLER-CASE`-catchable condition of the same two-field (message, data)
+shape as any other native error (Part VIII) — it is not a panic, a process
+abort, or a silent no-op/`NIL` return.** The reference implementation's own
+gate functions (`src/evaluator/builtins_core.rs`, `require_read_fs` and its
+siblings) return exactly this shape, distinguishing in the message, as a
+convenience and not a normative requirement, between "never granted" and
+"granted but attenuated by an enclosing fence" (see the attenuation rule
+below).
+
+**The capability grant itself has two distinct layers, and a conformant
+host must reproduce both:**
+- A **standing grant**, made once by host embedding code (or by the CLI's
+  `--capability` flag) against a specific environment, that persists for
+  that environment's entire lifetime with no Lisp-level way to add to it.
+  This grant is shared by every lexical child of the environment it was
+  made against — a `LET`, `LAMBDA`, or any other lexically-nested
+  environment sees exactly its ancestor's granted set, not a private copy
+  it could narrow or widen on its own. A *forked* top-level world (the
+  reference implementation's `fork_world`, used to hand out independent
+  worlds from a per-thread stdlib prototype) instead receives an
+  independent **copy** of the forking world's grants at the moment of the
+  fork: the two worlds' grants are equal at that instant but mutating one
+  world's grants afterward does not affect the other's.
+- A **dynamic-extent attenuation mask**, entered and left by
+  `WITH-CAPABILITIES` (see below), that can only ever narrow what the
+  standing grant already allows — never widen it. The two layers combine
+  by conjunction: an operation proceeds only when the standing grant
+  permits it *and* the current attenuation mask (if any) also permits it.
+
+**`(WITH-CAPABILITIES (name...) body...)` is a special form with the same
+attenuation-only nesting rule Part X's `WITH-FUEL` uses, and for the same
+reason.** Entering it intersects the requested capability list with
+whatever mask is already in effect (`None` meaning "no mask, standing
+grant governs alone"), so a fence can never grant itself a capability the
+enclosing fence has already excluded, no matter what it asks for; leaving
+it — by ordinary completion, by a caught error, or by any non-local exit
+passing through it — restores exactly the mask that was in effect before
+entry. Unlike fuel, there is nothing to debit on exit: a capability mask
+has no notion of "amount spent," so restoration is a plain save/restore
+with no analogue of fuel's spent-amount bookkeeping. There is deliberately
+no Lisp-callable way to widen the mask from inside a fence; only
+`WITH-CAPABILITIES` itself may install a new (narrower-or-equal) one.
 
 ## Part X — Step-budget fencing (fuel)
 
@@ -626,8 +670,8 @@ never calls the counting function.
 
 **The kernel maintains one step counter, decremented once per evaluation
 step, checked before that step runs.** "One evaluation step" means one
-iteration of the evaluator's own dispatch loop — the same unit of work
-that Part VI's tail-call trampoline advances on every call, so a
+iteration of the evaluator's own dispatch loop — the loop that drives both
+plain (non-tail) evaluation and Part VI's tail-call elimination, so a
 tail-recursive loop that never grows the stack is still metered correctly:
 each tail step still charges fuel even though it charges no additional
 stack frame. Charging happens unconditionally, on every step, in both a
@@ -636,29 +680,44 @@ only meters the slow path and lets compiled code run unmetered has not
 implemented this section.
 
 **Exhaustion signals a normal, `HANDLER-CASE`-catchable condition, and
-that is a deliberate, load-bearing design choice with a known,
-documented consequence.** Unlike a `THROW`/`RETURN-FROM` past an
+that is a deliberate design choice, required for correctness, with a
+known, documented consequence.** Unlike a `THROW`/`RETURN-FROM` past an
 unmatched target (Part VIII, which is *not* catchable), running out of
 fuel produces the same two-field (message, data) condition shape as any
-other native error, specifically so that surrounding `UNWIND-PROTECT`- and
-`HANDLER-CASE`-based cleanup code gets a chance to run instead of being
-killed off mid-cleanup by its own metering. The mechanism a host uses to
-make that possible — the reference implementation disarms its own counter
-at the instant it signals exhaustion, so that cleanup code evaluated while
-handling the condition doesn't immediately re-trigger the same signal
-before it can finish — has a real, acknowledged gap: **guest code that
-directly wraps a `HANDLER-CASE` around the fuel-exhausted condition and
-loops from inside the handler can keep running past its nominal budget**,
+other native error, specifically so that surrounding cleanup code —
+`lib/16-conditions.lisp`'s guest-level `UNWIND-PROTECT`, or a plain
+`HANDLER-CASE` — gets a chance to run instead of being killed off
+mid-cleanup by its own metering. `UNWIND-PROTECT` is ordinary library
+code built from `CATCH`/`THROW` and dynamic variables (Part VI); `WITH-FUEL`
+itself has no dependency on it.
+
+The mechanism a host uses to give cleanup code that chance — the reference
+implementation disarms its own counter at the instant it signals
+exhaustion, so that cleanup code evaluated while handling the condition
+doesn't immediately re-trigger the same signal before it can finish — has
+a real, acknowledged gap, and this document requires a host to have *a*
+gap of the same shape, not to have this exact implementation choice:
+**guest code that catches the fuel-exhausted condition with a
+`HANDLER-CASE` positioned inside the very fence that exhausted, and loops
+from inside that handler, can keep running past its nominal budget**,
 because the counter that would normally stop it has just been disarmed to
-let the handler run at all. This is not a defect this document is asking
-hosts to fix; it is documented reference-implementation behavior (called
-out explicitly in the reference's own `--mcp` sandboxing code as a known
-limitation), and a conformant host must reproduce the same shape of gap
-rather than quietly closing it in a way that changes observable behavior
-— though a host is free to close it as a genuine improvement over the
-yardstick, the same latitude Part XII already grants for `MOD`'s overflow
-quirk, as long as it does not change behavior for any program that isn't
-specifically trying to evade its budget.
+let the handler run at all. This is documented reference-implementation
+behavior (called out explicitly in the reference's own `--mcp` sandboxing
+code as a known limitation), not a defect this document is asking hosts to
+fix. What conformance requires is narrower than "reproduce this exact
+disarm mechanism": a host must ensure ordinary cleanup code (a `CATCH`
+handler, an `UNWIND-PROTECT` cleanup form, a `HANDLER-CASE` body) gets to
+run at all after exhaustion rather than being re-killed on its own first
+step — some disarming or grace mechanism is required for that, full stop,
+not merely permitted — but a host is free to choose a narrower-scoped
+mechanism than "disarm the whole counter" (for instance, granting a small
+fixed cleanup allowance instead) as long as ordinary cleanup still runs.
+A host is not required to reproduce the reference's specific
+catch-and-reloop evasion window; closing it (e.g. by scoping the grace
+period to only the *first* handler frame, or by any other means) is a
+genuine improvement over the yardstick, not a divergence from it — the
+same latitude Part XII already grants for `MOD`'s overflow quirk — as long
+as it does not prevent ordinary cleanup code from running.
 
 **A step-budget fence is a special form, `(WITH-FUEL n body...)`, and
 nested fences attenuate rather than compose additively — the same rule
@@ -724,8 +783,8 @@ set (Part XII says which forms have that latitude):
 - **Representation**: cons/car/cdr with the identity/equality rules of
   Part IV; interned symbols; the numeric types and operations of Part V;
   strings and characters per Parts II–IV; hash tables and arrays as
-  primitive mutable structures (`lib/16-*`/`lib/17-*` use them natively,
-  not as derived structures); a global-environment mutation primitive
+  primitive mutable structures (`lib/15-sets-hash.lisp`/`lib/17-arrays.lisp`
+  use them natively, not as derived structures); a global-environment mutation primitive
   (`SET`/`DEFINE`-shaped) and symbol property lists (`lib/00-core.lisp`
   and the module system are unwritable without both). Cons cells are
   immutable — no destructive mutation primitive exists or may exist; see
@@ -733,7 +792,8 @@ set (Part XII says which forms have that latitude):
 - **Control**: the special forms and evaluation-order guarantees of Parts
   VI–VII, including the exact tail-call position list, one non-local-exit
   mechanism, one dynamic-binding mechanism, and one error-signalling
-  mechanism producing the two-field condition shape of Part VIII.
+  mechanism producing the two-field condition structure defined in Part
+  VIII.
 - **Reflection**: a `VAU`-or-equivalent expansion hook per Part VI,
   sufficient to define `DEFMACRO` in terms of it, and an `EVAL` (or
   `compile-and-run`) hook callable from Lisp code. This is required for a
@@ -751,9 +811,11 @@ set (Part XII says which forms have that latitude):
 - **Capability-gated I/O**: Part IX.
 - **Step-budget fencing (fuel)**: Part X — a native step counter charged
   on every evaluation step, a `WITH-FUEL`-shaped fence with
-  attenuation-only nesting, and a setter that only widens the budget from
-  outside a fence. Orthogonal to capabilities and to the recursion-depth
-  bound; a host needs all three to safely run untrusted code.
+  attenuation-only nesting, and a setter that is unrestricted (may arm,
+  widen, or disarm the budget) only when called from outside any fence,
+  and strictly narrow-only when called from inside one. Orthogonal to
+  capabilities and to the recursion-depth bound; a host needs all three to
+  safely run untrusted code.
 - **Reader/printer**: Parts II–III, with the extension/minimal split Part
   II states.
 - **The exact set of builtin names `lib/*.lisp` invokes**, spelled and
@@ -790,8 +852,8 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    `RPLACA`/`RPLACD` as a free choice, on the reasoning that `lib/*.lisp`
    never observably depends on in-place mutation. That reasoning was
    incomplete: the Rust reference's `RPLACA`/`RPLACD` return a *new* cons
-   cell rather than mutating in place for a specific, load-bearing reason
-   stated directly in its source comment (`src/evaluator/builtins_extra.rs`,
+   cell rather than mutating in place for a specific reason the rest of
+   this document depends on, stated directly in its source comment (`src/evaluator/builtins_extra.rs`,
    `BuiltinFunc::Rplaca`/`Rplacd`) — it is "an intentional safety feature"
    that makes circular list construction *impossible*, and this document's
    own Part III already relies on that: the printer has no cycle
@@ -820,8 +882,8 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    long as what it *has* implemented means exactly what this document
    says. A host is not conformant merely because it has an excuse for
    what it's missing; it is on a documented path to conformance, and
-   should say so (as `sbcl/README.md` and `lamedh-asm/README.md` already
-   do).
+   should say so in its own documentation, tracked as that host's own
+   issue-tracker business rather than audited here (Part XIII).
 5. **`MOD`'s overflow edge case** (Part V): a host may either reproduce
    the reference implementation's silent-zero behavior on the one
    representable-overflow input, or raise the same overflow signal
