@@ -64,6 +64,8 @@ programs this stage targets.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
+- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP` and `DEFMACRO` — see "The kernel
+  surface" below.
 - `LAMBDA` with real closure conversion: a free-variable scan
   (`scan_free_vars`) decides what a nested lambda must capture *before*
   a single byte of its body is emitted; captured values are copied by
@@ -89,6 +91,46 @@ Local/free variable references compile to a fixed `[rbp+disp]` load
 decided entirely at compile time (`current_scope`, a compile-time-only
 lexical scope chain) — never a name lookup at runtime.
 
+## The kernel surface: what's native versus what belongs in a library
+
+[Issue #452](https://github.com/pnathan/lamedh/issues/452) proposes a
+host-agnostic spec for the minimal primitive surface any Lamedh host
+(the Rust reference, the SBCL port, this one) must provide, so that a
+shared `lib/*.lisp`-style corpus can run unmodified on top of any of
+them. This project is the concrete first attempt at drawing that line
+for a from-scratch host, and two of its later primitives exist
+specifically to test where the line falls:
+
+- **`CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`** compile to calls into the
+  same host routines the reader and compiler already use internally
+  (`reader.asm`'s `car`/`cdr`/`cons`), reached from *compiled Lamedh
+  code* for the first time — previously only the compiler itself could
+  call them. This is the minimum needed before any list-processing
+  library code is expressible in Lamedh at all on top of this kernel.
+- **`DEFMACRO`** is the single highest-leverage primitive on the
+  candidate list: a macro transformer is compiled exactly like a
+  `LAMBDA` (`compile_defmacro` reuses `compile_lambda` directly, wrapping
+  the body in a synthetic `(LAMBDA params body)` built with `cons`), and
+  expanding a macro call means invoking that *already-compiled closure*
+  directly from host code — `invoke_closure_host` does an ordinary
+  indirect call through the closure's stored code pointer, synchronously,
+  at compile time, with the call site's raw unevaluated argument forms
+  as arguments (`raw_args_to_regs`). Nothing distinguishes "the compiler"
+  from "compiled code" here; they are both just x86-64 machine code
+  running in the same process, so a macro transformer needs no
+  interpreter of its own. Whatever it returns is recursively compiled in
+  its place. `COND`/`AND`/`OR`/`LET`/the CL-compat layer all become
+  ordinary Lamedh source once this exists, the same way they already are
+  in the reference implementation's `lib/08-vau.lisp` and
+  `lib/21-cl-compat.lisp` — see `tests/cases/011_defmacro.asm` for
+  `UNLESS` derived from `IF` this way, with no change to the compiler.
+
+Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
+from their ordinary value cell, so a name can be a macro or a function
+without ambiguity; macro-hood is checked at compile time only; a
+reference to a global name that isn't a macro never pays for the check
+at runtime.
+
 ## v0 limits (known, not silent)
 
 - At most 3 arguments per call/lambda (registers `rsi`,`rdx`,`rcx`; no
@@ -102,7 +144,7 @@ lexical scope chain) — never a name lookup at runtime.
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
 - No garbage collector. No bignums, floats, strings, hash tables,
-  vectors, macros, `vau`, conditions, or dynamic variables yet.
+  vectors, `vau`, first-class conditions, or dynamic variables yet.
 - Proper tail-call frame reuse (`jmp` instead of `call`+`ret`, reusing
   the caller's stack frame) is not yet implemented for ordinary Lisp
   calls; the inline-cache trampoline's *own* internal dispatch already
@@ -162,7 +204,12 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   lambdas.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured
   variable is visible across closures over it.
-- Bignums, floats, strings, hash tables, arrays, macros, `vau`,
-  conditions, dynamic variables — the rest of the Lisp 1.5 + extensions
-  surface the Rust interpreter (`../src`) already implements.
+- Bignums, floats, strings, hash tables, arrays, `vau`, dynamic
+  variables — the rest of the Lisp 1.5 + extensions surface the Rust
+  interpreter (`../src`) already implements. `DEFMACRO` existing means
+  most of `lib/08-vau.lisp`'s derived forms and the CL-compat layer are
+  now just a matter of writing them, not extending the compiler.
+- A non-local-exit primitive (`CATCH`/`THROW`), the other "control"
+  entry on [issue #452](https://github.com/pnathan/lamedh/issues/452)'s
+  candidate kernel surface, alongside dynamic variables.
 - AArch64 backend (currently x86-64 Linux only).

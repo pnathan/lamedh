@@ -6,8 +6,12 @@
 ;   [0]  header       = HDR_SYMBOL
 ;   [8]  name_len
 ;   [16] value        (tagged LispVal; IMM_UNBOUND until DEFINEd)
-;   [24] next         (raw ptr to next symbol in this bucket, or 0)
-;   [32] name bytes, padded to a multiple of 8
+;   [24] macro         (tagged closure if this name is a macro; IMM_NIL
+;                        otherwise — checked at compile time only, never
+;                        emitted as a runtime load, since macro expansion
+;                        is a host-time computation, not a target one)
+;   [32] next         (raw ptr to next symbol in this bucket, or 0)
+;   [40] name bytes, padded to a multiple of 8
 ;
 ; A fixed 512-bucket direct-chained hash table (FNV-1a), sized generously
 ; for the fixed test/bench corpus this v0 targets — see README roadmap
@@ -82,7 +86,7 @@ intern_symbol:
     jz .not_found
     cmp qword [rbx+8], r13         ; compare name_len
     jne .next
-    lea rdi, [rbx+32]
+    lea rdi, [rbx+40]
     mov rsi, r12
     mov rdx, r13
     call bytes_equal
@@ -93,27 +97,28 @@ intern_symbol:
     or rax, TAG_HEAPOBJ
     jmp .out
 .next:
-    mov rbx, [rbx+24]
+    mov rbx, [rbx+32]
     jmp .scan
 
 .not_found:
-    ; allocate: 32 header bytes + name, padded to 8
+    ; allocate: 40 header bytes + name, padded to 8
     mov rdi, r13
     add rdi, 7
     and rdi, ~7
-    add rdi, 32
+    add rdi, 40
     call data_alloc                ; rax = raw new symbol address
     mov rbx, rax
 
     mov qword [rbx], HDR_SYMBOL
     mov [rbx+8], r13
     mov qword [rbx+16], IMM_UNBOUND
+    mov qword [rbx+24], IMM_NIL     ; not a macro until DEFMACRO says otherwise
     mov rdi, [r14]
-    mov [rbx+24], rdi              ; next = old bucket head
+    mov [rbx+32], rdi              ; next = old bucket head
     mov [r14], rbx                 ; bucket head = new symbol
 
     ; copy name bytes
-    lea rdi, [rbx+32]
+    lea rdi, [rbx+40]
     mov rsi, r12
     mov rcx, r13
     rep movsb

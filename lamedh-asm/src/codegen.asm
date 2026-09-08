@@ -243,6 +243,15 @@ emit_setl_al:
     mov rdi, 0xC0
     jmp emit8
 
+global emit_setne_al
+emit_setne_al:
+    mov rdi, 0x0F
+    call emit8
+    mov rdi, 0x95
+    call emit8
+    mov rdi, 0xC0
+    jmp emit8
+
 ; emit_movzx_eax_al() — 0F B6 C0
 global emit_movzx_eax_al
 emit_movzx_eax_al:
@@ -331,6 +340,21 @@ emit_je:
     mov rdi, 0x0F
     call emit8
     mov rdi, 0x84
+    call emit8
+    call codegen_here
+    push rax
+    mov rdi, 0
+    call emit32
+    pop rax
+    ret
+
+; emit_jne(rel32 placeholder) -> rax = address of the rel32 field.
+; 0F 85 <rel32>
+global emit_jne
+emit_jne:
+    mov rdi, 0x0F
+    call emit8
+    mov rdi, 0x85
     call emit8
     call codegen_here
     push rax
@@ -541,6 +565,27 @@ emit_sub_rax_imm32:
     pop rbx
     ret
 
+; emit_add_reg_imm32(dil=reg, esi=imm32) — 48 81 /0 id, general register
+global emit_add_reg_imm32
+emit_add_reg_imm32:
+    push rbx
+    push r12
+    mov bl, dil
+    mov r12d, esi
+    mov rdi, 0x48
+    call emit8
+    mov rdi, 0x81
+    call emit8
+    mov al, 0xC0                     ; mod11, reg=000(/0), rm=reg
+    or al, bl
+    movzx rdi, al
+    call emit8
+    mov edi, r12d
+    call emit32
+    pop r12
+    pop rbx
+    ret
+
 ; emit_sub_rsp_imm32(edi=imm32) — 48 81 /5 id
 global emit_sub_rsp_imm32
 emit_sub_rsp_imm32:
@@ -612,4 +657,14 @@ patch_rel32:
     lea rax, [rdi+4]
     sub rsi, rax                 ; rsi = target - (field+4)
     mov [rdi], esi
+    ret
+
+; patch_imm64(rdi = address of a 64-bit immediate field, rsi = value)
+; Overwrites an already-emitted `mov reg, imm64` operand in place with a
+; value that wasn't known yet when the instruction was emitted (e.g. a
+; forward "resume here" address) — the absolute-value counterpart to
+; patch_rel32's relative displacements.
+global patch_imm64
+patch_imm64:
+    mov [rdi], rsi
     ret
