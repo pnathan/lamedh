@@ -133,6 +133,17 @@ Required:
   optimizer (`lib/11-optimizer-vau.lisp`, `lib/24-rules.lisp`), and typed
   protocols (`lib/29-protocols.lisp`) to run unmodified on every host.
 
+Static typing is not an optional flourish this document can leave for
+later: #451's argument is that the HM checker has no host dependency once
+this hook exists, and a shared type checker is exactly how a major Lamedh
+program — one large enough that a human can no longer hold its whole
+call graph in mind — stays maintainable across the three (or four, or
+more) hosts this document exists to keep in agreement. A host that
+implements every primitive above but cannot run the portable checker has
+not delivered a platform serious programs can be written against; §3's
+`EVAL` hook is required precisely so no host gets to treat static typing
+as someone else's problem.
+
 ## 4. Capability-gated I/O
 
 Required: read, write, and syscall-adjacent operations (filesystem, shell,
@@ -209,10 +220,15 @@ performance choice:
   §2, but worth noting this port has never actually exercised "build
   `BLOCK` from `CATCH`/`THROW` alone" the way a from-scratch host would
   need to.
-- No portable HM type checker exists yet (#451's subject); the honest
-  unverified-axiom surface (`DECLARE-TYPE!`/`SEE-TYPE`) stands in for it
-  rather than faking verification — this is a scoping gap, not a kernel
-  nonconformance.
+- No portable HM type checker runs on this port yet (#451's subject); the
+  honest unverified-axiom surface (`DECLARE-TYPE!`/`SEE-TYPE`) stands in
+  for it rather than faking verification, which is the right interim
+  choice over silently reporting programs as checked when they are not.
+  It is not a kernel-primitive nonconformance — the `EVAL` hook §3
+  requires is present — but per §3's note above, it is a gap this document
+  treats as a priority to close, not an indefinitely deferrable nice-to-
+  have: a host without a working portable checker is not yet a platform
+  a major Lamedh program should be written against.
 
 **lamedh-asm** (PR #450) — pre-conformant by its own README; a v0 prototype
 that has not yet reached most of this surface, not a host that disagrees
@@ -256,6 +272,11 @@ deliberately leaves for a follow-up rather than blocking on:
   `SHELL`/`READ-FS`/etc. and for the SBCL port's gap.
 - Reconcile the SBCL port's capability-enforcement gap and give
   `lamedh-asm` a tracked path through §1–§5.
+- Get the portable HM type checker (#451) actually running, unmodified,
+  on every host that has the §3 `EVAL` hook. This is prioritized above the
+  other items in this list: static typing is not optional scaffolding, it
+  is how a Lamedh program large enough to need multiple hosts stays
+  maintainable on any of them.
 - Scope a `tests/kernel-conformance/` corpus, per #452's own risk list, so
   this document does not decay the moment one host's convenience wins out
   over the line drawn here, and so "the shared `lib/*.lisp` corpus" above
