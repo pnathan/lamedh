@@ -13,12 +13,24 @@ implementation. As of this writing three hosts exist or are emerging —
 for all of them.
 
 **Conformance criterion.** A host is Lamedh-conformant if and only if it
-implements exactly the surface enumerated below — no more required, and
-nothing on the list reimplemented divergently — and the shared `lib/*.lisp`
-corpus (or an explicitly agreed portable subset of it) loads and runs
-unmodified on top of it, producing identical observable behavior for any
-program that does not reach for a host-specific escape hatch. This document
-*is* the spec; it does not summarize a decision made elsewhere.
+implements *at least* the surface enumerated below, with nothing on the
+list reimplemented with different observable semantics, and the shared
+`lib/*.lisp` corpus loads and runs unmodified on top of it, producing
+identical observable behavior for any program that does not reach for a
+host-specific escape hatch. A host may implement more than this surface
+natively (for performance, or because its host language already supplies
+it) without losing conformance, as long as the extra native surface is not
+required by `lib/*.lisp` and does not change the observable behavior of
+anything that is. This document *is* the spec; it does not summarize a
+decision made elsewhere.
+
+Until `tests/kernel-conformance/` (see Suggested next step) exists,
+"the shared `lib/*.lisp` corpus" means every file currently listed in
+`STDLIB` in `src/lib.rs`, run in that order — not an unspecified or
+host-chosen subset. A host that cannot yet load all of it is not
+conformant; it is on a documented path to conformance, and should say so
+plainly (as `sbcl/README.md` and `lamedh-asm/README.md` already do for
+their own gaps) rather than claim partial coverage as conformance.
 
 A primitive belongs on this list only if `lib/*.lisp` cannot be written
 without it, or without something structurally equivalent. Everything a host
@@ -38,18 +50,39 @@ Required:
   document does not mandate one, because the three current hosts already
   disagree (see Divergences, below) and none of `lib/*.lisp` depends on a
   specific choice.
-- **Floats, strings, and chars** sufficient for the reader/printer baseline
-  in §5 and for the arithmetic and string operations `lib/*.lisp` calls
-  natively (see each host's builtin surface for the exact list; this
-  document does not enumerate individual arithmetic/string builtins, only
-  the representational categories).
+- **Floats, strings, and chars**, plus the primitive operations over them
+  that `lib/*.lisp` calls natively rather than defining itself: arithmetic
+  comparison and the four operators (`+ - * /`) from above extended to
+  floats; string length, character access, and concatenation; character
+  code conversion. This document does not freeze the exact builtin names —
+  those are free to vary in spelling across hosts — but a host is missing
+  part of §1, not merely offering a convenience, if any of these
+  operations require dropping into `lib/*.lisp`-unreachable host code to
+  express. Enumerating the precise builtin table per category is tracked
+  as open work in Suggested next step; until it lands, treat "whatever
+  `lib/*.lisp` calls without defining" as the operational definition of
+  this bullet.
+- **Equality and truthiness**: `EQ` (identity, per the symbol/cons
+  semantics above) and `EQUAL` (structural equality over the types in this
+  section) as two distinct, primitive predicates — `lib/*.lisp` depends on
+  the distinction, not just on one generic "equal". `NIL` is the only false
+  value; everything else, including `()`'s own alias, is true.
+- **A global-environment mutation primitive** — `SET`/`DEFINE`-shaped —
+  and **symbol property lists**, since `lib/00-core.lisp` and the module
+  system are unwritable without both.
+- **Hash tables and arrays** as primitive, mutable data structures (not
+  merely derivable from cons cells), since `lib/16-*` / `lib/17-*` use them
+  natively rather than defining them from lower primitives.
 
-Explicitly *not* required: a destructive mutation primitive on cons cells.
-The Rust reference's `RPLACA`/`RPLACD` are non-destructive (each returns a
-new cell — see Divergences) precisely so that no host is required to support
-in-place list mutation or its consequences (aliasing, circular structure).
-Allocation and GC policy are a host's own business; that consing *works*,
-with the identity/equality semantics above, is what conformance requires.
+A destructive mutation primitive on cons cells is explicitly *not*
+required. The Rust reference's `RPLACA`/`RPLACD` are non-destructive (each
+returns a new cell — see Divergences); `lib/*.lisp` must not depend on
+in-place cons mutation, so a host may offer a destructive `RPLACA` (as a
+straightforward mapping onto its host language, the way the SBCL port's
+native CL could) without losing conformance, and a host that offers none
+at all still conforms. Allocation and GC policy are a host's own business;
+that consing *works*, with the identity/equality semantics above, is what
+conformance requires.
 
 ## 2. Control
 
@@ -66,6 +99,14 @@ Required, as exactly one primitive each:
   language already has correct dynamic/special variables (e.g. the SBCL
   port reusing `PROGV`/`SYMBOL-VALUE`) satisfies this by construction; it
   need not reimplement one.
+- **One error-signalling primitive** distinct from ordinary `THROW` — a way
+  for a native operation (a type error, division by zero, an unbound
+  variable) to raise a first-class condition value that library code can
+  intercept. `HANDLER-CASE`/conditions being library-expressible (above)
+  presupposes this: something must originate the condition value a
+  `CATCH` eventually catches. A host may fold this into its non-local-exit
+  primitive (signal is throw-with-a-payload) rather than adding a second
+  mechanism.
 - **Closures**, with lexical capture and application. A host may restrict
   *how* capture is implemented internally (copy-by-value at closure
   creation, one level of free-variable scan, etc. — see `lamedh-asm`'s v0
@@ -201,11 +242,21 @@ silent trap. It is listed here so that closing each gap can be checked
 directly against this document rather than against the moving target of
 what the Rust reference happens to do.
 
-## Suggested next step
+## Status and suggested next step
 
 The audit above answers the "compare the three hosts side by side" step
-#452 asked for before freezing wording. The remaining work is reconciling
-the SBCL port's capability-enforcement gap and lamedh-asm's road to §1–§5,
-and — per #452's own risk list — scoping a `tests/kernel-conformance/`
-corpus so this document does not decay the moment one host's convenience
-wins out over the line drawn here.
+#452 asked for before freezing wording. Open work this first version
+deliberately leaves for a follow-up rather than blocking on:
+
+- Enumerate the exact arithmetic/string/hash-table/array builtin table
+  per §1, rather than the "whatever `lib/*.lisp` calls" operational
+  placeholder above.
+- Audit the Rust reference's `NET-*`/`OS-*` capability names for actual
+  enforcement at the call site, matching the depth already done for
+  `SHELL`/`READ-FS`/etc. and for the SBCL port's gap.
+- Reconcile the SBCL port's capability-enforcement gap and give
+  `lamedh-asm` a tracked path through §1–§5.
+- Scope a `tests/kernel-conformance/` corpus, per #452's own risk list, so
+  this document does not decay the moment one host's convenience wins out
+  over the line drawn here, and so "the shared `lib/*.lisp` corpus" above
+  has an executable definition instead of a pointer to `src/lib.rs`.
