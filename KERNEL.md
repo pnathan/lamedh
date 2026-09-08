@@ -323,6 +323,107 @@ not assume they all behave like cons cells or all behave like fixnums:**
   values follow the same shape (structural on their defining parts,
   identity on the closure environment).
 
+**Hash tables, arrays, and environments each have a specific, closed type
+contract, stated precisely here rather than left to "whatever the host
+language's native collection does" — the failure mode this document is
+built to rule out is exactly a program that reads as correct, runs on the
+reference implementation, and then breaks on a second host because that
+host's map or vector type has slightly different key-equality or
+element-type rules.**
+
+- **A hash table's keys and values are both unconstrained** — any `LispVal`
+  of any type, including another hash table, an array, or a closure, is a
+  legal key or value, and a single table may mix key types freely (a
+  fixnum key and a string key in the same table is not an error). There is
+  no `:test` argument to `(make-hash-table)` and no way to select a
+  different key-equality policy per table: **every hash table in the
+  language uses exactly one fixed key-equality rule, and it is `EQUAL`
+  (Part IV's deep structural equality — the library definition itself,
+  `lib/04-predicates.lisp`, is exactly "recurse through conses, `EQ` at
+  the atoms"), not `EQ`.** This matters concretely because of Part IV's
+  `EQ`-on-cons defect: `(let ((h (make-hash-table)) (k (cons 1 2)))
+  (sethash h k 'v) (gethash h (cons 1 2)))` returns `V` — a freshly-built
+  cons cell *does* find a structurally-equal key, via `EQUAL`, even though
+  `(eq (cons 1 2) (cons 1 2))` is `NIL` and even though `EQ` on cons cells
+  is unconditionally `NIL` in the same implementation (see Part IV). A
+  host must key its hash tables on `EQUAL`, never on `EQ`, specifically so
+  that this case behaves the same everywhere despite `EQ`'s own cons-cell
+  behavior being currently unsettled. A conformant hash table must also make `NaN` usable
+  as a key at all (two `NaN` keys, or a lookup with a fresh `NaN`, must
+  hit the same slot, matching `EQ`'s explicit `NaN`-is-`NaN` carve-out)
+  and must make `0.0` and `-0.0` hash to the same slot (they are `EQUAL`
+  by ordinary float value-equality, so a key-equality contract that let
+  them collide differently would be internally inconsistent). A host
+  built on a language whose native hash-map requires a `Hash`
+  implementation derived independently from its `Eq` must ensure the two
+  agree on every one of these points rather than trusting a
+  default-derived hash.
+- **An array (`(array n)`) is fixed-length for its entire lifetime and
+  holds unconstrained, independently-typed elements** — `n` slots, each
+  initialized to `Nil`, addressable by `FETCH`/`STORE` at any
+  zero-based index `0 <= i < n`; **there is no resize, grow, push, or
+  pop primitive for this array type**, and a host must not add one
+  under this name, since `lib/*.lisp` code that calls `(array n)` is
+  relying on the length staying exactly `n`. Every slot may independently
+  hold a value of any type, changed by `STORE` to any other type at will
+  — this is a plain mutable vector of `LispVal`, not a homogeneous or
+  declared-element-type structure. An out-of-range index (negative, or
+  `>= n`) is a catchable error (Part VIII), never a silent
+  out-of-bounds read, a wraparound index, or a native crash. The
+  reference implementation additionally refuses to allocate one above
+  16,777,216 (2^24) elements with a catchable error rather than
+  attempting the allocation; this specific ceiling is a reference
+  implementation detail, not a number a portable program may assume
+  every host shares, but *some* finite, catchable-error ceiling — rather
+  than an attempt to allocate an unbounded amount of memory that could
+  abort the process — is required, in the same spirit as Part X's fuel
+  and Part VI's recursion-depth bound existing so that resource limits
+  fail as catchable Lisp conditions rather than as native faults.
+- **A typed array (`(typed-array n elem-type)`) is fixed-length *and*
+  fixed-element-type for its entire lifetime, and `elem-type` must be
+  exactly one of two symbols: `'INT64` or `'FLOAT64` — there is no third
+  option and no way to declare a typed array of any other element type
+  (not characters, not symbols, not sub-word integers).** Storing into a
+  typed array is type-checked per slot against its declared `elem-type`,
+  by a narrower and *different* rule from Part V's general arithmetic
+  coercions — **this is a place a portable program must not assume Part
+  V's char-to-integer coercion applies just because it applies
+  everywhere else fixnums are expected:**
+  - An `INT64` typed array accepts only a `Number` (fixnum) value at each
+    slot. Storing a `Float`, a `Char`, or any other type is a type error
+    (Part VIII) — in particular, unlike ordinary arithmetic, a `Char` is
+    **not** silently coerced to its code point here.
+  - A `FLOAT64` typed array accepts either a `Float` value (stored
+    directly) or a `Number` value (silently promoted to float on store) —
+    this one direction of numeric contagion is preserved, but nothing
+    else is: a `Char` is still a type error, not a doubly-coerced float.
+  - Reading a slot always produces a value of the declared type (`Number`
+    for `INT64`, `Float` for `FLOAT64`), never the type that happened to
+    be stored before some other coercion — there is no way to read back
+    anything but the declared type from a given typed array.
+  A host that instead accepts any numeric-ish value (including `Char`) by
+  reusing its general arithmetic-coercion code path for typed-array
+  storage has implemented an observably different, more permissive type
+  than this document specifies.
+- **An environment value's binding contents depend on how it was
+  constructed, and a portable program must not assume `(make-environment)`
+  and "the environment my top-level code is running in" start out the
+  same:** `(make-environment)` with no arguments produces a **minimal**
+  environment holding only native builtins — none of `lib/*.lisp`'s
+  functions or macros are present in it, and no capability is enabled in
+  it, regardless of what is enabled in the environment that called
+  `make-environment`. `(make-environment parent-env)` with one argument
+  instead produces an ordinary lexical child of `parent-env`, which does
+  see everything `parent-env` sees (including its stdlib bindings, if
+  any) through the normal lexical-lookup chain, and which shares
+  `parent-env`'s capability grant (Part IX) rather than getting an
+  independent one. A host that makes the zero-argument form return a
+  full stdlib-loaded environment — a plausible "helpful" choice, since
+  that is what a REPL or script normally starts with — has implemented a
+  different, more permissive primitive than this document specifies, and
+  a portable program that calls `(make-environment)` expecting a bare
+  kernel must not be handed stdlib bindings it never asked for.
+
 ## Part V — The numeric tower
 
 **Contagion.** Any float operand, in any position, promotes an entire
@@ -782,10 +883,12 @@ set (Part XII says which forms have that latitude):
 
 - **Representation**: cons/car/cdr with the identity/equality rules of
   Part IV; interned symbols; the numeric types and operations of Part V;
-  strings and characters per Parts II–IV; hash tables and arrays as
-  primitive mutable structures (`lib/15-sets-hash.lisp`/`lib/17-arrays.lisp`
-  use them natively, not as derived structures); a global-environment mutation primitive
-  (`SET`/`DEFINE`-shaped) and symbol property lists (`lib/00-core.lisp`
+  strings and characters per Parts II–IV; hash tables, arrays, typed
+  arrays, and environments as primitive mutable structures with the exact
+  type contracts Part IV states (`lib/15-sets-hash.lisp`/
+  `lib/17-arrays.lisp` use them natively, not as derived structures); a
+  global-environment mutation primitive (`SET`/`DEFINE`-shaped) and symbol
+  property lists (`lib/00-core.lisp`
   and the module system are unwritable without both). Cons cells are
   immutable — no destructive mutation primitive exists or may exist; see
   Part XII.
