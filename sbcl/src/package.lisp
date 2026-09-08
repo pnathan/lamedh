@@ -14,4 +14,5 @@
   (:use #:cl)
   (:export #:run-repl #:run-file #:run-string #:make-global-environment
            #:lread #:lread-all #:leval #:lprint #:lprint-to-string
-           #:*standard-lamedh-environment* #:lamedh-error #:lamedh-error-datum))
+           #:*standard-lamedh-environment* #:lamedh-error #:lamedh-error-datum
+           #:enable-feature #:disable-feature #:enable-all-features #:toplevel))

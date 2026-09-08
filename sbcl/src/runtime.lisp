@@ -34,13 +34,16 @@
   parent
   (rootp nil))
 
-(defvar *global-table* (make-hash-table :test 'eq))
-(defvar *dynamic-syms* (make-hash-table :test 'eq))
+(defvar *dynamic-syms* (make-hash-table :test 'eq)
+  "Process-wide: which Lamedh symbols are dynamic (DEFDYNAMIC/DEFVAR).
+Deliberately not per-environment -- see MAKE-ENVIRONMENT's docstring below
+on why dynamic-variable identity stays process-wide even across isolated
+worlds.")
 (defvar *global-env* (%make-lenv nil t)
-  "The single global (root) environment. The reference implementation
-supports multiple isolated interpreter \"worlds\" via MAKE-ENVIRONMENT;
-this port targets one process-wide global environment, which is what the
-CLI, the REPL, and every bootstrap/test file need.")
+  "The process's default global (root) environment -- what the CLI, REPL,
+and bootstrap/test files use. MAKE-ENVIRONMENT (below) creates additional,
+independent root environments; each is a genuine ROOT (its own TABLE is
+its own global namespace), not a child of this one.")
 
 (defun make-global-environment () *global-env*)
 
@@ -58,56 +61,61 @@ CLI, the REPL, and every bootstrap/test file need.")
       (boundp sym)
       (loop for e = env then (lenv-parent e)
             while e
-            do (when (lenv-rootp e)
-                 (return-from env-boundp (nth-value 1 (gethash sym *global-table*))))
-               (multiple-value-bind (v present) (gethash sym (lenv-table e))
+            do (multiple-value-bind (v present) (gethash sym (lenv-table e))
                  (declare (ignore v))
                  (when present (return-from env-boundp t)))
+               (when (lenv-rootp e) (return-from env-boundp nil))
             finally (return nil))))
 
 (defun env-resolve (env sym)
-  "Resolve SYM's value starting from ENV. Signals LAMEDH-UNBOUND-VARIABLE if
-unbound."
+  "Resolve SYM's value starting from ENV -- a root frame's own TABLE slot
+IS its global namespace, so this is one uniform frame walk with no
+special-cased global storage. Signals LAMEDH-UNBOUND-VARIABLE if unbound."
   (if (dynamic-sym-p sym)
       (if (boundp sym)
           (symbol-value sym)
           (error 'lamedh-unbound-variable :name sym))
       (loop for e = env then (lenv-parent e)
             while e
-            do (if (lenv-rootp e)
-                   (multiple-value-bind (v present) (gethash sym *global-table*)
-                     (if present (return v) (error 'lamedh-unbound-variable :name sym)))
-                   (multiple-value-bind (v present) (gethash sym (lenv-table e))
-                     (when present (return v))))
+            do (multiple-value-bind (v present) (gethash sym (lenv-table e))
+                 (when present (return v)))
+               (when (and (lenv-rootp e) (not (lenv-parent e)))
+                 (error 'lamedh-unbound-variable :name sym))
             finally (error 'lamedh-unbound-variable :name sym))))
 
 (defun env-set-local (env sym val)
-  "Bind SYM to VAL in ENV's own frame (the root frame's global table if ENV
-is the root). Used by DEF, lambda/fexpr/macro/vau parameter binding, and
-LET/LET* bindings for non-dynamic variables."
-  (if (lenv-rootp env)
-      (setf (gethash sym *global-table*) val)
-      (setf (gethash sym (lenv-table env)) val))
-  val)
+  "Bind SYM to VAL in ENV's own frame -- for a root frame, that frame's
+TABLE is its global namespace. Used by DEF, lambda/fexpr/macro/vau
+parameter binding, and LET/LET* bindings for non-dynamic variables."
+  (setf (gethash sym (lenv-table env)) val))
 
 (defun env-update (env sym val)
   "SETQ semantics: mutate the nearest existing binding for SYM, or create
 one in the global table if none exists anywhere in the chain (matching the
 reference implementation's SETQ, which is intentionally permissive)."
   (when (dynamic-sym-p sym)
-    (if (boundp sym)
-        (return-from env-update (setf (symbol-value sym) val))
-        (progn (setf (symbol-value sym) val) (return-from env-update val))))
+    (return-from env-update (setf (symbol-value sym) val)))
   (loop for e = env then (lenv-parent e)
         while e
-        do (if (lenv-rootp e)
-               (return-from env-update (setf (gethash sym *global-table*) val))
-               (multiple-value-bind (v present) (gethash sym (lenv-table e))
-                 (declare (ignore v))
-                 (when present (return-from env-update (setf (gethash sym (lenv-table e)) val))))))
-  (setf (gethash sym *global-table*) val))
+        do (multiple-value-bind (v present) (gethash sym (lenv-table e))
+             (declare (ignore v))
+             (when present (return-from env-update (setf (gethash sym (lenv-table e)) val))))
+           (when (lenv-rootp e) (return-from env-update (setf (gethash sym (lenv-table e)) val))))
+  (setf (gethash sym (lenv-table env)) val))
 
 (defun make-child-env (parent) (%make-lenv parent nil))
+
+(defun make-fresh-root-env (&key (copy-from *global-env*))
+  "A genuinely independent root environment: its own TABLE (global
+namespace), pre-populated with a snapshot of COPY-FROM's current bindings
+(default: the process's default global environment, so a fresh world
+starts with the full stdlib already loaded rather than a bare kernel --
+see MAKE-ENVIRONMENT's docstring for why this differs from the reference
+implementation's bare-kernel NEW_WITH_BUILTINS default)."
+  (let ((new (%make-lenv nil t)))
+    (when copy-from
+      (maphash (lambda (k v) (setf (gethash k (lenv-table new)) v)) (lenv-table copy-from)))
+    new))
 
 ;;; ============================================================================
 ;;; Callable value types
@@ -450,6 +458,54 @@ WITH-CAPABILITIES fence.")
   (or (null *capability-mask*)
       (and (member (if (symbolp name) (symbol-name name) name) *capability-mask* :test #'string=) t)))
 
+;;; ---- capability grants (real enforcement) ----------------------------------
+;;;
+;;; Matches the reference implementation's model: every host-facing
+;;; primitive is off by default (the library/embedding default); a host
+;;; grants specific capabilities with ENABLE-FEATURE. The CLI grants every
+;;; capability by default (see cli.lisp), same as the reference `lamedh`
+;;; binary, with --sandbox for none and --capability NAME for one at a
+;;; time. WITH-CAPABILITIES (above) can only narrow what a host has
+;;; granted, never widen it.
+
+(defvar *enabled-features* nil
+  "List of capability-name strings this process has been granted, via
+ENABLE-FEATURE (library/embedding API) or the CLI's default-all-on /
+--sandbox / --capability handling.")
+
+(defun feature-granted-p (name)
+  (let ((name (if (symbolp name) (symbol-name name) (string-upcase name))))
+    (and (member name *enabled-features* :test #'string=) t)))
+
+(defun feature-active-p (name)
+  "T iff NAME is both host-granted (ENABLE-FEATURE) and not excluded by
+any enclosing WITH-CAPABILITIES fence."
+  (and (feature-granted-p name) (capability-mask-allows-p name)))
+
+(defun enable-feature (name)
+  "Grant capability NAME (a string or symbol) to this process. Public
+embedding API, analogous to the reference implementation's
+Environment::enable_feature."
+  (pushnew (if (symbolp name) (symbol-name name) (string-upcase name)) *enabled-features* :test #'string=)
+  name)
+
+(defun disable-feature (name)
+  (setf *enabled-features*
+        (remove (if (symbolp name) (symbol-name name) (string-upcase name)) *enabled-features* :test #'string=))
+  name)
+
+(defun enable-all-features () (setf *enabled-features* (copy-list *all-capability-names*)))
+
+(defun require-feature! (name)
+  "Signal a catchable Lamedh error unless NAME is currently active (granted
+and not masked out). Called at the top of every gated builtin (io.lisp)."
+  (unless (feature-active-p name)
+    (lamedh-error
+     (if (feature-granted-p name)
+         (format nil "capability denied: ~A (excluded by an enclosing WITH-CAPABILITIES fence)" name)
+         (format nil "capability denied: ~A (not granted -- see ENABLE-FEATURE / --capability ~A)" name name))))
+  t)
+
 (defvar *kernel-fuel* nil
   "NIL when unarmed; otherwise a non-negative integer step budget, charged
 once per LEVAL trampoline iteration -- the same unit WITH-FUEL/STEP-COUNT
@@ -466,7 +522,7 @@ once per LEVAL trampoline iteration -- the same unit WITH-FUEL/STEP-COUNT
 (defspecial "WITH-CAPABILITIES" (args env whole)
   (declare (ignore whole))
   (destructuring-bind (caps-form &rest body) args
-    (let* ((requested (mapcar #'symbol-name (leval caps-form env)))
+    (let* ((requested (mapcar (lambda (c) (if (symbolp c) (symbol-name c) c)) (leval caps-form env)))
            (new-mask (if *capability-mask* (intersection *capability-mask* requested :test #'string=) requested)))
       (done (let ((*capability-mask* new-mask)) (progn-eval body env))))))
 

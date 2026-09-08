@@ -3,7 +3,10 @@
 (in-package #:lamedh-rt)
 
 (defun run-string (source)
-  "Evaluate every top-level form in SOURCE, returning the last value."
+  "Evaluate every top-level form in SOURCE, returning the last value.
+Grants no capabilities of its own -- the library/embedding default (see
+ENABLE-FEATURE); the CLI entry points below grant capabilities themselves
+before calling this."
   (let ((result nil))
     (dolist (form (lread-all source) result) (setf result (leval form *global-env*)))))
 
@@ -24,11 +27,33 @@
         (lamedh-condition (c) (format t "~&error: ~A~%" (lamedh-condition-value-string c)))
         (error (c) (format t "~&error: ~A~%" c))))))
 
+;;; ---- argv parsing: --sandbox / --capability NAME / a script path -----------
+;;;
+;;; Matches the reference `lamedh` CLI: every capability is granted by
+;;; default; --sandbox grants none; one or more --capability NAME grants
+;;; exactly those (repeatable). A remaining bare argument is the script path.
+
+(defun parse-cli-args (args)
+  "Returns (VALUES SANDBOX-P EXPLICIT-CAPABILITIES SCRIPT-PATH)."
+  (let (sandbox-p caps script)
+    (loop while args do
+      (let ((a (pop args)))
+        (cond
+          ((string= a "--sandbox") (setf sandbox-p t))
+          ((string= a "--capability")
+           (unless args (lamedh-error "--capability requires a NAME argument"))
+           (push (pop args) caps))
+          (t (setf script a)))))
+    (values sandbox-p (nreverse caps) script)))
+
 (defun toplevel ()
   (let ((args (uiop:command-line-arguments)))
-    (handler-case
-        (cond
-          ((null args) (run-repl))
-          (t (run-file (first args))))
-      (error (c) (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit 1))))
-  (uiop:quit 0))
+    (multiple-value-bind (sandbox-p caps script) (parse-cli-args args)
+      (cond
+        (caps (dolist (c caps) (enable-feature c)))
+        (sandbox-p nil)
+        (t (enable-all-features)))
+      (handler-case
+          (if script (run-file script) (run-repl))
+        (error (c) (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit :unix-status 1)))))
+  (uiop:quit :unix-status 0))

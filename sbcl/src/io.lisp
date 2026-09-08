@@ -1,8 +1,10 @@
 ;;;; io.lisp -- host I/O primitives: files, ports, text/UTF-8, shell, OS,
 ;;;; TCP/UDP, TLS, and regex. Backs lib/07,30-44.
 ;;;;
-;;;; This port does not gate these behind capabilities (see sbcl/README.md
-;;;; on sandboxing); every primitive here is simply always available.
+;;;; Every host-facing primitive here is gated by REQUIRE-FEATURE! against
+;;;; the same capability vocabulary as the reference implementation
+;;;; (READ-FS/CREATE-FS/TEMP-FS/SHELL/IO/NET-*/OS-*) -- see runtime.lisp's
+;;;; "capability grants" section and sbcl/README.md.
 
 (in-package #:lamedh-rt)
 
@@ -14,30 +16,52 @@
 ;;; Files
 ;;; ============================================================================
 
-(defbuiltin "FILE-EXISTS-P" (path) (bool (probe-file path)))
-(defbuiltin "DIRECTORY-P" (path) (bool (and (probe-file path) (uiop:directory-pathname-p (probe-file path)))))
-(defbuiltin "FILE-P" (path) (bool (and (probe-file path) (not (uiop:directory-pathname-p (probe-file path))))))
-(defbuiltin "FILE-READABLE-P" (path) (bool (probe-file path)))
-(defbuiltin "FILE-WRITABLE-P" (path) (bool (or (probe-file path) (probe-file (make-pathname :name nil :type nil :defaults path)))))
-(defbuiltin "FILE-EXECUTABLE-P" (path) (bool (probe-file path)))
-(defbuiltin "FILE-SIZE" (path) (with-open-file (s path :element-type '(unsigned-byte 8)) (file-length s)))
-(defbuiltin "READ-FILE" (path) (uiop:read-file-string path))
+(defbuiltin "FILE-EXISTS-P" (path) (require-feature! "READ-FS") (bool (probe-file path)))
+(defbuiltin "DIRECTORY-P" (path)
+  (require-feature! "READ-FS") (bool (and (probe-file path) (uiop:directory-pathname-p (probe-file path)))))
+(defbuiltin "FILE-P" (path)
+  (require-feature! "READ-FS") (bool (and (probe-file path) (not (uiop:directory-pathname-p (probe-file path))))))
+(defbuiltin "FILE-READABLE-P" (path) (require-feature! "READ-FS") (bool (probe-file path)))
+(defbuiltin "FILE-WRITABLE-P" (path)
+  (require-feature! "READ-FS")
+  (bool (or (probe-file path) (probe-file (make-pathname :name nil :type nil :defaults path)))))
+(defbuiltin "FILE-EXECUTABLE-P" (path) (require-feature! "READ-FS") (bool (probe-file path)))
+(defbuiltin "FILE-SIZE" (path)
+  (require-feature! "READ-FS") (with-open-file (s path :element-type '(unsigned-byte 8)) (file-length s)))
+(defbuiltin "READ-FILE" (path) (require-feature! "READ-FS") (uiop:read-file-string path))
 (defbuiltin "READ-STRING" (s) (lread-all s))
+(defbuiltin "READ" ()
+  "Read one Lamedh form from stdin, one line at a time (a simplification
+of the reference implementation's incremental multi-line READ). Requires
+IO."
+  (require-feature! "IO")
+  (let ((l (read-line *standard-input* nil nil))) (and l (lread l))))
+(defbuiltin "LOAD-FILE" (path)
+  (require-feature! "READ-FS")
+  (let ((result nil))
+    (dolist (form (lread-all (uiop:read-file-string path)) result) (setf result (leval form *global-env*)))))
 (defbuiltin "WRITE-FILE" (path content)
+  (require-feature! "CREATE-FS")
   (with-open-file (s path :direction :output :if-exists :supersede :if-does-not-exist :create)
     (write-string content s))
   nil)
-(defbuiltin "DELETE-FILE" (path) (delete-file path) nil)
-(defbuiltin "CREATE-DIRECTORY" (path) (ensure-directories-exist (uiop:ensure-directory-pathname path)) nil)
-(defbuiltin "RENAME-FILE" (old new) (rename-file old new) nil)
-(defbuiltin "CHMOD" (path mode) (declare (ignore mode)) path)
+(defbuiltin "DELETE-FILE" (path) (require-feature! "CREATE-FS") (delete-file path) nil)
+(defbuiltin "CREATE-DIRECTORY" (path)
+  (require-feature! "CREATE-FS") (ensure-directories-exist (uiop:ensure-directory-pathname path)) nil)
+(defbuiltin "RENAME-FILE" (old new)
+  (require-feature! "READ-FS") (require-feature! "CREATE-FS") (rename-file old new) nil)
+(defbuiltin "CHMOD" (path mode) (declare (ignore mode)) (require-feature! "CREATE-FS") path)
 (defbuiltin "DIRECTORY-FILES" (path)
+  (require-feature! "READ-FS")
   (mapcar (lambda (p) (namestring (uiop:enough-pathname p (uiop:ensure-directory-pathname path))))
           (uiop:directory-files path)))
-(defbuiltin "FILE-NEWER-P" (a b) (bool (> (or (file-write-date a) 0) (or (file-write-date b) 0))))
+(defbuiltin "FILE-NEWER-P" (a b)
+  (require-feature! "READ-FS") (bool (> (or (file-write-date a) 0) (or (file-write-date b) 0))))
 (defbuiltin "MAKE-TEMP-FILE" (&optional prefix)
+  (require-feature! "TEMP-FS")
   (namestring (uiop:with-temporary-file (:pathname p :prefix (or prefix "lamedh") :keep t) p)))
 (defbuiltin "MAKE-TEMP-DIRECTORY" (&optional prefix)
+  (require-feature! "TEMP-FS")
   (let ((dir (uiop:ensure-directory-pathname
               (format nil "~A~A-~D/" (uiop:temporary-directory) (or prefix "lamedh") (random 1000000)))))
     (ensure-directories-exist dir)
@@ -61,13 +85,16 @@
   (map '(vector (unsigned-byte 8)) (lambda (c) (if (characterp c) (char-code c) c)) arr))
 
 (defbuiltin "PORT-OPEN-INPUT-FILE*" (path)
+  (require-feature! "READ-FS")
   (make-lport :kind :file :name path :direction :input
               :stream (open path :direction :input :element-type '(unsigned-byte 8))))
 (defbuiltin "PORT-OPEN-OUTPUT-FILE*" (path)
+  (require-feature! "CREATE-FS")
   (make-lport :kind :file :name path :direction :output
               :stream (open path :direction :output :element-type '(unsigned-byte 8)
                             :if-exists :supersede :if-does-not-exist :create)))
 (defbuiltin "PORT-OPEN-APPEND-FILE*" (path)
+  (require-feature! "CREATE-FS")
   (make-lport :kind :file :name path :direction :output
               :stream (open path :direction :output :element-type '(unsigned-byte 8)
                             :if-exists :append :if-does-not-exist :create)))
@@ -79,7 +106,9 @@
 (defbuiltin "PORT-OUTPUT-CONTENTS*" (port)
   (unless (lport-out-bytes port) (lamedh-error "PORT-OUTPUT-CONTENTS*: not a memory output port"))
   (bytes-array->lisp (lport-out-bytes port)))
-(defbuiltin "PORT-STDIN*" () (make-lport :kind :stdin :name "<stdin>" :direction :input :stream *standard-input*))
+(defbuiltin "PORT-STDIN*" ()
+  (require-feature! "IO")
+  (make-lport :kind :stdin :name "<stdin>" :direction :input :stream *standard-input*))
 (defbuiltin "PORT-STDOUT*" () (make-lport :kind :stdout :name "<stdout>" :direction :output :stream *standard-output*))
 (defbuiltin "PORT-STDERR*" () (make-lport :kind :stderr :name "<stderr>" :direction :output :stream *error-output*))
 
@@ -176,6 +205,7 @@ Encoding Standard convention)."
 ;;; ============================================================================
 
 (defbuiltin "SHELL" (cmd)
+  (require-feature! "SHELL")
   (multiple-value-bind (out err code)
       (uiop:run-program cmd :output '(:string :stripped nil) :error-output '(:string :stripped nil)
                          :ignore-error-status t :force-shell t)
@@ -185,20 +215,23 @@ Encoding Standard convention)."
 ;;; OS (lib/41-os.lisp, lib/42-os-linux.lisp)
 ;;; ============================================================================
 
-(defbuiltin "OS-ARGS*" () (cons (or (first sb-ext:*posix-argv*) "lamedh") (rest sb-ext:*posix-argv*)))
-(defbuiltin "OS-EXECUTABLE-PATH*" () (namestring (truename (or *load-truename* sb-ext:*runtime-pathname* "/proc/self/exe"))))
-(defbuiltin "OS-CWD*" () (namestring (uiop:getcwd)))
-(defbuiltin "OS-CHDIR*" (path) (sb-posix:chdir path) nil)
-(defbuiltin "OS-ENV-GET*" (name) (uiop:getenv name))
+(defbuiltin "OS-ARGS*" ()
+  (require-feature! "OS-ENV") (cons (or (first sb-ext:*posix-argv*) "lamedh") (rest sb-ext:*posix-argv*)))
+(defbuiltin "OS-EXECUTABLE-PATH*" ()
+  (require-feature! "OS-ENV") (namestring (truename (or *load-truename* sb-ext:*runtime-pathname* "/proc/self/exe"))))
+(defbuiltin "OS-CWD*" () (require-feature! "OS-ENV") (namestring (uiop:getcwd)))
+(defbuiltin "OS-CHDIR*" (path) (require-feature! "OS-ENV-WRITE") (sb-posix:chdir path) nil)
+(defbuiltin "OS-ENV-GET*" (name) (require-feature! "OS-ENV") (uiop:getenv name))
 (defbuiltin "OS-ENV-LIST*" ()
+  (require-feature! "OS-ENV")
   (sort (mapcar (lambda (kv) (let ((i (position #\= kv))) (cons (subseq kv 0 i) (subseq kv (1+ i)))))
                 (sb-ext:posix-environ))
         #'string< :key #'car))
-(defbuiltin "OS-ENV-SET*" (name value) (sb-posix:setenv name value 1) nil)
-(defbuiltin "OS-ENV-UNSET*" (name) (sb-posix:unsetenv name) nil)
-(defbuiltin "OS-PID*" () (sb-posix:getpid))
-(defbuiltin "OS-PPID*" () (sb-posix:getppid))
-(defbuiltin "OS-HOSTNAME*" () (machine-instance))
+(defbuiltin "OS-ENV-SET*" (name value) (require-feature! "OS-ENV-WRITE") (sb-posix:setenv name value 1) nil)
+(defbuiltin "OS-ENV-UNSET*" (name) (require-feature! "OS-ENV-WRITE") (sb-posix:unsetenv name) nil)
+(defbuiltin "OS-PID*" () (require-feature! "OS-ENV") (sb-posix:getpid))
+(defbuiltin "OS-PPID*" () (require-feature! "OS-ENV") (sb-posix:getppid))
+(defbuiltin "OS-HOSTNAME*" () (require-feature! "OS-ENV") (machine-instance))
 (defbuiltin "OS-NOW*" () (cons (- (get-universal-time) 2208988800) 0))
 (defbuiltin "OS-MONOTONIC-NANOS*" () (round (* (get-internal-real-time) (/ 1000000000 internal-time-units-per-second))))
 (defbuiltin "OS-SLEEP*" (ms) (sleep (/ ms 1000.0)) nil)
@@ -217,6 +250,7 @@ Encoding Standard convention)."
 (defstruct lchild process)
 (defbuiltin "OS-SPAWN*" (program argv inherit-env env cwd stdin-mode stdout-mode stderr-mode)
   (declare (ignore inherit-env))
+  (require-feature! "OS-PROCESS")
   (flet ((mode (m) (case m (:pipe :stream) (:null nil) (t t))))
     (let* ((proc (sb-ext:run-program program argv :output (mode stdout-mode) :error (mode stderr-mode)
                                       :input (mode stdin-mode) :wait nil
@@ -241,13 +275,14 @@ Encoding Standard convention)."
 (defbuiltin "OS-PROCESS-TERMINATE*" (handle) (sb-ext:process-kill (lchild-process handle) 15) nil)
 (defbuiltin "OS-PROCESS-P*" (v) (bool (lchild-p v)))
 (defbuiltin "OS-SIGNAL*" (pid signal-name)
+  (require-feature! "OS-SIGNAL")
   (let ((n (cond ((string-equal signal-name "TERM") 15) ((string-equal signal-name "KILL") 9)
                  ((string-equal signal-name "HUP") 1) ((string-equal signal-name "INT") 2)
                  (t 15))))
     (sb-posix:kill pid n))
   nil)
-(defbuiltin "OS-LINUX-STAT" (path) (declare (ignore path)) nil)
-(defbuiltin "OS-LINUX-READLINK" (path) (namestring (truename path)))
+(defbuiltin "OS-LINUX-STAT" (path) (declare (ignore path)) (require-feature! "READ-FS") nil)
+(defbuiltin "OS-LINUX-READLINK" (path) (require-feature! "READ-FS") (namestring (truename path)))
 
 ;;; ============================================================================
 ;;; TLS (lib/43-tls.lisp) -- honestly unavailable: no bundled TLS library.
@@ -273,6 +308,7 @@ Encoding Standard convention)."
 (defstruct lnethandle kind socket stream)
 
 (defbuiltin "NET-RESOLVE*" (host port)
+  (require-feature! "NET-DNS")
   (let ((addrs (sb-bsd-sockets:host-ent-addresses (sb-bsd-sockets:get-host-by-name host))))
     (mapcar (lambda (a) (list (lsym "IPV4") (format nil "~{~D~^.~}" (coerce a 'list)) port)) addrs)))
 (defun sockaddr->triple (socket)
@@ -286,11 +322,13 @@ Encoding Standard convention)."
     (list (lsym "IPV4") (format nil "~{~D~^.~}" (coerce addr 'list)) port)))
 
 (defbuiltin "TCP-CONNECT*" (host port)
+  (require-feature! "NET-CONNECT")
   (let ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
     (sb-bsd-sockets:socket-connect sock (sb-bsd-sockets:host-ent-address (sb-bsd-sockets:get-host-by-name host)) port)
     (make-lport :kind :file :name (format nil "~A:~D" host port) :direction :input
                 :stream (sb-bsd-sockets:socket-make-stream sock :input t :output t :element-type '(unsigned-byte 8)))))
 (defbuiltin "TCP-LISTEN*" (host port backlog)
+  (require-feature! "NET-LISTEN")
   (let ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
     (setf (sb-bsd-sockets:sockopt-reuse-address sock) t)
     (sb-bsd-sockets:socket-bind sock (sb-bsd-sockets:make-inet-address host) port)
@@ -310,10 +348,12 @@ Encoding Standard convention)."
 (defbuiltin "NET-HANDLE-KIND*" (h) (lsym (string-upcase (symbol-name (lnethandle-kind h)))))
 
 (defbuiltin "UDP-BIND*" (host port)
+  (require-feature! "NET-LISTEN")
   (let ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :datagram :protocol :udp)))
     (sb-bsd-sockets:socket-bind sock (sb-bsd-sockets:make-inet-address host) port)
     (make-lnethandle :kind :udp :socket sock)))
 (defbuiltin "UDP-CONNECT*" (host port)
+  (require-feature! "NET-CONNECT")
   (let ((sock (make-instance 'sb-bsd-sockets:inet-socket :type :datagram :protocol :udp)))
     (sb-bsd-sockets:socket-connect sock (sb-bsd-sockets:host-ent-address (sb-bsd-sockets:get-host-by-name host)) port)
     (make-lnethandle :kind :udp :socket sock)))
@@ -327,19 +367,31 @@ Encoding Standard convention)."
 (defbuiltin "UDP-SET-TIMEOUT*" (h secs) (declare (ignore h secs)) nil)
 
 ;;; ============================================================================
-;;; Regex (lib/44-regex.lisp) -- a small backtracking engine.
+;;; Regex (lib/44-regex.lisp) -- a Thompson-NFA / Pike's-VM engine.
 ;;; ============================================================================
 ;;;
 ;;; DEVIATION (documented in sbcl/README.md): the reference implementation
-;;; wraps Rust's `regex` crate (RE2 semantics -- no backtracking, guaranteed
-;;; linear time). This is a straightforward recursive-descent /
-;;; backtracking matcher instead: functionally equivalent on the common
-;;; subset (literals, ./*/+/?/{}, character classes, ^/$, |, capturing
-;;; groups, \d\w\s escapes) but WITHOUT RE2's linear-time guarantee -- a
-;;; pathological pattern can backtrack exponentially here. Named groups
-;;; and Unicode-aware classes are not supported.
+;;; wraps Rust's `regex` crate (RE2 semantics). This engine gives the same
+;;; underlying guarantee by the same means RE2 does: the AST is compiled to
+;;; a small byte-code program (:CHAR/:ANY/:CLASS/:BOL/:EOL/:SAVE/:JMP/:SPLIT
+;;; /:MATCH), and matching runs that program as a Pike's VM -- simulating
+;;; every live NFA thread in lockstep, one input character at a time, with
+;;; per-step, per-program-counter thread deduplication. That dedup is the
+;;; whole guarantee: it bounds the live thread set to at most (length
+;;; PROGRAM) at every step, so total work is O(length(s) * length(program))
+;;; -- linear in the input for a fixed pattern -- with NO possibility of the
+;;; catastrophic exponential blowup a backtracking matcher suffers on
+;;; pathological patterns such as (a+)+b. Leftmost-first (greedy,
+;;; Perl/PCRE-style) priority among ambiguous alternatives is preserved by
+;;; processing threads in priority order and letting a higher-priority
+;;; thread's MATCH cut off every lower-priority thread still alive that
+;;; step. Unanchored search injects a fresh lowest-priority start thread at
+;;; every input position not yet matched, so the first successful MATCH is
+;;; always the leftmost one -- one single left-to-right pass over S, not one
+;;; VM run per start offset. Named capture groups and Unicode-aware classes
+;;; are not supported (neither was true of the prior backtracking matcher).
 
-(defstruct lregex pattern ast)
+(defstruct lregex pattern ast program nsub)
 
 (defun regex-parse (pattern)
   (let ((pos 0) (len (length pattern)) (group-count 0))
@@ -417,48 +469,144 @@ Encoding Standard convention)."
   (let ((hit (some (lambda (r) (char<= (car r) ch (cdr r))) ranges)))
     (if negate (not hit) hit)))
 
-(defun regex-match-node (node s i caps k)
-  "Try to match NODE at position I in string S; K is a continuation
-(lambda (i caps) ...) called with the position after a successful match.
-Returns K's result, or NIL if no match (with backtracking via K's own
-NIL propagation)."
-  (case (car node)
-    (:char (and (< i (length s)) (char= (char s i) (second node)) (funcall k (1+ i) caps)))
-    (:any (and (< i (length s)) (funcall k (1+ i) caps)))
-    (:class (and (< i (length s)) (regex-class-match-p (second node) (third node) (char s i)) (funcall k (1+ i) caps)))
-    (:bol (and (= i 0) (funcall k i caps)))
-    (:eol (and (= i (length s)) (funcall k i caps)))
-    (:seq (regex-match-seq (second node) s i caps k))
-    (:alt (some (lambda (b) (regex-match-node b s i caps k)) (second node)))
-    (:group (regex-match-node (third node) s i caps
-                               (lambda (j caps2) (funcall k j (cons (list (second node) i j) caps2)))))
-    (:rep (regex-match-rep node s i caps k))
-    (t nil)))
+;;; ---- compiler: AST -> byte-code program -----------------------------------
+;;;
+;;; Instructions (each a mutable list so branch targets can be back-patched
+;;; once known): (:CHAR c) (:ANY) (:CLASS negate ranges) (:BOL) (:EOL)
+;;; (:SAVE n) (:JMP target) (:SPLIT t1 t2 -- t1 tried at higher priority)
+;;; (:MATCH). PROG is an adjustable vector with a fill-pointer; PC is
+;;; always (fill-pointer PROG) at the moment of emission.
 
-(defun regex-match-seq (nodes s i caps k)
-  (if (null nodes) (funcall k i caps)
-      (regex-match-node (car nodes) s i caps (lambda (j caps2) (regex-match-seq (cdr nodes) s j caps2 k)))))
+(defun rx-emit (prog instr)
+  (vector-push-extend instr prog)
+  (1- (fill-pointer prog)))
 
-(defun regex-match-rep (node s i caps k)
+(defun rx-compile-alt (prog branches)
+  (if (null (cdr branches))
+      (rx-compile-node prog (car branches))
+      (let ((split-pc (rx-emit prog (list :split 0 0))))
+        (let ((l1 (fill-pointer prog)))
+          (rx-compile-node prog (car branches))
+          (let ((jmp-pc (rx-emit prog (list :jmp 0))))
+            (let ((l2 (fill-pointer prog)))
+              (rx-compile-alt prog (cdr branches))
+              (setf (second (aref prog split-pc)) l1
+                    (third (aref prog split-pc)) l2
+                    (second (aref prog jmp-pc)) (fill-pointer prog))))))))
+
+(defun rx-compile-rep (prog node)
   (destructuring-bind (inner min max) (cdr node)
-    (labels ((go-count (n i caps)
-               (if (and max (>= n max))
-                   (funcall k i caps)
-                   (or (regex-match-node inner s i caps (lambda (j caps2) (and (/= j i) (go-count (1+ n) j caps2))))
-                       (and (>= n min) (funcall k i caps))))))
-      (go-count 0 i caps))))
+    (dotimes (i min) (rx-compile-node prog inner))
+    (if (null max)
+        ;; zero-or-more additional copies via a standard Thompson '*' loop.
+        (let ((l1 (fill-pointer prog)))
+          (let ((split-pc (rx-emit prog (list :split 0 0))))
+            (rx-compile-node prog inner)
+            (rx-emit prog (list :jmp l1))
+            (setf (second (aref prog split-pc)) (1+ split-pc)
+                  (third (aref prog split-pc)) (fill-pointer prog))))
+        ;; (max - min) further copies, each independently optional (greedy).
+        (dotimes (i (- max min))
+          (let ((split-pc (rx-emit prog (list :split 0 0))))
+            (setf (second (aref prog split-pc)) (fill-pointer prog))
+            (rx-compile-node prog inner)
+            (setf (third (aref prog split-pc)) (fill-pointer prog)))))))
+
+(defun rx-compile-node (prog node)
+  (case (car node)
+    (:char (rx-emit prog (list :char (second node))))
+    (:any (rx-emit prog (list :any)))
+    (:class (rx-emit prog (list :class (second node) (third node))))
+    (:bol (rx-emit prog (list :bol)))
+    (:eol (rx-emit prog (list :eol)))
+    (:seq (dolist (n (second node)) (rx-compile-node prog n)))
+    (:alt (rx-compile-alt prog (second node)))
+    (:group (rx-emit prog (list :save (* 2 (second node))))
+     (rx-compile-node prog (third node))
+     (rx-emit prog (list :save (1+ (* 2 (second node))))))
+    (:rep (rx-compile-rep prog node))
+    (t (lamedh-error "REGEX: unknown AST node"))))
+
+(defun regex-compile-program (ast group-count)
+  "Returns (VALUES simple-vector-of-instructions nsub), where NSUB is the
+number of capture slots (group 0, the whole match, plus GROUP-COUNT
+explicit groups)."
+  (let ((prog (make-array 16 :adjustable t :fill-pointer 0)))
+    (rx-emit prog (list :save 0))
+    (rx-compile-node prog ast)
+    (rx-emit prog (list :save 1))
+    (rx-emit prog (list :match))
+    (values (coerce prog 'simple-vector) (1+ group-count))))
+
+;;; ---- Pike's VM: run the compiled program against S in one linear pass ----
+
+(defun regex-vm-search (prog nsub s start)
+  "Unanchored search for PROG (NSUB capture slots) in S, starting at or
+after char index START. Returns a simple-vector of 2*NSUB slot values (a
+position, or NIL if that slot was never set) for the leftmost match, or
+NIL if there is no match."
+  (let* ((slen (length s)) (plen (length prog))
+         (gen-a (make-array plen :initial-element -1))
+         (gen-b (make-array plen :initial-element -1))
+         (clist (make-array 8 :adjustable t :fill-pointer 0))
+         (nlist (make-array 8 :adjustable t :fill-pointer 0))
+         (cgen gen-a) (ngen gen-b)
+         (stamp 0) (cstamp (incf stamp))
+         (matched nil) (matchcaps nil))
+    (labels
+        ((addthread (list garr gstamp pc caps sp)
+           (when (= (aref garr pc) gstamp) (return-from addthread))
+           (setf (aref garr pc) gstamp)
+           (let ((instr (aref prog pc)))
+             (case (car instr)
+               (:jmp (addthread list garr gstamp (second instr) caps sp))
+               (:split (addthread list garr gstamp (second instr) caps sp)
+                       (addthread list garr gstamp (third instr) caps sp))
+               (:save (let ((newcaps (copy-seq caps)))
+                        (setf (aref newcaps (second instr)) sp)
+                        (addthread list garr gstamp (1+ pc) newcaps sp)))
+               (:bol (when (= sp 0) (addthread list garr gstamp (1+ pc) caps sp)))
+               (:eol (when (= sp slen) (addthread list garr gstamp (1+ pc) caps sp)))
+               (t (vector-push-extend (cons pc caps) list))))))
+      (loop for sp from start to slen do
+        (unless matched
+          (addthread clist cgen cstamp 0 (make-array (* 2 nsub) :initial-element nil) sp))
+        (setf (fill-pointer nlist) 0)
+        (let ((nstamp (incf stamp)))
+          (block step
+            (dotimes (idx (fill-pointer clist))
+              (destructuring-bind (pc . caps) (aref clist idx)
+                (let ((instr (aref prog pc)))
+                  (case (car instr)
+                    (:char (when (and (< sp slen) (char= (char s sp) (second instr)))
+                             (addthread nlist ngen nstamp (1+ pc) caps (1+ sp))))
+                    (:any (when (< sp slen) (addthread nlist ngen nstamp (1+ pc) caps (1+ sp))))
+                    (:class (when (and (< sp slen) (regex-class-match-p (second instr) (third instr) (char s sp)))
+                              (addthread nlist ngen nstamp (1+ pc) caps (1+ sp))))
+                    (:match (setf matched t matchcaps caps) (return-from step))
+                    (t (lamedh-error "REGEX: bad thread state")))))))
+          (rotatef clist nlist)
+          (rotatef cgen ngen)
+          (setf cstamp nstamp))
+        (when (and matched (zerop (fill-pointer clist))) (return)))
+      matchcaps)))
 
 (defun regex-search (rx s start)
   "Search RX in S starting at or after char index START. Returns (values
-match-start match-end caps) or NIL."
-  (loop for i from start to (length s) do
-    (let (result)
-      (regex-match-node (lregex-ast rx) s i nil (lambda (j caps) (setf result (list i j caps)) t))
-      (when result (return-from regex-search (values (first result) (second result) (third result))))))
-  nil)
+match-start match-end caps) or NIL, where CAPS is an alist of (group-index
+start end) triples for groups >= 1 (group 0 is MATCH-START/MATCH-END)."
+  (let ((caps (regex-vm-search (lregex-program rx) (lregex-nsub rx) s start)))
+    (when caps
+      (let (groups)
+        (loop for idx from 1 below (lregex-nsub rx) do
+          (let ((gs (aref caps (* 2 idx))) (ge (aref caps (1+ (* 2 idx)))))
+            (when (and gs ge) (push (list idx gs ge) groups))))
+        (values (aref caps 0) (aref caps 1) (nreverse groups))))))
 
 (defbuiltin "REGEX-COMPILE*" (pattern)
-  (make-lregex :pattern pattern :ast (regex-parse pattern)))
+  (multiple-value-bind (ast group-count) (regex-parse pattern)
+    (multiple-value-bind (prog nsub) (regex-compile-program ast group-count)
+      (make-lregex :pattern pattern :ast ast :program prog :nsub nsub))))
 (defbuiltin "REGEX-P*" (v) (bool (lregex-p v)))
 (defbuiltin "REGEX-PATTERN*" (rx) (lregex-pattern rx))
 (defbuiltin "REGEX-ESCAPE*" (s)
@@ -466,7 +614,11 @@ match-start match-end caps) or NIL."
     (loop for c across s do
       (when (find c ".^$*+?()[]{}|\\") (write-char #\\ out))
       (write-char c out))))
-(defun as-regex (re) (if (lregex-p re) re (make-lregex :pattern re :ast (regex-parse re))))
+(defun as-regex (re)
+  (if (lregex-p re) re
+      (multiple-value-bind (ast group-count) (regex-parse re)
+        (multiple-value-bind (prog nsub) (regex-compile-program ast group-count)
+          (make-lregex :pattern re :ast ast :program prog :nsub nsub)))))
 (defbuiltin "REGEX-IS-MATCH*" (re s) (bool (regex-search (as-regex re) s 0)))
 (defbuiltin "REGEX-FIND*" (re s &optional (start 0))
   (multiple-value-bind (i j) (regex-search (as-regex re) s start)

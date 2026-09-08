@@ -111,28 +111,42 @@ to report as true."
 (defbuiltin "KERNEL-FUEL-REMAINING" () *kernel-fuel*)
 (defbuiltin "KERNEL-FUEL-SET!" (n) (setf *kernel-fuel* n))
 (defbuiltin "MONOTONIC-MICROS" () (round (* (get-internal-real-time) (/ 1000000 internal-time-units-per-second))))
-(defbuiltin "FEATURE-ENABLED-P" (name)
-  "This port does not gate host-facing builtins behind capabilities (see
-sbcl/README.md) -- every feature is always enabled, subject only to the
-introspection-level WITH-CAPABILITIES mask."
-  (bool (capability-mask-allows-p name)))
+(defbuiltin "FEATURE-ENABLED-P" (name) (bool (feature-active-p name)))
 (defbuiltin "CAPABILITY-MASK-ALLOWS-P" (name) (bool (capability-mask-allows-p name)))
 (defbuiltin "SET" (sym val)
   (if (dynamic-sym-p sym) (setf (symbol-value sym) val) (env-set-local *global-env* sym val)))
 
-;;; ---- SPAWN/AWAIT (lib/22-guard.lisp) --------------------------------------
+;;; ---- SPAWN/AWAIT (lib/22-guard.lisp): real SBCL threads -------------------
 ;;;
-;;; DEVIATION (documented in sbcl/README.md): the reference implementation
-;;; runs SPAWN's body on a genuine share-nothing interpreter thread of its
-;;; own. This port evaluates it SYNCHRONOUSLY on the calling thread instead
-;;; -- there is no real concurrency here, only the same functional result
-;;; AWAIT would eventually see. A capability/fuel-armed child still gets
-;;; its own attenuated mask/budget for the extent of its (synchronous) run.
+;;; "Share-nothing" per the reference implementation's design: the child
+;;; runs in a FRESH root environment (a snapshot of the parent's global
+;;; bindings at fork time, via MAKE-FRESH-ROOT-ENV -- see runtime.lisp),
+;;; not the parent's live *GLOBAL-ENV*, so neither thread's later global
+;;; definitions/redefinitions are visible to the other. DEVIATION
+;;; (documented in sbcl/README.md): process-wide caches that sit outside
+;;; the Lamedh environment model proper -- property lists, record/type
+;;; schemas, the dynamic-symbol registry -- are still process-wide CL
+;;; hash tables shared by every thread; this is a real, if narrow, gap in
+;;; the isolation guarantee, not a full share-nothing implementation.
+
+(defstruct lchannel thread (joined nil) cached)
 
 (defbuiltin "SPAWN-THREAD" (body-source effective-caps fuel)
-  (let ((forms (lread-all body-source)))
-    (handler-case
-        (let ((*capability-mask* effective-caps) (*kernel-fuel* fuel))
-          (list (lsym ":OK") (let (result) (dolist (f forms result) (setf result (leval f *global-env*))))))
-      (error (c) (list (lsym ":ERROR") (princ-to-string c))))))
-(defbuiltin "CHANNEL-RECV" (handle) handle)
+  (let* ((forms (lread-all body-source))
+         (child-env (make-fresh-root-env)))
+    (make-lchannel
+     :thread (sb-thread:make-thread
+              (lambda ()
+                (handler-case
+                    (let ((*global-env* child-env) (*capability-mask* effective-caps) (*kernel-fuel* fuel)
+                          (*current-env* nil))
+                      (list (lsym ":OK") (let (result) (dolist (f forms result) (setf result (leval f child-env))))))
+                  (error (c) (list (lsym ":ERROR") (princ-to-string c)))))
+              :name "lamedh-spawn"))))
+
+(defbuiltin "CHANNEL-RECV" (handle)
+  (if (lchannel-joined handle)
+      (lchannel-cached handle)
+      (let ((result (sb-thread:join-thread (lchannel-thread handle) :default (list (lsym ":ERROR") "thread died"))))
+        (setf (lchannel-cached handle) result (lchannel-joined handle) t)
+        result)))

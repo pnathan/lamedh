@@ -9,6 +9,8 @@
 
 (in-package #:lamedh-rt)
 
+(enable-all-features) ; a trusted local test run, like the CLI's default
+
 (defparameter *test-files*
   '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
