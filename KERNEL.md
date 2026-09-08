@@ -16,11 +16,12 @@ rule of observable behavior stated in this document is the Rust
 reference's actual behavior, verified directly against its source
 (`src/reader.rs`, `src/printer.rs`, `src/lib.rs`, `src/environment.rs`,
 `src/evaluator/*.rs`) — not a plausible-sounding generic Lisp convention,
-and not an invention of this document. Lamedh has a few genuinely
-surprising rules — surprising enough that a competent implementer guessing
-from "it's a Lisp" gets them wrong — and those are exactly the rules a spec
-exists to pin down. Part IV's `EQ` rule for cons cells is the sharpest
-example; see there.
+and not an invention of this document. Where a rule cites a function or
+file, that citation is the place in the reference where the rule is
+implemented. Lamedh has a few genuinely surprising rules — surprising
+enough that a competent implementer guessing from "it's a Lisp" gets them
+wrong — and those are exactly the rules a spec exists to pin down. Part
+IV's `EQ` rule for cons cells is the sharpest example; see there.
 
 **A small, closed set of declared axes is where hosts are allowed to
 differ**, listed in full in Part XII. Outside that list, a host's observable
@@ -32,191 +33,318 @@ short and explicit specifically so that "conformant divergence" and "actual
 bug" stay distinguishable, which a document that just says "hosts may vary
 reasonable things" cannot do.
 
+**Error message text is never part of the portable surface** (Part VIII).
+Wherever this document says an operation "is an error", it means the
+operation signals a `HANDLER-CASE`-catchable condition (Part VIII) rather
+than returning a value, crashing, or continuing silently; the wording of
+the message is the reference's own and a host may choose its own.
+
 **This is a Lisp 1.5 dialect with modern extensions, not a reimplementation
 of Common Lisp or Scheme.** Where a rule below looks unusual next to CL or
 Scheme habit (fixed-arity-plus-rest lambda lists with no `&optional`/`&key`;
-a condition system with no type hierarchy; `EQ` false on every cons pair),
-that is not an oversight — it is what the language is, and it is the
-language that the entire `lib/*.lisp` corpus already runs in production
-against.
+a condition system with no type hierarchy; `EQ` false on every cons pair;
+a two-armed-only `IF`), that is not an oversight — it is what the language
+is, and it is the language that the entire `lib/*.lisp` corpus already
+runs in production against.
 
 ## Part II — Lexical grammar (the reader)
 
-**Whitespace and comments.** `ws ::= (space | line-comment | block-comment)*`.
-A line comment runs from `;` to end of line. A block comment runs from `#|`
-to a matching `|#` and **nests**: an inner `#|` increments a depth counter
-that an inner `|#` decrements, so `#| a #| b |# c |#` is one comment, not a
-premature close. An unterminated block comment or string is a hard parse
-failure, not a silent truncation. A leading `#!` line (shebang) is stripped
-before parsing begins, not part of the general comment grammar.
+The reader (`src/reader.rs`) is a recursive-descent parser over UTF-8
+source text. It is **not token-based**: at each position it skips
+whitespace and comments, then tries a fixed, ordered list of productions
+and commits to the first one that matches, consuming exactly what that
+production matched. Except where a production is stated below to carry a
+boundary guard, **nothing requires the character after a matched
+production to be a delimiter** — the next production simply starts there.
+Several concrete consequences of this rule are listed under each
+production; a conforming reader must reproduce them.
 
-**Symbols.** Two constituent grammars, tried in this order against each
-atom-shaped token:
-- A *general* symbol: first character `alpha | & | $ | ?`; every character
-  after that drawn from `alphanumeric | - * ? ! + = < > : _` (any number,
-  including zero more). `-` is a legal non-initial character (so `FOO-BAR`
-  is one symbol), and `:` is legal non-initially (module-qualified
-  `MODULE:SYMBOL` reads as one symbol) but a *leading* `:` instead triggers
-  the keyword-symbol grammar below.
-- An *operator* symbol: one or more characters from `+ - * / = < > ! ~`,
-  covering tokens like `+`, `>=`, `/=` that don't start with a letter.
-  Operator symbols are **not** case-folded (they have no case), but every
-  other symbol class is.
-- `:foo` (a *keyword symbol*: `:` then a general-symbol-shaped tail) and
-  `*foo*` (an *earmuff symbol*: `*` then a general-symbol-shaped tail then
-  `*`) are each their own reader production, but **both produce an ordinary
-  `Symbol`** — there is no distinct keyword or special-variable runtime
-  type. The reader-level distinction exists only to accept `:` and a second
-  `*` inside what would otherwise be illegal symbol characters; nothing
-  downstream treats a keyword symbol differently from any other symbol
-  except by convention.
-- Digits alone are never ambiguous with a symbol: the numeric-literal
-  productions are tried first, and every symbol production requires a
-  non-digit leading character (a letter, `&`, `$`, `?`, `:`, `*`, or an
-  operator character), so a bare digit string can only ever be a number.
-- **Case folding is unconditional**: every symbol (general, keyword,
-  earmuff) is uppercased at intern time, regardless of surrounding context.
-  There is no case-sensitivity mode and no escaped-symbol syntax (no
-  `|foo bar|`) to opt out of it.
-- `T` (after uppercasing) reads as the ordinary interned symbol `T`. `NIL`
-  (after uppercasing) does **not** read as a symbol at all — it reads as
-  the same `Nil` value that `()` reads as. `NIL` is not "a symbol that
-  happens to be treated as false"; it is literally the empty list, exactly
-  as `()` is, with no symbol object backing it. See Part IV.
+**Source text and whitespace.** Source is UTF-8. `ws ::= (space |
+line-comment | block-comment)*`, where *space* is exactly one of the four
+characters space (U+0020), horizontal tab, carriage return, line feed. Form
+feed, vertical tab, and every non-ASCII whitespace character are **not**
+whitespace and are a parse error wherever they appear outside a string
+(`(a<FF>b)` fails to read).
 
-**Integer literals.** Four forms, none combinable with another in the same
-token:
-- Decimal: optional leading `-`, then one or more digits. Leading zeros are
-  legal. There is no leading `+`; a token starting with `+` reads as the
-  operator symbol `+` unless it's immediately followed by a decimal literal
-  with no space, in which case it's still just the symbol (a bare `+` sign
-  on a numeric literal is not part of this grammar at all).
-- Octal, `Q` suffix (case-sensitive, uppercase only): `-? digit+ "Q"`.
-- Hexadecimal, `H`/`h` suffix: `-? digit hex-digit* [Hh]`, and it must
-  *start* with a decimal digit `0`-`9` — `FFh` is not a valid hex literal
-  under this grammar (it would need a leading `0`: `0FFh`).
-- Radix-prefixed, CL style: `# [xXbBoO] -? digit-in-that-radix+`. There is
-  no `#d` decimal prefix (decimal already has its own unprefixed form).
-- An integer literal that overflows a 64-bit signed integer degrades
-  silently to a float if it still parses as one — it does not error and
-  does not become a bignum at the reader level on any host, since no host
-  is required to have reader-level bignums (see Part XII on numeric
-  precision).
+- A *line comment* is `;` followed by **one or more** characters other
+  than LF or CR, ending at (not consuming) the next LF or CR. A `;`
+  immediately followed by a line break or by end of input does not match
+  the comment production and is a **parse error** in the reference
+  (`parse_comment` requires at least one comment character). See Part XII,
+  axis 7.
+- A *block comment* runs from `#|` to the matching `|#` and **nests**: an
+  inner `#|` increments a depth counter that an inner `|#` decrements, so
+  `#| a #| b |# c |#` is one comment. Block comments are not recognized
+  inside strings. An unterminated block comment is a hard parse failure.
+- A *shebang line*: if the **first two bytes of a source text** are `#!`,
+  everything up to (not including) the first LF is discarded before
+  parsing begins (`strip_shebang`). This applies to any text handed to the
+  reader's whole-text entry points (`read`, `read_all`, file loading), not
+  only to files, and only at offset 0.
 
-**Float literals.** `-? digit+ "." digit+ (("e"|"E") ("+"|"-")? digit+)?`
-— both the integer part and the fractional part require at least one
-digit. **`.5` and `5.` are both illegal** under this grammar; there is no
-production that accepts either. A conformant reader must reject them the
-same way (as a parse failure or as some other token, per Part XII's grammar
-axis — see there), not silently accept CL-style bare-decimal-point floats.
+**Dispatch order.** After skipping `ws`, the productions are tried in this
+order (`parse_expr`); the first match wins:
 
-**String literals**, delimited by `"`. Recognized escapes: `\n \t \r \\ \"
-\0`. Any other backslash-prefixed character is **not an error and is not
-stripped** — it is passed through to the string's contents literally as
-the two characters `\` and that character. An unterminated string is a
-hard parse failure.
+1. *atom*: `1+`/`1-` literal symbols, then numeric literals (float,
+   radix-prefixed, hex-suffixed, octal-suffixed, decimal — in that order),
+   then earmuff symbol, keyword symbol, general symbol, operator symbol;
+2. string literal;
+3. `#S(` record literal;
+4. `(` list;
+5. `'x'` character literal;
+6. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
+   `#'` function shorthand.
 
-**Character literals**, `'x'`. Recognized escapes: `\n \t \r \\ \' \0`. Any
-other backslash-prefixed character decodes to that character alone, with
-the backslash silently dropped — this is the opposite convention from
-strings, and both conventions are normative, not a discrepancy to fix. A
-character is a code point in `0..=255`; there is no character type wider
-than a byte. Empty `''` is not a valid character literal.
+If none matches, the text is a parse error at that position. In particular
+`.` never begins a form (it is only the dotted-pair marker inside a list),
+`)` outside a list is an error, and `#` followed by anything other than
+`|`, `S`, `s`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
+carry a 1-based line and column; the message text is not portable.
 
-**Record literals**, `#S(TypeName field...)` (also spelled `#s`). The head
-of the inner list must be a symbol naming the record's brand; the rest must
-be a proper (non-dotted) list of field values in declaration order. This is
-purely structural at read time — no type registry is consulted, so reading
-a `#S(...)` form never fails for referring to an unknown type.
+**Symbols.** Four productions, all producing an ordinary interned
+`Symbol`. Constituent classes are **ASCII only**: *letter* is `A`–`Z` /
+`a`–`z`, *digit* is `0`–`9`; a non-ASCII character such as `é` is not a
+constituent of anything and is a parse error outside strings.
 
-**Quote-family reader macros**, each desugaring to a two-element list:
-`'`*e* → `(QUOTE e)`; `` ` ``*e* → `(QUASIQUOTE e)`; `,`*e* → `(UNQUOTE
-e)`; `,@`*e* → `(UNQUOTE-SPLICING e)`; `#'`*e* → `(FUNCTION e)`.
+- *`1+`/`1-`*: the two-character sequences `1+` and `1-` read as the
+  symbols `1+` and `1-`. This is a prefix match with no boundary guard
+  and it is tried **before** numbers, so `1+x` reads as `1+` then `X`,
+  and `1-5` reads as `1-` then `5`. No other digit-leading symbol exists.
+- *Earmuff*: `* letter (letter | digit | -)* *`. Tried before the keyword
+  and general productions. The tail admits **only** letters, digits, and
+  `-`: `*foo*` and `*a-b1*` are earmuff symbols, but `*foo?*` is not —
+  it reads as the operator symbol `*` followed by the general symbol
+  `FOO?*`, and `*a_b*` reads as `*` then `A_B*`.
+- *Keyword*: `: (letter | & | $) (letter | digit | - * ? ! + = < > _)*`.
+  The tail excludes `:` and may not begin with `?`: `:foo:bar` reads as
+  two symbols `:FOO` `:BAR`, and `:?x` is a parse error. A keyword's
+  stored name includes the leading colon (`:FOO`).
+- *General*: `(letter | & | $ | ?) (letter | digit | - * ? ! + = < > : _)*`.
+  `-` is legal non-initially (`FOO-BAR` is one symbol); `:` is legal
+  non-initially (`MODULE:SYMBOL` is one symbol; `A:` is one symbol). `.`,
+  `\`, `|`, `/`, `~`, `#`, `,`, `'`, `` ` ``, `"`, and parentheses are
+  never constituents: `a.b` reads as `A`, `.`, `B` (a dotted pair inside a
+  list, an error at top level), `a\b` and `|a b|` are parse errors,
+  `foo(bar)` reads as `FOO` then `(BAR)`.
+- *Operator*: one or more characters from `+ - * / = < > ! ~`, e.g. `+`,
+  `>=`, `/=`, `->`, `<=>`, `!~`. A lone `-` or `+` followed by a space is
+  an operator symbol; `-5` is a number (numbers are tried first); `+5`
+  reads as the symbol `+` followed by the number `5` (there is no `+`
+  sign in the numeric grammar); `-foo` reads as `-` then `FOO`.
+- **Case folding is unconditional**: every earmuff, keyword, and general
+  symbol is uppercased before interning; `foo`, `Foo`, `FOO` are the same
+  symbol. Operator symbols contain no letters and are unaffected. There is
+  no case-sensitivity mode and no escaped-symbol syntax.
+- `T` (after uppercasing) reads as the ordinary interned symbol `T`.
+  `NIL` (after uppercasing) does **not** read as a symbol — it reads as
+  the same `Nil` value that `()` reads as. This special-casing happens
+  only in the general production: `:nil` is the keyword symbol `:NIL`.
+  See Part IV.
+- **Keyword symbols are not "just a convention"**: the evaluator treats
+  any symbol whose name begins with `:` as *self-evaluating* (evaluating
+  `:foo` yields `:FOO` without a variable lookup), and every binding and
+  assignment form (`LET`, `LET*`, `LAMBDA` parameters, `SETQ`, `DEF`,
+  `DEFDYNAMIC`, `PROG`, `FOR`) rejects a keyword — and the symbol `T` — as
+  a target with an error (`check_bindable`, `src/evaluator/core.rs`).
+  Otherwise a keyword is an ordinary symbol: `EQ` by identity, usable as a
+  hash key, printable, with a property list.
+
+**Integer literals.** A `Number` is a 64-bit two's-complement signed
+integer (Part V). Five productions, tried in the order given under
+*Dispatch order*:
+
+- *Decimal*: `-? digit+`. No `+` sign, leading zeros allowed. **No
+  boundary guard**: `12abc` reads as `12` then `ABC`; `5.` reads as `5`
+  followed by a dotted-pair marker. If the digits do not fit in `i64`, the
+  token instead reads as a `Float` (`9223372036854775808` reads as the
+  float `9223372036854775808.0`; `-9223372036854775808` fits and is a
+  `Number`). It never errors and never becomes a bignum on any host
+  (Part XII, axis 1, is about arithmetic results, not literals).
+- *Octal, `Q` suffix*: `-? digit+ Q` (uppercase `Q` only). No boundary
+  guard: `17Qx` is `15` then `X`. If a digit is not octal (`8Q`) or the
+  value overflows `i64`, the production fails and the reader falls
+  through to the decimal production (`8Q` reads as `8` then the symbol
+  `Q`; an overflowing `777…7Q` reads as a float then `Q`). Portable
+  programs must not write such tokens.
+- *Hexadecimal, `H`/`h` suffix*: `-? digit hex-digit* [Hh]`, hex digits
+  in either case. The digit run **must start with a decimal digit**: `FFh`
+  is the symbol `FFH`; write `0FFh`. **Boundary guard**: if the character
+  after the suffix is alphanumeric or `-`, the production fails
+  (`ffhello` is a symbol; `1Ahx` falls through to read `1` then `AHX`).
+  Overflow fails the production and falls through as for octal.
+- *Radix-prefixed*: `# [xXbBoO] -? digit-in-radix+`. **Boundary guard**:
+  an alphanumeric or `-` immediately after the digits fails the whole
+  production, and because no other production accepts `#x`, the result is
+  a parse error (`#b102` and `#xFG` are parse errors, not `#b10` `2`).
+  Overflow is likewise a parse error. There is no `#d` prefix.
+- *`i64::MIN`* can be written in decimal (`-9223372036854775808`) but not
+  via any suffixed or prefixed form (those parse the magnitude first).
+
+**Float literals.** `-? digit+ "." digit+ (("e"|"E") ("+"|"-")? digit+)?`.
+Both the integer part and the fractional part require at least one digit,
+and the exponent is legal **only after a fractional part**: `1.5`,
+`-2.0e-3`, `1.0E10` are floats; `.5`, `5.`, and `1e5` are **not**. `1e5`
+reads as the number `1` followed by the symbol `E5`. Inside a list, `.`
+is the dotted-pair marker, so `(a .5)` reads as `(A . 5)`, `(5. a)` reads
+as `(5 . A)`, and `(.5)` is a parse error. At top level a stray `.` is a
+parse error. No boundary guard: `1.5x` reads as `1.5` then `X`. A literal
+whose magnitude exceeds `f64` range reads as the corresponding infinity
+(`1.0e999` is `+inf`), never an error.
+
+**String literals**, delimited by `"`, may span lines (a raw LF inside a
+string is part of the string). Recognized escapes: `\n` `\t` `\r` `\\`
+`\"` `\0`. Any other backslash-prefixed character is **not an error and is
+not stripped** — both characters are kept literally (`"a\qb"` is the
+four-character string `a\qb`). A backslash as the last character of the
+input, or an unterminated string, is a hard parse failure. A string's
+contents are a sequence of Unicode scalar values (stored as UTF-8);
+string-indexing primitives count code points, not bytes (Part IV).
+
+**Character literals**, `'x'`: a `'` followed by exactly one character (or
+one escape) and a closing `'`. Recognized escapes: `\n` `\t` `\r` `\\`
+`\'` `\0`. Any other backslash-prefixed character decodes to that
+character alone, with the backslash dropped (`'\q'` is `'q'`) — the
+opposite convention from strings, and both are normative. A `Char` is a
+code point in `0..=255`: a character above U+00FF (`'€'`) does not match
+this production and the text then falls through to the quote production,
+which fails on `€` — a parse error. Empty `''` is not a character
+literal. Because this production is tried before quote, `'a'` is the
+character `a` while `'a` followed by a delimiter is `(QUOTE A)`; `'(1)`
+is `(QUOTE (1))` because `(` is followed by `1`, not `'`, but `'('` is the
+character `(`.
+
+**Record literals**, `#S(TypeName field...)` (also `#s`). No whitespace is
+permitted between `#S` and `(`. The head of the inner list must be a
+symbol (read and uppercased by the general production — it names the
+record's brand); the rest must be a proper list of field values in
+declaration order. A dotted tail, a non-symbol head, or an empty `#S()`
+is a hard parse failure. Reading is purely structural — no type registry
+is consulted, so a literal for an undeclared brand still reads.
+
+**Lists.** `( ws (expr ws)* ( "." ws expr ws )? ")"`. `()` reads as `Nil`.
+The dotted tail requires at least one preceding element (`( . x)` is an
+error) and must be the last thing before `)` (`(a . b c)` is an error).
+`(a . ())` and `(a . nil)` both read as the proper list `(A)`. Once `(`
+has been consumed, a missing `)` is a hard failure (not a backtrack).
+
+**Quote-family reader macros**, each producing a two-element list whose
+head is an interned symbol: `'`*e* → `(QUOTE e)`; `` ` ``*e* →
+`(QUASIQUOTE e)`; `,`*e* → `(UNQUOTE e)`; `,@`*e* → `(UNQUOTE-SPLICING e)`;
+`#'`*e* → `(FUNCTION e)`. Whitespace and comments **are** permitted
+between the macro character(s) and *e* (`' a` is `(QUOTE A)`).
+
+**Nesting depth is bounded.** A reader must reject input nested more
+deeply than some finite limit with an ordinary parse error rather than
+exhausting its native stack. The reference's default limit is 512 levels
+(`DEFAULT_READER_DEPTH`) and a stdlib-loaded environment raises it to
+50,000; the exact number is a host detail, not part of the language.
 
 **What is grammar-minimal versus library-extensible.** Decimal integers,
-symbols (both classes), strings, proper and dotted lists, `NIL`/`T`, and
-the quote family are the required minimum — `lib/*.lisp` cannot be
-written without them. Octal/hex-suffix and radix-prefix integers, floats,
-block comments, character literals, keyword/earmuff symbol sugar, and
-`#S(...)` records are each a layered extension: a host may implement them
-however it likes, or defer them, as long as it does not change what they
-mean once implemented (Part XII does not grant latitude on *meaning*, only
-on *whether a from-scratch host has gotten around to parsing them yet*).
+symbols (all four productions), strings, proper and dotted lists,
+`NIL`/`T`, and the quote family are the required minimum — `lib/*.lisp`
+cannot be written without them. Octal/hex-suffix and radix-prefix
+integers, floats, block comments, character literals, and `#S(...)`
+records are each a layered extension: a host may defer them, as long as
+it does not change what they mean once implemented (Part XII, axis 4,
+grants latitude on *whether a from-scratch host has parsed them yet*, not
+on *meaning*).
 
 ## Part III — Printed representation
 
-A conformant printer must satisfy `(read (print x)) ≡ x` (under `EQUAL`,
-Part IV) for every value built from primitive data, with these exact rules:
+The printer (`src/printer.rs`, `print`) produces `PRIN1`-style readable
+text: `(read (print x))` is `EQUAL` (Part IV) to `x` for every value built
+from `Nil`, symbols, fixnums, finite floats, characters, strings, cons
+cells, and records whose fields are themselves such values. The exact
+rules:
 
-- `Nil` prints as `()`. There is no code path that ever prints the string
-  `NIL` for this value.
-- `T` is an ordinary symbol and prints as its stored (already-uppercase)
-  name — nothing special-cased.
-- A symbol prints as its stored name, verbatim, ignoring any property list.
-- A `Number` prints as a plain decimal integer — never with a radix marker,
-  regardless of how it was read.
-- A `Float` prints via the host's default float-to-string conversion, with
-  one required post-processing rule: if that conversion did not already
-  produce a string containing `.`, `e`, `E`, `inf`, or `NaN`, a literal
-  `.0` is appended. This is why a whole-number float like `3.0` prints as
-  `"3.0"`, not `"3"` — the rule exists specifically to keep the printed
-  form re-readable as a float rather than an integer. **`inf` and `NaN`
-  printed forms are not currently re-readable** by Part II's float grammar
-  (which requires digits on both sides of a literal `.`); this is a known
-  round-trip gap in the reference implementation, not a rule to conform to
-  — a host is free to close it, but is not required to reproduce it. The
-  `e`/`E` checks are presently dead code on the reference implementation:
-  Rust's default `f64`-to-string conversion never produces scientific
-  notation, so a very large or very small float prints as a long run of
-  plain decimal digits (still syntactically readable by Part II's grammar,
-  just unwieldy) rather than as `1e300`-style notation. A host is free to
-  use scientific notation for extreme magnitudes instead, as long as Part
-  II's float grammar (extended to accept it) can read it back.
-- A `Char` prints as `'x'`, escaping `\n \t \r \\ \' \0` exactly as the
-  reader's character-literal grammar expects, and printing every other
-  byte raw.
-- A `String` prints with `"`, escaping `\" \\ \n \t \r \0` — a rule that
-  happens to be symmetric with the reader's own string-escape set. Any
-  other character, including other control characters, prints raw and
-  unescaped.
-- A proper list prints as `(a b c)`; an improper (dotted) list prints as
-  `(a . b)` for its final non-nil, non-cons cdr. **Printing a circular
-  list is not currently guarded against** — the reference printer recurses
-  structurally on `cdr` with no cycle detection and will exhaust the stack
-  on a genuine cycle. This is a known gap, not a spec requirement; a host
-  may detect and error on cycles instead, and doing so is *not* a
-  conformance violation even though it's observably different output for
-  a program that builds a circular list and prints it (such a program is
-  already outside anything Part IV's equality/identity rules make
-  well-defined for it to rely on).
-- `#S(TypeName field...)` prints fields in declaration order, matching the
-  reader's field-collection order exactly, so record values round-trip
-  whenever every field value is itself self-representing.
+- `Nil` prints as `()`. No code path ever prints the text `NIL` for this
+  value.
+- A symbol prints as its stored (uppercased) name, verbatim, ignoring its
+  property list. `T` prints as `T`; a keyword prints with its colon
+  (`:FOO`).
+- A `Number` prints as a plain decimal integer with a leading `-` when
+  negative — never with a radix marker, regardless of how it was read.
+- A `Float` prints via the host's shortest-round-trip decimal conversion
+  (Rust's `f64::to_string`), with one required post-processing rule: if
+  the resulting text contains none of `.`, `e`, `E`, `inf`, `NaN`, a
+  literal `.0` is appended. So `3.0` prints as `3.0`, `-0.0` prints as
+  `-0.0`, `1.0e10` prints as `10000000000.0`, and `0.0000001` prints as
+  `0.0000001`. Rust's conversion never produces scientific notation, so
+  the `e`/`E` checks never fire on the reference: an extreme magnitude
+  prints as a long run of plain digits (`1.0e30` prints as
+  `1000000000000000000000000000000.0`), which Part II's grammar reads
+  back. A host may instead emit scientific notation for extreme
+  magnitudes only if its reader accepts what it emits (Part II's float
+  grammar already does, provided a fractional part is present). Positive
+  and negative infinity print as `inf` and `-inf`; a NaN prints as `NaN`.
+  **These three forms are not readable** by Part II's grammar (they read
+  as symbols); this is a round-trip gap in the reference, not a rule to
+  conform to — a host may close it, and is not required to reproduce it.
+- A `Char` prints as `'x'`, escaping `\n` `\t` `\r` `\\` `\'` `\0` exactly
+  as the reader expects. Every other byte prints raw as the Unicode scalar
+  value with the same numeric value (so byte 200 prints as `'È'`, encoded
+  in UTF-8), including control characters other than the six escaped ones
+  (byte 7 prints as a raw BEL between quotes). This is consistent with the
+  reader, which accepts any scalar value `<= 255` between quotes.
+- A `String` prints between `"`, escaping exactly `\"` `\\` `\n` `\t`
+  `\r` `\0` — the same set the reader decodes. Every other character,
+  including other control characters and all non-ASCII, prints raw.
+- A proper list prints as `(a b c)`; an improper list prints its final
+  non-`Nil` cdr after ` . `: `(A B . C)`. Printing recurses structurally
+  on the cdr with **no cycle detection**; since cons cells are immutable
+  (Part XII, axis 2) no program can construct a cycle, so this is not
+  reachable from Lisp code.
+- `#S(TYPENAME f1 f2 ...)` prints the brand followed by each field printed
+  by these same rules, in declaration order — the exact inverse of the
+  reader's record production.
+- **Opaque values print as non-readable tags**, and a host must print
+  *something* non-readable for them (the exact text is not portable):
+  `<builtin>`, `<lambda>`, `<fexpr>`, `<macro>`, `<vau>`, `<native>`,
+  `<hash-table>`, `<array:N>` (N the length), `<typed-array:int64:N>` /
+  `<typed-array:float64:N>`, `<environment>`, and for a condition value
+  `#<error "message">` or `#<error "message" data>` (message rendered as
+  a debug-escaped string, data printed by these rules). Ports, network
+  handles, and process handles print as `#<port:...>`, `#<net:...>`,
+  `#<process ...>`.
 
 ## Part IV — Data model: types, equality, and truth
 
 **The primitive types** are: `Nil` (the empty list, doubling as boolean
-false), symbols, fixnums, floats, characters, strings, and cons cells —
-plus a longer tail of compound and host-facing types (hash tables, arrays,
-environments, closures, records, first-class conditions, and opaque
-handles for ports/network/processes) whose equality rules differ enough
-from each other that they get their own treatment below rather than being
-folded into "compound types compare the obvious way." Part V covers
-numeric detail; this section covers identity, equality, and truth for all
-of them.
+false), symbols, fixnums (`Number`), floats, characters (`Char`), strings,
+and cons cells — plus compound and host-facing types (hash tables, arrays,
+typed arrays, environments, closures and the other callables, records,
+first-class conditions, and opaque handles for ports/network/processes)
+whose equality rules differ from each other and are stated individually
+below. Part V covers numeric detail; this section covers identity,
+equality, truth, and the exact contract of each collection type.
 
 **`NIL` is not a symbol.** `()` and the token `NIL` are the same value, a
-distinct `Nil` type with no symbol behind it — not "the symbol NIL, which
-happens to be self-evaluating and falsy," which is how some Lisps describe
-it. There is no distinguished `True` type; `T` is an ordinary interned
-symbol used by convention as *a* truthy value, not *the* truthy value.
+distinct `Nil` type with no symbol behind it. `(symbolp nil)` is `NIL`;
+`(atom nil)` and `(null nil)` are `T`; `(car nil)` and `(cdr nil)` are
+`NIL` (not errors); `CAR`/`CDR` of any other non-cons is an error. There
+is no distinguished `True` type; `T` is an ordinary interned symbol, bound
+to itself in the global environment and unrebindable (Part II), used by
+convention as *a* truthy value, not *the* truthy value.
 
-**Truth is exactly "not `Nil`".** `IF` and every other conditional
-dispatches on one predicate: a value is false if and only if it is `Nil`;
-every other value, including `0`, the empty string, and any symbol
-(including a symbol literally read from the text `NIL`'s quoted form, if
-such a thing could even arise — it can't, since `NIL` never parses as a
-symbol at all) is true.
+**Truth is exactly "not `Nil`".** `IF`, `COND`, `AND`, `OR`, `WHILE`, and
+`NOT` dispatch on one predicate (`is_truthy`): a value is false if and
+only if it is `Nil`; every other value — `0`, `0.0`, the empty string, an
+empty hash table, any symbol — is true.
+
+**`Char` and `Number` are distinct types.** `'a'` is a `Char` with code
+97; `97` is a `Number`. `(charp 'a')` is `T` and `(fixp 'a')` is `NIL`.
+They are never `EQ` or `EQUAL` to each other, though arithmetic and
+numeric comparison coerce a `Char` to its code (Part V): `(eq 'a' 97)` is
+`NIL`, `(= 'a' 97)` is `T`.
+
+**Strings are sequences of Unicode scalar values; characters are bytes.**
+A string may contain any scalar value (`"héllo"` has length 5); every
+string primitive that takes or returns an index counts code points
+(`string-length*`, `index`, `substring`). A `Char` is always in
+`0..=255`; `(make-char n)` errors outside that range; `(char-code c)`
+returns a `Char`'s code, or for a non-empty string the full code point of
+its **first** character (which may exceed 255; the empty string is an
+error); `(code-char n)` returns a **one-character string**, not a `Char`.
 
 **`EQ` is defined per-type, and one of its rules is currently unsettled —
 flagged here as an open defect rather than frozen as normative, precisely
@@ -242,631 +370,740 @@ before three hosts each guess differently:**
 > either way** — neither on it being `NIL`, nor on it being pointer
 > identity.
 
-For every other type, `EQ` is defined as follows, and — because none of
-these types carry any notion of identity separate from their value in the
-reference implementation (fixnums, floats, and characters are plain scalar
-payloads with no boxing; strings are plain owned values, not
-reference-counted) — `EQ` and `EQUAL` **necessarily coincide** for all of
-them:
+For every other pair of values, `EQ` is the relation implemented by
+`PartialEq for LispVal` (`src/lib.rs`), which is also the relation used
+by `EQUAL` at the leaves, by `CATCH` tag matching (Part VI), and by hash
+table keys (below). Two values of **different types are never `EQ`**.
+Within one type:
 
 - **Fixnum, float, character, string**: value equality. Two freshly
-  computed, entirely unshared values of any of these types that happen to
-  hold the same value **are** `EQ`. `(eq 100000 100000)` on two
-  independently computed fixnums is `T`. `(eq "ab" (string-append "a"
-  "b"))` is `T`. A host built on a language where these types *are*
-  natively boxed/interned (or not) must still make `EQ` behave this way
-  observably — by using value comparison for them regardless of what its
-  own host language's native `eq` would do.
-- **Float, specifically**: `NaN` is `EQ` to `NaN`. This is **not** IEEE 754
-  equality (which says `NaN ≠ NaN`); it is a value-equality rule with an
-  explicit `NaN`-is-`NaN` carve-out, and a host must reproduce the
-  carve-out, not delegate to its host language's native float comparison
-  unmodified.
-- **Symbol**: identity. Because symbols are interned (Part II), two reads
-  of the same name always denote the same symbol object, so value equality
-  and identity equality coincide for symbols too in practice — but the
-  *mechanism* a host uses to implement `EQ` on symbols should be identity
-  comparison of the interned object, not name-string comparison, so that a
-  symbol's mutable property list (which `EQ` never inspects, but other
-  operations do) stays attached to one object.
+  computed, unshared values holding the same value **are** `EQ`:
+  `(eq 100000 100000)` is `T`; `(eq "ab" (concat "a" "b"))` is `T`. A host
+  whose native representation boxes or interns these differently must
+  still compare them by value.
+- **Float, specifically**: IEEE `==` **plus** an explicit carve-out that
+  `NaN` is `EQ` to `NaN` (`lisp_float_eq`). Consequently `(eq 0.0 -0.0)`
+  is `T` (IEEE says they are equal) and `(eq (/ 0.0 0.0) (/ 0.0 0.0))` is
+  `T` (the carve-out). A host must reproduce both, not delegate to its
+  language's native float comparison unmodified.
+- **Symbol**: identity of the interned symbol object. Because the reader
+  interns, two reads of the same name in the same symbol table denote the
+  same object. Note that `(make-environment)` with no arguments creates a
+  **separate symbol table** (below), so a symbol *interned or read inside
+  that environment* is a different object from the same-named symbol
+  outside it — `(eq 'foo (eval '(read-from-string "foo") e))` is `NIL` for
+  such an `e`, while `(eq 'foo (eval ''foo e))` is `T` because the quoted
+  form carries the outer symbol object into `e`.
 - **`Nil`**: always `EQ` to `Nil`.
+- **Builtin**: two references to the same primitive operation are `EQ`
+  (`(eq car (function car))` is `T`); a host-registered native function
+  compares by identity.
+- **Closures (`LAMBDA`), macros, fexprs, and `VAU` operatives**: equal
+  when their parameter lists (including the rest parameter, if any) and
+  bodies are `EQUAL` as data **and** their captured environments are the
+  identical environment object. This means `(eq (lambda (x) x)
+  (lambda (x) x))` is `T` when both are constructed in the same
+  environment, and `NIL` when constructed in different call frames.
+- **Hash tables, arrays, typed arrays, environments, and every opaque
+  host handle** (ports, network handles, process handles): identity.
+  Two separately constructed, content-identical tables or arrays are
+  never `EQ` or `EQUAL`; `(let ((h (make-hash-table))) (eq h h))` is `T`.
+- **Records** (`#S(...)` values, `DEFRECORD` instances): structural — same
+  brand name **and** fields pairwise `EQ`-or-`EQUAL` (the recursive
+  relation). `(eq #S(p 1) #S(p 1))` is `T`; `(equal #S(p 1) #S(q 1))` is
+  `NIL`. Records are value types for equality even though they are
+  compound; a host must not compare them by identity.
+- **Condition values** (`make-error`): structural on message string and
+  data payload, like records.
 
-**`EQUAL` is deep structural equality**, defined recursively: two atoms are
-`EQUAL` exactly when they are `EQ` (note this means, given the rule above,
-that **two structurally identical cons cells are never `EQUAL` by falling
-through to `EQ` at the top level — `EQUAL` recurses *through* conses and
-only calls `EQ` at their leaves**, comparing `car` against `car` and `cdr`
-against `cdr` recursively rather than ever asking whether the outer cons
-values are `EQ` to each other). Two conses are `EQUAL` exactly when their
-cars are (recursively) `EQUAL` and their cdrs are (recursively) `EQUAL`.
-**`EQUAL` does not perform numeric contagion**: `5` and `5.0` are never
-`EQUAL` to each other — a fixnum and a float are different types, `EQ`
-between them is false by the type-mismatch case, and `EQUAL` inherits that
-at the leaf. A host must not "helpfully" make `(equal 5 5.0)` true.
+**`EQUAL` is deep structural equality**, and in the reference it is
+library code (`lib/04-predicates.lisp`): `(equal a b)` is `(eq a b)` when
+`a` is an atom (anything that is not a cons), `NIL` when `a` is a cons and
+`b` is not, and otherwise the conjunction of `(equal (car a) (car b))` and
+`(equal (cdr a) (cdr b))`. It never asks whether two conses are `EQ` to
+each other, so two structurally identical lists are `EQUAL` regardless of
+the `EQ`-on-cons defect. `EQUAL` on any pair of non-cons values is
+therefore exactly `EQ` on them, including identity for hash tables and
+arrays and structure for records. **`EQUAL` performs no numeric
+contagion**: `(equal 5 5.0)` is `NIL`, `(equal 'a' 97)` is `NIL`. A host
+must not "helpfully" make them true.
 
-**Compound types not listed above — hash tables, arrays, environments,
-closures, records, first-class error/condition values, and any host-native
-handle (a port, a network or process handle) — are still atoms under
-`EQ`'s cons-exclusion rule (they are simply not cons cells), and each has
-its own equality rule rather than one uniform "compound values are never
-equal" fallback. A host must reproduce which rule applies to which type,
-not assume they all behave like cons cells or all behave like fixnums:**
+**Hash tables, arrays, typed arrays, and environments each have a
+specific, closed contract**, stated here so that a program which runs on
+the reference does not break on a host whose native map or vector type
+has slightly different key-equality or element-type rules:
 
-- **Hash tables, arrays, environments, and any opaque host handle (ports,
-  network handles, process handles) compare by identity** — two of these
-  are `EQ`/`EQUAL` exactly when they are the same underlying object, never
-  merely when they hold equal contents. A host must not make two
-  separately constructed, content-identical hash tables or arrays
-  `EQUAL`; that is observably different from the reference.
-- **Records (`#S(...)` values, `DEFRECORD` instances) compare
-  structurally** — by type name and field values, recursively — not by
-  identity. Two independently constructed records of the same type with
-  equal fields **are** `EQUAL` (and `EQ`, under the cons-exclusion rule
-  above, since a record is not a cons cell). This is the opposite rule
-  from hash tables and arrays, deliberately: a host must not "fix" this
-  into identity comparison on the theory that records are compound
-  mutable-ish structures like hash tables — they are specified to behave
-  as value types for equality purposes.
-- **A first-class condition/error value compares structurally** on its
-  message and data fields, the same value-type treatment as records.
-- **Closures (lambdas) compare structurally on their parameter list, rest
-  parameter, and body, but by identity on their captured environment** —
-  two closures are equal only if they'd behave identically *and* close
-  over the literal same environment object, not merely an
-  environment with equal-looking bindings. Fexprs, macros, and `VAU`
-  values follow the same shape (structural on their defining parts,
-  identity on the closure environment).
-
-**Hash tables, arrays, and environments each have a specific, closed type
-contract, stated precisely here rather than left to "whatever the host
-language's native collection does" — the failure mode this document is
-built to rule out is exactly a program that reads as correct, runs on the
-reference implementation, and then breaks on a second host because that
-host's map or vector type has slightly different key-equality or
-element-type rules.**
-
-- **A hash table's keys and values are both unconstrained** — any `LispVal`
-  of any type, including another hash table, an array, or a closure, is a
-  legal key or value, and a single table may mix key types freely (a
-  fixnum key and a string key in the same table is not an error). There is
-  no `:test` argument to `(make-hash-table)` and no way to select a
-  different key-equality policy per table: **every hash table in the
-  language uses exactly one fixed key-equality rule, and it is `EQUAL`
-  (Part IV's deep structural equality — the library definition itself,
-  `lib/04-predicates.lisp`, is exactly "recurse through conses, `EQ` at
-  the atoms"), not `EQ`.** This matters concretely because of Part IV's
-  `EQ`-on-cons defect: `(let ((h (make-hash-table)) (k (cons 1 2)))
-  (sethash h k 'v) (gethash h (cons 1 2)))` returns `V` — a freshly-built
-  cons cell *does* find a structurally-equal key, via `EQUAL`, even though
-  `(eq (cons 1 2) (cons 1 2))` is `NIL` and even though `EQ` on cons cells
-  is unconditionally `NIL` in the same implementation (see Part IV). A
-  host must key its hash tables on `EQUAL`, never on `EQ`, specifically so
-  that this case behaves the same everywhere despite `EQ`'s own cons-cell
-  behavior being currently unsettled. A conformant hash table must also make `NaN` usable
-  as a key at all (two `NaN` keys, or a lookup with a fresh `NaN`, must
-  hit the same slot, matching `EQ`'s explicit `NaN`-is-`NaN` carve-out)
-  and must make `0.0` and `-0.0` hash to the same slot (they are `EQUAL`
-  by ordinary float value-equality, so a key-equality contract that let
-  them collide differently would be internally inconsistent). A host
-  built on a language whose native hash-map requires a `Hash`
-  implementation derived independently from its `Eq` must ensure the two
-  agree on every one of these points rather than trusting a
-  default-derived hash.
-- **An array (`(array n)`) is fixed-length for its entire lifetime and
-  holds unconstrained, independently-typed elements** — `n` slots, each
-  initialized to `Nil`, addressable by `FETCH`/`STORE` at any
-  zero-based index `0 <= i < n`; **there is no resize, grow, push, or
-  pop primitive for this array type**, and a host must not add one
-  under this name, since `lib/*.lisp` code that calls `(array n)` is
-  relying on the length staying exactly `n`. Every slot may independently
-  hold a value of any type, changed by `STORE` to any other type at will
-  — this is a plain mutable vector of `LispVal`, not a homogeneous or
-  declared-element-type structure. An out-of-range index (negative, or
-  `>= n`) is a catchable error (Part VIII), never a silent
-  out-of-bounds read, a wraparound index, or a native crash. The
-  reference implementation additionally refuses to allocate one above
-  16,777,216 (2^24) elements with a catchable error rather than
-  attempting the allocation; this specific ceiling is a reference
-  implementation detail, not a number a portable program may assume
-  every host shares, but *some* finite, catchable-error ceiling — rather
-  than an attempt to allocate an unbounded amount of memory that could
-  abort the process — is required, in the same spirit as Part X's fuel
-  and Part VI's recursion-depth bound existing so that resource limits
-  fail as catchable Lisp conditions rather than as native faults.
-- **A typed array (`(typed-array n elem-type)`) is fixed-length *and*
-  fixed-element-type for its entire lifetime, and `elem-type` must be
-  exactly one of two symbols: `'INT64` or `'FLOAT64` — there is no third
-  option and no way to declare a typed array of any other element type
-  (not characters, not symbols, not sub-word integers).** Storing into a
-  typed array is type-checked per slot against its declared `elem-type`,
-  by a narrower and *different* rule from Part V's general arithmetic
-  coercions — **this is a place a portable program must not assume Part
-  V's char-to-integer coercion applies just because it applies
-  everywhere else fixnums are expected:**
-  - An `INT64` typed array accepts only a `Number` (fixnum) value at each
-    slot. Storing a `Float`, a `Char`, or any other type is a type error
-    (Part VIII) — in particular, unlike ordinary arithmetic, a `Char` is
-    **not** silently coerced to its code point here.
-  - A `FLOAT64` typed array accepts either a `Float` value (stored
-    directly) or a `Number` value (silently promoted to float on store) —
-    this one direction of numeric contagion is preserved, but nothing
-    else is: a `Char` is still a type error, not a doubly-coerced float.
-  - Reading a slot always produces a value of the declared type (`Number`
-    for `INT64`, `Float` for `FLOAT64`), never the type that happened to
-    be stored before some other coercion — there is no way to read back
-    anything but the declared type from a given typed array.
-  A host that instead accepts any numeric-ish value (including `Char`) by
-  reusing its general arithmetic-coercion code path for typed-array
-  storage has implemented an observably different, more permissive type
-  than this document specifies.
-- **An environment value's binding contents depend on how it was
-  constructed, and a portable program must not assume `(make-environment)`
-  and "the environment my top-level code is running in" start out the
-  same:** `(make-environment)` with no arguments produces a **minimal**
-  environment holding only native builtins — none of `lib/*.lisp`'s
-  functions or macros are present in it, and no capability is enabled in
-  it, regardless of what is enabled in the environment that called
-  `make-environment`. `(make-environment parent-env)` with one argument
-  instead produces an ordinary lexical child of `parent-env`, which does
-  see everything `parent-env` sees (including its stdlib bindings, if
-  any) through the normal lexical-lookup chain, and which shares
-  `parent-env`'s capability grant (Part IX) rather than getting an
-  independent one. A host that makes the zero-argument form return a
-  full stdlib-loaded environment — a plausible "helpful" choice, since
-  that is what a REPL or script normally starts with — has implemented a
-  different, more permissive primitive than this document specifies, and
-  a portable program that calls `(make-environment)` expecting a bare
-  kernel must not be handed stdlib bindings it never asked for.
+- **Hash table.** `(make-hash-table)` takes **no arguments**; there is no
+  `:test` and no way to choose a key-equality policy. Keys and values are
+  unconstrained (any type, including hash tables, arrays, closures, and
+  `Nil` as a key), and one table may mix key types. Key equality is the
+  recursive `EQ`/`EQUAL` relation above (the reference stores keys in a
+  `HashMap<LispVal, LispVal>` whose `Eq` is `PartialEq for LispVal` and
+  whose `Hash` is consistent with it): a fresh `(cons 1 2)` finds a key
+  stored as `(cons 1 2)`; `1` and `1.0` are **distinct** keys; `0.0` and
+  `-0.0` are the **same** key; `NaN` finds `NaN`; a lambda constructed
+  with the same text in the same environment finds the stored lambda;
+  content-identical arrays are distinct keys. A host whose native map
+  derives hashing independently of equality must make the two agree on
+  every one of these points. Operations: `(sethash table key value)`
+  inserts or replaces and returns `T`; `(gethash table key)` returns the
+  value, or **`NIL` when the key is absent — there is no second return
+  value and a stored `NIL` is indistinguishable from absence**; `(remhash
+  table key)` removes and returns `T` whether or not the key was present;
+  `(keys table)` returns a list of the keys in **unspecified order**. The
+  table argument is always first; passing a non-table is an error.
+- **Array.** `(array n)` creates a fixed-length vector of `n` slots, each
+  `Nil`; `n` must be a non-negative fixnum (a float, a negative number, or
+  a non-number is an error). The length never changes: there is no
+  resize, push, or pop primitive for this type, and a host must not add
+  one under these names. Slots hold independently typed values of any
+  type; `(store arr i v)` overwrites slot `i` and **returns `v`**;
+  `(fetch arr i)` returns slot `i`; `(array-length* arr)` returns `n`. An
+  index must be a non-negative fixnum (`-1` and `1.0` are errors) and
+  must satisfy `i < n` (an out-of-range index is an error, never a
+  wraparound or a silent `NIL`). An array may contain itself. The
+  reference refuses `n > 16,777,216` (2^24) with an error rather than
+  attempting the allocation; the specific ceiling is a reference detail,
+  but *some* finite, catchable-error ceiling is required, in the same
+  spirit as Part X's fuel and Part VI's recursion bound.
+- **Typed array.** `(typed-array n elem-type)` — `n` as for `array`, and
+  `elem-type` must be exactly the symbol `INT64` or `FLOAT64` (case
+  folded by the reader, so `'int64` works); any other symbol or a
+  non-symbol is an error. Slots are zero-initialized (`0` or `0.0`).
+  `fetch`, `store`, and `array-length*` accept typed arrays with the same
+  index rules as `array`. Storage is type-checked per slot by a rule
+  **narrower than Part V's arithmetic coercion**: an `INT64` array
+  accepts only a `Number` (a `Float` or a `Char` is an error — `Char` is
+  **not** coerced to its code here); a `FLOAT64` array accepts a `Float`
+  (stored as-is, including `NaN`) or a `Number` (converted to the nearest
+  `f64`), and rejects a `Char`. Reading always yields the declared type
+  (`Number` for `INT64`, `Float` for `FLOAT64`). Typed arrays compare by
+  identity.
+- **Environment.** `(the-environment)` returns the current lexical
+  environment as a first-class value; `(make-environment)` with no
+  arguments returns a **fresh root environment holding only native
+  builtins and `T`**: none of `lib/*.lisp` is present, **no capability is
+  enabled** (regardless of the caller's grants), and it has its own
+  symbol table and its own dynamic-variable registry.
+  `(make-environment parent)` returns an ordinary lexical child of
+  `parent` that sees every binding of `parent` and **shares** `parent`'s
+  capability grant, symbol table, and dynamic registry. Two or more
+  arguments, or a non-environment argument, is an error. `(eval form
+  env)` evaluates `form` in `env`. A host that makes the zero-argument
+  form return a stdlib-loaded or capability-carrying environment has
+  implemented a different, more permissive primitive.
 
 ## Part V — The numeric tower
 
-**Contagion.** Any float operand, in any position, promotes an entire
-arithmetic or numeric-comparison call to float — this is a call-wide
-predicate ("does any argument have float type"), not a first-argument-wins
-or pairwise-promotion rule. A character operand is automatically coerced
-to its integer code point in every arithmetic operator (`+ - * /`) and in
-numeric comparison (`< > =`); this coercion is unconditional, not something
-a program opts into.
+There are exactly two numeric types: `Number` (a 64-bit two's-complement
+signed integer, the fixnum) and `Float` (IEEE 754 binary64). There are no
+bignums, ratios, or complex numbers in the reference (Part XII, axis 1,
+lets a host add arbitrary precision *above* the fixnum range).
 
-**Division and remainder — two operators, two different sign
-conventions, both required exactly as specified:**
+**Contagion.** In `+`, `-`, `*`, `/` and in the comparisons `<`, `>`,
+`=`, if **any** operand is a `Float`, every operand is converted to
+`f64` and the operation is performed in floating point — a call-wide
+predicate, not first-argument-wins or pairwise promotion. A `Char`
+operand is unconditionally coerced to its code point (as a fixnum in the
+integer path, as an `f64` in the float path) in these same operators.
+Any other operand type (string, symbol, `Nil`, list) is an error.
 
-- `/` on two fixnums **truncates toward zero** (C/Rust-style integer
-  division) and never silently returns a float. Division by zero is an
-  error (Part VIII), not an infinity — this differs from the float-operand
-  case of `/`, where dividing by `0.0` yields IEEE infinity or `NaN` rather
-  than erroring, because the float path never checks for zero at all.
-- `REMAINDER` uses **truncated remainder**: the result's sign follows the
-  *dividend*, matching what `/`'s truncation implies (`(remainder -7 2)`
-  is `-1`).
-- `MOD` uses **floored (Euclidean) remainder**: the result's sign follows
-  the *divisor*, and is always non-negative when the divisor is positive
-  (`(mod -7 2)` is `1`, not `-1`). This is a genuinely different operator
-  from `REMAINDER`, not two names for the same thing, and a host must
-  implement both conventions distinctly rather than aliasing one to the
-  other.
-- The one integer-overflow-representable division case (dividend equal to
-  the minimum representable fixnum, divisor `-1`) is a numeric-precision
-  concern, not a sign-convention concern — see the overflow axis in Part
-  XII. Note as an observed reference-implementation quirk, **not** a rule to
-  reproduce: `MOD`'s handling of this same edge case silently substitutes
-  `0` without raising the overflow signal that `/` and `REMAINDER` raise
-  for the equivalent case. A host is free to make `MOD` raise the same
-  overflow signal `/`/`REMAINDER` do here instead of silently returning
-  `0`; that would be a correctness improvement over the yardstick, not a
-  divergence from it, since nothing in `lib/*.lisp` exercises this exact
-  edge case today.
+**The four arithmetic operators** (`apply_math_op`,
+`src/evaluator/builtins_core.rs`):
 
-**Comparison across types.** `<`, `>`, and `=` accept any mix of fixnum,
-float, and character operands (applying the contagion and character-coercion
-rules above) freely. Comparing a string against a number, or a number
-against any non-numeric type, is an error (Part VIII), never a silent
-coercion and never a permissive `NIL`-returning "just not equal, I guess."
+- `(+ a...)` is variadic; `(+)` is `0`. `(* a...)` is variadic; `(*)` is
+  `1`. `(- a)` negates; `(- a b...)` subtracts each later operand from
+  the first; `(-)` is an error. `(/ a b)` takes **exactly two**
+  operands; one or three is an error. Integer-path results are fixnums;
+  float-path results are floats (`(+ 1 2.0)` is `3.0`, `(* 2 'a')` is
+  `194`).
+- Fixnum `/` **truncates toward zero** (`(/ 7 2)` is `3`, `(/ -7 2)` is
+  `-3`) and never returns a float. Fixnum division by zero is an error.
+  Float `/` never checks for zero: `(/ 1.0 0)` is `inf`, `(/ 0.0 0.0)` is
+  `NaN`, `(/ -1.0 0.0)` is `-inf`.
+- **Overflow** on the integer path wraps modulo 2^64 (two's complement)
+  **and sets the global `OVERFLOW` flag**, observable from Lisp with
+  `(flag-set-p 'OVERFLOW)` and cleared with `(clear-flag 'OVERFLOW)` or
+  `(clear-all-flags)`: `(+ 9223372036854775807 1)` returns
+  `-9223372036854775808` and sets the flag. The same wrap-and-flag rule
+  applies to `(- i64::MIN)`, `*`, `(/ i64::MIN -1)`, `(remainder i64::MIN
+  -1)`, `gcd`, and `lcm`. This is the fixed-width model of Part XII,
+  axis 1; a host on the arbitrary-precision model returns the exact
+  result and never sets the flag.
 
-**Overflow** is where hosts are allowed to diverge, and how: see Part XII.
-Within whatever range a host's numeric model can represent exactly,
-arithmetic must match this section's rules exactly and must match the
-Rust reference's results bit-for-bit for every value that also fits in a
-64-bit signed integer, since that is the range the shared corpus is
-written and tested against.
+**Remainder and modulus — two operators, two sign conventions, and both
+accept only fixnums** (`REMAINDER`: `builtins_core.rs`; `MOD`:
+`builtins_extra.rs`). A `Float` or a `Char` operand to either is an error
+— Part V's contagion and char coercion do **not** apply here, and a
+zero divisor is an error in both:
+
+- `(remainder a b)` is the truncated remainder, sign following the
+  *dividend*: `(remainder -7 2)` is `-1`, `(remainder 7 -2)` is `1`.
+- `(mod a b)` is the Euclidean remainder, always in `0 <= r < |b|`:
+  `(mod -7 2)` is `1`, `(mod 7 -2)` is `1`.
+- On the one overflowing input, `(mod i64::MIN -1)`, the reference
+  returns `0` **without** setting `OVERFLOW`, whereas `/` and `REMAINDER`
+  on `(i64::MIN, -1)` set the flag. See Part XII, axis 5.
+
+**Comparison** (`<`/`LESSP`, `>`/`GREATERP`, `=`): each takes **two or
+more** operands (one is an error) and is a monotone chain — `(< a b c)`
+is `T` exactly when `a < b` and `b < c`; `(= a b c)` when all are
+numerically equal. Operands may mix fixnum, float, and character freely:
+two fixnums (or two characters) compare exactly as integers; any operand
+pair involving a float is compared as `f64` (so a fixnum above 2^53 may
+compare equal to a float it is not equal to mathematically); `(= 5 5.0)`
+is `T`; `(< 1 'a' 200)` is `T`. Any non-numeric operand (a string, a
+symbol, `Nil`) is an error, never a permissive `NIL`. Equality of floats
+under `=` is exact IEEE `==` (so `(= NaN NaN)` is `NIL` — unlike `EQ`,
+Part IV).
+
+**Other numeric primitives the corpus relies on**, with their exact
+result types: `(float x)` converts a fixnum or char to `Float` (identity
+on a float). `(floor x)`, `(ceiling x)`, `(round x)`, `(truncate x)`
+accept any numeric and return a **fixnum**; `round` rounds half **away
+from zero** (`(round 2.5)` is `3`, `(round -2.5)` is `-3`, `(round 0.5)`
+is `1`); a result outside fixnum range saturates to `i64::MIN`/`i64::MAX`
+and a `NaN` argument yields `0`. `(expt base exp)`: fixnum base with
+non-negative fixnum exponent yields a fixnum and **errors on overflow**
+(no wrap, no flag — `(expt 2 70)` is an error); a negative fixnum
+exponent yields a float; any float operand yields a float. `sqrt`, `sin`,
+`cos`, `tan`, `exp`, `log` accept any numeric and return a float.
+`(gcd ...)` and `(lcm ...)` are variadic over fixnums with `(gcd)` = `0`,
+`(lcm)` = `1`. `(plusp x)` and `(minusp x)` accept a fixnum or a float;
+`(zerop x)` accepts **only a fixnum** — `(zerop 0.0)` is an error — and
+all three error on a non-number.
+
+**Within 64-bit signed range, every arithmetic result must match the
+Rust reference bit-for-bit** — including float results, which are
+ordinary IEEE binary64 operations in round-to-nearest-even. Overflow
+beyond that range is the one place hosts may diverge (Part XII, axis 1).
 
 ## Part VI — Evaluation model
 
-**Evaluation order is strictly left to right**, uniformly: a function
-call evaluates its operator, then its operands in left-to-right order,
-each exactly once. `IF` evaluates its test, then evaluates *only* the
-selected branch — the untaken branch is not touched at all, not even to
-the extent of checking its shape.
+**Evaluating a value** (`eval_step`, `src/evaluator/special_forms.rs`):
+`Nil` evaluates to `Nil`; a keyword symbol evaluates to itself; any other
+symbol is a variable reference resolved per the rules below (an unbound
+symbol is an error); every non-symbol atom — number, float, char, string,
+and every compound or opaque value that is not a cons — is
+self-evaluating. A cons is a *form*: if its head is a symbol carrying a
+special-form tag, the form is dispatched to that special form; otherwise
+it is an application.
 
-**`LET` binds in parallel; `LET*` binds sequentially.** In `(let ((a
-init-a) (b init-b)) ...)`, every `init-*` form is evaluated in the
-*outer* environment, before any new binding is visible — `init-b` cannot
-see `a`. In `(let* ((a init-a) (b init-b)) ...)`, each `init-*` form is
-evaluated after the previous binding has already been installed, so
-`init-b` *does* see `a`. This is the standard Lisp distinction, stated
-here because it is exactly the kind of rule a spec must pin down rather
-than leave to "the usual convention."
+**Special forms are recognized by symbol identity, not by binding.** The
+tag is attached to the interned symbol at intern time
+(`SymbolTable::intern`, `src/environment.rs`), so a form whose head is
+one of the names in Part VII is *always* that special form — a local or
+global binding of that name is never consulted in operator position.
+Conversely the names are not reserved as variables: `(let ((if 3)) if)`
+is `3`. Special forms are not first-class: evaluating the bare symbol
+`IF` is an ordinary (usually unbound) variable reference, and a special
+form cannot be passed to `FUNCALL`/`APPLY`.
 
-**Tail calls: a specific, closed list of positions get proper, unbounded
-tail-call elimination — nowhere else is guaranteed, and one common way of
-calling a function does *not* qualify.** The guaranteed tail positions are:
-the last form of a `LAMBDA` body; both branches of `IF`; the last form of
-each `COND` clause; the last form of a `PROGN`; the body of `LET`/`LET*`;
-and the body of a `VAU`/fexpr/macro expansion. A call in any of these
-positions to another function, however deeply the chain of such calls
-goes, must not grow the host's native call stack — this is a hard
-guarantee a portable program may rely on for writing loops as tail
-recursion. **Function-call *arguments* are never tail positions** (evaluate
-them, then call — the call itself is not in tail position relative to its
-own argument evaluation). **Calling a function via `FUNCALL`, `APPLY`, or
-a host embedding API is explicitly *not* guaranteed to get this
-treatment** — a portable program must not write a loop that depends on
-`(funcall self ...)` in tail position looping forever without growing the
-stack; a host may optimize that case, but is not required to, and the
-reference implementation itself does not.
+**Application evaluates the operator first, then the operands left to
+right, each exactly once.** The operator position is evaluated by the
+ordinary rule above (there is no separate function namespace: a symbol in
+operator position resolves to its variable value). If the operator value
+is a macro, fexpr, or `VAU` operative, the operands are **not** evaluated
+(see below). Otherwise the operand list must be a proper list (a dotted
+operand list is an error) and each operand is evaluated in order; the
+resulting value is then applied. Applying anything other than a closure,
+builtin, or native function is an error ("not a function"), as is an
+arity mismatch.
 
-Non-tail evaluation depth (ordinary recursion that is not eliminated by
-the rule above) is bounded, and exceeding the bound is a catchable error
-condition (Part VIII), not an unrecoverable native stack fault, though a
-host is free to implement the bound generously (the reference
-implementation runs the whole evaluator on an oversized stack precisely
-so this bound, not the underlying native stack, is what a program
-actually hits first).
+**`IF` takes exactly three operands**: `(if test then else)`. A
+two-operand `(if test then)` or a four-operand form is an **error**, not
+an implicit `NIL` else — `WHEN`/`UNLESS` (library macros in
+`lib/12-control.lisp`) exist for the one-armed case. The test is evaluated
+(non-tail); then exactly the selected branch is evaluated, in tail
+position; the other branch is never touched.
+
+**`COND`**: `(cond clause...)`. Each clause must be a non-empty proper
+list `(test body...)`; an atom clause or an empty `()` clause is an error
+(detected only when reached). Tests are evaluated in order until one is
+truthy; that clause's body forms are then evaluated in order and the
+**last body form is in tail position**. A clause `(test)` with no body
+returns the test's value. If no test is truthy, `COND` returns `NIL`.
+
+**`PROGN`**: `(progn)` is `NIL`; otherwise the forms are evaluated in
+order and the last is in tail position.
+
+**`AND` and `OR` are kernel special forms in the reference** (Part VII).
+`(and)` is `T`; `(and f...)` evaluates left to right and returns `NIL`
+at the first `NIL`, else the value of the last form. `(or)` is `NIL`;
+`(or f...)` returns the first truthy value, else `NIL`. **No position in
+`AND`/`OR` is a tail position.**
+
+**`QUOTE`** takes exactly one operand and returns it unevaluated.
+**`QUASIQUOTE`** takes exactly one template and rebuilds it
+(`quasiquote_eval`, `src/evaluator/quasiquote.rs`): an atom is returned
+as-is; a cons `(UNQUOTE e)` is replaced by the value of `e`; a list
+element `(UNQUOTE-SPLICING e)` is replaced by the elements of the value
+of `e`, which must be a proper list (else an error), followed by the
+processed rest of the list — this works in any element position,
+including before a dotted tail; any other cons is rebuilt from its
+processed car and cdr. **There is no nesting-level tracking**: an inner
+`` ` `` is an ordinary symbol `QUASIQUOTE` in the template and inner
+`,` forms are still evaluated at the *outer* level — `` `(a `(b ,(+ 1 2))) ``
+yields `(A (QUASIQUOTE (B 3)))`. An `UNQUOTE` with other than one operand
+is an error; an ill-formed `UNQUOTE-SPLICING` is treated as ordinary data.
+
+**`LET` binds in parallel; `LET*` binds sequentially.** Both take a
+binding list followed by **at least one** body form (a bare `(let ())` is
+an error; `(let () 1)` is `1`). Every binding must be a two-element list
+`(name init)` — `(x)` or a bare `x` is an error — and `name` must be a
+non-keyword symbol other than `T` (`NIL` is not a symbol, so `(let ((nil
+1)) ...)` is an error). In `LET`, every `init` is evaluated in the
+**outer** environment, in order, before the body sees any new binding.
+In `LET*`, one new frame is created and each `init` is evaluated with all
+earlier bindings of the same `LET*` already installed. Multiple body
+forms are implicitly wrapped in `PROGN`; the body is in tail position.
+
+**Tail calls: a specific, closed list of positions receive proper,
+unbounded tail-call elimination** (the trampoline in
+`run_trampoline_inner`, `src/evaluator/functions.rs`): the last form of a
+`LAMBDA` body; both branches of `IF`; the last body form of the selected
+`COND` clause; the last form of `PROGN`; the (implicitly `PROGN`-wrapped)
+body of `LET` and `LET*`; the body of a `VAU` operative or fexpr; and the
+expansion of a macro. A call in any of these positions to another
+function, however long the chain, must not grow the host's native stack:
+`(defun tl (n) (if (= n 0) 'done (tl (- n 1))))` runs for ten million
+iterations. **Every other position is a non-tail position**, and a
+portable program must not rely on tail behavior there — in particular the
+body of `CATCH`, `BLOCK`, `UNWIND-PROTECT`, `HANDLER-CASE`, `AND`, `OR`,
+`WITH-FUEL`, `WITH-CAPABILITIES`, `PROG`, `WHILE`, `FOR`, and every
+function-call *argument*. Nor does a call through `FUNCALL`, `APPLY`, or
+a host embedding API receive tail treatment: the reference evaluates the
+callee's body with a fresh non-tail `eval`, so `(defun f (n) (if (= n 0)
+'done (funcall 'f (- n 1))))` exhausts the recursion bound for large `n`
+while the direct call does not.
+
+**Non-tail evaluation depth is bounded, and exceeding the bound is a
+catchable error**, not a native stack fault (`DepthGuard`,
+`src/evaluator/core.rs`; default `10_000` nested `eval` frames,
+host-adjustable). The bound counts `eval` entries, so one Lisp-level
+non-tail call may cost more than one frame (a `FUNCALL` costs two: the
+`funcall` application and the callee's body). A host must size its native
+stack so that this bound, not the stack, is what a program hits first;
+the reference runs the evaluator on a 512 MiB thread for exactly this
+reason.
 
 **`LAMBDA` parameter lists are fixed-arity, plus at most one rest
-parameter, spelled either as `&REST name` or as a dotted tail `(a b .
-name)` — never both in the same list.** There is no `&optional` and no
-`&key`; this is not an oversight, it is the whole grammar. Calling a
-lambda with the wrong number of arguments is an error (Part VIII), as is
-calling a value that is not callable at all in operator position; neither
-is a native crash.
+parameter**, spelled either `(a b &REST r)` or with a dotted tail `(a b .
+r)` — never both. `&REST` must be followed by exactly one symbol; any
+other `&`-prefixed name (`&OPTIONAL`, `&KEY`, ...) anywhere in the list
+is an error **at definition time**; parameter names must be non-keyword
+symbols other than `T`. A body of zero forms is legal and evaluates to
+`NIL`; multiple forms are wrapped in `PROGN`. Calling a lambda with `n`
+fixed parameters and no rest parameter requires exactly `n` arguments;
+with a rest parameter, at least `n` — the surplus is collected into a
+fresh proper list (possibly `NIL`) bound to the rest parameter. A closure
+captures the environment in which the `LAMBDA` form was evaluated; each
+call creates one fresh frame whose parent is that captured environment
+(lexical scoping — the caller's environment is never consulted for
+lexical lookup). `(function f)` / `#'f` returns the value of `f` if it is
+a callable (else an error); `#'(lambda ...)` is the same as the `LAMBDA`
+form.
 
-**`SETQ` resolves its target with a specific precedence, and creates a
-new binding rather than erroring when the target is unbound:**
-1. If the symbol has ever been declared dynamic (see the dynamic-variables
-   paragraph below), `SETQ` writes the symbol's single global dynamic
-   cell unconditionally. Read together with that paragraph, this is not
-   "`SETQ` overrides an existing lexical shadow": once a symbol is
-   declared dynamic, `LET`, lambda parameters, and every other binding
-   form stop creating an ordinary lexical frame slot for that name at all
-   — they install a new *dynamic* binding instead (the same shallow-binding
-   mechanism the paragraph below describes), exactly as declaring a
-   variable `special` does in Common Lisp. So there is no separate lexical
-   binding for `SETQ`'s rule to skip past; there is only ever the one
-   dynamic cell, and every binding form and every `SETQ` for that name
-   agree on addressing it. `(let ((x 1)) (setq x 2) x)` evaluates to `2`
-   whether or not `x` is dynamic — if `x` is dynamic, the `LET` installed
-   a fresh dynamic binding holding `1` before `SETQ` changed it to `2`; if
-   not, ordinary lexical rules apply and give the same answer by the usual
-   route.
+**Variable resolution** (`Environment::resolve`): if the symbol is
+dynamic (below), read the symbol's single global value cell. Otherwise
+walk the lexical frame chain from the current frame outward; the root
+frame's storage *is* the symbol's value cell. An unbound symbol is an
+error.
 
-   **A sharper, genuinely surprising consequence: declaring a symbol
-   dynamic is retroactive and global, with no way back.** Variable lookup
-   (`Environment::resolve`) checks the symbol's `is_dynamic` flag fresh on
-   *every* reference, not once at the binding site that created a frame
-   for it. So the moment any code, anywhere in a running program, declares
-   `x` dynamic, every existing lexical frame slot named `x` — however long
-   it has been live, in however many already-executing closures, created
-   long before the declaration ran — becomes permanently unreachable for
-   both reads and `SETQ`: every subsequent reference to `x`, from any of
-   those closures, redirects to the one global dynamic cell instead, as
-   if the declaration had been in effect from the start. Because symbols
-   are interned globally, this is not scoped to a file or a module: one
-   `(defdynamic x)` anywhere makes *every* `x` in the entire running
-   program dynamic, retroactively, with no corresponding "undeclare"
-   operation to undo it. This matches how `(proclaim '(special x))`
-   behaves in Common Lisp (also global, also effectively one-way in
-   practice) — a CL programmer will find this familiar; a programmer
-   coming from Scheme or from Lisp 1.5 itself, where variables are
-   lexical by default and nothing is named globally-dynamic after the
-   fact, will not. A host must reproduce this exact retroactive, global,
-   one-way behavior — it is not latitude Part XII grants, and getting it
-   wrong (e.g. by scoping a dynamic declaration to a module, or by having
-   already-live closures keep their lexical slots) is a conformance
-   failure, not a reasonable interpretation.
-2. Otherwise, `SETQ` walks the lexical environment chain outward from the
-   call site and updates the first frame where the symbol is already
-   bound.
-3. If no frame has it bound anywhere in the chain, `SETQ` does **not**
-   error — it creates a new binding local to the calling environment's
-   own frame (or, if the calling environment is the global environment,
-   sets the symbol's global value cell). A program that `SETQ`s a name it
-   never `LET`- or parameter-bound gets a fresh local variable, silently,
-   by design.
+**`SETQ`**: `(setq var1 val1 var2 val2 ...)` — an odd number of operands
+is an error; each `var` must be a non-keyword symbol other than `T`; each
+`val` is evaluated (left to right, each assignment taking effect before
+the next `val` is evaluated) and the last value is returned. Each
+assignment resolves its target as follows (`Environment::update_sym`):
+1. If the symbol is dynamic, write its global value cell. Read together
+   with the dynamic-variables paragraph, this is coherent: once a symbol
+   is dynamic, `LET`, lambda parameters, and every other binding form
+   install a *dynamic* binding for it (saving and later restoring the
+   same cell) rather than a frame slot, so `(let ((x 1)) (setq x 2) x)`
+   is `2` whether or not `x` is dynamic.
+2. Otherwise walk the lexical chain outward and overwrite the first frame
+   in which the symbol is already bound (the root frame counts as bound
+   when the symbol's value cell holds a value).
+3. If no frame binds it, **create** a new binding in the frame where the
+   `SETQ` was evaluated (or in the global cell if that is the root): `(let
+   ((x 1)) (setq y 2) y)` is `2` and `y` is unbound afterwards. `SETQ` of
+   an unknown name is never an error.
 
-**`VAU`, fexprs, and macros are three distinct reflection mechanisms with
-different binding shapes and different expansion timing, and the
-difference in timing matters for what a portable program can assume:**
-- **`VAU`** takes exactly two parameters: one bound to the call's entire
-  unevaluated operand list, and one bound to a first-class value denoting
-  the calling environment (not specially privileged — an ordinary
-  environment value a `VAU` body can pass around and `EVAL` in). Its body
-  runs once per call, in a fresh child of the `VAU`'s own closure
-  environment, with no separate expansion step — there is nothing to
-  cache, because there is no expansion phase distinct from execution.
-- **A fexpr** (`DEFEXPR`) takes a fixed-arity parameter list (no rest
-  parameter) bound one-to-one to the call's unevaluated operand forms (or,
-  for a single-parameter fexpr, the whole operand list at once); its body
-  likewise runs once per call in a child of its closure environment, with
-  no separate expansion phase.
-- **A macro** (`DEFMACRO`) is genuinely different: at every call, its body
-  runs first, against the unevaluated operand forms, to produce an
-  *expanded form*; that expanded form is then evaluated in the *caller's*
-  environment. **This expansion is not cached anywhere** — a macro is
-  re-expanded from scratch on every single call, not compiled once and
-  reused. A portable program must not assume a macro's expansion happens
-  only once per call site; each call re-runs the macro's own body as
-  ordinary Lisp code.
+**Dynamic variables use shallow binding, and declaring a symbol dynamic
+is global, retroactive, and irreversible.** `(defdynamic name init
+[docstring])` — also spelled `(defvar ...)`, the same special form —
+requires an `init` form (a one-operand `(defdynamic *x*)` is an error),
+marks the symbol dynamic in the environment's shared registry, then
+evaluates `init` and stores it in the symbol's global value cell, and
+returns the symbol. (The reference prints a warning to stderr when the
+name lacks `*earmuffs*`; that is not normative.) From that moment:
+- resolution of that symbol, in **every** frame and every already-created
+  closure, reads the global cell (`resolve` checks the flag on each
+  reference, not at binding time): `(defun f (x) (lambda () x))`, `(setq g
+  (f 10))`, `(defdynamic x 99)`, `(funcall g)` yields `99`;
+- every binding form (`LET`, `LET*`, lambda and macro parameters, `PROG`
+  variables, `FOR`) binds it by saving the cell's current contents,
+  installing the new value, and **restoring the saved contents when the
+  form exits by any path** — normal return, error, `THROW`,
+  `RETURN-FROM`, `RETURN`/`GO`, or fuel exhaustion — including bindings
+  accumulated across a chain of tail calls, which are restored in LIFO
+  order when the chain finally returns: `(defdynamic *x* 1) (catch 'c
+  (let ((*x* 2)) (throw 'c 0))) *x*` is `1`;
+- `SETQ` writes the cell (rule 1 above), so an assignment inside a
+  dynamic binding is visible to callers until the binding exits and is
+  then undone by the restore;
+- there is no undeclare. This matches CL's `(proclaim '(special x))`
+  and a host must reproduce it exactly; scoping the declaration to a
+  file or module, or letting live closures keep their lexical slots, is
+  a conformance failure.
+Symbols in the registry are shared by an environment and all its lexical
+children (and copied by a world fork); `(make-environment)` with no
+arguments starts with an empty registry (Part IV).
 
-**`CATCH`/`THROW` and `BLOCK`/`RETURN-FROM` are dynamic-extent, non-lexical
-escapes, and an unmatched one is not a catchable Lisp-level condition —
-it terminates evaluation.** `CATCH`'s tag is evaluated (so tags are
-dynamic values, not lexical names) and compared against a thrown tag with
-`EQ`... more precisely, with the value-equality rules of Part IV applied
-to whatever type the tag happens to be; `BLOCK`/`RETURN-FROM` instead key
-on a name taken directly from an unevaluated symbol at each site. Both
-walk outward dynamically through however many enclosing frames of the
-same construct exist at the moment of the throw/return, re-propagating
-past any that don't match. **A `THROW` or `RETURN-FROM` with no matching
-`CATCH`/`BLOCK` anywhere on the current dynamic call chain is not
-something `HANDLER-CASE` can intercept** (see Part VIII) — it propagates
-all the way to the top level and halts whatever unit of execution is
-running. A portable program must ensure every `CATCH`/`BLOCK` it uses is
-actually reachable from every place that might `THROW`/`RETURN-FROM` to
-it, because there is no safety net.
+**`VAU`, fexprs, and macros are three distinct operative mechanisms:**
+- **`(vau (ops env) body...)`** — the parameter list must be exactly two
+  symbols. On application, a fresh child of the operative's *definition*
+  environment binds `ops` to the **entire unevaluated operand list** and
+  `env` to the **caller's environment** as a first-class value; the body
+  (implicitly `PROGN`-wrapped) runs in tail position. `((vau (o e) (list o
+  (eval (car o) e))) (+ 1 2))` is `(((+ 1 2)) 3)`. `$VAU` is an alias.
+  Applied via `APPLY`, the (already evaluated) argument list is what `ops`
+  receives. Anonymous `(vau ...)` and `defvau` (library) both produce
+  ordinary first-class values.
+- **A fexpr** — `(defexpr name (params...) body)` or the anonymous
+  `(fexpr (params...) body...)` — takes a proper parameter list with no
+  rest parameter (a dotted tail is an error). A fexpr with **exactly one
+  parameter** binds it to the whole unevaluated operand list; a fexpr
+  with `n != 1` parameters requires exactly `n` operands and binds them
+  one-to-one, unevaluated. The body runs in a fresh child of the
+  definition environment, in tail position, with no access to the
+  caller's environment except through values it is handed.
+- **A macro** — `(defmacro name (params...) body)` or the anonymous
+  `(macro (params...) body...)` — has a lambda-style parameter list
+  (fixed parameters plus optional `&REST`/dotted rest) checked with the
+  same arity rules as lambdas. At **every** call the body runs in a fresh
+  child of the definition environment with the unevaluated operands
+  bound, producing an *expansion*; the expansion is then evaluated in the
+  **caller's** environment, in tail position. **Expansion is never
+  cached**: each call re-runs the macro body. `(macroexpand form)`
+  performs one expansion step without evaluating the result.
+- `DEFEXPR` and `DEFMACRO` take three or four operands (`name params
+  [docstring] body`); the body is a single form. They bind `name` in the
+  current environment (globally, at top level) and return the symbol.
 
-**Dynamic variables use shallow binding**: a dynamically-declared symbol
-has exactly one live value cell, shared globally; entering a dynamic
-binding form saves that cell's current contents and installs a new value,
-and *leaving* that form — by any means, including a `THROW` or
-`RETURN-FROM` that unwinds straight through it — restores the saved value
-before control passes further out. This restore-on-every-exit-path
-guarantee, including non-local exits and including exits that unwind
-through several accumulated dynamic bindings made across a chain of tail
-calls, is required: `lib/*.lisp`'s condition-handling layer
-(`lib/16-conditions.lisp`) is written assuming dynamic bindings always
-unwind correctly no matter how control leaves their scope.
+**Three non-local exit mechanisms exist, all dynamic-extent, and an
+unmatched exit of any of them is not a condition — it propagates to the
+top level and halts the unit of execution** (they are distinct `LispError`
+variants — `Throw`, `ReturnFrom`, `Return`, `Go` — that `HANDLER-CASE`
+and `ERRORSET` deliberately let pass, Part VIII):
+- **`(catch tag-form body...)`** evaluates `tag-form` (so tags are
+  values), then the body forms in order (**not** tail positions),
+  returning the last value or `NIL` for an empty body. **`(throw tag-form
+  value-form)`** evaluates both and unwinds to the innermost dynamically
+  enclosing `CATCH` whose tag is **`EQUAL`-equivalent** to the thrown tag
+  — the recursive `PartialEq` relation of Part IV, so a list tag `'(a b)`
+  matches a freshly built `(list 'a 'b)` and a string tag matches an
+  equal string — yielding `value`. Non-matching `CATCH` frames re-raise
+  the throw outward.
+- **`(block name body...)`** with an **unevaluated** symbol `name`;
+  **`(return-from name [value])`** (value defaults to `NIL`) unwinds to
+  the innermost dynamically enclosing `BLOCK` with the same name —
+  dynamic, not lexical: a function called from inside the block may
+  `RETURN-FROM` it. Body forms are not tail positions.
+- **`(prog (vars...) item...)`** binds each var to `NIL`, then executes
+  the items in order, treating a bare symbol item as a label. `(go
+  label)` jumps to a label in the innermost dynamically enclosing
+  `PROG` (an unknown label is an error at the `PROG`); `(return value)`
+  exits the innermost `PROG` with `value`; falling off the end yields
+  `NIL`. Items are not tail positions.
+
+**`(unwind-protect body-form cleanup...)` is a kernel special form**:
+`body-form` (exactly one form, non-tail) is evaluated; then **every
+cleanup form is evaluated unconditionally** — after a normal return, an
+error, a fuel exhaustion, or any non-local exit passing through — and the
+body's outcome (value or propagating error/exit) is then delivered. **An
+error raised by a cleanup form is discarded**, and does not replace the
+body's outcome or stop the remaining cleanup forms. A cleanup form's
+value is never returned.
+
+**`WHILE` and `FOR` are kernel special forms in the reference**: `(while
+test body...)` re-evaluates `test` before each pass and returns `NIL`;
+`(for (var start end [step]) body...)` evaluates `start`, `end`, and
+`step` once (fixnums; a zero step is an error), iterates `var` from
+`start` to `end` **inclusive** in one reused frame, and returns `NIL`.
+Both may be derived from `COND`/`LET`/tail calls on a host (Part XII,
+axis 3) provided the observable behavior — including the single reused
+`FOR` frame, which every closure created in the body shares — matches.
 
 ## Part VII — Special forms reference
 
-The forms named and given exact semantics in Part VI — `QUOTE`, `IF`,
-`LAMBDA`, `LET`/`LET*`, `PROGN`, `COND`, `SETQ`, `VAU`, `DEFEXPR`,
-`DEFMACRO`, `CATCH`/`THROW`, `BLOCK`/`RETURN-FROM`, `HANDLER-CASE` (Part
-VIII), and `DEFDYNAMIC` (the dynamic-variable declaration primitive
-itself — `DEFVAR` is the same primitive under an alias, not a separate
-library-level form built on top of it) — are the special forms a host
-must give exactly this behavior to, whether it implements each one as a
-true kernel primitive or derives it from a smaller set (Part XII covers
-which specific forms are eligible for that latitude, and which are not).
-Every other named construct `lib/*.lisp` uses — `AND`, `OR`, `WHEN`,
-`UNLESS`, `DO`, the CL-compat layer, `DEFUN` — is already, in the
-reference implementation itself, ordinary library code built from this
-list plus the primitives of Parts II–VI; a host that gets this list right
-and loads `lib/*.lisp` unmodified gets those forms for free and does not
-need its own account of their semantics here.
+The reference attaches a special-form tag to exactly these symbol names
+(`SymbolTable::intern`, `src/environment.rs`); every one of them is
+dispatched by identity in operator position as Part VI describes:
+
+- **Core evaluation**: `QUOTE`, `QUASIQUOTE`, `IF`, `COND`, `AND`, `OR`,
+  `PROGN`, `LET`, `LET*`, `SETQ`, `LAMBDA`, `FUNCTION`, `LABEL`.
+- **Definition**: `DEF` (`(def name value [docstring])`, binds in the
+  current frame), `DEFINE` (Lisp 1.5 `((name value)...)` list form),
+  `DEFDYNAMIC`/`DEFVAR`, `DEFEXPR`, `DEFMACRO`, `MACRO`, `FEXPR`, `VAU`/`$VAU`.
+- **Control**: `CATCH`, `THROW`, `BLOCK`, `RETURN-FROM`, `PROG`, `RETURN`,
+  `GO`, `WHILE`, `FOR`, `UNWIND-PROTECT`, `HANDLER-CASE`.
+- **Fencing**: `WITH-FUEL`, `WITH-CAPABILITIES` (Parts IX–X).
+- **Typed subset** (reference-specific, not required for the `lib/*.lisp`
+  kernel surface and not further specified here): `DEFUN-TYPED`,
+  `DEFUN*`, `DEFSTRUCT-TYPED`, `DECLARE-TYPED`, `JIT-OPTIMIZE`,
+  `CHECK-TYPE`.
+
+The forms given exact semantics in Parts VI, VIII, IX and X are the ones
+a host must reproduce exactly, whether it implements each as a true
+kernel primitive or derives it from a smaller set — Part XII, axis 3,
+names which are eligible for derivation. Every other named construct the
+corpus uses — `DEFUN` (a macro in `lib/00-core.lisp`), `WHEN`, `UNLESS`,
+`DOLIST`, `DOTIMES` (`lib/12-control.lisp`), `IGNORE-ERRORS`,
+`RESTART-CASE`, `HANDLER-BIND` (`lib/16-conditions.lisp`), `DEFVAU`, the
+CL-compat layer — is library code built from this list plus the
+primitives of Parts II–VI; a host that gets this list right and loads
+`lib/*.lisp` unmodified gets those forms for free.
 
 ## Part VIII — The condition system
 
-**There is no native taxonomy of condition types, and a portable program
-cannot dispatch on one.** A condition value carries exactly two pieces of
-information: a message string and a data payload (an arbitrary value,
-`Nil` if unused) — nothing else. There is no type tag, no class hierarchy,
-and no `DEFINE-CONDITION`-style extension mechanism anywhere in the
-language, at either the native or the library level.
+**A condition is a value with exactly two fields, and there is no
+taxonomy.** `(make-error message [data])` builds a first-class condition
+value: `message` is a string (any other value is converted with the Part
+III printer, so `(make-error 'sym)` has message `"SYM"`); `data` is any
+single value, `Nil` if omitted; further arguments are ignored. `(error-p
+v)`, `(error-message c)`, `(error-data c)` inspect it. There is no type
+tag, no class hierarchy, and no `DEFINE-CONDITION`-style extension at
+either the native or the library level.
 
-**`HANDLER-CASE` catches every condition unconditionally — it does not
-pattern-match on a condition type, because none exists to match on.** Its
-one clause form binds the condition value (message plus data) to a
-variable and runs its body; there is no second clause form and no type
-specifier to write, because "catch this kind of error but not that kind"
-is not an operation the language provides. A program that needs to
-distinguish error causes does so by inspecting the message string or the
-data payload itself, by convention, not by type dispatch. **This is a
-scoping fact about the language, not a gap this document is leaving open
-for a future revision to close** — `lib/16-conditions.lisp`'s
-`RESTART-CASE`/`HANDLER-BIND`/restart-invocation layer is built entirely
-on this one untyped `HANDLER-CASE` plus `CATCH`/`THROW` plus dynamic
-variables, and does not itself add typing either.
+**Signalling.** `(error)` signals a condition with message `"Error"` and
+`Nil` data; `(error c)` where `c` is a condition value re-signals it
+unchanged; `(error message [data] ...)` signals `(make-error message
+data)` (only the first extra argument is data). A native failure inside a
+primitive or special form (unbound variable, wrong argument count, type
+error, division by zero, index out of range, recursion bound, fuel
+exhaustion, capability denial, ...) is raised as a *native error* carrying
+only a message; the moment a handler observes it, it is converted to a
+condition value with that message and `Nil` data, so **handlers see one
+uniform two-field value** regardless of origin.
 
-**A `CATCH`/`THROW` non-local exit and a `BLOCK`/`RETURN-FROM` non-local
-exit are not conditions at all and are never visible to `HANDLER-CASE`** —
-they are a structurally separate control-flow mechanism (Part VI) that
-passes straight through any enclosing `HANDLER-CASE` untouched. A portable
-program cannot use `HANDLER-CASE` to intercept a stray `THROW`; it must
-use a matching `CATCH`.
+**`HANDLER-CASE` catches every condition unconditionally.**
+`(handler-case expr (head (var) handler-body...))` takes exactly two
+operands: the protected form and **one** clause. The clause's `head`
+symbol is **not inspected** (`error` by convention; any symbol works);
+its second element is a list whose first symbol, if present, is bound to
+the condition. If `expr` returns normally its value is returned. If a
+condition or native error is raised anywhere in `expr`'s dynamic extent,
+control unwinds to the `HANDLER-CASE`, a fresh child environment binds
+`var` to the condition value, and the handler body forms are evaluated in
+order (non-tail), the last value being the result. There is no second
+clause and no type specifier: "catch this kind but not that kind" is not
+an operation the language provides, and a program distinguishes causes by
+inspecting the message or data by convention. **This is a scoping fact
+about the language, not a gap left open**: `lib/16-conditions.lisp`'s
+`RESTART-CASE`/`HANDLER-BIND`/`INVOKE-RESTART` layer is built entirely on
+`HANDLER-CASE`, `CATCH`/`THROW`, dynamic variables, and `ERRORSET`, and
+adds no typing.
 
-**The exact message text a given native error produces is not part of the
-portable surface**, even though the reference implementation's condition
-value happens to carry one: message strings vary in capitalization and
-level of detail from one native operation to the next, and at least one
-(the "not a function" error for calling a non-callable value) embeds a
-Rust-internal debug rendering of the offending value rather than a clean
-Lamedh-printed one. A conformant host must signal *a* condition — of the
-same two-field (message, data) shape — for the same class of native
-failure (unbound variable, unbound function, division by zero, wrong
-number of arguments, index out of range, calling a non-callable value,
-non-numeric argument to a numeric operator, exceeding the non-tail
-recursion bound), but is not required to reproduce the reference
-implementation's exact wording, and a program that pattern-matches on
-exact error text is relying on something this specification does not
-guarantee.
+**`ERRORSET` is a kernel primitive (a builtin function, not a special
+form).** `(errorset form [ignored])` evaluates the *value* `form` (so
+callers quote it: `(errorset '(car 5))`) in the current environment and
+returns a one-element list `(value)` on success, or `NIL` if a condition
+or native error was raised — the wrapper list makes a successful `NIL`
+distinguishable from failure. `IGNORE-ERRORS` is a library macro over it.
+
+**Non-local exits are not conditions and are invisible to both
+`HANDLER-CASE` and `ERRORSET`.** A `THROW`, `RETURN-FROM`, `RETURN`, or
+`GO` passing through a `HANDLER-CASE` or `ERRORSET` is not intercepted;
+if no matching `CATCH`/`BLOCK`/`PROG` exists on the dynamic chain it
+propagates to the top level and terminates the unit of execution
+(`(handler-case (throw 'foo 1) (error (e) 'caught))` is not caught). A
+portable program must ensure every target is reachable, because there is
+no safety net. `UNWIND-PROTECT` cleanups do run as such an exit passes.
+
+**The exact message text a native error produces is not part of the
+portable surface**, even though the reference's condition value carries
+one: messages vary in capitalization and detail from one primitive to the
+next, and at least one (calling a non-callable value: `"Not a function:
+Number(5)"`) embeds a Rust debug rendering rather than a Lamedh-printed
+value. A conformant host must signal *a* condition — of the same
+two-field form — for the same class of native failure (unbound variable,
+calling a non-callable value, wrong number of arguments, non-numeric
+argument to a numeric operator, division by zero, index out of range,
+typed-array type mismatch, recursion bound exceeded, fuel exhausted,
+capability denied), but is not required to reproduce the wording, and a
+program that pattern-matches exact text relies on something this
+specification does not guarantee.
 
 ## Part IX — Capability-gated I/O
 
-Read, write, and syscall-adjacent operations (filesystem, shell,
-process/environment, network) must sit behind a capability system a host
-enforces at the primitive call site — not merely as bookkeeping.
+Read, write, and syscall-adjacent operations (filesystem, shell, process
+and environment access, networking, stdin) sit behind a capability system
+a host enforces **at the primitive call site** — not merely as
+bookkeeping.
 
-This document specifies the *shape* of the primitive — an operation that
-consults a named capability set before acting — not the enforcement
-mechanism, the exact capability names, or which operations are gated by
-which name. The Rust reference's current names (`READ-FS`, `CREATE-FS`,
-`TEMP-FS`, `SHELL`, `IO`, plus `NET-*`/`OS-*`) are a reasonable default for
-a conformant host to adopt verbatim, but adopting them is not itself the
-conformance requirement; *enforcing something* at the call site is. A host
-that defines the capability names as inert labels queried by no primitive
-does not conform to this section, regardless of what `lib/22-guard.lisp`
-layers on top.
+**Names and enforcement.** The reference's capability names are exactly:
+`READ-FS`, `CREATE-FS`, `TEMP-FS`, `SHELL`, `IO`, `NET-DNS`,
+`NET-CONNECT`, `NET-LISTEN`, `OS-ENV`, `OS-ENV-WRITE`, `OS-PROCESS`,
+`OS-SIGNAL`. Each has a gate function of one uniform form
+(`require_read_fs` and siblings, `src/evaluator/builtins_core.rs`) that a
+gated primitive calls before acting; a name is compared exactly after
+uppercasing. Resource-acquiring network and process primitives call their
+gate (`net-resolve` → `NET-DNS`; `tcp-connect*`, `udp-connect`,
+`udp-send-to` → `NET-CONNECT`; `tcp-listen*`, `udp-bind` → `NET-LISTEN`;
+environment reads → `OS-ENV`, writes → `OS-ENV-WRITE`; spawning →
+`OS-PROCESS`; signalling → `OS-SIGNAL`), while operations on an
+already-acquired handle (accept, read, write, close) are not re-gated —
+acquisition is the gate. This document specifies the *form* of the
+primitive — consult a named capability set before acting — and the
+reference's names are the recommended default; adopting them verbatim is
+not itself the conformance requirement, *enforcing something* at the call
+site is. A host whose capability names are inert labels queried by no
+primitive does not conform, regardless of what `lib/22-guard.lisp` layers
+on top.
 
 **A gated operation attempted without permission signals an ordinary,
-`HANDLER-CASE`-catchable condition of the same two-field (message, data)
-shape as any other native error (Part VIII) — it is not a panic, a process
-abort, or a silent no-op/`NIL` return.** The reference implementation's own
-gate functions (`src/evaluator/builtins_core.rs`, `require_read_fs` and its
-siblings) return exactly this shape, distinguishing in the message, as a
-convenience and not a normative requirement, between "never granted" and
-"granted but attenuated by an enclosing fence" (see the attenuation rule
-below).
+`HANDLER-CASE`-catchable condition of the same two-field form as any other
+native error (Part VIII)** — not a panic, a process abort, or a silent
+no-op. The reference's gates distinguish in the message, as a convenience
+and not a requirement, between "never granted" and "granted but attenuated
+by an enclosing fence".
 
-**The capability grant itself has two distinct layers, and a conformant
-host must reproduce both:**
-- A **standing grant**, made once by host embedding code (or by the CLI's
-  `--capability` flag) against a specific environment, that persists for
-  that environment's entire lifetime with no Lisp-level way to add to it.
-  This grant is shared by every lexical child of the environment it was
-  made against — a `LET`, `LAMBDA`, or any other lexically-nested
-  environment sees exactly its ancestor's granted set, not a private copy
-  it could narrow or widen on its own. A *forked* top-level world (the
-  reference implementation's `fork_world`, used to hand out independent
-  worlds from a per-thread stdlib prototype) instead receives an
-  independent **copy** of the forking world's grants at the moment of the
-  fork: the two worlds' grants are equal at that instant but mutating one
-  world's grants afterward does not affect the other's.
-- A **dynamic-extent attenuation mask**, entered and left by
-  `WITH-CAPABILITIES` (see below), that can only ever narrow what the
-  standing grant already allows — never widen it. The two layers combine
-  by conjunction: an operation proceeds only when the standing grant
-  permits it *and* the current attenuation mask (if any) also permits it.
+**The grant has two layers, and a conformant host must reproduce both:**
+- A **standing grant**, made by host embedding code (`enable_feature`) or
+  the CLI's `--capability` flag against an environment, persisting for the
+  environment's lifetime. **There is no Lisp-callable way to add to it**:
+  the only Lisp-facing primitives are queries — `(feature-enabled-p name)`
+  (symbol or string; `T` when the name is granted *and* not masked by the
+  current fence) and `(capability-mask-allows-p name)`. The grant lives in
+  state shared by an environment and every lexical child of it, including
+  `(make-environment parent)`, `LET` frames, and closures — none of which
+  can narrow or widen it privately. `(make-environment)` with no
+  arguments has an **empty** grant. A forked world (the reference's
+  `fork_world`) receives an independent **copy** of the grant at fork
+  time; later changes to either world do not affect the other.
+- A **dynamic-extent attenuation mask**, per thread, installed only by
+  `WITH-CAPABILITIES`, which can only narrow. An operation proceeds only
+  when the standing grant permits it *and* the mask (if any) permits it.
 
-**`(WITH-CAPABILITIES (name...) body...)` is a special form with the same
-attenuation-only nesting rule Part X's `WITH-FUEL` uses, and for the same
-reason.** Entering it intersects the requested capability list with
-whatever mask is already in effect (`None` meaning "no mask, standing
-grant governs alone"), so a fence can never grant itself a capability the
-enclosing fence has already excluded, no matter what it asks for; leaving
-it — by ordinary completion, by a caught error, or by any non-local exit
-passing through it — restores exactly the mask that was in effect before
-entry. Unlike fuel, there is nothing to debit on exit: a capability mask
-has no notion of "amount spent," so restoration is a plain save/restore
-with no analogue of fuel's spent-amount bookkeeping. There is deliberately
-no Lisp-callable way to widen the mask from inside a fence; only
-`WITH-CAPABILITIES` itself may install a new (narrower-or-equal) one.
+**`(with-capabilities list-form body...)` is a special form.**
+`list-form` is **evaluated** and must yield a proper list of symbols
+(strings, non-symbols, or a dotted list are errors) — so the idiom is
+`(with-capabilities '(READ-FS) ...)`; a bare `(with-capabilities (READ-FS)
+...)` evaluates `(READ-FS)` as a call. The new mask is the requested names
+when no mask is active, otherwise the **intersection** with the enclosing
+mask: `(with-capabilities '(READ-FS) (with-capabilities '(SHELL) ...))`
+leaves nothing allowed, no matter what the inner fence asks for. Body
+forms are evaluated in order (non-tail), stopping at the first error;
+the value is the last form's or `NIL` for an empty body. On exit by any
+path — completion, error, non-local exit — the previous mask is restored
+exactly. There is nothing to debit: a mask has no "amount spent". The mask
+follows the *call*, not the lexical fence: helpers called from inside the
+fence, and code `EVAL`ed inside it, are masked; a closure created inside
+the fence but called outside runs with the caller's authority. There is
+deliberately no primitive that installs a wider mask.
 
 ## Part X — Step-budget fencing (fuel)
 
-A sandboxed host needs a second axis of defense beyond capabilities: a way
-to run untrusted code with a hard ceiling on *how much computation it can
-do* even when it touches no I/O at all — an infinite loop in pure
-arithmetic is still a denial of service. Lamedh calls this budget **fuel**,
-and it must be a genuine kernel mechanism, not a library convenience,
-because a library-level step counter is trivially defeated by code that
-never calls the counting function.
+A sandboxed host needs a second axis of defense beyond capabilities: a
+ceiling on *how much computation* untrusted code can do even when it
+touches no I/O — an infinite loop in pure arithmetic is still a denial of
+service. Lamedh calls this budget **fuel**, and it is a kernel mechanism,
+not a library convenience, because a library-level counter is defeated by
+code that never calls it.
 
-**The kernel maintains one step counter, decremented once per evaluation
-step, checked before that step runs.** "One evaluation step" means one
-iteration of the evaluator's own dispatch loop — the loop that drives both
-plain (non-tail) evaluation and Part VI's tail-call elimination, so a
-tail-recursive loop that never grows the stack is still metered correctly:
-each tail step still charges fuel even though it charges no additional
-stack frame. Charging happens unconditionally, on every step, in both a
-tree-walking evaluator and any compiled/JIT path a host has — a host that
-only meters the slow path and lets compiled code run unmetered has not
-implemented this section.
+**One per-thread step counter, decremented once per evaluation step,
+checked before the step runs** (`charge_kernel_fuel`,
+`src/evaluator/core.rs`, called at the top of every trampoline
+iteration). "One step" is one iteration of the evaluator's dispatch loop:
+every `eval` entry (each non-tail sub-evaluation — a test, an argument, a
+`LET` init) and every tail step (an `IF` branch taken, a `PROGN` last
+form, a tail call) each cost exactly one unit, in both the tree-walking
+path and any compiled path a host has. A tail-recursive loop that never
+grows the stack is therefore still metered. The counter has two states:
+*unarmed* (no limit; the default) and *armed with `n` remaining*. When
+armed and `n > 0`, a step decrements it; when armed and `n == 0`, the
+step **does not run**: the counter is set back to *unarmed* and a native
+error ("fuel exhausted") is raised. A host that meters only its slow path
+and lets compiled code run unmetered has not implemented this section;
+the reference refuses to JIT-compile while a budget is armed for exactly
+this reason.
 
-**Exhaustion signals a normal, `HANDLER-CASE`-catchable condition, and
-that is a deliberate design choice, required for correctness, with a
-known, documented consequence.** Unlike a `THROW`/`RETURN-FROM` past an
-unmatched target (Part VIII, which is *not* catchable), running out of
-fuel produces the same two-field (message, data) condition shape as any
-other native error, specifically so that surrounding cleanup code —
-`lib/16-conditions.lisp`'s guest-level `UNWIND-PROTECT`, or a plain
-`HANDLER-CASE` — gets a chance to run instead of being killed off
-mid-cleanup by its own metering. `UNWIND-PROTECT` is ordinary library
-code built from `CATCH`/`THROW` and dynamic variables (Part VI); `WITH-FUEL`
-itself has no dependency on it.
+**Exhaustion is an ordinary `HANDLER-CASE`-catchable condition**, unlike an
+unmatched `THROW` (Part VIII), specifically so that cleanup code —
+`UNWIND-PROTECT` cleanup forms, a `HANDLER-CASE` handler, the fence's own
+budget restore — can run instead of being re-killed on its own first
+step. That is why exhaustion **disarms** the counter as it signals: with
+the counter stuck at zero, every cleanup step would re-signal forever.
 
-The mechanism a host uses to give cleanup code that chance — the reference
-implementation disarms its own counter at the instant it signals
-exhaustion, so that cleanup code evaluated while handling the condition
-doesn't immediately re-trigger the same signal before it can finish — has
-a real, acknowledged gap, and this document requires a host to have *a*
-gap of the same shape, not to have this exact implementation choice:
-**guest code that catches the fuel-exhausted condition with a
-`HANDLER-CASE` positioned inside the very fence that exhausted, and loops
-from inside that handler, can keep running past its nominal budget**,
-because the counter that would normally stop it has just been disarmed to
-let the handler run at all. This is documented reference-implementation
-behavior (called out explicitly in the reference's own `--mcp` sandboxing
-code as a known limitation), not a defect this document is asking hosts to
-fix. What conformance requires is narrower than "reproduce this exact
-disarm mechanism": a host must ensure ordinary cleanup code (a `CATCH`
-handler, an `UNWIND-PROTECT` cleanup form, a `HANDLER-CASE` body) gets to
-run at all after exhaustion rather than being re-killed on its own first
-step — some disarming or grace mechanism is required for that, full stop,
-not merely permitted — but a host is free to choose a narrower-scoped
-mechanism than "disarm the whole counter" (for instance, granting a small
-fixed cleanup allowance instead) as long as ordinary cleanup still runs.
-A host is not required to reproduce the reference's specific
-catch-and-reloop evasion window; closing it (e.g. by scoping the grace
-period to only the *first* handler frame, or by any other means) is a
-genuine improvement over the yardstick, not a divergence from it — the
-same latitude Part XII already grants for `MOD`'s overflow quirk — as long
-as it does not prevent ordinary cleanup code from running.
+**The consequence, tracked as issue #457:** because the counter stays
+disarmed until the fence that armed it exits, **guest code that catches
+the exhaustion condition with a `HANDLER-CASE` positioned inside the very
+fence that exhausted runs unmetered from that point until the fence
+exits** — and a handler that loops and never returns runs indefinitely.
+`(with-fuel 100 (handler-case (loop-forever) (error (e) (kernel-fuel-
+remaining))))` returns `NIL` (unarmed) rather than a small number. The
+window is bounded to that one fence: an enclosing fence re-arms on the
+inner fence's exit, debiting the inner fence's whole budget as spent. What
+conformance requires is narrower than "reproduce this disarm mechanism":
+a host **must** let ordinary cleanup code run after exhaustion — some
+disarming or grace mechanism is required, not merely permitted — but a
+host is free to choose a narrower mechanism (for instance a small fixed
+cleanup allowance) that closes the catch-and-reloop window; doing so is an
+improvement over the yardstick, not a divergence from it, as long as
+ordinary cleanup still runs. Once #457 is fixed in the reference this
+paragraph will be tightened to forbid the unconditional bypass.
 
-**A step-budget fence is a special form, `(WITH-FUEL n body...)`, and
-nested fences attenuate rather than compose additively — the same rule
-capabilities follow.** Entering a fence with a requested budget `n`
-installs `min(n, remaining-budget-of-the-nearest-enclosing-fence)`, never
-more than what the enclosing fence has left: **a nested fence can never
-grant itself a larger effective budget than its enclosing fence has
-remaining, no matter what number it asks for.** This is the mechanism
-that makes "guest code cannot simply remove its own limit" true in the
-one specific sense this document requires: code running inside a fence
-that wraps itself in `(WITH-FUEL 999999999999999 ...)` gets silently
-clamped to whatever the enclosing fence actually has left, not the
-inflated number it asked for. (This is a *different* guarantee from the
-catch-and-reloop gap two paragraphs up — clamping stops a guest from
-widening its own budget; it does nothing about a guest that catches
-exhaustion and loops within the budget it already had re-armed for
-cleanup. Both facts are part of this section; neither substitutes for the
-other.) On leaving a fence — by ordinary completion, by a caught error, or
-by any non-local exit passing through it — the amount of fuel actually
-spent inside the fence must be debited from the enclosing fence's own
-remaining budget, so that spending inside a nested fence is not free
-fuel from the outer fence's point of view; this restoration must happen
-on every exit path, the same non-negotiable guarantee dynamic-variable
-unwinding gets in Part VI.
+**`(with-fuel budget-form body...)` is a special form, and nested fences
+attenuate**, following the exact algorithm of `SpecialForm::WithFuel`
+(`src/evaluator/special_forms.rs`):
+1. Evaluate `budget-form` (this evaluation is charged to the *enclosing*
+   budget, if any). The value must be a non-negative fixnum; a negative
+   number, a float, or a non-number is an error, and a missing budget is
+   an error.
+2. Let `prev` be the enclosing remaining budget (or *unarmed*). Arm the
+   counter with `armed = min(budget, prev)` if `prev` is a number, else
+   `budget`. **A nested fence can never grant itself more than its
+   enclosing fence has left**, whatever number it asks for: `(with-fuel
+   100 (with-fuel 100000 (kernel-fuel-remaining)))` reports about `96`.
+   Increment the fence-depth counter.
+3. Evaluate the body forms in order (non-tail), stopping at the first
+   error or non-local exit. An empty body yields `NIL`. `(with-fuel 0
+   form)` exhausts on the first step.
+4. On exit **by any path**, decrement the fence depth; let `now` be the
+   counter's remaining value, or `0` if exhaustion disarmed it; compute
+   `spent = armed - now` (saturating); and restore the counter to `prev -
+   spent` (saturating) if `prev` was a number, or to *unarmed* if it was
+   unarmed. Fuel spent inside a nested fence is therefore never free from
+   the outer fence's point of view, and this debit happens on every exit
+   path, the same guarantee dynamic-variable restore has in Part VI.
+5. Deliver the body's value or propagate its error/exit.
 
-**Fuel is queryable and settable from Lisp code, and the setter is the one
-place this mechanism is itself capability-gated — but by fence position,
-not by the ordinary named-capability system of Part IX.** A read-only
-query returns the current remaining budget (or an unarmed/no-limit
-indication outside any fence). A setter can arm, widen, or disarm the
-budget entirely *when called from outside any fence* — this is the
-mechanism a host's own embedding layer uses to arm a budget before running
-untrusted code in the first place, and it is necessarily unrestricted
-there, since something has to be able to set the first budget. **From
-inside a fence, the same setter must refuse to set a value larger than
-the fence's current remaining budget** — attempting to widen or disarm
-the budget from within a fence is an error, not a silent no-op and not a
-silently clamped success. This asymmetry (unrestricted outside a fence,
-strictly attenuating-only inside one) is what makes "widen your own
-sandbox" impossible while still leaving a host's own driver code free to
-set up the sandbox in the first place.
+The fuel counter and the capability mask are **per-thread state, not
+per-environment state**: they follow the running computation, not the
+environment a closure was defined in.
 
-**Fuel is orthogonal to capabilities and to the non-tail recursion depth
-bound of Part VI — a host must implement all three, and none substitutes
-for another.** A program can exhaust its recursion-depth bound while
-holding abundant fuel (deep non-tail recursion that terminates quickly in
-step count but not in stack depth), and a program can exhaust its fuel
-while never approaching the recursion bound (a fast, shallow, unbounded
-loop). Capabilities gate *what* untrusted code can touch; the recursion
-bound gates *how deep* it can nest; fuel gates *how much total work* it
-can do. A host that implements capabilities and the recursion bound but
-not fuel has not built a platform that can safely run untrusted Lamedh
-code at all, since an infinite pure-computation loop needs none of the
-I/O capabilities gates and needn't recurse non-tail at all to burn
-unbounded wall-clock time.
+**Fuel is queryable and settable from Lisp, and the setter is gated by
+fence position, not by Part IX's named capabilities.**
+`(kernel-fuel-remaining)` returns the remaining count, or `NIL` when
+unarmed. `(kernel-fuel-set! n-or-nil)` arms the counter with `n` (a
+non-negative fixnum) or disarms it with `NIL`, and returns the previous
+state (a count or `NIL`). **Outside any fence** it is unrestricted — this
+is how a host driver arms the first budget. **Inside a fence with an
+armed counter**, a request to set a value greater than the current
+remaining count, or to disarm, is an **error** (not a silent no-op, not a
+clamped success); lowering is permitted. This asymmetry makes "widen your
+own sandbox" impossible while leaving the host's driver free to set one
+up.
+
+**Fuel is orthogonal to capabilities and to Part VI's recursion bound; a
+host must implement all three.** A program can exhaust the recursion bound
+with abundant fuel (deep non-tail recursion that is short in steps), and
+exhaust fuel while never approaching the recursion bound (a shallow
+unbounded loop). Capabilities gate *what* untrusted code can touch; the
+recursion bound gates *how deep* it can nest; fuel gates *how much total
+work* it can do. A host with the first two but not fuel cannot safely run
+untrusted Lamedh code at all.
 
 ## Part XI — The kernel primitive inventory
 
@@ -874,44 +1111,46 @@ A host must provide, as either a true native primitive or something that
 produces identical observable behavior when derived from a smaller native
 set (Part XII says which forms have that latitude):
 
-- **Representation**: cons/car/cdr with the identity/equality rules of
-  Part IV; interned symbols; the numeric types and operations of Part V;
-  strings and characters per Parts II–IV; hash tables, arrays, typed
-  arrays, and environments as primitive mutable structures with the exact
-  type contracts Part IV states (`lib/15-sets-hash.lisp`/
-  `lib/17-arrays.lisp` use them natively, not as derived structures); a
-  global-environment mutation primitive (`SET`/`DEFINE`-shaped) and symbol
-  property lists (`lib/00-core.lisp`
-  and the module system are unwritable without both). Cons cells are
-  immutable — no destructive mutation primitive exists or may exist; see
-  Part XII.
+- **Representation**: `CONS`/`CAR`/`CDR` with the identity and equality
+  rules of Part IV, including `(car nil)` = `(cdr nil)` = `NIL`; interned
+  symbols with the reader's interning and case rules, `INTERN` (which
+  uppercases), `GENSYM` (fresh uninterned symbols, never `EQ` to anything
+  else), and symbol property lists (`GETP`/`PUTP`); the numeric types and
+  operations of Part V; strings and characters per Parts II–IV; hash
+  tables, arrays, typed arrays, and environments as primitive mutable
+  structures with the exact contracts Part IV states
+  (`lib/15-sets-hash.lisp`, `lib/17-arrays.lisp` use them natively); a
+  global-binding primitive (`SET`, `DEF`, `DEFINE`) — `lib/00-core.lisp`
+  and the module system are unwritable without property lists and global
+  definition. Cons cells are immutable — no destructive mutation primitive
+  exists or may exist; see Part XII, axis 2.
 - **Control**: the special forms and evaluation-order guarantees of Parts
-  VI–VII, including the exact tail-call position list, one non-local-exit
-  mechanism, one dynamic-binding mechanism, and one error-signalling
-  mechanism producing the two-field condition structure defined in Part
-  VIII.
-- **Reflection**: a `VAU`-or-equivalent expansion hook per Part VI,
-  sufficient to define `DEFMACRO` in terms of it, and an `EVAL` (or
-  `compile-and-run`) hook callable from Lisp code. This is required for a
-  portable form of the HM type checker (#451), the rulebook optimizer
-  (`lib/11-optimizer-vau.lisp`, `lib/24-rules.lisp`), and typed protocols
-  (`lib/29-protocols.lisp`) to run unmodified on every host. Static typing
-  is not an optional flourish this document can leave for later: #451's
-  argument is that the HM checker has no host dependency once this hook
-  exists, and a shared type checker is exactly how a Lamedh program large
-  enough that a human can no longer hold its whole call graph in mind
-  stays maintainable across every host this specification exists to keep
-  in agreement. A host that implements every other primitive in this
-  document but cannot run the portable checker has not delivered a
-  platform serious programs can be written against.
+  VI–VII, including the exact tail-call position list, the three
+  non-local-exit mechanisms, `UNWIND-PROTECT`, one dynamic-binding
+  mechanism, and one error-signalling mechanism producing the two-field
+  condition value of Part VIII together with `HANDLER-CASE` and
+  `ERRORSET`.
+- **Reflection**: `VAU` (or an equivalent operative hook) per Part VI,
+  sufficient to define `DEFMACRO` in terms of it; `EVAL` taking a form and
+  an optional environment; `THE-ENVIRONMENT` and `MAKE-ENVIRONMENT`;
+  `READ-FROM-STRING` and the printer as `PRIN1-TO-STRING`/
+  `PRINC-TO-STRING`. This is required for a portable form of the HM type
+  checker (#451), the rulebook optimizer (`lib/11-optimizer-vau.lisp`,
+  `lib/24-rules.lisp`), and typed protocols (`lib/29-protocols.lisp`) to
+  run unmodified on every host. Static typing is not an optional flourish
+  this document can leave for later: #451's argument is that the HM
+  checker has no host dependency once this hook exists, and a shared type
+  checker is exactly how a Lamedh program large enough that a human can no
+  longer hold its whole call graph in mind stays maintainable across every
+  host this specification exists to keep in agreement. A host that
+  implements every other primitive in this document but cannot run the
+  portable checker has not delivered a platform serious programs can be
+  written against.
 - **Capability-gated I/O**: Part IX.
 - **Step-budget fencing (fuel)**: Part X — a native step counter charged
-  on every evaluation step, a `WITH-FUEL`-shaped fence with
-  attenuation-only nesting, and a setter that is unrestricted (may arm,
-  widen, or disarm the budget) only when called from outside any fence,
-  and strictly narrow-only when called from inside one. Orthogonal to
-  capabilities and to the recursion-depth bound; a host needs all three to
-  safely run untrusted code.
+  on every evaluation step, the `WITH-FUEL` fence with attenuation-only
+  nesting, `KERNEL-FUEL-REMAINING`, and a `KERNEL-FUEL-SET!` that is
+  unrestricted outside any fence and strictly narrow-only inside one.
 - **Reader/printer**: Parts II–III, with the extension/minimal split Part
   II states.
 - **The exact set of builtin names `lib/*.lisp` invokes**, spelled and
@@ -934,43 +1173,41 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
 1. **Numeric precision beyond 64-bit signed integer range.** A host must
    declare one of two models and be internally consistent about it:
    **fixed-width wraparound** (matching the Rust reference bit-for-bit:
-   overflowing arithmetic wraps modulo 2⁶⁴ and the host makes an
-   overflow signal observable somehow, whether as a flag or otherwise) or
+   overflowing arithmetic wraps modulo 2⁶⁴ into the signed range and the
+   host makes the `OVERFLOW` signal observable, as Part V describes) or
    **arbitrary precision** (the host returns the exact mathematical
-   result and never wraps; the overflow-signal concept simply does not
-   apply and may be permanently false/absent). Within 64-bit signed
-   integer range, both models must agree with each other and with the
-   Rust reference exactly — this axis only has teeth once a computation's
-   true result leaves that range.
-2. ~~Destructive cons mutation.~~ **This is not an axis — cons cells must
-   be immutable, full stop, and this is a MUST, not a place hosts may
-   differ.** An earlier revision of this document listed destructive
-   `RPLACA`/`RPLACD` as a free choice, on the reasoning that `lib/*.lisp`
-   never observably depends on in-place mutation. That reasoning was
-   incomplete: the Rust reference's `RPLACA`/`RPLACD` return a *new* cons
-   cell rather than mutating in place for a specific reason the rest of
-   this document depends on, stated directly in its source comment (`src/evaluator/builtins_extra.rs`,
-   `BuiltinFunc::Rplaca`/`Rplacd`) — it is "an intentional safety feature"
-   that makes circular list construction *impossible*, and this document's
-   own Part III already relies on that: the printer has no cycle
-   detection and would exhaust the stack on a genuine cycle, and Part IV's
-   equality rules are only meaningful for finite structure. A host that
-   offers a genuinely destructive `RPLACA`/`RPLACD` — even one that seems
-   like a "natural mapping" onto its own host language's native mutation
-   (as CL's `RPLACA` would be for the SBCL port) — would let a Lamedh
-   program construct a cycle that the rest of this specification does not
-   define behavior for anywhere else. **`RPLACA`/`RPLACD` must be the same
-   non-destructive, always-returns-a-new-cell operation on every host, or
-   must be omitted entirely; a host must never expose a way to mutate an
-   existing cons cell's car or cdr in place.**
-3. **Whether `BLOCK`/`RETURN-FROM`, `HANDLER-CASE`, and `DEFMACRO`/`DEFEXPR`
-   are true native primitives or are derived from `CATCH`/`THROW`,
-   dynamic variables, and `VAU`+`EVAL` respectively.** The reference
-   implementation happens to make all of these native, for performance;
-   Part VI–VIII specify their observable behavior precisely enough that a
-   from-scratch host may instead build every one of them as library code
-   on top of the smaller primitive set in Part XI, and the result conforms
-   as long as the observable behavior matches.
+   result and never wraps; the overflow-signal concept does not apply and
+   `(flag-set-p 'OVERFLOW)` may be permanently `NIL`). Within 64-bit
+   signed range, both models must agree with each other and with the Rust
+   reference exactly — this axis only has teeth once a computation's true
+   result leaves that range. Integer *literals* are outside this axis:
+   Part II's overflow-to-float rule applies on every host.
+2. **Destructive cons mutation is not an axis: cons cells must be
+   immutable on every host.** `RPLACA` and `RPLACD` return a **new** cons
+   cell sharing the untouched half of the original
+   (`src/evaluator/builtins_extra.rs`, `BuiltinFunc::Rplaca`/`Rplacd`);
+   the original is never modified. This is required, not incidental: the
+   reference shares cons children structurally between parser output,
+   closure bodies, quasiquote templates, and macro inputs, so in-place
+   mutation would silently alter every value sharing the sub-structure;
+   and it is what makes circular lists impossible, which Part III's
+   printer (no cycle detection) and Part IV's equality rules (defined only
+   for finite structure) rely on. A host built on a language whose native
+   `RPLACA` mutates (CL, for the SBCL port) must not expose that
+   behavior: `RPLACA`/`RPLACD` must be the same non-destructive,
+   new-cell operation on every host, or be omitted, and no primitive may
+   mutate an existing cons cell's car or cdr in place.
+3. **Whether `BLOCK`/`RETURN-FROM`, `PROG`/`GO`/`RETURN`, `AND`, `OR`,
+   `WHILE`, `FOR`, `UNWIND-PROTECT`, `HANDLER-CASE`, and
+   `DEFMACRO`/`DEFEXPR` are true native primitives or are derived** from
+   `CATCH`/`THROW`, `COND`/`LET`/tail calls, dynamic variables, and
+   `VAU`+`EVAL` respectively. The reference makes all of these native, for
+   performance; Parts VI–VIII specify their observable behavior precisely
+   enough that a from-scratch host may instead build any of them as
+   library code on top of the smaller primitive set in Part XI, and the
+   result conforms as long as the observable behavior — including which
+   positions are and are not tail positions, and the invisibility of
+   non-local exits to `HANDLER-CASE` — matches.
 4. **Reader/printer extension timing** (Part II's closing paragraph): a
    host may defer implementing radix-prefixed/suffixed integer literals,
    floats, block comments, character literals, or `#S(...)` records
@@ -981,30 +1218,34 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    should say so in its own documentation, tracked as that host's own
    issue-tracker business rather than audited here (Part XIII).
 5. **`MOD`'s overflow edge case** (Part V): a host may either reproduce
-   the reference implementation's silent-zero behavior on the one
-   representable-overflow input, or raise the same overflow signal
-   `/`/`REMAINDER` raise for that input instead. Both conform; the latter
-   is arguably a bug fix, not a divergence, since no corpus code depends
-   on the former.
+   the reference's silent `0` on `(mod i64::MIN -1)` without setting
+   `OVERFLOW`, or set the same flag `/` and `REMAINDER` set for that
+   input. Both conform; the latter is a correctness improvement, since no
+   corpus code depends on the former.
 6. **Native surface beyond this document.** A host may implement more
    than Part XI requires natively, for performance or because its host
    language already supplies it (the Rust reference's JIT and
    performance-sensitive paths are themselves full of this) — as long as
    the extra native surface is not required by `lib/*.lisp` and does not
    change the observable behavior of anything that is.
+7. **The empty line comment** (Part II): the reference rejects a `;`
+   immediately followed by a line break or end of input as a parse error.
+   A host may instead treat it as an empty comment. Because no text that
+   loads on the reference contains one, this leniency cannot change the
+   meaning of any conforming program; it only accepts text the reference
+   rejects.
 
-## Part XIII — Status and suggested next step
+## Part XIII — Status and open work
 
 This document is a specification, not an audit report: it states required
 and permitted behavior, and deliberately does not carry a running account
 of which host currently falls short of which rule. Per-host conformance
-gaps found while writing or reviewing this document are tracked as
-ordinary issues against the host in question — currently #455 (the SBCL
-port) and #456 (`lamedh-asm`) — and closed there as the host's own work,
-not maintained as prose here that would drift the moment either issue's
-status changes. A rule in Parts II–XII that a host doesn't yet meet is
-that host's issue tracker's business; this document only needs to be
-right about what the rule *is*.
+gaps are tracked as ordinary issues against the host in question —
+currently #455 (the SBCL port) and #456 (`lamedh-asm`) — and closed there
+as the host's own work, not maintained as prose here that would drift the
+moment either issue's status changes. A rule in Parts II–XII that a host
+doesn't yet meet is that host's issue tracker's business; this document
+only needs to be right about what the rule *is*.
 
 What remains open in the specification itself, tracked explicitly rather
 than smoothed over:
@@ -1014,10 +1255,12 @@ than smoothed over:
   Part XI's last bullet. This is the largest remaining mechanical task and
   the one most directly checkable by a script rather than by writing more
   prose.
-- **Confirm the Rust reference's `NET-*`/`OS-*` capability names are
-  actually enforced** at the call site, matching the depth already
-  established here for `SHELL`/`READ-FS`/etc. — this is about the
-  yardstick's own internal consistency, not a host lagging behind it.
+- **Audit every network and process primitive against its gate.** Part
+  IX records the reference's rule — resource acquisition is gated, use of
+  an acquired handle is not — from the gate functions and the acquiring
+  primitives that call them; a per-primitive check that no acquiring
+  operation in `src/evaluator/builtins_net.rs` and `builtins_os.rs` skips
+  its gate is the remaining yardstick-consistency item.
 - **Resolve issue #454** (`EQ` on cons cells) and update Part IV from
   "undefined, open defect" to a real rule once it lands.
 - **Get the portable HM type checker (#451) actually running**,
@@ -1028,22 +1271,32 @@ than smoothed over:
   list, so this document does not decay the moment one host's convenience
   wins out over the line drawn here, and so conformance against this
   specification is something a script can check rather than something
-  only an audit essay can argue for.
+  only an audit essay can argue for. The concrete examples given inline in
+  Parts II–X (reader consequences, arithmetic results, fence arithmetic)
+  are the natural seed of that corpus.
 - **Prove the kernel primitive set is actually sufficient for serious
   library code, not merely for what already happens to be native**
   (issue #458): implement a well-typed, high-speed hash table from
   scratch in Lamedh — over `typed-array` buckets and a hash function
   written in Lamedh, type-checked via the portable HM checker (#451) or
   `lib/29-protocols.lisp` — and benchmark it against the native
-  `HashTable` builtin this document's Part IV already specifies. A
-  language whose fast, typed collections are all native, with only a
-  slow or untyped escape hatch available for anything else, has not
-  actually delivered on Part XI's reflection requirements no matter how
-  precisely their observable behavior is pinned down here.
+  `HashTable` builtin Part IV specifies. A language whose fast, typed
+  collections are all native, with only a slow or untyped escape hatch
+  available for anything else, has not delivered on Part XI's reflection
+  requirements no matter how precisely their observable behavior is
+  pinned down here.
 - **Fix the kernel-fuel catch-and-reloop bypass** (issue #457): guest
   code that catches the fuel-exhausted condition inside its own fence and
-  never returns from the handler gets an unconditional, indefinite fuel
-  bypass, not bounded cleanup grace — a real defect in the reference
-  implementation, not a tolerable quirk. Once fixed, Part X's framing of
-  this as permitted-but-not-required host behavior should be tightened to
+  never returns from the handler gets an unconditional fuel bypass for
+  the rest of that fence, not bounded cleanup grace — a defect in the
+  reference, not a tolerable quirk. Once fixed, Part X's framing of this
+  as permitted-but-not-required host behavior is to be tightened to
   disallow unconditional bypass outright.
+- **Add reader-level feature-conditional dispatch** (issue #459). The
+  reader has no `#+`/`#-` (Common-Lisp `*features*`-style) syntax, or any
+  other mechanism, by which a single shared `lib/*.lisp` file can branch
+  on which host or host capability it is running under; the only `#`
+  dispatches are those listed in Part II. Nothing implementable exists yet,
+  so Part II does not describe one; when a design lands in the reference,
+  Part II gains its grammar and Part XII its declared axis (which host
+  feature names exist).
