@@ -64,8 +64,8 @@ programs this stage targets.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
-- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, and `CATCH`/`THROW`
-  — see "The kernel surface" below.
+- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, `CATCH`/`THROW`,
+  and `PRINT`/`NEWLINE` — see "The kernel surface" below.
 - `LAMBDA` with real closure conversion: a free-variable scan
   (`scan_free_vars`) decides what a nested lambda must capture *before*
   a single byte of its body is emitted; captured values are copied by
@@ -137,6 +137,18 @@ specifically to test where the line falls:
   through an inline-cached call). `BLOCK`/`RETURN-FROM` and first-class
   conditions are ordinary library code once this exists, the same way
   they already are in the reference implementation.
+- **`PRINT`/`NEWLINE`** are the first primitives that let *compiled*
+  Lamedh code produce output at all — every test before them called
+  `print_fixnum` from the hand-written host driver, never from within a
+  compiled program (`tests/cases/013_print.asm`). They wrap the same
+  `print_fixnum`/`print_newline` host routines the test harness always
+  used, reached the same way `CAR`/`CDR`/`CONS` reach `car`/`cdr`/`cons`.
+  `PRINT` returns its argument, the way most Lisps' `PRINT` does. This
+  is deliberately the *minimum* possible I/O primitive (stdout, one
+  fixnum at a time, no format string) — see Roadmap for what a real
+  `FORMAT` still needs (strings, variadic args, a general write
+  primitive) before it can be library code the way `CAR`/`CDR`-based
+  list processing already is.
 
 Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
 from their ordinary value cell, so a name can be a macro or a function

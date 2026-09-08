@@ -65,6 +65,8 @@ extern data_alloc
 extern emit_setne_al
 extern patch_imm64
 extern emit_add_reg_imm32
+extern print_fixnum
+extern print_newline
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -87,6 +89,8 @@ kw_lt:     db "<"
 kw_eq:     db "="
 kw_catch:  db "CATCH"
 kw_throw:  db "THROW"
+kw_print:  db "PRINT"
+kw_newline: db "NEWLINE"
 
 section .data
 align 8
@@ -501,6 +505,43 @@ compile_nullp:
     call emit_cmp_rax_imm64
     call emit_sete_al
     jmp bool_from_al
+
+; compile_print(rdi=arg form) — prints a fixnum, returns it (PRINT's
+; own value, the way most Lisps' PRINT returns what it was given). The
+; first primitive that lets *compiled* Lamedh code produce any output
+; at all — every test before this called print_fixnum from the hand-
+; written host driver, never from within a compiled program.
+compile_print:
+    call compile_form                     ; arg -> target rax
+    mov dil, REG_RAX
+    call emit_push_reg                       ; save arg (the result to
+                                              ; return once printing is
+                                              ; done)
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr                            ; target: rdi = arg
+    lea rax, [rel print_fixnum]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                        ; target: rax = &print_fixnum
+    mov dil, REG_RAX
+    call emit_call_reg                                ; call print_fixnum(rdi=arg)
+    mov dil, REG_RAX
+    call emit_pop_reg                                   ; rax = arg (restored)
+    ret
+
+; compile_newline() — 0-arg form; writes a newline, returns NIL.
+compile_newline_form:
+    lea rax, [rel print_newline]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    ret
 
 ; compile_binop(rdi=lhs form, rsi=rhs form, dl='+'/'-'/'*'/'<'/'=' as ASCII)
 ; Compiles both operands (lhs pushed across rhs's own compilation, since
@@ -1717,6 +1758,29 @@ compile_form:
     jmp .out
 
 .not_nullp:
+    mov rdi, r12
+    mov rsi, kw_print
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_print
+    mov rdi, r13
+    call car
+    mov rdi, rax
+    call compile_print
+    jmp .out
+
+.not_print:
+    mov rdi, r12
+    mov rsi, kw_newline
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_newline
+    call compile_newline_form
+    jmp .out
+
+.not_newline:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1
