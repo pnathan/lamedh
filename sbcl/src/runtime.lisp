@@ -462,18 +462,22 @@ constructors -- returns (values name params doc body)."
     (done (make-vau-obj :operands-sym ops-sym :env-sym env-sym :env env :body (wrap-progn (cdr args))))))
 (setf (gethash (lsym "$VAU") *special-forms*) (gethash (lsym "VAU") *special-forms*))
 
-(defvar *capability-mask* nil
-  "NIL = unmasked (every capability effective, matching this port -- see
-sbcl/README.md on sandboxing not being reproduced); otherwise a list of
+(defvar *capability-mask* :all
+  "The keyword :ALL (unmasked -- every host-granted capability is
+effective, the default with no enclosing fence) or a list of
 capability-name strings, the intersection of every enclosing
-WITH-CAPABILITIES fence.")
+WITH-CAPABILITIES fence -- which may be the empty list, meaning nothing
+is currently allowed. Keeping :ALL as a distinct sentinel (rather than
+NIL) matters: NIL and '() are the same object in Lisp, so a NIL-means-
+unmasked convention could not tell an empty, everything-denied fence
+apart from no fence at all.")
 
 (defparameter *all-capability-names*
   '("READ-FS" "CREATE-FS" "TEMP-FS" "SHELL" "IO" "NET-DNS" "NET-CONNECT"
     "NET-LISTEN" "OS-ENV" "OS-ENV-WRITE" "OS-PROCESS" "OS-SIGNAL"))
 
 (defun capability-mask-allows-p (name)
-  (or (null *capability-mask*)
+  (or (eq *capability-mask* :all)
       (and (member (if (symbolp name) (symbol-name name) name) *capability-mask* :test #'string=) t)))
 
 ;;; ---- capability grants (real enforcement) ----------------------------------
@@ -541,7 +545,8 @@ once per LEVAL trampoline iteration -- the same unit WITH-FUEL/STEP-COUNT
   (declare (ignore whole))
   (destructuring-bind (caps-form &rest body) args
     (let* ((requested (mapcar (lambda (c) (if (symbolp c) (symbol-name c) c)) (leval caps-form env)))
-           (new-mask (if *capability-mask* (intersection *capability-mask* requested :test #'string=) requested)))
+           (new-mask (if (eq *capability-mask* :all) requested
+                         (intersection *capability-mask* requested :test #'string=))))
       (done (let ((*capability-mask* new-mask)) (progn-eval body env))))))
 
 (defspecial "DEFSTRUCT-TYPED" (args env whole)
@@ -569,10 +574,25 @@ tier does."
 
 (defspecial "JIT-OPTIMIZE" (args env whole)
   "No-op in the SBCL port: no separate typed JIT exists here. Native
-compilation happens uniformly via SBCL's own compiler once a function's
-Lamedh-level type check passes -- see COMPILE-CHECKED-LAMBDA."
+compilation happens uniformly, unconditionally, and untyped via SBCL's
+own compiler at every LAMBDA/DEFUN -- see src/compile.lisp's
+TRY-COMPILE-LAMBDA and the README's \"Ahead-of-time compilation\" section."
   (declare (ignore env whole))
   (done (car args)))
+
+(defspecial "DEFUN-TYPED" (args env whole)
+  "DEFUN-TYPED is the reference implementation's HM-checker/typed-JIT
+entry point (SpecialForm::DefunTyped: elaborates a typed signature, then
+hands a type-checked body to Cranelift) -- not ported here (see README's
+\"The type checker\"): there is no HM checker in this port to elaborate
+the signature against. Signaling a clear, named error here (rather than
+leaving the name unbound, an opaque \"Unbound variable\" crash) is the
+same honesty this port applies to CHECK-TYPE/SEE-TYPE/RECORD-COMPILED-P
+elsewhere: DEFUN-TYPED genuinely cannot run in this port, and says so."
+  (declare (ignore env whole))
+  (let ((name (and (consp (car args)) (caar args))))
+    (lamedh-error
+     (format nil "DEFUN-TYPED (~A): not supported in this port -- no HM type checker exists here to elaborate the typed signature (see sbcl/README.md's \"The type checker\"); use ordinary DEFUN/DEFUN* instead" (or name "?")))))
 
 ;;; ---- PROG / RETURN / GO / WHILE / FOR -----------------------------------------
 

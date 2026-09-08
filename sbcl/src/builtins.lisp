@@ -28,15 +28,40 @@
     ((vau-obj-p fn) (lamedh-error "cannot FUNCALL/APPLY a vau"))
     (t (lamedh-error (format nil "not a function: ~A" (lprint-to-string fn))))))
 
+(defun lamedh-deep-eq (a b)
+  "Structural equality mirroring the reference implementation's derived
+PartialEq for LispVal -- used for record/struct FIELDS (a Vec<LispVal>
+there), which recurses through nested cons cells even though top-level
+EQ itself never does (see LAMEDH-EQ)."
+  (cond
+    ((and (consp a) (consp b)) (and (lamedh-deep-eq (car a) (car b)) (lamedh-deep-eq (cdr a) (cdr b))))
+    ((or (consp a) (consp b)) nil)
+    ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
+    ((and (numberp a) (numberp b)) (eql a b))
+    ((and (characterp a) (characterp b)) (char= a b))
+    ((and (stringp a) (stringp b)) (string= a b))
+    (t (eq a b))))
+
+(defun lamedh-struct-deep-eq (a b)
+  (and (eq (lamedh-struct-type-name a) (lamedh-struct-type-name b))
+       (let ((va (lamedh-struct-values a)) (vb (lamedh-struct-values b)))
+         (and (= (length va) (length vb)) (every #'lamedh-deep-eq va vb)))))
+
 (defun lamedh-eq (a b)
-  "Lamedh's EQ: identity for conses/symbols/callables, but VALUE equality
-for the immutable atomic types (numbers, characters, strings) -- matching
-the reference implementation, where LispVal's derived structural equality
-makes EQ on two equal atoms true regardless of allocation identity."
+  "Lamedh's EQ: identity for symbols/callables, but VALUE equality for the
+immutable atomic types (numbers, characters, strings) and DEEP structural
+equality for records/structs (recursing into every field, cons cells
+included) -- matching the reference implementation's derived LispVal
+PartialEq exactly, including its one asymmetry: a cons cell is never EQ
+to anything, not even itself by identity (Lisp 1.5 manual: EQ is defined
+only for atoms), while a Struct field that happens to hold a cons still
+gets compared structurally as part of the struct's own deep equality."
   (cond
     ((and (numberp a) (numberp b)) (eql a b))
     ((and (characterp a) (characterp b)) (char= a b))
     ((and (stringp a) (stringp b)) (string= a b))
+    ((or (consp a) (consp b)) nil)
+    ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
     (t (eq a b))))
 
 (defun lamedh-equal (a b) (lamedh-truthy-p (lapply-fn (env-resolve *global-env* (lsym "EQUAL")) (list a b))))
@@ -187,6 +212,24 @@ otherwise (a float argument, or any single-argument reciprocal)."
 (env-set-local *global-env* (lsym "1-") (lambda (x) (- (numify x) 1)))
 (defbuiltin "SQRT" (x) (sqrt (coerce x 'double-float)))
 (defbuiltin "ISQRT" (x) (isqrt x))
+
+(defvar *lamedh-random-state* (make-random-state t)
+  "A dedicated random state RANDOM-SEED! reseeds, kept separate from
+CL:*RANDOM-STATE* so seeding Lamedh's RNG never perturbs unrelated CL
+code sharing this Lisp image.")
+(defbuiltin "RANDOM" (n)
+  (unless (and (integerp n) (plusp n))
+    (lamedh-error (format nil "RANDOM: expected a positive integer, got ~A" (lprint-to-string n))))
+  (random n *lamedh-random-state*))
+(defbuiltin "RANDOM-SEED!" (n)
+  (unless (integerp n)
+    (lamedh-error (format nil "RANDOM-SEED!: expected an integer, got ~A" (lprint-to-string n))))
+  ;; Deterministic given the same seed (matching the reference implementation's
+  ;; contract), but not bit-for-bit identical to its RNG -- callers rely on
+  ;; statistical/structural properties (a shuffled list stays a permutation,
+  ;; a Monte Carlo estimate converges), never on the exact sequence.
+  (setf *lamedh-random-state* (sb-ext:seed-random-state n))
+  n)
 (defbuiltin "SIN" (x) (sin (coerce x 'double-float)))
 (defbuiltin "COS" (x) (cos (coerce x 'double-float)))
 (defbuiltin "TAN" (x) (tan (coerce x 'double-float)))

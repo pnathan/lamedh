@@ -66,6 +66,38 @@ to report as true."
   name)
 (defbuiltin "DECLARE-PROTOCOL-DISPATCH!" (name idx) (putp name "protocol-dispatch" idx) name)
 
+(defun lc-backtick-instance-msg (msg)
+  "The reference implementation's static CHECK-TYPE reports a missing
+protocol instance as \"no `NAME` instance for ...\" (backtick-quoted,
+lib/29-protocols.lisp's header). This port's CHECK-TYPE below discovers
+the same fact dynamically instead (by actually running the expression),
+so its runtime dispatcher's plain-text \"no NAME instance for ...\"
+(same file, DEFPROTOCOL's dispatcher) is reformatted to match that
+convention -- same information, consistent presentation, no fabricated
+static verdict."
+  (let ((p2 (search " instance for" msg)))
+    (if (and p2 (>= p2 3) (string= "no " msg :end2 3))
+        (concatenate 'string "no `" (subseq msg 3 p2) "`" (subseq msg p2))
+        msg)))
+
+(defspecial "CHECK-TYPE" (args env whole)
+  (declare (ignore whole))
+  "CHECK-TYPE is part of the reference implementation's HM-checker/JIT
+elaboration surface (SpecialForm::CheckType calls into `jit_check_expr`)
+-- not ported here (see README's \"The type checker\"). Rather than leave
+the name unbound, this gives an honest, dynamic approximation: actually
+run the expression and report what happened, instead of statically
+inferring a type for it. A successful run cannot distinguish \"well-typed\"
+from \"happened not to error this time\", so it is reported as such, not
+as a verified type."
+  (unless args (lamedh-error "CHECK-TYPE: expected an argument"))
+  (done
+   (handler-case
+       (progn (leval (car args) env)
+              "not statically checked in this port -- ran without error at runtime")
+     (lamedh-condition (c) (lc-backtick-instance-msg (lamedh-condition-value-string c)))
+     (error (c) (format nil "~A" c)))))
+
 ;;; ---- module system (lib/06-require.lisp, lib/27-modules.lisp) -----------
 
 (defun sexpr-rename-tail (tail rmap)

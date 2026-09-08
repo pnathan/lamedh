@@ -69,6 +69,33 @@ completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
 
+### Running the `examples/` programs
+
+The repository root's `examples/<name>/main.lisp` programs (the reference
+implementation's own showcase/self-check suite, run against it by
+`tests/test_examples.rs`) are unmodified Lamedh source, so they can be run
+against this port exactly like any other file: grant `READ-FS` (most of
+them read a file), bind `*ARGV*`, and `run-file` each one — for example,
+from a REPL started with `(enable-all-features)` already in effect (the
+CLI's own default):
+
+```lisp
+(run-string "(def *ARGV* ())")
+(run-file "../examples/fibonacci/main.lisp")
+```
+
+At the time of writing, **51 of the 53** examples run to completion
+unmodified. The two that do not — `lamed-nebula` and `typed-numerics` —
+both call `DEFUN-TYPED`, the reference implementation's HM-checker/typed-
+JIT entry point; this port signals a clear, named error for it (see "The
+type checker" below) rather than running it, since there is no checker
+here to elaborate a typed signature against. Every other example,
+including several that specifically exercise this port's own recent
+work — `sandbox-fuel` (real `SPAWN` threads, `WITH-CAPABILITIES` denial),
+`text-stats`/`shapes` (capability-gated file I/O, protocol dispatch),
+`quicksort`/`mergesort`/`priority-queue`/`monte-carlo-pi` (`RANDOM`/
+`RANDOM-SEED!`) — passes its own self-check.
+
 ## What's implemented from scratch in Common Lisp (`sbcl/src/`)
 
 - `reader.lisp` — a hand-written recursive-descent reader matching the
@@ -148,14 +175,27 @@ declared scheme and reports it back as `(DECLARED scheme)` — which is
 exactly what a `DECLARE-TYPE!` axiom *means* even in the reference
 implementation (trusted at call sites, not derived from the body) — while
 anything never declared reports `(DYNAMIC "not statically checked in this
-port")` rather than being reported as verified. `defun*`/HM inference and
-the typed JIT are consequently also not ported; `JIT-OPTIMIZE` is a no-op
-special form so `defun`'s expansion (which calls it on every definition)
-still loads unmodified. `RECORD-COMPILED-P` always reports `NIL`: this
-port has no separate compiled tier (every record — whichever tier
-`DEFRECORD` would have chosen in the reference implementation — uses the
-same `LAMEDH-STRUCT` representation), so reporting `NIL` is accurate, not
-a missed optimization to fix.
+port")` rather than being reported as verified. `CHECK-TYPE` similarly
+cannot statically infer a type without a checker; instead of leaving it
+unbound, it actually *runs* the given expression and reports what
+happened (an honest dynamic approximation — see its docstring in
+`extra.lisp` for the one deliberate exception: a missing-protocol-
+instance error is reformatted to match the checker's own backtick-quoted
+message convention, since that specific fact — "no instance for this
+type" — is equally true whether discovered statically or dynamically).
+`defun*`/HM inference and the typed JIT are consequently also not
+ported; `JIT-OPTIMIZE` is a no-op special form so `defun`'s expansion
+(which calls it on every definition) still loads unmodified, and
+`DEFUN-TYPED` itself — the reference implementation's typed-definition
+entry point — signals a clear, named "not supported in this port" error
+rather than being left unbound (an opaque "Unbound variable" crash); the
+only two `examples/` programs that do not run under this port
+(`lamed-nebula`, `typed-numerics`) are the ones that call it (see
+"Running the `examples/` programs" above). `RECORD-COMPILED-P` always
+reports `NIL`: this port has no separate compiled tier (every record —
+whichever tier `DEFRECORD` would have chosen in the reference
+implementation — uses the same `LAMEDH-STRUCT` representation), so
+reporting `NIL` is accurate, not a missed optimization to fix.
 
 ## Ahead-of-time compilation (`compile.lisp`)
 
@@ -207,9 +247,22 @@ exists today.
 - **Integers are CL bignums**, not wrapping 64-bit integers; the reference
   implementation's `OVERFLOW` flag and float-promotion-on-overflow behavior
   is not reproduced.
-- **`EQ`** is identity for conses, symbols, and callables, but *value*
-  equality for the immutable atomic types (numbers, characters, strings),
-  matching the reference implementation's derived structural equality.
+- **`EQ`** is identity for symbols and callables, but *value* equality for
+  the immutable atomic types (numbers, characters, strings) and *deep
+  structural* equality for records/structs — recursing into every field,
+  including any cons cells a field happens to hold — matching the
+  reference implementation's derived `LispVal` `PartialEq` exactly,
+  asymmetry and all: a cons cell is never `EQ` to anything, not even
+  itself by identity (Lisp 1.5: `EQ` is defined only for atoms), while
+  that same cons *nested inside a struct field* is compared structurally
+  as part of the struct's own equality (this is what makes `EQUAL` on two
+  `DEFVARIANT` values like `(ok 14)` work at all, since `EQUAL`'s own
+  definition, `lib/04-predicates.lisp`, bottoms out at `EQ` for atoms).
+  `RANDOM`/`RANDOM-SEED!` are ported too: deterministic given the same
+  seed, but not bit-for-bit identical to the reference implementation's
+  RNG — every `examples/` program using them relies only on statistical
+  or structural properties (a shuffled list stays a permutation, a Monte
+  Carlo estimate converges), never the exact sequence.
 - **Integer `/`** truncates (C/Rust-style), unlike CL's exact-rational
   result for non-dividing integers; **`ROUND`** rounds half away from zero
   (`f64::round`'s convention), not CL's round-half-to-even.
@@ -236,6 +289,12 @@ exists today.
   active set, never widen it. Once a resource handle is open (a port, a
   spawned OS process), subsequent operations on that same handle are not
   re-gated — "continue authority" — mirroring the reference implementation.
+  The mask itself is `*CAPABILITY-MASK*`, either the keyword `:ALL` (no
+  fence: every host-granted capability is effective) or an explicit list
+  of capability-name strings — deliberately not `NIL` for "no fence",
+  since `NIL` and `'()` are the same object in Lisp and a `NIL`-means-
+  unmasked convention could not distinguish that from `(WITH-CAPABILITIES
+  () ...)`'s explicit, everything-denied empty fence.
 - **`MAKE-ENVIRONMENT`** (no arguments) returns a genuinely independent root
   environment: its own global table, seeded from a snapshot of the calling
   environment's current bindings at the moment of the call, with no shared
