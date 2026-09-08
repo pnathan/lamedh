@@ -121,10 +121,24 @@ implementation's bare-kernel NEW_WITH_BUILTINS default)."
 ;;; Callable value types
 ;;; ============================================================================
 
-(defstruct lambda-obj params rest env body name)
+(defstruct lambda-obj params rest env body name (compiled nil))
 (defstruct macro-obj params rest env body)
 (defstruct fexpr-obj params env body)
 (defstruct vau-obj operands-sym env-sym env body)
+
+(defvar *lambda-compile-hook* nil
+  "Set by src/compile.lisp (loaded after this file) to TRY-COMPILE-LAMBDA.
+LAMBDA-OBJ construction below calls it, when set, to fill in COMPILED --
+an ahead-of-time SBCL-native closure LEVAL and LAPPLY-FN call directly
+instead of tree-walking BODY, whenever it is non-NIL and the call's
+argument count matches this lambda's declared arity exactly (see
+LC-ARITY-OK-P). See src/compile.lisp's header for the compiled subset and
+why leaving it NIL -- an ordinary tree-walked lambda -- is always
+correct, never merely a fallback for something broken.")
+
+(defun lc-arity-ok-p (fn args)
+  (let ((n (length (lambda-obj-params fn))) (m (length args)))
+    (if (lambda-obj-rest fn) (>= m n) (= m n))))
 
 (defun callable-p (v)
   (or (functionp v) (lambda-obj-p v) (macro-obj-p v) (fexpr-obj-p v) (vau-obj-p v)))
@@ -360,7 +374,11 @@ bound; the caller wraps the body evaluation in PROGV for those."
 (defspecial "LAMBDA" (args env whole)
   (declare (ignore whole))
   (multiple-value-bind (fixed rest) (parse-param-list (car args) "lambda")
-    (done (make-lambda-obj :params fixed :rest rest :env env :body (wrap-progn (cdr args))))))
+    (let* ((body (wrap-progn (cdr args)))
+           (fn (make-lambda-obj :params fixed :rest rest :env env :body body)))
+      (when *lambda-compile-hook*
+        (setf (lambda-obj-compiled fn) (funcall *lambda-compile-hook* fixed rest body env)))
+      (done fn))))
 
 (defspecial "FUNCTION" (args env whole)
   (declare (ignore whole))
@@ -818,12 +836,14 @@ its shallow-bound value), then evaluate BODY."
                     (let ((eval-args (mapcar (lambda (a) (leval a env)) rest)))
                       (cond
                         ((lambda-obj-p fn)
-                         (let ((new-env (make-child-env (lambda-obj-env fn))))
-                           (let ((dyn (bind-params new-env (lambda-obj-params fn) (lambda-obj-rest fn)
-                                                    eval-args "lambda")))
-                             (if dyn
-                                 (return (with-dyn-pairs dyn (leval (lambda-obj-body fn) new-env)))
-                                 (setf form (lambda-obj-body fn) env new-env)))))
+                         (if (and (lambda-obj-compiled fn) (lc-arity-ok-p fn eval-args))
+                             (return (funcall (lambda-obj-compiled fn) eval-args))
+                             (let ((new-env (make-child-env (lambda-obj-env fn))))
+                               (let ((dyn (bind-params new-env (lambda-obj-params fn) (lambda-obj-rest fn)
+                                                        eval-args "lambda")))
+                                 (if dyn
+                                     (return (with-dyn-pairs dyn (leval (lambda-obj-body fn) new-env)))
+                                     (setf form (lambda-obj-body fn) env new-env))))))
                         ((functionp fn) (return (let ((*current-env* env)) (apply fn eval-args))))
                         (t (lamedh-error
                             (format nil "not a function: ~A" (lprint-to-string fn))))))))))))))))

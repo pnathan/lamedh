@@ -11,6 +11,7 @@
                (:file "runtime")
                (:file "printer")
                (:file "builtins")
+               (:file "compile")
                (:file "extra")
                (:file "io")
                (:file "bootstrap")

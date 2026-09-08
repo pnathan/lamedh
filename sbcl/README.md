@@ -101,6 +101,8 @@ FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
   promotion: a Char value numifies to its code point in `+`/`-`/`=`/`<`/...,
   matching `(+ 'a' 1)` => `98`), strings, hash tables, arrays,
   property lists, `eval`/`apply`/`funcall`/`gensym`/`intern`.
+- `compile.lisp` — the ahead-of-time Lamedh → SBCL compiler every `LAMBDA`/
+  `DEFUN` attempts unconditionally (see "Ahead-of-time compilation" below).
 - `extra.lisp` — the native hooks the condensation/records, module, guard-
   fence, and instrumentation *Lamedh* files call into: `RECORD-NEW`/
   `RECORD-REF`/`RECORD-WITH`/`RECORD-BRAND`/`RECORD-FIELDS`, the
@@ -155,17 +157,50 @@ port has no separate compiled tier (every record — whichever tier
 same `LAMEDH-STRUCT` representation), so reporting `NIL` is accurate, not
 a missed optimization to fix.
 
-**Architecture note for a future native-compilation pass**: the reference
-implementation's typed JIT (Cranelift) is a *separate* code-generation
-backend bolted onto its interpreter. This port does not need an equivalent
-second backend at all: once a Lamedh-level type check (a port of
-`src/check.rs`, or the `defun*`/`check-type` surface) accepts a function as
-fully typed, that function's body can be handed directly to **SBCL's own
-native compiler** (`compile`) instead of being interpreted by `LEVAL` — SBCL
-is already a mature, optimizing compiler for exactly the value
-representations this port uses (fixnums, double-floats, conses,
-`SIMPLE-VECTOR`). The type checker's job becomes deciding *when* it is safe
-to compile, not *how* to emit machine code. Not yet implemented.
+## Ahead-of-time compilation (`compile.lisp`)
+
+The reference implementation's typed JIT (Cranelift) is a *separate*
+code-generation backend bolted onto its interpreter, gated by its type
+checker's verdict. This port needed no equivalent second backend, and no
+type checker to gate it: **every** `LAMBDA`/`DEFUN` is handed directly to
+**SBCL's own native compiler** (`compile`) at the moment it is created
+(`src/compile.lisp`'s `TRY-COMPILE-LAMBDA`, hooked into the `LAMBDA`
+special form) — SBCL is already a mature, optimizing compiler for exactly
+the value representations this port uses (fixnums, bignums, double-floats,
+conses, characters, strings). The compiler decides *whether* it recognizes
+the body well enough to emit native code, not *whether it is safe to try*:
+recognizing a body is form-by-form structural, not type-directed, so
+`defun*`/`check-type` inference plays no role here (see "The type checker"
+above for why that piece is not ported).
+
+The supported subset is intentionally narrow: literals, `QUOTE`, `IF`/
+`PROGN`/`AND`/`OR`, parameter references (native CL lexicals) and free
+variable references (`ENV-RESOLVE` against the lambda's closed-over
+environment, so a later redefinition is still seen), and calls to any
+name that is **already** bound, at the moment this lambda is compiled, to
+an ordinary function or another compiled/interpreted lambda — never a
+macro, fexpr, or vau, and never unbound. That last rule is what makes a
+self- or mutually-recursive `DEFUN` safe without a dedicated recursion
+check: `DEF`/`LABEL` bind a function's own name only *after* its `LAMBDA`
+form (and hence its compile attempt) has already run, so such a function
+always finds its own name unbound at compile time and falls back to the
+tree-walking interpreter — which is exactly where it needs to run anyway,
+since only `LEVAL`'s trampoline gives self-tail-calls this port's O(1)-
+Lamedh-stack guarantee. `LET`/`SETQ`/loops/dynamic parameters/nested
+closures/condition handling, and any call to a not-yet-bound or
+macro-like name, fall back the same way: tree-walked, fully correct,
+simply not (yet) native-compiled. Falling back is never a degraded mode —
+an uncompiled lambda behaves identically to how every lambda behaved
+before this compiler existed. On the reference embedded standard library,
+this compiles roughly 45% of all top-level functions (442 of 952) to
+native SBCL code on a cold bootstrap, dominated by leaf arithmetic/
+predicate/string helpers and functions built on already-loaded
+infrastructure; recursive control constructs (loops expressed as
+self-recursion, which is idiomatic throughout this stdlib) are the main
+class that remains interpreted. Widening the subset — `LET`, or a
+self-tail-call loop rewrite that would let compiled-to-compiled recursion
+keep an O(1) Lamedh stack — is future work, not a correctness gap in what
+exists today.
 
 ## Deliberate deviations
 
