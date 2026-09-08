@@ -11,6 +11,7 @@
 
 extern data_alloc
 extern intern_symbol
+extern make_string
 
 section .bss
 align 8
@@ -91,6 +92,8 @@ is_delim:
     cmp dil, 39                   ; '
     je .yes
     cmp dil, ';'
+    je .yes
+    cmp dil, '"'
     je .yes
     xor eax, eax
     ret
@@ -207,6 +210,73 @@ read_symbol:
     pop rbx
     ret
 
+section .bss
+align 8
+strbuf: resb 4096
+
+section .text
+
+; read_string() -> rax = tagged HDR_STRING heapobj. Assumes the current
+; char is the opening '"'. Minimal escapes only: \n \t \" \\; anything
+; else after a backslash is copied through literally. Unterminated
+; input or a literal longer than the scratch buffer simply stops early
+; (v0 — no reader error reporting yet, see README roadmap).
+read_string:
+    push rbx
+    inc qword [reader_pos]          ; consume opening '"'
+    xor rbx, rbx                     ; length so far
+.loop:
+    call reader_peek
+    cmp rax, -1
+    je .done
+    cmp al, '"'
+    je .close
+    cmp al, '\'
+    je .escape
+    mov [strbuf + rbx], al
+    inc rbx
+    inc qword [reader_pos]
+    cmp rbx, 4095
+    jae .done
+    jmp .loop
+.escape:
+    inc qword [reader_pos]              ; consume backslash
+    call reader_peek
+    cmp rax, -1
+    je .done
+    cmp al, 'n'
+    je .esc_n
+    cmp al, 't'
+    je .esc_t
+    mov [strbuf + rbx], al                ; \" \\ and anything else: literal
+    inc rbx
+    inc qword [reader_pos]
+    cmp rbx, 4095
+    jae .done
+    jmp .loop
+.esc_n:
+    mov byte [strbuf + rbx], 10
+    inc rbx
+    inc qword [reader_pos]
+    cmp rbx, 4095
+    jae .done
+    jmp .loop
+.esc_t:
+    mov byte [strbuf + rbx], 9
+    inc rbx
+    inc qword [reader_pos]
+    cmp rbx, 4095
+    jae .done
+    jmp .loop
+.close:
+    inc qword [reader_pos]                ; consume closing '"'
+.done:
+    mov rdi, strbuf
+    mov rsi, rbx
+    call make_string
+    pop rbx
+    ret
+
 ; read_list() -> rax = tagged proper list, consuming up to and including
 ; the closing ')'. Caller has already consumed the opening '('.
 read_list:
@@ -254,6 +324,12 @@ read_form:
     jmp .quote_fixed
 
 .not_quote:
+    cmp al, '"'
+    jne .not_string
+    call read_string
+    jmp .out
+
+.not_string:
     cmp al, '-'
     je .maybe_number
     cmp al, '0'

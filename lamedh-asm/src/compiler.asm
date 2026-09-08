@@ -67,6 +67,12 @@ extern patch_imm64
 extern emit_add_reg_imm32
 extern print_fixnum
 extern print_newline
+extern print_value
+extern string_length_tagged
+extern file_open
+extern file_close
+extern file_write
+extern file_read
 extern emit_jl
 extern emit_load_stack_arg
 
@@ -93,6 +99,11 @@ kw_catch:  db "CATCH"
 kw_throw:  db "THROW"
 kw_print:  db "PRINT"
 kw_newline: db "NEWLINE"
+kw_string_length: db "STRING-LENGTH"
+kw_fd_open:  db "FD-OPEN"
+kw_fd_close: db "FD-CLOSE"
+kw_fd_write: db "FD-WRITE"
+kw_fd_read:  db "FD-READ"
 kw_rest:   db "&REST"
 
 section .data
@@ -632,7 +643,10 @@ compile_print:
     mov dil, REG_RDI
     mov sil, REG_RAX
     call emit_mov_rr                            ; target: rdi = arg
-    lea rax, [rel print_fixnum]
+    lea rax, [rel print_value]                     ; dispatches on the
+                                                    ; argument's runtime
+                                                    ; tag: string bytes or
+                                                    ; a fixnum's decimal
     mov rsi, rax
     mov dil, REG_RAX
     call emit_mov_reg_imm64                        ; target: rax = &print_fixnum
@@ -2093,6 +2107,94 @@ compile_form:
     jmp .out
 
 .not_newline:
+    mov rdi, r12
+    mov rsi, kw_string_length
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_string_length
+    mov rdi, r13
+    call car
+    lea rsi, [rel string_length_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_string_length:
+    mov rdi, r12
+    mov rsi, kw_fd_open
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_fd_open
+    mov rdi, r13
+    call car                            ; path form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; mode form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel file_open]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_fd_open:
+    mov rdi, r12
+    mov rsi, kw_fd_close
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jz .not_fd_close
+    mov rdi, r13
+    call car
+    lea rsi, [rel file_close]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_fd_close:
+    mov rdi, r12
+    mov rsi, kw_fd_write
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jz .not_fd_write
+    mov rdi, r13
+    call car                            ; fd form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; string form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel file_write]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_fd_write:
+    mov rdi, r12
+    mov rsi, kw_fd_read
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_fd_read
+    mov rdi, r13
+    call car                            ; fd form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; max-len form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel file_read]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_fd_read:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1

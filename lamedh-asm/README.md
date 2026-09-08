@@ -47,7 +47,7 @@ One 64-bit word per value; the low 2 bits are a tag (`src/tags.inc`):
 |------|-----------|---------|
 | `00` | fixnum    | bits 63:2, a signed 62-bit integer |
 | `01` | cons      | bits 63:2 (shifted) address a 16-byte `[car\|cdr]` cell |
-| `10` | heapobj   | address of a header word naming the object's kind (symbol, closure) |
+| `10` | heapobj   | address of a header word naming the object's kind (symbol, closure, string) |
 | `11` | immediate | `NIL`, `TRUE`, `FALSE`, `UNBOUND`, `EOF` |
 
 Fixnum arithmetic runs directly on the tagged (shifted-left-by-2)
@@ -65,7 +65,13 @@ programs this stage targets.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, `CATCH`/`THROW`,
-  and `PRINT`/`NEWLINE` — see "The kernel surface" below.
+  `PRINT`/`NEWLINE`, `STRING-LENGTH`, and `FD-OPEN`/`FD-CLOSE`/
+  `FD-WRITE`/`FD-READ` — see "The kernel surface" below.
+- String literals (`"..."`) read as a length-prefixed byte-buffer
+  heapobj (`HDR_STRING`) and are self-evaluating, exactly like a
+  fixnum literal — no compiler change was needed for that part, since
+  the data heap never relocates and a string's absolute address bakes
+  as a code immediate the same way any other literal datum does.
 - `LAMBDA` with real closure conversion: a free-variable scan
   (`scan_free_vars`) decides what a nested lambda must capture *before*
   a single byte of its body is emitted; captured values are copied by
@@ -146,9 +152,29 @@ specifically to test where the line falls:
   `PRINT` returns its argument, the way most Lisps' `PRINT` does. This
   is deliberately the *minimum* possible I/O primitive (stdout, one
   fixnum at a time, no format string) — see Roadmap for what a real
-  `FORMAT` still needs (strings, variadic args, a general write
-  primitive) before it can be library code the way `CAR`/`CDR`-based
-  list processing already is.
+  `FORMAT` still needs (variadic args, a general write primitive)
+  before it can be library code the way `CAR`/`CDR`-based list
+  processing already is. `PRINT` itself now dispatches on the
+  argument's *runtime* tag (`print_value` in `strings.asm`): a string
+  writes its raw bytes, anything else prints as a fixnum's decimal
+  value — the compiled code `compile_print` emits is unchanged; only
+  the host address it bakes moved from `print_fixnum` straight to
+  `print_value`.
+- **`STRING-LENGTH`** and **`FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/`FD-READ`**
+  round out enough of a host surface to read and write real files.
+  Every fd is a plain tagged fixnum, so `STDIN`/`STDOUT`/`STDERR` (0/1/2)
+  need no separate primitives at all — `(FD-WRITE 2 "oops")` already
+  writes to stderr. `FD-OPEN`'s mode argument is a plain fixnum (`0`
+  read, `1` write/create/truncate, `2` append/create), not a symbol:
+  a bare symbol in argument position would be read as a *variable
+  reference* by `compile_form`'s existing global/local lookup, not the
+  symbol's own identity, and requiring the caller to quote it (`'WRITE`)
+  seemed like the wrong trade for three fixnum constants. All four are
+  raw one-shot Linux syscalls (`fileio.asm`) — `FD-WRITE`/`FD-READ`
+  don't loop on a short write/read, and a read past EOF or a syscall
+  error folds to an empty string rather than raising anything, there
+  being no conditions yet to raise (same honest scope as `THROW` with
+  no matching `CATCH`).
 
 Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
 from their ordinary value cell, so a name can be a macro or a function
@@ -166,8 +192,17 @@ at runtime.
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
-- No garbage collector. No bignums, floats, strings, hash tables,
-  vectors, `vau`, first-class conditions, or dynamic variables yet.
+- No garbage collector. No bignums, floats, hash tables, vectors,
+  `vau`, first-class conditions, or dynamic variables yet.
+- Strings are immutable byte buffers only: no `STRING-REF`,
+  `STRING-APPEND`, `SUBSTRING`, or any string-building primitive yet —
+  just reader literals, `STRING-LENGTH`, and `PRINT`. Escapes are
+  limited to `\n`, `\t`, `\"`, `\\` (anything else after a backslash is
+  copied through literally); a literal longer than the reader's 4KB
+  scratch buffer is silently truncated.
+- File I/O does not loop on a short `read`/`write`, and folds a
+  negative syscall result (an error) to an empty string rather than
+  signaling anything — there being no conditions yet to raise.
 - `THROW` with no matching `CATCH` traps (`int3`) rather than raising a
   catchable condition — there being no conditions yet to raise.
 - Proper tail-call frame reuse (`jmp` instead of `call`+`ret`, reusing
@@ -281,11 +316,17 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   lambdas.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured
   variable is visible across closures over it.
-- Bignums, floats, strings, hash tables, arrays, `vau`, dynamic
-  variables — the rest of the Lisp 1.5 + extensions surface the Rust
-  interpreter (`../src`) already implements. `DEFMACRO` existing means
-  most of `lib/08-vau.lisp`'s derived forms and the CL-compat layer are
-  now just a matter of writing them, not extending the compiler; with
+- Bignums, floats, hash tables, arrays, `vau`, dynamic variables — the
+  rest of the Lisp 1.5 + extensions surface the Rust interpreter
+  (`../src`) already implements. `DEFMACRO` existing means most of
+  `lib/08-vau.lisp`'s derived forms and the CL-compat layer are now
+  just a matter of writing them, not extending the compiler; with
   `CATCH`/`THROW` also in place, so are `BLOCK`/`RETURN-FROM` and a
-  first `HANDLER-CASE`-shaped condition system.
+  first `HANDLER-CASE`-shaped condition system. Hash tables in
+  particular are planned as a pure-Lamedh alist library once `DEFMACRO`
+  and the list-op builtins exist — a deliberate demonstration of the
+  kernel/library boundary from issue #452, not a new kernel primitive.
+- String mutation/building primitives (`STRING-REF`, `STRING-APPEND`,
+  `SUBSTRING`) and a real `FORMAT` built on top of `PRINT`/`FD-WRITE`
+  and variadic args.
 - AArch64 backend (currently x86-64 Linux only).
