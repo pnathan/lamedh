@@ -64,8 +64,8 @@ programs this stage targets.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
-- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP` and `DEFMACRO` — see "The kernel
-  surface" below.
+- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, and `CATCH`/`THROW`
+  — see "The kernel surface" below.
 - `LAMBDA` with real closure conversion: a free-variable scan
   (`scan_free_vars`) decides what a nested lambda must capture *before*
   a single byte of its body is emitted; captured values are copied by
@@ -98,7 +98,7 @@ host-agnostic spec for the minimal primitive surface any Lamedh host
 (the Rust reference, the SBCL port, this one) must provide, so that a
 shared `lib/*.lisp`-style corpus can run unmodified on top of any of
 them. This project is the concrete first attempt at drawing that line
-for a from-scratch host, and two of its later primitives exist
+for a from-scratch host, and three of its later primitives exist
 specifically to test where the line falls:
 
 - **`CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`** compile to calls into the
@@ -124,6 +124,19 @@ specifically to test where the line falls:
   in the reference implementation's `lib/08-vau.lisp` and
   `lib/21-cl-compat.lisp` — see `tests/cases/011_defmacro.asm` for
   `UNLESS` derived from `IF` this way, with no change to the compiler.
+- **`CATCH`/`THROW`** is the other "control" candidate: a fixed-depth
+  stack of installed catch points (`compiler.asm`'s `catch_stack` —
+  tag, saved `rbp`/`rsp`, resume target, 32 bytes per frame). `CATCH`
+  installs a frame inline and falls straight through into its body;
+  `THROW` walks the stack from the top for an EQ tag match and does an
+  ordinary longjmp — restore `rbp`/`rsp` from the matched frame, put the
+  thrown value in `rax`, jump to its resume point — including when the
+  `THROW` executes from inside a different compiled function than the
+  one holding the `CATCH` (`tests/cases/012_catch_throw.asm`'s third
+  case: a `THROW` inside a `DEFINE`'d function unwinds correctly back
+  through an inline-cached call). `BLOCK`/`RETURN-FROM` and first-class
+  conditions are ordinary library code once this exists, the same way
+  they already are in the reference implementation.
 
 Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
 from their ordinary value cell, so a name can be a macro or a function
@@ -145,6 +158,8 @@ at runtime.
   variable visible to the closure that captured it (or vice versa).
 - No garbage collector. No bignums, floats, strings, hash tables,
   vectors, `vau`, first-class conditions, or dynamic variables yet.
+- `THROW` with no matching `CATCH` traps (`int3`) rather than raising a
+  catchable condition — there being no conditions yet to raise.
 - Proper tail-call frame reuse (`jmp` instead of `call`+`ret`, reusing
   the caller's stack frame) is not yet implemented for ordinary Lisp
   calls; the inline-cache trampoline's *own* internal dispatch already
@@ -208,8 +223,7 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   variables — the rest of the Lisp 1.5 + extensions surface the Rust
   interpreter (`../src`) already implements. `DEFMACRO` existing means
   most of `lib/08-vau.lisp`'s derived forms and the CL-compat layer are
-  now just a matter of writing them, not extending the compiler.
-- A non-local-exit primitive (`CATCH`/`THROW`), the other "control"
-  entry on [issue #452](https://github.com/pnathan/lamedh/issues/452)'s
-  candidate kernel surface, alongside dynamic variables.
+  now just a matter of writing them, not extending the compiler; with
+  `CATCH`/`THROW` also in place, so are `BLOCK`/`RETURN-FROM` and a
+  first `HANDLER-CASE`-shaped condition system.
 - AArch64 backend (currently x86-64 Linux only).
