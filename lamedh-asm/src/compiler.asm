@@ -286,6 +286,61 @@ build_frame_from_list:
     pop rbx
     ret
 
+; build_param_frame(rdi=params list) -> rax = frame list of (symbol . disp)
+; pairs. The first 3 params arrive in registers and are spilled to fixed
+; local slots (disp -8,-16,-24, same as before); the 4th onward arrive
+; already on the caller's stack (pushed before the call) and are simply
+; addressed in place at their fixed positive offset — no copy needed,
+; since a disp32 is a disp32 regardless of sign. This is what lets a
+; call take more than 3 arguments: params[3] sits at [rbp+16], params[4]
+; at [rbp+24], and so on — the same layout compile_call's callers must
+; leave on the stack (see compile_call_args).
+build_param_frame:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi                  ; cursor
+    xor r12, r12                    ; index (mutable)
+    mov r13, IMM_NIL                  ; acc
+.loop:
+    cmp rbx, IMM_NIL
+    je .done
+    mov rdi, rbx
+    call car
+    mov r14, rax                        ; symbol
+    cmp r12, 3
+    jae .stack_disp
+    mov rax, r12
+    inc rax
+    imul rax, rax, -8                     ; register-spilled: -8,-16,-24
+    jmp .have_disp
+.stack_disp:
+    mov rax, r12
+    sub rax, 3
+    imul rax, rax, 8
+    add rax, 16                            ; caller-stack: 16,24,32,...
+.have_disp:
+    mov rdi, r14
+    mov rsi, rax
+    call cons                              ; pair
+    mov rdi, rax
+    mov rsi, r13
+    call cons                                ; acc = (pair . acc)
+    mov r13, rax
+    inc r12
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .loop
+.done:
+    mov rax, r13
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; append_lists(rdi=list1, rsi=list2) -> rax = list1 with list2 as its tail
 append_lists:
     push rbx
@@ -719,8 +774,7 @@ compile_lambda:
     mov r15, rax                            ; entry = this lambda's code pointer
 
     mov rdi, r12
-    xor rsi, rsi
-    call build_frame_from_list
+    call build_param_frame
     push rax                                  ; [param_frame, jmp_over_site]
 
     mov rdi, r12
@@ -737,8 +791,19 @@ compile_lambda:
     call list_length
     mov rbx, rax                                    ; nfree
 
+    ; free vars continue right after however many *local slots* params
+    ; actually used — only the first 3 (register-spilled) consume one;
+    ; params beyond that live on the caller's stack and use none. r15
+    ; already holds `entry` (needed later, for the closure's code
+    ; pointer), so min(nparams,3) is recomputed into scratch rax each
+    ; time it's needed rather than cached in a register.
+    mov rax, r14
+    cmp rax, 3
+    jbe .nregparams_ok1
+    mov rax, 3
+.nregparams_ok1:
+    mov rsi, rax
     mov rdi, r12
-    mov rsi, r14
     call build_frame_from_list                        ; free_frame
 
     mov rdi, [rsp]                                      ; param_frame (top of [param_frame, jmp_over_site])
@@ -749,6 +814,10 @@ compile_lambda:
     ; --- prologue ---
     call emit_push_rbp_frame
     mov rax, r14
+    cmp rax, 3
+    jbe .nregparams_ok2
+    mov rax, 3
+.nregparams_ok2:
     add rax, rbx
     imul eax, eax, 8
     mov edi, eax
@@ -791,7 +860,11 @@ compile_lambda:
     mov dil, REG_RBX
     mov sil, REG_RAX
     call emit_load_based                       ; rbx = *(raw+32+8*i)
-    mov eax, r14d
+    mov eax, r14d                                 ; nparams, clamped to the
+    cmp eax, 3                                      ; number of *local slots*
+    jbe .minok                                        ; params actually use
+    mov eax, 3                                          ; (see build_param_frame)
+.minok:
     add eax, r12d
     inc eax
     imul eax, eax, -8
@@ -1034,31 +1107,50 @@ compile_defmacro:
     ret
 
 ; compile_call_args(rdi=args list) -> emits target code that evaluates
-; and pushes up to 3 argument values, left to right; rax = count pushed.
+; and pushes every argument (no count limit short of available stack —
+; tested up to 32); rax = count pushed.
+;
+; Evaluated right-to-left (recurse to the end of the list before
+; evaluating the head), which is what makes the resulting stack layout
+; come out right without a second pass: after this returns, the target
+; stack (top to bottom) holds arg0, arg1, arg2, arg3, ... argN-1 — the
+; first 3 are exactly what compile_call's callers pop into rsi/rdx/rcx,
+; and whatever remains below them is already in the exact layout a
+; callee's stack-passed params expect (see build_param_frame): arg3 at
+; [rbp+16], arg4 at [rbp+24], and so on, once the callee's own `call`
+; pushes a return address on top. This is lamedh-asm's own convention
+; (there being no C ABI to honor) — right-to-left evaluation order is
+; simply what a hybrid register+stack layout falls out of cleanly; a
+; real Lisp would document this as a visible evaluation-order choice,
+; the same way classic cdecl's own right-to-left argument evaluation is
+; a side effect of its stack layout, not an accident.
 compile_call_args:
     push rbx
-    push r12
-    mov r12, rdi
-    xor rbx, rbx
-.loop:
-    cmp r12, IMM_NIL
-    je .done
-    cmp rbx, 3
-    jae .done
-    mov rdi, r12
+    mov rbx, rdi
+    cmp rbx, IMM_NIL
+    je .base
+    push rbx
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call compile_call_args                 ; recurse first: evaluates
+                                            ; every later arg before this
+                                            ; one
+    pop rbx
+    push rax                                 ; save the rest's count
+    mov rdi, rbx
     call car
     mov rdi, rax
-    call compile_form
+    call compile_form                          ; this arg -> target rax
     mov dil, REG_RAX
-    call emit_push_reg
-    inc rbx
-    mov rdi, r12
-    call cdr
-    mov r12, rax
-    jmp .loop
-.done:
-    mov rax, rbx
-    pop r12
+    call emit_push_reg                            ; push it (topmost, since
+                                                   ; evaluated/pushed last)
+    pop rax
+    inc rax
+    jmp .out
+.base:
+    xor rax, rax
+.out:
     pop rbx
     ret
 
@@ -1105,21 +1197,25 @@ compile_call:
     add rax, 16
     mov r14, rax                            ; cell_addr
 
-    cmp r13, 3
-    jb .n_n2
-    mov dil, REG_RCX
-    call emit_pop_reg
-.n_n2:
-    cmp r13, 2
-    jb .n_n1
-    mov dil, REG_RDX
-    call emit_pop_reg
-.n_n1:
+    ; compile_call_args pushes right-to-left, so arg0 ends up topmost —
+    ; pop ascending (arg0 first) to match. Anything past the 3rd stays
+    ; on the stack, already positioned exactly where the callee's
+    ; stack-passed params expect it (build_param_frame).
     cmp r13, 1
-    jb .n_n0
+    jb .n_after_a0
     mov dil, REG_RSI
     call emit_pop_reg
-.n_n0:
+.n_after_a0:
+    cmp r13, 2
+    jb .n_after_a1
+    mov dil, REG_RDX
+    call emit_pop_reg
+.n_after_a1:
+    cmp r13, 3
+    jb .n_after_a2
+    mov dil, REG_RCX
+    call emit_pop_reg
+.n_after_a2:
 
     call emit_jmp32
     mov r12, rax                              ; jmp_over_site
@@ -1201,31 +1297,45 @@ compile_call:
     jmp .out
 
 .indirect_path:
-    mov rdi, rbx
-    call compile_form                        ; head -> target rax = closure value
-    mov dil, REG_RAX
-    call emit_push_reg
+    ; Args first, *then* the operator — fully right-to-left, operator
+    ; included, not just "before the args" as an earlier version had it.
+    ; That earlier order pushed the closure value *underneath* any
+    ; excess (beyond 3) stack-passed args, so popping only 3 args before
+    ; reaching for the closure grabbed an excess arg instead whenever
+    ; nargs > 3. Evaluating the operator last puts the closure on top,
+    ; poppable before the excess args — which must stay untouched,
+    ; positioned exactly where the callee's stack-passed params expect
+    ; them — are ever reached.
     mov rdi, r12
     call compile_call_args
-    mov rbx, rax                                ; nargs
+    mov r12, rax                                ; nargs (r12 reused: the
+                                                 ; args list itself is no
+                                                 ; longer needed; rbx still
+                                                 ; holds the operator form)
 
-    cmp rbx, 3
-    jb .i_n2
-    mov dil, REG_RCX
-    call emit_pop_reg
-.i_n2:
-    cmp rbx, 2
-    jb .i_n1
-    mov dil, REG_RDX
-    call emit_pop_reg
-.i_n1:
-    cmp rbx, 1
-    jb .i_n0
+    mov rdi, rbx
+    call compile_form                             ; operator -> target rax
+    mov dil, REG_RAX
+    call emit_push_reg                               ; push closure (now on
+                                                      ; top, above every arg)
+    mov dil, REG_RDI
+    call emit_pop_reg                                  ; rdi = closure ptr
+
+    cmp r12, 1
+    jb .i_after_a0
     mov dil, REG_RSI
     call emit_pop_reg
-.i_n0:
-    mov dil, REG_RDI
-    call emit_pop_reg                           ; rdi = closure ptr
+.i_after_a0:
+    cmp r12, 2
+    jb .i_after_a1
+    mov dil, REG_RDX
+    call emit_pop_reg
+.i_after_a1:
+    cmp r12, 3
+    jb .i_after_a2
+    mov dil, REG_RCX
+    call emit_pop_reg
+.i_after_a2:
 
     mov dil, REG_RAX
     mov sil, REG_RDI

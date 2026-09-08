@@ -158,8 +158,6 @@ at runtime.
 
 ## v0 limits (known, not silent)
 
-- At most 3 arguments per call/lambda (registers `rsi`,`rdx`,`rcx`; no
-  stack-spilled extra args yet).
 - A lambda body is a single expression (no implicit `PROGN`).
 - A nested `LAMBDA` may only capture free variables from its
   *immediately* enclosing lambda's own frame — a variable needed from
@@ -177,6 +175,8 @@ at runtime.
   calls; the inline-cache trampoline's *own* internal dispatch already
   ends in a tail-jump, but the enclosing function's call site itself
   still uses `call`.
+- No true variadic/`&rest` parameters yet — every param is positional,
+  just no longer capped at 3 (see the calling convention below).
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers
@@ -186,8 +186,34 @@ attempt yet.
 ## Calling convention
 
 This project owns its own convention; there is no C ABI to honor.
-Compiled functions: `fn(rdi=closure_ptr, rsi=arg0, rdx=arg1, rcx=arg2) ->
-rax`. Compiled code preserves **no** register across a call into other
+Compiled functions: `fn(rdi=closure_ptr, rsi=arg0, rdx=arg1, rcx=arg2,
+[stack: arg3, arg4, ...]) -> rax`. The first 3 positional arguments
+arrive in registers; the 4th onward arrive already pushed onto the
+stack by the caller, in ascending order (`arg3` at `[rbp+16]`, `arg4`
+at `[rbp+24]`, ...) — `build_param_frame` addresses them there directly,
+with no copy into a local slot, since a stack-passed parameter is
+already sitting exactly where it needs to be read from. Tested up to 32
+arguments (`tests/cases/015_32args.asm`); nothing enforces that as a
+hard ceiling, it is simply as far as this project has tested.
+
+Argument evaluation order is right-to-left, operator position included
+— `compile_call_args` recurses to the end of the argument list before
+evaluating anything, which is what makes the first-3-in-registers /
+rest-on-the-stack split fall out cleanly without a second pass: after
+it returns, the stack (top to bottom) already reads `arg0, arg1, arg2,
+arg3, ...`, exactly the pop order compile_call's two call paths use and
+exactly the layout a callee's stack-passed params expect. The operator
+form itself (which may be an arbitrary expression yielding a closure,
+not just a bare symbol) is evaluated *last*, once every argument is
+already on the stack — evaluating it first would leave the closure
+value sitting underneath any stack-passed arguments, which is wrong for
+the identical reason a mid-list pop would be. This is a real, visible
+evaluation-order choice for anything with side effects in argument
+position, the same way classic cdecl's own right-to-left evaluation is
+a side effect of its stack layout rather than an accident — there is no
+C ABI here dictating otherwise, so the layout gets to decide the order.
+
+Compiled code preserves **no** register across a call into other
 compiled code — not even the base 8 GPRs used as scratch throughout
 codegen. A caller (including hand-written test drivers) that needs a
 value to survive a call into compiled code must keep it on the stack,
@@ -226,7 +252,7 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   every local to a fixed stack slot.
 - Proper tail calls: frame-reuse `jmp` for calls in tail position.
 - A copying or generational GC for the data heap.
-- More than 3 arguments; multi-expression lambda bodies (`PROGN`).
+- Multi-expression lambda bodies (`PROGN`); variadic/`&rest` params.
 - General (not single-level) free-variable propagation through nested
   lambdas.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured
