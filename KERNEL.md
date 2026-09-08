@@ -26,7 +26,7 @@ spec exists to pin down. §IV's EQ rule for cons cells is the sharpest
 example; see there.
 
 **A small, closed set of declared axes is where hosts are allowed to
-differ**, listed in full in Part XI. Outside that list, a host's observable
+differ**, listed in full in Part XII. Outside that list, a host's observable
 behavior must match this document — which is to say, must match the Rust
 reference — exactly. The list exists so that SBCL's native bignums and
 `lamedh-asm`'s tag-cancellation wraparound arithmetic don't get flagged as
@@ -103,14 +103,14 @@ token:
 - An integer literal that overflows a 64-bit signed integer degrades
   silently to a float if it still parses as one — it does not error and
   does not become a bignum at the reader level on any host, since no host
-  is required to have reader-level bignums (see Part XI on numeric
+  is required to have reader-level bignums (see Part XII on numeric
   precision).
 
 **Float literals.** `-? digit+ "." digit+ (("e"|"E") ("+"|"-")? digit+)?`
 — both the integer part and the fractional part require at least one
 digit. **`.5` and `5.` are both illegal** under this grammar; there is no
 production that accepts either. A conformant reader must reject them the
-same way (as a parse failure or as some other token, per Part XI's grammar
+same way (as a parse failure or as some other token, per Part XII's grammar
 axis — see there), not silently accept CL-style bare-decimal-point floats.
 
 **String literals**, delimited by `"`. Recognized escapes: `\n \t \r \\ \"
@@ -143,7 +143,7 @@ written without them. Octal/hex-suffix and radix-prefix integers, floats,
 block comments, character literals, keyword/earmuff symbol sugar, and
 `#S(...)` records are each a layered extension: a host may implement them
 however it likes, or defer them, as long as it does not change what they
-mean once implemented (Part XI does not grant latitude on *meaning*, only
+mean once implemented (Part XII does not grant latitude on *meaning*, only
 on *whether a from-scratch host has gotten around to parsing them yet*).
 
 ## Part III — Printed representation
@@ -323,7 +323,7 @@ rules above) freely. Comparing a string against a number, or a number
 against any non-numeric type, is an error (Part VIII), never a silent
 coercion and never a permissive `NIL`-returning "just not equal, I guess."
 
-**Overflow** is where hosts are allowed to diverge, and how: see Part XI.
+**Overflow** is where hosts are allowed to diverge, and how: see Part XII.
 Within whatever range a host's numeric model can represent exactly,
 arithmetic must match this section's rules exactly and must match the
 Rust reference's results bit-for-bit for every value that also fits in a
@@ -458,7 +458,7 @@ The forms named and given exact semantics in Part VI — `QUOTE`, `IF`,
 `DEFMACRO`, `CATCH`/`THROW`, `BLOCK`/`RETURN-FROM`, `HANDLER-CASE` (Part
 VIII), and dynamic-variable declaration — are the special forms a host
 must give exactly this behavior to, whether it implements each one as a
-true kernel primitive or derives it from a smaller set (Part XI covers
+true kernel primitive or derives it from a smaller set (Part XII covers
 which specific forms are eligible for that latitude, and which are not).
 Every other named construct `lib/*.lisp` uses — `AND`, `OR`, `WHEN`,
 `UNLESS`, `DO`, the CL-compat layer, `DEFUN`, `DEFVAR`/`DEFDYNAMIC` sugar
@@ -527,14 +527,115 @@ gated by which name. The Rust reference's current names (`READ-FS`,
 default for a conformant host to adopt verbatim, but adopting them is not
 itself the conformance requirement; *enforcing something* at the call site
 is. A host that defines the capability names as inert labels queried by no
-primitive (see the SBCL port's gap in Part XII) does not conform to this
-section, regardless of what `lib/22-guard.lisp` layers on top.
+primitive (as filed against the SBCL port in issue #455) does not conform
+to this section, regardless of what `lib/22-guard.lisp` layers on top.
 
-## Part X — The kernel primitive inventory
+## Part X — Step-budget fencing (fuel)
+
+A sandboxed host needs a second axis of defense beyond capabilities: a way
+to run untrusted code with a hard ceiling on *how much computation it can
+do* even when it touches no I/O at all — an infinite loop in pure
+arithmetic is still a denial of service. Lamedh calls this budget **fuel**,
+and it must be a genuine kernel mechanism, not a library convenience,
+because a library-level step counter is trivially defeated by code that
+never calls the counting function.
+
+**The kernel maintains one step counter, decremented once per evaluation
+step, checked before that step runs.** "One evaluation step" means one
+iteration of the evaluator's own dispatch loop — the same unit of work
+that Part VI's tail-call trampoline advances on every call, so a
+tail-recursive loop that never grows the stack is still metered correctly:
+each tail step still charges fuel even though it charges no additional
+stack frame. Charging happens unconditionally, on every step, in both a
+tree-walking evaluator and any compiled/JIT path a host has — a host that
+only meters the slow path and lets compiled code run unmetered has not
+implemented this section.
+
+**Exhaustion signals a normal, `HANDLER-CASE`-catchable condition, and
+that is a deliberate, load-bearing design choice with a known,
+documented consequence.** Unlike a `THROW`/`RETURN-FROM` past an
+unmatched target (Part VIII, which is *not* catchable), running out of
+fuel produces the same two-field (message, data) condition shape as any
+other native error, specifically so that surrounding `UNWIND-PROTECT`- and
+`HANDLER-CASE`-based cleanup code gets a chance to run instead of being
+killed off mid-cleanup by its own metering. The mechanism a host uses to
+make that possible — the reference implementation disarms its own counter
+at the instant it signals exhaustion, so that cleanup code evaluated while
+handling the condition doesn't immediately re-trigger the same signal
+before it can finish — has a real, acknowledged gap: **guest code that
+directly wraps a `HANDLER-CASE` around the fuel-exhausted condition and
+loops from inside the handler can keep running past its nominal budget**,
+because the counter that would normally stop it has just been disarmed to
+let the handler run at all. This is not a defect this document is asking
+hosts to fix; it is documented reference-implementation behavior (called
+out explicitly in the reference's own `--mcp` sandboxing code as a known
+limitation), and a conformant host must reproduce the same shape of gap
+rather than quietly closing it in a way that changes observable behavior
+— though a host is free to close it as a genuine improvement over the
+yardstick, the same latitude Part XII already grants for `MOD`'s overflow
+quirk, as long as it does not change behavior for any program that isn't
+specifically trying to evade its budget.
+
+**A step-budget fence is a special form, `(WITH-FUEL n body...)`, and
+nested fences attenuate rather than compose additively — the same rule
+capabilities follow.** Entering a fence with a requested budget `n`
+installs `min(n, remaining-budget-of-the-nearest-enclosing-fence)`, never
+more than what the enclosing fence has left: **a nested fence can never
+grant itself a larger effective budget than its enclosing fence has
+remaining, no matter what number it asks for.** This is the mechanism
+that makes "guest code cannot simply remove its own limit" true in the
+one specific sense this document requires: code running inside a fence
+that wraps itself in `(WITH-FUEL 999999999999999 ...)` gets silently
+clamped to whatever the enclosing fence actually has left, not the
+inflated number it asked for. (This is a *different* guarantee from the
+catch-and-reloop gap two paragraphs up — clamping stops a guest from
+widening its own budget; it does nothing about a guest that catches
+exhaustion and loops within the budget it already had re-armed for
+cleanup. Both facts are part of this section; neither substitutes for the
+other.) On leaving a fence — by ordinary completion, by a caught error, or
+by any non-local exit passing through it — the amount of fuel actually
+spent inside the fence must be debited from the enclosing fence's own
+remaining budget, so that spending inside a nested fence is not free
+fuel from the outer fence's point of view; this restoration must happen
+on every exit path, the same non-negotiable guarantee dynamic-variable
+unwinding gets in Part VI.
+
+**Fuel is queryable and settable from Lisp code, and the setter is the one
+place this mechanism is itself capability-gated — but by fence position,
+not by the ordinary named-capability system of Part IX.** A read-only
+query returns the current remaining budget (or an unarmed/no-limit
+indication outside any fence). A setter can arm, widen, or disarm the
+budget entirely *when called from outside any fence* — this is the
+mechanism a host's own embedding layer uses to arm a budget before running
+untrusted code in the first place, and it is necessarily unrestricted
+there, since something has to be able to set the first budget. **From
+inside a fence, the same setter must refuse to set a value larger than
+the fence's current remaining budget** — attempting to widen or disarm
+the budget from within a fence is an error, not a silent no-op and not a
+silently clamped success. This asymmetry (unrestricted outside a fence,
+strictly attenuating-only inside one) is what makes "widen your own
+sandbox" impossible while still leaving a host's own driver code free to
+set up the sandbox in the first place.
+
+**Fuel is orthogonal to capabilities and to the non-tail recursion depth
+bound of Part VI — a host must implement all three, and none substitutes
+for another.** A program can exhaust its recursion-depth bound while
+holding abundant fuel (deep non-tail recursion that terminates quickly in
+step count but not in stack depth), and a program can exhaust its fuel
+while never approaching the recursion bound (a fast, shallow, unbounded
+loop). Capabilities gate *what* untrusted code can touch; the recursion
+bound gates *how deep* it can nest; fuel gates *how much total work* it
+can do. A host that implements capabilities and the recursion bound but
+not fuel has not built a platform that can safely run untrusted Lamedh
+code at all, since an infinite pure-computation loop needs none of the
+I/O capabilities gates and needn't recurse non-tail at all to burn
+unbounded wall-clock time.
+
+## Part XI — The kernel primitive inventory
 
 A host must provide, as either a true native primitive or something that
 produces identical observable behavior when derived from a smaller native
-set (Part XI says which forms have that latitude):
+set (Part XII says which forms have that latitude):
 
 - **Representation**: cons/car/cdr with the identity/equality rules of
   Part IV; interned symbols; the numeric types and operations of Part V;
@@ -542,8 +643,9 @@ set (Part XI says which forms have that latitude):
   primitive mutable structures (`lib/16-*`/`lib/17-*` use them natively,
   not as derived structures); a global-environment mutation primitive
   (`SET`/`DEFINE`-shaped) and symbol property lists (`lib/00-core.lisp`
-  and the module system are unwritable without both). A destructive
-  cons-mutation primitive is *not* required — see Part XI.
+  and the module system are unwritable without both). Cons cells are
+  immutable — no destructive mutation primitive exists or may exist; see
+  Part XII.
 - **Control**: the special forms and evaluation-order guarantees of Parts
   VI–VII, including the exact tail-call position list, one non-local-exit
   mechanism, one dynamic-binding mechanism, and one error-signalling
@@ -563,6 +665,11 @@ set (Part XI says which forms have that latitude):
   document but cannot run the portable checker has not delivered a
   platform serious programs can be written against.
 - **Capability-gated I/O**: Part IX.
+- **Step-budget fencing (fuel)**: Part X — a native step counter charged
+  on every evaluation step, a `WITH-FUEL`-shaped fence with
+  attenuation-only nesting, and a setter that only widens the budget from
+  outside a fence. Orthogonal to capabilities and to the recursion-depth
+  bound; a host needs all three to safely run untrusted code.
 - **Reader/printer**: Parts II–III, with the extension/minimal split Part
   II states.
 - **The exact set of builtin names `lib/*.lisp` invokes**, spelled and
@@ -575,12 +682,12 @@ set (Part XI says which forms have that latitude):
   of this bullet, and a host cannot claim conformance against a subset of
   it chosen for its own convenience.
 
-## Part XI — Declared axes of host variation
+## Part XII — Declared axes of host variation
 
 This is the complete list of places a conformant host may produce
 observably different results from the Rust reference, and exactly what
 latitude each axis grants. Nothing outside this list is a free variable —
-if a rule in Parts II–X doesn't appear here, it is not optional.
+if a rule in Parts II–XI doesn't appear here, it is not optional.
 
 1. **Numeric precision beyond 64-bit signed integer range.** A host must
    declare one of two models and be internally consistent about it:
@@ -593,20 +700,34 @@ if a rule in Parts II–X doesn't appear here, it is not optional.
    integer range, both models must agree with each other and with the
    Rust reference exactly — this axis only has teeth once a computation's
    true result leaves that range.
-2. **Destructive cons mutation.** The reference implementation's
-   `RPLACA`/`RPLACD` are non-destructive (each returns a new cell rather
-   than mutating in place); `lib/*.lisp` never depends on in-place cons
-   mutation being observable, so a host may offer a genuinely destructive
-   `RPLACA`/`RPLACD` (a natural mapping if its host language already has
-   one, as CL's does for the SBCL port) or offer none at all, and either
-   choice conforms.
+2. ~~Destructive cons mutation.~~ **This is not an axis — cons cells must
+   be immutable, full stop, and this is a MUST, not a place hosts may
+   differ.** An earlier revision of this document listed destructive
+   `RPLACA`/`RPLACD` as a free choice, on the reasoning that `lib/*.lisp`
+   never observably depends on in-place mutation. That reasoning was
+   incomplete: the Rust reference's `RPLACA`/`RPLACD` return a *new* cons
+   cell rather than mutating in place for a specific, load-bearing reason
+   stated directly in its source comment (`src/evaluator/builtins_extra.rs`,
+   `BuiltinFunc::Rplaca`/`Rplacd`) — it is "an intentional safety feature"
+   that makes circular list construction *impossible*, and this document's
+   own Part III already relies on that: the printer has no cycle
+   detection and would exhaust the stack on a genuine cycle, and Part IV's
+   equality rules are only meaningful for finite structure. A host that
+   offers a genuinely destructive `RPLACA`/`RPLACD` — even one that seems
+   like a "natural mapping" onto its own host language's native mutation
+   (as CL's `RPLACA` would be for the SBCL port) — would let a Lamedh
+   program construct a cycle that the rest of this specification does not
+   define behavior for anywhere else. **`RPLACA`/`RPLACD` must be the same
+   non-destructive, always-returns-a-new-cell operation on every host, or
+   must be omitted entirely; a host must never expose a way to mutate an
+   existing cons cell's car or cdr in place.**
 3. **Whether `BLOCK`/`RETURN-FROM`, `HANDLER-CASE`, and `DEFMACRO`/`DEFEXPR`
    are true native primitives or are derived from `CATCH`/`THROW`,
    dynamic variables, and `VAU`+`EVAL` respectively.** The reference
    implementation happens to make all of these native, for performance;
    Part VI–VIII specify their observable behavior precisely enough that a
    from-scratch host may instead build every one of them as library code
-   on top of the smaller primitive set in Part X, and the result conforms
+   on top of the smaller primitive set in Part XI, and the result conforms
    as long as the observable behavior matches.
 4. **Reader/printer extension timing** (Part II's closing paragraph): a
    host may defer implementing radix-prefixed/suffixed integer literals,
@@ -624,131 +745,43 @@ if a rule in Parts II–X doesn't appear here, it is not optional.
    is arguably a bug fix, not a divergence, since no corpus code depends
    on the former.
 6. **Native surface beyond this document.** A host may implement more
-   than Part X requires natively, for performance or because its host
+   than Part XI requires natively, for performance or because its host
    language already supplies it (the Rust reference's JIT and
    performance-sensitive paths are themselves full of this) — as long as
    the extra native surface is not required by `lib/*.lisp` and does not
    change the observable behavior of anything that is.
 
-## Part XII — Divergences observed in the three current hosts
-
-This section is not part of the conformance requirement; it is the audit
-trail #452's "Suggested next step" asked for, kept attached to the spec
-so future hosts and future revisions of this document can see where the
-existing three already disagree or fall short of it.
-
-**Rust reference** (`src/`) — implements more than this document
-requires, by design (axis 6 above):
-- Fixnums wrap on overflow and set an `OVERFLOW` flag rather than
-  trapping or promoting to bignum — the fixed-width-wraparound choice
-  under axis 1, and the one this document treats as the default reference
-  point other hosts compare against.
-- `RPLACA`/`RPLACD` exist natively but are non-destructive — axis 2,
-  documented as intentionally either-way.
-- `CATCH`/`THROW`, `BLOCK`/`RETURN-FROM`, and `HANDLER-CASE` are all
-  native special forms rather than being derived in Lisp — axis 3,
-  optional, a candidate for pushing down into `lib/` if anyone wants the
-  exercise.
-- `DEFEXPR`/`DEFMACRO` are native rather than derived from `VAU`+`EVAL`
-  — likewise axis 3.
-- `MOD`'s silent-zero overflow behavior (Part V, axis 5) is the
-  reference's own quirk, not a rule to reproduce.
-- The "not a function" error message embeds a Rust `{:?}` debug
-  rendering rather than a clean printed value (Part VIII) — an
-  implementation wart, not a wording a host should copy.
-- The reader natively parses radix literals and `#S(...)` record syntax
-  that Part II classifies as library-extendable, not kernel-required.
-
-**SBCL port** (`sbcl/`, PR #449) — a genuine conformance gap, not a
-performance choice:
-- Capabilities are tracked (`*capability-mask*`, `WITH-CAPABILITIES`) but
-  **not enforced** — every native I/O primitive in `sbcl/src/io.lisp`
-  (file, shell, process, TCP/UDP) remains callable regardless of the
-  mask. This fails Part IX as written; closing it is a prerequisite for
-  calling this port conformant, not a nice-to-have.
-- Integers are host-native CL bignums — the arbitrary-precision choice
-  under axis 1, documented candidly in `sbcl/README.md`.
-- Dynamic binding is satisfied by construction (reuses CL `PROGV`), and
-  `CATCH`/`THROW`/`BLOCK`/`HANDLER-CASE` map directly onto CL's own
-  equivalents rather than being derived from one primitive — permitted
-  under axis 3, though this port has never actually exercised "build
-  `BLOCK` from `CATCH`/`THROW` alone" the way a from-scratch host would
-  need to.
-- No portable HM type checker runs on this port yet (#451's subject); the
-  honest unverified-axiom surface (`DECLARE-TYPE!`/`SEE-TYPE`) stands in
-  for it rather than faking verification, which is the right interim
-  choice over silently reporting programs as checked when they are not.
-  It is not a kernel-primitive nonconformance — the Part X `EVAL` hook is
-  present — but per Part X's note, it is a priority to close, not an
-  indefinitely deferrable nice-to-have: a host without a working portable
-  checker is not yet a platform a major Lamedh program should be written
-  against.
-- **Not yet audited against this revision's precise rules** (this
-  document's Parts II–VIII were written after the original SBCL audit):
-  whether `sbcl/src/builtins.lisp`'s `EQ`/`CAR`/`CDR` layer falls back to
-  CL's native pointer-identity `EQ` on conses has not been checked. Per
-  Part IV's note, that fallback is not currently a spec violation either
-  way — the reference implementation's own cons-`EQ` behavior is an open
-  defect, not settled semantics — but it's worth tracking so the eventual
-  resolution of that defect can be applied consistently across hosts
-  rather than discovered as a fresh divergence per host.
-
-**`lamedh-asm`** (PR #450) — pre-conformant by its own README; a v0
-prototype that has not yet reached most of this surface, not a host that
-disagrees with it:
-- Confirmed, exactly as #452 states: `cons`/`car`/`cdr` are implemented
-  and used internally by the reader/compiler, but compiled Lamedh
-  `LAMBDA` bodies cannot call them — `(CONS 1 2)` in user code compiles
-  as a call to an unbound global, not a primitive operation. Part X is
-  not yet met for user code.
-- No non-local-exit primitive, no dynamic-binding primitive: Part VI is
-  not met.
-- No macro/fexpr/`VAU` hook and no runtime `EVAL`: Part X's reflection
-  requirement is not met. The single-pass compiler's special-form
-  dispatch is a fixed table (`QUOTE`/`IF`/`DEFINE`/`LAMBDA`/five binops);
-  anything else compiles as an application.
-- No capability gating exists because no I/O is reachable from compiled
-  code at all yet: Part IX is vacuously unmet rather than violated.
-- The reader parses only signed integers, symbols, lists, and `'quote`
-  sugar — short of even Part II's stated minimum (no strings, no dotted
-  pairs). The printer round-trips only fixnums.
-- Fixnum overflow silently wraps with no overflow signal at all — a
-  degenerate case of the fixed-width axis (axis 1) that is missing the
-  "make it observable somehow" half of that axis's requirement, tracked
-  as a gap rather than a violation given the project's own v0 scope
-  statement.
-
-None of this makes `lamedh-asm` a conformance failure today: it is a v0
-prototype whose own README lists every one of these as a scope limit, not
-a silent trap. It is listed here so that closing each gap can be checked
-directly against this document rather than against the moving target of
-what the Rust reference happens to do.
-
 ## Part XIII — Status and suggested next step
 
-This revision replaces a category-sketch draft with source-verified
-semantics for the reader/printer grammar, the evaluation model, the
-numeric tower, equality, and the condition system — the parts of a real
-language specification a document naming five kernel *categories* cannot
-supply on its own. What remains open, tracked explicitly rather than
-smoothed over:
+This document is a specification, not an audit report: it states required
+and permitted behavior, and deliberately does not carry a running account
+of which host currently falls short of which rule. Per-host conformance
+gaps found while writing or reviewing this document are tracked as
+ordinary issues against the host in question — currently #455 (the SBCL
+port) and #456 (`lamedh-asm`) — and closed there as the host's own work,
+not maintained as prose here that would drift the moment either issue's
+status changes. A rule in Parts II–XII that a host doesn't yet meet is
+that host's issue tracker's business; this document only needs to be
+right about what the rule *is*.
+
+What remains open in the specification itself, tracked explicitly rather
+than smoothed over:
 
 - **Enumerate the exact builtin-name table** `lib/*.lisp` calls, per
   category (arithmetic, string, hash-table, array, and beyond), closing
-  Part X's last bullet. This is the largest remaining mechanical task and
+  Part XI's last bullet. This is the largest remaining mechanical task and
   the one most directly checkable by a script rather than by writing more
   prose.
-- **Audit the Rust reference's `NET-*`/`OS-*` capability names for actual
-  enforcement** at the call site, matching the depth already done here
-  for `SHELL`/`READ-FS`/etc. and for the SBCL port's gap.
-- **Verify the SBCL port's `EQ`-on-conses behavior** against Part IV's
-  rule specifically, as flagged in Part XII — this is the single most
-  likely place for a silent, hard-to-detect divergence to already exist.
-- **Reconcile the SBCL port's capability-enforcement gap** and give
-  `lamedh-asm` a tracked path through Parts II–X.
+- **Confirm the Rust reference's `NET-*`/`OS-*` capability names are
+  actually enforced** at the call site, matching the depth already
+  established here for `SHELL`/`READ-FS`/etc. — this is about the
+  yardstick's own internal consistency, not a host lagging behind it.
+- **Resolve issue #454** (`EQ` on cons cells) and update Part IV from
+  "undefined, open defect" to a real rule once it lands.
 - **Get the portable HM type checker (#451) actually running**,
-  unmodified, on every host that has the Part X `EVAL` hook — prioritized
-  above the other items in this list, per Part X's own statement of why.
+  unmodified, on every host that has the Part XI `EVAL` hook —
+  prioritized above the other items in this list, per Part XI's own
+  statement of why.
 - **Scope a `tests/kernel-conformance/` corpus**, per #452's own risk
   list, so this document does not decay the moment one host's convenience
   wins out over the line drawn here, and so conformance against this
