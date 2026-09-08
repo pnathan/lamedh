@@ -436,14 +436,62 @@ constructors -- returns (values name params doc body)."
     (done (make-vau-obj :operands-sym ops-sym :env-sym env-sym :env env :body (wrap-progn (cdr args))))))
 (setf (gethash (lsym "$VAU") *special-forms*) (gethash (lsym "VAU") *special-forms*))
 
-(defspecial "DEFMODULE" (args env whole)
-  "No-op in this port: every bootstrap file is loaded unconditionally (see
-sbcl/src/bootstrap.lisp), so there is no namespacing/search-path system to
-register against. Its argument forms are deliberately left unevaluated,
-matching a real module declaration's syntax -- (defmodule name (:export
-a b c) ...) -- so loading it never errors."
-  (declare (ignore env whole))
-  (done (car args)))
+(defvar *capability-mask* nil
+  "NIL = unmasked (every capability effective, matching this port -- see
+sbcl/README.md on sandboxing not being reproduced); otherwise a list of
+capability-name strings, the intersection of every enclosing
+WITH-CAPABILITIES fence.")
+
+(defparameter *all-capability-names*
+  '("READ-FS" "CREATE-FS" "TEMP-FS" "SHELL" "IO" "NET-DNS" "NET-CONNECT"
+    "NET-LISTEN" "OS-ENV" "OS-ENV-WRITE" "OS-PROCESS" "OS-SIGNAL"))
+
+(defun capability-mask-allows-p (name)
+  (or (null *capability-mask*)
+      (and (member (if (symbolp name) (symbol-name name) name) *capability-mask* :test #'string=) t)))
+
+(defvar *kernel-fuel* nil
+  "NIL when unarmed; otherwise a non-negative integer step budget, charged
+once per LEVAL trampoline iteration -- the same unit WITH-FUEL/STEP-COUNT
+(lib/22-guard.lisp, lib/26-instrument.lisp) measure and bound.")
+
+(defspecial "WITH-FUEL" (args env whole)
+  (declare (ignore whole))
+  (destructuring-bind (n-form &rest body) args
+    (let ((n (leval n-form env)) (prev *kernel-fuel*))
+      (done (let ((*kernel-fuel* (if *kernel-fuel* (min n *kernel-fuel*) n)))
+              (unwind-protect (progn-eval body env)
+                (setf *kernel-fuel* prev)))))))
+
+(defspecial "WITH-CAPABILITIES" (args env whole)
+  (declare (ignore whole))
+  (destructuring-bind (caps-form &rest body) args
+    (let* ((requested (mapcar #'symbol-name (leval caps-form env)))
+           (new-mask (if *capability-mask* (intersection *capability-mask* requested :test #'string=) requested)))
+      (done (let ((*capability-mask* new-mask)) (progn-eval body env))))))
+
+(defspecial "DEFSTRUCT-TYPED" (args env whole)
+  "(DEFSTRUCT-TYPED name (field type)...) -- the native-record kernel
+primitive DEFRECORD's compiled tier expands into. In this port every
+record uses the same LAMEDH-STRUCT representation (see the \"Records\"
+section above), so this just declares the schema and installs a
+constructor, field accessors, and mutating setters -- each given a
+DECLARED type scheme, exactly as the reference implementation's compiled
+tier does."
+  (declare (ignore whole))
+  (destructuring-bind (name . field-specs) args
+    (record-declare* name field-specs)
+    (let ((ctor (lsym (concatenate 'string "MAKE-" (symbol-name name)))))
+      (env-set-local env ctor (lambda (&rest vals) (apply #'record-new* name vals)))
+      (declare-type!* ctor (list (lsym "->") (mapcar #'cadr field-specs) name)))
+    (dolist (spec field-specs)
+      (let* ((field (car spec))
+             (getter (lsym (concatenate 'string (symbol-name name) "-" (symbol-name field))))
+             (setter (lsym (concatenate 'string "SET-" (symbol-name name) "-" (symbol-name field) "!"))))
+        (env-set-local env getter (lambda (self) (record-ref* self field)))
+        (declare-type!* getter (list (lsym "->") (list name) (cadr spec)))
+        (env-set-local env setter (lambda (self val) (record-set!* self field val)))))
+    (done name)))
 
 (defspecial "JIT-OPTIMIZE" (args env whole)
   "No-op in the SBCL port: no separate typed JIT exists here. Native
@@ -589,8 +637,82 @@ its shallow-bound value), then evaluate BODY."
              (progn-eval handler-body henv))))))))
 
 ;;; ============================================================================
+;;; Records (DEFRECORD/DEFSTRUCT-TYPED's runtime representation)
+;;; ============================================================================
+;;;
+;;; One runtime representation for every record, matching the reference
+;;; implementation's StructObj: LAMEDH-STRUCT (defined in reader.lisp, ahead
+;;; of the #S(...) literal reader) holds a brand (type-name symbol) and a
+;;; values vector. A global schema registry maps a brand to its ordered
+;;; field-name list so RECORD-REF/RECORD-WITH can resolve a field name to a
+;;; vector index. This port has no separate "compiled tier": every record,
+;;; whether DEFRECORD chose the compiled or dynamic tier in the reference
+;;; implementation, is represented and accessed identically here -- see
+;;; sbcl/README.md.
+
+(defvar *record-schemas* (make-hash-table :test 'eq)
+  "Brand (symbol) -> ordered list of field-name symbols.")
+
+(defun record-declare* (name field-specs)
+  (setf (gethash name *record-schemas*) (mapcar #'car field-specs))
+  name)
+
+(defun record-field-index (brand field)
+  (or (position field (gethash brand *record-schemas*))
+      (lamedh-error (format nil "record ~A has no field ~A" brand field))))
+
+(defun record-new* (brand &rest values)
+  (make-lamedh-struct :type-name brand :values (coerce values 'simple-vector)))
+
+(defun record-ref* (self field)
+  (unless (lamedh-struct-p self) (lamedh-error (format nil "RECORD-REF: not a record: ~A" (lprint-to-string self))))
+  (svref (lamedh-struct-values self) (record-field-index (lamedh-struct-type-name self) field)))
+
+(defun record-set!* (self field val)
+  (setf (svref (lamedh-struct-values self) (record-field-index (lamedh-struct-type-name self) field)) val))
+
+(defun record-with* (self &rest kvs)
+  (let ((new (copy-seq (lamedh-struct-values self))) (brand (lamedh-struct-type-name self)))
+    (loop for (k v) on kvs by #'cddr do (setf (svref new (record-field-index brand k)) v))
+    (make-lamedh-struct :type-name brand :values new)))
+
+(defun record-brand* (v) (and (lamedh-struct-p v) (lamedh-struct-type-name v)))
+(defun record-fields* (v) (and (lamedh-struct-p v) (coerce (lamedh-struct-values v) 'list)))
+
+;;; ============================================================================
+;;; The (approximated) type-checker surface
+;;; ============================================================================
+;;;
+;;; This port does not implement the reference implementation's HM type
+;;; checker (src/check.rs): the declared-scheme axiom system it works
+;;; alongside (DECLARE-TYPE!/SEE-TYPE) is preserved honestly instead of
+;;; faked as fully verified -- see sbcl/README.md. DECLARE-TYPE! is exactly
+;;; what its name says even in the reference implementation: an axiom
+;;; trusted at call sites, not derived from the body, so reporting every
+;;; declared symbol as DECLARED (never TYPED/CHECKED, which promise
+;;; body-derived verification this port cannot perform) is accurate, not
+;;; optimistic.
+
+(defvar *declared-types* (make-hash-table :test 'eq))
+
+(defun declare-type!* (name scheme) (setf (gethash name *declared-types*) scheme) name)
+
+(defun see-type* (name)
+  (let ((scheme (gethash name *declared-types*)))
+    (if scheme
+        (list (lsym "DECLARED") scheme)
+        (list (lsym "DYNAMIC") "not statically checked in this port (no HM checker implemented)"))))
+
+;;; ============================================================================
 ;;; The evaluator
 ;;; ============================================================================
+
+(declaim (inline charge-kernel-fuel))
+(defun charge-kernel-fuel ()
+  (when *kernel-fuel*
+    (if (<= *kernel-fuel* 0)
+        (progn (setf *kernel-fuel* nil) (lamedh-error "fuel exhausted (kernel step budget)"))
+        (decf *kernel-fuel*))))
 
 (defun expand-macro-call (m arg-forms)
   (let* ((menv (make-child-env (macro-obj-env m)))
@@ -599,6 +721,7 @@ its shallow-bound value), then evaluate BODY."
 
 (defun leval (form env)
   (loop
+    (charge-kernel-fuel)
     (cond
       ((null form) (return nil))
       ((symbolp form)

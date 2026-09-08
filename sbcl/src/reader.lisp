@@ -8,6 +8,12 @@
 
 (in-package #:lamedh-rt)
 
+;;; A Lamedh record/struct value (DEFRECORD/DEFSTRUCT-TYPED's runtime
+;;; representation -- see runtime.lisp's "records" section for the
+;;; constructor/accessor primitives). Defined here, ahead of RUNTIME.LISP,
+;;; because the #S(...) reader literal below constructs one directly.
+(defstruct lamedh-struct type-name values)
+
 (defstruct (cursor (:constructor %make-cursor (text len &optional (pos 0))))
   (text "" :type simple-string)
   (len 0 :type fixnum)
@@ -111,8 +117,8 @@ result, not collapsed to a single value by a short-circuiting OR."
               (when (member (cur-peek c) '(#\+ #\-)) (cur-advance c))
               (read-digits c))
             (return-from try-read-float
-              (values (coerce (read-from-string (subseq (cursor-text c) start (cursor-pos c)))
-                              'double-float)
+              (values (let ((*read-default-float-format* 'double-float))
+                        (coerce (read-from-string (subseq (cursor-text c) start (cursor-pos c))) 'double-float))
                       t)))))
       (setf (cursor-pos c) start)
       (values nil nil))))
@@ -296,6 +302,11 @@ result, not collapsed to a single value by a short-circuiting OR."
   (when (cur-eof-p c) (reader-error* "unexpected end of input"))
   (let ((ch (cur-peek c)))
     (cond
+      ((and (char= ch #\#) (member (cur-peek c 1) '(#\S #\s)))
+       (cur-advance c) (cur-advance c)
+       (let ((body (read-list c)))
+         (unless (consp body) (reader-error* "#S(...) requires a brand and fields"))
+         (make-lamedh-struct :type-name (car body) :values (coerce (cdr body) 'simple-vector))))
       ((char= ch #\() (read-list c))
       ((char= ch #\") (read-string-literal c))
       ((char= ch #\')

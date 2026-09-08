@@ -11,5 +11,7 @@
                (:file "runtime")
                (:file "printer")
                (:file "builtins")
+               (:file "extra")
+               (:file "io")
                (:file "bootstrap")
                (:file "cli")))

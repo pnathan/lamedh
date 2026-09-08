@@ -8,10 +8,26 @@ native primitives, all written in Common Lisp under `sbcl/src/`.
 
 It reuses the reference implementation's own standard-library *source*
 (`sbcl/lib/*.lisp` are byte-for-byte copies of files under `../lib/`) so
-that the same Lamedh-level code — `defun`, `let`, macros, fexprs, `vau`,
-`prog`/`go` loops, and so on — runs unmodified on both interpreters. That is
-the load-bearing conformance claim of this port: not "the two READMEs agree
-about the syntax," but "the same `.lisp` files execute correctly on both."
+that the same Lamedh-level code runs unmodified on both interpreters. That
+is the load-bearing conformance claim of this port: not "the two READMEs
+agree about the syntax," but "the same `.lisp` files execute correctly on
+both." `sbcl/src/bootstrap.lisp` loads every file in the same order as the
+reference implementation's `with_stdlib()` (`src/lib.rs`'s
+`STDLIB_SOURCES`) — the full Prelude plus every optional module: records
+and the condensation change-plane, the module/namespace system, guard
+fences, the structural pattern matcher and rulebook optimizer, sum types,
+instrumentation, typed protocols, text/ports/base64/hex/url/json/mime,
+shell, OS, TCP/UDP, and regex.
+
+**A design principle this port follows throughout**: when a reference
+`.lisp` file needed something host-specific, the fix was to add the
+*minimal* native kernel hook that file actually calls (a record
+constructor, a byte-level port primitive, a UTF-8 codec) and then load the
+*unmodified* Lamedh source — never to reimplement that file's own logic in
+Common Lisp. The Lamedh-level API stays the shared, portable surface;
+only the handful of truly representation-specific primitives underneath it
+differ per host, exactly as they do between the reference implementation's
+own Rust kernel and its Lisp-layer stdlib.
 
 ## Running it
 
@@ -45,25 +61,24 @@ sbcl --non-interactive --load tests/run-tests.lisp
 ```
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
-implementation's `tests/lisp/*.lisp` language-level fixtures — and runs them
-through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`). At the
-time of writing this passes all 188 assertions across arithmetic, lists,
-predicates, list-processing (`mapcar`/`assoc`/`subst`/`sublis`/...),
-strings/symbols, every core special form (`prog`/`let`/`label`/`defexpr`/
-`defmacro`/quasiquote), `for`/`while` loops, hash tables and property
-lists, and bitwise operations.
+implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
+them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
+At the time of writing this passes all **512 assertions** across
+arithmetic, lists, predicates, list-processing, strings/symbols and string
+completions, the TEXT UTF-8 boundary, every core special form, loops, hash
+tables/plists, bitwise operations, and the broader stdlib-battery and
+FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
 
-## What is a genuine parallel implementation vs. what is explicitly out of scope
+## What's implemented from scratch in Common Lisp (`sbcl/src/`)
 
-**Implemented from scratch in Common Lisp** (`sbcl/src/`):
-
-- `reader.lisp` -- a hand-written recursive-descent reader matching the
+- `reader.lisp` — a hand-written recursive-descent reader matching the
   reference grammar: Lisp-1.5 octal `177Q` and assembly-style hex `0FFh`
   literals, CL-style `#x`/`#b`/`#o` radix literals, the `'c'` character
   literal (disambiguated from the quote reader macro), earmuff (`*name*`)
   and keyword (`:name`) symbol classes, `` ` ``/`,`/`,@`/`#'` reader macros,
-  line and nesting `#| |#` block comments, and shebang stripping.
-- `runtime.lisp` -- the environment model (lexical frame chain over a
+  the `#S(brand v1 v2 ...)` record literal, line and nesting `#| |#` block
+  comments, and shebang stripping.
+- `runtime.lisp` — the environment model (lexical frame chain over a
   single global/root frame; dynamic/special variables reuse SBCL's own
   `PROGV`/`SYMBOL-VALUE` machinery rather than reimplementing shallow
   binding) and the evaluator: a trampolined `LEVAL` giving proper tail-call
@@ -74,80 +89,135 @@ lists, and bitwise operations.
   `PROGN`, `SETQ`, `DEF`, `DEFDYNAMIC`/`DEFVAR`, `LAMBDA`, `FUNCTION`,
   `LABEL`, `DEFINE`, `DEFEXPR`, `DEFMACRO`, anonymous `MACRO`/`FEXPR`/`VAU`
   constructors, `PROG`/`RETURN`/`GO`, `WHILE`, `FOR`, `LET`/`LET*`, `BLOCK`/
-  `RETURN-FROM`, `CATCH`/`THROW`, `UNWIND-PROTECT`, `HANDLER-CASE`), and
-  first-class lexical closures, macros, fexprs, and Kernel-style `vau`
-  operatives.
-- `printer.lisp`, `builtins.lisp` -- readable-value printing and the
-  ~120 native primitives the bootstrap library is built on (cons-cell
-  kernel, arithmetic, strings, hash tables, arrays, property lists,
-  `eval`/`apply`/`funcall`).
+  `RETURN-FROM`, `CATCH`/`THROW`, `UNWIND-PROTECT`, `HANDLER-CASE`,
+  `DEFSTRUCT-TYPED`, `WITH-FUEL`, `WITH-CAPABILITIES`), first-class lexical
+  closures, macros, fexprs, and Kernel-style `vau` operatives, plus the
+  record system (one runtime representation, `LAMEDH-STRUCT`, shared by
+  every `DEFRECORD`/`DEFSTRUCT-TYPED` — see "Records" below) and a kernel
+  step-fuel counter charged once per trampoline iteration
+  (`WITH-FUEL`/`STEP-COUNT`'s shared unit).
+- `printer.lisp` — readable-value printing, including `#S(...)` records.
+- `builtins.lisp` — the cons-cell kernel, arithmetic (with Lisp-1.5 char
+  promotion: a Char value numifies to its code point in `+`/`-`/`=`/`<`/...,
+  matching `(+ 'a' 1)` => `98`), strings, hash tables, arrays,
+  property lists, `eval`/`apply`/`funcall`/`gensym`/`intern`.
+- `extra.lisp` — the native hooks the condensation/records, module, guard-
+  fence, and instrumentation *Lamedh* files call into: `RECORD-NEW`/
+  `RECORD-REF`/`RECORD-WITH`/`RECORD-BRAND`/`RECORD-FIELDS`, the
+  `DECLARE-TYPE!`/`SEE-TYPE` axiom surface (see "The type checker" below),
+  `ERRORSET`/`SEE-SOURCE`, `SEXPR-RENAME` and the `$MODULE-SOURCE-LOOKUP`
+  module registry, `KERNEL-FUEL-REMAINING`/`KERNEL-FUEL-SET!`, and `SPAWN`'s
+  synchronous fallback (see "Deliberate deviations").
+- `io.lisp` — host I/O: files, byte-level ports (file/memory/stdio), the
+  explicit UTF-8↔String boundary, `(shell ...)` (`uiop:run-program`), OS
+  process/environment/time/randomness/spawn primitives (`sb-posix`), TCP/
+  UDP (`sb-bsd-sockets`), a from-scratch backtracking regex engine, and
+  honest "unavailable" TLS stubs (see below).
 
-**Reused unmodified as data** (`sbcl/lib/`): `00-core.lisp` through
-`05-math.lisp`, `08-vau.lisp`, `09-lisp15.lisp`, `10-testing.lisp`,
-`12-control.lisp` through `15-sets-hash.lisp`, `17-arrays.lisp`, and
-`21-cl-compat.lisp` — copied verbatim from `../lib/`. This is the Prelude
-plus the control-flow/functional/string/set/array/CL-compat layer: `defun`
-(including `&optional`/`&key` extended lambda lists), `when`/`unless`/
-`case`/`typecase`/`dolist`/`dotimes`, `flet`/`macrolet`/`fexprlet`/
-`vaulet`, the functional toolkit (`filter`/`reduce`/`fold`/`zip`/`group-by`/
-...), the full string library, set/alist/hash-table helpers, arrays, and
-`setf`/`push`/`pop`/`incf`/`decf`. `JIT-OPTIMIZE` (which `defun`'s expansion
-calls on every definition) is a no-op special form here rather than an
-error, so these files load byte-for-byte unmodified.
+## Reused unmodified as data (`sbcl/lib/`)
 
-**Explicitly out of scope for this port** (documented, not silently
-dropped): the typed JIT / Cranelift backend and `defun*`/HM type inference
-(`src/check.rs`, `src/jit*`); `defrecord`/protocols/condensation
-(`20-condensation.lisp`, `29-protocols.lisp`); the module/namespace system
-(`06-require.lisp`, `27-modules.lisp` — `REQUIRE`/`PROVIDE`/`DEFMODULE`
-exist here only as harmless no-ops so files that call them still load);
-guard fences and capability processes (`22-guard.lisp`); structural pattern
-matching and the rule-based optimizer (`23-match.lisp`, `24-rules.lisp`);
-sum types and instrumentation (`25-variants.lisp`, `26-instrument.lisp`);
-`format` (`18-format.lisp`); and every host-integration module gated behind
-a capability in the reference implementation (`07-shell.lisp`, networking,
-TLS, OS, regex, base64/hex/URL/JSON/MIME). None of these are conceptually
-irreconcilable with this architecture — they were simply out of scope for
-the time available. The sandboxing capability model itself is not
-reproduced; this port is meant to run trusted Lamedh source, matching how
-it is invoked here (its own process, not embedded as a library the way
-`lamedh-cli` embeds the Rust crate).
+Every file `sbcl/src/bootstrap.lisp` loads is a byte-for-byte copy of the
+corresponding `../lib/*.lisp` file: `00` through `06`, `08`, `09`, `10`,
+`12` through `44`, and `97` through `99` — i.e. everything in the
+reference implementation's `with_stdlib()` load list. This is the entire
+standard library: `defun` (including `&optional`/`&key` extended lambda
+lists), `when`/`unless`/`case`/`typecase`/`dolist`/`dotimes`, `flet`/
+`macrolet`/`fexprlet`/`vaulet`, the functional toolkit, the full string
+library, set/alist/hash-table helpers, arrays, `setf`/`push`/`pop`/`incf`/
+`decf`, `REQUIRE`/`PROVIDE` and `DEFMODULE`/`WITH-MODULE`/`IMPORT`,
+`DEFRECORD`/`DERIVE`/the sexpr change plane, guard fences and (a
+synchronous approximation of) capability processes, `MATCH`/
+`DESTRUCTURING-BIND`/`SGREP`/`REWRITE`, the rulebook optimizer,
+`DEFVARIANT`/`VARIANT-CASE`/Option/Result, `TRACE`/`TIME`/`STEP-COUNT`,
+typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`) and conformance
+(`IMPLEMENTS!`), `TEXT`/`PORTS`/`BASE64`/`HEX`/`URL`/`JSON`/`MIME`, `SHELL`,
+`NET`/`TCP`/`UDP`/`HTTP`, `OS`/`OS-LINUX`, `TLS`, `REGEX`, and the REPL
+help/documentation system.
 
-## Deliberate semantic deviations
+## The type checker
 
-- **Integers are CL bignums**, not wrapping 64-bit integers. The reference
+The reference implementation's HM type checker (`src/check.rs`) is not
+ported: this is the one genuinely large subsystem left out, since a real
+port would be its own substantial project. What *is* preserved, honestly:
+`DECLARE-TYPE!`/`SEE-TYPE` (the declared-scheme axiom surface every
+`DEFRECORD`/`DEFVARIANT`/protocol instance calls into) records every
+declared scheme and reports it back as `(DECLARED scheme)` — which is
+exactly what a `DECLARE-TYPE!` axiom *means* even in the reference
+implementation (trusted at call sites, not derived from the body) — while
+anything never declared reports `(DYNAMIC "not statically checked in this
+port")` rather than being reported as verified. `defun*`/HM inference and
+the typed JIT are consequently also not ported; `JIT-OPTIMIZE` is a no-op
+special form so `defun`'s expansion (which calls it on every definition)
+still loads unmodified. `RECORD-COMPILED-P` always reports `NIL`: this
+port has no separate compiled tier (every record — whichever tier
+`DEFRECORD` would have chosen in the reference implementation — uses the
+same `LAMEDH-STRUCT` representation), so reporting `NIL` is accurate, not
+a missed optimization to fix.
+
+**Architecture note for a future native-compilation pass**: the reference
+implementation's typed JIT (Cranelift) is a *separate* code-generation
+backend bolted onto its interpreter. This port does not need an equivalent
+second backend at all: once a Lamedh-level type check (a port of
+`src/check.rs`, or the `defun*`/`check-type` surface) accepts a function as
+fully typed, that function's body can be handed directly to **SBCL's own
+native compiler** (`compile`) instead of being interpreted by `LEVAL` — SBCL
+is already a mature, optimizing compiler for exactly the value
+representations this port uses (fixnums, double-floats, conses,
+`SIMPLE-VECTOR`). The type checker's job becomes deciding *when* it is safe
+to compile, not *how* to emit machine code. Not yet implemented.
+
+## Deliberate deviations
+
+- **Integers are CL bignums**, not wrapping 64-bit integers; the reference
   implementation's `OVERFLOW` flag and float-promotion-on-overflow behavior
   is not reproduced.
 - **`EQ`** is identity for conses, symbols, and callables, but *value*
-  equality for the immutable atomic types (numbers, characters, strings) --
-  matching the reference implementation's derived structural equality on
-  `LispVal`, not a naive CL `EQ` (which would make two `read`-produced
-  strings with the same content compare unequal).
-- **`PROG`'s `GO`/`RETURN`** are implemented with CL `CATCH`/`THROW` under
-  fixed tags scoped to the nearest enclosing `PROG` (an unmatched `GO`
-  label signals an error rather than searching an outer `PROG`), matching
-  the reference implementation's own non-lexical, nearest-enclosing-loop
-  semantics.
-- **`HANDLER-CASE`** supports exactly the `(error (var) ...)` clause shape
-  used throughout the reference stdlib (there is no user-facing condition
-  type hierarchy to discriminate on here).
-- **Backtraces, kernel fuel budgets (`WITH-FUEL`), and the capability mask
-  (`WITH-CAPABILITIES`)** are not implemented; forms that use them are
-  simply not loaded (see "explicitly out of scope" above).
-
-## Architecture note: native compilation
-
-The reference implementation ships a typed JIT (Cranelift) as a *separate*
-compiled tier alongside its tree-walking interpreter. This port does not
-duplicate that machinery. Instead, `JIT-OPTIMIZE` is a no-op here (see
-`runtime.lisp`), and the intended path to native speed is architecturally
-simpler on this host: once a Lamedh-level type check (a port of
-`src/check.rs`'s HM inference, or the `defun*`/`declare-typed`/`check-type`
-surface) accepts a function as fully typed, that function's body can be
-handed directly to **SBCL's own native compiler** (`compile`) instead of
-being interpreted by `LEVAL` -- SBCL is already a mature, optimizing
-native-code compiler for exactly the value representations this port uses
-(fixnums, double-floats, conses, `SIMPLE-VECTOR`). This eliminates the need
-for a second code-generation backend entirely: the type checker's job
-becomes deciding *when* it is safe to compile, not *how* to emit machine
-code. This is a natural next step, not yet implemented.
+  equality for the immutable atomic types (numbers, characters, strings),
+  matching the reference implementation's derived structural equality.
+- **Integer `/`** truncates (C/Rust-style), unlike CL's exact-rational
+  result for non-dividing integers; **`ROUND`** rounds half away from zero
+  (`f64::round`'s convention), not CL's round-half-to-even.
+- **A Char value numifies** to its code point in every arithmetic/
+  comparison builtin (`(+ 'a' 1)` => `98`, `(= 'A' 65)` => true) — the
+  reference implementation's "char promotes to integer like C" rule.
+  `CODE-CHAR` returns a one-character *string* and `MAKE-CHAR` returns a
+  genuine Char value — two different return types, both intentional, per
+  the reference stdlib's own documented convention.
+- **`PROG`'s `GO`/`RETURN`** use CL `CATCH`/`THROW` under fixed tags scoped
+  to the nearest enclosing `PROG` (an unmatched `GO` label errors rather
+  than searching an outer `PROG`), matching the reference implementation's
+  own non-lexical, nearest-enclosing-loop semantics.
+- **`HANDLER-CASE`** supports the `(error (var) ...)` clause shape used
+  throughout the reference stdlib, plus a catch-all for any other signaled
+  CL condition (so a builtin's internal error — division by zero, a
+  wrong-type argument — is still catchable).
+- **The capability/sandbox model is not enforced.** Every host-facing
+  primitive is always available; `WITH-CAPABILITIES` only narrows the
+  introspection-level mask `CAPABILITIES-EFFECTIVE`/`FEATURE-ENABLED-P`
+  report, exactly mirroring the reference implementation's own attenuation
+  bookkeeping, but nothing is actually gated behind it. This port is meant
+  to run trusted Lamedh source in its own process, not to sandbox
+  untrusted code.
+- **`SPAWN`/`AWAIT`** (capability processes, `lib/22-guard.lisp`) evaluate
+  their body *synchronously* on the calling thread instead of on a genuine
+  share-nothing interpreter thread — same functional result, no real
+  concurrency.
+- **Regex** (`lib/44-regex.lisp`) is backed by a straightforward
+  recursive-descent / backtracking matcher (literals, `.`, `*`/`+`/`?`/
+  `{n,m}`, character classes, `^`/`$`, `|`, capturing groups, `\d`/`\w`/`\s`
+  escapes) instead of the reference implementation's RE2-semantics `regex`
+  crate wrapper — functionally equivalent on that common subset but
+  *without* RE2's guaranteed-linear-time property (a pathological pattern
+  can backtrack exponentially here), and without named capture groups or
+  full Unicode-aware classes.
+- **TLS is honestly unavailable**, not silently degraded: every
+  `lib/43-tls.lisp` primitive exists (so the file loads without error) but
+  signals a clear error when actually invoked. This is a genuine external-
+  dependency gap — SBCL has no built-in TLS, and this port was built
+  without network access to fetch an OpenSSL binding (`cl+ssl`) — not a
+  design choice; wiring one in is a mechanical follow-up.
+- **`OS:NOW`** has one-second resolution (`get-universal-time`), not
+  nanosecond; **`OS:HOSTNAME`**/**`OS:PPID`** use `(machine-instance)`/
+  `sb-posix:getppid` rather than reading `/proc` directly, and **file
+  permission predicates** (`FILE-WRITABLE-P`, ...) are approximations, not
+  a real `stat`-based check.
