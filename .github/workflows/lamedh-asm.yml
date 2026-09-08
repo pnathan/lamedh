@@ -1,0 +1,37 @@
+name: lamedh-asm
+
+# lamedh-asm is a separate, freestanding x86-64 host: no Cargo project,
+# no Rust toolchain, no dependency on anything under src/ or cli/. This
+# gate mirrors that isolation — it never touches cargo, and path filters
+# mean it only runs when lamedh-asm/ (or this workflow file) actually
+# changes, so it never blocks or slows down PRs that don't touch it.
+
+on:
+  push:
+    branches: ["main", "plurality"]
+    paths:
+      - "lamedh-asm/**"
+      - ".github/workflows/lamedh-asm.yml"
+  pull_request:
+    branches: ["main", "plurality"]
+    paths:
+      - "lamedh-asm/**"
+      - ".github/workflows/lamedh-asm.yml"
+
+jobs:
+  test:
+    name: lamedh-asm test (nasm + ld only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nasm
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Confirm no Cargo project here
+        run: |
+          if [ -f lamedh-asm/Cargo.toml ]; then
+            echo "lamedh-asm/Cargo.toml exists — it must not, this host is deliberately outside the Cargo workspace" >&2
+            exit 1
+          fi
+      - name: make test
+        working-directory: lamedh-asm
+        run: make test
