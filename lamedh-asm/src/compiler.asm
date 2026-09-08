@@ -67,6 +67,8 @@ extern patch_imm64
 extern emit_add_reg_imm32
 extern print_fixnum
 extern print_newline
+extern emit_jl
+extern emit_load_stack_arg
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -91,6 +93,7 @@ kw_catch:  db "CATCH"
 kw_throw:  db "THROW"
 kw_print:  db "PRINT"
 kw_newline: db "NEWLINE"
+kw_rest:   db "&REST"
 
 section .data
 align 8
@@ -113,6 +116,14 @@ global catch_stack
 global catch_stack_top
 catch_stack: resb (256 * 32)
 catch_stack_top: resq 1
+
+; Host-side scratch cell for compile_lambda's &REST handling: holds the
+; rest-parameter symbol (or IMM_NIL) across the span between
+; split_rest_params and the point where the prologue's rest-list-building
+; loop is emitted. Safe as a single global cell (not a stack/recursion
+; slot) because nothing in that span recurses into compile_lambda —
+; recursive compilation only happens later, while compiling the body.
+rest_sym_scratch: resq 1
 
 section .text
 
@@ -337,6 +348,52 @@ build_param_frame:
     mov rax, r13
     pop r14
     pop r13
+    pop r12
+    pop rbx
+    ret
+
+; split_rest_params(rdi=params list) -> rax=fixed_list, rdx=rest_sym.
+; Splits a LAMBDA params list at "&REST": everything before it becomes
+; fixed_list (order preserved); the symbol immediately following &REST
+; is returned as rest_sym. No &REST present -> fixed_list = the whole
+; input list, rest_sym = IMM_NIL.
+split_rest_params:
+    push rbx
+    push r12
+    mov rbx, rdi
+    cmp rbx, IMM_NIL
+    jne .have_head
+    mov rax, IMM_NIL
+    mov rdx, IMM_NIL
+    jmp .out
+.have_head:
+    mov rdi, rbx
+    call car
+    mov r12, rax                      ; head symbol
+    mov rdi, r12
+    mov rsi, kw_rest
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_rest
+    mov rdi, rbx
+    call cadr
+    mov rdx, rax                        ; rest_sym
+    mov rax, IMM_NIL                      ; fixed_list = NIL (nothing after &REST)
+    jmp .out
+.not_rest:
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call split_rest_params
+    push rax                                ; fixed_tail
+    push rdx                                  ; rest_sym
+    mov rdi, r12
+    mov rsi, [rsp+8]
+    call cons
+    mov rdx, [rsp]
+    add rsp, 16
+.out:
     pop r12
     pop rbx
     ret
@@ -763,7 +820,10 @@ compile_lambda:
     push r15
     mov rbx, rdi
     call cadr
-    mov r12, rax                     ; params list
+    mov rdi, rax
+    call split_rest_params
+    mov r12, rax                        ; fixed params list (&REST stripped)
+    mov [rest_sym_scratch], rdx           ; rest_sym, or IMM_NIL if none
     mov rdi, rbx
     call caddr
     mov r13, rax                       ; body (single form)
@@ -802,12 +862,34 @@ compile_lambda:
     jbe .nregparams_ok1
     mov rax, 3
 .nregparams_ok1:
+    cmp qword [rest_sym_scratch], IMM_NIL
+    je .no_rest_bump1
+    inc rax                                                ; &REST consumes one more local slot
+.no_rest_bump1:
     mov rsi, rax
     mov rdi, r12
     call build_frame_from_list                        ; free_frame
 
+    ; If this lambda has a &REST param, give it its own (symbol . disp)
+    ; frame entry — disp is always -32 here: the restriction that &REST
+    ; is only supported when nfixed>=3 (see split_rest_params call site
+    ; and the README) means the register-spilled slots always fill all
+    ; 3 of -8,-16,-24, so the REST slot always lands at -32.
+    mov r12, rax                                            ; free_frame (r12 is dead here: last read by build_frame_from_list above)
+    mov rdi, [rest_sym_scratch]
+    cmp rdi, IMM_NIL
+    je .no_rest_frame
+    mov rsi, -32
+    call cons                                                 ; (rest_sym . -32)
+    mov rdi, rax
+    mov rsi, r12
+    call cons                                                   ; (rest_pair . free_frame)
+    jmp .have_combined_frame
+.no_rest_frame:
+    mov rax, r12
+.have_combined_frame:
+    mov rsi, rax                                                  ; combined = rest-entry? ++ free_frame
     mov rdi, [rsp]                                      ; param_frame (top of [param_frame, jmp_over_site])
-    mov rsi, rax                                          ; free_frame
     call append_lists
     push rax                                                ; [new_scope, param_frame, jmp_over_site]
 
@@ -818,6 +900,10 @@ compile_lambda:
     jbe .nregparams_ok2
     mov rax, 3
 .nregparams_ok2:
+    cmp qword [rest_sym_scratch], IMM_NIL
+    je .no_rest_bump2
+    inc rax
+.no_rest_bump2:
     add rax, rbx
     imul eax, eax, 8
     mov edi, eax
@@ -843,6 +929,19 @@ compile_lambda:
     call emit_store_local
 .no_p2:
 
+    ; If &REST, stash nargs (still in rax — untouched by the register
+    ; spills above, which only ever move rsi/rdx/rcx) into the REST
+    ; slot itself: it's not read as the REST param until the loop below
+    ; writes the real list there, so it's free scratch until then, and
+    ; this is the last point before free-var extraction gets a chance to
+    ; clobber rax.
+    cmp qword [rest_sym_scratch], IMM_NIL
+    je .no_rest_save
+    mov dil, REG_RAX
+    mov esi, -32
+    call emit_store_local
+.no_rest_save:
+
     ; extract captured free vars from the closure object (still in rdi)
     xor r12, r12                       ; i
 .free_loop:
@@ -865,6 +964,10 @@ compile_lambda:
     jbe .minok                                        ; params actually use
     mov eax, 3                                          ; (see build_param_frame)
 .minok:
+    cmp qword [rest_sym_scratch], IMM_NIL
+    je .no_rest_bump3
+    inc eax                                              ; free vars start one slot later
+.no_rest_bump3:
     add eax, r12d
     inc eax
     imul eax, eax, -8
@@ -874,6 +977,79 @@ compile_lambda:
     inc r12
     jmp .free_loop
 .free_done:
+
+    ; --- &REST: build the rest-arg list from the stack-passed tail ---
+    ; Restriction: only supported when nfixed>=3, so every rest argument
+    ; is stack-resident (see split_rest_params / README). Walks from the
+    ; last actual argument down to nfixed, consing each onto an
+    ; accumulator, so the final list is in left-to-right order.
+    ;
+    ; The loop index lives in RDX, not RCX: emit_cmp_rax_imm64 loads its
+    ; own immediate into RCX as scratch (see codegen.asm), so a loop
+    ; index kept in RCX gets silently destroyed the first time the
+    ; loop-continuation test runs.
+    cmp qword [rest_sym_scratch], IMM_NIL
+    je .no_rest_loop
+
+    mov dil, REG_RDX
+    mov esi, -32
+    call emit_load_local                            ; target: rdx = nargs (stashed above)
+    mov dil, REG_RDX
+    mov esi, -4
+    call emit_add_reg_imm32                           ; target: rdx = nargs-4 (index of the last stack arg)
+    mov rsi, IMM_NIL
+    mov dil, REG_RBX
+    call emit_mov_reg_imm64                             ; target: rbx = acc = NIL
+
+    call codegen_here
+    push rax                                              ; [loop_start]
+
+    mov dil, REG_RAX
+    mov sil, REG_RDX
+    call emit_mov_rr                                        ; target: rax = rdx (index)
+    mov rsi, r14
+    sub rsi, 3                                                ; nfixed-3, a compile-time constant
+    call emit_cmp_rax_imm64                                     ; target: cmp rax, (nfixed-3) (clobbers rcx)
+    call emit_jl                                                  ; target: jl -> done (rax = rel32 field addr)
+    push rax                                                        ; [jl_site, loop_start]
+
+    mov dil, REG_RAX
+    mov sil, REG_RDX
+    call emit_load_stack_arg                                          ; target: rax = stack_arg[rdx]
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr                                                    ; target: rdi = arg value
+    mov dil, REG_RSI
+    mov sil, REG_RBX
+    call emit_mov_rr                                                      ; target: rsi = acc
+    lea rax, [rel cons]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                                                 ; target: rax = &cons
+    mov dil, REG_RAX
+    call emit_call_reg                                                        ; target: call rax -> rax = new pair
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                                                           ; target: acc = new pair
+    mov dil, REG_RDX
+    mov esi, -1
+    call emit_add_reg_imm32                                                      ; target: rdx -= 1
+
+    call emit_jmp32                                                                ; target: jmp -> loop_start
+    mov rdi, rax
+    mov rsi, [rsp+8]                                                                 ; loop_start
+    call patch_rel32
+
+    call codegen_here                                                                  ; done:
+    mov rdi, [rsp]                                                                       ; jl_site
+    mov rsi, rax
+    call patch_rel32
+    add rsp, 16                                                                            ; discard jl_site,loop_start
+
+    mov dil, REG_RBX
+    mov esi, -32
+    call emit_store_local                                                                   ; target: REST slot = acc
+.no_rest_loop:
 
     ; compile the body with the new scope installed
     mov rax, [current_scope]
@@ -1217,15 +1393,31 @@ compile_call:
     call emit_pop_reg
 .n_after_a2:
 
+    ; rax = actual arg count, for a &REST-taking callee to know how many
+    ; stack-passed args past its fixed params actually exist (see
+    ; compile_lambda). Every call sets this, whether or not the callee
+    ; happens to want it — a callee that doesn't just ignores it.
+    mov rsi, r13
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+
     call emit_jmp32
     mov r12, rax                              ; jmp_over_site
 
     call codegen_here
     push rax                                    ; [trampoline_entry]
 
+    ; rax (nargs, set by the caller just before this call) must survive
+    ; the trampoline's own heavy use of rax as scratch, the same way
+    ; arg0/closure below must survive being repurposed as patch_rel32's
+    ; arguments — save it first, restore it last.
     mov dil, REG_RAX
-    mov esi, 0
-    call emit_load_rsp_disp8                        ; rax = return address (unpopped)
+    call emit_push_reg                              ; save nargs
+
+    mov dil, REG_RAX
+    mov esi, 8                                        ; return address is now
+    call emit_load_rsp_disp8                            ; one slot deeper, under
+                                                         ; the nargs we just saved
     mov edi, 4
     call emit_sub_rax_imm32                            ; rax = field_addr
 
@@ -1281,6 +1473,10 @@ compile_call:
     call emit_pop_reg                                                   ; rdi = tagged closure (restored)
     mov dil, REG_RAX
     call emit_pop_reg                                                     ; discard field_addr
+    mov dil, REG_RAX
+    call emit_pop_reg                                                     ; rax = nargs (restored,
+                                                                           ; overwriting the just-
+                                                                           ; discarded field_addr)
 
     mov dil, REG_RBX
     call emit_jmp_reg                                                       ; tail-jump into the resolved callee
@@ -1346,6 +1542,12 @@ compile_call:
     mov sil, REG_RAX
     mov edx, 8
     call emit_load_based
+    ; rax (used as scratch just above) is free again now that code_ptr
+    ; is safely in rbx — set it to the actual arg count (see the named
+    ; path's identical comment) right before the call itself.
+    mov rsi, r12
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
     mov dil, REG_RBX
     call emit_call_reg
 

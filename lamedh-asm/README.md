@@ -175,8 +175,11 @@ at runtime.
   calls; the inline-cache trampoline's *own* internal dispatch already
   ends in a tail-jump, but the enclosing function's call site itself
   still uses `call`.
-- No true variadic/`&rest` parameters yet — every param is positional,
-  just no longer capped at 3 (see the calling convention below).
+- `&REST` parameters are supported, but only when the fixed-parameter
+  count is >= 3 (`(LAMBDA (A B C &REST MORE) ...)`, not `(LAMBDA (A
+  &REST MORE) ...)`) — a deliberately narrow v1 that keeps every rest
+  argument stack-resident, never register-spilled, sidestepping the
+  register/stack boundary entirely (see the calling convention below).
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers
@@ -212,6 +215,24 @@ evaluation-order choice for anything with side effects in argument
 position, the same way classic cdecl's own right-to-left evaluation is
 a side effect of its stack layout rather than an accident — there is no
 C ABI here dictating otherwise, so the layout gets to decide the order.
+
+Every call site passes the actual argument count in `rax`, in addition
+to the first 3 arguments in registers and any remainder on the stack
+— set once at the call site and preserved through the inline-cache
+trampoline's own internal scratch use, whether or not the callee cares.
+A callee that ignores it pays nothing; a `&REST`-taking callee uses it
+to know how many stack-passed arguments past its fixed parameters
+actually exist. `&REST` is supported only when the fixed-parameter
+count is >= 3 (`split_rest_params` splits `(A B C &REST MORE)` into
+the fixed list `(A B C)` and the rest symbol `MORE` at `LAMBDA`-compile
+time), because that restriction guarantees every rest argument is
+stack-resident: the compiled prologue walks the stack-passed tail from
+the last actual argument down to the fixed count, consing each onto an
+accumulator (right-to-left, so the final list comes out in the
+original left-to-right order), and stores the result into the `&REST`
+parameter's own local slot — which always lands at `[rbp-32]`, right
+after the 3 register-spilled fixed-parameter slots, precisely because
+the restriction guarantees there are always exactly 3 of those.
 
 Compiled code preserves **no** register across a call into other
 compiled code — not even the base 8 GPRs used as scratch throughout
@@ -252,7 +273,10 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   every local to a fixed stack slot.
 - Proper tail calls: frame-reuse `jmp` for calls in tail position.
 - A copying or generational GC for the data heap.
-- Multi-expression lambda bodies (`PROGN`); variadic/`&rest` params.
+- Multi-expression lambda bodies (`PROGN`).
+- `&REST` params without the `nfixed>=3` restriction (would need a
+  register/stack-boundary-crossing rest list, not just a stack-only
+  one).
 - General (not single-level) free-variable propagation through nested
   lambdas.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured

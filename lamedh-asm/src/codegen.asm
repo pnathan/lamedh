@@ -363,6 +363,57 @@ emit_jne:
     pop rax
     ret
 
+; emit_jl(rel32 placeholder) -> rax = address of the rel32 field.
+; 0F 8C <rel32> — jump if less (signed)
+global emit_jl
+emit_jl:
+    mov rdi, 0x0F
+    call emit8
+    mov rdi, 0x8C
+    call emit8
+    call codegen_here
+    push rax
+    mov rdi, 0
+    call emit32
+    pop rax
+    ret
+
+; emit_load_stack_arg(dil=dst reg, sil=index reg)
+; MOV dst, [rbp + index*8 + 16] — reads the index'th stack-passed
+; argument (index 0 = the 4th positional argument, at [rbp+16]) when
+; the index is only known at runtime, e.g. building a &REST list. Every
+; other indexed/offset load in this compiler bakes its displacement as
+; a compile-time immediate; this is the one place an index is itself a
+; register, which is why it alone needs a SIB byte.
+global emit_load_stack_arg
+emit_load_stack_arg:
+    push rbx
+    push r12
+    mov bl, dil
+    mov r12b, sil
+    mov rdi, 0x48
+    call emit8
+    mov rdi, 0x8B
+    call emit8
+    mov al, 0x84                     ; mod10, rm=100 (SIB follows)
+    mov cl, bl
+    shl cl, 3
+    or al, cl
+    movzx rdi, al
+    call emit8                         ; modrm
+    mov al, 0xC0                        ; scale=11(x8), base=101(rbp)
+    mov cl, r12b
+    shl cl, 3
+    or al, cl
+    or al, 5
+    movzx rdi, al
+    call emit8                            ; sib
+    mov rdi, 16
+    call emit32                             ; disp32 = 16
+    pop r12
+    pop rbx
+    ret
+
 ; emit_jmp32() -> rax = address of the rel32 field. E9 <rel32>
 global emit_jmp32
 emit_jmp32:
