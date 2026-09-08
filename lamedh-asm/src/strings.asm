@@ -109,25 +109,36 @@ print_string:
     pop rbx
     ret
 
-; print_value(rdi=tagged value) -> writes a string's raw bytes, or a
-; fixnum's decimal value, dispatching on the tag at runtime (the
-; argument's type isn't known until then). This is what PRINT actually
-; calls; compile_print itself is unchanged — only the host address it
-; bakes moved from print_fixnum to this dispatcher.
+; print_value(rdi=tagged value) -> writes a string's raw bytes, a
+; float's fixed-decimal representation, or a fixnum's decimal value,
+; dispatching on the tag at runtime (the argument's type isn't known
+; until then). This is what PRINT actually calls; compile_print itself
+; is unchanged — only the host address it bakes moved from
+; print_fixnum to this dispatcher.
 extern print_fixnum
+extern is_float
+extern float_print
 global print_value
 print_value:
     push rbx
     mov rbx, rdi
     call is_string
     test rax, rax
-    jz .fixnum
+    jnz .string
+    mov rdi, rbx
+    call is_float
+    test rax, rax
+    jnz .float
+    mov rdi, rbx
+    call print_fixnum
+    jmp .out
+.string:
     mov rdi, rbx
     call print_string
     jmp .out
-.fixnum:
+.float:
     mov rdi, rbx
-    call print_fixnum
+    call float_print
 .out:
     pop rbx
     ret

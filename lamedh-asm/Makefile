@@ -9,7 +9,7 @@ LD      := ld
 BUILD   := build
 
 CORE := src/heap.asm src/print.asm src/reader.asm src/symtab.asm \
-        src/strings.asm src/fileio.asm src/codegen.asm src/compiler.asm
+        src/strings.asm src/floats.asm src/fileio.asm src/codegen.asm src/compiler.asm
 
 .PHONY: test clean
 

@@ -47,7 +47,7 @@ One 64-bit word per value; the low 2 bits are a tag (`src/tags.inc`):
 |------|-----------|---------|
 | `00` | fixnum    | bits 63:2, a signed 62-bit integer |
 | `01` | cons      | bits 63:2 (shifted) address a 16-byte `[car\|cdr]` cell |
-| `10` | heapobj   | address of a header word naming the object's kind (symbol, closure, string) |
+| `10` | heapobj   | address of a header word naming the object's kind (symbol, closure, string, float) |
 | `11` | immediate | `NIL`, `TRUE`, `FALSE`, `UNBOUND`, `EOF` |
 
 Fixnum arithmetic runs directly on the tagged (shifted-left-by-2)
@@ -65,12 +65,13 @@ programs this stage targets.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, `CATCH`/`THROW`,
-  `PRINT`/`NEWLINE`, `STRING-LENGTH`, and `FD-OPEN`/`FD-CLOSE`/
-  `FD-WRITE`/`FD-READ` — see "The kernel surface" below.
-- String literals (`"..."`) read as a length-prefixed byte-buffer
-  heapobj (`HDR_STRING`) and are self-evaluating, exactly like a
+  `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
+  `FD-READ`, and `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<` — see "The kernel
+  surface" below.
+- String and float literals (`"..."`, `3.14`) read as heapobjs
+  (`HDR_STRING`, `HDR_FLOAT`) and are self-evaluating, exactly like a
   fixnum literal — no compiler change was needed for that part, since
-  the data heap never relocates and a string's absolute address bakes
+  the data heap never relocates and a heapobj's absolute address bakes
   as a code immediate the same way any other literal datum does.
 - `LAMBDA` with real closure conversion: a free-variable scan
   (`scan_free_vars`) decides what a nested lambda must capture *before*
@@ -175,6 +176,23 @@ specifically to test where the line falls:
   error folds to an empty string rather than raising anything, there
   being no conditions yet to raise (same honest scope as `THROW` with
   no matching `CATCH`).
+- **`FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`** are a boxed IEEE754 double
+  (`HDR_FLOAT`, `floats.asm`) and its arithmetic — but, unlike every
+  other primitive above, arithmetic on it is *not* inlined as target
+  SSE2 instructions. `codegen.asm`'s own header is explicit that it
+  hand-encodes only the 8 base GPRs; rather than extend it with XMM
+  register support, each float op is an ordinary host routine (using
+  XMM registers freely on the host side, invisibly to the target-code
+  emitter) reached through `compile_binary_hostcall`/
+  `compile_unary_hostcall` — the exact same mechanism `CAR`/`CDR`/`EQ`
+  already use to reach `car`/`cdr`, just with a different address
+  baked in. `FLOAT` converts a fixnum to a float (the only way to get
+  one other than a reader literal); `F<` returns `IMM_TRUE`/`IMM_NIL`,
+  matching `<`'s own convention. This is a real, honestly-labeled
+  trade-off, not a shortcut disguised as a feature: a JIT worth the
+  name would inline these; a real function call per float operation is
+  the cost of not yet teaching `codegen.asm` about XMM registers at
+  all (see Roadmap).
 
 Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
 from their ordinary value cell, so a name can be a macro or a function
@@ -192,14 +210,22 @@ at runtime.
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
-- No garbage collector. No bignums, floats, hash tables, vectors,
-  `vau`, first-class conditions, or dynamic variables yet.
+- No garbage collector. No bignums, hash tables, vectors, `vau`,
+  first-class conditions, or dynamic variables yet.
 - Strings are immutable byte buffers only: no `STRING-REF`,
   `STRING-APPEND`, `SUBSTRING`, or any string-building primitive yet —
   just reader literals, `STRING-LENGTH`, and `PRINT`. Escapes are
   limited to `\n`, `\t`, `\"`, `\\` (anything else after a backslash is
   copied through literally); a literal longer than the reader's 4KB
   scratch buffer is silently truncated.
+- Float arithmetic (`F+`/`F-`/`F*`/`F/`/`F<`) is a real host-routine
+  call per operation, not an inlined target instruction — see "The
+  kernel surface" above. `PRINT` of a float is always fixed
+  6-decimal-place formatting (`3.500000`), never scientific notation
+  or shortest round-trip output; there is no `FLOAT<`-style family for
+  `<=`/`>`/`>=`/`=` yet, and no mixed fixnum/float arithmetic (`(F+ 1
+  2.0)` does not work — both operands must already be floats; use
+  `FLOAT` to convert first).
 - File I/O does not loop on a short `read`/`write`, and folds a
   negative syscall result (an error) to an empty string rather than
   signaling anything — there being no conditions yet to raise.
@@ -316,7 +342,12 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   lambdas.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured
   variable is visible across closures over it.
-- Bignums, floats, hash tables, arrays, `vau`, dynamic variables — the
+- XMM support in `codegen.asm`, so float arithmetic can be inlined as
+  target SSE2 instructions instead of a host-routine call per
+  operation; mixed fixnum/float arithmetic; `FLOAT<=`/`FLOAT>`/
+  `FLOAT>=`/`FLOAT=`; a real (shortest round-trip or scientific-
+  notation) float printer instead of fixed 6-decimal-place formatting.
+- Bignums, hash tables, arrays, `vau`, dynamic variables — the
   rest of the Lisp 1.5 + extensions surface the Rust interpreter
   (`../src`) already implements. `DEFMACRO` existing means most of
   `lib/08-vau.lisp`'s derived forms and the CL-compat layer are now

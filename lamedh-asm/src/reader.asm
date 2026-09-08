@@ -12,6 +12,7 @@
 extern data_alloc
 extern intern_symbol
 extern make_string
+extern make_float
 
 section .bss
 align 8
@@ -134,10 +135,17 @@ reader_skip_ws:
 .done:
     ret
 
-; read_number() -> rax = tagged fixnum. Assumes current char is '-' or a digit.
+; read_number() -> rax = tagged fixnum or tagged float. Assumes current
+; char is '-' or a digit. A '.' followed by at least one digit right
+; after the integer part switches this to a float literal (HDR_FLOAT,
+; see floats.asm); anything else (including a bare trailing '.', not
+; used by this project's grammar — no dotted pairs yet) leaves it a
+; plain fixnum.
 read_number:
     push rbx
     push r12
+    push r13
+    push r14
     xor r12, r12                  ; sign flag: 0 = positive
     call reader_peek
     cmp al, '-'
@@ -149,24 +157,94 @@ read_number:
 .loop:
     call reader_peek
     cmp rax, -1
-    je .done
+    je .int_done
     cmp al, '0'
-    jb .done
+    jb .int_done
     cmp al, '9'
-    ja .done
+    ja .int_done
     imul rbx, rbx, 10
     movzx rax, al
     sub rax, '0'
     add rbx, rax
     inc qword [reader_pos]
     jmp .loop
-.done:
+.int_done:
+    ; float literal? needs '.' followed by at least one digit
+    mov rax, [reader_pos]
+    mov rcx, [reader_buf]
+    cmp rax, [reader_end]
+    jae .fixnum_done
+    movzx rax, byte [rcx+rax]
+    cmp al, '.'
+    jne .fixnum_done
+    mov rax, [reader_pos]
+    inc rax
+    cmp rax, [reader_end]
+    jae .fixnum_done
+    mov rcx, [reader_buf]
+    movzx rax, byte [rcx+rax]
+    cmp al, '0'
+    jb .fixnum_done
+    cmp al, '9'
+    ja .fixnum_done
+    jmp .float_literal
+
+.fixnum_done:
     test r12, r12
     jz .pos
     neg rbx
 .pos:
     mov rax, rbx
     TO_FIXNUM rax
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+.float_literal:
+    inc qword [reader_pos]              ; consume '.'
+    xor r13, r13                          ; fractional digit accumulator
+    xor r14, r14                            ; count of fractional digits
+.frac_loop:
+    call reader_peek
+    cmp rax, -1
+    je .frac_done
+    cmp al, '0'
+    jb .frac_done
+    cmp al, '9'
+    ja .frac_done
+    imul r13, r13, 10
+    movzx rax, al
+    sub rax, '0'
+    add r13, rax
+    inc r14
+    inc qword [reader_pos]
+    jmp .frac_loop
+.frac_done:
+    cvtsi2sd xmm0, rbx                   ; int part
+    cvtsi2sd xmm1, r13                      ; fractional numerator
+    mov rax, 1
+    mov rcx, r14
+.pow_loop:
+    test rcx, rcx
+    jz .pow_done
+    imul rax, rax, 10
+    dec rcx
+    jmp .pow_loop
+.pow_done:
+    cvtsi2sd xmm2, rax                       ; 10^(fractional digit count)
+    divsd xmm1, xmm2
+    addsd xmm0, xmm1
+    test r12, r12
+    jz .float_pos
+    mov rax, 0x8000000000000000                ; flip sign bit
+    movq xmm2, rax
+    xorpd xmm0, xmm2
+.float_pos:
+    call make_float
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret

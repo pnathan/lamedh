@@ -73,6 +73,12 @@ extern file_open
 extern file_close
 extern file_write
 extern file_read
+extern float_of_fixnum
+extern float_add
+extern float_sub
+extern float_mul
+extern float_div
+extern float_lt
 extern emit_jl
 extern emit_load_stack_arg
 
@@ -104,6 +110,12 @@ kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
 kw_fd_write: db "FD-WRITE"
 kw_fd_read:  db "FD-READ"
+kw_float:    db "FLOAT"
+kw_fadd:     db "F+"
+kw_fsub:     db "F-"
+kw_fmul:     db "F*"
+kw_fdiv:     db "F/"
+kw_flt:      db "F<"
 kw_rest:   db "&REST"
 
 section .data
@@ -2195,6 +2207,83 @@ compile_form:
     jmp .out
 
 .not_fd_read:
+    mov rdi, r12
+    mov rsi, kw_float
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_float
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_of_fixnum]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_float:
+    mov rdi, r12
+    mov rsi, kw_fadd
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_fadd
+    lea rdx, [rel float_add]
+    jmp .do_float_binop
+.not_fadd:
+    mov rdi, r12
+    mov rsi, kw_fsub
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_fsub
+    lea rdx, [rel float_sub]
+    jmp .do_float_binop
+.not_fsub:
+    mov rdi, r12
+    mov rsi, kw_fmul
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_fmul
+    lea rdx, [rel float_mul]
+    jmp .do_float_binop
+.not_fmul:
+    mov rdi, r12
+    mov rsi, kw_fdiv
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_fdiv
+    lea rdx, [rel float_div]
+    jmp .do_float_binop
+.not_fdiv:
+    mov rdi, r12
+    mov rsi, kw_flt
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_flt
+    lea rdx, [rel float_lt]
+    jmp .do_float_binop
+.not_flt:
+    jmp .not_float_binop
+
+.do_float_binop:
+    mov r14, rdx                          ; host fn addr, across the two `car`s below
+    mov rdi, r13
+    call car                                ; arg1 form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                                  ; arg2 form
+    mov rsi, rax
+    pop rdi
+    mov rdx, r14
+    call compile_binary_hostcall
+    jmp .out
+
+.not_float_binop:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1
