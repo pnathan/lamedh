@@ -193,6 +193,22 @@ specifically to test where the line falls:
   name would inline these; a real function call per float operation is
   the cost of not yet teaching `codegen.asm` about XMM registers at
   all (see Roadmap).
+- **Hash tables are not a kernel primitive at all** — the concrete
+  demonstration issue #452's kernel/library boundary was framed around.
+  `HT-EMPTY`/`HT-SET`/`HT-GET`/`HT-ASSOC`/`HT-HAS-KEY`
+  (`tests/cases/020_hashtable.asm`) are four small `DEFINE`s built from
+  nothing but `CONS`/`CAR`/`CDR`/`EQ`/`NULLP`/`IF` — the exact same
+  primitives exposed for this purpose above, with zero new kernel
+  surface. It's a persistent (not mutated-in-place) alist: `HT-SET`
+  conses a new `(key . val)` pair onto the *front* of the table rather
+  than rewriting a cell, returning a new table and leaving the old one
+  intact — not a design preference, but what falls out of not having a
+  `RPLACD`/`SET-CDR!` primitive to mutate an existing cons with (this
+  project captures and reads heap values everywhere, but doesn't yet
+  mutate one after creation). A real key comparison would need
+  `EQUAL`-style structural equality to support string/list keys, not
+  just `EQ`'s pointer identity — fine for the symbol/fixnum keys this
+  library is tested with, a real limit for anything else.
 
 Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
 from their ordinary value cell, so a name can be a macro or a function
@@ -347,16 +363,18 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   operation; mixed fixnum/float arithmetic; `FLOAT<=`/`FLOAT>`/
   `FLOAT>=`/`FLOAT=`; a real (shortest round-trip or scientific-
   notation) float printer instead of fixed 6-decimal-place formatting.
-- Bignums, hash tables, arrays, `vau`, dynamic variables — the
-  rest of the Lisp 1.5 + extensions surface the Rust interpreter
-  (`../src`) already implements. `DEFMACRO` existing means most of
-  `lib/08-vau.lisp`'s derived forms and the CL-compat layer are now
-  just a matter of writing them, not extending the compiler; with
-  `CATCH`/`THROW` also in place, so are `BLOCK`/`RETURN-FROM` and a
-  first `HANDLER-CASE`-shaped condition system. Hash tables in
-  particular are planned as a pure-Lamedh alist library once `DEFMACRO`
-  and the list-op builtins exist — a deliberate demonstration of the
-  kernel/library boundary from issue #452, not a new kernel primitive.
+- Bignums, arrays, `vau`, dynamic variables — the rest of the Lisp 1.5
+  + extensions surface the Rust interpreter (`../src`) already
+  implements. `DEFMACRO` existing means most of `lib/08-vau.lisp`'s
+  derived forms and the CL-compat layer are now just a matter of
+  writing them, not extending the compiler; with `CATCH`/`THROW` also
+  in place, so are `BLOCK`/`RETURN-FROM` and a first
+  `HANDLER-CASE`-shaped condition system.
+- A `RPLACD`/`SET-CDR!`-style mutation primitive, so the hash table
+  library (see "kernel surface" above) can rewrite a binding in place
+  instead of consing a new persistent table on every `HT-SET`; `EQUAL`-
+  style structural equality, so it can take string/list keys, not just
+  `EQ`-comparable ones.
 - String mutation/building primitives (`STRING-REF`, `STRING-APPEND`,
   `SUBSTRING`) and a real `FORMAT` built on top of `PRINT`/`FD-WRITE`
   and variadic args.
