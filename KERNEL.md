@@ -1,10 +1,9 @@
 # KERNEL.md — the Lamedh language specification
 
-This document is the specification referenced by issue #452: it defines the
-observable semantics of Lamedh precisely enough that two independently
-written hosts can agree on what a program means, and it defines the minimal
-primitive surface a host must expose to run the shared `lib/*.lisp` stdlib
-corpus unmodified. As of this writing three hosts exist or are emerging —
+This document defines the observable semantics of Lamedh precisely enough
+that two independently written hosts agree on what a program means, and it
+defines the minimal primitive surface a host must expose to run the shared
+`lib/*.lisp` stdlib corpus unmodified. Three hosts exist or are emerging —
 
 - the Rust reference implementation (`src/`, `cli/`)
 - a standalone Common Lisp / SBCL port (`sbcl/`, PR #449)
@@ -12,24 +11,22 @@ corpus unmodified. As of this writing three hosts exist or are emerging —
 
 ## Part I — Scope, status, and method
 
-**The Rust reference implementation is the semantics yardstick.** Where this
-document states a rule of observable behavior, that rule is the Rust
-reference's actual, verified behavior — not a plausible-sounding generic
-Lisp convention, and not this document's own invention. Every normative rule
-below was extracted by reading the Rust source directly (`src/reader.rs`,
-`src/printer.rs`, `src/lib.rs`, `src/environment.rs`, `src/evaluator/*.rs`)
-and, where a claim mattered enough to get wrong, verified against the exact
-code a second time. This matters because Lamedh has a few genuinely
+**The Rust reference implementation is the semantics yardstick.** Every
+rule of observable behavior stated in this document is the Rust
+reference's actual behavior, verified directly against its source
+(`src/reader.rs`, `src/printer.rs`, `src/lib.rs`, `src/environment.rs`,
+`src/evaluator/*.rs`) — not a plausible-sounding generic Lisp convention,
+and not an invention of this document. Lamedh has a few genuinely
 surprising rules — surprising enough that a competent implementer guessing
-from "it's a Lisp" would get them wrong — and those are exactly the rules a
-spec exists to pin down. §IV's EQ rule for cons cells is the sharpest
+from "it's a Lisp" gets them wrong — and those are exactly the rules a spec
+exists to pin down. Part IV's `EQ` rule for cons cells is the sharpest
 example; see there.
 
 **A small, closed set of declared axes is where hosts are allowed to
 differ**, listed in full in Part XII. Outside that list, a host's observable
 behavior must match this document — which is to say, must match the Rust
 reference — exactly. The list exists so that SBCL's native bignums and
-`lamedh-asm`'s tag-cancellation wraparound arithmetic don't get flagged as
+`lamedh-asm`'s tag-cancellation wraparound arithmetic do not get flagged as
 spec violations for a choice that is genuinely a host's to make; it is
 short and explicit specifically so that "conformant divergence" and "actual
 bug" stay distinguishable, which a document that just says "hosts may vary
@@ -39,9 +36,9 @@ reasonable things" cannot do.
 of Common Lisp or Scheme.** Where a rule below looks unusual next to CL or
 Scheme habit (fixed-arity-plus-rest lambda lists with no `&optional`/`&key`;
 a condition system with no type hierarchy; `EQ` false on every cons pair),
-that is not an oversight this spec is working around — it is what the
-language is, checked directly against the one implementation that has run
-the entire `lib/*.lisp` corpus in production use.
+that is not an oversight — it is what the language is, and it is the
+language that the entire `lib/*.lisp` corpus already runs in production
+against.
 
 ## Part II — Lexical grammar (the reader)
 
@@ -226,27 +223,24 @@ flagged here as an open defect rather than frozen as normative, precisely
 because it is exactly the kind of surprising rule a spec exists to catch
 before three hosts each guess differently:**
 
-> **The reference implementation currently makes `EQ` unconditionally
-> `NIL` whenever either argument is a cons cell — including comparing a
-> cons cell against itself.** `(let ((x (cons 1 2))) (eq x x))` returns
-> `NIL`. The code (`src/evaluator/builtins_core.rs`, `BuiltinFunc::Eq`)
-> justifies this with a comment citing the Lisp 1.5 manual's position that
-> `EQ` is defined only on atoms — but the 1.5 manual describing `EQ` as
-> guaranteed only on atoms is not the same claim as "must be `false` on
-> every non-atom pair," and real Lisp 1.5 implementations, and every
-> Lisp since, have used `EQ` on lists as pointer-identity comparison in
-> practice: `(eq x x)` for the same actual cons cell is true everywhere
-> else this operator exists. Hard-coding it to `NIL` here is a stronger
-> and more surprising restriction than the manual actually requires, and
-> was surprising even to this project's own maintainer on first
-> encountering it. **This document does not require a conformant host to
-> reproduce this behavior.** It is filed as a defect against the
-> reference implementation (issue #454) rather than settled here as
-> intended semantics; until that issue resolves, treat `EQ` on cons cells
-> as **undefined behavior a portable program must not rely on either way**
-> — neither on it being `NIL`, nor on it being pointer identity — and
-> watch the linked issue for the outcome that will eventually replace this
-> paragraph with a real rule.
+> **The reference implementation makes `EQ` unconditionally `NIL` whenever
+> either argument is a cons cell — including comparing a cons cell against
+> itself.** `(let ((x (cons 1 2))) (eq x x))` returns `NIL`. The code
+> (`src/evaluator/builtins_core.rs`, `BuiltinFunc::Eq`) justifies this with
+> a comment citing the Lisp 1.5 manual's position that `EQ` is defined only
+> on atoms — but the 1.5 manual describing `EQ` as guaranteed only on
+> atoms is not the same claim as "must be `false` on every non-atom pair,"
+> and real Lisp 1.5 implementations, and every Lisp since, use `EQ` on
+> lists as pointer-identity comparison in practice: `(eq x x)` for the
+> same actual cons cell is true everywhere else this operator exists.
+> Hard-coding it to `NIL` here is a stronger and more surprising
+> restriction than the manual actually requires. **This document does not
+> require a conformant host to reproduce this behavior.** It is tracked
+> as a defect against the reference implementation, issue #454, rather
+> than settled here as intended semantics. Until #454 resolves, `EQ` on
+> cons cells is **undefined behavior a portable program must not rely on
+> either way** — neither on it being `NIL`, nor on it being pointer
+> identity.
 
 For every other type, `EQ` is defined as follows, and — because none of
 these types carry any notion of identity separate from their value in the
@@ -546,8 +540,7 @@ new binding rather than erroring when the target is unbound:**
    not, ordinary lexical rules apply and give the same answer by the usual
    route.
 
-   **A sharper, genuinely surprising consequence, confirmed directly
-   against the resolution code rather than assumed: declaring a symbol
+   **A sharper, genuinely surprising consequence: declaring a symbol
    dynamic is retroactive and global, with no way back.** Variable lookup
    (`Environment::resolve`) checks the symbol's `is_dynamic` flag fresh on
    *every* reference, not once at the binding site that created a frame
@@ -1036,3 +1029,21 @@ than smoothed over:
   wins out over the line drawn here, and so conformance against this
   specification is something a script can check rather than something
   only an audit essay can argue for.
+- **Prove the kernel primitive set is actually sufficient for serious
+  library code, not merely for what already happens to be native**
+  (issue #458): implement a well-typed, high-speed hash table from
+  scratch in Lamedh — over `typed-array` buckets and a hash function
+  written in Lamedh, type-checked via the portable HM checker (#451) or
+  `lib/29-protocols.lisp` — and benchmark it against the native
+  `HashTable` builtin this document's Part IV already specifies. A
+  language whose fast, typed collections are all native, with only a
+  slow or untyped escape hatch available for anything else, has not
+  actually delivered on Part XI's reflection requirements no matter how
+  precisely their observable behavior is pinned down here.
+- **Fix the kernel-fuel catch-and-reloop bypass** (issue #457): guest
+  code that catches the fuel-exhausted condition inside its own fence and
+  never returns from the handler gets an unconditional, indefinite fuel
+  bypass, not bounded cleanup grace — a real defect in the reference
+  implementation, not a tolerable quirk. Once fixed, Part X's framing of
+  this as permitted-but-not-required host behavior should be tightened to
+  disallow unconditional bypass outright.
