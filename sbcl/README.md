@@ -107,11 +107,12 @@ FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
   `DECLARE-TYPE!`/`SEE-TYPE` axiom surface (see "The type checker" below),
   `ERRORSET`/`SEE-SOURCE`, `SEXPR-RENAME` and the `$MODULE-SOURCE-LOOKUP`
   module registry, `KERNEL-FUEL-REMAINING`/`KERNEL-FUEL-SET!`, and `SPAWN`'s
-  synchronous fallback (see "Deliberate deviations").
-- `io.lisp` — host I/O: files, byte-level ports (file/memory/stdio), the
+  real-thread implementation (see "Deliberate deviations").
+- `io.lisp` — host I/O, every capability-gated primitive checking
+  `REQUIRE-FEATURE!`: files, byte-level ports (file/memory/stdio), the
   explicit UTF-8↔String boundary, `(shell ...)` (`uiop:run-program`), OS
   process/environment/time/randomness/spawn primitives (`sb-posix`), TCP/
-  UDP (`sb-bsd-sockets`), a from-scratch backtracking regex engine, and
+  UDP (`sb-bsd-sockets`), a Thompson-NFA/Pike's-VM regex engine, and
   honest "unavailable" TLS stubs (see below).
 
 ## Reused unmodified as data (`sbcl/lib/`)
@@ -125,8 +126,8 @@ lists), `when`/`unless`/`case`/`typecase`/`dolist`/`dotimes`, `flet`/
 `macrolet`/`fexprlet`/`vaulet`, the functional toolkit, the full string
 library, set/alist/hash-table helpers, arrays, `setf`/`push`/`pop`/`incf`/
 `decf`, `REQUIRE`/`PROVIDE` and `DEFMODULE`/`WITH-MODULE`/`IMPORT`,
-`DEFRECORD`/`DERIVE`/the sexpr change plane, guard fences and (a
-synchronous approximation of) capability processes, `MATCH`/
+`DEFRECORD`/`DERIVE`/the sexpr change plane, guard fences and real
+threaded capability processes, `MATCH`/
 `DESTRUCTURING-BIND`/`SGREP`/`REWRITE`, the rulebook optimizer,
 `DEFVARIANT`/`VARIANT-CASE`/Option/Result, `TRACE`/`TIME`/`STEP-COUNT`,
 typed protocols (`DEFPROTOCOL`/`DEFINSTANCE`) and conformance
@@ -191,25 +192,46 @@ to compile, not *how* to emit machine code. Not yet implemented.
   throughout the reference stdlib, plus a catch-all for any other signaled
   CL condition (so a builtin's internal error — division by zero, a
   wrong-type argument — is still catchable).
-- **The capability/sandbox model is not enforced.** Every host-facing
-  primitive is always available; `WITH-CAPABILITIES` only narrows the
-  introspection-level mask `CAPABILITIES-EFFECTIVE`/`FEATURE-ENABLED-P`
-  report, exactly mirroring the reference implementation's own attenuation
-  bookkeeping, but nothing is actually gated behind it. This port is meant
-  to run trusted Lamedh source in its own process, not to sandbox
-  untrusted code.
-- **`SPAWN`/`AWAIT`** (capability processes, `lib/22-guard.lisp`) evaluate
-  their body *synchronously* on the calling thread instead of on a genuine
-  share-nothing interpreter thread — same functional result, no real
-  concurrency.
-- **Regex** (`lib/44-regex.lisp`) is backed by a straightforward
-  recursive-descent / backtracking matcher (literals, `.`, `*`/`+`/`?`/
-  `{n,m}`, character classes, `^`/`$`, `|`, capturing groups, `\d`/`\w`/`\s`
-  escapes) instead of the reference implementation's RE2-semantics `regex`
-  crate wrapper — functionally equivalent on that common subset but
-  *without* RE2's guaranteed-linear-time property (a pathological pattern
-  can backtrack exponentially here), and without named capture groups or
-  full Unicode-aware classes.
+- **The capability/sandbox model is enforced.** Every host-facing
+  primitive (files, ports, shell, OS, network) calls `REQUIRE-FEATURE!`
+  against a granted-capability set (the CLI's `--sandbox`/`--capability`
+  flags, or `ENABLE-FEATURE`/`DISABLE-FEATURE` from host code) intersected
+  with the dynamic-extent `WITH-CAPABILITIES` mask, matching the reference
+  implementation's attenuation-only semantics: a fence can only narrow the
+  active set, never widen it. Once a resource handle is open (a port, a
+  spawned OS process), subsequent operations on that same handle are not
+  re-gated — "continue authority" — mirroring the reference implementation.
+- **`MAKE-ENVIRONMENT`** (no arguments) returns a genuinely independent root
+  environment: its own global table, seeded from a snapshot of the calling
+  environment's current bindings at the moment of the call, with no shared
+  mutable state afterward. `(the-environment)`/`(current-environment)`
+  capture the calling lexical scope. One narrower-than-the-reference-
+  implementation scope decision, made deliberately given this port's
+  reliance on process-wide CL symbol identity: dynamic-variable defaults,
+  property lists, record/variant schemas, and declared type schemes stay
+  process-wide, not per-environment.
+- **`SPAWN`/`AWAIT`** (capability processes, `lib/22-guard.lisp`) run on
+  genuine `SB-THREAD` threads. Each spawned child gets a fresh root
+  environment (a snapshot of the parent's globals at fork time, via
+  `MAKE-FRESH-ROOT-ENV`), so later global definitions in either thread are
+  invisible to the other — real share-nothing for the Lamedh environment
+  model. The same process-wide-cache caveat as `MAKE-ENVIRONMENT` above
+  applies here too: plists, record/type schemas, and the dynamic-symbol
+  registry are still shared CL hash tables across every thread.
+- **Regex** (`lib/44-regex.lisp`) is backed by a Thompson-NFA byte-code
+  compiler and a Pike's-VM simulator: the AST compiles to a small program
+  (`:CHAR`/`:ANY`/`:CLASS`/`:BOL`/`:EOL`/`:SAVE`/`:JMP`/`:SPLIT`/`:MATCH`),
+  and matching simulates every live thread in lockstep with per-step,
+  per-program-counter deduplication — the same mechanism that gives RE2 its
+  guarantee. Total work is bounded by O(length(s) × length(program)):
+  linear in the input for a fixed pattern, with no possibility of the
+  catastrophic exponential blowup a backtracking matcher suffers on
+  patterns such as `(a+)+b`. Leftmost-first (greedy, Perl/PCRE) priority
+  among ambiguous alternatives is preserved by processing threads in
+  priority order; unanchored search injects a fresh lowest-priority start
+  thread at every position not yet matched, in one linear left-to-right
+  pass. Named capture groups and full Unicode-aware classes remain
+  unsupported, as they were under the prior backtracking matcher.
 - **TLS is honestly unavailable**, not silently degraded: every
   `lib/43-tls.lisp` primitive exists (so the file loads without error) but
   signals a clear error when actually invoked. This is a genuine external-
