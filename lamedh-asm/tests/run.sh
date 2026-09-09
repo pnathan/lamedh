@@ -224,6 +224,16 @@ else
 (PUTP (QUOTE PROPTEST) "b" 2)
 (REMPROP (QUOTE PROPTEST) "a")
 (PRINT (LIST (GETP (QUOTE PROPTEST) "a") (GETP (QUOTE PROPTEST) "b")))
+(NEWLINE)
+(PRINT (LIST NIL (EQ NIL (QUOTE ())) (IF NIL 1 2) (IF NIL 1 NIL)))
+(NEWLINE)
+(DEFMACRO DOC-MACRO (X)
+  "a docstring, followed by a second body form — a single-body-form-only
+DEFMACRO would silently keep only this string and discard the real
+template below, the exact shape lib/02-cxr.lisp's own `defcxr` macro
+uses to build CADR/CADDR/etc."
+  (LIST (QUOTE QUOTE) (LIST (QUOTE EXPANDED) X)))
+(PRINT (DOC-MACRO 5))
 LISP
     want_out='T
 T
@@ -284,7 +294,9 @@ CAUGHT
 3
 7
 a docstring
-(() 2)'
+(() 2)
+(() T 2 ())
+(EXPANDED 5)'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

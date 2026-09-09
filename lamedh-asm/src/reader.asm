@@ -408,6 +408,29 @@ read_symbol:
     jae .done                       ; defensive cap; see README roadmap
     jmp .loop
 .done:
+    ; "NIL" is read as the literal empty-list immediate directly, never
+    ; interned as a symbol at all — matching the Rust reference's own
+    ; reader (reader.rs: `"NIL" => LispVal::Nil`, distinct from "T",
+    ; which the reference reads as an ordinary interned symbol needing
+    ; its own self-binding bootstrap — see symtab.asm's
+    ; bootstrap_globals). An earlier version of this reader treated
+    ; bareword NIL as an ordinary (permanently unbound) symbol instead,
+    ; a real conformance bug: `(IF NIL 1 2)` evaluated NIL as an
+    ; unbound global variable reference (truthy, since only the literal
+    ; NIL immediate is false) and returned 1, and reference stdlib code
+    ; uses bareword `nil` constantly as a self-evaluating literal.
+    cmp rbx, 3
+    jne .intern
+    cmp byte [symbuf], 'N'
+    jne .intern
+    cmp byte [symbuf+1], 'I'
+    jne .intern
+    cmp byte [symbuf+2], 'L'
+    jne .intern
+    mov rax, IMM_NIL
+    pop rbx
+    ret
+.intern:
     mov rdi, symbuf
     mov rsi, rbx
     call intern_symbol

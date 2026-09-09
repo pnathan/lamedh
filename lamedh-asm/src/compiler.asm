@@ -138,6 +138,7 @@ kw_apply: db "APPLY"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
 kw_defdynamic: db "DEFDYNAMIC"
+kw_vau: db "$VAU"
 kw_lambda: db "LAMBDA"
 kw_defmacro: db "DEFMACRO"
 kw_cons:   db "CONS"
@@ -2649,6 +2650,104 @@ invoke_macro:
     pop rbx
     ret
 
+; compile_vau(rdi = the full ($VAU (operands-param env-param) body...)
+; form) — Kernel-style vau (John Shutt's vau-calculus), the one
+; primitive KERNEL.md's own `defvau` needs beneath it (already
+; present, unmodified, in the reference's own lib/00-core.lisp, which
+; this host already loads — see README Roadmap): identical to LAMBDA
+; (params is exactly the fixed 2-element `(operands-param env-param)`
+; list `defvau` always builds; body compiles unchanged) except the
+; resulting closure is retagged HDR_OPERATIVE instead of HDR_CLOSURE at
+; the moment it's built — see tags.inc's own comment for why an
+; operative can otherwise be a completely ordinary LAMBDA-built closure
+; under the hood. compile_form's own operative-call check (the
+; ".not_macro_call" dispatch, further down) is the only other place
+; that cares about the distinction: it decides whether a call site
+; evaluates its operands normally or bakes them as a raw QUOTE'd list
+; plus a placeholder "caller's environment" value — exactly the way
+; DEFMACRO's own macro slot already decides between an ordinary
+; application and a macro expansion. v0 scope, narrower than the spec
+; on purpose: an operative is only recognized at a literal call site
+; `(name arg...)` whose head is a global already bound to one at
+; compile time (the same top-level-and-before-use discipline DEFMACRO
+; needs, and the same "not lexically shadowed" gap DEFMACRO also has —
+; see README) — not via APPLY/FUNCALL, and not as a first-class value
+; passed around and called indirectly; "the caller's environment" is a
+; fixed placeholder value (global_environment_sentinel below), since
+; this kernel has no first-class environments — EVAL's own existing
+; 2-argument form already tolerates this for free (compile_unary_
+; hostcall only ever compiles EVAL's first operand, silently ignoring
+; a second one, so `(eval form e)` already evaluates `form` in the one
+; global environment this kernel has, exactly like 1-argument EVAL
+; always did) — meaning an operative body's `(eval x e)` on a call-site
+; *lexical* silently evaluates against the wrong (global) scope rather
+; than erroring; see README for which reference stdlib usages this
+; does and doesn't affect.
+compile_vau:
+    push rbx
+    mov rbx, rdi
+    call cdr
+    mov rbx, rax                        ; (params body...) — already
+                                         ; exactly LAMBDA's own cdr shape
+    mov rdi, kw_lambda
+    mov rsi, 6
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, rbx
+    call cons                             ; (LAMBDA params body...)
+    mov rdi, rax
+    call compile_lambda                     ; target rax = tagged closure
+                                             ; (HDR_CLOSURE)
+
+    ; --- retag the freshly built closure as HDR_OPERATIVE ---
+    mov dil, REG_RCX
+    mov sil, REG_RAX
+    call emit_mov_rr                          ; target: rcx = rax (save
+                                               ; tagged ptr)
+
+    mov edi, 0xFFFFFFFC
+    call emit_and_rax_imm32                     ; target: rax = raw addr
+                                                 ; (untagged)
+
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                              ; target: rbx = raw
+                                                   ; addr (store base)
+
+    mov rsi, HDR_OPERATIVE
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                         ; target: rax =
+                                                     ; HDR_OPERATIVE
+
+    mov edx, 0
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    call emit_store_based                             ; target:
+                                                       ; [rbx+0] = rax
+
+    mov dil, REG_RAX
+    mov sil, REG_RCX
+    call emit_mov_rr                                    ; target: rax =
+                                                         ; rcx (restore
+                                                         ; tagged ptr)
+
+    pop rbx
+    ret
+
+; global_environment_sentinel() -> rax = a dedicated interned symbol,
+; the placeholder "caller's environment" value an operative's own
+; env-param is bound to at a call site (compile_form's operative-call
+; check, below) — this kernel has exactly one environment (global), so
+; there is nothing more meaningful to pass; see compile_vau's own
+; comment.
+kw_global_environment_sentinel: db "LAMEDH-ASM-GLOBAL-ENVIRONMENT"
+kw_global_environment_sentinel_len: equ $ - kw_global_environment_sentinel
+global_environment_sentinel:
+    mov rdi, kw_global_environment_sentinel
+    mov rsi, kw_global_environment_sentinel_len
+    call intern_symbol
+    ret
+
 ; compile_defmacro(rdi = (DEFMACRO name (params) body) form)
 ; A macro transformer is compiled exactly like a LAMBDA — the name is
 ; simply skipped, giving a synthetic (LAMBDA params body) built with
@@ -2667,15 +2766,26 @@ compile_defmacro:
     mov rdi, rbx
     call caddr
     push rax                            ; [params]
+    ; body = every form after params — not just the first one — the
+    ; same "multiple body forms, implicitly PROGN-wrapped" support
+    ; compile_lambda's own body already has. A single-form-only body
+    ; silently discarded everything past a leading docstring: the
+    ; reference's own lib/02-cxr.lisp defines its `defcxr` macro with
+    ; exactly that shape (a docstring, then the real backquote
+    ; template), so `cadddr` alone returned only the docstring text as
+    ; the "expansion" every time, and the actual DEFUN template that
+    ; builds CADR/CADDR/etc. never ran at all — CADR ended up
+    ; permanently unbound, not merely wrong.
     mov rdi, rbx
-    call cadddr                          ; body -> rax
+    call cdr
     mov rdi, rax
-    mov rsi, IMM_NIL
-    call cons                              ; (body . nil)
-    mov rdi, [rsp]                           ; params
-    mov rsi, rax
-    call cons                                  ; (params body)
-    add rsp, 8                                   ; [ ]
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rsi, rax                              ; body forms list
+    mov rdi, [rsp]                              ; params
+    call cons                                     ; (params body-forms...)
+    add rsp, 8                                      ; [ ]
 
     push rax                                       ; save (params body) across intern_symbol's own args
 
@@ -2750,7 +2860,12 @@ compile_call_args:
 
 ; emit_check_callable() — target: rax holds a tagged value about to be
 ; treated as a closure and called. Verifies it is actually a
-; HDR_CLOSURE heapobj; if not, calls fail_wrong_type (native_errors.asm)
+; HDR_CLOSURE (or HDR_OPERATIVE — a $VAU/DEFVAU operative shares the
+; exact same [8]=code-ptr layout and is equally callable; a call
+; site's own different treatment, baking QUOTE'd operands instead of
+; evaluating them, already happened at compile time before this check
+; ever runs, so from here on an operative is invoked exactly like an
+; ordinary closure) heapobj; if neither, calls fail_wrong_type (native_errors.asm)
 ; instead of letting the caller's own subsequent `and rax,~TAG_MASK` +
 ; dereference run on whatever address an unbound global (IMM_NIL) or
 ; other non-closure value happens to produce — previously a near-NULL
@@ -2796,27 +2911,49 @@ emit_check_callable:
     mov dil, REG_RBX
     mov sil, REG_RAX
     call emit_cmp_rr                                ; cmp rbx, rax
-    call emit_jne                                     ; -> fail
-    push rax                                            ; [hdr_fail_site, tag_fail_site]
+    call emit_je                                      ; -> restore (ordinary closure)
+    push rax                                            ; [hdr_ok1_site, tag_fail_site]
+
+    mov rsi, HDR_OPERATIVE
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                               ; rax = HDR_OPERATIVE
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_cmp_rr                                        ; cmp rbx, rax
+    call emit_jne                                             ; -> fail (neither)
+    push rax                                                    ; [hdr_fail_site, hdr_ok1_site, tag_fail_site]
+
+    ; both the HDR_CLOSURE early-je above and this HDR_OPERATIVE match
+    ; falling through converge here — restore *must* run on both paths
+    ; (the je above must not land past it, straight into "success" with
+    ; rax still holding the HDR_CLOSURE comparison constant instead of
+    ; the original tagged pointer — an earlier draft of this patch had
+    ; exactly that bug), so hdr_ok1_site is patched right here rather
+    ; than deferred to the shared "success" site below.
+    call codegen_here                                           ; restore:
+    mov rdi, [rsp+8]                                              ; hdr_ok1_site
+    mov rsi, rax
+    call patch_rel32                                                ; hdr_ok1_site -> restore
 
     mov dil, REG_RAX
     mov sil, REG_RDI
     call emit_mov_rr                                      ; rax = rdi (restore tagged value)
     call emit_jmp32                                         ; -> success
-    push rax                                                  ; [ok_site, hdr_fail_site, tag_fail_site]
+    push rax                                                  ; [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
 
     call codegen_here                                           ; fail:
-    push rax                                                      ; [fail_addr, ok_site, hdr_fail_site, tag_fail_site]
+    push rax                                                      ; [fail_addr, ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
     ; patch_rel32 clobbers rax internally (lea rax,[rdi+4]), so
     ; fail_addr must be reloaded from memory for the second call
     ; rather than trusted to survive in a register across the first.
     mov rdi, [rsp+16]
     mov rsi, [rsp]
     call patch_rel32                                              ; hdr_fail_site -> fail
-    mov rdi, [rsp+24]
+    mov rdi, [rsp+32]
     mov rsi, [rsp]
     call patch_rel32                                                ; tag_fail_site -> fail
     add rsp, 8                                                        ; discard fail_addr
+                                                                       ; [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
 
     ; fail: target rdi still holds the original tagged culprit value —
     ; the very first instruction this routine emitted was "rdi = rax"
@@ -2845,7 +2982,7 @@ emit_check_callable:
     mov rdi, [rsp]
     mov rsi, rax
     call patch_rel32                                                      ; ok_site -> success
-    add rsp, 24
+    add rsp, 32                                                             ; discard [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
     ret
 
 ; compile_call(rdi=operator form, rsi=args list)
@@ -4601,6 +4738,17 @@ compile_form:
 
 .not_defdynamic:
     mov rdi, r12
+    mov rsi, kw_vau
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_vau
+    mov rdi, rbx
+    call compile_vau
+    jmp .out
+
+.not_vau:
+    mov rdi, r12
     mov rsi, kw_lambda
     mov rdx, 6
     call sym_is
@@ -5798,7 +5946,84 @@ compile_form:
     jmp .out
 
 .not_macro_call:
-    ; not a recognized special form or macro — a general application.
+    ; Is the head symbol's global VALUE currently an Operative
+    ; ($VAU/DEFVAU — KERNEL.md's vau combiner)? If so this call must
+    ; NOT evaluate its operands: an operative's whole point is
+    ; receiving the raw, unevaluated argument forms as an ordinary
+    ; list (exactly like a macro's raw args) plus a placeholder
+    ; "caller's environment" value (compile_vau's own comment explains
+    ; why a fixed placeholder, not a real one, is this kernel's honest
+    ; v0 answer). Building `(name (QUOTE raw-args) (QUOTE sentinel))`
+    ; and delegating to compile_call, rather than hand-rolling a second
+    ; calling convention, reuses its entire self-patching inline-cache
+    ; machinery unchanged — an operative call site is just an ordinary
+    ; 2-argument call whose two arguments happen to be QUOTE'd data
+    ; instead of expressions to evaluate. A frame_lookup guard first
+    ; (matching compile_call's own "locally bound — not a global call"
+    ; check) keeps a local variable or parameter that happens to share
+    ; an operative's name from being misread as one.
+    mov rax, r12
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_operative_call
+    mov rax, r12
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .not_operative_call
+    mov rdi, r12
+    mov rsi, [current_scope]
+    call frame_lookup
+    cmp rax, FRAME_NOT_FOUND
+    jne .not_operative_call            ; locally bound — never an operative
+    mov rax, r12
+    UNTAG_PTR rax
+    mov rax, [rax+16]                     ; value slot
+    cmp rax, IMM_UNBOUND
+    je .not_operative_call
+    mov rdx, rax
+    and rdx, TAG_MASK
+    cmp rdx, TAG_HEAPOBJ
+    jne .not_operative_call
+    mov rdx, rax
+    UNTAG_PTR rdx
+    cmp qword [rdx], HDR_OPERATIVE
+    jne .not_operative_call
+
+    mov rdi, kw_quote
+    mov rsi, 5
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r13                          ; raw args (unevaluated)
+    call build_list2
+    push rax                                ; [q1 = (QUOTE raw-args)]
+
+    mov rdi, kw_quote
+    mov rsi, 5
+    call intern_symbol
+    push rax                                  ; [QUOTE_sym, q1]
+    call global_environment_sentinel
+    mov rsi, rax
+    pop rdi                                     ; QUOTE_sym
+    call build_list2                              ; q2 = (QUOTE sentinel)
+    mov rsi, rax
+    pop rdi                                         ; q1
+    call build_list2                                  ; (q1 q2)
+    mov r13, rax                                        ; new args list —
+                                                         ; the original
+                                                         ; raw args are
+                                                         ; already baked
+                                                         ; into q1, so
+                                                         ; overwriting r13
+                                                         ; here is safe
+
+    mov rdi, r12
+    mov rsi, r13
+    call compile_call
+    jmp .out
+
+.not_operative_call:
+    ; not a recognized special form, macro, or operative — an ordinary
+    ; general application.
     mov rdi, r12
     mov rsi, r13
     call compile_call
@@ -5813,18 +6038,90 @@ compile_form:
 ; compile_thunk(rdi = tagged sexpr) -> rax = pointer to a fresh native
 ; 0-arg function (any incoming register content is ignored) that
 ; evaluates the form and returns its tagged value in rax.
+;
+; Emits a leading `jmp` over its own body before compiling anything,
+; the same guard compile_lambda's own nested-function emission already
+; uses (a lambda body is itself emitted inline into whatever function
+; is currently open, jumped over so the enclosing function's own
+; straight-line code never falls into it). compile_thunk needs the
+; identical guard for a reason compile_lambda doesn't have to worry
+; about: compile_thunk can be invoked *re-entrantly*, in the middle of
+; another, still-open compile_thunk's own emission — EVAL, exposed to
+; *compiled* Lamedh code via eval_form below, can be called from
+; within a macro transformer's own body (invoke_macro runs the
+; transformer as ordinary already-compiled target code; the
+; reference's own lib/02-cxr.lisp does exactly this: `defcxr`'s
+; `(eval operations)` evaluates one of its own macro parameters at
+; expansion time, while compile_form is still mid-way through
+; compiling the *outer* form that triggered the macro expansion).
+; Without the jmp-over guard, the nested thunk's own prologue/epilogue
+; get spliced directly into the still-open outer thunk's own
+; instruction stream at whatever offset codegen_here happened to be —
+; the outer thunk would then run straight into the nested thunk's own
+; `leave`/`ret` mid-body, popping the *outer* frame's saved rbp as a
+; return address (0 at the top level, since boot.asm never sets one) —
+; a real, previously-uncaught bug, not a hypothetical one: this is
+; exactly what made `lib/02-cxr.lisp` (and thus `lib/08-vau.lisp`,
+; whose own `$if` needs CADR/CADDR from it) segfault before this fix.
+;
+; Also always compiles against a clean top-level scope
+; (current_scope=NIL, current_frame_depth=0, current_prog_ctx=0),
+; saved and restored around compile_form exactly like compile_lambda's
+; own body already does for its nested scope — never whatever ambient
+; compile-time state happens to be active when this is called. For a
+; plain top-level EVAL call these are already NIL/0/0, so this changes
+; nothing observable there, but for the same re-entrant EVAL-inside-a-
+; macro-transformer case described above, it stops a *silent* second
+; bug once the jmp-over splicing fix above is in place: without this,
+; a nested compile_thunk call would inherit whatever current_scope/
+; current_frame_depth the *outer*, still-active compilation happened
+; to be using, corrupting the outer compilation's own frame bookkeeping
+; once it later resumed. KERNEL.md's own EVAL is one-argument,
+; evaluating in "the global environment" — an ambient non-global scope
+; leaking in was never correct to begin with, re-entrant or not.
 global compile_thunk
 compile_thunk:
     push rbx
     mov rbx, rdi
+
+    mov rax, [current_scope]
+    push rax                          ; [old_scope]
+    mov rax, [current_frame_depth]
+    push rax                            ; [old_frame_depth, old_scope]
+    mov rax, [current_prog_ctx]
+    push rax                              ; [old_prog_ctx, old_frame_depth, old_scope]
+    mov qword [current_scope], IMM_NIL
+    mov qword [current_frame_depth], 0
+    mov qword [current_prog_ctx], 0
+
+    call emit_jmp32
+    push rax                     ; [jmp_over_site, old_prog_ctx, old_frame_depth, old_scope]
+
     call codegen_here
-    push rax                     ; function entry address, returned below
+    push rax                     ; [entry_addr, jmp_over_site, old_prog_ctx, old_frame_depth, old_scope]
+                                  ; — entry address, returned below
     call emit_push_rbp_frame
     mov rdi, rbx
     call compile_form
     call emit_leave
     call emit_ret
-    pop rax
+
+    call codegen_here
+    mov rsi, rax
+    mov rdi, [rsp+8]              ; jmp_over_site
+    call patch_rel32                ; jmp_over_site -> just past this thunk
+
+    pop rax                          ; entry_addr
+    add rsp, 8                         ; discard jmp_over_site
+                                        ; [old_prog_ctx, old_frame_depth, old_scope]
+
+    pop rcx
+    mov [current_prog_ctx], rcx
+    pop rcx
+    mov [current_frame_depth], rcx
+    pop rcx
+    mov [current_scope], rcx
+
     pop rbx
     ret
 
@@ -5844,6 +6141,15 @@ eval_form:
     push rbx
     mov rbx, rdi
     call compile_thunk           ; rax = fresh native 0-arg function
-    call rax                       ; -> rax = its result
+    ; Every compiled thunk is invoked this way, everywhere else in this
+    ; project (file_runner.asm's run_buffer, every tests/cases/*.asm
+    ; lamedh_main): the extra push keeps rsp 16-byte aligned at the
+    ; callee's entry, which floats.asm's host routines rely on for
+    ; aligned SSE moves — a bare `call rax` here shifts alignment by 8
+    ; and can fault (SIGBUS) the moment the freshly compiled code calls
+    ; into one of them.
+    push rax
+    call qword [rsp]
+    add rsp, 8
     pop rbx
     ret

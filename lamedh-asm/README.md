@@ -819,10 +819,15 @@ into conformance incrementally, tracked honestly rather than silently:
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
-- No garbage collector. No bignums, `vau`, or first-class conditions
-  yet. Dynamic variables now exist (`DEFDYNAMIC`/dynamic-extent `LET`
-  — see "KERNEL.md conformance" above) but only via plain `LET`, not
-  `LET*`, and only when every binding in the `LET` is dynamic.
+- No garbage collector. No bignums or first-class conditions yet.
+  Dynamic variables now exist (`DEFDYNAMIC`/dynamic-extent `LET` — see
+  "KERNEL.md conformance" above) but only via plain `LET`, not `LET*`,
+  and only when every binding in the `LET` is dynamic. `$VAU`
+  operatives now exist too (see "KERNEL.md conformance" above) but
+  `(eval x e)` on a call-site lexical evaluates in the wrong (global)
+  scope rather than the caller's real one, since this kernel has no
+  first-class environments; only recognized at a literal call-site
+  head, not via `APPLY`/`FUNCALL`/indirect use.
 - Arrays are fixed-size at creation (`ARRAY` doesn't grow/shrink)
   and `FETCH`/`STORE` do no bounds checking — an out-of-range
   index reads or writes adjacent heap memory rather than raising
@@ -1297,47 +1302,143 @@ bugs no existing test had exercised:
     exercises this yet, `06-require.lisp` included); `LET*` does not
     support dynamic bindings at all yet, only plain `LET`.
 
-  `08-vau.lisp` itself is a hard wall — it needs `$VAU`/`vau` itself
-  (Kernel-style operatives with a captured *dynamic* environment
-  parameter), which this compiled, lexically-addressed host has no
-  representation for at all yet (see "v0 limits" below) and is a
-  substantially larger undertaking than any primitive above, likely
-  needing environments as a first-class heap value before `vau` can be
-  attempted honestly. But `08-vau.lisp`'s own position in the
-  reference's load order does *not* block every later file the way a
-  strictly sequential reading would suggest: skipping it and checking
-  each later Prelude file's *own* direct dependencies (not just its
-  position in the list) found that **`12-control.lisp`,
-  `13-functional.lisp`, `14-strings.lisp`, `15-sets-hash.lisp`,
-  `17-arrays.lisp`, `18-format.lisp`, and `21-cl-compat.lisp` — the
-  rest of the Prelude tier — all also load completely, unmodified,
-  with zero further kernel or prelude changes**, once loaded after
-  `00-core.lisp` through `06-require.lisp` but skipping `08-vau.lisp`
-  itself (confirmed via `build/lamedhc` on the concatenation, exit 0).
-  That is every Prelude-tier file `src/lib.rs`'s own `STDLIB_SOURCES`
-  lists except `08-vau.lisp`.
-  Every optional-tier file checked past that point, though —
-  `16-conditions.lisp` (`defvau restart-case`/`handler-bind`/
-  `with-retry-restart`), `19-call-graph.lisp`, `07-shell.lisp`,
-  `09-lisp15.lisp`, `10-testing.lisp`, and `28-types.lisp` — traps
-  immediately, and not always for the same reason at first glance:
-  `19-call-graph.lisp`/`07-shell.lisp`/`09-lisp15.lisp`/
-  `10-testing.lisp`/`28-types.lisp` don't use `vau` directly at all,
-  but every one of them opens with `(defmodule ...)`, and `DEFMODULE`
-  itself is defined in `27-modules.lisp` — which `src/lib.rs`'s own
-  comment explains loads deliberately early, right after
-  `20-condensation.lisp`, specifically so every later optional file
-  can rely on it — and `27-modules.lisp` (like `20-condensation.lisp`)
-  is itself built on `defvau`. So the real wall isn't `08-vau.lisp`'s
-  position in the list, it's `vau` the primitive: every file from
-  `16-conditions.lisp` onward needs it, either directly or
-  transitively through `DEFMODULE`, with no exceptions found yet.
-  The confirmed-loadable set is `00-core` through `06-require` plus
-  `12-control`/`13-functional`/`14-strings`/`15-sets-hash`/
-  `17-arrays`/`18-format`/`21-cl-compat` — the entire Prelude tier
-  bar `08-vau.lisp` itself — with the whole Optional tier (everything
-  from `07-shell.lisp` on, in `STDLIB_SOURCES`'s own grouping) blocked
-  on `vau`.
+  **`$VAU` (Kernel-style operatives, John Shutt's vau-calculus) now
+  exists**, and with it `08-vau.lisp` through `21-cl-compat.lisp` —
+  the *entire* Prelude tier, in the reference's own load order, no
+  files skipped — now load completely, unmodified
+  (`tests/cases/058_vau.asm`). This was the previously-identified hard
+  wall ("PROG/VAU/DEFDYNAMIC" — the last of that trio); getting there
+  needed one new primitive plus finding and fixing three real,
+  previously-latent bugs it exposed:
+  - **`$VAU`** (`compile_vau`, `compiler.asm`): identical to `LAMBDA`
+    (`defvau`'s own params are always the fixed 2-element
+    `(operands-param env-param)` list) except the resulting closure is
+    retagged `HDR_OPERATIVE` instead of `HDR_CLOSURE` the moment it's
+    built (tags.inc: identical `[8]=code-ptr [16]=nargs [24..]=free
+    vars` layout — an operative *is* an ordinary closure underneath).
+    A call site `(name arg...)` whose head is a global already bound
+    (at compile time, not lexically shadowed — `frame_lookup` against
+    `current_scope` guards this, matching `compile_call`'s own "locally
+    bound — not a global call" check) to an `HDR_OPERATIVE` value skips
+    evaluating its operands entirely: the whole raw argument list is
+    baked as one `(QUOTE ...)` literal, a placeholder "caller's
+    environment" value (`global_environment_sentinel`, a dedicated
+    interned symbol — this kernel has no first-class environments, so
+    there is nothing more meaningful to pass) is baked as a second
+    `(QUOTE ...)`, and the two-argument call is handed to the ordinary
+    `compile_call` unchanged — reusing its self-patching inline-cache
+    machinery rather than a second calling convention.
+    `emit_check_callable` (the runtime check a call site's resolved
+    value is actually callable) now accepts `HDR_OPERATIVE` alongside
+    `HDR_CLOSURE` — it previously only recognized `HDR_CLOSURE`, so
+    every operative call failed as "not a function" until this was
+    added; the flow to add it correctly (restructured to a shared
+    `restore:` join point both the `HDR_CLOSURE` and `HDR_OPERATIVE`
+    matches funnel through) took one wrong first draft, caught
+    immediately by the regression suite (the `HDR_CLOSURE` fast path's
+    early jump landed *after* the "restore the original tagged
+    pointer" step instead of before it, leaving target `rax` holding
+    the raw header-tag integer for every ordinary closure call, not
+    just operatives — ~30 of 59 tests failing instantly is what a
+    clobbered universal calling-convention register looks like).
+    `EVAL`'s own existing 2-argument form needed no change at all:
+    `compile_unary_hostcall` already only ever compiles `EVAL`'s first
+    operand, so `(eval form e)` already silently evaluates `form` in
+    the one global environment this kernel has, discarding `e` — which
+    is exactly right for `08-vau.lisp`'s own `$if`/`$and`/`$or`/
+    `$sequence`, each of which only ever forwards `e` opaquely through
+    recursive `eval` calls, never inspecting or extending it. **v0
+    scope, and one substantive, documented divergence from Kernel's
+    own semantics**: `(eval x e)` on a *lexical* (a call-site local
+    variable or parameter, as opposed to a literal or a global) is
+    silently evaluated in the wrong (global) scope rather than
+    erroring — a real environment would be needed for that to work at
+    all, and none of `08-vau.lisp`'s own operatives, nor any operative
+    used purely at the top level (`29-protocols.lisp`,
+    `20-condensation.lisp`, `24-rules.lisp`, `27-modules.lisp`, where
+    global genuinely *is* the caller's environment), hit this; an
+    operative used *inside a function body* over one of that
+    function's own locals would. Also not yet supported: an operative
+    reached via `APPLY`/`FUNCALL` or any indirect/first-class use
+    (only a literal call-site head is recognized).
+  - **Nested `EVAL`-during-macro-expansion corrupted the code heap**
+    (`compile_thunk`, `compiler.asm`): `invoke_macro` runs a macro
+    transformer as ordinary already-compiled target code, synchronously,
+    *during* an outer `compile_form`'s own still-open compilation — and
+    the reference's own `lib/02-cxr.lisp` does exactly this
+    (`defcxr`'s `(eval operations)` evaluates one of its own macro
+    parameters at expansion time, to build `CADR`/`CADDR`/etc.). Before
+    this fix, a nested `compile_thunk` call (triggered by that `eval`)
+    bump-allocated its own fresh function *contiguously in the code
+    heap*, splicing its whole prologue/body/epilogue directly into the
+    middle of the still-open outer thunk's own instruction stream at
+    whatever offset the shared `code_heap_cur` cursor happened to be —
+    the outer thunk would then run straight into the *nested* thunk's
+    own `leave`/`ret` mid-body, popping the outer frame's saved `rbp`
+    (`0` at the top level, since `boot.asm` never sets one) as a return
+    address and segfaulting. Fixed the same way `compile_lambda`
+    already guards its own nested-function emission: `compile_thunk`
+    now emits a leading `jmp` over its own body before compiling
+    anything, patched to land just past the thunk once compilation
+    finishes — at the top level this is one harmless dead 5-byte `jmp`
+    before the real entry point; in the nested case the outer function
+    now correctly branches over the inner thunk and resumes where it
+    left off. `compile_thunk` also now saves/resets/restores
+    `current_scope`/`current_frame_depth`/`current_prog_ctx` around its
+    own `compile_form` call (matching `compile_lambda`'s own nested-scope
+    handling) — harmless at the top level (already `NIL`/`0`/`0` there)
+    but necessary for the nested case: without it, a nested `EVAL`
+    would silently inherit the *outer*, still-in-progress compilation's
+    own frame bookkeeping, corrupting it once the outer compilation
+    resumed. And `eval_form`'s own `call rax` (invoking the freshly
+    compiled thunk) was a bare indirect call rather than this project's
+    own documented `push rax; call qword [rsp]; add rsp, 8` safe
+    idiom every other thunk invocation already uses to keep the
+    target's `rsp` 16-byte-aligned for `floats.asm`'s own SSE moves —
+    pre-existing, unrelated to the splicing bug, but only ever
+    exercised (and only ever faulted) once nested `EVAL` was.
+  - **`DEFMACRO` supported only a single body form, silently discarding
+    everything past a leading docstring** (`compile_defmacro`,
+    `compiler.asm`): it took the literal fourth element of the
+    `(DEFMACRO name (params) body...)` form as "the" body, ignoring
+    every subsequent form — fine for every macro this project's own
+    `lib/prelude.lisp` had defined so far (none carry a docstring), but
+    `lib/02-cxr.lisp`'s own `defcxr` macro *does*
+    (`"Generate a CAR/CDR composition function"` before its real
+    backquote template), so every `defcxr`-built function
+    (`CADR`/`CADDR`/... — needed by `08-vau.lisp`'s own `$if`) silently
+    expanded to just the docstring text and never actually defined
+    anything: `CADR` ended up permanently unbound, not merely wrong, a
+    much harder failure to trace back to its actual cause than a wrong
+    answer would have been. Fixed to collect every form after `params`
+    (not just the first) into the body, the same "multiple body forms,
+    implicitly `PROGN`-wrapped" support `compile_lambda`'s own body
+    already has — a docstring now just evaluates to itself and is
+    discarded like any other non-final `PROGN` form, needing no special
+    extraction.
+  - **Bareword `NIL` was read as an ordinary (permanently unbound)
+    symbol, not the empty-list value** (`read_symbol`, `reader.asm`) —
+    a real, separate, and rather fundamental conformance bug this
+    session's `$VAU` debugging surfaced by accident (`(IF NIL 1 2)`
+    returned `1`, since an *unbound* variable read is truthy under this
+    kernel's rules and only the literal `NIL` immediate is false).
+    `reader.rs`'s own `read_atom` special-cases the text `"NIL"` to
+    produce `LispVal::Nil` directly, never interning it as a symbol at
+    all (unlike `"T"`, which the reference reads as an ordinary
+    interned symbol needing its own self-binding bootstrap — see
+    `bootstrap_globals`, `symtab.asm`); this kernel's reader now does
+    the same. Reference stdlib code uses bareword `nil` constantly as a
+    self-evaluating literal (`lib/00-core.lisp` alone dozens of times),
+    so this one silently blocked essentially all of it — `(DEFUN K (N)
+    'X) (K 1)` returned `NIL` instead of `X` before this fix, for
+    exactly this reason (`$defun-auto-compile`'s own `(getp name
+    "no-compile")` check read `nil`'s "false" branch as true).
+
+  The confirmed-loadable set is now **the entire Prelude tier** —
+  `00-core` through `21-cl-compat`, `src/lib.rs`'s own `STDLIB_SOURCES`
+  order, no files skipped. Not yet attempted: the Optional tier
+  (`20-condensation.lisp` onward) — `20-condensation.lisp` itself is
+  the next wall (traps; not yet root-caused).
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
@@ -1356,6 +1457,13 @@ bugs no existing test had exercised:
   correctly, unmodified** (see "The prelude" above for the exact scope
   and the one genuine, documented divergence — its self-check hits this
   kernel's narrower 62-bit fixnum range at exactly `20!`, not a bug).
+  Since the bareword-`NIL`-reader fix (see "KERNEL.md conformance"
+  above), the self-check now genuinely detects that overflow and calls
+  `(error "factorial self-check failed")` as its own source says to —
+  an uncaught `error`, correctly, `int3`-traps (exit 133) rather than
+  exiting 0 the way it silently did before that fix (the self-check's
+  own `AND`/`IF` logic never actually completed either branch
+  observably), which was never truly "passing" either.
   `DEFUN`, `FORMAT`, `1+`/`1-`, `FUNCTION`/`#'`, `IOTA`, `REDUCE`, and
   `DOTIMES` are all real now. **`examples/fizzbuzz/main.lisp` now runs
   unmodified too, self-check included** (`OK`, exit 0): `MAPCAR`,
@@ -1449,13 +1557,13 @@ bugs no existing test had exercised:
   operation; mixed fixnum/float arithmetic; `FLOAT<=`/`FLOAT>`/
   `FLOAT>=`/`FLOAT=`; a real (shortest round-trip or scientific-
   notation) float printer instead of fixed 6-decimal-place formatting.
-- Bignums, `vau`, dynamic variables — the rest of the Lisp 1.5 +
-  extensions surface the Rust interpreter (`../src`) already
-  implements. `DEFMACRO` existing means most of `lib/08-vau.lisp`'s
-  derived forms and the CL-compat layer are now just a matter of
-  writing them, not extending the compiler; `BLOCK`/`RETURN-FROM` are
-  the next candidate for the same `CATCH`/`THROW`-derivation treatment
-  `HANDLER-CASE` already got.
+- Bignums — the rest of the Lisp 1.5 + extensions surface the Rust
+  interpreter (`../src`) already implements. `$VAU`/`DEFDYNAMIC`
+  existing means the entire reference Prelude tier (`00-core.lisp`
+  through `21-cl-compat.lisp`) now loads unmodified — see "KERNEL.md
+  conformance" above; `BLOCK`/`RETURN-FROM` are the next candidate for
+  the same `CATCH`/`THROW`-derivation treatment `HANDLER-CASE` already
+  got.
 - `EVAL` now exists (`eval_form`, exposed as `(EVAL form)`) and
   `ERRORSET` uses it to match the spec exactly, but it takes no second
   (environment) argument — there being no environment-as-value in this

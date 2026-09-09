@@ -50,6 +50,7 @@
 %define HDR_ARRAY       5     ; [8 len][len*8 bytes: tagged slots]
 %define HDR_CONDITION   6     ; [8 message][8 data]
 %define HDR_TYPED_ARRAY 7     ; [8 len][8 elem-type: 0=INT64 1=FLOAT64][len*8 bytes: raw untagged int64/double slots]
+%define HDR_OPERATIVE   8     ; identical layout to HDR_CLOSURE ([8 native-code-ptr][8 nargs][8 nfree][8*nfree captured]) — a $VAU operative is literally a LAMBDA-built closure with its header word overwritten (compile_vau, compiler.asm); the distinct tag is what a call site's compile-time check (compile_form's operative-call check) uses to choose "don't evaluate the operands" over the ordinary calling convention.
 
 ; fixnum <-> machine-integer conversion
 %macro TO_FIXNUM 1        ; reg <- (reg << 2), tag 00 is already 0 after shift
