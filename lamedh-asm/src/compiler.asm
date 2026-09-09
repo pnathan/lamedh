@@ -119,6 +119,12 @@ kw_or:     db "OR"
 kw_let:      db "LET"
 kw_let_star: db "LET*"
 kw_setq:     db "SETQ"
+kw_error:         db "ERROR"
+kw_handler_case:  db "HANDLER-CASE"
+kw_errorset:      db "ERRORSET"
+kw_error_p:       db "ERROR-P"
+kw_error_message: db "ERROR-MESSAGE"
+kw_error_data:    db "ERROR-DATA"
 kw_string_length: db "STRING-LENGTH"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -2518,6 +2524,483 @@ compile_throw:
     pop rbx
     ret
 
+; --- the condition system (KERNEL.md Part VIII) ---
+;
+; A condition value is a two-field heapobj (HDR_CONDITION,
+; conditions.asm). ERROR signals one by THROWing it to a single
+; shared internal tag (handler_case_tag, conditions.asm) that every
+; HANDLER-CASE/ERRORSET installs its catch frame with — this is Part
+; XII axis 3's own explicit license to derive a special form from a
+; smaller primitive set: CATCH/THROW's existing "nearest matching tag
+; wins" search is already exactly the dynamic-extent unwind a
+; condition system needs, so one shared tag plus the machinery below
+; is the whole of it, no separate signaling primitive required.
+
+extern make_string
+extern make_error
+extern is_condition
+extern error_message_tagged
+extern error_data_tagged
+extern error_of
+extern handler_case_tag
+
+; emit_pop_catch_frame() — target: catch_stack_top -= 1, preserving
+; rax. Correct whether reached by a protected form completing normally
+; or by a throw landing here (a throw always pre-adds 1 to
+; catch_stack_top before jumping in — see compile_throw/compile_error).
+emit_pop_catch_frame:
+    mov dil, REG_RAX
+    call emit_push_reg
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64
+    mov edi, 1
+    call emit_sub_rax_imm32
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_store_mem64
+    mov dil, REG_RAX
+    jmp emit_pop_reg
+
+; emit_install_catch_frame(rdi = host-known tag value) -> rax =
+; address of the resume-target placeholder's imm64 operand (patch it
+; with patch_imm64 once the real resume label is known — same
+; deferred-patch idea compile_catch itself uses, just factored out so
+; HANDLER-CASE and ERRORSET don't each re-derive it with a baked
+; rather than compiled tag).
+emit_install_catch_frame:
+    push rbx
+    push r12
+    mov r12, rdi                      ; tag
+
+    mov rsi, r12
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_push_reg                   ; push tag
+
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64
+    mov edi, 32
+    call emit_imul_rax_imm32
+    lea rax, [rel catch_stack]
+    mov edi, eax
+    call emit_add_rax_imm32
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                        ; rbx = frame_addr
+
+    mov dil, REG_RAX
+    call emit_pop_reg                          ; rax = tag
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 0
+    call emit_store_based                        ; frame[0] = tag
+
+    mov dil, REG_RAX
+    mov sil, REG_RBP
+    call emit_mov_rr
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 8
+    call emit_store_based                           ; frame[8] = rbp
+
+    mov dil, REG_RAX
+    mov sil, REG_RSP
+    call emit_mov_rr
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 16
+    call emit_store_based                             ; frame[16] = rsp
+
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64
+    mov edi, 1
+    call emit_add_rax_imm32
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_store_mem64                               ; top += 1
+
+    call codegen_here
+    mov r12, rax
+    add r12, 2
+    mov dil, REG_RAX
+    mov rsi, 0
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 24
+    call emit_store_based                                 ; frame[24] = placeholder
+
+    mov rax, r12
+    pop r12
+    pop rbx
+    ret
+
+; emit_throw_baked(rdi = host-known tag value) — throws whatever is
+; currently in target rax to the nearest enclosing CATCH/HANDLER-CASE
+; installed with this exact tag. Unlike compile_throw, the tag is a
+; compile-time constant (not a form to compile) and the value is
+; already sitting in target rax (built by a host function call, not
+; evaluated fresh) — this is what ERROR's signaling needs.
+emit_throw_baked:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov r12, rdi                  ; tag
+
+    mov dil, REG_RAX
+    call emit_push_reg               ; push value (already computed)
+
+    mov rsi, r12
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64             ; rax = tag
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                       ; rbx = tag
+
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64
+    mov dil, REG_RSI
+    mov sil, REG_RAX
+    call emit_mov_rr                          ; rsi = remaining count
+
+    call codegen_here
+    mov r13, rax                                 ; loop_start
+
+    mov dil, REG_RAX
+    mov sil, REG_RSI
+    call emit_mov_rr
+    mov rsi, 0
+    call emit_cmp_rax_imm64
+    call emit_je
+    mov r14, rax                                    ; unmatched_site
+
+    mov dil, REG_RAX
+    mov sil, REG_RSI
+    call emit_mov_rr
+    mov edi, 1
+    call emit_sub_rax_imm32
+    mov dil, REG_RSI
+    mov sil, REG_RAX
+    call emit_mov_rr                                    ; rsi = index
+
+    mov dil, REG_RAX
+    mov sil, REG_RSI
+    call emit_mov_rr
+    mov edi, 32
+    call emit_imul_rax_imm32
+    lea rax, [rel catch_stack]
+    mov edi, eax
+    call emit_add_rax_imm32                               ; rax = frame_addr
+
+    mov dil, REG_RDX
+    mov sil, REG_RAX
+    mov edx, 0
+    call emit_load_based                                     ; rdx = frame[0] tag
+    mov dil, REG_RDX
+    mov sil, REG_RBX
+    call emit_cmp_rr
+    call emit_jne
+    push rax                                                    ; [continue_site]
+
+    mov dil, REG_RSI
+    mov esi, 1
+    call emit_add_reg_imm32
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RSI
+    call emit_store_mem64                                          ; top = index+1
+
+    mov dil, REG_RCX
+    mov sil, REG_RAX
+    mov edx, 16
+    call emit_load_based                                             ; rcx = saved rsp
+    mov dil, REG_RDX
+    mov sil, REG_RAX
+    mov edx, 8
+    call emit_load_based                                               ; rdx = saved rbp
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    mov edx, 24
+    call emit_load_based                                                 ; rbx = resume target
+    mov dil, REG_RDI
+    mov esi, 0
+    call emit_load_rsp_disp8                                               ; rdi = thrown value (unpopped)
+
+    mov dil, REG_RSP
+    mov sil, REG_RCX
+    call emit_mov_rr
+    mov dil, REG_RBP
+    mov sil, REG_RDX
+    call emit_mov_rr
+    mov dil, REG_RAX
+    mov sil, REG_RDI
+    call emit_mov_rr
+    mov dil, REG_RBX
+    call emit_jmp_reg
+
+    call codegen_here
+    pop rdi                                                                   ; continue_site
+    mov rsi, rax
+    call patch_rel32
+
+    call emit_jmp32
+    mov rdi, rax
+    mov rsi, r13
+    call patch_rel32
+
+    call codegen_here
+    mov rdi, r14
+    mov rsi, rax
+    call patch_rel32
+    mov rdi, 0xCC
+    call emit8                             ; no matching CATCH — trap
+
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_error(rdi = the full (ERROR ...) form, 0/1/2 args)
+compile_error:
+    push rbx
+    mov rbx, rdi
+    call cdr
+    cmp rax, IMM_NIL
+    jne .has_args
+
+    ; (ERROR) — bake a fixed "Error"/NIL condition once, at compile
+    ; time, exactly like any other self-evaluating literal.
+    lea rdi, [rel default_error_msg]
+    mov rsi, 5
+    call make_string
+    mov rdi, rax
+    mov rsi, IMM_NIL
+    call make_error
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    jmp .throw_it
+
+.has_args:
+    mov rbx, rax                    ; args list
+    mov rdi, rbx
+    call cdr
+    cmp rax, IMM_NIL
+    jne .two_args
+
+    ; (ERROR c) — runtime dispatch (error_of): re-signal c unchanged if
+    ; it's already a condition, else wrap it as the message.
+    mov rdi, rbx
+    call car
+    lea rsi, [rel error_of]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .throw_it
+
+.two_args:
+    ; (ERROR message data)
+    mov rdi, rbx
+    call car
+    push rax
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel make_error]
+    call compile_binary_hostcall
+
+.throw_it:
+    call handler_case_tag
+    mov rdi, rax
+    call emit_throw_baked
+    pop rbx
+    ret
+
+; compile_handler_case(rdi = the full
+;   (HANDLER-CASE protected (head (var) handler-body...)) form)
+; Exactly two operands: the protected form, and one clause. `head` is
+; never inspected (any symbol works, `error` by convention); its
+; second element, if non-empty, names the variable the caught
+; condition is bound to. Catches *unconditionally* — there is no
+; typed clause, matching KERNEL.md Part VIII exactly.
+compile_handler_case:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                       ; protected form
+    mov rdi, rbx
+    call caddr
+    mov r13, rax                         ; clause = (head (var) handler-body...)
+
+    call handler_case_tag
+    mov rdi, rax
+    call emit_install_catch_frame
+    mov r14, rax                            ; resume-target placeholder addr
+
+    mov rdi, r12
+    call compile_form                          ; protected -> target rax
+
+    call emit_pop_catch_frame
+    call emit_jmp32                              ; -> DONE (patched below)
+    push rax                                       ; [done_site]
+
+    call codegen_here                              ; HANDLER label
+    mov rdi, r14
+    mov rsi, rax
+    call patch_imm64
+
+    call emit_pop_catch_frame                        ; rax = condition value
+
+    mov rdi, r13
+    call cadr
+    mov rbx, rax                                       ; (var) or NIL
+    cmp rbx, IMM_NIL
+    je .bind_none
+
+    mov rdi, rbx
+    call car
+    mov rbx, rax                                         ; var symbol
+
+    mov edi, 8
+    call emit_sub_rsp_imm32
+
+    mov rax, [current_frame_depth]
+    inc rax
+    imul rax, rax, -8
+    mov esi, eax
+    mov dil, REG_RAX
+    call emit_store_local                                    ; var's slot = condition
+
+    mov rax, [current_frame_depth]
+    inc rax
+    imul rax, rax, -8
+    mov rsi, rax
+    mov rdi, rbx
+    call cons                                                    ; (var . disp)
+    mov rdi, rax
+    mov rsi, [current_scope]
+    call cons                                                      ; new_scope
+    mov rbx, rax
+
+    mov rax, [current_scope]
+    push rax                                                          ; [old_scope, done_site]
+    mov [current_scope], rbx
+    mov rax, [current_frame_depth]
+    push rax                                                            ; [old_frame_depth, old_scope, done_site]
+    inc qword [current_frame_depth]
+
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rdi, rax
+    call compile_progn                                                     ; handler-body -> rax
+
+    pop rax
+    mov [current_frame_depth], rax
+    pop rax
+    mov [current_scope], rax
+
+    mov dil, REG_RSP
+    mov esi, 8
+    call emit_add_reg_imm32
+    jmp .handler_done
+
+.bind_none:
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rdi, rax
+    call compile_progn
+
+.handler_done:
+    call codegen_here                                                          ; DONE
+    pop rdi
+    mov rsi, rax
+    call patch_rel32
+
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_errorset(rdi = the full (ERRORSET form [ignored]) form)
+; Narrower than KERNEL.md's own ERRORSET: `form` is compiled and run
+; directly as ordinary Lamedh source, not "evaluated as a value that
+; is itself then run as code" — this kernel has no EVAL primitive yet
+; to do that second step with (see README roadmap). Catches any ERROR
+; signaled within it: returns a one-element list (value) on success
+; (so a successful NIL return is distinguishable from failure), or NIL
+; if caught.
+compile_errorset:
+    push rbx
+    push r12
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                    ; protected form
+
+    call handler_case_tag
+    mov rdi, rax
+    call emit_install_catch_frame
+    mov rbx, rax                       ; resume-target placeholder addr
+
+    mov rdi, r12
+    call compile_form                     ; protected -> target rax
+
+    call emit_pop_catch_frame
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr
+    mov rsi, IMM_NIL
+    mov dil, REG_RSI
+    call emit_mov_reg_imm64
+    lea rax, [rel cons]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                       ; rax = (value)
+
+    call emit_jmp32
+    push rax                                   ; [done_site]
+
+    call codegen_here
+    mov rdi, rbx
+    mov rsi, rax
+    call patch_imm64
+
+    call emit_pop_catch_frame                    ; rax = condition (discarded)
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                        ; rax = NIL (failure)
+
+    call codegen_here
+    pop rdi
+    mov rsi, rax
+    call patch_rel32
+
+    pop r12
+    pop rbx
+    ret
+
+section .rodata
+default_error_msg: db "Error"
+
+section .text
+
 ; compile_form(rdi = tagged sexpr)
 ; Emits code, inline into whatever function is currently open, that
 ; leaves the form's value in rax at runtime. Purely recursive descent —
@@ -3142,6 +3625,84 @@ compile_form:
     jmp .out
 
 .not_setq:
+    mov rdi, r12
+    mov rsi, kw_handler_case
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_handler_case
+    mov rdi, rbx
+    call compile_handler_case
+    jmp .out
+
+.not_handler_case:
+    mov rdi, r12
+    mov rsi, kw_errorset
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jz .not_errorset
+    mov rdi, rbx
+    call compile_errorset
+    jmp .out
+
+.not_errorset:
+    mov rdi, r12
+    mov rsi, kw_error
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_error
+    mov rdi, rbx
+    call compile_error
+    jmp .out
+
+.not_error:
+    mov rdi, r12
+    mov rsi, kw_error_p
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_error_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel is_condition]
+    mov rdi, rax
+    call compile_unary_hostcall           ; target rax = raw 0/1
+    call bool_from_al                        ; -> IMM_NIL/IMM_TRUE (AL
+                                              ; already holds that 0/1,
+                                              ; no fresh set* needed)
+    jmp .out
+
+.not_error_p:
+    mov rdi, r12
+    mov rsi, kw_error_message
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_error_message
+    mov rdi, r13
+    call car
+    lea rsi, [rel error_message_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_error_message:
+    mov rdi, r12
+    mov rsi, kw_error_data
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_error_data
+    mov rdi, r13
+    call car
+    lea rsi, [rel error_data_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_error_data:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1

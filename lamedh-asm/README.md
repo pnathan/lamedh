@@ -65,8 +65,10 @@ programs this stage targets.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
   and `REMAINDER`.
-- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ` as real special
-  forms (Part VII).
+- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`
+  as real special forms (Part VI/VII), plus `ERROR`/`ERRORSET`/
+  `ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA` (Part VIII's condition
+  system).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
   `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
@@ -288,15 +290,36 @@ into conformance incrementally, tracked honestly rather than silently:
   global cell written rather than a fresh binding created in the
   enclosing frame — a narrower but still useful approximation of the
   spec's own fallback rule.
+- **The condition system (Part VIII) now exists**: `ERROR`/
+  `HANDLER-CASE`/`ERRORSET`/`ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA`
+  (`tests/cases/028_conditions.asm`), built entirely on the existing
+  `CATCH`/`THROW` machinery via one shared internal tag every
+  `HANDLER-CASE`/`ERRORSET` installs its catch frame with and every
+  `ERROR` throws to — Part XII axis 3's own explicit license to derive
+  a special form this way, not a new signaling primitive. One shared
+  tag is safe because `CATCH`/`THROW`'s own "nearest matching frame
+  wins" search already gives the correct nesting behavior for free: a
+  `HANDLER-CASE` nested inside another catches first, and `(ERROR c)`
+  re-signaling an already-a-condition `c` unchanged correctly escapes
+  to the *next* enclosing one, since the catching `HANDLER-CASE`'s own
+  frame is already popped by the time its handler body runs. `(ERROR)`
+  with 0/1/2 arguments, and `HANDLER-CASE`'s unconditional catching (no
+  typed clause) match the spec exactly. `ERRORSET` is narrower than
+  the spec's own: it compiles and runs its form directly as ordinary
+  Lamedh source, not "evaluates a value that is itself then run as
+  code" — this kernel has no `EVAL` primitive yet to do that second
+  step with (see Roadmap). No native failure (division by zero, index
+  out of range, wrong arity, unbound variable) signals a condition
+  yet — those still misbehave exactly as before; only explicit `ERROR`
+  calls go through this system so far.
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
   special forms (`BLOCK`/`PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/`VAU`/
-  `DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet; the condition system
-  (Part VIII),
-  capability gating (Part IX), and fuel (Part X) don't exist yet;
-  proper tail calls (Part VI) aren't implemented (see v0 limits
-  below); the hash table/array/float primitive *names* (`HT-*`/
-  `ARRAY-*`/`F+` etc.) don't match Part XI's required exact names
-  (`MAKE-HASH-TABLE`/`ARRAY`/`FETCH`/`STORE`/contagion-based `+`) —
+  `DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet; capability gating
+  (Part IX) and fuel (Part X) don't exist yet; proper tail calls
+  (Part VI) aren't implemented (see v0 limits below); the hash
+  table/array/float primitive *names* (`HT-*`/`ARRAY-*`/`F+` etc.)
+  don't match Part XI's required exact names (`MAKE-HASH-TABLE`/
+  `ARRAY`/`FETCH`/`STORE`/contagion-based `+`) —
   Part XI is explicit that this is the actual conformance bar, not a
   detail; there is no character type, no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values, no `GENSYM`/
@@ -468,9 +491,15 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   extensions surface the Rust interpreter (`../src`) already
   implements. `DEFMACRO` existing means most of `lib/08-vau.lisp`'s
   derived forms and the CL-compat layer are now just a matter of
-  writing them, not extending the compiler; with `CATCH`/`THROW` also
-  in place, so are `BLOCK`/`RETURN-FROM` and a first
-  `HANDLER-CASE`-shaped condition system.
+  writing them, not extending the compiler; `BLOCK`/`RETURN-FROM` are
+  the next candidate for the same `CATCH`/`THROW`-derivation treatment
+  `HANDLER-CASE` already got.
+- A real `EVAL` primitive (form + optional environment), so `ERRORSET`
+  can match the spec exactly ("evaluate a value that is itself then
+  run as code") instead of just compiling its argument form directly;
+  native failures (division by zero, index out of range, wrong arity,
+  unbound variable) signaling catchable conditions instead of
+  misbehaving.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD`-style
   cons mutation now that `ARRAY-SET` has established the pattern;
