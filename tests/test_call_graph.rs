@@ -172,3 +172,55 @@ fn call_graph_recursive_self_call() {
         callees
     );
 }
+
+#[test]
+fn call_graph_survives_a_defun_star_typed_function_in_the_graph() {
+    // A defun*-typed function's SEE-SOURCE returns its own original
+    // `(defun-typed name params body...)` form -- not `(lambda params
+    // body...)` like an ordinary DEFUN-backed function -- one extra leading
+    // NAME element, shifting params/body by one position. CALL-GRAPH-ADD!
+    // must recognize that shape rather than misreading NAME as the
+    // parameter list, which previously crashed CG-COLLECT-FORMS (a CAR on
+    // a bare symbol) and took down CALL-GRAPH-CALLERS for every other
+    // pending function flushed in the same pass, not just this one.
+    let env = env_with_stdlib();
+    eval_line("(defun* cg-typed-leaf (n) (+ n 1))", &env);
+    eval_line("(defun cg-typed-caller (n) (cg-typed-leaf n))", &env);
+    eval_line("(defun cg-normal-a (x) (cg-normal-util x))", &env);
+    eval_line("(defun cg-normal-util (x) x)", &env);
+
+    // The typed function itself must be inspectable, not silently poisoned
+    // -- and its own body must be walked for real, not just "not error":
+    // CG-TYPED-LEAF's body `(+ n 1)` calls `+` and nothing else, so a
+    // correctly-parsed params/body pair must find exactly that, not an
+    // empty list (which is what a params-list mismatch that silently
+    // discards the body -- returning NIL from CALL-GRAPH-ADD! instead of
+    // erroring -- would otherwise produce unnoticed).
+    let leaf_callees = sorted_members("(call-graph-callees 'cg-typed-leaf)", &env);
+    assert_eq!(
+        leaf_callees,
+        vec!["+".to_owned()],
+        "call-graph-callees on a defun*-typed function should find its real \
+         callees, got {:?}",
+        leaf_callees
+    );
+
+    // The typed function must show up as a callee of its caller.
+    let caller_callees = sorted_members("(call-graph-callees 'cg-typed-caller)", &env);
+    assert!(
+        caller_callees.contains(&"CG-TYPED-LEAF".to_owned()),
+        "expected CG-TYPED-LEAF in callees, got {:?}",
+        caller_callees
+    );
+
+    // Flushing $CG-PENDING (which a typed function's name also enters) must
+    // not corrupt the reverse lookup for unrelated ordinary functions
+    // defined in the same pass.
+    let callers = sorted_members("(call-graph-callers 'cg-normal-util)", &env);
+    assert!(
+        callers.contains(&"CG-NORMAL-A".to_owned()),
+        "expected CG-NORMAL-A as caller of CG-NORMAL-UTIL even with a typed \
+         function pending in the same flush, got {:?}",
+        callers
+    );
+}
