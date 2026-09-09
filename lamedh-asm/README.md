@@ -1734,19 +1734,51 @@ bugs no existing test had exercised:
     `tests/cases/060_module_source.asm` now also checks
     `$MODULE-SOURCE-LOOKUP("TEXT")`.
 
+  **`97-doc-renderer.lisp`, `98-help-system.lisp`, and
+  `99-help-data.lisp` all load completely too** — the reference's own
+  `OPTIONAL_MODULES` table (`src/lib.rs`) doesn't stop at `44-regex`;
+  these three come after the entire networking/OS/regex block in
+  file-number order, which made an earlier version of
+  `src/modules.asm`'s own header comment wrongly lump them in with
+  that dependency tier by association — but none of the three actually
+  needs anything past ordinary Lisp (`HASH-TABLE`/`PRINC`/`CONS`/
+  `COND`), confirmed by loading each standalone. This needed one more
+  genuine gap closed:
+  - **`SET-BANG`** (`lib/prelude.lisp`) — the reference's own alternate
+    name for the identical hash-table-mutation builtin as `SETHASH`
+    (`environment.rs` registers both `"SETHASH"` and `"SET-BANG"` for
+    the same `BuiltinFunc::Set`), surfaced by `98-help-system.lisp`'s
+    own `REGISTER-DOC` (`(set-bang help-db name entry)`). A pure alias
+    over the existing `SETHASH`, no new kernel primitive. Covered by
+    `file_runner_prelude` (`tests/run.sh`), alongside the existing
+    `SETHASH`/`GETHASH`/`REMHASH`/`KEYS` checks.
+
+  `src/modules.asm`'s embedded module registry now includes
+  `DOC-RENDERER`, `HELP-SYSTEM`, and `HELP-DATA` alongside the 15 files
+  already there, closing the gap back up to the reference's own full
+  `OPTIONAL_MODULES` table — `(require 'help-data)` now works
+  end-to-end through the real module-resolution path (not just via
+  manual file concatenation), and `(get-doc '+)`/`(help '+)` return the
+  real, structured documentation entries `99-help-data.lisp` registers.
+  `tests/cases/060_module_source.asm` now also checks
+  `$MODULE-SOURCE-LOOKUP("HELP-DATA")`.
+
   **The confirmed-loadable set is now the entire Prelude tier plus
-  every Optional-tier file with no OS/networking/TLS/regex dependency**
-  — `00-core` through `21-cl-compat`, then (module-system load order)
-  `20-condensation`, `27-modules`, `11-optimizer-vau`, `19-call-graph`,
-  `07-shell`, `09-lisp15`, `10-testing`, `22-guard`, `23-match`,
-  `24-rules`, `25-variants`, `26-instrument`, `28-types`,
-  `29-protocols`, and `30-text` — **30 of the reference's own 47
-  `STDLIB_SOURCES` files, every one of them not gated on real OS I/O**.
-  The remaining 17 (`31-ports` through `44-regex`, `97-doc-renderer`
-  through `99-help-data`) need genuine file-descriptor/socket/TLS/
-  regex host primitives this freestanding, no-libc kernel does not
-  implement and, per this project's own scope, is not trying to (see
-  "Known gaps").
+  every Optional-tier file with no OS/networking/TLS/regex
+  dependency** — `00-core` through `21-cl-compat`, then (module-system
+  load order) `20-condensation`, `27-modules`, `11-optimizer-vau`,
+  `19-call-graph`, `07-shell`, `09-lisp15`, `10-testing`, `22-guard`,
+  `23-match`, `24-rules`, `25-variants`, `26-instrument`, `28-types`,
+  `29-protocols`, `30-text`, `97-doc-renderer`, `98-help-system`, and
+  `99-help-data` — **33 of the reference's own 47 `STDLIB_SOURCES`
+  files, every one of them not gated on real OS I/O**. The remaining
+  14 (`31-ports` through `44-regex`) need genuine file-descriptor/
+  socket/TLS/regex host primitives this freestanding, no-libc kernel
+  does not implement and, per this project's own scope, is not trying
+  to (see "Known gaps") — this is the actual, principled boundary of
+  "the entire standard lib, excluding key 3P dependencies": every
+  reference stdlib file with no such dependency now loads, unmodified,
+  and every one still excluded genuinely has one.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver

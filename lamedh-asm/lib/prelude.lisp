@@ -598,6 +598,13 @@
          (CONS (CONS KEY VALUE) (HT-BUCKET-REMOVE (FETCH TABLE (HT-INDEX KEY)) KEY)))
   T)
 
+; SET-BANG — the reference's own name for this exact same builtin
+; (environment.rs registers "SETHASH" and "SET-BANG" as two names for
+; the identical BuiltinFunc::Set), surfaced by lib/98-help-system.lisp's
+; own REGISTER-DOC (`(set-bang help-db name entry)`). A pure alias, no
+; new behavior.
+(DEFUN SET-BANG (TABLE KEY VALUE) (SETHASH TABLE KEY VALUE))
+
 (DEFUN GETHASH (TABLE KEY)
   (LET ((PAIR (HT-BUCKET-ASSOC (FETCH TABLE (HT-INDEX KEY)) KEY)))
     (IF (NULL PAIR) (QUOTE ()) (CDR PAIR))))

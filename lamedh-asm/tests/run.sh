@@ -166,6 +166,9 @@ else
 (NEWLINE)
 (PRINT (EQUAL (KEYS HT) (KEYS HT)))
 (NEWLINE)
+(SET-BANG HT (QUOTE D) 7)
+(PRINT (GETHASH HT (QUOTE D)))
+(NEWLINE)
 (PRINT (LOGAND 12 10))
 (NEWLINE)
 (PRINT (ASH 1 4))
@@ -275,6 +278,7 @@ T
 T
 ()
 T
+7
 8
 16
 T
@@ -313,6 +317,53 @@ ABC'
         pass=$((pass+1))
     else
         echo "FAIL  file_runner_prelude  stdout: got [$got_out] want [$want_out] exit: got $got_exit"
+        fail=$((fail+1))
+    fi
+
+    # stdlib_conformance — the actual conformance target this project
+    # tracks in README's "KERNEL.md conformance" section: every one of
+    # the reference's own 33 non-OS-dependent STDLIB_SOURCES files
+    # (../lib/*.lisp, the Rust reference implementation's own stdlib,
+    # untouched), concatenated in src/lib.rs's own STDLIB_SOURCES load
+    # order — 00-core through 99-help-data, skipping only the
+    # genuinely file-descriptor/socket/TLS/regex-dependent tier
+    # (31-ports through 44-regex) this freestanding, no-libc host does
+    # not implement — loaded as one buffer through lamedhc, exactly
+    # the way Environment::with_stdlib() loads them unconditionally in
+    # the reference. This is a stronger check than any single
+    # accumulated-file bisection this project's own commit history
+    # describes: it catches cross-file interaction bugs a single
+    # file's own isolated load-test cannot (this exact test caught
+    # none at the time it was added, but is here so a regression would
+    # be caught here rather than being separately rediscovered).
+    stdlib_files="00-core 01-list 02-cxr 03-meta 04-predicates 05-math 06-require 08-vau 12-control 13-functional 14-strings 15-sets-hash 16-conditions 17-arrays 18-format 21-cl-compat 20-condensation 27-modules 11-optimizer-vau 19-call-graph 07-shell 09-lisp15 10-testing 22-guard 23-match 24-rules 25-variants 26-instrument 28-types 29-protocols 30-text 97-doc-renderer 98-help-system 99-help-data"
+    stdlib_prog="$BUILD/stdlib_conformance.lisp"
+    : > "$stdlib_prog"
+    for f in $stdlib_files; do
+        cat "../lib/$f.lisp" >> "$stdlib_prog"
+        echo >> "$stdlib_prog"
+    done
+    cat >> "$stdlib_prog" <<'LISP'
+(PRINT (LENGTH (LIST 1 2 3)))
+(NEWLINE)
+(PRINT (MAP (LAMBDA (X) (* X X)) (LIST 1 2 3)))
+(NEWLINE)
+(DEFVARIANT (OPTION A) (SOME (VALUE A)) (NONE))
+(PRINT (SOME 42))
+(NEWLINE)
+(PRINT (GET-DOC (QUOTE +)))
+LISP
+    stdlib_want='3
+(1 4 9)
+#S(SOME 42)
+((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.500000 2.500000) 4.000000) ((+) 0)) (SEE-ALSO - * /))'
+    stdlib_got=$("$runner_bin" "$stdlib_prog")
+    stdlib_exit=$?
+    if [ "$stdlib_got" = "$stdlib_want" ] && [ "$stdlib_exit" = "0" ]; then
+        echo "ok    stdlib_conformance"
+        pass=$((pass+1))
+    else
+        echo "FAIL  stdlib_conformance  stdout: got [$stdlib_got] want [$stdlib_want] exit: got $stdlib_exit"
         fail=$((fail+1))
     fi
 fi

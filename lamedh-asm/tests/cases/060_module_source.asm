@@ -36,6 +36,16 @@ e2b_len: equ $ - e2b                              ; T — 30-text.lisp is
                                                    ; every module past
                                                    ; it (PORTS onward).
 
+e2c: db '(PRINT (IF ($MODULE-SOURCE-LOOKUP "HELP-DATA") T (QUOTE ())))'
+e2c_len: equ $ - e2c                              ; T — 99-help-data.lisp
+                                                   ; (and 97-doc-renderer/
+                                                   ; 98-help-system) come
+                                                   ; after the OS-
+                                                   ; dependent tier in
+                                                   ; file-number order
+                                                   ; but have no such
+                                                   ; dependency themselves.
+
 e3: db '($EVAL-MODULE-SOURCE "test" "(DEFINE FROM-MODULE 42)")'
 e3_len: equ $ - e3
 
@@ -68,6 +78,11 @@ lamedh_main:
 
     mov rdi, e2b
     mov rsi, e2b_len
+    call run_thunk_discard
+    call print_newline               ; T
+
+    mov rdi, e2c
+    mov rsi, e2c_len
     call run_thunk_discard
     call print_newline               ; T
 

@@ -28,9 +28,16 @@
 ; three Rust primitives this kernel already had (STRING->UTF8*/
 ; UTF8->STRING*/UTF8->STRING-LOSSY*, lib/14-strings.lisp) — no
 ; capability, no I/O, no OS dependency at all. PORTS (31-ports.lisp)
-; onward genuinely does need real file-descriptor/OS-capability
-; primitives this freestanding, no-libc host does not have yet (see
-; README Roadmap), which is where embedding actually stops.
+; through REGEX (44-regex.lisp) genuinely do need real file-
+; descriptor/socket/TLS/regex primitives this freestanding, no-libc
+; host does not have yet (see README Roadmap) — but the reference's
+; own OPTIONAL_MODULES table doesn't stop there: DOC-RENDERER
+; (97-doc-renderer.lisp), HELP-SYSTEM (98-help-system.lisp), and
+; HELP-DATA (99-help-data.lisp) come after the whole networking/OS
+; block in file-number order but have no such dependency themselves —
+; ordinary Lisp over HASH-TABLE/PRINC/CONS/COND, verified by loading
+; each standalone — so they are embedded here too, closing the gap
+; back up to the reference's own full OPTIONAL_MODULES table.
 
 %include "src/tags.inc"
 
@@ -71,6 +78,9 @@ MODULE_SRC modules_mod, "../lib/27-modules.lisp"
 MODULE_SRC types, "../lib/28-types.lisp"
 MODULE_SRC protocols, "../lib/29-protocols.lisp"
 MODULE_SRC text, "../lib/30-text.lisp"
+MODULE_SRC doc_renderer, "../lib/97-doc-renderer.lisp"
+MODULE_SRC help_system, "../lib/98-help-system.lisp"
+MODULE_SRC help_data, "../lib/99-help-data.lisp"
 
 origin_embedded: db "embedded"
 origin_embedded_len: equ $ - origin_embedded
@@ -101,6 +111,9 @@ MODULE_NAME modules_mod, "MODULES"
 MODULE_NAME types, "TYPES"
 MODULE_NAME protocols, "PROTOCOLS"
 MODULE_NAME text, "TEXT"
+MODULE_NAME doc_renderer, "DOC-RENDERER"
+MODULE_NAME help_system, "HELP-SYSTEM"
+MODULE_NAME help_data, "HELP-DATA"
 
 align 8
 module_table:
@@ -119,6 +132,9 @@ module_table:
     dq module_name_types, module_name_types_len, types_src_start, types_src_end
     dq module_name_protocols, module_name_protocols_len, protocols_src_start, protocols_src_end
     dq module_name_text, module_name_text_len, text_src_start, text_src_end
+    dq module_name_doc_renderer, module_name_doc_renderer_len, doc_renderer_src_start, doc_renderer_src_end
+    dq module_name_help_system, module_name_help_system_len, help_system_src_start, help_system_src_end
+    dq module_name_help_data, module_name_help_data_len, help_data_src_start, help_data_src_end
 module_table_end:
 %define MODULE_ROW_BYTES 32
 %define MODULE_TABLE_COUNT ((module_table_end - module_table) / MODULE_ROW_BYTES)
