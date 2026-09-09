@@ -21,6 +21,7 @@ extern reader_init
 extern read_form
 extern compile_thunk
 extern compile_nesting_depth
+extern current_lambda_depth
 
 %define SRC_BUF_BYTES (16 * 1024 * 1024)
 
@@ -61,6 +62,13 @@ run_buffer:
     ; across an unwind path that cannot run them (macroexpand_once's
     ; own comment, compiler.asm).
     mov qword [compile_nesting_depth], 0
+    ; Same reasoning, same fix, for current_lambda_depth
+    ; (compiler.asm, docs/spec-tco-capture-gc.md section 2): a macro
+    ; transformer error caught mid-LAMBDA-body-compile longjmps past
+    ; compile_lambda's own `dec qword [current_lambda_depth]`, so a
+    ; fresh top-level compile must not trust the previous one's
+    ; inc/dec pairs to have balanced.
+    mov qword [current_lambda_depth], 0
     call compile_thunk
     ; Every compiled thunk is called this way, everywhere in this
     ; project (every tests/cases/*.asm lamedh_main does the same

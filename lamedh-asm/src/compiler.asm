@@ -374,6 +374,35 @@ current_frame_depth: resq 1
 ; silently jumping into a different, already-returned function's code.
 current_prog_ctx: resq 1
 
+; tail_ctx: consume-on-entry compile-time flag (docs/spec-tco-capture-
+; gc.md section 2) — 1 means "the form compile_form is about to
+; compile is in tail position", 0 otherwise. compile_form reads this
+; into its own r15 at entry and immediately zeroes it, so every
+; subform starts non-tail by default; only the small set of tail-
+; transparent special-form helpers (compile_progn/compile_if/
+; compile_cond/compile_and/compile_or/compile_let/compile_let_star,
+; and compile_call for the call itself) re-arm it — writing their own
+; saved snapshot back into this cell — immediately before compiling
+; whichever of their own subforms is itself in tail position. Forgetting
+; to re-arm is always the safe failure (a missed tail-call optimization,
+; not a wrongly-taken one), which is why this is consume-on-entry
+; rather than push/pop-restored: a stale "still armed" value could
+; otherwise leak into an unrelated, unaudited call site.
+tail_ctx: resq 1
+
+global current_lambda_depth
+; current_lambda_depth: how many LAMBDA bodies are currently being
+; compiled, one inside the other (incremented/decremented around
+; compile_lambda's own body compile, saved/restored like
+; current_prog_ctx). compile_call's own tail-call codegen additionally
+; requires this to be nonzero before ever emitting a frame-reuse jump,
+; independently of what tail_ctx says — a defensive belt-and-suspenders
+; check (docs/spec-tco-capture-gc.md section 2.3) so a tail jump can
+; never be emitted while compiling a top-level thunk (compile_thunk
+; never increments this), regardless of any bug in the tail_ctx
+; plumbing above.
+current_lambda_depth: resq 1
+
 ; lambda_frame_depth_scratch: holds a LAMBDA's own computed base_index
 ; (params+frees+REST slot count) from where it's computed (prologue
 ; emission) until where it's needed (installing current_frame_depth
@@ -1468,16 +1497,25 @@ compile_binop:
     pop rbx
     ret
 
-; compile_progn(rdi = forms list) — emits code evaluating each form in
-; order; target rax holds the last one's value, or NIL for an empty
-; list (KERNEL.md Part VI: "(progn) is NIL"). This is what a multi-
-; form LAMBDA/LET/LET* body compiles through — compile_form's callers
-; already preserve rbx/r12/r13/r14 across a nested compile_form call,
-; so a plain host-side loop over the list is enough; no special
+; compile_progn(rdi = forms list, rsi = tail) — emits code evaluating
+; each form in order; target rax holds the last one's value, or NIL for
+; an empty list (KERNEL.md Part VI: "(progn) is NIL"). This is what a
+; multi-form LAMBDA/LET/LET* body compiles through — compile_form's
+; callers already preserve rbx/r12/r13/r14 across a nested compile_form
+; call, so a plain host-side loop over the list is enough; no special
 ; backpatching is needed since nothing branches here.
+;
+; rsi=tail is forwarded to the LAST form only (PROGN is tail-transparent
+; only in its final position, docs/spec-tco-capture-gc.md section 2):
+; every earlier form is compiled non-tail, which is already the default
+; since compile_form zeroes [tail_ctx] on entry — only the last form's
+; compile_form call needs [tail_ctx] re-armed from the saved rsi first.
 compile_progn:
     push rbx
+    push r14
+    push r15
     mov rbx, rdi
+    mov r15, rsi                        ; saved tail flag
     cmp rbx, IMM_NIL
     jne .have
     mov rsi, IMM_NIL
@@ -1487,19 +1525,30 @@ compile_progn:
 .have:
 .loop:
     mov rdi, rbx
+    call cdr
+    mov r14, rax                        ; next cursor: is THIS form last?
+    cmp r14, IMM_NIL
+    jne .not_last
+    mov [tail_ctx], r15                 ; last form: forward tail-ness
+.not_last:
+    mov rdi, rbx
     call car
     mov rdi, rax
     call compile_form
-    mov rdi, rbx
-    call cdr
-    mov rbx, rax
+    mov rbx, r14
     cmp rbx, IMM_NIL
     jne .loop
 .out:
+    pop r15
+    pop r14
     pop rbx
     ret
 
-; compile_cond(rdi = the full (COND clause...) form)
+; compile_cond(rdi = the full (COND clause...) form, rsi = tail)
+;
+; rsi=tail is forwarded only to the matched clause's own body (its last
+; form, via compile_progn) — never to the test forms, per the tail-
+; position table in docs/spec-tco-capture-gc.md section 2.
 ;
 ; Each clause is (test body...). Tests are tried in order; the first
 ; truthy one's body (compile_progn'd) becomes the result and every
@@ -1516,6 +1565,9 @@ compile_cond:
     push r12
     push r13
     push r14
+    push r15
+    mov r15, rsi                        ; saved tail flag, forwarded only
+                                         ; to the matched clause's own body
     mov rbx, rdi
     call cdr
     mov rbx, rax                      ; clauses cursor
@@ -1543,6 +1595,7 @@ compile_cond:
                                                         ; (already in target
                                                         ; rax) stands
     mov rdi, rax
+    mov rsi, r15
     call compile_progn                              ; body -> target rax
 .no_body:
     call emit_jmp32                                    ; -> rax = end-jump site
@@ -1582,21 +1635,29 @@ compile_cond:
     mov rbx, rax
     jmp .patch_loop
 .out:
+    pop r15
     pop r14
     pop r13
     pop r12
     pop rbx
     ret
 
-; compile_and(rdi = the full (AND form...) form)
+; compile_and(rdi = the full (AND form...) form, rsi = tail)
 ; (AND) -> T. Otherwise forms are evaluated left to right; the first
 ; NIL short-circuits the rest with NIL as the result; if none is NIL,
 ; the last form's value is the result. Same end-jump-list-then-patch
 ; technique as compile_cond, one jump per short-circuiting form.
+;
+; rsi=tail is forwarded only to the LAST form (only it can be the whole
+; AND's own value with no short-circuit test left to run afterward) —
+; every earlier form is a test, never tail, per
+; docs/spec-tco-capture-gc.md section 2.
 compile_and:
     push rbx
     push r12
     push r13
+    push r14
+    mov r14, rsi                       ; saved tail flag
     mov rbx, rdi
     call cdr
     mov rbx, rax                     ; forms cursor
@@ -1610,12 +1671,17 @@ compile_and:
 .have:
 .loop:
     mov rdi, rbx
+    call cdr
+    mov r13, rax                       ; next cursor: is THIS form last?
+    cmp r13, IMM_NIL
+    jne .not_last
+    mov [tail_ctx], r14                ; last form: forward tail-ness
+.not_last:
+    mov rdi, rbx
     call car
     mov rdi, rax
     call compile_form                    ; form -> target rax
-    mov rdi, rbx
-    call cdr
-    mov rbx, rax
+    mov rbx, r13
     cmp rbx, IMM_NIL
     je .last_done                          ; last form: its value stands
     mov rsi, IMM_NIL
@@ -1643,21 +1709,26 @@ compile_and:
     mov rbx, rax
     jmp .patch_loop
 .out:
+    pop r14
     pop r13
     pop r12
     pop rbx
     ret
 
-; compile_or(rdi = the full (OR form...) form)
+; compile_or(rdi = the full (OR form...) form, rsi = tail)
 ; (OR) -> NIL. Otherwise forms are evaluated left to right; the first
 ; non-NIL short-circuits the rest with that value as the result; if
 ; every form is NIL, the result is NIL (the last form's own NIL value,
 ; already correct with no extra work). Mirrors compile_and exactly,
 ; short-circuiting on "not NIL" (emit_jne) instead of "is NIL".
+;
+; rsi=tail: same last-form-only forwarding as compile_and.
 compile_or:
     push rbx
     push r12
     push r13
+    push r14
+    mov r14, rsi                       ; saved tail flag
     mov rbx, rdi
     call cdr
     mov rbx, rax
@@ -1671,12 +1742,17 @@ compile_or:
 .have:
 .loop:
     mov rdi, rbx
+    call cdr
+    mov r13, rax                       ; next cursor: is THIS form last?
+    cmp r13, IMM_NIL
+    jne .not_last
+    mov [tail_ctx], r14                ; last form: forward tail-ness
+.not_last:
+    mov rdi, rbx
     call car
     mov rdi, rax
     call compile_form
-    mov rdi, rbx
-    call cdr
-    mov rbx, rax
+    mov rbx, r13
     cmp rbx, IMM_NIL
     je .last_done
     mov rsi, IMM_NIL
@@ -1704,6 +1780,7 @@ compile_or:
     mov rbx, rax
     jmp .patch_loop
 .out:
+    pop r14
     pop r13
     pop r12
     pop rbx
@@ -1737,7 +1814,16 @@ let_binding_names:
     pop rbx
     ret
 
-; compile_let(rdi = the full (LET ((name init)...) body...) form)
+; compile_let(rdi = the full (LET ((name init)...) body...) form, rsi = tail)
+;
+; rsi=tail is forwarded only to the body's last form (via compile_progn)
+; — never to any init, which always runs in the OUTER scope before this
+; LET's own frame even exists (docs/spec-tco-capture-gc.md section 2).
+; Saved across this whole function in rbp, the one general-purpose
+; register the fast path below never otherwise touches (the
+; .dynamic_rewrite path below has its own nested push rbp/pop rbp
+; around its unrelated scratch use of rbp, which round-trips the saved
+; tail flag back unchanged).
 ;
 ; Parallel binding: every init is compiled and evaluated in the OUTER
 ; scope, in order — none can see any other binding this same LET
@@ -1766,6 +1852,8 @@ compile_let:
     push r13
     push r14
     push r15
+    push rbp
+    mov rbp, rsi                        ; saved tail flag
     mov rbx, rdi
     call cadr
     mov r12, rax                        ; bindings list (original head)
@@ -1863,6 +1951,7 @@ compile_let:
     mov [current_frame_depth], rax
 
     mov rdi, r13
+    mov rsi, rbp                                                ; tail flag
     call compile_progn                                          ; body -> target rax
 
     pop rax
@@ -1876,6 +1965,7 @@ compile_let:
     mov esi, eax
     call emit_add_reg_imm32
 
+    pop rbp
     pop r15
     pop r14
     pop r13
@@ -2044,9 +2134,22 @@ compile_let:
 
     add rsp, 40
     mov rdi, rbp
-    pop rbp
+    pop rbp                                 ; restores the outer tail flag
+                                             ; this function's own prologue
+                                             ; saved in rbp — deliberately
+                                             ; NOT forwarded into [tail_ctx]
+                                             ; here: whether the rewritten
+                                             ; synthetic LET's own last body
+                                             ; form (an UNWIND-PROTECT,
+                                             ; never tail regardless) sees
+                                             ; it makes no codegen
+                                             ; difference, so this path
+                                             ; conservatively treats itself
+                                             ; as non-tail rather than
+                                             ; special-casing forwarding.
     call compile_form                       ; -> target rax = result
 
+    pop rbp
     pop r15
     pop r14
     pop r13
@@ -2054,7 +2157,8 @@ compile_let:
     pop rbx
     ret
 
-; compile_let_star(rdi = the full (LET* ((name init)...) body...) form)
+; compile_let_star(rdi = the full (LET* ((name init)...) body...) form,
+; rsi = tail)
 ;
 ; Sequential binding: each init sees every earlier binding of the same
 ; LET* (but not later ones). Structurally identical to compile_let
@@ -2062,12 +2166,19 @@ compile_let:
 ; immediately after its own init is stored, one at a time, instead of
 ; building the whole frame up front and installing it only once every
 ; init has run.
+;
+; rsi=tail is forwarded only to the body's last form, same as
+; compile_let, and saved the same way (rbp — every other
+; general-purpose register is already committed to this function's own
+; bookkeeping).
 compile_let_star:
     push rbx
     push r12
     push r13
     push r14
     push r15
+    push rbp
+    mov rbp, rsi                        ; saved tail flag
     mov rbx, rdi
     call cadr
     mov r12, rax                        ; bindings list
@@ -2137,6 +2248,7 @@ compile_let_star:
     jmp .loop
 .bindings_done:
     mov rdi, r13
+    mov rsi, rbp                                                    ; tail flag
     call compile_progn                                              ; body -> target rax
 
     pop rax
@@ -2150,6 +2262,7 @@ compile_let_star:
     mov esi, eax
     call emit_add_reg_imm32
 
+    pop rbp
     pop r15
     pop r14
     pop r13
@@ -2157,7 +2270,7 @@ compile_let_star:
     pop rbx
     ret
 
-; compile_if(rdi = the full (IF test then else) form)
+; compile_if(rdi = the full (IF test then else) form, rsi = tail)
 ;
 ; Backpatched forward branches: the je/jmp targets aren't known until the
 ; then/else branches have themselves been compiled (their length depends
@@ -2165,11 +2278,16 @@ compile_let_star:
 ; rel32 and fixed up afterward with the same patch_rel32 primitive the
 ; runtime inline cache uses on already-executed code — compile-time
 ; backpatching and runtime self-modification are the same mechanism.
+;
+; rsi=tail is forwarded to BOTH branches (IF is tail-transparent in each,
+; docs/spec-tco-capture-gc.md section 2) — never to the test.
 compile_if:
     push rbx
     push r12
     push r13
     push r14
+    push r15
+    mov r15, rsi                     ; saved tail flag
     mov r14, rdi                     ; whole form
     call cadr
     mov r12, rax                        ; test form
@@ -2187,6 +2305,7 @@ compile_if:
     call emit_je                               ; rax = je rel32 field addr
     mov r14, rax                                 ; (form no longer needed)
 
+    mov [tail_ctx], r15
     mov rdi, r13
     call compile_form                              ; then branch
     call emit_jmp32                                  ; rax = jmp rel32 field addr
@@ -2197,6 +2316,7 @@ compile_if:
     mov rsi, rax
     call patch_rel32                                    ; je -> else branch start
 
+    mov [tail_ctx], r15
     mov rdi, rbx
     call compile_form                                     ; else branch
 
@@ -2205,6 +2325,7 @@ compile_if:
     mov rsi, rax
     call patch_rel32                                        ; jmp -> end
 
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -2689,8 +2810,20 @@ compile_lambda:
                                                         ; RETURN mustn't reach
                                                         ; through this boundary
 
+    ; The body's own last form is always in tail position (it's a
+    ; function's own return, unconditionally, regardless of whatever
+    ; called compile_lambda's caller) — rsi=1, a literal, not forwarded
+    ; from anywhere. current_lambda_depth brackets the whole body so
+    ; nothing below (docs/spec-tco-capture-gc.md section 2's tail-call
+    ; site codegen, a later landing-plan step) ever emits a tail jump
+    ; while compiling something that isn't actually inside some
+    ; function body — compile_thunk's own top-level forms, notably,
+    ; leave this at 0.
+    inc qword [current_lambda_depth]
     mov rdi, r13
+    mov rsi, 1
     call compile_progn
+    dec qword [current_lambda_depth]
 
     pop rax
     mov [current_prog_ctx], rax
@@ -3458,7 +3591,7 @@ emit_check_callable:
     add rsp, 32                                                             ; discard [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
     ret
 
-; compile_call(rdi=operator form, rsi=args list)
+; compile_call(rdi=operator form, rsi=args list, rdx=tail)
 ; A general application (f arg...). If f is a symbol that is not locally
 ; bound (i.e. a genuine global), the call site is compiled through a
 ; per-site, self-patching inline-cache trampoline: the first invocation
@@ -3468,6 +3601,10 @@ emit_check_callable:
 ; direct call, no indirection, no re-resolution. Anything else (a local
 ; variable holding a closure, a literal LAMBDA) goes through one indirect
 ; call via the closure's stored code pointer.
+; rdx=tail is landing-plan step 1 plumbing only (docs/spec-tco-capture-
+; gc.md section 2.6): accepted here but not yet acted on — every call
+; site below still emits an ordinary call/indirect-call, never a
+; tail jmp. Real tail-call codegen is a later step.
 global compile_call
 compile_call:
     push rbx
@@ -4193,6 +4330,9 @@ compile_handler_case:
     mov rdi, rax
     call cdr
     mov rdi, rax
+    xor esi, esi                                                           ; never tail: a catch-stack
+                                                                            ; frame would point into a
+                                                                            ; discarded frame (spec sec. 2)
     call compile_progn                                                     ; handler-body -> rax
 
     pop rax
@@ -4211,6 +4351,7 @@ compile_handler_case:
     mov rdi, rax
     call cdr
     mov rdi, rax
+    xor esi, esi                          ; never tail, same as the bound path
     call compile_progn
 
 .handler_done:
@@ -4509,6 +4650,8 @@ compile_block:
     mov r13, rax                          ; resume-target placeholder addr
 
     mov rdi, rbx
+    xor esi, esi                             ; never tail: same catch-frame
+                                              ; reasoning as HANDLER-CASE
     call compile_progn                       ; body -> target rax
 
     call emit_pop_catch_frame
@@ -4938,6 +5081,7 @@ compile_while:
     push rax                                   ; [done_site, loop_start]
 
     mov rdi, rbx
+    xor esi, esi                                  ; never tail (spec sec. 2)
     call compile_progn                            ; body -> rax (discarded)
 
     call emit_jmp32
@@ -4974,6 +5118,17 @@ compile_form:
     push r12
     push r13
     push r14
+    push r15
+    ; Consume-on-entry: whatever the caller armed [tail_ctx] with applies
+    ; only to THIS form, not to anything compile_form calls transitively
+    ; (e.g. compile_call's own argument sub-forms) — so snapshot it into
+    ; r15 and zero the global immediately. Any tail-transparent helper
+    ; below (compile_progn/if/cond/and/or/let/let*/compile_call) that
+    ; wants to forward tail-ness to one of ITS OWN subforms re-arms
+    ; [tail_ctx] from its own saved copy right before compiling that one
+    ; subform (docs/spec-tco-capture-gc.md section 2).
+    mov r15, [tail_ctx]
+    mov qword [tail_ctx], 0
     mov rbx, rdi
     call is_cons
     test rax, rax
@@ -5567,6 +5722,7 @@ compile_form:
     test rax, rax
     jz .not_if
     mov rdi, rbx
+    mov rsi, r15
     call compile_if
     jmp .out
 
@@ -6691,6 +6847,7 @@ compile_form:
     mov rdi, rbx
     call cdr
     mov rdi, rax
+    mov rsi, r15
     call compile_progn
     jmp .out
 
@@ -6702,6 +6859,7 @@ compile_form:
     test rax, rax
     jz .not_cond
     mov rdi, rbx
+    mov rsi, r15
     call compile_cond
     jmp .out
 
@@ -6713,6 +6871,7 @@ compile_form:
     test rax, rax
     jz .not_and
     mov rdi, rbx
+    mov rsi, r15
     call compile_and
     jmp .out
 
@@ -6724,6 +6883,7 @@ compile_form:
     test rax, rax
     jz .not_or
     mov rdi, rbx
+    mov rsi, r15
     call compile_or
     jmp .out
 
@@ -6735,6 +6895,7 @@ compile_form:
     test rax, rax
     jz .not_let_star
     mov rdi, rbx
+    mov rsi, r15
     call compile_let_star
     jmp .out
 
@@ -6746,6 +6907,7 @@ compile_form:
     test rax, rax
     jz .not_let
     mov rdi, rbx
+    mov rsi, r15
     call compile_let
     jmp .out
 
@@ -7074,6 +7236,7 @@ compile_form:
 
     mov rdi, r12
     mov rsi, r13
+    mov rdx, r15
     call compile_call
     jmp .out
 
@@ -7082,9 +7245,11 @@ compile_form:
     ; general application.
     mov rdi, r12
     mov rsi, r13
+    mov rdx, r15
     call compile_call
 
 .out:
+    pop r15
     pop r14
     pop r13
     pop r12
