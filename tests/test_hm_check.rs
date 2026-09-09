@@ -519,6 +519,52 @@ fn portable_and_native_agree_wherever_both_can_see_the_same_thing() {
     );
 }
 
+#[test]
+fn portable_and_native_agree_on_every_stdlib_scheme_they_both_derive() {
+    // The maintenance sweep, over the WHOLE standard library rather than a
+    // sample: wherever both checkers actually derived a scheme for the same
+    // name — native CHECKED and portable CHECKED — the rendered schemes must
+    // be identical, since that rendering is what `condense-classify` and the
+    // condensation layer's honesty guarantees are defined on.
+    //
+    // Names where the two legitimately differ are excluded by construction,
+    // not by exception: native TYPED reports a codegen fact the portable
+    // checker cannot see (and answers DYNAMIC for), and native DECLARED is
+    // compared separately above.
+    let e = env();
+    let out = ev(
+        &e,
+        "(let* ((names (remove-duplicates $cg-pending)) \
+                (both (filter (lambda (n) \
+                                (and (eq (car (see-type n)) 'checked) \
+                                     (eq (car (hm-see-type n)) 'checked))) \
+                              names)) \
+                (bad (filter (lambda (n) \
+                               (not (equal (cadr (see-type n)) \
+                                           (cadr (hm-see-type n))))) \
+                             both))) \
+           (list (length names) (length both) bad))",
+    );
+    assert!(
+        out.ends_with(" ())"),
+        "portable and native derived different schemes for: {out}"
+    );
+    // Guard the guard: if the overlap ever collapsed to nothing this test
+    // would pass vacuously.
+    let counts: Vec<i64> = out
+        .trim_start_matches('(')
+        .split(' ')
+        .take(2)
+        .filter_map(|t| t.parse().ok())
+        .collect();
+    assert_eq!(counts.len(), 2, "unexpected shape: {out}");
+    assert!(counts[0] > 400, "expected the whole stdlib, got {out}");
+    assert!(
+        counts[1] > 40,
+        "expected a real overlap to compare, got {out}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Interop with the condensation layer.
 // ---------------------------------------------------------------------------
@@ -572,15 +618,141 @@ fn the_condensation_layer_runs_off_the_portable_checker() {
     // tier) that no portable checker can observe, so the seam defers to the
     // host for exactly that verdict and nothing else.
     //
-    // This is not a coverage gap: one-door `defun` keeps the original
-    // closure behind the native membrane, so `see-source` still reaches the
-    // body and the portable checker reports a genuine CHECKED scheme for the
-    // very same function. The host just knows one more fact about it.
+    // A natively compiled function's live binding is an opaque membrane, so
+    // the portable checker cannot see a body and says DYNAMIC — honestly, and
+    // exactly as the host's own `checker_lambda_source` does. The seam is what
+    // supplies the TYPED answer for those names.
     ev(&e, "(defun ctyped-demo (n) (+ n 1))");
     assert_eq!(ev(&e, "(car (see-type 'ctyped-demo))"), "TYPED");
-    assert_eq!(
-        ev(&e, "(hm-see-type 'ctyped-demo)"),
-        "(CHECKED (-> (INT64) INT64))"
-    );
+    assert_eq!(ev(&e, "(car (hm-see-type 'ctyped-demo))"), "DYNAMIC");
     assert_eq!(ev(&e, "(car (condense-verdict 'ctyped-demo))"), "TYPED");
+}
+
+// ---------------------------------------------------------------------------
+// Honesty of the verdict layer (#451 review findings F1–F4).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_callers_verdict_tracks_its_callees_current_body() {
+    // F1. A verdict is derived from the whole world, including the CALLEE
+    // bodies the checker reads on demand. The cache this layer used to keep
+    // was invalidated only for the redefined name, so every CALLER went on
+    // reporting a confident scheme computed from the callee's OLD body. There
+    // is no cache now, and this is the regression guard.
+    let e = env();
+    ev(&e, "(defun cal (x) (concat x \"!\"))");
+    ev(&e, "(defun cer (y) (cal y))");
+    assert_eq!(ev(&e, "(hm-verdict 'cer)"), "(CHECKED (-> (STRING) STRING))");
+    ev(&e, "(defun cal (x) (car x))");
+    assert_eq!(
+        ev(&e, "(hm-verdict 'cer)"),
+        "(CHECKED (FORALL (A) (-> ((LIST A)) A)))"
+    );
+    // HM-VERDICT and HM-SEE-TYPE cannot drift, because the former is the
+    // latter.
+    assert_eq!(ev(&e, "(hm-verdict 'cer)"), ev(&e, "(hm-see-type 'cer)"));
+}
+
+#[test]
+fn a_rebinding_that_bypasses_defun_cannot_fabricate_a_verdict() {
+    // F2. `jit-optimize` records a `source-form` property for every function
+    // it natively compiles, and a later `def`/`set`/`setq` rebinding never
+    // clears it — so asking SEE-SOURCE about the SYMBOL returns the old body
+    // and would report a confident CHECKED scheme for code the name no longer
+    // runs. The checker asks about the live VALUE instead.
+    let e = env();
+    ev(&e, "(defun sf (n) (+ n 1))");
+    assert_eq!(ev(&e, "(car (see-type 'sf))"), "TYPED");
+    ev(&e, "(set 'sf (lambda (s) (concat s \"!\")))");
+    // What the name actually runs now:
+    assert_eq!(ev(&e, "(funcall sf \"a\")"), "\"a!\"");
+    // ... and what the checker says about it.
+    assert_eq!(ev(&e, "(hm-see-type 'sf)"), "(CHECKED (-> (STRING) STRING))");
+    assert_eq!(
+        ev(&e, "(condense-verdict 'sf)"),
+        "(CHECKED (-> (STRING) STRING))"
+    );
+}
+
+#[test]
+fn a_wrong_arity_self_call_is_a_type_error() {
+    // F3. The function under check is reached through the native checker's
+    // provisional registry entry, which rejects a wrong-arity call outright
+    // rather than conceding the gradual frontier.
+    let e = env();
+    assert_eq!(
+        ev(&e, "(car (hm-check-named 'sa '(x) '((if x (sa x 1) 0))))"),
+        "TYPE-ERROR"
+    );
+    assert_eq!(
+        ev(&e, "(car (hm-check-named 'sb '(x) '((if x (sb x) 0))))"),
+        "CHECKED"
+    );
+}
+
+#[test]
+fn let_typed_annotations_use_the_native_annotation_grammar() {
+    // F4. LET-TYPED annotations are `src/jit/parse.rs`'s `parse_ty` grammar —
+    // scalars (with `u8`/`byte` naming the byte scalar), struct names, bare
+    // `array`, `(array T)` — and NOT the larger DECLARE-TYPE! grammar.
+    let e = env();
+    assert_eq!(ev(&e, "(hm-check-expr '(let ((a int64 1)) a))"), "(CHECKED INT64)");
+    assert_eq!(
+        ev(&e, "(hm-check-expr '(let ((a (array int64) (array 3))) a))"),
+        "(CHECKED (ARRAY INT64))"
+    );
+    assert_eq!(ev(&e, "(hm-parse-annotation (hm-new-state) 'u8)"), "CHAR");
+    assert_eq!(ev(&e, "(hm-parse-annotation (hm-new-state) 'byte)"), "CHAR");
+    // Accepted by DECLARE-TYPE!, rejected as an annotation — both directions
+    // of the disagreement this fixes.
+    assert_eq!(
+        ev(&e, "(car (hm-check-expr '(let ((a (list int64) (list 1))) a)))"),
+        "TYPE-ERROR"
+    );
+    assert_eq!(
+        ev(&e, "(car (hm-check-expr '(let ((a string \"s\")) a)))"),
+        "TYPE-ERROR"
+    );
+}
+
+#[test]
+fn the_defun_hook_records_a_dated_note_never_a_cache() {
+    // Under EAGER the hook checks the definition on the spot and records the
+    // verdict. That record is explicitly a dated note, not an answer: nothing
+    // reads it back as current, which is what keeps F1 fixed.
+    let e = env();
+    ev(&e, "(defun noted (x) (concat x \"!\"))");
+    ev(&e, "(hm-check-policy! 'eager)");
+    ev(&e, "($hm-on-defun 'noted)");
+    assert_eq!(
+        ev(&e, "(hm-definition-verdict 'noted)"),
+        "(CHECKED (-> (STRING) STRING))"
+    );
+    // Redefining by a path the hook never sees leaves the note stale — and
+    // the live answer correct.
+    ev(&e, "(set 'noted (lambda (x) (car x)))");
+    assert_eq!(
+        ev(&e, "(hm-definition-verdict 'noted)"),
+        "(CHECKED (-> (STRING) STRING))"
+    );
+    assert_eq!(
+        ev(&e, "(hm-see-type 'noted)"),
+        "(CHECKED (FORALL (A) (-> ((LIST A)) A)))"
+    );
+    ev(&e, "(hm-check-policy! 'lazy)");
+}
+
+#[test]
+fn the_no_compile_declaration_still_reaches_the_checker_hook() {
+    // `(declare (no-compile))` pins a definition away from the COMPILER, not
+    // from the checker: it takes a different branch of the `defun` expansion,
+    // and that branch calls the hook too.
+    let e = env();
+    ev(&e, "(hm-check-policy! 'eager)");
+    ev(&e, "(defun pinned (x) (declare (no-compile)) (concat x \"!\"))");
+    assert_eq!(
+        ev(&e, "(hm-definition-verdict 'pinned)"),
+        "(CHECKED (-> (STRING) STRING))"
+    );
+    ev(&e, "(hm-check-policy! 'lazy)");
 }

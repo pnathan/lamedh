@@ -228,7 +228,7 @@
   ;; spelling: the portable registry really did learn every declaration.
   (assert-equal (hm-dropped-declarations) nil))
 
-;;; ---- the DEFUN hook ------------------------------------------------------
+;;; ---- the DEFUN hook, and the absence of a verdict cache ------------------
 ;;;
 ;;; These demo functions are defined at TOP LEVEL on purpose. A DEFUN inside a
 ;;; DEFTEST body binds inside the test closure, where SEE-SOURCE cannot reach
@@ -237,42 +237,125 @@
 ;;; the verdicts here about the checker rather than about the compiler.
 
 (defun hm-hook-demo (a b) (concat a b))
-(defun hm-cache-demo (x) (concat x "!"))
 (defun hm-classify-demo (x) (car x))
 (defun hm-condense-demo (x) (concat x "!"))
 
+;; The F1 regression pair: a CALLER whose verdict is derived from a CALLEE's
+;; body, so redefining the callee must change the caller's answer.
+(defun hm-callee (x) (concat x "!"))
+(defun hm-caller (y) (hm-callee y))
+
 (deftest hm-defun-hook-drives-the-portable-checker
   ;; $HM-ON-DEFUN is exactly what `$defun-auto-compile` calls on every single
-  ;; definition in the language. Under the EAGER policy it checks the
-  ;; definition on the spot and caches the verdict; under LAZY it only drops
-  ;; the stale one. Calling it directly is calling what DEFUN calls.
+  ;; definition in the language. Under EAGER it checks the definition on the
+  ;; spot and records the verdict; under LAZY it does nothing and verdicts are
+  ;; computed on demand.
   (let ((prev (hm-check-policy! 'eager)))
     (progn
-      (hm-invalidate! 'hm-hook-demo)
-      (assert-nil (has-key-p $hm-verdicts 'hm-hook-demo))
       ($hm-on-defun 'hm-hook-demo)
-      (assert-true (has-key-p $hm-verdicts 'hm-hook-demo))
-      (assert-equal (hm-verdict 'hm-hook-demo)
+      (assert-equal (hm-definition-verdict 'hm-hook-demo)
                     '(checked (-> (string string) string)))
-      (hm-check-policy! 'lazy)
-      (hm-invalidate! 'hm-hook-demo)
-      ($hm-on-defun 'hm-hook-demo)
-      ;; LAZY leaves the verdict uncomputed until something asks for it.
-      (assert-nil (has-key-p $hm-verdicts 'hm-hook-demo))
-      (hm-check-policy! prev))))
+      (hm-check-policy! prev)
+      (assert-equal (hm-check-policy) 'lazy))))
 
-(deftest hm-verdict-is-cached-and-invalidated
-  (assert-equal (hm-verdict 'hm-cache-demo) '(checked (-> (string) string)))
-  (assert-true (has-key-p $hm-verdicts 'hm-cache-demo))
-  ;; The DEFUN hook drops it, so a redefinition can never be served a stale
-  ;; verdict...
-  ($hm-on-defun 'hm-cache-demo)
-  (assert-nil (has-key-p $hm-verdicts 'hm-cache-demo))
-  (assert-equal (hm-verdict 'hm-cache-demo) '(checked (-> (string) string)))
-  ;; ... and so does any change to the type registry, since a verdict is
-  ;; derived from the whole of it.
-  (hm-registry-changed!)
-  (assert-nil (has-key-p $hm-verdicts 'hm-cache-demo)))
+(deftest hm-verdicts-are-never-stale
+  ;; #451 review F1: there is deliberately NO verdict cache. A verdict is
+  ;; derived from the whole world -- including the CALLEE bodies the checker
+  ;; reads on demand -- so a cache keyed on the redefined name alone served
+  ;; callers a confident answer computed from their callee's OLD body.
+  (assert-equal (hm-verdict 'hm-caller) '(checked (-> (string) string)))
+  (defun hm-callee (x) (car x))
+  (assert-equal (hm-verdict 'hm-caller)
+                '(checked (forall (a) (-> ((list a)) a))))
+  ;; ... and it agrees with a direct, uncached query, because it IS one.
+  (assert-equal (hm-verdict 'hm-caller) (hm-see-type 'hm-caller))
+  (defun hm-callee (x) (concat x "!")))
+
+(deftest hm-source-comes-from-the-live-binding
+  ;; #451 review F2: SEE-SOURCE asked about a SYMBOL answers from a
+  ;; `source-form` property that several host paths write and then never
+  ;; clear on a later rebinding. Asking about the live VALUE instead is what
+  ;; keeps the checker from reporting a confident scheme for code the name no
+  ;; longer runs.
+  (defun hm-rebound (n) (+ n 1))
+  (set 'hm-rebound (lambda (s) (concat s "!")))
+  (assert-equal (funcall hm-rebound "a") "a!")
+  (assert-equal (hm-see-type 'hm-rebound) '(checked (-> (string) string))))
+
+(deftest hm-self-call-arity-is-an-error
+  ;; #451 review F3: the function under check is reached through the native
+  ;; checker's provisional REGISTRY entry, which rejects a wrong-arity call
+  ;; rather than conceding the gradual frontier.
+  (assert-equal (car (hm-check-named 'hm-sa '(x) '((if x (hm-sa x 1) 0))))
+                'type-error)
+  (assert-equal (car (hm-check-named 'hm-sb '(x) '((if x (hm-sb x) 0))))
+                'checked))
+
+(deftest hm-let-typed-annotations-use-the-native-grammar
+  ;; #451 review F4: LET-TYPED annotations are `src/jit/parse.rs`'s much
+  ;; smaller `parse_ty` grammar, not DECLARE-TYPE!'s.
+  (assert-equal (hm-check-expr '(let ((a int64 1)) a)) '(checked int64))
+  (assert-equal (hm-check-expr '(let ((a array (array 3))) a))
+                '(checked (forall (a) (array a))))
+  (assert-equal (hm-check-expr '(let ((a (array int64) (array 3))) a))
+                '(checked (array int64)))
+  ;; `u8`/`byte` name the byte scalar, and are accepted where DECLARE-TYPE!
+  ;; would not know them...
+  (assert-equal (hm-parse-annotation (hm-new-state) 'u8) 'char)
+  (assert-equal (hm-parse-annotation (hm-new-state) 'byte) 'char)
+  ;; ... while `(list T)`, `string`, `symbol` and `any` -- all fine in a
+  ;; DECLARE-TYPE! scheme -- are not annotations the native parser accepts.
+  (assert-equal (car (hm-check-expr '(let ((a (list int64) (list 1))) a)))
+                'type-error)
+  (assert-equal (car (hm-check-expr '(let ((a string "s")) a))) 'type-error))
+
+;;; ---- unification corners -------------------------------------------------
+
+(deftest hm-shared-tail-rows-meet-at-one-row
+  ;; Two open rows with DIFFERENT tails share one fresh tail, so `rest` stays
+  ;; a single row and each side gains the other's private labels.
+  (let ((st (hm-new-state)))
+    (let ((r1 (list 'record (list (cons 'a 'int64)) (hm-fresh st)))
+          (r2 (list 'record (list (cons 'b 'string)) (hm-fresh st))))
+      (progn
+        (assert-true (hm-unifies-p st r1 r2))
+        (assert-equal (hm-render-scheme (hm-generalize st r1))
+                      '(forall (a) (record ((a int64) (b string)) a))))))
+  ;; Two rows already sharing ONE tail cannot disagree on fields.
+  (let ((st (hm-new-state)))
+    (let ((rho (hm-fresh st)))
+      (assert-nil (hm-unifies-p st
+                                (list 'record (list (cons 'a 'int64)) rho)
+                                (list 'record (list (cons 'b 'int64)) rho))))))
+
+(deftest hm-generalize-avoiding-keeps-entangled-vars-free
+  ;; A variable reachable from the AVOID set stays a free monotype, so a
+  ;; nested callee's scheme cannot sever its link to the enclosing check.
+  (let ((st (hm-new-state)))
+    (let ((a (hm-fresh st)) (b (hm-fresh st)))
+      (progn
+        (assert-equal (cadr (hm-generalize st (list '-> (list a) b))) '(0 1))
+        (assert-equal (cadr (hm-generalize-avoiding st (list '-> (list a) b)
+                                                    (list (cadr a))))
+                      '(1))))))
+
+(deftest hm-force-any-overwrites-a-concretized-variable
+  ;; The self-recursion honesty rule: ANY absorbs a still-FREE variable, so
+  ;; undoing an internal concretization needs the forcing path.
+  (let ((st (hm-new-state)))
+    (let ((v (hm-fresh st)))
+      (progn
+        (hm-unify! st v 'int64)
+        (assert-equal (hm-walk st v) 'int64)
+        (hm-unify! st v 'any)
+        (assert-equal (hm-walk st v) 'int64)
+        (hm-force-any! st (cadr v))
+        (assert-equal (hm-walk st v) 'any)))))
+
+(deftest hm-protocol-misuse-is-an-error
+  ;; A RESOLVED dispatch argument with no matching instance is a static error,
+  ;; not a silent gradual pass.
+  (assert-equal (car (hm-check-expr '(length 1))) 'type-error))
 
 ;;; ---- interop with the condensation layer ---------------------------------
 

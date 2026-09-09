@@ -233,21 +233,21 @@ generator-backed axiom (DECLARED)."
 ;; guarantee and the trace's tier information intact on a host that compiles,
 ;; and costs nothing on one that does not.
 ;;
-;; Note this is NOT a coverage gap in the portable checker: one-door `defun`
-;; keeps the original closure behind the native membrane, so `see-source`
-;; still reaches the body and HM-SEE-TYPE reports a genuine CHECKED scheme for
-;; a compiled function. The host simply knows one more fact about it.
+;; This is also what covers a natively compiled function: its live binding is
+;; an opaque membrane, so the portable checker cannot see a body and honestly
+;; says DYNAMIC, and the host answers TYPED for exactly those names.
 (def $condense-native-see-type (if (boundp 'see-type) (eval 'see-type) nil))
 
 (defun condense-verdict (sym)
   "SYM's checker verdict, in SEE-TYPE's shape: (TYPED sig tier) |
 (DECLARED s) | (CHECKED s) | (TYPE-ERROR msg) | (DYNAMIC reason).
 
-The portable checker answers -- through its per-symbol cache (HM-VERDICT),
-since checking is a tree-walked analysis whose result is computed once per
-definition and dropped when the symbol is redefined or the type registry
-changes. The host's native checker answers only when it reports TYPED, the
-one verdict that states a codegen fact rather than a checking result."
+The portable checker answers, recomputed on every call: a verdict is derived
+from the whole world (the callee bodies it reads, the declared axioms, the
+type registries), and not every path that changes any of those can be hooked,
+so anything cached here would eventually be a confident wrong answer. The
+host's native checker answers only when it reports TYPED, the one verdict that
+states a codegen fact rather than a checking result."
   (let ((native (if $condense-native-see-type
                     (funcall $condense-native-see-type sym)
                     nil)))

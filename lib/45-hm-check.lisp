@@ -45,8 +45,9 @@
 ;;;
 ;;; `defun` reaches this file through `$defun-auto-compile` (lib/00-core.lisp),
 ;;; the one door every definition in the language routes through: it calls
-;;; `$HM-ON-DEFUN`, which drops the redefined name's cached verdict and, under
-;;; `(hm-check-policy! 'eager)`, checks the definition on the spot.
+;;; `$HM-ON-DEFUN`, which under `(hm-check-policy! 'eager)` checks the
+;;; definition on the spot. Verdicts are never cached -- see section 9's "why
+;;; there is no verdict cache".
 ;;;
 ;;; And `condense-verdict` (lib/20-condensation.lisp) is the seam through
 ;;; which the condensation layer's honesty machinery -- `condense-classify`,
@@ -1007,6 +1008,31 @@ late and regresses honest CHECKED verdicts into hard TYPE-ERRORs)."
 
 ;;; ---- binding forms --------------------------------------------------------
 
+(defun hm-parse-annotation (state form)
+  "Parse a LET-TYPED type ANNOTATION. Mirrors `src/jit/parse.rs`'s `parse_ty`,
+which is a deliberately different and much smaller grammar than the
+DECLARE-TYPE! one HM-PARSE-TY implements: a scalar keyword (`int64`,
+`float64`, `bool`, and `char`/`u8`/`byte` all naming the byte scalar), a
+registered struct name, the bare `array` keyword with the element type left as
+a fresh inference variable, or `(array T)` with the element pinned. Nothing
+else -- notably not `(list T)`, `string`, `symbol` or `any`, none of which the
+native annotation parser accepts."
+  (cond
+    ((symbolp form)
+     (cond
+       ((eq form 'array) (list 'array (hm-fresh state)))
+       ((hm-struct-p form) (list 'struct form))
+       ((eq form 'int64) 'int64)
+       ((eq form 'float64) 'float64)
+       ((eq form 'bool) 'bool)
+       ((member form '(char u8 byte)) 'char)
+       (t (error (concat "unknown type `" (princ-to-string form) "'")))))
+    ((consp form)
+     (if (and (eq (car form) 'array) (= (length form) 2))
+         (list 'array (hm-parse-annotation state (cadr form)))
+         (error "type must be a scalar, struct, `array`, or `(array T)`")))
+    (t (error "bad type annotation"))))
+
 (defun hm-elab-let (state tyenv args)
   "`(let ((name init) ...) body...)`, and LET-TYPED's `(name type init)` shape
 which pins the type explicitly. Bindings are MONOTYPES and all enter scope
@@ -1018,7 +1044,7 @@ together for the body (matching the native Scope discipline)."
                 (let ((parts (if (consp b) b (list b))))
                   (cond
                     ((and (= (length parts) 3) (symbolp (car parts)))
-                     (let ((d (hm-parse-ty (cadr parts) nil))
+                     (let ((d (hm-parse-annotation state (cadr parts)))
                            (init-ty (hm-elab state inner (caddr parts))))
                        (if (hm-unifies-p state d init-ty)
                            (setq inner (cons (cons (car parts) d) inner))
@@ -1580,7 +1606,16 @@ Cx::derived_call."
         ;; A callee currently being checked up-stack: use its in-flight
         ;; monotype arrow (the standard monomorphic-recursion assumption).
         (if (not (= (length (cadr assumed)) (length args)))
-            nil
+            ;; The function under check is the one the native checker reaches
+            ;; through its provisional REGISTRY entry rather than through the
+            ;; recursion assumption, and that arm rejects a wrong-arity call
+            ;; outright instead of conceding the gradual frontier. A nested
+            ;; callee keeps the assumption's own permissive behaviour.
+            (if (and name (eq name (gethash state 'self)))
+                (error (concat "`" (princ-to-string name) "` expects "
+                               (princ-to-string (length (cadr assumed)))
+                               " args, got " (princ-to-string (length args))))
+                nil)
             (progn
               (mapcar (lambda (a p)
                         (let ((at (hm-elab state tyenv a)))
@@ -1683,16 +1718,33 @@ body normalization."
 Uses only SEE-SOURCE -- an existing, portable reflection primitive the
 condensation layer already depends on -- so no new host hook is needed. A
 variadic lambda, a non-lambda value and an unbound name all yield NIL: none of
-them is a plain lambda whose body this checker can see.
+them is a plain lambda whose body this checker can see. This is exactly the
+reference host's own `checker_lambda_source` rule.
 
-Note this is slightly BROADER than the reference host's own
-`checker_lambda_source`, which requires the live binding to be a
-`LispVal::Lambda` and so gives up on a natively compiled function. One-door
-`defun` keeps the original closure behind the native membrane, and SEE-SOURCE
-reconstructs from it, so the portable checker still reports a real CHECKED
-scheme where the host reports TYPED. Broader visibility is safe -- it can only
-turn a DYNAMIC non-answer into a checked one, never the reverse."
-  (let ((src (handler-case (see-source name) (error (e) nil))))
+SEE-SOURCE is asked about NAME'S CURRENT VALUE, never about the symbol. That
+distinction is load-bearing, not stylistic: asked about a SYMBOL, SEE-SOURCE
+answers from a `source-form` property, and several host paths write that
+property and then rebind the name later without clearing it. On the reference
+host, `jit-optimize` records a `source-form` for every function it natively
+compiles, so after
+
+    (defun f (n) (+ n 1))            ; auto-compiled; source-form recorded
+    (def f (lambda (s) (concat s \"!\")))   ; rebound; property NOT cleared
+
+the symbol still carries the OLD body. Checking that would report a confident
+CHECKED scheme for code the name no longer runs -- a fabricated verdict, which
+is precisely what this checker's honesty discipline exists to prevent. The
+live value cannot lie about itself.
+
+The cost is that a name whose current value is an opaque host object -- a
+natively compiled function's membrane, a builtin -- reports DYNAMIC rather
+than being checked through. That is the honest answer for a body this checker
+cannot see, and on such a host `condense-verdict` already asks the host, which
+reports TYPED for exactly those names."
+  (let* ((value (handler-case (eval name) (error (e) nil)))
+         (src (if value
+                  (handler-case (see-source value) (error (e) nil))
+                  nil)))
     (if (and (consp src)
              (eq (car src) 'lambda)
              (not (member '&rest (cadr src)))
@@ -1704,10 +1756,14 @@ turn a DYNAMIC non-answer into a checked one, never the reverse."
         nil)))
 
 (defun hm-check-lambda (params body)
-  "Check a function of PARAMS (a flat list of bare symbols) and BODY (a list
-of body forms). Returns (CHECKED scheme) | (TYPE-ERROR \"msg\") |
-(DYNAMIC \"reason\") -- the same verdict shape the native SEE-TYPE reports."
-  (hm-check-named 'lambda params body))
+  "Check an ANONYMOUS function of PARAMS (a flat list of bare symbols) and
+BODY (a list of body forms). Returns (CHECKED scheme) | (TYPE-ERROR \"msg\") |
+(DYNAMIC \"reason\") -- the same verdict shape the native SEE-TYPE reports.
+
+NIL for the name, not a sentinel symbol: an anonymous lambda has no name to
+call itself by, and any symbol picked to stand in for one would be a name real
+code could also use as a call head."
+  (hm-check-named nil params body))
 
 (defun hm-check-named (name params body)
   "HM-CHECK-LAMBDA with NAME seeded as a self-recursion assumption, so a
@@ -1724,7 +1780,14 @@ this from its provisional registry entry; this is the portable equivalent)."
               (arrow (list '-> ptys ret))
               (tyenv (mapcar #'cons params ptys)))
          (progn
-           (sethash (gethash state 'assumptions) name arrow)
+           ;; NAME is the function under check, not merely a callee: the
+           ;; native checker reaches it through a provisional registry entry
+           ;; (see HM-ELAB-DERIVED-CALL's arity arm). An anonymous check
+           ;; (NAME nil) has no such entry and seeds neither.
+           (if name
+               (progn (sethash (gethash state 'assumptions) name arrow)
+                      (sethash state 'self name))
+               nil)
            ;; This function's own in-flight variables seed the AVOID set so a
            ;; callee checked on demand never quantifies them.
            (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
@@ -1802,17 +1865,14 @@ DECLARED is checked first, mirroring see_type_form's own order."
 
 (defun hm-declare-type! (name form)
   "Register a DECLARED scheme axiom for NAME. Portable half of DECLARE-TYPE!."
-  (progn
-    (hm-registry-changed!)
-    (handler-case
-        (progn (sethash $hm-declared name (hm-parse-scheme form)) name)
-      (error (e) (hm-drop! 'declared name form)))))
+  (handler-case
+      (progn (sethash $hm-declared name (hm-parse-scheme form)) name)
+    (error (e) (hm-drop! 'declared name form))))
 
 (defun hm-declare-instance! (name form)
   "Register one protocol INSTANCE scheme for NAME (additive)."
   (handler-case
       (progn
-        (hm-registry-changed!)
         (sethash $hm-protocols name
                  (append (hm-protocol-instances name)
                          (list (hm-parse-scheme form))))
@@ -1820,7 +1880,7 @@ DECLARED is checked first, mirroring see_type_form's own order."
     (error (e) (hm-drop! 'instance name form))))
 
 (defun hm-declare-protocol-dispatch! (name idx)
-  (progn (hm-registry-changed!) (sethash $hm-pdispatch name idx) name))
+  (progn (sethash $hm-pdispatch name idx) name))
 
 (defun hm-declare-variant! (head ctors)
   "Register a sum type. HEAD is NAME, or (NAME param...) for a parametric
@@ -1828,7 +1888,6 @@ variant. Mirrors declare_variant / declare_generic_variant."
   (let ((name (if (consp head) (car head) head))
         (params (if (consp head) (cdr head) nil)))
     (progn
-      (hm-registry-changed!)
       (if params
           (sethash $hm-generics name (list (length params) nil ctors nil))
           (sethash $hm-variants name ctors))
@@ -1855,7 +1914,6 @@ are registered BEFORE the field types are parsed, so recursive definitions
 resolve by name."
   (let ((name (if (consp head) (car head) head))
         (params (if (consp head) (cdr head) nil)))
-    (hm-registry-changed!)
     (handler-case
         (if params
             (hm-declare-generic-record! name params field-specs)
@@ -1956,63 +2014,74 @@ constructor of a declared parametric variant, the back-reference is recorded
 ;;; single `defun` in the language routes through -- calls `$HM-ON-DEFUN` when
 ;;; it is bound. What that does is governed by the check POLICY:
 ;;;
-;;;   'lazy (the default) -- drop any cached verdict for the redefined name, so
-;;;     the next HM-SEE-TYPE / condensation query recomputes it from the new
-;;;     body. This is the same discipline `00-core.lisp` already documents for
-;;;     purity and the call graph: "computed LAZILY on first query rather than
-;;;     eagerly at definition time. This avoids multi-second startup costs
-;;;     during stdlib loading." A tree-walked HM check is exactly that kind of
-;;;     cost, and exactly that kind of query.
+;;;   'lazy (the default) -- do nothing. Verdicts are computed on demand, the
+;;;     same discipline `00-core.lisp` already documents for purity and the
+;;;     call graph: "computed LAZILY on first query rather than eagerly at
+;;;     definition time. This avoids multi-second startup costs during stdlib
+;;;     loading." A tree-walked HM check is exactly that kind of cost.
 ;;;
-;;;   'eager -- additionally run the portable checker on the new definition
-;;;     immediately and cache the verdict. This is what a host with no native
-;;;     checker wants (checking at definition time is the whole point there),
-;;;     and what `(hm-check-policy! 'eager)` turns on here for testing that the
-;;;     defun path really does drive this checker.
+;;;   'eager -- run the portable checker on the new definition immediately and
+;;;     RECORD the verdict on the symbol's plist. This is what a host with no
+;;;     native checker wants: type errors surface where they are introduced.
 ;;;
-;;; Either way the verdict CACHE below is the single place both policies meet,
-;;; and HM-VERDICT is what the condensation layer consults.
+;;; ---- why there is no verdict cache ----------------------------------------
+;;;
+;;; There was one, and it was unsound in two ways that both produced dishonest
+;;; CHECKED verdicts -- the exact failure this checker's honesty discipline
+;;; exists to prevent -- so it is gone.
+;;;
+;;;   1. A verdict is derived from the whole world, not from one definition:
+;;;      the callee schemes it derives on demand, the declared axioms, the
+;;;      record/variant/protocol registries. Invalidating only the redefined
+;;;      NAME left every CALLER holding a verdict computed from the callee's
+;;;      old body. `(defun a (x) (concat x "!")) (defun b (y) (a y))` then
+;;;      redefining `a` to `(+ x 1)` left `b` reporting the old string scheme.
+;;;   2. Not every definition path can be hooked. `defun*`, `defun-typed`,
+;;;      `def`, `setq` and `set` are all host special forms or builtins that
+;;;      never reach `$defun-auto-compile`, so any cache keyed on that hook is
+;;;      stale by construction on a host that has them.
+;;;
+;;; A recomputed verdict cannot be stale, and it is cheap: checking a typical
+;;; stdlib function is sub-millisecond, and the consumers (the condensation
+;;; layer's `condense-check-type`, `edit!`'s barrier) query a handful of
+;;; symbols on demand, not in a loop.
+;;;
+;;; The EAGER record below is deliberately NOT a cache and nothing serves it as
+;;; a current answer: it is a dated note of what the checker said the last time
+;;; this hook saw the name defined. HM-SEE-TYPE is the only current answer.
 
-(def $hm-verdicts (make-hash-table))
 (def $hm-policy 'lazy)
+(def $hm-definition-verdict-key "hm.definition-verdict")
 
 (defun hm-check-policy! (policy)
-  "Set the portable checker's DEFUN policy: 'LAZY (verdicts computed on first
-query) or 'EAGER (every definition checked immediately). Returns the previous
-policy."
+  "Set the portable checker's DEFUN policy: 'LAZY (verdicts computed on
+demand) or 'EAGER (every definition checked as it is made). Returns the
+previous policy."
   (let ((prev $hm-policy))
     (progn (setq $hm-policy policy) prev)))
 
 (defun hm-check-policy ()
   $hm-policy)
 
-(defun hm-invalidate! (name)
-  (progn (remhash $hm-verdicts name) name))
-
-(defun hm-registry-changed! ()
-  "Drop every cached verdict. A verdict is derived from the WHOLE registry --
-a newly declared axiom, record, variant or protocol instance can change what
-any already-checked function's call sites mean -- so a registry mutation
-invalidates the lot rather than trying to track dependencies. Registration is
-rare and definition-time; verdict queries are the common case."
-  (progn (mapc (lambda (k) (remhash $hm-verdicts k)) (keys $hm-verdicts)) nil))
-
 (defun hm-verdict (sym)
-  "SYM's portable verdict, computed on first query and cached until either SYM
-is redefined (the `$defun-auto-compile` hook) or the type registry changes
-(HM-REGISTRY-CHANGED!). Checking is a tree-walked analysis, so this -- not
-HM-SEE-TYPE -- is what repeated consumers such as the condensation layer
-should call."
-  (if (has-key-p $hm-verdicts sym)
-      (gethash $hm-verdicts sym)
-      (let ((v (hm-see-type sym)))
-        (progn (sethash $hm-verdicts sym v) v))))
+  "SYM's portable verdict, computed fresh. An alias for HM-SEE-TYPE, kept as
+the name consumers call so it stays obvious that there is nothing cached
+behind it (see this section's header for why there must not be)."
+  (hm-see-type sym))
+
+(defun hm-definition-verdict (sym)
+  "What the checker said about SYM the last time the DEFUN hook saw it defined
+under the EAGER policy, or NIL. A DATED NOTE, not an answer: SYM may have been
+redefined since, by a path that does not route through the hook. Ask
+HM-SEE-TYPE for what is true now."
+  (getp sym $hm-definition-verdict-key))
 
 (def $hm-on-defun
   (lambda (name)
     (progn
-      (hm-invalidate! name)
-      (if (eq $hm-policy 'eager) (hm-verdict name) nil)
+      (if (eq $hm-policy 'eager)
+          (putp name $hm-definition-verdict-key (hm-see-type name))
+          nil)
       name)))
 
 ;;; ---- bulk auditing --------------------------------------------------------

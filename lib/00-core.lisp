@@ -32,14 +32,19 @@
 ;;   2. `$HM-ON-DEFUN`, the PORTABLE type checker's definition hook
 ;;      (lib/45-hm-check.lisp, issue #451). Every `defun` in the language
 ;;      routes through here, so this is the one door the portable checker
-;;      needs: it drops the redefined name's cached verdict (so the next
-;;      HM-SEE-TYPE / condensation query recomputes it from the new body) and,
-;;      under `(hm-check-policy! 'eager)`, checks the new definition on the
-;;      spot. Lazy is the default for exactly the reason the purity and
-;;      call-graph analyses below are lazy: a tree-walked HM check is a
-;;      per-query cost, not a per-definition one, and paying it eagerly for
-;;      every stdlib definition would add seconds to startup. On a host with
-;;      no native checker, `'eager` makes this the definition-time checker.
+;;      needs: under `(hm-check-policy! 'eager)` it checks the new definition
+;;      on the spot and records the verdict, which is what a host with no
+;;      native checker wants. Lazy is the default for exactly the reason the
+;;      purity and call-graph analyses below are lazy: a tree-walked HM check
+;;      is a per-query cost, not a per-definition one, and paying it eagerly
+;;      for every stdlib definition would add seconds to startup.
+;;
+;;      Note the checker deliberately keeps NO cache keyed on this hook. Not
+;;      every definition path can reach it -- `defun*`, `defun-typed`, `def`,
+;;      `setq` and `set` are host special forms and builtins that never do --
+;;      so a cache invalidated here would be stale by construction. Verdicts
+;;      are recomputed instead; see that file's "why there is no verdict
+;;      cache" note.
 ;;
 ;; Guarded by BOUNDP because 45-hm-check.lisp loads long after this file --
 ;; the same pattern `$CG-PENDING`/`$CALL-GRAPH` already use below.
@@ -174,8 +179,15 @@
                                   (eq (car (car (cdr first-form))) 'no-compile))
                               nil)))
          (body-forms  (if has-nc (cdr body-1) body-1))
+         ;; A `(declare (no-compile))` definition is pinned away from the
+         ;; COMPILER, not from the CHECKER: it still routes through the
+         ;; portable checker's hook, so `(hm-check-policy! 'eager)` sees every
+         ;; definition the language makes and not merely the compilable ones.
          (auto        (if has-nc
-                          `(putp ',name "no-compile" t)
+                          `(progn (putp ',name "no-compile" t)
+                                  (if (boundp '$hm-on-defun)
+                                      ($hm-on-defun ',name)
+                                      nil))
                           `($defun-auto-compile ',name)))
          (lambda-expr (if ($params-extended-p params)
                           ($extended-lambda params body-forms)
