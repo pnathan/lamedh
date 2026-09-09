@@ -36,7 +36,10 @@ fn ev(e: &Shared<Environment>, src: &str) -> String {
 /// Do types `a` and `b` unify, in a fresh checker state? `st` is in scope for
 /// both operands, so either may name a fresh row tail with `(hm-fresh st)`.
 fn unifies(e: &Shared<Environment>, a: &str, b: &str) -> String {
-    ev(e, &format!("(let ((st (hm-new-state))) (hm-unifies-p st {a} {b}))"))
+    ev(
+        e,
+        &format!("(let ((st (hm-new-state))) (hm-unifies-p st {a} {b}))"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +62,10 @@ fn arithmetic_constrains_operands_and_rejects_strings() {
         ev(&e, "(hm-check-lambda '(x) '((+ x 1)))"),
         "(CHECKED (-> (INT64) INT64))"
     );
-    assert_eq!(ev(&e, "(car (hm-check-expr '(+ \"a\" \"b\")))"), "TYPE-ERROR");
+    assert_eq!(
+        ev(&e, "(car (hm-check-expr '(+ \"a\" \"b\")))"),
+        "TYPE-ERROR"
+    );
 }
 
 #[test]
@@ -75,9 +81,18 @@ fn division_arity_matches_the_evaluator() {
 #[test]
 fn list_rules_infer_element_types() {
     let e = env();
-    assert_eq!(ev(&e, "(hm-check-expr '(list 1 2 3))"), "(CHECKED (LIST INT64))");
-    assert_eq!(ev(&e, "(car (hm-check-expr '(list 1 \"s\")))"), "TYPE-ERROR");
-    assert_eq!(ev(&e, "(hm-check-expr '(car (list 1 2)))"), "(CHECKED INT64)");
+    assert_eq!(
+        ev(&e, "(hm-check-expr '(list 1 2 3))"),
+        "(CHECKED (LIST INT64))"
+    );
+    assert_eq!(
+        ev(&e, "(car (hm-check-expr '(list 1 \"s\")))"),
+        "TYPE-ERROR"
+    );
+    assert_eq!(
+        ev(&e, "(hm-check-expr '(car (list 1 2)))"),
+        "(CHECKED INT64)"
+    );
     // A cons onto a known non-list ground type is a dotted pair.
     assert_eq!(
         ev(&e, "(hm-check-expr '(cons 1 \"s\"))"),
@@ -102,13 +117,16 @@ fn the_nil_branch_honesty_rule_degrades_instead_of_biasing() {
 fn occurs_check_rejects_an_infinite_type() {
     let e = env();
     // Two DISTINCT fresh variables unify happily...
-    assert_eq!(unifies(&e, "(hm-fresh st)", "(list 'list (hm-fresh st))"), "T");
+    assert_eq!(
+        unifies(&e, "(hm-fresh st)", "(list 'list (hm-fresh st))"),
+        "T"
+    );
     // ... but binding one INTO a type that contains it is the infinite type
     // the occurs-check exists to reject.
     let cyclic = "(let ((a (hm-fresh st))) (hm-unifies-p st a (list 'list a)))";
     assert_eq!(
         ev(&e, &format!("(let ((st (hm-new-state))) {cyclic})")),
-        "NIL"
+        "()"
     );
 }
 
@@ -147,12 +165,18 @@ fn one_row_typed_reader_accepts_every_conforming_brand() {
         "CHECKED"
     );
     assert_eq!(
-        ev(&e, "(car (hm-check-expr '(record-ref (make-RowB 1 \"s\") 'x)))"),
+        ev(
+            &e,
+            "(car (hm-check-expr '(record-ref (make-RowB 1 \"s\") 'x)))"
+        ),
         "CHECKED"
     );
     // A field neither brand has is a static error, not a silent pass.
     assert_eq!(
-        ev(&e, "(car (hm-check-expr '(record-ref (make-RowA 1 2) 'nope)))"),
+        ev(
+            &e,
+            "(car (hm-check-expr '(record-ref (make-RowA 1 2) 'nope)))"
+        ),
         "TYPE-ERROR"
     );
 }
@@ -171,7 +195,10 @@ fn defrecord_registers_the_brand_in_the_portable_registry() {
     // per-accessor axiom, which lands in the portable declared table too,
     // rendered exactly as the native checker renders it.
     ev(&e, "(defrecord Label (n int64) (s string))");
-    assert_eq!(ev(&e, "(hm-struct-def 'Label)"), "((N . INT64) (S . STRING))");
+    assert_eq!(
+        ev(&e, "(hm-struct-def 'Label)"),
+        "((N . INT64) (S . STRING))"
+    );
     assert_eq!(
         ev(&e, "(hm-see-type 'Label-s)"),
         "(DECLARED (-> (LABEL) STRING))"
@@ -184,7 +211,7 @@ fn defrecord_brands_are_nominal_but_row_subsumable() {
     ev(&e, "(defrecord Chest (w int64))");
     ev(&e, "(defrecord Crate (w int64))");
     // Same shape, different brand: nominally distinct.
-    assert_eq!(unifies(&e, "'(struct Chest)", "'(struct Crate)"), "NIL");
+    assert_eq!(unifies(&e, "'(struct Chest)", "'(struct Crate)"), "()");
     // Both subsume into an open row naming only W.
     for brand in ["Chest", "Crate"] {
         let row = "(list 'record (list (cons 'w 'int64)) (hm-fresh st))";
@@ -193,7 +220,7 @@ fn defrecord_brands_are_nominal_but_row_subsumable() {
     // A CLOSED row must name every field of the brand.
     assert_eq!(
         unifies(&e, "'(struct Chest)", "(list 'record (list) nil)"),
-        "NIL"
+        "()"
     );
 }
 
@@ -264,10 +291,13 @@ fn parametric_variants_from_the_stdlib_are_registered_generically() {
     assert_eq!(ev(&e, "(hm-generic-arity (hm-generic-def 'option))"), "1");
     // A constructor application absorbs into its variant's application,
     // arguments pairwise.
-    assert_eq!(unifies(&e, "'(app some (int64))", "'(app option (int64))"), "T");
+    assert_eq!(
+        unifies(&e, "'(app some (int64))", "'(app option (int64))"),
+        "T"
+    );
     assert_eq!(
         unifies(&e, "'(app some (int64))", "'(app option (string))"),
-        "NIL"
+        "()"
     );
 }
 
@@ -279,7 +309,10 @@ fn parametric_variants_from_the_stdlib_are_registered_generically() {
 fn protocol_instances_reach_the_portable_registry_and_dispatch() {
     let e = env();
     assert_eq!(ev(&e, "(hm-protocol-p 'length)"), "T");
-    assert_eq!(ev(&e, "(< 0 (length (hm-protocol-instances 'length)))"), "T");
+    assert_eq!(
+        ev(&e, "(< 0 (length (hm-protocol-instances 'length)))"),
+        "T"
+    );
     // Every LENGTH instance returns int64, so even an unresolved dispatch
     // argument still yields the shared ground result.
     assert_eq!(
@@ -287,7 +320,10 @@ fn protocol_instances_reach_the_portable_registry_and_dispatch() {
         "(CHECKED (FORALL (A) (-> (A) INT64)))"
     );
     // A resolved dispatch argument selects the matching instance.
-    assert_eq!(ev(&e, "(hm-check-expr '(length (list 1 2)))"), "(CHECKED INT64)");
+    assert_eq!(
+        ev(&e, "(hm-check-expr '(length (list 1 2)))"),
+        "(CHECKED INT64)"
+    );
 }
 
 #[test]
@@ -319,7 +355,10 @@ fn protocol_dispatch_position_is_registered_portably() {
 #[test]
 fn declared_axioms_are_registered_and_consumed_at_call_sites() {
     let e = env();
-    ev(&e, "(declare-type! 'axiom-demo '(forall (a) (-> ((list a)) a)))");
+    ev(
+        &e,
+        "(declare-type! 'axiom-demo '(forall (a) (-> ((list a)) a)))",
+    );
     assert_eq!(
         ev(&e, "(hm-see-type 'axiom-demo)"),
         "(DECLARED (FORALL (A) (-> ((LIST A)) A)))"
@@ -328,7 +367,10 @@ fn declared_axioms_are_registered_and_consumed_at_call_sites() {
         ev(&e, "(hm-check-expr '(axiom-demo (list 1 2)))"),
         "(CHECKED INT64)"
     );
-    assert_eq!(ev(&e, "(car (hm-check-expr '(axiom-demo 1)))"), "TYPE-ERROR");
+    assert_eq!(
+        ev(&e, "(car (hm-check-expr '(axiom-demo 1)))"),
+        "TYPE-ERROR"
+    );
 }
 
 #[test]
@@ -381,7 +423,7 @@ fn no_stdlib_declaration_is_dropped_by_the_portable_registry() {
     // parser gap or a registration channel this file does not cover — the one
     // thing that could make the checker quietly under-report.
     let e = env();
-    assert_eq!(ev(&e, "(hm-dropped-declarations)"), "NIL");
+    assert_eq!(ev(&e, "(hm-dropped-declarations)"), "()");
 }
 
 #[test]
@@ -392,7 +434,7 @@ fn the_portable_registry_learned_the_stdlibs_own_records_and_variants() {
     let e = env();
     assert_eq!(ev(&e, "(hm-generic-p 'option)"), "T");
     assert_eq!(ev(&e, "(hm-generic-p 'result)"), "T");
-    assert_eq!(ev(&e, "(hm-struct-p 'some)"), "NIL"); // parametric, not plain
+    assert_eq!(ev(&e, "(hm-struct-p 'some)"), "()"); // parametric, not plain
     assert_eq!(ev(&e, "(hm-protocol-p 'length)"), "T");
     // And the declared-axiom table picked up lib/28-types.lisp's entries.
     assert_eq!(
@@ -438,7 +480,10 @@ fn the_checker_runs_over_real_stdlib_definitions_without_crashing() {
         .next()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(count > 40, "expected a stdlib-scale sample, got {count} names");
+    assert!(
+        count > 40,
+        "expected a stdlib-scale sample, got {count} names"
+    );
     assert!(out.ends_with(" T)"), "not every verdict was honest: {out}");
 }
 
@@ -459,7 +504,7 @@ fn portable_and_native_agree_wherever_both_can_see_the_same_thing() {
            (list (length dec) bad))",
     );
     assert!(
-        out.ends_with(" NIL)"),
+        out.ends_with(" ())"),
         "portable and native disagree on a DECLARED scheme: {out}"
     );
     let count: i64 = out
@@ -493,8 +538,11 @@ fn portable_verdicts_classify_through_condense_classify() {
     // A rendered CHECKED scheme is the exact sexpr CONDENSE-VACUOUS-P
     // classifies.
     assert_eq!(
-        ev(&e, "(condense-vacuous-p (cadr (hm-check-lambda '(x) '(x))))"),
-        "NIL"
+        ev(
+            &e,
+            "(condense-vacuous-p (cadr (hm-check-lambda '(x) '(x))))"
+        ),
+        "()"
     );
     assert_eq!(
         ev(&e, "(condense-vacuous-p '(forall (a b) (-> (a) b)))"),
@@ -521,10 +569,13 @@ fn the_condensation_layer_runs_off_the_portable_checker() {
     );
     // The one thing the native checker is still consulted for is TYPED — a
     // codegen fact (a natively compiled function's signature and execution
-    // tier) that no portable checker can observe. The portable verdict there
-    // is an honest DYNAMIC, and the seam prefers the host's TYPED so
-    // `condense-verified-p`'s guarantee is unchanged.
-    ev(&e, "(defun-typed ctyped-demo ((n int64)) int64 (+ n 1))");
+    // tier) that no portable checker can observe: one-door `defun` has
+    // rebound this name to a native membrane, so it is no longer a plain
+    // lambda and the portable checker says DYNAMIC, honestly. The seam
+    // prefers the host's TYPED there, so `condense-verified-p`'s guarantee
+    // is unchanged on a host that compiles.
+    ev(&e, "(defun ctyped-demo (n) (+ n 1))");
+    assert_eq!(ev(&e, "(car (see-type 'ctyped-demo))"), "TYPED");
     assert_eq!(ev(&e, "(car (hm-see-type 'ctyped-demo))"), "DYNAMIC");
     assert_eq!(ev(&e, "(car (condense-verdict 'ctyped-demo))"), "TYPED");
 }
