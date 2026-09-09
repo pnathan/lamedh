@@ -27,6 +27,27 @@ thread_local! {
     static KERNEL_FUEL: Cell<i64> = const { Cell::new(-1) };
 }
 
+/// Small, fixed, non-renewable grace allowance (issue #457) granted the
+/// instant the kernel fuel counter first hits zero, so `UNWIND-PROTECT`
+/// cleanup forms and the owning `WITH-FUEL` frame's own bookkeeping can
+/// still take metered steps after exhaustion, without disarming the counter
+/// (`-1`, unlimited) the way the pre-#457 implementation did. It is charged
+/// against the enclosing fence's budget like any other step — see
+/// `charge_kernel_fuel` and `SpecialForm::WithFuel`.
+const KERNEL_FUEL_GRACE_ALLOWANCE: i64 = 256;
+
+thread_local! {
+    /// `None` outside any post-exhaustion grace window. `Some(n)` once the
+    /// main counter has hit zero: `n` counts down from
+    /// [`KERNEL_FUEL_GRACE_ALLOWANCE`] and, once it reaches zero, is never
+    /// regranted for this exhaustion (`charge_kernel_fuel` keeps re-signalling
+    /// `FuelExhausted` with no further steps). Reset to `None` by
+    /// [`set_kernel_fuel`] every time the counter is (re)armed — i.e. on
+    /// every `WITH-FUEL` entry and exit — so each dynamic extent of the
+    /// counter gets its own independent grace budget.
+    static FUEL_GRACE: Cell<Option<i64>> = const { Cell::new(None) };
+}
+
 // ---------------------------------------------------------------------------
 // Capability mask (#320): DYNAMIC-EXTENT attenuation. `None` = unmasked
 // (host grants only). WITH-CAPABILITIES (a kernel special form) arms the
@@ -83,6 +104,10 @@ pub(crate) fn cap_mask_get() -> Option<Vec<String>> {
 /// Arm (Some) or disarm (None) the current thread's kernel fuel budget,
 /// returning the previous state so callers can restore it on scope exit.
 pub fn set_kernel_fuel(fuel: Option<u64>) -> Option<u64> {
+    // Every (re)arm starts a fresh dynamic extent for the counter, so any
+    // leftover post-exhaustion grace state from a previous extent must not
+    // leak into this one (issue #457).
+    FUEL_GRACE.with(|g| g.set(None));
     KERNEL_FUEL.with(|f| {
         let prev = f.get();
         f.set(match fuel {
@@ -102,26 +127,46 @@ pub fn kernel_fuel_remaining() -> Option<u64> {
 }
 
 /// Charge one kernel fuel step; error when the armed budget is spent.
-/// Exhaustion **disarms** as it signals: the error itself must be
-/// catchable, and HANDLER-CASE handlers and UNWIND-PROTECT cleanups (the
-/// fence's own budget-restore among them) run through this same trampoline
-/// — with the counter stuck at zero they would re-signal forever and the
-/// error could never be handled. The WITH-FUEL fence that armed the budget
-/// restores/re-arms the enclosing state on exit.
+///
+/// Exhaustion signals [`LispError::FuelExhausted`] — a control-flow signal,
+/// not an ordinary error, riding the same propagation path as `Return`/
+/// `Go`/`Throw`/`ReturnFrom` (issue #457). Ordinary guest `HANDLER-CASE`
+/// does not intercept it, so code positioned *inside* the very fence that
+/// exhausted cannot catch its own exhaustion and loop past it. Only the
+/// owning `WITH-FUEL` special form converts it back into an ordinary
+/// catchable [`LispError::Generic`] for code outside the fence.
+///
+/// Unlike the pre-#457 implementation, exhaustion does **not** disarm the
+/// counter (`-1`, unlimited): the counter stays at `0` ("armed, exhausted"),
+/// and a small, fixed, [`KERNEL_FUEL_GRACE_ALLOWANCE`]-sized, non-renewable
+/// grace allowance is granted instead, so Rust-level `UNWIND-PROTECT`
+/// cleanup forms and `HANDLER-CASE`/`BLOCK`/`CATCH` unwinding on the way
+/// back up to the owning fence can still take metered steps. Once the grace
+/// allowance is itself spent, every further step re-signals
+/// `FuelExhausted` with no further grant — grace is charged against the
+/// enclosing fence's budget, never free, and it is not regranted until the
+/// counter is next (re)armed by [`set_kernel_fuel`].
 #[inline]
 pub(super) fn charge_kernel_fuel() -> Result<(), LispError> {
     KERNEL_FUEL.with(|f| {
         let v = f.get();
         if v < 0 {
             Ok(())
-        } else if v == 0 {
-            f.set(-1);
-            Err(LispError::Generic(
-                "fuel exhausted (kernel step budget)".to_string(),
-            ))
-        } else {
+        } else if v > 0 {
             f.set(v - 1);
             Ok(())
+        } else {
+            FUEL_GRACE.with(|g| match g.get() {
+                None => {
+                    g.set(Some(KERNEL_FUEL_GRACE_ALLOWANCE));
+                    Err(LispError::FuelExhausted)
+                }
+                Some(remaining) if remaining > 0 => {
+                    g.set(Some(remaining - 1));
+                    Ok(())
+                }
+                Some(_) => Err(LispError::FuelExhausted),
+            })
         }
     })
 }

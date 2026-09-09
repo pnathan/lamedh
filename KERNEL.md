@@ -1031,30 +1031,40 @@ and lets compiled code run unmetered has not implemented this section;
 the reference refuses to JIT-compile while a budget is armed for exactly
 this reason.
 
-**Exhaustion is an ordinary `HANDLER-CASE`-catchable condition**, unlike an
-unmatched `THROW` (Part VIII), specifically so that cleanup code —
-`UNWIND-PROTECT` cleanup forms, a `HANDLER-CASE` handler, the fence's own
-budget restore — can run instead of being re-killed on its own first
-step. That is why exhaustion **disarms** the counter as it signals: with
-the counter stuck at zero, every cleanup step would re-signal forever.
-
-**The consequence, tracked as issue #457:** because the counter stays
-disarmed until the fence that armed it exits, **guest code that catches
+**Exhaustion does not disarm the counter, and is not an ordinary
+`HANDLER-CASE`-catchable condition (resolved by issue #457).** Earlier
+behavior — documented here until the fix landed — disarmed the counter
+(unlimited) the instant it signalled, as an ordinary catchable condition,
+specifically so cleanup code could run without being re-killed on its own
+first step. That was a genuine sandboxing hole: **guest code that caught
 the exhaustion condition with a `HANDLER-CASE` positioned inside the very
-fence that exhausted runs unmetered from that point until the fence
-exits** — and a handler that loops and never returns runs indefinitely.
-`(with-fuel 100 (handler-case (loop-forever) (error (e) (kernel-fuel-
-remaining))))` returns `NIL` (unarmed) rather than a small number. The
-window is bounded to that one fence: an enclosing fence re-arms on the
-inner fence's exit, debiting the inner fence's whole budget as spent. What
-conformance requires is narrower than "reproduce this disarm mechanism":
-a host **must** let ordinary cleanup code run after exhaustion — some
-disarming or grace mechanism is required, not merely permitted — but a
-host is free to choose a narrower mechanism (for instance a small fixed
-cleanup allowance) that closes the catch-and-reloop window; doing so is an
-improvement over the yardstick, not a divergence from it, as long as
-ordinary cleanup still runs. Once #457 is fixed in the reference this
-paragraph will be tightened to forbid the unconditional bypass.
+fence that exhausted ran unmetered, indefinitely, from that point until the
+fence exited** — a handler that loops and never returns ran forever with
+no budget at all, not merely "until the fence's cleanup finishes."
+
+The reference now signals exhaustion as a distinct, **not**
+`HANDLER-CASE`-catchable control-flow condition, riding the same
+propagation path as `RETURN`/`GO`/`THROW`/`RETURN-FROM` (Part VIII) —
+ordinary guest `HANDLER-CASE` clauses do not intercept it, so code
+positioned inside the exhausted fence cannot catch its own exhaustion and
+loop past it. In place of an unconditional disarm, a small, fixed,
+non-renewable **grace allowance** is granted the instant the counter first
+hits zero, charged against the enclosing fence's already-known remaining
+budget (never free), so `UNWIND-PROTECT` cleanup forms and the owning
+`WITH-FUEL` frame's own bookkeeping can still take metered steps on the way
+back out. Only the owning `WITH-FUEL` fence — the one whose armed budget
+hit zero — converts the signal back into an ordinary catchable condition,
+and only for code **outside** that fence; once the grace allowance is
+itself spent, further steps keep re-signalling with no further grant.
+
+**This is now a MUST-match rule, not host latitude**: a conformant host
+must not let guest code positioned inside the exhausted fence intercept and
+loop past its own exhaustion signal, unconditionally or indefinitely. A
+host is free to choose its own grace-allowance size, or a different
+mechanism entirely, as long as (a) ordinary `HANDLER-CASE` inside the fence
+cannot catch the raw exhaustion signal, and (b) any post-exhaustion
+allowance is bounded and charged against the enclosing budget, not
+unlimited.
 
 **`(with-fuel budget-form body...)` is a special form, and nested fences
 attenuate**, following the exact algorithm of `SpecialForm::WithFuel`
@@ -1287,13 +1297,12 @@ than smoothed over:
   available for anything else, has not delivered on Part XI's reflection
   requirements no matter how precisely their observable behavior is
   pinned down here.
-- **Fix the kernel-fuel catch-and-reloop bypass** (issue #457): guest
-  code that catches the fuel-exhausted condition inside its own fence and
-  never returns from the handler gets an unconditional fuel bypass for
-  the rest of that fence, not bounded cleanup grace — a defect in the
-  reference, not a tolerable quirk. Once fixed, Part X's framing of this
-  as permitted-but-not-required host behavior is to be tightened to
-  disallow unconditional bypass outright.
+- ~~Fix the kernel-fuel catch-and-reloop bypass~~ (issue #457) — **done**:
+  exhaustion now signals a distinct, not-`HANDLER-CASE`-catchable
+  control-flow condition (Part VIII-shaped), paired with a small fixed
+  non-renewable grace allowance charged against the enclosing fence's
+  budget instead of an unconditional disarm. Part X now states this as a
+  MUST-match rule.
 - **Add reader-level feature-conditional dispatch** (issue #459). The
   reader has no `#+`/`#-` (Common-Lisp `*features*`-style) syntax, or any
   other mechanism, by which a single shared `lib/*.lisp` file can branch
