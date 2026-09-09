@@ -183,6 +183,59 @@
         (a2 (array 1)))
     (assert-true (/= (lht-hash a1) (lht-hash a2)))))
 
+(deftest lht-array-keys-spread-not-single-bucket-chain
+  ;; Issue #474 follow-up, flagged explicitly in #472's own body: before
+  ;; HASH-CODE existed, every identity-compared key (arrays included)
+  ;; hashed into the SAME constant bucket, so N distinct array keys
+  ;; degenerated into one O(N) linear-probe chain -- no better than an
+  ;; alist. HASH-CODE gives each live array its own allocation-derived
+  ;; hash, so LHT-HASH now spreads them like any other key type. This
+  ;; inserts many distinct, simultaneously-live arrays and bounds the
+  ;; worst *actual* probe-chain length (distance from a key's ideal bucket
+  ;; to the bucket it actually lands in), which the old constant-bucket
+  ;; branch could never satisfy -- its worst case grew as N-1, unboundedly
+  ;; with N, since every key shared one ideal bucket.
+  (let* ((n 200)
+         (h (make-lht))
+         (keys (lht-make-distinct-arrays n)))
+    (progn
+      (mapc (lambda (k) (lht-put! h k 'lht-arr-present)) keys)
+      (assert-equal (lht-count h) n)
+      ;; Spreading must not break lookup: every key is still found.
+      (assert-nil (lht-array-key-mismatches h keys))
+      ;; A generous bound -- well above the O(log N) chain length expected
+      ;; under real hashing at this table's 0.7 load factor -- that only a
+      ;; genuinely degenerate, single-bucket hash could blow through.
+      (assert-true (< (lht-max-probe-chain h keys) 40)))))
+
+(defun lht-make-distinct-arrays (n)
+  (if (<= n 0) nil (cons (array 1) (lht-make-distinct-arrays (- n 1)))))
+
+(defun lht-array-key-mismatches (h keys)
+  (if (null keys)
+      nil
+      (if (eq (lht-get h (car keys)) 'lht-arr-present)
+          (lht-array-key-mismatches h (cdr keys))
+          (cons (car keys) (lht-array-key-mismatches h (cdr keys))))))
+
+;; Probe-chain length for KEY: distance (mod CAPACITY) from KEY's ideal
+;; bucket (LHT-INDEX of its hash) to the bucket LHT-FIND actually lands it
+;; in. A degenerate hash (every key sharing one ideal bucket) forces this
+;; toward the full linear-probe length as more keys are inserted; a
+;; well-spread hash keeps it small regardless of table size.
+(defun lht-probe-chain-length (h key)
+  (let* ((cap (lht--capacity h))
+         (start (lht-index (lht-hash key) cap))
+         (r (lht-find h key))
+         (idx (cadr r)))
+    (mod (- idx start) cap)))
+
+(defun lht-max-probe-chain (h keys)
+  (if (null keys)
+      0
+      (max (lht-probe-chain-length h (car keys))
+           (lht-max-probe-chain h (cdr keys)))))
+
 (deftest lht-hash-agrees-with-equal-on-collisions
   ;; Two structurally-EQUAL-but-freshly-built compound keys must collide
   ;; into the SAME entry, exercising both the hash function and the probe's
