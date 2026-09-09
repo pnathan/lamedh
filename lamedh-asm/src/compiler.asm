@@ -106,6 +106,10 @@ extern char_code_tagged
 extern code_char_string
 extern random_tagged
 extern random_seed_tagged
+extern feature_enabled_p
+extern capability_mask_allows_p
+extern push_capability_mask
+extern pop_capability_mask
 extern lognot_tagged
 extern logand_tagged
 extern logior_tagged
@@ -187,6 +191,10 @@ kw_make_char:    db "MAKE-CHAR"
 kw_char_code:    db "CHAR-CODE"
 kw_code_char:    db "CODE-CHAR"
 kw_random:       db "RANDOM"
+kw_feature_enabled_p:        db "FEATURE-ENABLED-P"
+kw_capability_mask_allows_p: db "CAPABILITY-MASK-ALLOWS-P"
+kw_push_capability_mask:     db "PUSH-CAPABILITY-MASK!"
+kw_pop_capability_mask:      db "POP-CAPABILITY-MASK!"
 kw_random_seed:  db "RANDOM-SEED!"
 kw_lognot:       db "LOGNOT"
 kw_logand:       db "LOGAND"
@@ -4366,6 +4374,59 @@ compile_form:
     jmp .out
 
 .not_ash:
+    mov rdi, r12
+    mov rsi, kw_feature_enabled_p
+    mov rdx, 17
+    call sym_is
+    test rax, rax
+    jz .not_feature_enabled_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel feature_enabled_p]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_feature_enabled_p:
+    mov rdi, r12
+    mov rsi, kw_capability_mask_allows_p
+    mov rdx, 24
+    call sym_is
+    test rax, rax
+    jz .not_capability_mask_allows_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel capability_mask_allows_p]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_capability_mask_allows_p:
+    mov rdi, r12
+    mov rsi, kw_push_capability_mask
+    mov rdx, 21
+    call sym_is
+    test rax, rax
+    jz .not_push_capability_mask
+    mov rdi, r13
+    call car
+    lea rsi, [rel push_capability_mask]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_push_capability_mask:
+    mov rdi, r12
+    mov rsi, kw_pop_capability_mask
+    mov rdx, 20
+    call sym_is
+    test rax, rax
+    jz .not_pop_capability_mask
+    lea rsi, [rel pop_capability_mask]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_pop_capability_mask:
     mov rdi, r12
     mov rsi, kw_array_ref
     mov rdx, 5

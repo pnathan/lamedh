@@ -14,7 +14,7 @@ AS=nasm
 ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/"
 LD=ld
 
-CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/codegen.asm src/compiler.asm"
+CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/codegen.asm src/compiler.asm"
 
 pass=0
 fail=0
@@ -189,6 +189,21 @@ else
 (PRINT (FOR (I 1 3) (PRINT I)))
 (NEWLINE)
 (PRINT (HANDLER-CASE (FOR (I 1 5 0) (PRINT I)) (E (X) (QUOTE CAUGHT))))
+(NEWLINE)
+(PRINT (FEATURE-ENABLED-P (QUOTE READ-FS)))
+(NEWLINE)
+(WITH-CAPABILITIES (QUOTE (READ-FS)) (PRINT (FEATURE-ENABLED-P (QUOTE READ-FS))))
+(NEWLINE)
+(WITH-CAPABILITIES (QUOTE (READ-FS)) (PRINT (FEATURE-ENABLED-P (QUOTE CREATE-FS))))
+(NEWLINE)
+(PRINT (FEATURE-ENABLED-P (QUOTE CREATE-FS)))
+(NEWLINE)
+(WITH-CAPABILITIES (QUOTE (READ-FS)) (WITH-CAPABILITIES (QUOTE (SHELL)) (PRINT (FEATURE-ENABLED-P (QUOTE READ-FS)))))
+(NEWLINE)
+(CATCH (QUOTE TAG) (WITH-CAPABILITIES (QUOTE (READ-FS)) (THROW (QUOTE TAG) 0)))
+(PRINT (FEATURE-ENABLED-P (QUOTE SHELL)))
+(NEWLINE)
+(PRINT (HANDLER-CASE (WITH-CAPABILITIES (QUOTE (SHELL)) (FD-OPEN (QUOTE X) 0)) (E (X) (QUOTE CAUGHT))))
 LISP
     want_out='T
 T
@@ -234,6 +249,13 @@ T
 123
 321
 123()
+CAUGHT
+T
+T
+()
+T
+()
+T
 CAUGHT'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?

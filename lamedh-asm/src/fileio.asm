@@ -19,12 +19,23 @@ extern data_alloc
 extern make_string
 extern string_len
 extern string_bytes
+extern require_capability
 
 section .text
 
 ; file_open(rdi=tagged string path, rsi=tagged mode fixnum) -> rax =
 ; tagged fd fixnum (negative on error, e.g. -2 = ENOENT, same as errno
-; but negated — no errno translation is done).
+; but negated — no errno translation is done). Capability-gated
+; (KERNEL.md Part IX): mode 0 (read) requires READ-FS (bit 0), modes 1
+; and 2 (write/append, both O_CREAT) require CREATE-FS (bit 1) —
+; enforced at this call site via require_capability
+; (capabilities.asm), which never returns (a catchable condition, the
+; same fail_wrong_type/native_throw machinery every other native
+; failure this kernel signals uses) if the capability isn't currently
+; granted and unmasked. Acquisition is the gate — file_read/file_write/
+; file_close on an already-open fd are not re-gated, matching the
+; spec's own "operations on an already-acquired handle... are not
+; re-gated" rule exactly.
 global file_open
 file_open:
     push rbx
@@ -40,12 +51,18 @@ file_open:
     je .write_mode
     cmp rax, 2
     je .append_mode
+    mov rdi, 0                              ; READ-FS bit
+    call require_capability
     mov rdx, O_RDONLY
     jmp .have_flags
 .write_mode:
+    mov rdi, 1                              ; CREATE-FS bit
+    call require_capability
     mov rdx, O_WRONLY | O_CREAT | O_TRUNC
     jmp .have_flags
 .append_mode:
+    mov rdi, 1                              ; CREATE-FS bit
+    call require_capability
     mov rdx, O_WRONLY | O_CREAT | O_APPEND
 .have_flags:
     mov rdi, rbx

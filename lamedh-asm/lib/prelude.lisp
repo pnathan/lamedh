@@ -459,3 +459,24 @@
                               (LIST (LIST (QUOTE SETQ) VAR
                                           (LIST (QUOTE +) VAR STEP-SYM))))))
           (QUOTE ()))))
+
+; WITH-CAPABILITIES (KERNEL.md Part IX): "list-form is evaluated ...
+; the new mask is the requested names when no mask is active,
+; otherwise the intersection with the enclosing mask ... on exit by
+; any path — completion, error, non-local exit — the previous mask is
+; restored exactly." That exact "restore on any exit" guarantee is
+; precisely what UNWIND-PROTECT (just added, see "KERNEL.md
+; conformance" above) already provides, so this is a two-line
+; derivation over it plus two small new kernel primitives
+; (capabilities.asm): PUSH-CAPABILITY-MASK! evaluates list-form,
+; computes the intersected (or outright, if unset) mask, saves the
+; previous one, and installs the new one; POP-CAPABILITY-MASK!
+; restores it. No new special-form machinery needed at all — Part XII
+; axis 3's own license, applied here the same way DOTIMES/FOR/BLOCK
+; already were.
+(DEFMACRO WITH-CAPABILITIES (LIST-FORM &REST BODY)
+  (LIST (QUOTE PROGN)
+        (LIST (QUOTE PUSH-CAPABILITY-MASK!) LIST-FORM)
+        (LIST (QUOTE UNWIND-PROTECT)
+              (CONS (QUOTE PROGN) BODY)
+              (LIST (QUOTE POP-CAPABILITY-MASK!)))))

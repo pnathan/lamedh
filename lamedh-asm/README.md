@@ -525,10 +525,47 @@ into conformance incrementally, tracked honestly rather than silently:
   itself wrapped in a synthetic innermost catch on `handler_case_tag()`
   — a real next step, deliberately not attempted here to keep this
   change's blast radius to the primary, spec-critical guarantee
-  (cleanup runs on every exit path, full stop). Most of the rest of
-  Part VII's special forms (`PROG`/`VAU`/`DEFDYNAMIC`) still don't
-  exist; capability gating
-  (Part IX) and fuel (Part X) don't exist yet; proper tail calls
+  (cleanup runs on every exit path, full stop). **Capability gating
+  (Part IX) now also exists** (`src/capabilities.asm`,
+  `file_runner_prelude`'s own coverage in `tests/run.sh`): a standing
+  grant plus a dynamic-extent attenuation mask, matching the spec's own
+  two-layer model — "per-thread" collapses to plain global state here,
+  a documented simplification (this is a single-threaded freestanding
+  binary with no environment-as-value yet to scope it to instead). All
+  twelve capability names from the spec (`READ-FS` through
+  `OS-SIGNAL`) are recognized by `FEATURE-ENABLED-P`/
+  `CAPABILITY-MASK-ALLOWS-P`, but only `READ-FS`/`CREATE-FS` are
+  actually *enforced* anywhere, since `FD-OPEN` (`fileio.asm`) is the
+  only gated primitive this kernel has — mode 0 (read) requires
+  `READ-FS`, modes 1/2 (write/append) require `CREATE-FS`, checked at
+  the call site itself (not mere bookkeeping, per the spec's own
+  explicit requirement) via a new `require_capability` routine that
+  signals a genuine catchable condition (the same `fail_wrong_type`/
+  `native_throw` machinery every other native failure here uses) on
+  denial, not a crash or silent no-op. The standing grant defaults to
+  *all* capabilities, matching the reference CLI's own default
+  (`AGENTS.md`: "enables all capabilities by default"); there is no
+  `--sandbox` flag or Lisp-callable way to narrow it yet (also matching
+  spec: "There is no Lisp-callable way to add to it" — this kernel
+  simply has no way to *subtract* from it yet either). `WITH-CAPABILITIES`
+  is a two-line `DEFMACRO` (`lib/prelude.lisp`) over `UNWIND-PROTECT` —
+  the exact "restore the previous mask on exit by any path" guarantee
+  the spec requires is exactly what `UNWIND-PROTECT` (just added,
+  above) already provides, so this needed no new special-form
+  machinery at all, only two small primitives
+  (`PUSH-CAPABILITY-MASK!`/`POP-CAPABILITY-MASK!`) that intersect-or-
+  replace the mask and save/restore it. Verified directly: nested
+  `WITH-CAPABILITIES` fences intersect (never union — asking for
+  `SHELL` inside a `READ-FS`-only fence leaves nothing allowed); the
+  mask restores exactly on normal completion *and* on a `THROW` passing
+  through; and denying `FD-OPEN` inside a fence that excludes `READ-FS`
+  is genuinely catchable via `HANDLER-CASE`. **v0 scope**: only symbol
+  arguments are supported for capability names, not the spec's own
+  "symbol or string" (a string is treated as unrecognized rather than
+  case-folded and matched); an unrecognized name inside a
+  `WITH-CAPABILITIES` list is silently skipped rather than signaling
+  the spec's own "a non-symbol is an error"; fuel (Part X) doesn't
+  exist yet; proper tail calls
   (Part VI) aren't implemented (see v0 limits below); the array
   primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/
   `STORE`/`ARRAY-LENGTH*`, no longer `MAKE-ARRAY`/`ARRAY-REF`/
