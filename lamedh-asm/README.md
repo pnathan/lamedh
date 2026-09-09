@@ -1546,7 +1546,37 @@ bugs no existing test had exercised:
     reference stdlib files) — only the full accumulated-file
     conformance testing this section describes exercises it for real.
 
-  **`09-lisp15.lisp` is the next wall**, not yet root-caused.
+  **`09-lisp15.lisp` needed one more special form — `DEFEXPR`**
+  (`compile_defexpr`, `compiler.asm`), Lisp 1.5's FEXPR (the reference's
+  own `SpecialForm::Defexpr`): like `DEFMACRO`, a FEXPR receives its
+  call's raw, unevaluated argument list, but unlike a macro there is no
+  separate expansion step recompiled in the call's place — the FEXPR's
+  own body runs directly and its return value is the call's result
+  (`(defexpr select (args) ...)`, `09-lisp15.lisp`'s own `SELECT`,
+  Lisp 1.5's `SELECT[q;(q1 e1);...;en]`, is what surfaced this). This
+  host has no separate FEXPR representation at all: `DEFEXPR` is sugar
+  over `$VAU`, not a new kernel mechanism — `params` is always a single
+  symbol (`(args)`, never `$VAU`/`DEFVAU`'s own fixed 2-element
+  `(operands-param env-param)` shape), so `compile_defexpr` just
+  appends a second, fresh, never-referenced `GENSYM` parameter and
+  delegates entirely to `compile_vau`, needing no change to the
+  operative-call check or `emit_check_callable` at all. This works
+  because a FEXPR body only ever calls 1-argument `EVAL` explicitly on
+  pieces of its raw argument list, and this kernel's `EVAL` already
+  ignores any second operand unconditionally — the exact same "no
+  first-class environments, `EVAL` always evaluates in the one global
+  environment this kernel has" v0 divergence `$VAU`'s own comment
+  already documents, carrying the identical caveat: the reference's
+  own 1-argument `EVAL` evaluates in the *caller's* environment (real
+  dynamic extent), not a fixed global one, so a FEXPR body's `EVAL`
+  resolving a caller-local lexical is silently wrong here. Verified
+  both the raw-argument-list mechanics and the explicit-`EVAL`-on-a-
+  global idiom `SELECT` itself uses (`tests/cases/062_defexpr.asm`).
+  **This one special form unblocked five files at once**:
+  `09-lisp15.lisp`, `10-testing.lisp`, `22-guard.lisp`,
+  `23-match.lisp`, and `24-rules.lisp` all now load completely,
+  unmodified, with no further changes needed. **`25-variants.lisp` is
+  the next wall**, not yet root-caused.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver

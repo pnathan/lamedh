@@ -147,6 +147,7 @@ kw_if:     db "IF"
 kw_define: db "DEFINE"
 kw_defdynamic: db "DEFDYNAMIC"
 kw_vau: db "$VAU"
+kw_defexpr: db "DEFEXPR"
 kw_lambda: db "LAMBDA"
 kw_defmacro: db "DEFMACRO"
 kw_cons:   db "CONS"
@@ -2757,6 +2758,88 @@ global_environment_sentinel:
     call intern_symbol
     ret
 
+; compile_defexpr(rdi = the full (DEFEXPR name (params) body...) form)
+; — Lisp 1.5's FEXPR (KERNEL.md/the reference's own SpecialForm::
+; Defexpr, evaluator/special_forms.rs): like DEFMACRO, a FEXPR receives
+; its call's raw, unevaluated argument list — but unlike a macro, that
+; is the WHOLE story: there is no separate expansion step recompiled
+; in the call's place, the FEXPR's own body runs directly and ITS
+; return value is the call's result. `params` is always a single
+; symbol (`(defexpr select (args) ...)` — never the 2-element
+; `(operands-param env-param)` shape `$VAU`/`DEFVAU` always use), bound
+; to the raw argument list; the body typically calls 1-argument
+; `(eval ...)` explicitly on pieces of it to get values.
+;
+; This host has no separate FEXPR representation at all: a FEXPR is
+; simply an Operative (compile_vau/HDR_OPERATIVE) built with a second,
+; auto-appended, never-referenced GENSYM parameter — DEFEXPR is sugar
+; over `$VAU`, not a new kernel mechanism, needing no change to the
+; operative-call check or emit_check_callable. This works because a
+; FEXPR body only ever calls 1-argument EVAL, and this kernel's EVAL
+; already ignores any second operand unconditionally (compile_unary_
+; hostcall only ever compiles the first) — exactly the same "no
+; first-class environments, EVAL always evaluates in the one global
+; environment this kernel has" v0 divergence $VAU's own comment
+; already documents; a FEXPR calling `(eval x)` on something that
+; resolves through a *caller-local* lexical, the way the reference's
+; own 1-argument EVAL (which evaluates in the caller's own environment,
+; not a fixed global one) would get right, is silently wrong here for
+; the same reason. Multiple body forms (and an optional leading
+; docstring, evaluated and discarded like any other non-final PROGN
+; form) are supported, matching DEFMACRO's own fix above.
+compile_defexpr:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                    ; name
+    mov rdi, rbx
+    call caddr
+    mov r13, rax                      ; params, e.g. (ARGS)
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rdi, rax
+    call cdr
+    push rax                            ; [body forms list]
+
+    call gensym
+    mov rdi, rax
+    mov rsi, IMM_NIL
+    call cons                             ; (fresh-unused-env-param)
+    mov rdi, r13
+    mov rsi, rax
+    call append_lists                       ; params2 = (ARGS fresh-env-param)
+
+    mov rdi, rax
+    pop rsi                                   ; body
+    call cons                                   ; (params2 . body)
+    mov rdi, r12
+    mov rsi, rax
+    call cons                                     ; (name params2 . body) —
+                                                   ; head discarded by
+                                                   ; compile_vau's own cdr
+    mov rdi, rax
+    call compile_vau                                ; target rax = tagged
+                                                     ; operative
+
+    mov rdi, r12
+    UNTAG_PTR rdi
+    add rdi, 16
+    mov rsi, rdi
+    mov dil, REG_RAX
+    call emit_store_mem64                             ; symbol.value =
+                                                       ; operative (same
+                                                       ; store idiom
+                                                       ; compile_define
+                                                       ; uses)
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; compile_defmacro(rdi = (DEFMACRO name (params) body) form)
 ; A macro transformer is compiled exactly like a LAMBDA — the name is
 ; simply skipped, giving a synthetic (LAMBDA params body) built with
@@ -4757,6 +4840,17 @@ compile_form:
     jmp .out
 
 .not_vau:
+    mov rdi, r12
+    mov rsi, kw_defexpr
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_defexpr
+    mov rdi, rbx
+    call compile_defexpr
+    jmp .out
+
+.not_defexpr:
     mov rdi, r12
     mov rsi, kw_lambda
     mov rdx, 6
