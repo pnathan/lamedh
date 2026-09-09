@@ -87,7 +87,8 @@ order (`parse_expr`); the first match wins:
 
 1. *atom*: `1+`/`1-` literal symbols, then numeric literals (float,
    radix-prefixed, hex-suffixed, octal-suffixed, decimal — in that order),
-   then earmuff symbol, keyword symbol, general symbol, operator symbol;
+   then earmuff symbol, plus-earmuff symbol, keyword symbol, general
+   symbol, operator symbol;
 2. string literal;
 3. `#S(` record literal;
 4. `(` list;
@@ -115,6 +116,14 @@ constituent of anything and is a parse error outside strings.
   `-`: `*foo*` and `*a-b1*` are earmuff symbols, but `*foo?*` is not —
   it reads as the operator symbol `*` followed by the general symbol
   `FOO?*`, and `*a_b*` reads as `*` then `A_B*`.
+- *Plus-earmuff*: `+ letter (letter | digit | -)* +`, e.g.
+  `+NUMERIC-PRECISION-MODEL+`, `+HOST-TRAITS+` (issue #463; the
+  Common-Lisp-style constant naming convention). Tried before the keyword
+  and general productions, mirroring *Earmuff* exactly with `+` in place
+  of `*`. The tail admits only letters, digits, and `-`, same as
+  *Earmuff*; a bare `+` or `+` not closed by a matching trailing `+`
+  (`+foo`, `+`, `++`) is unaffected and falls through to the general or
+  operator productions as before.
 - *Keyword*: `: (letter | & | $) (letter | digit | - * ? ! + = < > _)*`.
   The tail excludes `:` and may not begin with `?`: `:foo:bar` reads as
   two symbols `:FOO` `:BAR`, and `:?x` is a parse error. A keyword's
@@ -1191,8 +1200,27 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    new kernel primitive is needed to satisfy this. This introspectability
    requirement is not itself an axis: every host must expose its choice
    this way, whichever of the two models it picked; only the underlying
-   choice of model varies. Not yet implemented anywhere, including the
-   Rust reference — tracked as issue #463 (Part XIII).
+   choice of model varies. Implemented on the Rust reference (issue #463):
+   `Environment::new_with_builtins` (`src/environment.rs`, and so every
+   environment built on it — `with_stdlib`, `with_prelude`, sandboxed
+   environments alike) binds `+NUMERIC-PRECISION-MODEL+` to `WRAPAROUND-64`,
+   matching `src/evaluator/builtins_core.rs`'s `+`/`-`/`*`//`
+   (`checked_*` arithmetic over `i64` falling back to `wrapping_*` and
+   setting `OVERFLOW`, never promoting to arbitrary precision). It is also
+   the first entry of `+HOST-TRAITS+`, a single collective registry — an
+   alist of `(AXIS-NAME . CHOSEN-VALUE)` pairs, `((NUMERIC-PRECISION-MODEL
+   . WRAPAROUND-64))` on the reference today — that later axes needing the
+   same introspectable-choice treatment are expected to add entries to,
+   rather than each minting its own top-level constant. Reading either
+   global requires the reader to parse `+earmuff+`-style tokens
+   (`parse_plus_earmuff_symbol` in `src/reader.rs`, added alongside this
+   change; previously only `*earmuff*` was supported and a leading `+` was
+   consumed as the bare `+` operator symbol). Other hosts (SBCL: #455,
+   `lamedh-asm`: #456) still need to bind their own choice the same way.
+   Issue #459 (reader-level `#+`/`#-` feature-conditional dispatch) had not
+   landed when this was implemented; `+HOST-TRAITS+` stands alone for now,
+   but is a plausible registry to share with #459's feature list if and
+   when that lands, per the discussion on issue #463.
 2. **Destructive cons mutation is not an axis: cons cells must be
    immutable on every host.** `RPLACA` and `RPLACD` return a **new** cons
    cell sharing the untouched half of the original
@@ -1301,18 +1329,12 @@ than smoothed over:
   dispatches are those listed in Part II. Nothing implementable exists yet,
   so Part II does not describe one; when a design lands in the reference,
   Part II gains its grammar and Part XII its declared axis (which host
-  feature names exist).
-- **Expose declared-axis choices as an introspectable global trait**
-  (issue #463), starting with `+NUMERIC-PRECISION-MODEL+` for Part XII
-  axis 1: a portable program should be able to ask which model a host
-  implements rather than infer it behaviorally (e.g. by deliberately
-  overflowing a computation and checking `OVERFLOW`). No new kernel
-  primitive is required — Part XI's global-mutation primitive already
-  suffices — only a naming convention and the discipline of every host
-  actually binding it. Not yet implemented anywhere, reference included.
-  Natural to design alongside #459's feature registry, since both are
-  "what does this host claim to support," queried at read time versus at
-  run time.
+  feature names exist). Part XII axis 1's `+HOST-TRAITS+` registry (issue
+  #463, implemented) is a plausible registry to share this data with,
+  since both are "what does this host claim to support," queried at read
+  time by this issue versus at run time by #463 — not designed together
+  since #463 landed first and #459 had not landed, but not precluded
+  either.
 - **Cache macro expansion per call site** (issue #460): today every macro
   call re-runs the macro body from scratch on every invocation, including
   every iteration of a compiled loop, because macro dispatch shares one
