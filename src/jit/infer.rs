@@ -130,7 +130,14 @@ impl Infer {
             }
             Ty::Struct(def) => def.fields.iter().any(|(_, ft)| self.occurs(v, ft)),
             // Scalars and nullary checkable types contain no variables.
-            Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Symbol | Ty::Str | Ty::Any => false,
+            Ty::Int64
+            | Ty::Float64
+            | Ty::Bool
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::Str
+            | Ty::Any
+            | Ty::Boxed => false,
         }
     }
 
@@ -179,7 +186,8 @@ impl Infer {
             | (Ty::Bool, Ty::Bool)
             | (Ty::Char, Ty::Char)
             | (Ty::Symbol, Ty::Symbol)
-            | (Ty::Str, Ty::Str) => Ok(()),
+            | (Ty::Str, Ty::Str)
+            | (Ty::Boxed, Ty::Boxed) => Ok(()),
             (Ty::Array(ea), Ty::Array(eb)) | (Ty::List(ea), Ty::List(eb)) => self.unify(&ea, &eb),
             (Ty::Pair(a1, a2), Ty::Pair(b1, b2)) => {
                 self.unify(&a1, &b1)?;
@@ -465,7 +473,7 @@ impl Infer {
             Ty::Var(v) => Err(format!(
                 "cannot infer type (ambiguous: type variable ?{v} is unconstrained)"
             )),
-            Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Struct(_) => Ok(w),
+            Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Struct(_) | Ty::Boxed => Ok(w),
             Ty::Array(elem) => Ok(Ty::Array(Box::new(self.resolve(elem)?))),
             other => Err(format!("type {} is not compileable", super::ty_name(other))),
         }

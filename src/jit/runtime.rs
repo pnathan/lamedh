@@ -59,6 +59,13 @@ pub struct Ctx<'a> {
     /// result, exactly as `div_by_zero` already does for its one fixed
     /// message.
     pub(super) pending_error: RefCell<Option<String>>,
+    /// The root table backing [`Ty::Boxed`] handles (issue #476): a
+    /// call-scoped, append-only table of cloned `LispVal`s. A handle word is
+    /// a 1-based index into this table (word `0` means `NIL` without a table
+    /// slot); see the doc comment on `Ty::Boxed` for the full representation
+    /// and aliasing contract. Dropped with the rest of `Ctx` when the
+    /// top-level membrane call returns.
+    pub(super) boxed: RefCell<Vec<LispVal>>,
 }
 
 impl Ctx<'_> {
@@ -298,6 +305,49 @@ impl Ctx<'_> {
         self.pending_tail.borrow_mut().take()
     }
 
+    /// Box `lv` into this call's root table (issue #476), returning its
+    /// 1-based handle word. `NIL` shortcuts to `0` and takes no table slot —
+    /// see [`Ty::Boxed`]'s doc comment for why. O(1): the value is cloned
+    /// (cheap for every `LispVal` variant — `Shared`-backed ones bump a
+    /// refcount) and pushed, never inspected or copied element-wise.
+    pub(super) fn box_value(&self, lv: LispVal) -> u64 {
+        if matches!(lv, LispVal::Nil) {
+            return 0;
+        }
+        let mut table = self.boxed.borrow_mut();
+        table.push(lv);
+        table.len() as u64
+    }
+
+    /// Resolve a boxed handle word back to its `LispVal` (issue #476). Word
+    /// `0` is `NIL`. An out-of-range index — which should never happen from
+    /// well-typed code, but a malformed/adversarial word must not panic —
+    /// records a [`pending_error`](Ctx::pending_error) and returns `NIL` as
+    /// the memory-safe substitute, matching every other fallible `Ctx`
+    /// operation's discipline.
+    pub(super) fn unbox(&self, w: u64) -> LispVal {
+        if w == 0 {
+            return LispVal::Nil;
+        }
+        let table = self.boxed.borrow();
+        match table.get((w - 1) as usize) {
+            Some(lv) => lv.clone(),
+            None => {
+                drop(table);
+                self.set_pending_error(format!(
+                    "boxed: handle {w} out of range (table has {} entr{})",
+                    self.boxed.borrow().len(),
+                    if self.boxed.borrow().len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
+                ));
+                LispVal::Nil
+            }
+        }
+    }
+
     /// A `Ctx` for a *leaf* native call from a raw entry point (issue #424).
     /// The function table is empty: a leaf's native code never performs a
     /// cross-function call, so it never indexes `funcs` — the only `Ctx` state
@@ -316,6 +366,7 @@ impl Ctx<'_> {
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
+            boxed: RefCell::new(Vec::new()),
         }
     }
 

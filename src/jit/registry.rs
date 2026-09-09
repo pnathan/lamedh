@@ -1667,6 +1667,7 @@ impl Jit {
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
+            boxed: RefCell::new(Vec::new()),
         }
     }
 
@@ -1868,7 +1869,10 @@ impl Jit {
                         Value::Float(f) => LispVal::Float(f),
                         Value::Bool(b) => LispVal::Number(b as i64),
                         Value::Char(b) => LispVal::Char(b),
-                        Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) => {
+                        Value::Array(_)
+                        | Value::Struct(_)
+                        | Value::TypedArray(_)
+                        | Value::Boxed(_) => {
                             unreachable!("flat scalar array write-back produced a compound element")
                         }
                     })

@@ -1969,3 +1969,152 @@ fn tco_both_branches_tail_looping_still_compiles() {
         "(defun-typed (spins int64) ((n int64)) (if (> n 0) (spins (- n 1)) (spins (+ n 1))))",
     ]);
 }
+
+// --- boxed (issue #476 phase 2): type, lattice, membrane --------------------
+
+/// `(defun-typed (id boxed) ((x boxed)) x)` registers and round-trips an
+/// arbitrary `LispVal` through the interpreter (closure) tier — the
+/// acceptance criterion for phase 2. Exercise a variety of `LispVal` shapes,
+/// including `Shared`-backed ones, so the "clone aliases the caller's
+/// object" property (the doc comment on `Ty::Boxed`) is at least plausible,
+/// not just true for immutable scalars.
+#[test]
+fn boxed_identity_round_trips_on_interpreter_tier() {
+    let env = Environment::new_with_builtins();
+    let j = build(&["(defun-typed (id boxed) ((x boxed)) x)"]);
+    j.deoptimize_all(); // force the closure/interpreter edition, not native
+
+    let cases: Vec<LispVal> = vec![
+        LispVal::Nil,
+        LispVal::Number(42),
+        LispVal::Float(3.5),
+        LispVal::Char(b'z'),
+        LispVal::Symbol(env.intern_symbol("FOO")),
+        LispVal::String("hello".to_string()),
+        LispVal::Array(Shared::new(SharedCell::new(vec![
+            LispVal::Number(1),
+            LispVal::Number(2),
+        ]))),
+    ];
+    for lv in cases {
+        let out = j.call("ID", &[Value::Boxed(lv.clone())]).unwrap();
+        assert_eq!(out, Value::Boxed(lv));
+    }
+}
+
+/// The same round trip must also hold when a native edition exists (movement
+/// of a boxed handle is just a `u64` word, so nothing about phase 2 should
+/// block native compilation even though phase 3 codegen work hasn't landed).
+#[test]
+fn boxed_identity_round_trips_compiled_vs_interpreted() {
+    let env = Environment::new_with_builtins();
+    let j = build(&["(defun-typed (id boxed) ((x boxed)) x)"]);
+    let lv = LispVal::Number(7);
+    assert_eq!(
+        agree(&j, "id", &[Value::Boxed(lv)]),
+        Value::Boxed(LispVal::Number(7))
+    );
+    let _ = env;
+}
+
+/// `Ty::parse`/`ty_name` round-trip the surface name `boxed`.
+#[test]
+fn boxed_ty_parse_and_name() {
+    assert_eq!(Ty::parse("BOXED"), Some(Ty::Boxed));
+    assert_eq!(super::ty_name(&Ty::Boxed), "boxed");
+}
+
+/// `is_compileable(Ty::Boxed)` must be true — it is the one checkable type
+/// below the #162 line that *does* back a native edition.
+#[test]
+fn boxed_is_compileable() {
+    assert!(is_compileable(&Ty::Boxed));
+}
+
+/// A `boxed` field, array element, and return type must all be accepted by
+/// `defun-typed` — the movement-only surface (issue #476 §3).
+#[test]
+fn boxed_as_local_and_struct_field() {
+    let j = build(&["(defun-typed (through-let boxed) ((x boxed)) (let-typed ((y x)) y))"]);
+    assert_eq!(
+        agree(&j, "through-let", &[Value::Boxed(LispVal::Number(9))]),
+        Value::Boxed(LispVal::Number(9))
+    );
+}
+
+// --- boxed: the three refusals (issue #476 §4) ------------------------------
+
+/// Refusal 1: `elem_ty_matches` must never match `boxed` against any
+/// `TypedArrayObj` element type — a caller's raw scalar buffer must never be
+/// reinterpreted as a table of handles.
+#[test]
+fn boxed_never_matches_a_typed_array_element_type() {
+    assert!(!elem_ty_matches(crate::ElemTy::Int64, &Ty::Boxed));
+    assert!(!elem_ty_matches(crate::ElemTy::Float64, &Ty::Boxed));
+}
+
+/// Refusal 2: `is_flat_scalar_array` must be false for anything involving
+/// `boxed` — no #216 write-back of handle words into a caller's `LispVal::Array`.
+#[test]
+fn boxed_array_is_never_a_flat_scalar_array() {
+    assert!(!is_flat_scalar_array(&Ty::Array(Box::new(Ty::Boxed))));
+    assert!(!is_flat_scalar_array(&Ty::Boxed));
+}
+
+/// Refusal 3: `NativeTy::from_ty(Ty::Boxed)` must stay `None` — a raw native
+/// entry point has no `Ctx` (and so no `Ctx.boxed` root table) a caller
+/// could resolve a handle against.
+#[cfg(feature = "jit")]
+#[test]
+fn boxed_has_no_native_entry_representation() {
+    assert_eq!(super::entry::NativeTy::from_ty(&Ty::Boxed), None);
+}
+
+/// `Ctx::box_value`/`Ctx::unbox` directly: word `0` is `NIL` without taking
+/// a table slot, a fresh box gets index 1, and round-tripping recovers the
+/// original clone.
+#[test]
+fn ctx_box_value_and_unbox_round_trip() {
+    let j = build(&["(defun-typed (noop int64) ((n int64)) n)"]);
+    let ctx = j.ctx();
+    assert_eq!(ctx.box_value(LispVal::Nil), 0);
+    assert_eq!(ctx.unbox(0), LispVal::Nil);
+
+    let w = ctx.box_value(LispVal::Number(123));
+    assert_eq!(w, 1);
+    assert_eq!(ctx.unbox(w), LispVal::Number(123));
+
+    let w2 = ctx.box_value(LispVal::Number(456));
+    assert_eq!(w2, 2);
+    assert_eq!(ctx.unbox(w2), LispVal::Number(456));
+    // Boxing NIL still never takes a slot, even after other values are boxed.
+    assert_eq!(ctx.box_value(LispVal::Nil), 0);
+}
+
+/// An out-of-range handle word must never panic: it records a pending error
+/// and yields `NIL` as the memory-safe substitute (issue #476 §4's
+/// discipline, matching `record_index_error` et al.).
+#[test]
+fn ctx_unbox_out_of_range_records_error_not_panic() {
+    let j = build(&["(defun-typed (noop int64) ((n int64)) n)"]);
+    let ctx = j.ctx();
+    assert!(ctx.pending_error.borrow().is_none());
+    let lv = ctx.unbox(99);
+    assert_eq!(lv, LispVal::Nil);
+    let err = ctx.pending_error.borrow_mut().take();
+    assert!(
+        err.is_some(),
+        "expected a pending error for an out-of-range handle"
+    );
+    assert!(err.unwrap().contains("out of range"));
+}
+
+/// `Ctx::leaf()` (the raw native-entry `Ctx`, `jit` feature only) gets an
+/// empty boxed table, matching every other feature of a leaf `Ctx`.
+#[cfg(feature = "jit")]
+#[test]
+fn ctx_leaf_has_empty_boxed_table() {
+    let ctx = Ctx::leaf();
+    assert!(ctx.boxed.borrow().is_empty());
+    assert_eq!(ctx.unbox(0), LispVal::Nil);
+}

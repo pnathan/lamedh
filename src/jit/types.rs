@@ -75,6 +75,49 @@ pub enum Ty {
     /// checker stays sound on the applicative island and makes no claim across
     /// the membrane.
     Any,
+
+    /// An opaque, call-scoped handle to an arbitrary `LispVal` (issue #476):
+    /// **compileable**, unlike every other type below the `is_compileable`
+    /// line — inert cargo a typed function can carry, pass, return, and store
+    /// in a local/struct field/array slot, without the checker or codegen
+    /// ever looking inside it.
+    ///
+    /// ## Representation: index, not pointer
+    ///
+    /// The runtime word is a **1-based index into `Ctx.boxed`**, a per-call
+    /// root table (`RefCell<Vec<LispVal>>`), not a raw `*const LispVal`. Word
+    /// `0` is reserved to mean `NIL` — both because a freshly `jit_alloc`'d
+    /// (zero-filled) `(array boxed)` then reads as all-`NIL` with no init
+    /// pass, and because it gives every fallible boxed operation (an
+    /// out-of-range handle, a recorded error) a safe, valid substitute value
+    /// to produce instead of panicking. An index cannot dangle the way a raw
+    /// pointer into a growing `Vec<LispVal>` could.
+    ///
+    /// ## Lifetime: call-scoped
+    ///
+    /// The table lives on `Ctx` and is append-only for the duration of one
+    /// top-level membrane call; it drops with the arena when that call
+    /// returns. A handle therefore never outlives the call that produced it,
+    /// and — because handles never enter a `LispVal` themselves — never
+    /// crosses `fork_world`'s deep copy either. There is no GC question to
+    /// answer beyond "the call ends."
+    ///
+    /// ## Aliasing: a feature, not a bug
+    ///
+    /// `Ctx::box_value` stores a **clone** of the `LispVal`. For the
+    /// `Shared`-backed variants (`Array`, `Cons`, `Symbol`, `HashTable`,
+    /// `String` where applicable) that clone shares the same underlying
+    /// `Shared` allocation as the original, so a mutation performed *through*
+    /// a handle (e.g. a `store` via `BoxedAset`) is visible on the caller's
+    /// own object with no write-back path at all — the alias *is* the
+    /// write-back. The inline variants (`Number`, `Float`, `Char`, `Nil`) are
+    /// plain value copies, which is sound precisely because those variants
+    /// are immutable. This is why two handles may denote "the same object"
+    /// in a way plain word-equality of their indices cannot detect: no `Cmp`
+    /// node is ever elaborated at boxed type; identity/equality questions go
+    /// through the `BoxedEqual` intrinsic instead, which defers to
+    /// `PartialEq for LispVal`.
+    Boxed,
 }
 
 /// Which execution tier a registered typed function will actually run on
@@ -110,7 +153,7 @@ pub enum Analysis {
 /// (issue #162) are well-typed but stay interpreted/boxed.
 pub fn is_compileable(t: &Ty) -> bool {
     match t {
-        Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char => true,
+        Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Boxed => true,
         Ty::Array(e) => is_compileable(e),
         Ty::Struct(d) => d.fields.iter().all(|(_, ft)| is_compileable(ft)),
         // A sum's representation varies by constructor: checker-only.
@@ -229,6 +272,7 @@ impl Ty {
             "FLOAT64" => Some(Ty::Float64),
             "BOOL" => Some(Ty::Bool),
             "CHAR" | "U8" | "BYTE" => Some(Ty::Char),
+            "BOXED" => Some(Ty::Boxed),
             _ => None,
         }
     }
@@ -294,6 +338,7 @@ pub fn ty_name(t: &Ty) -> String {
             }
         }
         Ty::Any => "any".to_string(),
+        Ty::Boxed => "boxed".to_string(),
     }
 }
 
@@ -328,6 +373,12 @@ pub enum Value {
     /// needed on return since any in-place `store`/`aset` the callee performs
     /// already lands in the caller's own buffer.
     TypedArray(Shared<TypedArrayObj>),
+    /// An opaque handle value at the boundary (issue #476): the `LispVal` to
+    /// be boxed into the call's `Ctx.boxed` root table (on the way in via
+    /// [`Value::to_word`]), or the `LispVal` read back out of it (on the way
+    /// out via `Value::from_word`). See [`Ty::Boxed`] for the representation
+    /// and aliasing contract.
+    Boxed(LispVal),
 }
 
 /// Result of a call that also reports post-call array write-back (issue
@@ -379,6 +430,11 @@ impl Value {
             (Value::TypedArray(ta), Ty::Array(elem)) if elem_ty_matches(ta.elem, elem) => {
                 Ok(ta.data.borrow_mut().as_mut_ptr() as u64)
             }
+            // Boxing is O(1) regardless of what `lv` is: push a clone into
+            // the call's root table and hand back its 1-based index. `NIL`
+            // shortcuts to word `0` so it needs no table slot at all (and so
+            // a zero-filled `(array boxed)` reads as all-`NIL` for free).
+            (Value::Boxed(lv), Ty::Boxed) => Ok(ctx.box_value(lv.clone())),
             (Value::Struct(fields), Ty::Struct(def)) => {
                 if fields.len() != def.fields.len() {
                     return Err(format!(
@@ -407,13 +463,13 @@ impl Value {
     // `ctx` is unused outside the recursive calls today; it starts threading
     // through here so the boxed arm (issue #476 Phase 2) can resolve a handle
     // against `ctx`'s root table without another signature-wide ripple.
-    #[allow(clippy::only_used_in_recursion)]
     pub(super) fn from_word(w: u64, ty: &Ty, ctx: &Ctx) -> Value {
         match ty {
             Ty::Int64 => Value::Int(w as i64),
             Ty::Float64 => Value::Float(f64::from_bits(w)),
             Ty::Bool => Value::Bool(w != 0),
             Ty::Char => Value::Char(w as u8),
+            Ty::Boxed => Value::Boxed(ctx.unbox(w)),
             Ty::Array(elem) => {
                 let base = w as *const u64;
                 let len = unsafe { *base } as usize;
