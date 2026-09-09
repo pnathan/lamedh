@@ -31,6 +31,17 @@
 %define IMM_UNBOUND     ( (3 << 2) | TAG_IMMEDIATE )   ; 15
 %define IMM_EOF         ( (4 << 2) | TAG_IMMEDIATE )   ; 19
 
+; Char (KERNEL.md Part II/IV): a code point in 0..=255, packed directly
+; into the tagged word rather than heap-allocated. Enumeration index
+; 256+code — completely disjoint from the small IMM_NIL..IMM_EOF set
+; above (indices 0..4), so no immediate word is ever ambiguous between
+; the two. A tagged Char for code C is ((256+C) << 2) | TAG_IMMEDIATE;
+; chars.asm's tag_char/is_char_tagged/char_code_tagged are the
+; canonical encode/decode routines, reused (not re-derived) wherever
+; this arithmetic is needed — reader.asm's char-literal production
+; included.
+%define IMM_CHAR_BASE   256
+
 ; --- heapobj header tags (word at [addr], untagged raw address) ---
 %define HDR_SYMBOL      1     ; [8 name-len][8 value][8 macro][8 next-in-bucket][8 plist][8*n name bytes] (symtab.asm has the authoritative layout)
 %define HDR_CLOSURE     2     ; [8 native-code-ptr][8 nargs][8 nfree][8*nfree captured]

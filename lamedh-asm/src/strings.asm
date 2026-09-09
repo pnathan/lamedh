@@ -379,6 +379,8 @@ extern is_float
 extern float_print
 extern is_array
 extern array_length_tagged
+extern is_char_tagged
+extern print_char
 global print_value
 print_value:
     push rbx
@@ -398,6 +400,14 @@ print_value:
     call write_buf
     jmp .out
 .not_true:
+    mov rdi, rbx
+    call is_char_tagged
+    test rax, rax
+    jz .not_char
+    mov rdi, rbx
+    call print_char
+    jmp .out
+.not_char:
     mov rdi, rbx
     call is_cons
     test rax, rax

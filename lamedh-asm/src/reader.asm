@@ -16,6 +16,7 @@ extern make_float
 extern string_bytes
 extern string_len
 extern fail_wrong_type
+extern tag_char
 
 section .bss
 align 8
@@ -88,6 +89,43 @@ cdr:
     mov rsi, cdr_err_msg
     mov rdx, cdr_err_msg_len
     jmp fail_wrong_type
+
+; decode_char_escape(rdi=raw byte right after a '\' inside a char
+; literal) -> rax = the decoded byte value, 0..255. KERNEL.md's char-
+; literal escapes are the *opposite* convention from read_string's own
+; string escapes: here every unrecognized backslash-prefixed byte
+; decodes to that byte itself with the backslash dropped (`'\q'` is
+; `'q'`) — which is exactly what falling through to "return the byte
+; unchanged" already gives, so only the four escapes that need a
+; genuinely different byte value (\n \t \r \0) are special-cased;
+; backslash-backslash and backslash-quote fall through correctly
+; unchanged, same as read_string's own \" / \\ handling above. (A
+; trailing backslash at the very end of a comment line is a NASM line-
+; continuation marker even inside a ";" comment, so none of these
+; comments end with one — see chars.asm's own note on this gotcha.)
+decode_char_escape:
+    cmp dil, 'n'
+    je .n
+    cmp dil, 't'
+    je .t
+    cmp dil, 'r'
+    je .r
+    cmp dil, '0'
+    je .z
+    mov rax, rdi
+    ret
+.n:
+    mov rax, 10
+    ret
+.t:
+    mov rax, 9
+    ret
+.r:
+    mov rax, 13
+    ret
+.z:
+    xor rax, rax
+    ret
 
 ; --- reader -----------------------------------------------------------
 
@@ -485,6 +523,50 @@ read_form:
 .not_list:
     cmp al, 39                       ; '
     jne .not_quote
+    ; Char literal ("'x'", KERNEL.md Part II) is tried before quote
+    ; sugar: a '\'' followed by exactly one character (or one \n \t \r
+    ; \\ \' \0 escape) and a closing '\''. `'a'` is the character `a`,
+    ; but `'a` followed by a delimiter — no closing '\'' right after —
+    ; falls through to ordinary quote sugar, `(QUOTE A)`; `''` (nothing
+    ; between the quotes) is likewise not a char literal, per spec.
+    mov rdx, [reader_pos]              ; index of the opening '\''
+    mov rcx, [reader_buf]
+    lea r8, [rdx+1]
+    cmp r8, [reader_end]
+    jae .quote_sugar                   ; nothing after the opening '\''
+    movzx r9, byte [rcx+r8]            ; byte right after '\''
+    cmp r9b, 92                        ; '\\' — a possible escape
+    je .maybe_escaped_char
+    cmp r9b, 39                        ; '\'' immediately — "''" is empty
+    je .quote_sugar
+    lea r10, [rdx+2]
+    cmp r10, [reader_end]
+    jae .quote_sugar
+    movzx r11, byte [rcx+r10]
+    cmp r11b, 39                       ; closing '\''?
+    jne .quote_sugar
+    add qword [reader_pos], 3
+    movzx rdi, r9b
+    call tag_char
+    jmp .out
+.maybe_escaped_char:
+    lea r10, [rdx+2]
+    cmp r10, [reader_end]
+    jae .quote_sugar
+    movzx r11, byte [rcx+r10]           ; the escaped character
+    lea r9, [rdx+3]
+    cmp r9, [reader_end]
+    jae .quote_sugar
+    movzx r9, byte [rcx+r9]
+    cmp r9b, 39                         ; closing '\''?
+    jne .quote_sugar
+    add qword [reader_pos], 4
+    mov rdi, r11
+    call decode_char_escape
+    mov rdi, rax
+    call tag_char
+    jmp .out
+.quote_sugar:
     inc qword [reader_pos]
     call read_form
     mov r12, rax                      ; quoted datum

@@ -101,6 +101,9 @@ extern clear_flag
 extern clear_all_flags
 extern fail_wrong_type
 extern gensym
+extern make_char_from_fixnum
+extern char_code_tagged
+extern code_char_string
 extern symbol_plist
 extern set_symbol_plist
 
@@ -172,6 +175,9 @@ kw_array_ref:    db "FETCH"
 kw_array_set:    db "STORE"
 kw_array_length: db "ARRAY-LENGTH*"
 kw_hash_code:    db "HASH-CODE"
+kw_make_char:    db "MAKE-CHAR"
+kw_char_code:    db "CHAR-CODE"
+kw_code_char:    db "CODE-CHAR"
 kw_mod:          db "MOD"
 kw_remainder:    db "REMAINDER"
 kw_flag_set_p:      db "FLAG-SET-P"
@@ -4193,6 +4199,48 @@ compile_form:
     jmp .out
 
 .not_hash_code:
+    mov rdi, r12
+    mov rsi, kw_make_char
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_make_char
+    mov rdi, r13
+    call car
+    lea rsi, [rel make_char_from_fixnum]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_make_char:
+    mov rdi, r12
+    mov rsi, kw_char_code
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_char_code
+    mov rdi, r13
+    call car
+    lea rsi, [rel char_code_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_char_code:
+    mov rdi, r12
+    mov rsi, kw_code_char
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_code_char
+    mov rdi, r13
+    call car
+    lea rsi, [rel code_char_string]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_code_char:
     mov rdi, r12
     mov rsi, kw_array_ref
     mov rdx, 5

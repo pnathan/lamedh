@@ -270,7 +270,9 @@ specifically to test where the line falls:
 - **`STRING-REF`/`STRING-APPEND`/`SUBSTRING`** round out the string
   surface beyond `STRING-LENGTH`/`PRINT` (`tests/cases/036_string_ops.asm`)
   — see "v0 limits" below for their exact scope (byte-indexed, no
-  bounds check, no character type).
+  bounds check, and `STRING-REF` still returns a raw fixnum byte value
+  rather than a `Char` even now that the `Char` type exists — see
+  "KERNEL.md conformance" below).
 - **`EVAL`/`READ-FROM-STRING`/`PRINC-TO-STRING`** are Part XI's
   reflection primitives (`tests/cases/037_eval_read_princ.asm`) — the
   single highest-leverage addition per issue #452's own text, since it
@@ -490,8 +492,41 @@ into conformance incrementally, tracked honestly rather than silently:
   on purpose**: key equality is `EQ`, not the reference's own full
   recursive `EQ`/`EQUAL` union, so a cons/array/lambda-shaped key does
   not yet find itself by structural content; no resizing (fixed 61
-  buckets, same as the demonstration this promotes). There is no
-  character type, no Unicode-codepoint string
+  buckets, same as the demonstration this promotes). **A `Char` type
+  now exists** (`tests/cases/048_char_literals.asm`): a code point in
+  `0..=255`, packed directly into the tagged immediate word (like
+  `NIL`/`T`/`UNBOUND`/`EOF` in `tags.inc`, not heap-allocated — a
+  `Char`'s enumeration index is `256+code`, completely disjoint from
+  the existing `IMM_NIL..IMM_EOF` set), so `EQ` on two `Char`s is
+  already correct for free via `lisp_eq`'s own fast pointer-equal path
+  (two equal `Char`s are the identical tagged word), and `(eq 'a' 97)`
+  is `NIL` — a `Char` and a `Number` are never `EQ` regardless of
+  numeric value, matching Part IV exactly, even though `CHAR-CODE`
+  deliberately bridges the two. The reader's `'x'` production
+  (`chars.asm`/`reader.asm`) is tried *before* quote sugar, matching
+  the spec's own disambiguation rule and its two contrasting examples
+  exactly: `'a'` is the character `a`, `'a` followed by a delimiter is
+  `(QUOTE A)`, `'(1)` is `(QUOTE (1))` (the `(` is followed by `1`, not
+  a closing `'`), and `'('` is the character `(`. All six recognized
+  escapes (`\n` `\t` `\r` `\\` `\'` `\0`) decode correctly, and — the
+  opposite convention from string escapes — any other backslash-
+  prefixed byte decodes to that byte alone, backslash dropped
+  (`'\q'` is `'q'`). `MAKE-CHAR`/`CHAR-CODE`/`CODE-CHAR` are new kernel
+  primitives (`compile_unary_hostcall`, the same shape `HASH-CODE`
+  already used); `MAKE-CHAR` on a fixnum outside `0..255` is a genuine,
+  catchable condition (`fail_wrong_type`/`native_throw`, matching this
+  session's other native-failure work) rather than silently wrapping
+  or crashing; `CODE-CHAR` returns a one-character *string*, not a
+  `Char` — an asymmetric pair the spec states outright, not an
+  inconsistency this kernel introduced. **v0 scope, narrower than the
+  spec on purpose**: `+`/`-`/`*`/`<`/`=` don't coerce a `Char` operand
+  to its code point yet (Part V's contagion rule), only `CHAR-CODE`
+  does that conversion explicitly; `CHAR-CODE` only accepts a `Char`
+  argument, not the reference's own "or a non-empty string's first
+  code point" overload; `CODE-CHAR`/`MAKE-CHAR` are restricted to
+  `0..255` (one byte) rather than the reference's full Unicode code
+  point range, since this kernel's strings are plain byte buffers with
+  no UTF-8 encoder yet — there is still no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values. **Symbol
   property lists (`GETP`/`PUTP`) now exist**
   (`tests/cases/046_plist.asm`, plus `file_runner_prelude`'s own GETP/
@@ -596,9 +631,10 @@ into conformance incrementally, tracked honestly rather than silently:
   `PRINT`, and now `STRING-REF`/`STRING-APPEND`/`SUBSTRING`
   (`tests/cases/036_string_ops.asm`) — the small extra surface `FORMAT`
   needs (README Roadmap). `STRING-REF` returns a byte's numeric value
-  as a fixnum, not a `Char` — this kernel has no character type yet
-  (see below), so a byte's own value is the closest honest answer
-  available; `STRING-APPEND` and `SUBSTRING` return fresh strings,
+  as a fixnum, not a `Char` — a `Char` type exists now (see "KERNEL.md
+  conformance" above) but `STRING-REF` isn't wired to return one yet,
+  so a byte's own numeric value remains the interim answer here;
+  `STRING-APPEND` and `SUBSTRING` return fresh strings,
   neither argument mutated, matching every other value's immutability
   here. All three are byte-indexed, not Unicode-scalar-indexed — Part
   IV's own indexing rule remains unmet, tracked as ongoing work below.
@@ -975,10 +1011,11 @@ bugs no existing test had exercised:
   itself, since a generic `PUT!`/`REF` dispatch (what the reference's
   own protocol system actually exposes to calling code) still needs
   the multi-type dispatch system below, not just the hash table value
-  underneath it. String/char
-  operations (`STRING->LIST`, `STRING-JOIN`, `STRING-DOWNCASE`,
-  `CODE-CHAR`/`CHAR-CODE` — no character type yet, see "v0 limits");
-  `DEFRECORD` and the protocol/dispatch system (`DEFPROTOCOL`/
+  underneath it. `MAKE-CHAR`/`CHAR-CODE`/`CODE-CHAR` and the `Char`
+  type they build on now exist too (see "KERNEL.md conformance"
+  above), but the rest of the string/char surface most examples
+  actually call — `STRING->LIST`, `STRING-JOIN`, `STRING-DOWNCASE` —
+  is still missing; `DEFRECORD` and the protocol/dispatch system (`DEFPROTOCOL`/
   `DEFINSTANCE`, `VARIANT-CASE`) `lib/20-condensation.lisp` and
   `lib/29-protocols.lisp` provide; `RANDOM`; bitwise ops (`ASH`,
   `LOGAND`). None of this is surprising — it is the gap between "a
