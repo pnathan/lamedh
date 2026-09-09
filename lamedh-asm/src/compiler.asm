@@ -315,6 +315,39 @@ catch_stack_top: resq 1
 ; recursive compilation only happens later, while compiling the body.
 rest_sym_scratch: resq 1
 
+; compile_nesting_depth/macroexpand_memo: memoizes macro expansion so
+; that scanning a lambda body's free variables (scan_free_vars) and
+; later actually compiling it (compile_form) see the identical
+; expansion object, instead of each independently re-running the
+; transformer (docs/spec-tco-capture-gc.md section 1 — measured 2D+1
+; re-expansions of a macro at lambda-nesting depth D before this).
+; Keyed by the call FORM's own cons-cell address (0 = empty slot;
+; never a real key, since a real form is a live heap address): forms
+; are heap-allocated, immutable once read, and — with no GC in this
+; kernel yet — never relocate or have their address reused within one
+; process, so identity-by-address is sound for as long as the memo is
+; kept. compile_nesting_depth (incremented/decremented in
+; compile_thunk, alongside its own current_scope/current_frame_depth/
+; current_prog_ctx save-restore) distinguishes a fresh top-level
+; compile from a nested one (EVAL reached from inside a still-running
+; macro transformer, compile_thunk's own header comment) — the memo is
+; cleared only on the 0->1 transition, bounding its size to one
+; top-level form's own macro-call population rather than growing
+; across an entire program.
+global compile_nesting_depth
+compile_nesting_depth: resq 1
+%define MACROEXPAND_MEMO_SIZE 65536
+; Each entry is a (key, value, generation) triple — clearing the whole
+; table on every top-level form (a bare rep-stosq over the first
+; version of this table measurably slowed the stdlib_conformance load
+; down, since most top-level forms never populate more than a handful
+; of a 65536-entry table) is a single `inc` of a generation counter
+; instead: a slot is live only while its own stored generation matches
+; [macroexpand_generation], so bumping the counter invalidates every
+; slot in O(1) with no memory traffic at all.
+macroexpand_memo: resq (MACROEXPAND_MEMO_SIZE*3)
+macroexpand_generation: resq 1
+
 ; current_frame_depth: how many rbp-relative local slots are already
 ; considered reserved in the *current* function's own frame (params +
 ; frees + REST slot, plus whatever LET/LET* nesting is currently
@@ -906,9 +939,10 @@ scan_free_vars:
     mov r14, rax                           ; macro closure (tagged)
     mov rdi, rbx
     call cdr
-    mov rsi, rax                             ; args list
-    mov rdi, r14
-    call invoke_macro                          ; rax = expansion
+    mov rdx, rax                             ; args list
+    mov rsi, r14
+    mov rdi, rbx                               ; call form (memo key)
+    call macroexpand_once                        ; rax = expansion
     mov rdi, rax
     mov rsi, r12
     mov rdx, r13
@@ -946,6 +980,98 @@ scan_free_vars:
 
 .done:
     mov rax, r13
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; clear_macroexpand_memo() — invalidate the whole table in O(1): bump
+; the generation counter, touching no memory at all. Called from
+; compile_thunk on the compile_nesting_depth 0->1 transition (a fresh
+; top-level form), purely to bound the table's own effective
+; population across a long-running program's worth of top-level forms
+; — not for correctness (see macroexpand_memo's own comment on address
+; stability). An earlier version of this routine zeroed the whole
+; table with rep stosq on every top-level form, which measurably
+; slowed the stdlib_conformance load down (most top-level forms never
+; populate more than a handful of a 65536-entry table, so the O(table
+; size) clear dominated the O(macro calls) work it was meant to save).
+clear_macroexpand_memo:
+    inc qword [macroexpand_generation]
+    ret
+
+; macroexpand_once(rdi=call form (tagged cons, the memo key), rsi=macro
+; closure (tagged), rdx=raw args list) -> rax = expansion (tagged).
+; Open-addressing lookup (linear probe, wrapping) into
+; macroexpand_memo keyed by rdi's own address; on a miss, invokes the
+; macro exactly as a bare invoke_macro call already did at both of
+; this routine's two call sites (compile_form's own macro dispatch,
+; and scan_free_vars's macro branch) and remembers the result — so a
+; transformer with observable side effects (GENSYM, PUTP, ...) runs
+; once per call site, not once per scan plus once to actually compile.
+; A slot is live only while its own stored generation equals
+; [macroexpand_generation]; anything else (including .bss's own
+; zero-initialized state, which never matches the generation counter's
+; own post-first-clear value of 1) reads as empty regardless of
+; whatever key/value garbage is still sitting there. Falls back to an
+; unmemoized expansion (matching pre-memo behavior exactly) if linear
+; probing exhausts the whole table without finding either a match or
+; an empty slot — correctness never depends on the memo hitting, only
+; on scan and compile agreeing when it does.
+global macroexpand_once
+macroexpand_once:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi                    ; key (call form)
+    mov r12, rsi                      ; macro closure
+    mov r13, rdx                        ; args list
+
+    mov rax, rbx
+    shr rax, 4
+    and rax, (MACROEXPAND_MEMO_SIZE-1)
+    imul rax, rax, 24                      ; entry index -> byte offset (3 qwords/entry)
+    lea r14, [rel macroexpand_memo]
+    add r14, rax                             ; slot ptr
+    xor r15, r15                               ; probes so far
+.probe:
+    cmp r15, MACROEXPAND_MEMO_SIZE
+    jae .full
+    mov rax, [rel macroexpand_generation]
+    cmp [r14+16], rax
+    jne .miss                                    ; stale/never-written slot = empty
+    mov rax, [r14]
+    cmp rax, rbx
+    je .hit
+    add r14, 24
+    inc r15
+    lea rax, [rel macroexpand_memo]
+    lea rax, [rax + (MACROEXPAND_MEMO_SIZE*24)]
+    cmp r14, rax
+    jb .probe
+    lea r14, [rel macroexpand_memo]          ; wrap to the table start
+    jmp .probe
+.hit:
+    mov rax, [r14+8]
+    jmp .out
+.miss:
+    mov rdi, r12
+    mov rsi, r13
+    call invoke_macro                          ; rax = expansion
+    mov [r14], rbx
+    mov [r14+8], rax
+    mov rcx, [rel macroexpand_generation]
+    mov [r14+16], rcx
+    jmp .out
+.full:
+    mov rdi, r12
+    mov rsi, r13
+    call invoke_macro
+.out:
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -6866,10 +6992,11 @@ compile_form:
     mov rax, [rax+24]                    ; macro slot
     cmp rax, IMM_NIL
     je .not_macro_call
-    mov rbx, rax                            ; macro closure (tagged)
-    mov rdi, rbx
-    mov rsi, r13
-    call invoke_macro                         ; rax = expansion
+    mov r14, rax                            ; macro closure (tagged)
+    mov rdi, rbx                               ; call form (memo key)
+    mov rsi, r14
+    mov rdx, r13
+    call macroexpand_once                        ; rax = expansion
     mov rdi, rax
     call compile_form                           ; recompile in its place
     jmp .out
@@ -7013,6 +7140,12 @@ compile_thunk:
     push rbx
     mov rbx, rdi
 
+    cmp qword [compile_nesting_depth], 0
+    jne .no_memo_clear
+    call clear_macroexpand_memo
+.no_memo_clear:
+    inc qword [compile_nesting_depth]
+
     mov rax, [current_scope]
     push rax                          ; [old_scope]
     mov rax, [current_frame_depth]
@@ -7050,6 +7183,8 @@ compile_thunk:
     mov [current_frame_depth], rcx
     pop rcx
     mov [current_scope], rcx
+
+    dec qword [compile_nesting_depth]
 
     pop rbx
     ret

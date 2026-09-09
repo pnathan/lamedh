@@ -72,9 +72,13 @@ e14_len: equ $ - e14
 e15: db "(PRINT (((OUTER6 1) 2) 3))"
 e15_len: equ $ - e15                            ; 6
 
-; --- D1: a macro at nesting depth D is expanded 2D+1 times today.
-; CNT counts real transformer invocations; a pure counting macro run
-; through a 1-, 2-, and 3-deep lambda nest gives 3, 5, 7 today.
+; --- D1 (fixed): a macro at nesting depth D used to be expanded 2D+1
+; times (3, 5, 7 for a 1-, 2-, and 3-deep lambda nest) because
+; compile_lambda scanned each lambda's body twice and each scan
+; independently re-ran the transformer. macroexpand_once/
+; macroexpand_memo (compiler.asm) now memoize expansion by the call
+; form's own address, so scan and compile share one invocation: CNT
+; is 1 at every depth.
 e16: db "(DEFINE CNT 0)"
 e16_len: equ $ - e16
 e17: db "(DEFMACRO CM (X) (SETQ CNT (+ CNT 1)) X)"
@@ -82,19 +86,19 @@ e17_len: equ $ - e17
 e18: db "(DEFINE F1 (LAMBDA (A) (CM A)))"
 e18_len: equ $ - e18
 e19: db "(PRINT CNT)"
-e19_len: equ $ - e19                            ; 3
+e19_len: equ $ - e19                            ; 1
 e20: db "(SETQ CNT 0)"
 e20_len: equ $ - e20
 e21: db "(DEFINE F2 (LAMBDA (A) (LAMBDA (B) (CM B))))"
 e21_len: equ $ - e21
 e22: db "(PRINT CNT)"
-e22_len: equ $ - e22                            ; 5
+e22_len: equ $ - e22                            ; 1
 e23: db "(SETQ CNT 0)"
 e23_len: equ $ - e23
 e24: db "(DEFINE F3 (LAMBDA (A) (LAMBDA (B) (LAMBDA (C) (CM C)))))"
 e24_len: equ $ - e24
 e25: db "(PRINT CNT)"
-e25_len: equ $ - e25                            ; 7
+e25_len: equ $ - e25                            ; 1
 
 section .text
 

@@ -20,6 +20,7 @@ extern program_argv
 extern reader_init
 extern read_form
 extern compile_thunk
+extern compile_nesting_depth
 
 %define SRC_BUF_BYTES (16 * 1024 * 1024)
 
@@ -51,6 +52,15 @@ run_buffer:
     cmp rax, IMM_EOF
     je .done
     mov rdi, rax
+    ; A macro transformer that signals an error mid-expansion longjmps
+    ; (native_throw) past compile_thunk's own epilogue, skipping its
+    ; `dec qword [compile_nesting_depth]` — resetting to 0 here, before
+    ; every top-level compile, is what makes each iteration of this
+    ; loop a genuinely fresh top-level compile regardless of how the
+    ; previous one ended, rather than trusting balanced inc/dec pairs
+    ; across an unwind path that cannot run them (macroexpand_once's
+    ; own comment, compiler.asm).
+    mov qword [compile_nesting_depth], 0
     call compile_thunk
     ; Every compiled thunk is called this way, everywhere in this
     ; project (every tests/cases/*.asm lamedh_main does the same
