@@ -50,7 +50,13 @@ pub(super) fn apply_apply(
                 {
                     _guards.push(DynamicBinding::install(sym, fexpr_arg_list));
                 } else {
-                    new_env.set(f.params[0].clone(), fexpr_arg_list);
+                    // Bind by the parameter symbol's canonical id (issue
+                    // #462), not by re-interning its name via `env.set` --
+                    // matching apply_unevaluated's direct-call dispatch.
+                    // A gensym'd or foreign-symbol-table parameter name
+                    // must bind the id the body's references to that
+                    // symbol actually resolve to.
+                    new_env.set_id(f.param_ids[0], fexpr_arg_list);
                 }
             } else {
                 if unpacked_args.len() != f.params.len() {
@@ -60,7 +66,7 @@ pub(super) fn apply_apply(
                         unpacked_args.len()
                     )));
                 }
-                for ((param, id), arg) in f.params.iter().zip(&f.param_ids).zip(unpacked_args) {
+                for (id, arg) in f.param_ids.iter().zip(unpacked_args) {
                     if has_dyn
                         && let Some(sym) = new_env.symbol_by_id(*id)
                         && sym.borrow().is_dynamic
@@ -68,7 +74,7 @@ pub(super) fn apply_apply(
                         _guards.push(DynamicBinding::install(sym, arg));
                         continue;
                     }
-                    new_env.set(param.clone(), arg);
+                    new_env.set_id(*id, arg);
                 }
             }
             eval(&f.body, &new_env)
@@ -77,8 +83,12 @@ pub(super) fn apply_apply(
             // Via APPLY, args are already evaluated; treat them as the operand list.
             let arg_list = vec_to_list(unpacked_args);
             let new_env = Environment::new_child(&v.env);
-            new_env.set(v.operands_param.clone(), arg_list);
-            new_env.set(v.env_param.clone(), LispVal::Environment(env.clone()));
+            // Bind by canonical id (issue #462), matching
+            // apply_unevaluated's direct-call dispatch -- `v.operands_param_id`
+            // / `v.env_param_id` are already the canonical ids captured at
+            // VAU construction time.
+            new_env.set_id(v.operands_param_id, arg_list);
+            new_env.set_id(v.env_param_id, LispVal::Environment(env.clone()));
             eval(&v.body, &new_env)
         }
         _ => apply(&func, &unpacked_args, env),
