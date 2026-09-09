@@ -132,6 +132,21 @@ else
 (DEFINE PAIR (CONS 1 2))
 (RPLACA PAIR 9)
 (PRINT PAIR)
+(NEWLINE)
+(DEF $ANSWER 42)
+(PRINT $ANSWER)
+(NEWLINE)
+(PRINT (APPLY #'+ (LIST 3 4)))
+(NEWLINE)
+(PRINT (FUNCALL #'LIST 1 2 3 4 5))
+(NEWLINE)
+(PRINT (LIST (> 5 3) (> 3 5) (>= 5 5) (<= 4 5) (MAX 3 9) (MIN 3 9)))
+(NEWLINE)
+(FOR-EACH (LAMBDA (X) (PRINT X)) (LIST 1 2 3))
+(NEWLINE)
+(PRINT (FILTER (LAMBDA (X) (> X 2)) (LIST 1 2 3 4)))
+(NEWLINE)
+(PRINT (LIST (SOME (LAMBDA (X) (> X 3)) (LIST 1 2 3)) (EVERY (LAMBDA (X) (> X 0)) (LIST 1 2 3))))
 LISP
     want_out='T
 T
@@ -153,7 +168,14 @@ BLUE
 T
 (9 . 2)
 (1 . 9)
-(1 . 2)'
+(1 . 2)
+42
+7
+(1 2 3 4 5)
+(T () T T 9 3)
+123
+(3 4)
+(() T)'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

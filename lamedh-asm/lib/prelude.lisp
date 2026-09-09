@@ -233,3 +233,72 @@
 ; character, with no compiler change needed.
 (DEFUN RPLACA (C NEWCAR) (CONS NEWCAR (CDR C)))
 (DEFUN RPLACD (C NEWCDR) (CONS (CAR C) NEWCDR))
+
+; FUNCALL — needs no new kernel mechanism beyond APPLY (compiler.asm,
+; a thin wrapper over invoke_macro, the same host routine DEFMACRO's
+; own call sites already use to invoke an already-compiled closure
+; with any number of argument values): by the time this ordinary
+; DEFUN's own body runs, every one of its arguments is already
+; evaluated, and &REST already collects the trailing ones into a
+; fresh proper list — exactly the shape APPLY wants.
+(DEFUN FUNCALL (FN &REST ARGS) (APPLY FN ARGS))
+
+; >/>=/<=  — this kernel's only native comparison is `<` (and `=`);
+; the rest are ordinary DEFUNs over it rather than new compiler
+; special-cases, matching README's own "What's compiled" scope note
+; that compile_binop only ever grew + - * < =.
+(DEFUN > (A B) (< B A))
+(DEFUN >= (A B) (NOT (< A B)))
+(DEFUN <= (A B) (NOT (< B A)))
+
+(DEFUN MAX (A B) (IF (< A B) B A))
+(DEFUN MIN (A B) (IF (< A B) A B))
+
+; DEF — the reference's own alternate top-level binding form
+; (evaluator/special_forms.rs's SpecialForm::Def): like DEFINE, but
+; evaluates to the *symbol* being defined rather than its value —
+; `../examples/*/main.lisp`'s own idiom `(def $name expr)` relies on
+; this being usable as an ordinary top-level statement whose own
+; return value nobody cares about, freeing `$name` as the binding
+; site. NAME is unevaluated syntax here (an ordinary macro parameter),
+; matching the reference treating DEF's first operand as a literal
+; symbol, never an expression to evaluate. v0 scope: only the 2-operand
+; form; the reference's optional third (docstring) operand — stored
+; via the symbol's own plist, per its own implementation, now that
+; this kernel has GETP/PUTP too — is not yet supported here.
+(DEFMACRO DEF (NAME VAL)
+  (LIST (QUOTE PROGN)
+        (LIST (QUOTE DEFINE) NAME VAL)
+        (LIST (QUOTE QUOTE) NAME)))
+
+; FOR-EACH/FILTER/SOME/EVERY — the reference's own versions
+; (lib/29-protocols.lisp) are fn-first *protocols*, generically
+; dispatching over lists, arrays, hash tables, and strings alike
+; (DEFPROTOCOL/DEFINSTANCE, a full multi-type dispatch system this
+; kernel doesn't have yet). v0 scope here, honestly narrower: plain
+; recursive list-only versions, covering the overwhelmingly common
+; case in practice (calling one of these on a list) without the
+; generic-dispatch machinery. SOME/EVERY additionally simplify the
+; reference's own contract of returning the *matching element* (SOME)
+; or the last predicate result (EVERY) down to a plain T/NIL boolean.
+(DEFUN FOR-EACH (FN L)
+  (IF (NULL L)
+      (QUOTE ())
+      (PROGN (FN (CAR L)) (FOR-EACH FN (CDR L)))))
+
+(DEFUN FILTER (PRED L)
+  (IF (NULL L)
+      (QUOTE ())
+      (IF (PRED (CAR L))
+          (CONS (CAR L) (FILTER PRED (CDR L)))
+          (FILTER PRED (CDR L)))))
+
+(DEFUN SOME (PRED L)
+  (IF (NULL L)
+      (QUOTE ())
+      (IF (PRED (CAR L)) T (SOME PRED (CDR L)))))
+
+(DEFUN EVERY (PRED L)
+  (IF (NULL L)
+      T
+      (IF (PRED (CAR L)) (EVERY PRED (CDR L)) (QUOTE ()))))

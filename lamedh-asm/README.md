@@ -729,13 +729,41 @@ does, just from an in-memory buffer instead of an mmap'd file.
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 `REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
 `+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
-`MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, and `RPLACD` — each an
-ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler change
-needed for any of it (see `lib/prelude.lisp`'s own comments for exactly
-why; `DOTIMES` is derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part
-XII axis 3's explicit license, and now hygienically `GENSYM`s its
-internal loop-count binding — see "KERNEL.md conformance" above for
-why an earlier fixed-name version could collide on nesting).
+`MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, `RPLACD`, `DEF`,
+`FUNCALL`, `>`/`>=`/`<=`, `MAX`/`MIN`, `FOR-EACH`, `FILTER`, `SOME`,
+and `EVERY` — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
+over kernel primitives, no compiler change needed (see
+`lib/prelude.lisp`'s own comments for exactly why; `DOTIMES` is
+derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part XII axis 3's
+explicit license, and now hygienically `GENSYM`s its internal
+loop-count binding — see "KERNEL.md conformance" above for why an
+earlier fixed-name version could collide on nesting). The one
+exception is `FUNCALL`, which needed one new kernel primitive,
+`APPLY` (`compiler.asm`): `(APPLY fn args-list)` turned out to be
+exactly the job `invoke_macro` (see "The kernel surface" above) was
+already doing for macro expansion — given a closure and a raw list, it
+collects the list's own elements as argument *values* into the same
+register/stack layout an ordinary compiled call site would produce,
+then calls the closure with the right `nargs`. It never distinguishes
+"already-evaluated argument values" (what `APPLY` needs) from
+"unevaluated macro-call operand forms" (what it was built for), since
+it never compiles or evaluates anything itself either way — so `APPLY`
+is just `compile_binary_hostcall` wired straight to `invoke_macro`,
+and `FUNCALL` itself is then one line of prelude:
+`(DEFUN FUNCALL (FN &REST ARGS) (APPLY FN ARGS))`. `DEF` is the
+reference's own alternate top-level binding form (`SpecialForm::Def`,
+`../src/evaluator/special_forms.rs`) — like `DEFINE` but evaluating to
+the *symbol* rather than its value, matching `../examples/*/main.lisp`'s
+own `(def $name expr)` idiom; v0 supports only the reference's 2-operand
+form, not its optional third (docstring) operand. `FOR-EACH`/`FILTER`/
+`SOME`/`EVERY` are deliberately narrower than the reference's own
+versions (`lib/29-protocols.lisp`), which are fn-first *protocols*
+generically dispatching over lists, arrays, hash tables, and strings
+alike via `DEFPROTOCOL`/`DEFINSTANCE` — a full multi-type dispatch
+system this kernel doesn't have yet; these are plain recursive
+list-only versions, and `SOME`/`EVERY` simplify the reference's own
+contract (returning the matching element, or the last predicate
+result) down to a plain `T`/`NIL`.
 `DEFUN` and `WHEN`/`UNLESS` take any
 number of body forms directly (`(NAME PARAMS &REST BODY)`, the same way
 `LAMBDA`'s own body already does) — `invoke_macro` (see "The kernel
@@ -889,6 +917,38 @@ bugs no existing test had exercised:
   are out of scope for this from-scratch host regardless (Part IX
   capabilities this kernel has no I/O surface for yet); everything else
   in that directory is the honest bar.
+  **Measured against the full corpus** (`../examples/*/main.lisp`, 50
+  files as of this writing, run unmodified through `build/lamedhc`):
+  **2 pass end to end** (`fizzbuzz`, `church-numerals`) plus `factorial`
+  running its main loop correctly with the one documented 62-bit
+  divergence noted above. `APPLY`/`FUNCALL` (a new kernel primitive,
+  see "The prelude" above), `DEF`, `>`/`>=`/`<=`/`MAX`/`MIN`, and
+  list-only `FOR-EACH`/`FILTER`/`SOME`/`EVERY` were added this pass
+  specifically because a frequency count across the whole corpus (every
+  leading symbol in every example) named them as the most broadly used
+  forms this kernel didn't have; `church-numerals` is the first newly
+  passing result of that pass, not a coincidence. **The other ~48 fail
+  immediately** (a bare "not a function" from calling an unbound
+  global) on constructs the reference's full `lib/*.lisp` standard
+  library provides that this kernel does not yet, which the same
+  frequency count also surfaces as the next tier, roughly by how many
+  examples each would unblock: a real hash-table *value* (`MAKE-HASH-TABLE`/
+  `GETHASH`/`HAS-KEY-P`) — this kernel's only hash table today is the
+  `HT-*` alist-of-buckets-over-`ARRAY` demonstration in
+  `tests/cases/022_hashtable_array.asm`, never promoted to real,
+  reference-named prelude code, and it is indistinguishable from a
+  plain array at the value level, which blocks a generic `PUT!`/`REF`
+  the way the reference's own protocol dispatch has them; string/char
+  operations (`STRING->LIST`, `STRING-JOIN`, `STRING-DOWNCASE`,
+  `CODE-CHAR`/`CHAR-CODE` — no character type yet, see "v0 limits");
+  `DEFRECORD` and the protocol/dispatch system (`DEFPROTOCOL`/
+  `DEFINSTANCE`, `VARIANT-CASE`) `lib/20-condensation.lisp` and
+  `lib/29-protocols.lisp` provide; `RANDOM`; bitwise ops (`ASH`,
+  `LOGAND`). None of this is surprising — it is the gap between "a
+  kernel with a working prelude" and "the reference's full standard
+  library," and it is exactly what "run 100% of the examples" now
+  honestly requires, tracked here so the next pass has a measured
+  starting point instead of a guess.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle

@@ -112,6 +112,7 @@ kw_function: db "FUNCTION"
 kw_gensym: db "GENSYM"
 kw_symbol_plist: db "SYMBOL-PLIST"
 kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
+kw_apply: db "APPLY"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
 kw_lambda: db "LAMBDA"
@@ -3640,6 +3641,39 @@ compile_form:
     jmp .out
 
 .not_set_symbol_plist:
+    mov rdi, r12
+    mov rsi, kw_apply
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_apply
+    ; (APPLY fn args-list) — invoke_macro (above) already does exactly
+    ; this job for macro expansion: given a closure and a raw list, it
+    ; collects the list's own elements as argument *values* (car/cdr
+    ; traversal, no compile_form involved) into the same rsi/rdx/rcx +
+    ; stack layout an ordinary compiled call site would produce, then
+    ; calls the closure with the right nargs. That's every bit of what
+    ; APPLY needs too — the only difference from macro expansion is
+    ; that here args-list holds already-*evaluated* values instead of
+    ; unevaluated operand forms, which invoke_macro never distinguishes
+    ; (it never compiles or evaluates anything itself either way). No
+    ; new kernel mechanism needed, just this compile_binary_hostcall
+    ; wiring — fn and args-list are ordinary operand *expressions* here
+    ; (unlike a macro call site's raw syntax), so both compile normally.
+    mov rdi, r13
+    call car                            ; fn form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; args-list form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel invoke_macro]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_apply:
     mov rdi, r12
     mov rsi, kw_if
     mov rdx, 2
