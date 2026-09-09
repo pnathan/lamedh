@@ -258,29 +258,36 @@
       (hm-check-policy! prev)
       (assert-equal (hm-check-policy) 'lazy))))
 
-(deftest hm-verdicts-are-never-stale
+(deftest hm-verdicts-are-never-cached
   ;; #451 review F1: there is deliberately NO verdict cache. A verdict is
   ;; derived from the whole world -- including the CALLEE bodies the checker
   ;; reads on demand -- so a cache keyed on the redefined name alone served
-  ;; callers a confident answer computed from their callee's OLD body.
-  (assert-equal (hm-verdict 'hm-caller) '(checked (-> (string) string)))
-  (defun hm-callee (x) (car x))
-  (assert-equal (hm-verdict 'hm-caller)
-                '(checked (forall (a) (-> ((list a)) a))))
-  ;; ... and it agrees with a direct, uncached query, because it IS one.
+  ;; callers a confident answer computed from their callee's OLD body. The
+  ;; cache table must not come back...
+  (assert-nil (boundp '$hm-verdicts))
+  ;; ... and HM-VERDICT must stay a straight query, not a lookup.
   (assert-equal (hm-verdict 'hm-caller) (hm-see-type 'hm-caller))
-  (defun hm-callee (x) (concat x "!")))
+  (assert-equal (hm-verdict 'hm-caller) '(checked (-> (string) string))))
+;; The behavioural proof -- redefine the CALLEE, watch the CALLER's verdict
+;; follow -- needs top-level redefinition mid-test, which a DEFTEST body
+;; cannot express (its DEFUNs bind inside the test closure). It lives in
+;; tests/test_hm_check.rs's `a_callers_verdict_tracks_its_callees_current_body`.
 
 (deftest hm-source-comes-from-the-live-binding
   ;; #451 review F2: SEE-SOURCE asked about a SYMBOL answers from a
-  ;; `source-form` property that several host paths write and then never
-  ;; clear on a later rebinding. Asking about the live VALUE instead is what
-  ;; keeps the checker from reporting a confident scheme for code the name no
-  ;; longer runs.
-  (defun hm-rebound (n) (+ n 1))
-  (set 'hm-rebound (lambda (s) (concat s "!")))
-  (assert-equal (funcall hm-rebound "a") "a!")
-  (assert-equal (hm-see-type 'hm-rebound) '(checked (-> (string) string))))
+  ;; `source-form` property that several host paths write and then never clear
+  ;; on a later rebinding. HM-LAMBDA-SOURCE asks about the live VALUE, so a
+  ;; name whose value has no inspectable body yields nothing to check rather
+  ;; than a scheme for code the name no longer runs.
+  (assert-nil (hm-lambda-source 'car))
+  (assert-equal (car (hm-see-type 'car)) 'dynamic)
+  (assert-nil (hm-lambda-source 'no-such-name-anywhere))
+  (assert-equal (car (hm-see-type 'no-such-name-anywhere)) 'dynamic)
+  ;; A real plain lambda does yield its parameters and body.
+  (assert-equal (car (hm-lambda-source 'hm-caller)) '(y)))
+;; The rebinding scenario itself -- compile a name, then rebind it past DEFUN
+;; and confirm the checker follows the live value -- likewise needs top level;
+;; see `a_rebinding_that_bypasses_defun_cannot_fabricate_a_verdict`.
 
 (deftest hm-self-call-arity-is-an-error
   ;; #451 review F3: the function under check is reached through the native

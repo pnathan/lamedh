@@ -642,7 +642,10 @@ fn a_callers_verdict_tracks_its_callees_current_body() {
     let e = env();
     ev(&e, "(defun cal (x) (concat x \"!\"))");
     ev(&e, "(defun cer (y) (cal y))");
-    assert_eq!(ev(&e, "(hm-verdict 'cer)"), "(CHECKED (-> (STRING) STRING))");
+    assert_eq!(
+        ev(&e, "(hm-verdict 'cer)"),
+        "(CHECKED (-> (STRING) STRING))"
+    );
     ev(&e, "(defun cal (x) (car x))");
     assert_eq!(
         ev(&e, "(hm-verdict 'cer)"),
@@ -667,7 +670,10 @@ fn a_rebinding_that_bypasses_defun_cannot_fabricate_a_verdict() {
     // What the name actually runs now:
     assert_eq!(ev(&e, "(funcall sf \"a\")"), "\"a!\"");
     // ... and what the checker says about it.
-    assert_eq!(ev(&e, "(hm-see-type 'sf)"), "(CHECKED (-> (STRING) STRING))");
+    assert_eq!(
+        ev(&e, "(hm-see-type 'sf)"),
+        "(CHECKED (-> (STRING) STRING))"
+    );
     assert_eq!(
         ev(&e, "(condense-verdict 'sf)"),
         "(CHECKED (-> (STRING) STRING))"
@@ -696,7 +702,10 @@ fn let_typed_annotations_use_the_native_annotation_grammar() {
     // scalars (with `u8`/`byte` naming the byte scalar), struct names, bare
     // `array`, `(array T)` — and NOT the larger DECLARE-TYPE! grammar.
     let e = env();
-    assert_eq!(ev(&e, "(hm-check-expr '(let ((a int64 1)) a))"), "(CHECKED INT64)");
+    assert_eq!(
+        ev(&e, "(hm-check-expr '(let ((a int64 1)) a))"),
+        "(CHECKED INT64)"
+    );
     assert_eq!(
         ev(&e, "(hm-check-expr '(let ((a (array int64) (array 3))) a))"),
         "(CHECKED (ARRAY INT64))"
@@ -706,7 +715,10 @@ fn let_typed_annotations_use_the_native_annotation_grammar() {
     // Accepted by DECLARE-TYPE!, rejected as an annotation — both directions
     // of the disagreement this fixes.
     assert_eq!(
-        ev(&e, "(car (hm-check-expr '(let ((a (list int64) (list 1))) a)))"),
+        ev(
+            &e,
+            "(car (hm-check-expr '(let ((a (list int64) (list 1))) a)))"
+        ),
         "TYPE-ERROR"
     );
     assert_eq!(
@@ -749,7 +761,10 @@ fn the_no_compile_declaration_still_reaches_the_checker_hook() {
     // and that branch calls the hook too.
     let e = env();
     ev(&e, "(hm-check-policy! 'eager)");
-    ev(&e, "(defun pinned (x) (declare (no-compile)) (concat x \"!\"))");
+    ev(
+        &e,
+        "(defun pinned (x) (declare (no-compile)) (concat x \"!\"))",
+    );
     assert_eq!(
         ev(&e, "(hm-definition-verdict 'pinned)"),
         "(CHECKED (-> (STRING) STRING))"
