@@ -76,9 +76,28 @@ pub(super) fn apply_apply(
         LispVal::Vau(v) => {
             // Via APPLY, args are already evaluated; treat them as the operand list.
             let arg_list = vec_to_list(unpacked_args);
-            let new_env = Environment::new_child(&v.env);
-            new_env.set(v.operands_param.clone(), arg_list);
-            new_env.set(v.env_param.clone(), LispVal::Environment(env.clone()));
+            let new_env = Environment::new_child_with_dynamic(&v.env, env);
+            let has_dyn = new_env.has_any_dynamic();
+            let mut _guards: Vec<DynamicBinding> = Vec::new();
+            if has_dyn
+                && let Some(sym) = new_env.symbol_by_id(v.operands_param_id)
+                && sym.borrow().is_dynamic
+            {
+                _guards.push(DynamicBinding::install(sym, arg_list));
+            } else {
+                new_env.set(v.operands_param.clone(), arg_list);
+            }
+            if has_dyn
+                && let Some(sym) = new_env.symbol_by_id(v.env_param_id)
+                && sym.borrow().is_dynamic
+            {
+                _guards.push(DynamicBinding::install(
+                    sym,
+                    LispVal::Environment(env.clone()),
+                ));
+            } else {
+                new_env.set(v.env_param.clone(), LispVal::Environment(env.clone()));
+            }
             eval(&v.body, &new_env)
         }
         _ => apply(&func, &unpacked_args, env),
