@@ -204,6 +204,7 @@ sym_is:
     ret
 
 ; is_cons(rdi) -> rax=1/0
+global is_cons
 is_cons:
     mov rax, rdi
     and rax, TAG_MASK

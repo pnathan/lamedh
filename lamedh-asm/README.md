@@ -254,7 +254,11 @@ into conformance incrementally, tracked honestly rather than silently:
   semantics); `EQ` on cons cells is pointer identity, which the spec's
   own Part IV explicitly leaves undefined (issue #454) rather than
   requiring the reference's hardcoded `NIL`; `MOD`/`REMAINDER` now
-  match Part V's exact Euclidean/truncated split.
+  match Part V's exact Euclidean/truncated split; `PRINT` now produces
+  Part III's PRIN1-style readable text for every value this kernel
+  has — `NIL` as `()`, `T` as `T`, a symbol as its name, a cons
+  recursively as a proper or dotted list — not just fixnums/strings/
+  floats (`tests/cases/024_print_readable.asm`).
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
   special forms (`COND`/`AND`/`OR`/`PROGN`/`LET`/`LET*`/`SETQ`/`BLOCK`/
   `PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
@@ -267,9 +271,10 @@ into conformance incrementally, tracked honestly rather than silently:
   Part XI is explicit that this is the actual conformance bar, not a
   detail; there is no character type, no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values, no `GENSYM`/
-  property lists, no `EVAL`/`READ-FROM-STRING`; the printer doesn't
-  yet handle symbols, `NIL`, or cons lists (only fixnums/strings/
-  floats). This list is deliberately specific so it can shrink
+  property lists, no `EVAL`/`READ-FROM-STRING`; the printer has no
+  cycle detection (unreachable anyway — cons cells are immutable here)
+  and no opaque-value tags (`<lambda>` etc.) for closures/arrays/hash
+  tables yet. This list is deliberately specific so it can shrink
   honestly, item by item, rather than being replaced by a vaguer
   "in progress" note.
 

@@ -109,12 +109,69 @@ print_string:
     pop rbx
     ret
 
-; print_value(rdi=tagged value) -> writes a string's raw bytes, a
-; float's fixed-decimal representation, or a fixnum's decimal value,
-; dispatching on the tag at runtime (the argument's type isn't known
-; until then). This is what PRINT actually calls; compile_print itself
-; is unchanged — only the host address it bakes moved from
-; print_fixnum to this dispatcher.
+; print_symbol(rdi=tagged symbol) -> writes its interned name bytes
+; verbatim (already uppercased at intern time; see symtab.asm's
+; layout — name_len at [addr+8], name bytes starting at [addr+40]).
+print_symbol:
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov rdx, [rax+8]
+    lea rsi, [rax+40]
+    jmp write_buf
+
+; print_list(rdi=tagged cons) -> "(a b c)", or "(a . b)" for an
+; improper list — PRIN1-style, recursing through print_value so every
+; element prints by these same rules (KERNEL.md Part III). No cycle
+; detection: cons cells are immutable in this kernel (nothing can
+; RPLACD one into a cycle), so none is reachable from Lamedh code.
+extern car
+extern cdr
+extern is_cons
+print_list:
+    push rbx
+    mov rbx, rdi
+    mov rsi, lparen_buf
+    mov rdx, 1
+    call write_buf
+.loop:
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call print_value
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    cmp rbx, IMM_NIL
+    je .done
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .dotted
+    mov rsi, space_buf
+    mov rdx, 1
+    call write_buf
+    jmp .loop
+.dotted:
+    mov rsi, dot_buf
+    mov rdx, 3
+    call write_buf
+    mov rdi, rbx
+    call print_value
+.done:
+    mov rsi, rparen_buf
+    mov rdx, 1
+    call write_buf
+    pop rbx
+    ret
+
+; print_value(rdi=tagged value) -> writes the PRIN1-style readable
+; representation of any value this kernel has (KERNEL.md Part III):
+; NIL as "()", T as "T", a symbol as its name, a cons as a recursively
+; printed list, a string's raw bytes, a float's fixed-decimal form, or
+; a fixnum's decimal value — dispatching on the runtime tag (the
+; argument's type isn't known until then). This is what PRINT actually
+; calls; compile_print itself is unchanged — only the host address it
+; bakes moved from print_fixnum to this dispatcher.
 extern print_fixnum
 extern is_float
 extern float_print
@@ -122,23 +179,67 @@ global print_value
 print_value:
     push rbx
     mov rbx, rdi
+
+    cmp rbx, IMM_NIL
+    jne .not_nil
+    mov rsi, nil_buf
+    mov rdx, 2
+    call write_buf
+    jmp .out
+.not_nil:
+    cmp rbx, IMM_TRUE
+    jne .not_true
+    mov rsi, true_buf
+    mov rdx, 1
+    call write_buf
+    jmp .out
+.not_true:
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .not_cons
+    mov rdi, rbx
+    call print_list
+    jmp .out
+.not_cons:
+    mov rax, rbx
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_symbol
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .not_symbol
+    mov rdi, rbx
+    call print_symbol
+    jmp .out
+.not_symbol:
+    mov rdi, rbx
     call is_string
     test rax, rax
-    jnz .string
-    mov rdi, rbx
-    call is_float
-    test rax, rax
-    jnz .float
-    mov rdi, rbx
-    call print_fixnum
-    jmp .out
-.string:
+    jz .not_string
     mov rdi, rbx
     call print_string
     jmp .out
-.float:
+.not_string:
+    mov rdi, rbx
+    call is_float
+    test rax, rax
+    jz .not_float
     mov rdi, rbx
     call float_print
+    jmp .out
+.not_float:
+    mov rdi, rbx
+    call print_fixnum
 .out:
     pop rbx
     ret
+
+section .rodata
+nil_buf:    db "()"
+true_buf:   db "T"
+lparen_buf: db "("
+rparen_buf: db ")"
+space_buf:  db " "
+dot_buf:    db " . "
