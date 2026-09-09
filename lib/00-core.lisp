@@ -24,13 +24,34 @@
 
 ;; The quiet compile attempt behind one-door `defun`. Defined before `defun`
 ;; itself because every subsequent stdlib definition routes through it.
+;;
+;; Two things happen here, and they are independent:
+;;
+;;   1. the host's native compile attempt (`jit-optimize`), when the host has
+;;      one -- unchanged;
+;;   2. `$HM-ON-DEFUN`, the PORTABLE type checker's definition hook
+;;      (lib/45-hm-check.lisp, issue #451). Every `defun` in the language
+;;      routes through here, so this is the one door the portable checker
+;;      needs: it drops the redefined name's cached verdict (so the next
+;;      HM-SEE-TYPE / condensation query recomputes it from the new body) and,
+;;      under `(hm-check-policy! 'eager)`, checks the new definition on the
+;;      spot. Lazy is the default for exactly the reason the purity and
+;;      call-graph analyses below are lazy: a tree-walked HM check is a
+;;      per-query cost, not a per-definition one, and paying it eagerly for
+;;      every stdlib definition would add seconds to startup. On a host with
+;;      no native checker, `'eager` makes this the definition-time checker.
+;;
+;; Guarded by BOUNDP because 45-hm-check.lisp loads long after this file --
+;; the same pattern `$CG-PENDING`/`$CALL-GRAPH` already use below.
 (def $defun-auto-compile
   (lambda (name)
-    (if (getp name "no-compile")
-        name
-        ;; JIT-OPTIMIZE is a special form taking its symbol UNevaluated, so
-        ;; build the call with the target name spliced in and eval it.
-        (progn (eval (list 'jit-optimize name)) name))))
+    (progn
+      (if (boundp '$hm-on-defun) ($hm-on-defun name) nil)
+      (if (getp name "no-compile")
+          name
+          ;; JIT-OPTIMIZE is a special form taking its symbol UNevaluated, so
+          ;; build the call with the target name spliced in and eval it.
+          (progn (eval (list 'jit-optimize name)) name)))))
 
 
 ;; --- &OPTIONAL / &KEY parameter lists (0.3 regularity) ----------------------
