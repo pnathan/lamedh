@@ -526,6 +526,7 @@ encodings 0–7, so no REX.B/R is ever needed in emitted code).
 
 ```
 make test      # assembles everything, runs tests/run.sh
+make lamedhc   # builds build/lamedhc, the real file/stdin driver
 make clean
 ```
 
@@ -537,7 +538,17 @@ No Cargo project lives here (deliberately — this directory has no
 `tests/cases/NAME.asm` (which defines `global lamedh_main`) links it
 against `boot.asm` + the core and diffs the resulting binary's stdout
 and exit code against `tests/cases/NAME.expected` / `.exitcode`
-(exit code defaults to 0 if the `.exitcode` file is absent).
+(exit code defaults to 0 if the `.exitcode` file is absent). It also
+builds `build/lamedhc` (`src/file_runner.asm`) the same way and checks
+it against a small generated `.lisp` file, both as a path argument and
+piped over stdin, plus a missing-file exit code — the only case here
+that isn't a `tests/cases/*.asm` file, since it's exercising the driver
+itself rather than one compiled program.
+
+```
+build/lamedhc path/to/program.lisp   # run a file
+producer | build/lamedhc             # or read a program from stdin
+```
 
 ## Roadmap
 
@@ -558,9 +569,20 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   networking, regex, or TLS are out of scope for this from-scratch host
   regardless (Part IX capabilities this kernel has no I/O surface for
   yet); everything else in that directory is the honest bar. There is
-  no file-loading driver yet either — every test here still runs one
-  hand-assembled `lamedh_main` per case, not
-  `lamedhc examples/factorial/main.lisp`.
+  now a real file-loading driver — `make lamedhc` builds `build/lamedhc`
+  (`src/file_runner.asm`, linked via boot.asm/the shared core exactly
+  like a test case, just with a runtime read-eval loop over a whole
+  source text instead of one hardcoded literal): `lamedhc
+  path/to/program.lisp` or `producer | lamedhc` reads the named file, or
+  stdin when no path is given, and runs every top-level form in it in
+  order. `lamedhc ../examples/factorial/main.lisp` still fails today —
+  segfaults, in fact, calling the unbound global `DEFUN` as a function,
+  since there is no prelude loaded before the program's own forms and
+  no error yet for calling a non-callable value — which is exactly the
+  next-most-honest data point: the driver works, and a from-scratch
+  `lib/00-core.lisp`-equivalent prelude (starting with `DEFUN`, now that
+  it needs no compiler change) is the remaining piece before that
+  command means anything.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle

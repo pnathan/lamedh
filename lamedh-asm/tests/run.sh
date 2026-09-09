@@ -31,6 +31,52 @@ for f in src/boot.asm $CORE_SRCS; do
     core_objs="$core_objs $obj"
 done
 
+echo "== file_runner (lamedhc) =="
+runner_obj="$BUILD/file_runner.o"
+runner_bin="$BUILD/lamedhc"
+if ! $AS $ASFLAGS src/file_runner.asm -o "$runner_obj" 2>"$BUILD/asm.err"; then
+    echo "FAIL  file_runner  (assemble)"
+    cat "$BUILD/asm.err"
+    fail=$((fail+1))
+elif ! $LD -static -nostdlib -o "$runner_bin" $core_objs "$runner_obj" 2>"$BUILD/ld.err"; then
+    echo "FAIL  file_runner  (link)"
+    cat "$BUILD/ld.err"
+    fail=$((fail+1))
+else
+    tmp_prog="$BUILD/file_runner_case.lisp"
+    printf '(DEFINE SQUARE (LAMBDA (X) (* X X)))\n(PRINT (SQUARE 7))\n(PRINT (QUOTE OK))\n' > "$tmp_prog"
+
+    got_out=$("$runner_bin" "$tmp_prog")
+    got_exit=$?
+    if [ "$got_out" = "49OK" ] && [ "$got_exit" = "0" ]; then
+        echo "ok    file_runner_file_arg"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_file_arg  stdout: got [$got_out] exit: got $got_exit"
+        fail=$((fail+1))
+    fi
+
+    got_out=$("$runner_bin" < "$tmp_prog")
+    got_exit=$?
+    if [ "$got_out" = "49OK" ] && [ "$got_exit" = "0" ]; then
+        echo "ok    file_runner_stdin"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_stdin  stdout: got [$got_out] exit: got $got_exit"
+        fail=$((fail+1))
+    fi
+
+    got_exit=0
+    "$runner_bin" "$BUILD/file_runner_does_not_exist.lisp" >/dev/null 2>&1 || got_exit=$?
+    if [ "$got_exit" = "1" ]; then
+        echo "ok    file_runner_missing_file"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_missing_file  exit: got $got_exit want 1"
+        fail=$((fail+1))
+    fi
+fi
+
 for case_asm in tests/cases/*.asm; do
     name=$(basename "${case_asm%.asm}")
     expected="tests/cases/$name.expected"
