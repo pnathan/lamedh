@@ -556,6 +556,7 @@ fn compile_call(head: &LispVal, rest: &Shared<LispVal>, form: &LispVal) -> crate
         callee,
         args,
         original: form.clone(),
+        expansion: SharedCell::new(None),
     }
 }
 
@@ -807,18 +808,49 @@ pub(super) fn exec_step(
             callee,
             args,
             original,
+            expansion,
         } => {
             // Evaluate callee (non-tail).
             let func = exec(callee, env)?;
 
-            // Macros, fexprs, and vau operatives need their arguments
-            // *unevaluated*.  The operator (`func`) is already evaluated above;
-            // dispatch it directly with the unevaluated operand tail so we
-            // don't re-evaluate the operator expression (#226).
-            if matches!(
-                func,
-                LispVal::Macro(_) | LispVal::Fexpr(_) | LispVal::Vau(_)
-            ) {
+            // Macro calls participate in the per-call-site expansion cache
+            // (issue #460): a macro's expansion is a function of its
+            // definition and the literal operand forms, so once expanded it
+            // is memoized here, keyed on the identity of the macro value
+            // (`Shared::ptr_eq`). fexpr/vau dispatch below stays uncached by
+            // design — their semantics require live execution every call.
+            if let LispVal::Macro(m) = &func {
+                if let Some(cached) = expansion.borrow().as_ref()
+                    && Shared::ptr_eq(&cached.macro_id, m)
+                {
+                    // Cache hit: skip expansion entirely, resume straight
+                    // from the compiled expansion on this trampoline.
+                    return Ok(TcoStep::ExecTail(cached.code.clone(), env.clone()));
+                }
+                // Cache miss (first call at this site, or the binding was
+                // redefined since the last cached hit): expand fresh.
+                let rest = match original {
+                    LispVal::Cons { cdr, .. } => (**cdr).clone(),
+                    _ => LispVal::Nil,
+                };
+                let arg_forms = list_to_vec_ctx(&rest, "MACRO")?;
+                let expanded = expand_macro(m, &arg_forms, env)?;
+                // Only a successful expansion is cached — an expansion that
+                // errors must be retried on the next call, never memoized.
+                let compiled = compile(&expanded);
+                *expansion.borrow_mut() = Some(CachedExpansion {
+                    macro_id: m.clone(),
+                    code: compiled.clone(),
+                });
+                return Ok(TcoStep::ExecTail(compiled, env.clone()));
+            }
+
+            // Fexprs and vau operatives need their arguments *unevaluated*
+            // and must stay fresh every call (never cached). The operator
+            // (`func`) is already evaluated above; dispatch it directly with
+            // the unevaluated operand tail so we don't re-evaluate the
+            // operator expression (#226).
+            if matches!(func, LispVal::Fexpr(_) | LispVal::Vau(_)) {
                 let rest = match original {
                     LispVal::Cons { cdr, .. } => (**cdr).clone(),
                     _ => LispVal::Nil,
