@@ -14,7 +14,7 @@ AS=nasm
 ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/"
 LD=ld
 
-CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/codegen.asm src/compiler.asm"
+CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/codegen.asm src/compiler.asm"
 
 pass=0
 fail=0

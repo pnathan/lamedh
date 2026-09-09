@@ -1017,8 +1017,32 @@ bugs no existing test had exercised:
   actually call — `STRING->LIST`, `STRING-JOIN`, `STRING-DOWNCASE` —
   is still missing; `DEFRECORD` and the protocol/dispatch system (`DEFPROTOCOL`/
   `DEFINSTANCE`, `VARIANT-CASE`) `lib/20-condensation.lisp` and
-  `lib/29-protocols.lisp` provide; `RANDOM`; bitwise ops (`ASH`,
-  `LOGAND`). None of this is surprising — it is the gap between "a
+  `lib/29-protocols.lisp` provide. **`RANDOM`/`RANDOM-SEED!`
+  (`src/rng.asm`) and the bitwise ops `LOGAND`/`LOGIOR`/`LOGXOR`/
+  `LOGNOT`/`ASH` (`src/bitwise.asm`) now exist too**
+  (`tests/cases/049_bitwise.asm`, `tests/cases/050_random.asm`) — these
+  aren't primitives KERNEL.md itself mandates (Part V's numeric tower
+  is `+`/`-`/`*`/`/`/comparisons/`MOD`/`REMAINDER`/`FLOAT`, no bitwise
+  or randomness surface), but the reference implements them and real
+  examples in this corpus call them, so they're still real conformance
+  work toward "the full example corpus runs," just against the wider
+  reference-stdlib bar rather than the strict kernel-primitive one.
+  `RANDOM` is the exact SplitMix64 generator the reference's own
+  `rng_next` uses (`../src/evaluator/builtins_extra.rs`), lazily seeded
+  from `rdtsc` (no libc clock call available) unless `RANDOM-SEED!` set
+  it explicitly — so a fixed seed reproduces the identical sequence on
+  both hosts, the one part of this meant to be bit-for-bit
+  reproducible. `LOGAND`/`LOGIOR`/`LOGXOR` reuse the same tagged-word
+  trick `tags.inc` already documents for `+`/`-`: a fixnum's tag bits
+  are always `00`, so a plain bitwise AND/OR/XOR of two *tagged* words
+  is already correctly tagged, no untag/retag needed. **v0 scope**:
+  `LOGAND`/`LOGIOR`/`LOGXOR` are fixed 2-operand, not the reference's
+  own variadic fold (no general variadic-primitive-call mechanism
+  exists yet — the same reason every other multi-operand builtin here
+  is a fixed shape); `ASH`'s overflow/sign-extension behavior is scaled
+  to this kernel's own 62-bit fixnum width rather than the reference's
+  64-bit one (Part XII axis 1's existing width divergence, not a new
+  one). None of this is surprising — it is the gap between "a
   kernel with a working prelude" and "the reference's full standard
   library," and it is exactly what "run 100% of the examples" now
   honestly requires, tracked here so the next pass has a measured

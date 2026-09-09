@@ -104,6 +104,13 @@ extern gensym
 extern make_char_from_fixnum
 extern char_code_tagged
 extern code_char_string
+extern random_tagged
+extern random_seed_tagged
+extern lognot_tagged
+extern logand_tagged
+extern logior_tagged
+extern logxor_tagged
+extern ash_tagged
 extern symbol_plist
 extern set_symbol_plist
 
@@ -178,6 +185,13 @@ kw_hash_code:    db "HASH-CODE"
 kw_make_char:    db "MAKE-CHAR"
 kw_char_code:    db "CHAR-CODE"
 kw_code_char:    db "CODE-CHAR"
+kw_random:       db "RANDOM"
+kw_random_seed:  db "RANDOM-SEED!"
+kw_lognot:       db "LOGNOT"
+kw_logand:       db "LOGAND"
+kw_logior:       db "LOGIOR"
+kw_logxor:       db "LOGXOR"
+kw_ash:          db "ASH"
 kw_mod:          db "MOD"
 kw_remainder:    db "REMAINDER"
 kw_flag_set_p:      db "FLAG-SET-P"
@@ -4241,6 +4255,128 @@ compile_form:
     jmp .out
 
 .not_code_char:
+    mov rdi, r12
+    mov rsi, kw_random
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_random
+    mov rdi, r13
+    call car
+    lea rsi, [rel random_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_random:
+    mov rdi, r12
+    mov rsi, kw_random_seed
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_random_seed
+    mov rdi, r13
+    call car
+    lea rsi, [rel random_seed_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_random_seed:
+    mov rdi, r12
+    mov rsi, kw_lognot
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_lognot
+    mov rdi, r13
+    call car
+    lea rsi, [rel lognot_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_lognot:
+    mov rdi, r12
+    mov rsi, kw_logand
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_logand
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel logand_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_logand:
+    mov rdi, r12
+    mov rsi, kw_logior
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_logior
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel logior_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_logior:
+    mov rdi, r12
+    mov rsi, kw_logxor
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_logxor
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel logxor_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_logxor:
+    mov rdi, r12
+    mov rsi, kw_ash
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_ash
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel ash_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_ash:
     mov rdi, r12
     mov rsi, kw_array_ref
     mov rdx, 5
