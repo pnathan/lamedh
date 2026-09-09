@@ -87,6 +87,7 @@ extern float_mul
 extern float_div
 extern float_lt
 extern make_array
+extern make_typed_array
 extern array_ref
 extern array_set
 extern array_length_tagged
@@ -183,6 +184,7 @@ kw_fmul:     db "F*"
 kw_fdiv:     db "F/"
 kw_flt:      db "F<"
 kw_make_array:   db "ARRAY"
+kw_typed_array:  db "TYPED-ARRAY"
 kw_array_ref:    db "FETCH"
 kw_array_set:    db "STORE"
 kw_array_length: db "ARRAY-LENGTH*"
@@ -4182,6 +4184,26 @@ compile_form:
     jmp .out
 
 .not_make_array:
+    mov rdi, r12
+    mov rsi, kw_typed_array
+    mov rdx, 11
+    call sym_is
+    test rax, rax
+    jz .not_typed_array
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; elem-type form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel make_typed_array]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_typed_array:
     mov rdi, r12
     mov rsi, kw_array_length
     mov rdx, 13

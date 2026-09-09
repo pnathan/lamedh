@@ -49,6 +49,7 @@
 %define HDR_FLOAT       4     ; [8 bytes: one IEEE754 double]
 %define HDR_ARRAY       5     ; [8 len][len*8 bytes: tagged slots]
 %define HDR_CONDITION   6     ; [8 message][8 data]
+%define HDR_TYPED_ARRAY 7     ; [8 len][8 elem-type: 0=INT64 1=FLOAT64][len*8 bytes: raw untagged int64/double slots]
 
 ; fixnum <-> machine-integer conversion
 %macro TO_FIXNUM 1        ; reg <- (reg << 2), tag 00 is already 0 after shift

@@ -635,7 +635,30 @@ into conformance incrementally, tracked honestly rather than silently:
   `0..255` (one byte) rather than the reference's full Unicode code
   point range, since this kernel's strings are plain byte buffers with
   no UTF-8 encoder yet — there is still no Unicode-codepoint string
-  indexing, no typed arrays, no environments-as-values. **Symbol
+  indexing, no environments-as-values. **Typed arrays now also
+  exist** (`tests/cases/054_typed_arrays.asm`): `(typed-array n
+  elem-type)` — `n` as for `ARRAY`, `elem-type` exactly the symbol
+  `INT64` or `FLOAT64` — a new `HDR_TYPED_ARRAY` heapobj
+  (`[8]=len [16]=elem-type [24..]=raw untagged int64/double slots`,
+  `tags.inc`) storing native machine words instead of tagged values.
+  `FETCH`/`STORE`/`ARRAY-LENGTH*` are one polymorphic primitive over
+  both plain and typed arrays, not new names, matching Part XI exactly
+  — `array_ref`/`array_set` (`arrays.asm`) check the header and
+  dispatch: `FETCH` re-tags an `INT64` slot's raw word as a fixnum or
+  boxes a `FLOAT64` slot's raw bits fresh via `make_float` on every
+  read ("reading always yields the declared type"); `STORE` validates
+  per the spec's own narrower-than-arithmetic-coercion rule — an
+  `INT64` array accepts only a fixnum (a `Float` or `Char` is a
+  catchable wrong-type condition, `fail_wrong_type`/`native_throw`);
+  a `FLOAT64` array accepts a `Float` as-is or a fixnum converted to
+  the nearest `f64`, and also rejects a `Char` — deliberately *not*
+  coerced to its code point here, unlike Part V's own arithmetic
+  contagion. Slots are zero-initialized (`0`/`0.0`, the same raw bit
+  pattern either way). `PRINT` emits the spec's own distinct opaque
+  tag, `<typed-array:int64:N>` / `<typed-array:float64:N>`, not
+  reusing plain `ARRAY`'s `<array:N>`. **v0 scope**: no bounds
+  checking — the same divergence plain `ARRAY` already has (see v0
+  limits below), not a new one. **Symbol
   property lists (`GETP`/`PUTP`) now exist**
   (`tests/cases/046_plist.asm`, plus `file_runner_prelude`'s own GETP/
   PUTP coverage): every symbol gained a fourth mutable slot, `plist`

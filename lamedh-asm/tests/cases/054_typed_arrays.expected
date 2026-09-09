@@ -1,0 +1,12 @@
+<typed-array:int64:5>
+42
+-7
+0
+5
+<typed-array:float64:3>
+3.500000
+7.000000
+CAUGHT
+CAUGHT
+CAUGHT
+<array:3>

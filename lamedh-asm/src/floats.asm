@@ -53,6 +53,7 @@ is_float:
     ret
 
 ; float_val(rdi=tagged float) -> xmm0 = raw double value
+global float_val
 float_val:
     mov rax, rdi
     UNTAG_PTR rax

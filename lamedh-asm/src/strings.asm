@@ -378,6 +378,7 @@ extern print_fixnum
 extern is_float
 extern float_print
 extern is_array
+extern is_typed_array
 extern array_length_tagged
 extern is_char_tagged
 extern print_char
@@ -460,6 +461,38 @@ print_value:
     call write_buf
     jmp .out
 .not_array:
+    mov rdi, rbx
+    call is_typed_array
+    test rax, rax
+    jz .not_typed_array
+    mov rsi, typed_array_tag_open
+    mov rdx, typed_array_tag_open_len
+    call write_buf
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax+16], 0                 ; elem_type: 0=INT64
+    jne .typed_array_float_tag
+    mov rsi, int64_tag
+    mov rdx, int64_tag_len
+    call write_buf
+    jmp .typed_array_tag_done
+.typed_array_float_tag:
+    mov rsi, float64_tag
+    mov rdx, float64_tag_len
+    call write_buf
+.typed_array_tag_done:
+    mov rsi, colon_buf
+    mov rdx, 1
+    call write_buf
+    mov rdi, rbx
+    call array_length_tagged
+    mov rdi, rax
+    call print_fixnum
+    mov rsi, array_tag_close
+    mov rdx, 1
+    call write_buf
+    jmp .out
+.not_typed_array:
     mov rax, rbx
     and rax, TAG_MASK
     cmp rax, TAG_HEAPOBJ
@@ -489,5 +522,12 @@ dot_buf:    db " . "
 array_tag_open:     db "<array:"
 array_tag_open_len: equ $ - array_tag_open
 array_tag_close:    db ">"
+typed_array_tag_open:     db "<typed-array:"
+typed_array_tag_open_len: equ $ - typed_array_tag_open
+int64_tag:     db "int64"
+int64_tag_len: equ $ - int64_tag
+float64_tag:     db "float64"
+float64_tag_len: equ $ - float64_tag
+colon_buf: db ":"
 lambda_tag:     db "<lambda>"
 lambda_tag_len: equ $ - lambda_tag

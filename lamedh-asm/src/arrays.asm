@@ -19,6 +19,10 @@
 %include "src/tags.inc"
 
 extern data_alloc
+extern intern_symbol
+extern make_float
+extern float_val
+extern fail_wrong_type
 
 section .text
 
@@ -70,6 +74,108 @@ is_array:
     xor rax, rax
     ret
 
+; is_typed_array(rdi=tagged value) -> rax=1/0
+global is_typed_array
+is_typed_array:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .no
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_TYPED_ARRAY
+    jne .no
+    mov rax, 1
+    ret
+.no:
+    xor rax, rax
+    ret
+
+; make_typed_array(rdi=tagged fixnum n, rsi=tagged elem-type symbol) ->
+; rax = tagged HDR_TYPED_ARRAY heapobj, n raw slots zero-initialized
+; (0 for INT64, 0.0's all-zero bit pattern for FLOAT64 — the same raw
+; value either way, so the zero-init loop doesn't need to branch on
+; the type). elem-type must be exactly the symbol INT64 or FLOAT64
+; (the reader case-folds symbols on intern already, so this needs no
+; extra case handling); anything else is a catchable wrong-type
+; condition (fail_wrong_type/native_throw), matching KERNEL.md Part IV
+; exactly ("any other symbol or a non-symbol is an error").
+global make_typed_array
+make_typed_array:
+    push rbx
+    push r12
+    push r13
+    mov r12, rdi                  ; tagged n
+    mov r13, rsi                    ; elem-type symbol (for the error
+                                     ; path below, since intern_symbol
+                                     ; inside typed_array_elem_type_of
+                                     ; would otherwise clobber rsi)
+    mov rdi, rsi
+    call typed_array_elem_type_of     ; -> rax = 0 (INT64) / 1 (FLOAT64) / -1 (bad)
+    cmp rax, 0
+    jl .bad
+    mov rbx, rax                        ; elem_type (0/1)
+
+    mov rax, r12
+    UNTAG_FIXNUM rax
+    push rax                            ; [raw n]
+    shl rax, 3
+    add rax, 24
+    mov rdi, rax
+    call data_alloc
+    pop rcx                               ; raw n
+    mov qword [rax], HDR_TYPED_ARRAY
+    mov [rax+8], rcx
+    mov [rax+16], rbx
+    xor rdx, rdx
+.init:
+    cmp rdx, rcx
+    jae .done
+    mov qword [rax+24+rdx*8], 0
+    inc rdx
+    jmp .init
+.done:
+    or rax, TAG_HEAPOBJ
+    pop r13
+    pop r12
+    pop rbx
+    ret
+.bad:
+    mov rdi, r13
+    pop r13
+    pop r12
+    pop rbx
+    mov rsi, typed_array_type_msg
+    mov rdx, typed_array_type_msg_len
+    jmp fail_wrong_type
+
+; typed_array_elem_type_of(rdi=tagged symbol) -> rax = 0 (INT64), 1
+; (FLOAT64), or -1 (neither).
+typed_array_elem_type_of:
+    push rbx
+    mov rbx, rdi
+    mov rdi, int64_name
+    mov rsi, 5
+    call intern_symbol
+    cmp rax, rbx
+    je .is_int64
+    mov rdi, float64_name
+    mov rsi, 7
+    call intern_symbol
+    cmp rax, rbx
+    je .is_float64
+    mov rax, -1
+    pop rbx
+    ret
+.is_int64:
+    xor rax, rax
+    pop rbx
+    ret
+.is_float64:
+    mov rax, 1
+    pop rbx
+    ret
+
 ; array_length_tagged(rdi=tagged array) -> rax = tagged fixnum length.
 global array_length_tagged
 array_length_tagged:
@@ -79,29 +185,118 @@ array_length_tagged:
     TO_FIXNUM rax
     ret
 
-; array_ref(rdi=tagged array, rsi=tagged fixnum index) -> rax = tagged
-; value at that slot. No bounds check (v0 — see README).
+; array_ref(rdi=tagged array-or-typed-array, rsi=tagged fixnum index)
+; -> rax = tagged value at that slot. No bounds check (v0 — see
+; README; typed arrays share this same divergence, not a new one).
+; FETCH is one polymorphic primitive over both representations
+; (KERNEL.md Part XI): a plain array's slots are already tagged
+; values, returned as-is; a typed array's slots are raw untagged
+; int64/double words — "reading always yields the declared type", so
+; INT64 re-tags the raw word as a fixnum and FLOAT64 boxes it fresh
+; via make_float, on every read.
 global array_ref
 array_ref:
     mov rax, rdi
     UNTAG_PTR rax
+    cmp qword [rax], HDR_TYPED_ARRAY
+    je .typed
     mov rcx, rsi
     UNTAG_FIXNUM rcx
     mov rax, [rax+16+rcx*8]
     ret
+.typed:
+    push rbx
+    mov rbx, rax                  ; raw typed-array address
+    mov rcx, rsi
+    UNTAG_FIXNUM rcx
+    cmp qword [rbx+16], 0           ; elem_type: 0=INT64
+    jne .typed_float
+    mov rax, [rbx+24+rcx*8]
+    TO_FIXNUM rax
+    pop rbx
+    ret
+.typed_float:
+    movsd xmm0, [rbx+24+rcx*8]
+    pop rbx
+    jmp make_float
 
-; array_set(rdi=tagged array, rsi=tagged fixnum index, rdx=tagged
-; value) -> rax = value (also stored into the slot). The first
-; primitive in this kernel that mutates a heap object after creation.
+; array_set(rdi=tagged array-or-typed-array, rsi=tagged fixnum index,
+; rdx=tagged value) -> rax = value (also stored into the slot). A
+; plain array stores the tagged value as-is (no type check — the
+; first primitive in this kernel that mutates a heap object after
+; creation). A typed array validates per KERNEL.md Part XI's own
+; narrower-than-arithmetic-coercion rule: an INT64 array accepts only
+; a fixnum (a Float or Char is a wrong-type condition — Char is
+; deliberately *not* coerced to its code point here); a FLOAT64 array
+; accepts a Float (stored as-is, including NaN) or a fixnum (converted
+; to the nearest f64), and rejects a Char. Storage is always the raw
+; untagged word either way, matching FETCH's own unboxing.
 global array_set
 array_set:
-    mov rax, rdi
-    UNTAG_PTR rax
+    push rbx
+    mov rbx, rdi
+    UNTAG_PTR rbx
+    cmp qword [rbx], HDR_TYPED_ARRAY
+    je .typed
+    mov rax, rbx
     mov rcx, rsi
     UNTAG_FIXNUM rcx
     mov [rax+16+rcx*8], rdx
     mov rax, rdx
+    pop rbx
     ret
+.typed:
+    mov rcx, rsi
+    UNTAG_FIXNUM rcx
+    cmp qword [rbx+16], 0           ; elem_type: 0=INT64
+    jne .typed_float
+    mov rax, rdx
+    and rax, TAG_MASK
+    test rax, rax                     ; TAG_FIXNUM == 0
+    jnz .bad
+    mov rax, rdx
+    UNTAG_FIXNUM rax
+    mov [rbx+24+rcx*8], rax
+    mov rax, rdx
+    pop rbx
+    ret
+.typed_float:
+    ; a Float stores as-is; a fixnum converts to the nearest f64;
+    ; anything else (a Char, a string, ...) is a wrong-type condition.
+    mov rax, rdx
+    and rax, TAG_MASK
+    test rax, rax                       ; TAG_FIXNUM == 0
+    jz .float_from_fixnum
+    cmp rax, TAG_HEAPOBJ
+    jne .bad
+    mov rax, rdx
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_FLOAT
+    jne .bad
+    push rdx
+    mov rdi, rdx
+    call float_val                        ; xmm0 = value
+    pop rdx
+    movsd [rbx+24+rcx*8], xmm0
+    mov rax, rdx
+    pop rbx
+    ret
+.float_from_fixnum:
+    push rdx
+    mov rax, rdx
+    UNTAG_FIXNUM rax
+    cvtsi2sd xmm0, rax
+    pop rdx
+    movsd [rbx+24+rcx*8], xmm0
+    mov rax, rdx
+    pop rbx
+    ret
+.bad:
+    mov rdi, rdx
+    pop rbx
+    mov rsi, typed_array_store_msg
+    mov rdx, typed_array_store_msg_len
+    jmp fail_wrong_type
 
 ; hash_code_tagged(rdi=tagged value) -> rax = tagged fixnum hash code,
 ; always non-negative, masked to 30 bits so a caller can safely scale
@@ -246,3 +441,11 @@ remainder_tagged:
     mov rax, rdx
     TO_FIXNUM rax
     ret
+
+section .rodata
+int64_name:   db "INT64"
+float64_name: db "FLOAT64"
+typed_array_type_msg: db "TYPED-ARRAY: elem-type must be INT64 or FLOAT64"
+typed_array_type_msg_len: equ $ - typed_array_type_msg
+typed_array_store_msg: db "STORE: value does not match the typed array's element type"
+typed_array_store_msg_len: equ $ - typed_array_store_msg
