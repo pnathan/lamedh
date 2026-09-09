@@ -104,6 +104,7 @@ extern fail_not_callable
 
 section .rodata
 kw_quote:  db "QUOTE"
+kw_function: db "FUNCTION"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
 kw_lambda: db "LAMBDA"
@@ -3562,6 +3563,30 @@ compile_form:
 
 .not_quote:
     mov rdi, r12
+    mov rsi, kw_function
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jz .not_function
+    ; (FUNCTION x) / #'x — x is *not* evaluated as a nested application:
+    ; compiling it directly, the same way any other operand position
+    ; would, already gives exactly the right answer for both spellings
+    ; the spec requires — a bare symbol compiles as the ordinary
+    ; local-or-global variable read compile_form's own atom case above
+    ; already does (identical to referencing the symbol without
+    ; FUNCTION at all, since this kernel keeps no separate function
+    ; namespace), and #'(LAMBDA ...) compiles as an ordinary LAMBDA.
+    ; v0 does not yet check "is it actually callable, else an error"
+    ; (Part VI) — same scope as every other place this kernel doesn't
+    ; check a value's type before using it (see README).
+    mov rdi, r13
+    call car
+    mov rdi, rax
+    call compile_form
+    jmp .out
+
+.not_function:
+    mov rdi, r12
     mov rsi, kw_if
     mov rdx, 2
     call sym_is
@@ -4499,9 +4524,8 @@ compile_thunk:
 ; function, then call it. Exposing this to *compiled* Lamedh code as
 ; (EVAL form) is what makes reflection possible from within a running
 ; program, not just from the host driver — the same "the compiler is
-; just more compiled code" idea DEFMACRO's own invoke_closure_host
-; already rests on (see README's "kernel surface" section), one level
-; up.
+; just more compiled code" idea DEFMACRO's own invoke_macro already
+; rests on (see README's "kernel surface" section), one level up.
 global eval_form
 eval_form:
     push rbx

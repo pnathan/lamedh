@@ -626,23 +626,60 @@ literal datum in this compiler is, and runs through the identical
 does, just from an in-memory buffer instead of an mmap'd file.
 
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
-`REVERSE`, and `FORMAT` — each an ordinary `DEFMACRO`/`DEFUN` over
-kernel primitives, no compiler change needed for any of it (see
-`lib/prelude.lisp`'s own comments for exactly why). `DEFUN` and
-`WHEN`/`UNLESS` take any number of body forms directly
-(`(NAME PARAMS &REST BODY)`, the same way `LAMBDA`'s own body already
-does) — `invoke_macro` (see "The kernel surface" above) forwards every
-operand at a macro call site, not just the first 3, so this no longer
-needs the single-body-form workaround an earlier version of this
-prelude required. `FORMAT` walks its control string with `STRING-REF`
-at macro-expansion time, recognizing only `~a`/`~%` (v0 — see
-`lib/prelude.lisp`'s own comments for the exact scope, including that
-the `STREAM` argument is currently accepted but ignored — no
-`(format nil ...)` support yet); `(format t "~a! = ~a~%" n
-(factorial n))`, the exact idiom `examples/factorial/main.lisp` uses,
-now works end to end.
+`REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
+`+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, and `DOTIMES` — each an
+ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler change
+needed for any of it (see `lib/prelude.lisp`'s own comments for exactly
+why; `DOTIMES` is derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part
+XII axis 3's explicit license). `DEFUN` and `WHEN`/`UNLESS` take any
+number of body forms directly (`(NAME PARAMS &REST BODY)`, the same way
+`LAMBDA`'s own body already does) — `invoke_macro` (see "The kernel
+surface" above) forwards every operand at a macro call site, not just
+the first 3, so this no longer needs the single-body-form workaround an
+earlier version of this prelude required. `FORMAT` walks its control
+string with `STRING-REF` at macro-expansion time, recognizing only
+`~a`/`~%` (v0 — see `lib/prelude.lisp`'s own comments for the exact
+scope, including that the `STREAM` argument is currently accepted but
+ignored — no `(format nil ...)` support yet).
 
-Writing even this small a prelude surfaced three real, previously-latent
+**`examples/factorial/main.lisp`'s own `(dotimes (i 10) (format t "~a!
+= ~a~%" (1+ i) (factorial (1+ i))))` now runs correctly end to end**,
+printing all ten factorials exactly as the reference does — the
+concrete conformance target's first real win. Its self-check does not
+pass unmodified: `(factorial 20)` is `2432902008176640000`, which fits
+the reference's 64-bit `i64` fixnum but exceeds this kernel's 62-bit
+one (the low 2 bits are the tag — see "Value representation" above),
+so it silently wraps (setting `OVERFLOW`, per the fixnum overflow work
+above) to a different value, and the self-check's exact-equality
+assertion fails, hitting an unmatched `THROW` (`(error ...)` with no
+enclosing `HANDLER-CASE`) that traps rather than passing. This is a
+genuine, honest representational difference this kernel's own tagged
+fixnum makes (Part XII axis 1 explicitly allows a host's fixed-width
+model to differ from another's), not a bug to chase — `factorial-fold`
+(`REDUCE`/`IOTA`/`#'*`) agrees with the direct recursive `factorial` on
+every value that fits, confirming `REDUCE`/`IOTA`/`FUNCTION` are all
+correct; only the specific `20!` boundary the reference's wider fixnum
+happens to still fit is where the two hosts diverge.
+
+`FUNCTION`/`#'` (`compiler.asm`'s dispatch, plus a new `#'` reader
+macro in `reader.asm` mirroring `'`'s own construction) compiles its
+operand directly, exactly like any other expression position already
+would — a bare symbol is the ordinary local-or-global variable read
+`compile_form`'s own atom case already does (there is no separate
+function namespace in this kernel), and `#'(LAMBDA ...)` is an ordinary
+`LAMBDA`. This is what makes `+`/`-`/`*`/`<`/`=` needing *real* global
+closures (not just their existing fast inline-operator forms, which
+only trigger when one of them is the head of a list) visible at all:
+`(REDUCE #'* ...)` needs a callable *value* to pass, which nothing
+before this bound the bare symbol `*` to.
+
+The reader also gained the `1+`/`1-` two-character literal symbol
+production (KERNEL.md Part II: tried before ordinary number parsing,
+no boundary guard) — `examples/factorial/main.lisp` uses `(1+ i)`
+directly, and without this, `1+` read as the number `1` followed by
+the symbol `+`, splitting a call like `(1+ i)` into two malformed forms.
+
+Writing this much prelude surfaced four real, previously-latent
 bugs no existing test had exercised:
 
 - **The bare symbol `T`, evaluated as a variable, was unbound.**
@@ -688,6 +725,19 @@ bugs no existing test had exercised:
   `nargs` is a compile-time constant per call site, so the cleanup
   amount is too. `tests/cases/041_call_stack_cleanup.asm` is the
   regression test.
+- **The first draft of the `1+`/`1-` reader fix itself introduced a
+  bug**, caught before it reached a commit: the one-character lookahead
+  used to decide "is this `1+`/`1-` or an ordinary number" was loaded
+  into `al` — the same register still holding the *original* first
+  character, which every subsequent classification check in
+  `read_form` assumes untouched. A bare `"1"` immediately followed by a
+  non-digit, non-`+`/`-` character (`)`, a space, end of input — i.e.
+  most real occurrences of the digit `1` in actual source) got
+  misclassified using the lookahead byte instead. Fixed by moving the
+  lookahead into its own register (`r8`/`r8b`), leaving `al` untouched
+  for the fallback path. `tests/cases/042_one_plus_minus.asm` explicitly
+  covers plain leading-`1` numbers (`1`, `15`, `100`, a bare `1` at the
+  end of a list) alongside `1+`/`1-` themselves for exactly this reason.
 
 ## Roadmap
 
@@ -699,17 +749,20 @@ bugs no existing test had exercised:
   closure fails deterministically (`emit_check_callable`,
   `native_errors.asm`) rather than segfaulting undefined-behavior-style
   — not yet a `HANDLER-CASE`-catchable condition, but at least an
-  observable one. `DEFUN` and `FORMAT` are both real now (see "The
-  prelude" above), including the exact `(format t "~a! = ~a~%" n
-  (factorial n))` idiom `examples/factorial/main.lisp` itself uses.
-  That file still doesn't run unmodified: it also uses `reduce`, `iota`,
-  `1+`, `#'*` (function shorthand, i.e. `FUNCTION`/`#'` — Part VI), and
-  `dotimes` (Part VII, derivable from `WHILE`/`LET`/`SETQ`, all of which
-  exist), none written yet — each is ordinary library code once written,
-  not a new kernel gap the way `DEFUN`/`FORMAT` were. Examples that
-  need networking, regex, or TLS are out of scope for this from-scratch
-  host regardless (Part IX capabilities this kernel has no I/O surface
-  for yet); everything else in that directory is the honest bar.
+  observable one. **`examples/factorial/main.lisp`'s main loop now runs
+  correctly, unmodified** (see "The prelude" above for the exact scope
+  and the one genuine, documented divergence — its self-check hits this
+  kernel's narrower 62-bit fixnum range at exactly `20!`, not a bug).
+  `DEFUN`, `FORMAT`, `1+`/`1-`, `FUNCTION`/`#'`, `IOTA`, `REDUCE`, and
+  `DOTIMES` are all real now. `examples/fizzbuzz/main.lisp` is the next
+  concrete data point: it needs `mapcar`, `equal`, and `number->string`,
+  none written yet — same story as before, ordinary library code once
+  written (`equal` is explicitly library code in the reference too —
+  see KERNEL.md Part IV — needing only `EQ`/`CAR`/`CDR`, all present),
+  not a new kernel gap. Examples that need networking, regex, or TLS
+  are out of scope for this from-scratch host regardless (Part IX
+  capabilities this kernel has no I/O surface for yet); everything else
+  in that directory is the honest bar.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle

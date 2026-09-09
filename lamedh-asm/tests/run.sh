@@ -81,7 +81,13 @@ else
     # variable (bootstrap_globals, symtab.asm) — every one of these
     # found a real bug the first time it was actually exercised this
     # way (see the commit history), so this is a real regression net,
-    # not a formality.
+    # not a formality. Also FORMAT/1+/APPEND/IOTA/REDUCE/DOTIMES/#' —
+    # the exact surface examples/factorial/main.lisp needs, whose own
+    # (dotimes ...) loop over (format t "~a! = ~a~%" ...) now runs
+    # correctly end to end (only its final self-check still fails, on
+    # 20! exceeding this kernel's 62-bit fixnum range — a documented
+    # representational difference from the reference's 64-bit fixnums,
+    # not a bug; see the README).
     prelude_prog="$BUILD/file_runner_prelude_case.lisp"
     cat > "$prelude_prog" <<'LISP'
 (PRINT T)
@@ -99,6 +105,18 @@ else
 (UNLESS (QUOTE ()) (PRINT (QUOTE UNLESS-TRUE)))
 (NEWLINE)
 (PRINT (LIST 1 2 3))
+(NEWLINE)
+(PRINT (APPEND (LIST 1 2) (LIST 3 4)))
+(NEWLINE)
+(PRINT (IOTA 5 1))
+(NEWLINE)
+(PRINT (1+ 41))
+(NEWLINE)
+(PRINT (1- 41))
+(NEWLINE)
+(PRINT (REDUCE #'* (IOTA 5 1) 1))
+(NEWLINE)
+(DOTIMES (I 3) (FORMAT T "i=~a~%" I))
 LISP
     want_out='T
 T
@@ -106,7 +124,15 @@ T
 36
 WHEN-TRUE
 UNLESS-TRUE
-(1 2 3)'
+(1 2 3)
+(1 2 3 4)
+(1 2 3 4 5)
+42
+40
+120
+i=0
+i=1
+i=2'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

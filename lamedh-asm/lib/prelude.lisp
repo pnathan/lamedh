@@ -105,3 +105,57 @@
 
 (DEFMACRO FORMAT (STREAM CTRL &REST ARGS)
   (CONS (QUOTE PROGN) (REVERSE (FORMAT-BUILD CTRL 0 ARGS (QUOTE ())))))
+
+; 1+/1- — the reader's own "1+"/"1-" two-character literal symbol
+; production (KERNEL.md Part II) makes these ordinary names, not
+; special syntax; examples/factorial/main.lisp uses (1+ i) directly.
+(DEFUN 1+ (N) (+ N 1))
+(DEFUN 1- (N) (- N 1))
+
+; +/-/*/</= as ordinary global closures, not just inline operators.
+; `(+ a b)` in *operator* position always compiles to the fast inline
+; path (compile_binop) regardless of these definitions — that dispatch
+; is checked before an ordinary function call ever would be — but nothing
+; before this bound the *bare symbol* +/-/*/</= to a callable value, so
+; passing one as a higher-order argument (`(REDUCE #'* ...)`,
+; examples/factorial/main.lisp's own usage) had nothing to resolve to.
+; #'+ (FUNCTION, compiler.asm) then just reads this ordinary global
+; value, the same as referencing +/-/*/</= as a bare variable would.
+(DEFUN + (A B) (+ A B))
+(DEFUN - (A B) (- A B))
+(DEFUN * (A B) (* A B))
+(DEFUN < (A B) (< A B))
+(DEFUN = (A B) (= A B))
+
+(DEFUN APPEND (A B) (IF (NULL A) B (CONS (CAR A) (APPEND (CDR A) B))))
+
+; IOTA — (iota n start) is the n-element list (start start+1 ... start+n-1).
+(DEFUN IOTA-ONTO (N START ACC)
+  (IF (= N 0) (REVERSE ACC) (IOTA-ONTO (- N 1) (+ START 1) (CONS START ACC))))
+(DEFUN IOTA (N START) (IOTA-ONTO N START (QUOTE ())))
+
+; REDUCE — a left fold: (reduce fn (a b c) init) is (fn (fn (fn init a) b) c).
+; FN is an ordinary value here (ordinarily #'some-global), not unevaluated
+; syntax, so calling it is just an ordinary application through whatever
+; variable holds it — ".indirect_path" (compile_call, compiler.asm)
+; already supports an arbitrary expression in operator position; no
+; separate FUNCALL primitive is needed.
+(DEFUN REDUCE (FN L ACC)
+  (IF (NULL L) ACC (REDUCE FN (CDR L) (FN ACC (CAR L)))))
+
+; DOTIMES — (dotimes (var count) body...) runs body with var bound to
+; 0, 1, ..., count-1 in turn, derived from LET/WHILE/SETQ (all kernel
+; primitives — KERNEL.md Part XII axis 3 explicitly allows this).
+; COUNT is evaluated once, into a fixed internal temporary name — a
+; real but narrow v0 limitation (no GENSYM yet, see README): a nested
+; DOTIMES using that exact name as its own loop variable would collide.
+(DEFMACRO DOTIMES (SPEC &REST BODY)
+  (LIST (QUOTE LET)
+        (LIST (LIST (CAR SPEC) 0)
+              (LIST (QUOTE DOTIMES-COUNT) (CAR (CDR SPEC))))
+        (LIST (QUOTE WHILE)
+              (LIST (QUOTE <) (CAR SPEC) (QUOTE DOTIMES-COUNT))
+              (CONS (QUOTE PROGN)
+                    (APPEND BODY
+                            (LIST (LIST (QUOTE SETQ) (CAR SPEC)
+                                        (LIST (QUOTE +) (CAR SPEC) 1))))))))

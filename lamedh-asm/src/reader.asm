@@ -345,6 +345,7 @@ read_symbol:
 section .bss
 align 8
 strbuf: resb 4096
+one_plus_minus_buf: resb 2
 
 section .text
 
@@ -456,12 +457,56 @@ read_form:
     jmp .quote_fixed
 
 .not_quote:
+    cmp al, '#'
+    jne .not_sharp_quote
+    mov rax, [reader_pos]
+    mov rcx, [reader_buf]
+    inc rax
+    cmp rax, [reader_end]
+    jae .not_sharp_quote
+    movzx rax, byte [rcx+rax]
+    cmp al, 39                          ; '
+    jne .not_sharp_quote
+    add qword [reader_pos], 2             ; consume '#' and '\''
+    call read_form
+    mov r12, rax                            ; #'-quoted datum
+    jmp .function_fixed
+
+.not_sharp_quote:
     cmp al, '"'
     jne .not_string
     call read_string
     jmp .out
 
 .not_string:
+    ; "1+"/"1-": two-character literal symbols, tried before ordinary
+    ; number parsing (KERNEL.md Part II) — no boundary guard, so "1+x"
+    ; reads as the symbol 1+ followed by X. No other digit-leading
+    ; symbol exists; this is the one exception to "a leading digit
+    ; always starts a number" below. al must hold the *original* first
+    ; character again before falling through to .not_one_plus_minus —
+    ; every check below it assumes that.
+    cmp al, '1'
+    jne .not_one_plus_minus
+    mov rdx, [reader_pos]
+    mov rcx, [reader_buf]
+    lea r8, [rdx+1]
+    cmp r8, [reader_end]
+    jae .not_one_plus_minus
+    movzx r8, byte [rcx+r8]
+    cmp r8b, '+'
+    je .one_plus_minus
+    cmp r8b, '-'
+    jne .not_one_plus_minus
+.one_plus_minus:
+    mov byte [one_plus_minus_buf], '1'
+    mov [one_plus_minus_buf+1], r8b              ; '+' or '-'
+    add qword [reader_pos], 2                      ; consume both characters
+    mov rdi, one_plus_minus_buf
+    mov rsi, 2
+    call intern_symbol
+    jmp .out
+.not_one_plus_minus:
     cmp al, '-'
     je .maybe_number
     cmp al, '0'
@@ -509,6 +554,20 @@ read_form:
     mov rdi, rax
     mov rsi, r12
     call cons                          ; (QUOTE . (datum . nil))
+    jmp .out
+
+.function_fixed:
+    ; datum is in r12; build (FUNCTION datum), same shape as QUOTE above.
+    mov rdi, r12
+    mov rsi, IMM_NIL
+    call cons
+    mov r12, rax
+    mov rdi, symbuf_function
+    mov rsi, 8
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r12
+    call cons                          ; (FUNCTION . (datum . nil))
 
 .out:
     pop r12
@@ -516,3 +575,4 @@ read_form:
 
 section .rodata
 symbuf_quote: db "QUOTE"
+symbuf_function: db "FUNCTION"
