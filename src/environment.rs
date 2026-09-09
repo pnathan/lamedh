@@ -335,6 +335,26 @@ struct SharedState {
     /// host or a Lisp program must opt in. This is the foundation for
     /// sandboxing (see issue #64).
     features: SharedCell<HashSet<String>>,
+    /// Reader `#+`/`#-` feature names (issue #459): what this *host* is and
+    /// what reader/kernel capabilities it has, consulted at read time by
+    /// `src/reader.rs`'s `#+feature form` / `#-feature form` conditionals so
+    /// shared `lib/*.lisp` files can skip syntax or primitives a given host
+    /// doesn't support. Deliberately a **separate** set from `features`
+    /// above: `features` is sandbox capability grants (security policy,
+    /// off by default, toggled at runtime by host or Lisp code via
+    /// `enable_feature`), while this is host/capability *identity* (true
+    /// facts about this build, set once by the host at startup, read-only
+    /// to Lisp) — conflating the two would make `#+shell`-guarded reader
+    /// syntax vanish under `--sandbox` even though the reader doesn't care
+    /// about capability grants. Seeded with this host's defaults in
+    /// [`SharedState::new`] (so every `Environment`, including
+    /// `new_with_builtins()`'s minimal kernel, carries them); a host
+    /// embedding this library can add or remove names with
+    /// [`Environment::enable_reader_feature`] /
+    /// [`Environment::disable_reader_feature`]. Names are case-normalized to
+    /// uppercase, matching Lisp symbol convention, and stored without a
+    /// leading `:` (`#+rust` and `#+:rust` both check for `"RUST"`).
+    reader_features: SharedCell<HashSet<String>>,
     /// Registry of typed (`defun-typed`) functions. Shared across the whole
     /// environment chain so a typed definition made at the REPL is visible
     /// everywhere and its compiled edition persists across calls.
@@ -417,6 +437,20 @@ impl fmt::Debug for OsPolicy {
     }
 }
 
+/// Default reader `#+`/`#-` feature names for the Rust reference host
+/// (issue #459): one host-identity symbol plus a capability symbol for
+/// each Part XII reader-extension-timing axis item this reference already
+/// implements (CL-radix literals `#x`/`#b`/`#o`, float literals, nesting
+/// `#| |#` block comments). Kept as a plain slice (not a KERNEL.md-wide
+/// registry) — see the reader module doc comment for why this stays
+/// independent of the `+HOST-TRAITS+` registry #463 proposes.
+const DEFAULT_READER_FEATURES: &[&str] = &[
+    "RUST",
+    "READER-FLOATS",
+    "READER-RADIX",
+    "READER-BLOCK-COMMENTS",
+];
+
 impl SharedState {
     fn new() -> Self {
         SharedState {
@@ -425,6 +459,12 @@ impl SharedState {
             dynamic_vars: SharedCell::new(HashSet::default()),
             has_dynamic: Cell::new(false),
             features: SharedCell::new(HashSet::new()),
+            reader_features: SharedCell::new(
+                DEFAULT_READER_FEATURES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
             jit: SharedCell::new(crate::jit::Jit::new()),
             reader_depth_limit: Cell::new(crate::reader::DEFAULT_READER_DEPTH),
             module_sources: SharedCell::new(HashMap::new()),
@@ -2704,6 +2744,51 @@ impl Environment {
         self.shared.features.borrow().iter().cloned().collect()
     }
 
+    // Reader `#+`/`#-` features (issue #459).
+    // Shared across the whole environment chain, like `features` — but a
+    // deliberately separate set (see the `reader_features` field doc):
+    // host/capability identity, not sandbox capability grants. Host-only to
+    // mutate; the reader and Lisp code only ever read it.
+
+    /// Add a reader `#+`/`#-` feature name (case-normalized to uppercase,
+    /// leading `:` stripped if present) to this environment chain. A host
+    /// embedding this library calls this at startup to declare its own
+    /// identity (`"sbcl"`, `"lamedh-asm"`) or capabilities beyond this
+    /// reference's [`DEFAULT_READER_FEATURES`] defaults.
+    pub fn enable_reader_feature(&self, name: &str) {
+        self.shared
+            .reader_features
+            .borrow_mut()
+            .insert(name.trim_start_matches(':').to_uppercase());
+    }
+
+    /// Remove a reader `#+`/`#-` feature name from this environment chain.
+    pub fn disable_reader_feature(&self, name: &str) {
+        self.shared
+            .reader_features
+            .borrow_mut()
+            .remove(&name.trim_start_matches(':').to_uppercase());
+    }
+
+    /// Whether a reader `#+`/`#-` feature name is present.
+    pub fn reader_feature_enabled(&self, name: &str) -> bool {
+        self.shared
+            .reader_features
+            .borrow()
+            .contains(&name.trim_start_matches(':').to_uppercase())
+    }
+
+    /// List all reader `#+`/`#-` feature names present in this environment
+    /// chain.
+    pub fn reader_features_list(&self) -> Vec<String> {
+        self.shared
+            .reader_features
+            .borrow()
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     // Reader depth limit (issue #270).
     // Shared across the whole environment chain, like features.
 
@@ -3013,6 +3098,7 @@ mod worldfork {
                 dynamic_vars: SharedCell::new(old.dynamic_vars.borrow().clone()),
                 has_dynamic: Cell::new(old.has_dynamic.get()),
                 features: SharedCell::new(old.features.borrow().clone()),
+                reader_features: SharedCell::new(old.reader_features.borrow().clone()),
                 jit: SharedCell::new(jit),
                 reader_depth_limit: Cell::new(old.reader_depth_limit.get()),
                 module_sources: SharedCell::new(old.module_sources.borrow().clone()),
