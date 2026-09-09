@@ -23,10 +23,7 @@ use test_helpers::env_with_stdlib;
 fn cached_path_matches_uncached_path_output() {
     with_large_stack(|| {
         let env = env_with_stdlib();
-        eval_line(
-            "(defmacro sq-form (x) (list '* x x))",
-            &env,
-        );
+        eval_line("(defmacro sq-form (x) (list '* x x))", &env);
         eval_line("(defun sq (x) (sq-form x))", &env);
         for n in 0..20i64 {
             let compiled = eval_line(&format!("(sq {n})"), &env);
@@ -242,7 +239,10 @@ fn forked_world_does_not_inherit_cached_expansion() {
         // Prove isolation concretely: redefine the macro and mutate the
         // dynamic var in the PROTOTYPE only, after the fork was taken.
         eval_line("(setq *label* 'proto-mutated)", &proto);
-        eval_line("(defmacro labeled () (list 'quote 'proto-redefined))", &proto);
+        eval_line(
+            "(defmacro labeled () (list 'quote 'proto-redefined))",
+            &proto,
+        );
 
         // The prototype's own cache is now stale (redefinition invalidates
         // it) and re-expands to the new definition.
