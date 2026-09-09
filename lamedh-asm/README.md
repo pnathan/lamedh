@@ -65,10 +65,10 @@ programs this stage targets.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
   and `REMAINDER`.
-- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`
-  as real special forms (Part VI/VII), plus `ERROR`/`ERRORSET`/
-  `ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA` (Part VIII's condition
-  system).
+- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`,
+  `BLOCK`/`RETURN-FROM`, `WHILE` as real special forms (Part VI/VII),
+  plus `ERROR`/`ERRORSET`/`ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA`
+  (Part VIII's condition system).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
   `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
@@ -312,9 +312,21 @@ into conformance incrementally, tracked honestly rather than silently:
   out of range, wrong arity, unbound variable) signals a condition
   yet — those still misbehave exactly as before; only explicit `ERROR`
   calls go through this system so far.
+- **`BLOCK`/`RETURN-FROM`** are the same CATCH/THROW derivation
+  trick again, one call site simpler than `HANDLER-CASE`: `name` is
+  *unevaluated*, so it's used directly as the catch frame's tag (no
+  shared tag needed here — each block's own name already is a unique
+  tag), and a caught `RETURN-FROM`'s thrown value needs no rebinding,
+  it just *is* the `BLOCK`'s result. Dynamic, not lexical, matching
+  the spec: a function called from inside a `BLOCK` can
+  `RETURN-FROM` it (`tests/cases/029_block_while.asm`, mirroring
+  `CATCH`/`THROW`'s own cross-function test). **`WHILE`** is an
+  ordinary backward-branch loop — nothing to derive, since a backward
+  jump to an already-known target needs no forward-patching machinery
+  at all, unlike everything above it.
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
-  special forms (`BLOCK`/`PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/`VAU`/
-  `DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet; capability gating
+  special forms (`PROG`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
+  `QUASIQUOTE`) don't exist yet; capability gating
   (Part IX) and fuel (Part X) don't exist yet; proper tail calls
   (Part VI) aren't implemented (see v0 limits below); the hash
   table/array/float primitive *names* (`HT-*`/`ARRAY-*`/`F+` etc.)

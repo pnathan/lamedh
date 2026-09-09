@@ -125,6 +125,9 @@ kw_errorset:      db "ERRORSET"
 kw_error_p:       db "ERROR-P"
 kw_error_message: db "ERROR-MESSAGE"
 kw_error_data:    db "ERROR-DATA"
+kw_block:       db "BLOCK"
+kw_return_from: db "RETURN-FROM"
+kw_while:       db "WHILE"
 kw_string_length: db "STRING-LENGTH"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -2996,6 +2999,144 @@ compile_errorset:
     pop rbx
     ret
 
+; compile_block(rdi = (BLOCK name body...) form)
+; `name` is an *unevaluated* symbol — a compile-time-known tag, not a
+; form to compile — so this reuses the exact same catch-frame-install/
+; pop machinery HANDLER-CASE does, just with `name` itself as the tag
+; instead of the shared handler-case tag, and no variable binding on
+; the way out: RETURN-FROM's thrown value is already the correct
+; result. BLOCK/RETURN-FROM being expressible this way at all is
+; KERNEL.md Part XII axis 3's explicit license to derive a special
+; form from CATCH/THROW rather than add a new primitive.
+compile_block:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                      ; name (used directly as tag)
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rbx, rax                        ; body forms
+
+    mov rdi, r12
+    call emit_install_catch_frame
+    mov r13, rax                          ; resume-target placeholder addr
+
+    mov rdi, rbx
+    call compile_progn                       ; body -> target rax
+
+    call emit_pop_catch_frame
+    call emit_jmp32
+    push rax                                   ; [done_site]
+
+    call codegen_here                            ; RETURN-FROM lands here
+    mov rdi, r13
+    mov rsi, rax
+    call patch_imm64
+
+    call emit_pop_catch_frame                       ; rax = returned value
+                                                     ; (already the correct
+                                                     ; overall result — no
+                                                     ; binding needed, unlike
+                                                     ; HANDLER-CASE)
+
+    call codegen_here
+    pop rdi
+    mov rsi, rax
+    call patch_rel32
+
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_return_from(rdi = (RETURN-FROM name [value]) form)
+; `name` is unevaluated, matched by EQ against the nearest enclosing
+; BLOCK's own name — an unknown name is a hard failure at the THROW
+; site (the trap emit_throw_baked already falls back to when nothing
+; matches), same v0 posture as an unmatched CATCH/THROW.
+compile_return_from:
+    push rbx
+    push r12
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                    ; name
+
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    cmp rax, IMM_NIL
+    jne .has_value
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    jmp .throw_it
+.has_value:
+    mov rdi, rax
+    call car
+    mov rdi, rax
+    call compile_form
+.throw_it:
+    mov rdi, r12
+    call emit_throw_baked
+    pop r12
+    pop rbx
+    ret
+
+; compile_while(rdi = (WHILE test body...) form) -> always NIL.
+; test is re-evaluated before each pass (a forward branch, patched
+; once the loop's overall end is known); the backward jump back to the
+; top is the mirror image — its target is already known, so it needs
+; no patching at all, just like every other backward branch this
+; compiler has emitted (the &REST rest-list loop, notably).
+compile_while:
+    push rbx
+    push r12
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                  ; test form
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rbx, rax                    ; body forms
+
+    call codegen_here
+    push rax                          ; [loop_start]
+
+    mov rdi, r12
+    call compile_form                     ; test -> rax
+    mov rsi, IMM_NIL
+    call emit_cmp_rax_imm64
+    call emit_je                             ; -> done_site
+    push rax                                   ; [done_site, loop_start]
+
+    mov rdi, rbx
+    call compile_progn                            ; body -> rax (discarded)
+
+    call emit_jmp32
+    mov rdi, rax
+    mov rsi, [rsp+8]                                ; loop_start
+    call patch_rel32
+
+    call codegen_here
+    pop rdi                                            ; done_site
+    mov rsi, rax
+    call patch_rel32
+    pop rax                                               ; discard loop_start
+
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+
+    pop r12
+    pop rbx
+    ret
+
 section .rodata
 default_error_msg: db "Error"
 
@@ -3703,6 +3844,39 @@ compile_form:
     jmp .out
 
 .not_error_data:
+    mov rdi, r12
+    mov rsi, kw_block
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_block
+    mov rdi, rbx
+    call compile_block
+    jmp .out
+
+.not_block:
+    mov rdi, r12
+    mov rsi, kw_return_from
+    mov rdx, 11
+    call sym_is
+    test rax, rax
+    jz .not_return_from
+    mov rdi, rbx
+    call compile_return_from
+    jmp .out
+
+.not_return_from:
+    mov rdi, r12
+    mov rsi, kw_while
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_while
+    mov rdi, rbx
+    call compile_while
+    jmp .out
+
+.not_while:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1
