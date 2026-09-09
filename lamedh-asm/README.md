@@ -895,10 +895,15 @@ bugs no existing test had exercised:
   (`make lamedhc` builds `build/lamedhc`, `src/file_runner.asm`) that
   runs `lib/prelude.lisp` and then a named file or stdin through the
   same read-compile-run loop, and calling anything that isn't a real
-  closure fails deterministically (`emit_check_callable`,
-  `native_errors.asm`) rather than segfaulting undefined-behavior-style
-  — not yet a `HANDLER-CASE`-catchable condition, but at least an
-  observable one. **`examples/factorial/main.lisp`'s main loop now runs
+  closure now signals a genuine, `HANDLER-CASE`/`ERRORSET`-catchable
+  condition (`emit_check_callable`, `compiler.asm`, now routes through
+  `fail_wrong_type`/`native_throw`, `native_errors.asm` — the same real
+  signaling machinery `CAR`/`CDR`'s own wrong-type check already uses,
+  not the separate hard `exit(1)` an earlier version of this check had)
+  rather than segfaulting undefined-behavior-style; an *uncaught* one
+  traps (`int3`) the same way any other unmatched `THROW` does
+  (`tests/cases/034_not_callable.asm`/`035_not_callable_indirect.asm`).
+  **`examples/factorial/main.lisp`'s main loop now runs
   correctly, unmodified** (see "The prelude" above for the exact scope
   and the one genuine, documented divergence — its self-check hits this
   kernel's narrower 62-bit fixnum range at exactly `20!`, not a bug).
@@ -977,18 +982,16 @@ bugs no existing test had exercised:
   `ERRORSET` uses it to match the spec exactly, but it takes no second
   (environment) argument — there being no environment-as-value in this
   kernel yet to pass one with. Native-failure-to-condition plumbing now
-  exists for one case (`CAR`/`CDR` on a non-cons/non-`NIL` argument —
-  see "KERNEL.md conformance" above, `fail_wrong_type`/`native_throw`,
-  `native_errors.asm`) and the same `native_throw` routine is reusable
-  for the rest of this list: division by zero, index out of range,
-  wrong arity, and an unbound-variable *read* still misbehave exactly
-  as before (segfault, garbage, or the raw `IMM_UNBOUND` immediate,
-  respectively) rather than signaling. Calling a non-callable value
-  still fails deterministically (`emit_check_callable`,
-  `native_errors.asm`) but as a hard `exit(1)`, not yet a condition
-  `HANDLER-CASE` can catch — the natural next step, now that
-  `native_throw` exists, is switching `fail_not_callable`'s call sites
-  over to it the same way `car`/`cdr` now are.
+  covers two cases (`CAR`/`CDR` on a non-cons/non-`NIL` argument, and
+  calling a non-callable value — see "KERNEL.md conformance" above,
+  `fail_wrong_type`/`native_throw`, `native_errors.asm`; the separate,
+  cruder `fail_not_callable` a hard `exit(1)` version of the callable
+  check used is gone, folded into the same real signaling path), and
+  the same `native_throw` routine is reusable for the rest of this
+  list: division by zero, index out of range, wrong arity, and an
+  unbound-variable *read* still misbehave exactly as before (segfault,
+  garbage, or the raw `IMM_UNBOUND` immediate, respectively) rather
+  than signaling — the natural next candidates for the same treatment.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); the hash table still
   hashes/compares keys with `EQ`

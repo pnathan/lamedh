@@ -99,7 +99,7 @@ extern set_overflow_flag
 extern flag_set_p
 extern clear_flag
 extern clear_all_flags
-extern fail_not_callable
+extern fail_wrong_type
 extern gensym
 extern symbol_plist
 extern set_symbol_plist
@@ -110,6 +110,8 @@ section .rodata
 kw_quote:  db "QUOTE"
 kw_function: db "FUNCTION"
 kw_gensym: db "GENSYM"
+not_callable_err_msg: db "not a function"
+not_callable_err_msg_len: equ $ - not_callable_err_msg
 kw_symbol_plist: db "SYMBOL-PLIST"
 kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
 kw_apply: db "APPLY"
@@ -2232,15 +2234,18 @@ compile_call_args:
 
 ; emit_check_callable() — target: rax holds a tagged value about to be
 ; treated as a closure and called. Verifies it is actually a
-; HDR_CLOSURE heapobj; if not, calls fail_not_callable (native_errors.asm)
+; HDR_CLOSURE heapobj; if not, calls fail_wrong_type (native_errors.asm)
 ; instead of letting the caller's own subsequent `and rax,~TAG_MASK` +
 ; dereference run on whatever address an unbound global (IMM_NIL) or
 ; other non-closure value happens to produce — previously a near-NULL
 ; dereference (a segfault), since IMM_NIL's tag bits mask to a null
 ; pointer. KERNEL.md Part VIII lists calling a non-callable value among
-; the native-failure classes a host must signal for; this is the v0
-; stand-in (a deterministic exit, not yet a HANDLER-CASE-catchable
-; condition — see native_errors.asm).
+; the native-failure classes a host must signal for; this now goes
+; through the same real CATCH/HANDLER-CASE/ERRORSET-signaling machinery
+; CAR/CDR's own wrong-type check already uses (native_throw), not the
+; separate hard exit(1) an earlier version of this routine had —
+; catchable by an enclosing HANDLER-CASE/ERRORSET, and an uncaught one
+; traps (int3) the same way any other unmatched THROW does.
 ;
 ; On success, leaves target rax holding exactly the tagged value it was
 ; given: every register used as scratch (rdi, rbx) is restored, so a
@@ -2297,7 +2302,23 @@ emit_check_callable:
     call patch_rel32                                                ; tag_fail_site -> fail
     add rsp, 8                                                        ; discard fail_addr
 
-    lea rax, [rel fail_not_callable]
+    ; fail: target rdi still holds the original tagged culprit value —
+    ; the very first instruction this routine emitted was "rdi = rax"
+    ; and nothing on either failing path (a bare rax compare/subtract)
+    ; ever touches rdi again — so calling fail_wrong_type here (the same
+    ; real CATCH/HANDLER-CASE/ERRORSET-signaling routine CAR/CDR already
+    ; use, native_errors.asm) needs only two more immediate loads before
+    ; the call: target rsi/rdx = the fixed message text this v0 uses,
+    ; matching car_err_msg/cdr_err_msg's own fixed-message scope
+    ; (reader.asm) rather than the reference's interpolated text.
+    mov rsi, not_callable_err_msg
+    mov dil, REG_RSI
+    call emit_mov_reg_imm64
+    mov rsi, not_callable_err_msg_len
+    mov dil, REG_RDX
+    call emit_mov_reg_imm64
+
+    lea rax, [rel fail_wrong_type]
     mov rsi, rax
     mov dil, REG_RAX
     call emit_mov_reg_imm64

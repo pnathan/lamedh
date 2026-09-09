@@ -1,27 +1,16 @@
 ; native_errors.asm — native-failure-to-condition plumbing (KERNEL.md
 ; Part VIII lists several native-failure classes a host must signal
-; *a* condition for). Two distinct maturity levels currently live here:
-;
-; - fail_not_callable(): calling a non-callable value. compile_call's
-;   trampolines used to blindly dereference whatever tagged value a
-;   global cell or an expression happened to hold as if it were a
-;   closure — an unbound global defaults to IMM_NIL (tag bits 11), and
-;   `and rax, ~TAG_MASK` on that yields a null pointer, so calling one
-;   segfaulted on a near-NULL dereference rather than failing in any
-;   way a caller could act on. Not yet the real thing — no
-;   HANDLER-CASE can catch it — but a labeled, deterministic exit(1)
-;   on stderr is a real improvement over undefined behavior, and every
-;   call site's own not-a-function check routes here identically.
-;
-; - native_throw()/fail_wrong_type(): the real thing, for one case so
-;   far (CAR/CDR on a non-cons/non-NIL argument, reader.asm). This is
-;   what fail_not_callable above should eventually become: a genuine
-;   condition, signaled through the exact same CATCH/HANDLER-CASE/
-;   ERRORSET machinery Lisp-level ERROR/THROW already use, not a
-;   separate, parallel failure path.
+; *a* condition for): native_throw()/fail_wrong_type(), the real thing,
+; a genuine condition signaled through the exact same CATCH/
+; HANDLER-CASE/ERRORSET machinery Lisp-level ERROR/THROW already use,
+; not a separate, parallel failure path. Two callers use it so far:
+; CAR/CDR on a non-cons/non-NIL argument (reader.asm), and calling a
+; non-callable value (emit_check_callable, compiler.asm) — the latter
+; used to be a separate, cruder fail_not_callable() here (a fixed
+; message to stderr plus a hard exit(1), predating native_throw)
+; before being switched over to the real thing too.
 
 %include "src/tags.inc"
-%include "src/syscalls.inc"
 
 extern catch_stack
 extern catch_stack_top
@@ -29,28 +18,7 @@ extern handler_case_tag
 extern make_error
 extern make_string
 
-section .rodata
-not_callable_msg: db "lamedh-asm: not a function", 10
-not_callable_msg_len: equ $ - not_callable_msg
-
 section .text
-
-; fail_not_callable() — never returns. No arguments: the message is
-; deliberately generic rather than trying to re-derive and print the
-; culprit value here, since doing that safely (this may run with the
-; data/code heaps in an arbitrary mid-call state) is more machinery
-; than a v0 diagnostic needs.
-global fail_not_callable
-fail_not_callable:
-    mov edi, STDERR
-    mov rsi, not_callable_msg
-    mov edx, not_callable_msg_len
-    mov eax, SYS_write
-    syscall
-    mov edi, 1
-    mov eax, SYS_exit
-    syscall
-    ; unreachable
 
 ; native_throw(rdi=tag, rsi=value) — never returns. The exact same
 ; catch-stack search, restore, and jump compile_throw's *generated*
