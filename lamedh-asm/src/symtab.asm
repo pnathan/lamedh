@@ -255,6 +255,30 @@ gensym:
     pop rbx
     ret
 
+; symbolp_tagged(rdi=tagged value) -> rax = IMM_TRUE/IMM_NIL. The
+; Lisp-visible SYMBOLP predicate (compiler.asm) — a genuine Rust-level
+; builtin in the reference (environment.rs), missing here until now;
+; lib/06-require.lisp's own `$require-canonical-name`
+; (`(cond ((symbolp x) x) ...)`) is what surfaced the gap. NIL is a
+; distinct immediate, not a symbol (this reader's own "NIL" special
+; case, matching the reference), so SYMBOLP on NIL is correctly NIL,
+; same as any other non-symbol value.
+global symbolp_tagged
+symbolp_tagged:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .no
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .no
+    mov rax, IMM_TRUE
+    ret
+.no:
+    mov rax, IMM_NIL
+    ret
+
 ; symbol_plist(rdi=tagged symbol) -> rax = its plist slot's current
 ; value (IMM_NIL until some PUTP has run). The SYMBOL-PLIST kernel
 ; primitive's host half (compiler.asm) — GETP/PUTP themselves are

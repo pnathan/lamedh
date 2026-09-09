@@ -105,6 +105,7 @@ extern gensym
 extern make_char_from_fixnum
 extern char_code_tagged
 extern stringp_tagged
+extern symbolp_tagged
 extern boundp_tagged
 extern code_char_string
 extern random_tagged
@@ -129,6 +130,7 @@ kw_function: db "FUNCTION"
 kw_gensym: db "GENSYM"
 kw_jit_optimize: db "JIT-OPTIMIZE"
 kw_stringp: db "STRINGP"
+kw_symbolp: db "SYMBOLP"
 kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
@@ -5292,6 +5294,23 @@ compile_form:
     jmp .out
 
 .not_stringp:
+    mov rdi, r12
+    mov rsi, kw_symbolp
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_symbolp
+    ; (SYMBOLP x) — a genuine Rust-level builtin in the reference
+    ; (environment.rs), missing here until now; lib/06-require.lisp's
+    ; own `$require-canonical-name` needs it.
+    mov rdi, r13
+    call car
+    lea rsi, [rel symbolp_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_symbolp:
     mov rdi, r12
     mov rsi, kw_boundp
     mov rdx, 6

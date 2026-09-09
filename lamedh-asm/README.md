@@ -1436,9 +1436,32 @@ bugs no existing test had exercised:
 
   The confirmed-loadable set is now **the entire Prelude tier** —
   `00-core` through `21-cl-compat`, `src/lib.rs`'s own `STDLIB_SOURCES`
-  order, no files skipped. Not yet attempted: the Optional tier
-  (`20-condensation.lisp` onward) — `20-condensation.lisp` itself is
-  the next wall (traps; not yet root-caused).
+  order, no files skipped — **plus `20-condensation.lisp`, the first
+  Optional-tier file**, which needed one more missing primitive:
+  **`SYMBOLP`** (`symbolp_tagged`, `symtab.asm`) — another genuine
+  Rust-level builtin (`environment.rs`), surfaced by
+  `06-require.lisp`'s own `$require-canonical-name`
+  (`(cond ((symbolp x) x) ((stringp x) ...) ...)`), which every
+  `(provide 'name)`/`(require 'name)` call goes through —
+  `tests/cases/059_symbolp.asm` covers it, including that `NIL` is
+  correctly not a symbol (this reader's own "NIL" special case, see
+  above). **`27-modules.lisp` is the next wall**: it opens with
+  `(require 'condensation)`, and `require`'s own resolution path
+  (`06-require.lisp`'s `$require-resolve`) needs `$MODULE-SOURCE-
+  LOOKUP` — yet another genuine Rust-level builtin (`environment.rs`),
+  backing the reference's own embedded-module-by-name registry (the
+  numbered optional library files, keyed by name) that this from-
+  scratch host has no equivalent of at all yet. This is a real
+  feature gap, not a one-primitive fix: it needs either an embedded
+  registry mapping module names to source text (this project would
+  need to `incbin` every optional `lib/*.lisp` file the way
+  `file_runner.asm` already does for the prelude, then dispatch on
+  name) or, for the specific case of a module already loaded directly
+  by concatenation (as this conformance testing does, unlike the
+  reference's own `with_stdlib()` bootstrap, which the `06-require.lisp`
+  file header notes calls `$require-mark-loaded!` for exactly this
+  reason), a matching driver-side "mark already-loaded" step this
+  project's own `file_runner.asm` does not yet have either.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
