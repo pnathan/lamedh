@@ -284,5 +284,25 @@ set_symbol_plist:
     mov rax, rsi
     ret
 
+; boundp_tagged(rdi=tagged symbol) -> rax = IMM_TRUE/IMM_NIL. Reads the
+; symbol's own value slot ([16], the same one DEFINE/SETQ/an ordinary
+; global variable reference already use) and compares it against
+; IMM_UNBOUND, its initial value from intern_symbol until something
+; DEFINEs it — needed by lib/00-core.lisp's own DEFUN macro
+; (`(if (boundp '$cg-pending) ...)`), which must not treat an
+; as-yet-undefined optional bookkeeping global as an error.
+global boundp_tagged
+boundp_tagged:
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov rax, [rax+16]
+    cmp rax, IMM_UNBOUND
+    je .no
+    mov rax, IMM_TRUE
+    ret
+.no:
+    mov rax, IMM_NIL
+    ret
+
 section .rodata
 t_name: db "T"

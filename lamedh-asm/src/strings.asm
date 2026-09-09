@@ -159,6 +159,22 @@ is_string:
     xor rax, rax
     ret
 
+; stringp_tagged(rdi=tagged value) -> rax = IMM_TRUE/IMM_NIL. The
+; Lisp-visible STRINGP predicate (compiler.asm) over is_string's own
+; raw 0/1 — needed by lib/00-core.lisp's own DEFUN macro, which checks
+; `(stringp (car body))` on every macro-expansion to peel off an
+; optional leading docstring.
+global stringp_tagged
+stringp_tagged:
+    call is_string
+    test rax, rax
+    jz .no
+    mov rax, IMM_TRUE
+    ret
+.no:
+    mov rax, IMM_NIL
+    ret
+
 ; string_len(rdi=tagged string) -> rax = raw (untagged) byte length
 global string_len
 string_len:

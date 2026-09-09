@@ -214,6 +214,16 @@ else
 (PRINT (PROG (X) (GO SKIP) (SETQ X 1) SKIP (SETQ X 2) (RETURN X)))
 (NEWLINE)
 (PRINT (PROG (I) (SETQ I 0) OUTER (WHEN (= I 3) (RETURN I)) (PROG (J) (SETQ J 0) INNER (WHEN (= J 2) (RETURN 0)) (SETQ J (+ J 1)) (GO INNER)) (SETQ I (+ I 1)) (GO OUTER)))
+(NEWLINE)
+(DEF $DOCUMENTED-GLOBAL 7 "a docstring")
+(PRINT $DOCUMENTED-GLOBAL)
+(NEWLINE)
+(PRINT (GETP (QUOTE $DOCUMENTED-GLOBAL) "docstring"))
+(NEWLINE)
+(PUTP (QUOTE PROPTEST) "a" 1)
+(PUTP (QUOTE PROPTEST) "b" 2)
+(REMPROP (QUOTE PROPTEST) "a")
+(PRINT (LIST (GETP (QUOTE PROPTEST) "a") (GETP (QUOTE PROPTEST) "b")))
 LISP
     want_out='T
 T
@@ -271,7 +281,10 @@ CAUGHT
 ()
 15
 2
-3'
+3
+7
+a docstring
+(() 2)'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

@@ -1162,6 +1162,75 @@ bugs no existing test had exercised:
 
 ## Roadmap
 
+- **A second, harder conformance target now underway: `../lib/*.lisp`
+  (the Rust reference's own standard library) running unmodified
+  through `build/lamedhc`, up through `29-protocols.lisp` in the
+  reference's own load order (`src/lib.rs`'s `STDLIB_SOURCES`),
+  excluding the networking/TLS/regex/OS tiers (`30-text.lisp` through
+  `44-regex.lisp`) that need external protocols or OS surfaces this
+  freestanding, no-libc host has no I/O primitives for at all — those
+  are out of scope on the same grounds `../examples/*/main.lisp`
+  network/regex/TLS examples already are (see below). This is a much
+  higher bar than the example corpus: the reference stdlib is real,
+  actively-maintained Lisp using every corner of the reference's own
+  language (extended `&optional`/`&key` lambda lists, `vau`
+  operatives, environments-as-values, HM-inferred JIT membranes), not
+  example programs written against this project's own narrower v0
+  surface. **`00-core.lisp` now loads completely, unmodified**
+  (confirmed via `build/lamedhc ../lib/00-core.lisp`, exit 0) — the
+  first and most load-bearing file, since literally every other
+  reference stdlib file depends on the `defun`/`defmacro`/`def` it
+  establishes. Getting there needed four small, genuinely new
+  primitives, each traced by bisecting the file line-by-line against
+  successive `int3`/segfault failures until the exact next missing
+  symbol was identified (`tests/cases/056_stdlib_bootstrap_primitives.asm`
+  covers the three kernel-level ones; `file_runner_prelude` in
+  `tests/run.sh` covers the two prelude-level ones):
+  - **`STRINGP`** (`compiler.asm`, `stringp_tagged` in `strings.asm`) —
+    `00-core.lisp`'s own `defun` macro peels an optional leading
+    docstring off a function body with `(stringp (car body))` on every
+    single expansion.
+  - **`BOUNDP`** (`compiler.asm`, `boundp_tagged` in `symtab.asm`,
+    reading a symbol's own value slot and comparing it against
+    `IMM_UNBOUND`) — the same macro guards its optional call-graph
+    bookkeeping globals (`$cg-pending`, `$call-graph`) with
+    `(if (boundp '$cg-pending) ...)`, which must not treat a plausibly
+    still-undefined global as an error.
+  - **`JIT-OPTIMIZE`** (`compiler.asm`) — a real special form in the
+    reference (`jit.rs`) that HM-infers and natively compiles an
+    interpreted closure, taking its symbol operand *unevaluated*.
+    `00-core.lisp`'s `defun` calls `(eval (list 'jit-optimize name))`
+    after every definition (the "one-door policy": every `defun`
+    silently attempts optimization). This host has no distinct
+    "optimize this closure" step to perform at all — `compile_lambda`
+    already turns every `LAMBDA` into real native code the moment it
+    is read (see "Why this exists" above), so every function here
+    already *is* what `JIT-OPTIMIZE` would produce there. Implemented
+    as a documented no-op returning its own unevaluated operand,
+    exactly like `QUOTE` — not a stub standing in for missing work, but
+    the honestly correct behavior for an architecture that has already
+    done the thing `JIT-OPTIMIZE` asks for, unconditionally, for every
+    function.
+  - **`REMPROP`** (`lib/prelude.lisp`, ordinary library code over the
+    existing `SYMBOL-PLIST`/`SET-SYMBOL-PLIST!` primitives, the same
+    shape `GETP`/`PUTP` already use) and **`DEF`'s third (docstring)
+    operand** (`lib/prelude.lisp`, stored via `PUTP` under indicator
+    `"docstring"`, extending `DEF` from its previous v0-documented
+    2-operand-only scope) — `defun`'s expansion calls
+    `(remprop ',name "pure-checked")`/`(remprop ',name "source-form")`
+    unconditionally on every definition (correctly a no-op when the
+    indicator was never `PUTP`'d), and `(def ,name ,lambda-expr ,doc)`
+    with three arguments whenever the `DEFUN` body led with a string
+    literal — `PROG2`, `00-core.lisp`'s own first `defun`, has exactly
+    such a docstring, so this was the very first defun call to trap.
+  Not yet attempted: `01-list.lisp` onward — `08-vau.lisp` in
+  particular needs `$VAU`/`vau` itself (Kernel-style operatives with a
+  captured *dynamic* environment parameter), which this compiled,
+  lexically-addressed host has no representation for at all yet (see
+  "v0 limits" below) and is a substantially larger undertaking than
+  any of the four primitives above, likely needing environments as a
+  first-class heap value before `vau` can be attempted honestly.
+
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
   (`make lamedhc` builds `build/lamedhc`, `src/file_runner.asm`) that

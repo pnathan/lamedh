@@ -223,6 +223,23 @@
 (DEFUN PUTP (SYM IND VAL)
   (SET-SYMBOL-PLIST! SYM (CONS (CONS IND VAL) (SYMBOL-PLIST SYM))))
 
+; REMPROP — needs no new kernel primitive either, same as GETP/PUTP
+; above: ordinary library code filtering SYMBOL-PLIST down and writing
+; the result back via SET-SYMBOL-PLIST!. Removes every pair matching
+; IND (by EQ, same indicator-equality rule as GETP/PUTP), not just the
+; first — lib/00-core.lisp's own DEFUN macro calls this unconditionally
+; on every expansion, before the indicator has necessarily ever been
+; PUTP'd at all, so this must also be silently correct (a no-op) when
+; IND isn't present.
+(DEFUN REMPROP-ONTO (IND PL)
+  (IF (NULL PL)
+      (QUOTE ())
+      (IF (EQ (CAR (CAR PL)) IND)
+          (REMPROP-ONTO IND (CDR PL))
+          (CONS (CAR PL) (REMPROP-ONTO IND (CDR PL))))))
+(DEFUN REMPROP (SYM IND)
+  (SET-SYMBOL-PLIST! SYM (REMPROP-ONTO IND (SYMBOL-PLIST SYM))))
+
 ; RPLACA/RPLACD — needs no new kernel primitive at all: the reference's
 ; own doc comment for both (evaluator/builtins_extra.rs) is explicit
 ; that "this implementation returns a NEW cons cell rather than
@@ -262,14 +279,21 @@
 ; return value nobody cares about, freeing `$name` as the binding
 ; site. NAME is unevaluated syntax here (an ordinary macro parameter),
 ; matching the reference treating DEF's first operand as a literal
-; symbol, never an expression to evaluate. v0 scope: only the 2-operand
-; form; the reference's optional third (docstring) operand — stored
-; via the symbol's own plist, per its own implementation, now that
-; this kernel has GETP/PUTP too — is not yet supported here.
-(DEFMACRO DEF (NAME VAL)
-  (LIST (QUOTE PROGN)
-        (LIST (QUOTE DEFINE) NAME VAL)
-        (LIST (QUOTE QUOTE) NAME)))
+; symbol, never an expression to evaluate. The reference's optional
+; third (docstring) operand is stored on the symbol's plist (indicator
+; "docstring", a string — the same indicator-equality rule GETP/PUTP
+; already document) — needed for `lib/00-core.lisp`'s own `defun`
+; macro, whose `(def ,name ,lambda-expr ,doc)` expansion passes one
+; whenever the DEFUN body led with a string literal.
+(DEFMACRO DEF (NAME VAL &REST DOC)
+  (IF (NULL DOC)
+      (LIST (QUOTE PROGN)
+            (LIST (QUOTE DEFINE) NAME VAL)
+            (LIST (QUOTE QUOTE) NAME))
+      (LIST (QUOTE PROGN)
+            (LIST (QUOTE DEFINE) NAME VAL)
+            (LIST (QUOTE PUTP) (LIST (QUOTE QUOTE) NAME) "docstring" (CAR DOC))
+            (LIST (QUOTE QUOTE) NAME))))
 
 ; FOR-EACH/FILTER/SOME/EVERY — the reference's own versions
 ; (lib/29-protocols.lisp) are fn-first *protocols*, generically

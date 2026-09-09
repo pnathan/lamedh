@@ -104,6 +104,8 @@ extern fail_wrong_type
 extern gensym
 extern make_char_from_fixnum
 extern char_code_tagged
+extern stringp_tagged
+extern boundp_tagged
 extern code_char_string
 extern random_tagged
 extern random_seed_tagged
@@ -125,6 +127,9 @@ section .rodata
 kw_quote:  db "QUOTE"
 kw_function: db "FUNCTION"
 kw_gensym: db "GENSYM"
+kw_jit_optimize: db "JIT-OPTIMIZE"
+kw_stringp: db "STRINGP"
+kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
 kw_symbol_plist: db "SYMBOL-PLIST"
@@ -4075,6 +4080,35 @@ compile_form:
 
 .not_quote:
     mov rdi, r12
+    mov rsi, kw_jit_optimize
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_jit_optimize
+    ; (JIT-OPTIMIZE name) — a real special form in the Rust reference
+    ; (jit.rs), taking its symbol operand UNevaluated and attempting HM
+    ; inference + native-membrane compilation for an interpreted
+    ; closure that was, until that call, tree-walked. This host has no
+    ; tree-walking tier at all — `compile_lambda` already turns every
+    ; LAMBDA into real native code the moment it is read (see "Why this
+    ; exists" above) — so there is no distinct "optimize this" step to
+    ; perform: every function here already *is* what JIT-OPTIMIZE would
+    ; produce there. A documented no-op returning its own (unevaluated)
+    ; operand, exactly like QUOTE above, is the honest behavior for this
+    ; architecture, not a stub standing in for missing work — and it is
+    ; what makes `lib/00-core.lisp`'s own `defun` macro (`$defun-auto-
+    ; compile`, which calls `(eval (list 'jit-optimize name))` after
+    ; every definition) loadable at all: every other reference stdlib
+    ; file depends on `defun`.
+    mov rdi, r13
+    call car
+    mov rdi, REG_RAX
+    mov rsi, rax
+    call emit_mov_reg_imm64
+    jmp .out
+
+.not_jit_optimize:
+    mov rdi, r12
     mov rsi, kw_function
     mov rdx, 8
     call sym_is
@@ -4735,6 +4769,46 @@ compile_form:
     jmp .out
 
 .not_char_code:
+    mov rdi, r12
+    mov rsi, kw_stringp
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_stringp
+    ; (STRINGP x) — a new kernel primitive (compile_unary_hostcall over
+    ; strings.asm's stringp_tagged, itself a thin T/NIL wrapper around
+    ; the existing internal is_string check `print_value`/`lisp_eq`
+    ; already use). Needed by lib/00-core.lisp's own DEFUN macro,
+    ; unmodified, which checks `(stringp (car body))` on every
+    ; expansion to peel off an optional leading docstring.
+    mov rdi, r13
+    call car
+    lea rsi, [rel stringp_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_stringp:
+    mov rdi, r12
+    mov rsi, kw_boundp
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_boundp
+    ; (BOUNDP sym) — sym is an ordinary evaluated operand (the reference
+    ; caller side always passes an explicit `(quote name)`, never bare
+    ; unevaluated syntax, unlike DEF's NAME); a new kernel primitive
+    ; (compile_unary_hostcall over symtab.asm's boundp_tagged) needed by
+    ; lib/00-core.lisp's own DEFUN macro to guard its optional
+    ; call-graph bookkeeping globals.
+    mov rdi, r13
+    call car
+    lea rsi, [rel boundp_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_boundp:
     mov rdi, r12
     mov rsi, kw_code_char
     mov rdx, 9
