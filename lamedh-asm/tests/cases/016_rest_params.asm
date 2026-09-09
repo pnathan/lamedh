@@ -1,10 +1,10 @@
-; 016_rest_params — &REST parameters. Restriction (see README): only
-; supported when the fixed-parameter count is >= 3, so every rest
-; argument is always stack-resident (never register-spilled) — a
-; deliberately narrow v1 scope, not an accident. Exercises: zero rest
-; args (MORE = NIL), several rest args with order preserved (not
-; reversed by the cons-while-walking-backward construction), and a
-; &REST param sitting after a *stack-passed* fixed param (nfixed=4).
+; 016_rest_params — &REST parameters with nfixed>=3 (every rest argument
+; stack-resident, never register-spilled). Exercises: zero rest args
+; (MORE = NIL), several rest args with order preserved (not reversed by
+; the cons-while-walking-backward construction), and a &REST param
+; sitting after a *stack-passed* fixed param (nfixed=4). See
+; 033_rest_below3.asm for nfixed<3, where some rest arguments are
+; register- rather than stack-resident.
 
 %include "src/tags.inc"
 

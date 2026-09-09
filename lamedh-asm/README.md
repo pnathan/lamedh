@@ -430,11 +430,20 @@ into conformance incrementally, tracked honestly rather than silently:
   calls; the inline-cache trampoline's *own* internal dispatch already
   ends in a tail-jump, but the enclosing function's call site itself
   still uses `call`.
-- `&REST` parameters are supported, but only when the fixed-parameter
-  count is >= 3 (`(LAMBDA (A B C &REST MORE) ...)`, not `(LAMBDA (A
-  &REST MORE) ...)`) — a deliberately narrow v1 that keeps every rest
-  argument stack-resident, never register-spilled, sidestepping the
-  register/stack boundary entirely (see the calling convention below).
+- `&REST` parameters are supported for any fixed-parameter count,
+  including 0, 1, or 2 (`(LAMBDA (&REST ALL) ...)` and
+  `(LAMBDA (A &REST MORE) ...)` now work, not only nfixed>=3) —
+  `tests/cases/033_rest_below3.asm`. The calling convention always
+  places global argument indices 0/1/2 in rsi/rdx/rcx no matter how a
+  given callee splits fixed vs. REST, so for nfixed<3 some REST
+  elements are register-resident rather than stack-resident;
+  `compile_lambda`'s prologue now always spills all 3 argument
+  registers whenever a REST param exists (not just the first nfixed of
+  them) and folds whichever of slots `[nfixed,2]` a call actually
+  supplied onto the front of the stack-built tail, each checked against
+  the real argument count at runtime independently, since those three
+  slots don't form one contiguous runtime-counted range the way stack
+  arguments do.
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers
@@ -477,17 +486,29 @@ to the first 3 arguments in registers and any remainder on the stack
 trampoline's own internal scratch use, whether or not the callee cares.
 A callee that ignores it pays nothing; a `&REST`-taking callee uses it
 to know how many stack-passed arguments past its fixed parameters
-actually exist. `&REST` is supported only when the fixed-parameter
-count is >= 3 (`split_rest_params` splits `(A B C &REST MORE)` into
-the fixed list `(A B C)` and the rest symbol `MORE` at `LAMBDA`-compile
-time), because that restriction guarantees every rest argument is
-stack-resident: the compiled prologue walks the stack-passed tail from
-the last actual argument down to the fixed count, consing each onto an
-accumulator (right-to-left, so the final list comes out in the
-original left-to-right order), and stores the result into the `&REST`
-parameter's own local slot — which always lands at `[rbp-32]`, right
-after the 3 register-spilled fixed-parameter slots, precisely because
-the restriction guarantees there are always exactly 3 of those.
+actually exist. `&REST` is supported for any fixed-parameter count
+(`split_rest_params` splits `(A B C &REST MORE)` into the fixed list
+`(A B C)` and the rest symbol `MORE` at `LAMBDA`-compile time, the same
+way regardless of how many fixed params precede `&REST`). Whenever a
+`&REST` param exists, the prologue spills all 3 argument registers
+unconditionally, not just the fixed ones — global argument index 0/1/2
+always arrives in `rsi`/`rdx`/`rcx` regardless of a given callee's own
+fixed/REST split, so for `nfixed<3` a register can hold REST data
+rather than a fixed parameter's value — and reserves 4 local slots
+(3 register slots plus the `&REST` slot itself, always at `[rbp-32]`)
+rather than `min(nfixed,3)+1`, so the REST slot never collides with a
+register-resident REST element. Building the list has two parts: the
+compiled prologue first walks the stack-passed tail (global index>=3)
+from the last actual argument down to `max(nfixed,3)`, consing each
+onto an accumulator (right-to-left, so the final list comes out in
+left-to-right order); it then folds whichever of the register slots
+`[nfixed,2]` the call actually supplied onto the *front* of that
+accumulator, processed from index 2 down to `nfixed` so each cons lands
+in the right place, each one gated by comparing the real argument count
+(also passed in `rax`, stashed in the REST slot until this point) against
+that slot's index at runtime — unlike the stack walk's single running
+index, these three slots don't form one contiguous runtime-counted
+range, so each needs its own presence check.
 
 Compiled code preserves **no** register across a call into other
 compiled code — not even the base 8 GPRs used as scratch throughout
@@ -523,17 +544,23 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** Every example in the Rust reference's own corpus uses
   `DEFUN` and `FORMAT`; `DEFUN` is now a one-`DEFMACRO` addition (the
-  kernel already has everything it needs — `DEFINE`, `LAMBDA`, `CONS`),
-  but `FORMAT`'s natural signature, `(FORMAT stream control &REST
-  args)`, has only 2 fixed parameters, and this compiler's `&REST`
-  support requires `nfixed>=3` (see below) — so a spec-shaped variadic
-  standard library is blocked on exactly that restriction, not on
-  anything more exotic. Examples that need networking, regex, or TLS
-  are out of scope for this from-scratch host regardless (Part IX
-  capabilities this kernel has no I/O surface for yet); everything
-  else in that directory is the honest bar. There is no file-loading
-  driver yet either — every test here still runs one hand-assembled
-  `lamedh_main` per case, not `lamedhc examples/factorial/main.lisp`.
+  kernel already has everything it needs — `DEFINE`, `LAMBDA`, `CONS`;
+  `tests/cases/032_defun_macro.asm`), and `FORMAT`'s natural signature,
+  `(FORMAT stream control &REST args)`, is no longer blocked by the
+  `&REST` restriction either — `&REST` now works for any fixed-parameter
+  count, including `FORMAT`'s 2 (`tests/cases/033_rest_below3.asm`; see
+  "Calling convention" above). What's still actually missing before
+  `FORMAT` itself is real: a way to walk a control string's characters
+  at compile time to find `~a`/`~%` directives (no string-indexing
+  primitive yet) and a `PRINC-TO-STRING`/`PRIN1-TO-STRING`-shaped
+  primitive (Part XI) to render an argument's value into a string
+  rather than straight to a file descriptor. Examples that need
+  networking, regex, or TLS are out of scope for this from-scratch host
+  regardless (Part IX capabilities this kernel has no I/O surface for
+  yet); everything else in that directory is the honest bar. There is
+  no file-loading driver yet either — every test here still runs one
+  hand-assembled `lamedh_main` per case, not
+  `lamedhc examples/factorial/main.lisp`.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
@@ -542,9 +569,6 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   every local to a fixed stack slot.
 - Proper tail calls: frame-reuse `jmp` for calls in tail position.
 - A copying or generational GC for the data heap.
-- `&REST` params without the `nfixed>=3` restriction (would need a
-  register/stack-boundary-crossing rest list, not just a stack-only
-  one).
 - General (not single-level) free-variable propagation through nested
   lambdas.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured

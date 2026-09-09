@@ -202,6 +202,21 @@ current_frame_depth: resq 1
 ; rest_sym_scratch: nothing recurses into compile_lambda in between.
 lambda_frame_depth_scratch: resq 1
 
+; nregslots_scratch: how many of this LAMBDA's local slots are consumed
+; by "register-convention" positions before free vars start — 4 (3
+; register-passed argument slots plus the REST slot itself) whenever
+; this lambda has a &REST param, regardless of its own fixed-parameter
+; count, since the calling convention (compile_call_args) always passes
+; global argument indices 0/1/2 in rsi/rdx/rcx no matter how many of
+; them a given callee treats as fixed versus REST; otherwise
+; min(nfixed,3), same as before &REST existed. Computed once and reused
+; at every site that used to recompute this inline, so the three sites
+; (free-var frame start, this function's own frame depth, and each free
+; var's own slot index) can never disagree with each other or with the
+; REST slot's own fixed disp of -32. Same one-cell-is-safe reasoning as
+; rest_sym_scratch above.
+nregslots_scratch: resq 1
+
 section .text
 
 ; cadr(rdi=cons) -> car(cdr(x)).  caddr -> car(cdr(cdr(x))). Small host-side
@@ -1576,29 +1591,39 @@ compile_lambda:
     mov rbx, rax                                    ; nfree
 
     ; free vars continue right after however many *local slots* params
-    ; actually used — only the first 3 (register-spilled) consume one;
-    ; params beyond that live on the caller's stack and use none. r15
-    ; already holds `entry` (needed later, for the closure's code
-    ; pointer), so min(nparams,3) is recomputed into scratch rax each
-    ; time it's needed rather than cached in a register.
+    ; and REST together use. Without &REST that's simply min(nfixed,3)
+    ; — only the first 3 params are register-spilled to a local slot;
+    ; beyond that they live on the caller's stack and use none. With
+    ; &REST it's always 4 (3 register-argument slots plus the REST slot
+    ; itself), regardless of nfixed: compile_call_args always places
+    ; global argument indices 0/1/2 in rsi/rdx/rcx no matter how many of
+    ; them *this* callee treats as fixed parameters versus REST, so all
+    ; 3 slots are reserved whenever REST exists, even when nfixed<3 (see
+    ; the spill step and the register-fold step below). Computed once
+    ; into nregslots_scratch and reused at every site that needs it, so
+    ; free-var frame start, this function's own frame depth, and each
+    ; free var's own slot index can never disagree with each other or
+    ; with the REST slot's own fixed disp of -32. r15 already holds
+    ; `entry` (needed later, for the closure's code pointer).
     mov rax, r14
-    cmp rax, 3
-    jbe .nregparams_ok1
-    mov rax, 3
-.nregparams_ok1:
     cmp qword [rest_sym_scratch], IMM_NIL
-    je .no_rest_bump1
-    inc rax                                                ; &REST consumes one more local slot
-.no_rest_bump1:
+    jne .has_rest_nregslots
+    cmp rax, 3
+    jbe .nregslots_computed
+    mov rax, 3
+    jmp .nregslots_computed
+.has_rest_nregslots:
+    mov rax, 4
+.nregslots_computed:
+    mov [nregslots_scratch], rax
     mov rsi, rax
     mov rdi, r12
     call build_frame_from_list                        ; free_frame
 
     ; If this lambda has a &REST param, give it its own (symbol . disp)
-    ; frame entry — disp is always -32 here: the restriction that &REST
-    ; is only supported when nfixed>=3 (see split_rest_params call site
-    ; and the README) means the register-spilled slots always fill all
-    ; 3 of -8,-16,-24, so the REST slot always lands at -32.
+    ; frame entry — disp is always -32 here: nregslots_scratch is always
+    ; 4 whenever &REST exists (see above), so the REST slot always lands
+    ; right after the 3 register-argument slots, at -32.
     mov r12, rax                                            ; free_frame (r12 is dead here: last read by build_frame_from_list above)
     mov rdi, [rest_sym_scratch]
     cmp rdi, IMM_NIL
@@ -1619,15 +1644,7 @@ compile_lambda:
 
     ; --- prologue ---
     call emit_push_rbp_frame
-    mov rax, r14
-    cmp rax, 3
-    jbe .nregparams_ok2
-    mov rax, 3
-.nregparams_ok2:
-    cmp qword [rest_sym_scratch], IMM_NIL
-    je .no_rest_bump2
-    inc rax
-.no_rest_bump2:
+    mov rax, [nregslots_scratch]
     add rax, rbx
     mov [lambda_frame_depth_scratch], rax     ; stash base_index for
                                                ; current_frame_depth,
@@ -1637,20 +1654,34 @@ compile_lambda:
     mov edi, eax
     call emit_sub_rsp_imm32
 
-    ; spill up to 3 incoming params (rsi,rdx,rcx) into their slots
-    cmp r14, 1
+    ; Spill up to 3 incoming params (rsi,rdx,rcx) into their slots.
+    ; Whenever this lambda has a &REST param, all 3 are spilled
+    ; unconditionally regardless of nfixed — not just up to r14 of
+    ; them — because the calling convention always places global
+    ; argument indices 0/1/2 in rsi/rdx/rcx, and for nfixed<3 some of
+    ; those registers hold REST data rather than fixed-parameter data.
+    ; Spilling a register the caller didn't actually set (nargs too
+    ; small) is harmless: that slot is simply never read back, since
+    ; the register-fold step below only reads a slot after checking the
+    ; real nargs at runtime.
+    mov r12, r14
+    cmp qword [rest_sym_scratch], IMM_NIL
+    je .spillcount_ok
+    mov r12, 3
+.spillcount_ok:
+    cmp r12, 1
     jb .no_p0
     mov dil, REG_RSI
     mov esi, -8
     call emit_store_local
 .no_p0:
-    cmp r14, 2
+    cmp r12, 2
     jb .no_p1
     mov dil, REG_RDX
     mov esi, -16
     call emit_store_local
 .no_p1:
-    cmp r14, 3
+    cmp r12, 3
     jb .no_p2
     mov dil, REG_RCX
     mov esi, -24
@@ -1687,15 +1718,10 @@ compile_lambda:
     mov dil, REG_RBX
     mov sil, REG_RAX
     call emit_load_based                       ; rbx = *(raw+32+8*i)
-    mov eax, r14d                                 ; nparams, clamped to the
-    cmp eax, 3                                      ; number of *local slots*
-    jbe .minok                                        ; params actually use
-    mov eax, 3                                          ; (see build_param_frame)
-.minok:
-    cmp qword [rest_sym_scratch], IMM_NIL
-    je .no_rest_bump3
-    inc eax                                              ; free vars start one slot later
-.no_rest_bump3:
+    mov eax, [nregslots_scratch]                  ; where register/REST slots
+                                                   ; end and free vars begin
+                                                   ; (same value computed once,
+                                                   ; above)
     add eax, r12d
     inc eax
     imul eax, eax, -8
@@ -1707,10 +1733,12 @@ compile_lambda:
 .free_done:
 
     ; --- &REST: build the rest-arg list from the stack-passed tail ---
-    ; Restriction: only supported when nfixed>=3, so every rest argument
-    ; is stack-resident (see split_rest_params / README). Walks from the
-    ; last actual argument down to nfixed, consing each onto an
-    ; accumulator, so the final list is in left-to-right order.
+    ; Walks from the last actual argument down to max(nfixed,3), consing
+    ; each onto an accumulator, so the final list is in left-to-right
+    ; order. Stack-resident args only exist for global index>=3 at all,
+    ; so the lower bound is clamped there even when nfixed<3 — indices
+    ; below 3 are register-resident and handled by the fold step below
+    ; instead, not by this loop.
     ;
     ; The loop index lives in RDX, not RCX: emit_cmp_rax_imm64 loads its
     ; own immediate into RCX as scratch (see codegen.asm), so a loop
@@ -1736,8 +1764,13 @@ compile_lambda:
     mov sil, REG_RDX
     call emit_mov_rr                                        ; target: rax = rdx (index)
     mov rsi, r14
-    sub rsi, 3                                                ; nfixed-3, a compile-time constant
-    call emit_cmp_rax_imm64                                     ; target: cmp rax, (nfixed-3) (clobbers rcx)
+    cmp rsi, 3
+    jae .stack_thresh_ok
+    mov rsi, 3
+.stack_thresh_ok:
+    sub rsi, 3                                                ; max(nfixed,3)-3, a compile-time
+                                                               ; constant, always >=0
+    call emit_cmp_rax_imm64                                     ; target: cmp rax, that (clobbers rcx)
     call emit_jl                                                  ; target: jl -> done (rax = rel32 field addr)
     push rax                                                        ; [jl_site, loop_start]
 
@@ -1773,6 +1806,60 @@ compile_lambda:
     mov rsi, rax
     call patch_rel32
     add rsp, 16                                                                            ; discard jl_site,loop_start
+
+    ; --- &REST, nfixed<3: fold register-resident "extra" args (global
+    ; index in [nfixed,2]) onto the front of acc ---
+    ; Regardless of nfixed, compile_call_args always places global
+    ; argument indices 0/1/2 in rsi/rdx/rcx (compile_call), unconditionally
+    ; spilled above into local slots -8/-16/-24 once any &REST param
+    ; exists. When nfixed<3, some of those indices are REST elements,
+    ; not fixed parameters — fold them onto the front of whatever the
+    ; stack loop above built, processing from the highest index down so
+    ; each cons lands in the right place. Each slot's presence is a
+    ; runtime fact (nargs > i) checked independently, since unlike the
+    ; stack loop's single running index these three don't form one
+    ; contiguous runtime-counted range. A no-op loop (nfixed>=3) when
+    ; this lambda predates &REST's nfixed<3 support.
+    mov r12, 2
+.fold_loop:
+    cmp r12, r14
+    jl .fold_done
+    mov dil, REG_RAX
+    mov esi, -32
+    call emit_load_local                     ; target: rax = nargs (still stashed)
+    mov rsi, r12
+    inc rsi                                    ; i+1, a compile-time constant
+    call emit_cmp_rax_imm64                      ; target: cmp rax, i+1 (clobbers rcx)
+    call emit_jl                                   ; target: jl -> skip (nargs<=i: slot i absent)
+    push rax                                         ; [skip_site]
+
+    mov eax, r12d
+    inc eax
+    imul eax, eax, -8
+    mov esi, eax
+    mov dil, REG_RDI
+    call emit_load_local                                 ; target: rdi = slot[i]
+    mov dil, REG_RSI
+    mov sil, REG_RBX
+    call emit_mov_rr                                       ; target: rsi = acc
+    lea rax, [rel cons]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                                  ; target: rax = &cons
+    mov dil, REG_RAX
+    call emit_call_reg                                         ; target: call rax -> rax = new pair
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                                            ; target: acc = new pair
+
+    call codegen_here                                            ; skip:
+    pop rdi                                                        ; skip_site
+    mov rsi, rax
+    call patch_rel32
+
+    dec r12
+    jmp .fold_loop
+.fold_done:
 
     mov dil, REG_RBX
     mov esi, -32
