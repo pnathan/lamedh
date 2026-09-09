@@ -3591,80 +3591,41 @@ emit_check_callable:
     add rsp, 32                                                             ; discard [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
     ret
 
-; compile_call(rdi=operator form, rsi=args list, rdx=tail)
-; A general application (f arg...). If f is a symbol that is not locally
-; bound (i.e. a genuine global), the call site is compiled through a
-; per-site, self-patching inline-cache trampoline: the first invocation
-; resolves the symbol's current value, rewrites the *original* call
-; site's rel32 in place to target the resolved code directly, and only
-; then jumps there — every later call from that exact site is a plain
-; direct call, no indirection, no re-resolution. Anything else (a local
-; variable holding a closure, a literal LAMBDA) goes through one indirect
-; call via the closure's stored code pointer.
-; rdx=tail is landing-plan step 1 plumbing only (docs/spec-tco-capture-
-; gc.md section 2.6): accepted here but not yet acted on — every call
-; site below still emits an ordinary call/indirect-call, never a
-; tail jmp. Real tail-call codegen is a later step.
-global compile_call
-compile_call:
-    push rbx
+; emit_ic_trampoline(rdi=cell_addr, rsi=mode) -> rax = trampoline_entry
+; (a target code address).
+;
+; Factored out of compile_call's named-global-call path (docs/spec-tco-
+; capture-gc.md section 2.6 step 2) with NO behavior change: this is
+; exactly the code that used to live inline there, just wrapped in its
+; own prologue/epilogue. Emits, at the current codegen position: a
+; forward jmp (so ordinary fallthrough control flow at runtime skips
+; the trampoline body — the same "jmp over co-located data/code" trick
+; compile_lambda's own thunk header uses), the trampoline body itself
+; (resolve cell_addr's current value, patch the ORIGINAL call site's
+; rel32 operand to target the resolved code directly, then transfer
+; control there), and patches the forward jmp to land just past the
+; body. The caller still owns emitting the call site itself and
+; patching it to target the returned trampoline_entry — this only
+; builds the trampoline, once, immediately after the jmp-over site.
+;
+; mode (rsi) is accepted but unused until a later step adds mode=1: the
+; trampoline body below discovers the call site's rel32 field address
+; at RUNTIME by reading the return address off the stack (this
+; trampoline is only ever reached via an ordinary `call`, so the
+; return address sitting on the stack at entry is always exactly four
+; bytes past that field) — correct for mode=0 (an ordinary, non-tail
+; call site), but wrong for a tail-call variant entered via `jmp`
+; instead of `call`: there the "return address" on the stack belongs
+; to the CALLER's own caller, not this call site, so patching relative
+; to it would silently corrupt an unrelated call site. mode=1 (added
+; when tail-call codegen itself lands) will instead bake the call
+; site's own field address as a compile-time-known immediate, the same
+; technique emit_install_catch_frame already uses for catch-frame
+; resume addresses.
+emit_ic_trampoline:
     push r12
-    push r13
     push r14
-    mov rbx, rdi                    ; operator form
-    mov r12, rsi                      ; args
-
-    mov rax, rbx
-    and rax, TAG_MASK
-    cmp rax, TAG_HEAPOBJ
-    jne .indirect_path
-    mov rax, rbx
-    UNTAG_PTR rax
-    cmp qword [rax], HDR_SYMBOL
-    jne .indirect_path
-    mov rdi, rbx
-    mov rsi, [current_scope]
-    call frame_lookup
-    cmp rax, FRAME_NOT_FOUND
-    jne .indirect_path                 ; locally bound — not a global call
-
-    ; --- named global call: inline-cached, self-patching ---
-    mov rdi, r12
-    call compile_call_args
-    mov r13, rax                          ; nargs
-
-    mov rax, rbx
-    UNTAG_PTR rax
-    add rax, 16
-    mov r14, rax                            ; cell_addr
-
-    ; compile_call_args pushes right-to-left, so arg0 ends up topmost —
-    ; pop ascending (arg0 first) to match. Anything past the 3rd stays
-    ; on the stack, already positioned exactly where the callee's
-    ; stack-passed params expect it (build_param_frame).
-    cmp r13, 1
-    jb .n_after_a0
-    mov dil, REG_RSI
-    call emit_pop_reg
-.n_after_a0:
-    cmp r13, 2
-    jb .n_after_a1
-    mov dil, REG_RDX
-    call emit_pop_reg
-.n_after_a1:
-    cmp r13, 3
-    jb .n_after_a2
-    mov dil, REG_RCX
-    call emit_pop_reg
-.n_after_a2:
-
-    ; rax = actual arg count, for a &REST-taking callee to know how many
-    ; stack-passed args past its fixed params actually exist (see
-    ; compile_lambda). Every call sets this, whether or not the callee
-    ; happens to want it — a callee that doesn't just ignores it.
-    mov rsi, r13
-    mov dil, REG_RAX
-    call emit_mov_reg_imm64
+    mov r14, rdi                              ; cell_addr
 
     call emit_jmp32
     mov r12, rax                              ; jmp_over_site
@@ -3753,9 +3714,97 @@ compile_call:
     mov rsi, rax
     call patch_rel32                                                          ; jmp-over -> here
 
+    pop rax                                     ; trampoline_entry (return value)
+    pop r14
+    pop r12
+    ret
+
+; compile_call(rdi=operator form, rsi=args list, rdx=tail)
+; A general application (f arg...). If f is a symbol that is not locally
+; bound (i.e. a genuine global), the call site is compiled through a
+; per-site, self-patching inline-cache trampoline: the first invocation
+; resolves the symbol's current value, rewrites the *original* call
+; site's rel32 in place to target the resolved code directly, and only
+; then jumps there — every later call from that exact site is a plain
+; direct call, no indirection, no re-resolution. Anything else (a local
+; variable holding a closure, a literal LAMBDA) goes through one indirect
+; call via the closure's stored code pointer.
+; rdx=tail is landing-plan step 1 plumbing only (docs/spec-tco-capture-
+; gc.md section 2.6): accepted here but not yet acted on — every call
+; site below still emits an ordinary call/indirect-call, never a
+; tail jmp. Real tail-call codegen is a later step.
+global compile_call
+compile_call:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi                    ; operator form
+    mov r12, rsi                      ; args
+
+    mov rax, rbx
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .indirect_path
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .indirect_path
+    mov rdi, rbx
+    mov rsi, [current_scope]
+    call frame_lookup
+    cmp rax, FRAME_NOT_FOUND
+    jne .indirect_path                 ; locally bound — not a global call
+
+    ; --- named global call: inline-cached, self-patching ---
+    mov rdi, r12
+    call compile_call_args
+    mov r13, rax                          ; nargs
+
+    mov rax, rbx
+    UNTAG_PTR rax
+    add rax, 16
+    mov r14, rax                            ; cell_addr
+
+    ; compile_call_args pushes right-to-left, so arg0 ends up topmost —
+    ; pop ascending (arg0 first) to match. Anything past the 3rd stays
+    ; on the stack, already positioned exactly where the callee's
+    ; stack-passed params expect it (build_param_frame).
+    cmp r13, 1
+    jb .n_after_a0
+    mov dil, REG_RSI
+    call emit_pop_reg
+.n_after_a0:
+    cmp r13, 2
+    jb .n_after_a1
+    mov dil, REG_RDX
+    call emit_pop_reg
+.n_after_a1:
+    cmp r13, 3
+    jb .n_after_a2
+    mov dil, REG_RCX
+    call emit_pop_reg
+.n_after_a2:
+
+    ; rax = actual arg count, for a &REST-taking callee to know how many
+    ; stack-passed args past its fixed params actually exist (see
+    ; compile_lambda). Every call sets this, whether or not the callee
+    ; happens to want it — a callee that doesn't just ignores it.
+    mov rsi, r13
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+
+    mov rdi, r14                              ; cell_addr
+    mov rsi, 0                                  ; mode 0: today's only mode
+                                                   ; (docs/spec-tco-capture-gc.md
+                                                   ; section 2.6 step 2 — a
+                                                   ; later step adds mode=1)
+    call emit_ic_trampoline
+    mov r12, rax                                    ; trampoline_entry
+
     call emit_call32
     mov rdi, rax
-    pop rsi                                                                     ; trampoline_entry
+    mov rsi, r12                                                                ; trampoline_entry
     call patch_rel32                                                              ; call site -> trampoline
 
     ; Anything past the 3rd argument was left on the *target* stack by
