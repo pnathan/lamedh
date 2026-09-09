@@ -406,7 +406,7 @@ fn compile_setq(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         _ => return Code::Interp(form.clone()),
     };
     let mut pairs = Vec::with_capacity(forms.len() / 2);
-    for pair in forms.chunks_exact(2) {
+    for pair in forms.as_chunks::<2>().0 {
         match &pair[0] {
             // Constant/keyword targets (T, :FOO) fall back to the tree-walker
             // so the SETQ arm raises its "cannot rebind" error (issue #237).
