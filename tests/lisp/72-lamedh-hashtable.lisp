@@ -170,6 +170,19 @@
       (assert-nil (lht-get h a2))
       (assert-false (lht-has-key-p h a2)))))
 
+(deftest lht-hash-spreads-distinct-opaque-keys
+  ;; Issue #474 closed the degenerate-bucketing gap this file originally
+  ;; shipped with: before HASH-CODE existed, every host-opaque
+  ;; identity-compared key (arrays, closures, hash tables, ...) hashed to one
+  ;; constant bucket. Distinct *simultaneously live* arrays must now hash to
+  ;; different values -- both bound here so neither's allocation can be
+  ;; reused for the other's address (HASH-CODE hashes the live allocation,
+  ;; not a global identity: a freed then reused address is a documented,
+  ;; harmless caveat, not something this test should trip over).
+  (let ((a1 (array 1))
+        (a2 (array 1)))
+    (assert-true (/= (lht-hash a1) (lht-hash a2)))))
+
 (deftest lht-hash-agrees-with-equal-on-collisions
   ;; Two structurally-EQUAL-but-freshly-built compound keys must collide
   ;; into the SAME entry, exercising both the hash function and the probe's

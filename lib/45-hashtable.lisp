@@ -79,46 +79,42 @@
 ;;;
 ;;; KERNEL.md Part IV's key-equality contract is EQ/EQUAL: two keys collide
 ;;; in the same bucket-chain sense (i.e. MUST hash equal) exactly when they
-;;; are EQUAL, with two canonicalizations spelled out explicitly: `0.0` and
-;;; `-0.0` are the SAME key, and `NaN` finds `NaN`. LHT-HASH below handles
-;;; both without needing raw IEEE-754 bit access (no such primitive is in
-;;; Part XI's inventory, and none was added for this): floats are hashed by
-;;; their *canonical printed form* -- `(prin1-to-string f)`, except any float
-;;; equal to 0.0 (which per Part IV's `=` is true for both signs of zero)
-;;; canonicalizes to the literal string "0.0" before hashing, and any NaN
-;;; already prints as the single literal "NaN" regardless of its sign or
-;;; payload bits (verified against the reference: `(prin1-to-string (/ 0.0
-;;; 0.0))` and `(prin1-to-string (/ -0.0 0.0))` both print "NaN"). Every other
-;;; type is hashed structurally in a way that agrees with `EQUAL`: symbols by
-;;; their printed name, strings by their code points, conses recursively by
-;;; CAR/CDR, fixnums and chars directly. Host-opaque types whose `EQUAL` is
-;;; identity (hash tables, arrays, typed arrays, environments, closures,
-;;; builtins) and structural-but-unintrospectable types (records, conditions)
-;;; all hash to one constant bucket: this is *correct* (equal keys, which for
-;;; an identity type means the same object, trivially still hash equal to
-;;; themselves) but deliberately degenerate -- every such key collides with
-;;; every other, so a table keyed heavily by e.g. distinct arrays performs no
-;;; better than an alist. This is the concrete "large performance hit" gap
-;;; the issue asked to be reported honestly if it exists; see the PR
-;;; description's benchmark section. It is a direct consequence of Part XI
-;;; not providing any host-independent identity-hash primitive (no address-of,
-;;; no counter tied to allocation) -- exactly the kind of concrete, actionable
-;;; gap the issue says is worth surfacing.
+;;; are EQUAL. LHT-HASH gets this for free from the native `HASH-CODE`
+;;; primitive (issue #474): `(equal a b)` implies `(= (hash-code a) (hash-code
+;;; b))` is HASH-CODE's own documented contract, backed by the same `Hash for
+;;; LispVal` impl the native `HashTable` builtin's `HashMap<LispVal, LispVal>`
+;;; already relies on -- so LHT-HASH is just that value re-mixed through
+;;; LHT-MIX64 for this table's own avalanche/distribution needs, not a
+;;; hand-rolled EQUAL-agreement proof. In particular this closes the
+;;; degenerate-bucketing gap this file originally shipped with: HASH-CODE
+;;; hashes host-opaque, identity-compared types (arrays, hash tables,
+;;; environments, closures, ...) by their underlying allocation's address, so
+;;; a table keyed heavily by e.g. distinct arrays now spreads across buckets
+;;; instead of colliding into one. One caveat worth knowing, not a
+;;; correctness gap: an allocation's address is only unique among
+;;; simultaneously-live objects, so two host-opaque keys that are never alive
+;;; at the same time can, by allocator coincidence, share a HASH-CODE. This
+;;; is harmless here -- LHT-PROBE always confirms a bucket match with EQUAL,
+;;; never trusts a hash match alone -- and cannot happen for any key actually
+;;; stored in a live table (its slot in KEYS holds a live reference for as
+;;; long as it stays a key).
 ;;;
 ;;; The integer mixer (LHT-MIX64) is a SplitMix64-style finalizer, with its
 ;;; constants pre-masked to 63 bits (so they parse as fixnum literals rather
 ;;; than overflowing to floats per Part II's literal-overflow rule) and every
-;;; intermediate value masked back to 63 bits after each step. That mask
-;;; matters beyond literal parsing: `ASH` with a negative shift is Lisp's
-;;; usual ARITHMETIC (sign-extending) right shift, not a logical one -- there
-;;; is no unsigned-shift primitive in Part XI's inventory either -- so mixing
-;;; a full 64-bit two's-complement value would sign-extend the top bit
-;;; through every right shift and measurably weaken the avalanche. Keeping
-;;; the accumulator non-negative (top bit always 0) makes every `ASH ... -N`
-;;; in this file behave as a logical shift, at the cost of one bit of hash
-;;; space -- immaterial once capacity masks it down to a handful of bits
-;;; anyway. Multiplying by odd constants intentionally wraps mod 2^64 (Part
-;;; V's fixed-width model); the reference prints a stderr `integer overflow`
+;;; intermediate value masked back to 63 bits after each step -- including
+;;; the initial HASH-CODE input, which is a full-range (possibly negative)
+;;; 64-bit value masked down by the first `LOGAND` below. That mask matters
+;;; beyond literal parsing: `ASH` with a negative shift is Lisp's usual
+;;; ARITHMETIC (sign-extending) right shift, not a logical one -- there is no
+;;; unsigned-shift primitive in Part XI's inventory either -- so mixing a
+;;; full 64-bit two's-complement value would sign-extend the top bit through
+;;; every right shift and measurably weaken the avalanche. Keeping the
+;;; accumulator non-negative (top bit always 0) makes every `ASH ... -N` in
+;;; this file behave as a logical shift, at the cost of one bit of hash space
+;;; -- immaterial once capacity masks it down to a handful of bits anyway.
+;;; Multiplying by odd constants intentionally wraps mod 2^64 (Part V's
+;;; fixed-width model); the reference prints a stderr `integer overflow`
 ;;; warning and sets the global OVERFLOW flag on each wraparound, which is
 ;;; expected and harmless here -- callers who care can `(clear-flag
 ;;; 'overflow)` themselves.
@@ -135,15 +131,7 @@
 (def $lht-grow-num 10)
 (def $lht-grow-den 7)
 
-(def $lht-tag-nil 1)
-(def $lht-tag-sym 2)
-(def $lht-tag-str 3)
-(def $lht-tag-char 4)
-(def $lht-tag-float 5)
-(def $lht-tag-fix 6)
-(def $lht-tag-opaque (logand #x2545F4914F6CDD1D $lht-mask63)) ; one fixed bucket
-
-;;; ---- the integer/string mixer -----------------------------------------------
+;;; ---- the integer mixer --------------------------------------------------
 
 (defun lht-mix64 (x0)
   "SplitMix64-style avalanche finalizer over a 63-bit non-negative fixnum."
@@ -153,35 +141,13 @@
          (x (logxor x (ash x -31))))
     (logand x $lht-mask63)))
 
-(defun lht-hash-string-loop (s i n acc)
-  (if (>= i n)
-      acc
-      (lht-hash-string-loop
-       s (+ i 1) n
-       (lht-mix64 (logxor (* acc 31) (char-code (char-at s i)))))))
-
-(defun lht-hash-string (s)
-  "Hash a string by folding LHT-MIX64 over its code points."
-  (lht-hash-string-loop s 0 (string-length* s) $lht-c1))
-
-(defun lht-canon-float-string (f)
-  "Canonical printed form of F for hashing: 0.0 and -0.0 hash identically."
-  (if (= f 0.0) "0.0" (prin1-to-string f)))
-
 ;;; ---- the LispVal hash function -----------------------------------------------
 
 (defun lht-hash (v)
-  "Hash any LispVal so that (EQUAL A B) implies (= (lht-hash A) (lht-hash B))."
-  (cond
-    ((null v) (lht-mix64 $lht-tag-nil))
-    ((consp v)
-     (lht-mix64 (logxor (* 3 (lht-hash (car v))) (lht-hash (cdr v)))))
-    ((symbolp v) (lht-mix64 (logxor $lht-tag-sym (lht-hash-string (princ-to-string v)))))
-    ((stringp v) (lht-mix64 (logxor $lht-tag-str (lht-hash-string v))))
-    ((charp v) (lht-mix64 (logxor $lht-tag-char (char-code v))))
-    ((floatp v) (lht-mix64 (logxor $lht-tag-float (lht-hash-string (lht-canon-float-string v)))))
-    ((fixp v) (lht-mix64 (logxor $lht-tag-fix v)))
-    (t $lht-tag-opaque)))
+  "Hash any LispVal so that (EQUAL A B) implies (= (lht-hash A) (lht-hash B)).
+HASH-CODE (issue #474) already guarantees that agreement natively -- this
+just re-mixes its output through LHT-MIX64 for this table's own avalanche."
+  (lht-mix64 (hash-code v)))
 
 (declare-type! 'lht-hash '(-> (any) int64))
 
