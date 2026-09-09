@@ -179,10 +179,37 @@ pub(super) fn apply_unevaluated(
     }
 
     if let LispVal::Vau(vau) = func {
-        let new_env = Environment::new_child(&vau.env);
-        new_env.set_id(vau.operands_param_id, rest.clone());
-        new_env.set_id(vau.env_param_id, LispVal::Environment(env.clone()));
-        return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
+        let new_env = Environment::new_child_with_dynamic(&vau.env, env);
+        let has_dyn = new_env.has_any_dynamic();
+        let mut guards: Vec<DynamicBinding> = Vec::new();
+        if has_dyn
+            && let Some(sym) = new_env.symbol_by_id(vau.operands_param_id)
+            && sym.borrow().is_dynamic
+        {
+            guards.push(DynamicBinding::install(sym, rest.clone()));
+        } else {
+            new_env.set_id(vau.operands_param_id, rest.clone());
+        }
+        if has_dyn
+            && let Some(sym) = new_env.symbol_by_id(vau.env_param_id)
+            && sym.borrow().is_dynamic
+        {
+            guards.push(DynamicBinding::install(
+                sym,
+                LispVal::Environment(env.clone()),
+            ));
+        } else {
+            new_env.set_id(vau.env_param_id, LispVal::Environment(env.clone()));
+        }
+        if guards.is_empty() {
+            return Ok(TcoStep::TailCall(*vau.body.clone(), new_env));
+        } else {
+            return Ok(TcoStep::TailCallWithGuards(
+                *vau.body.clone(),
+                new_env,
+                guards,
+            ));
+        }
     }
 
     if let LispVal::Fexpr(fexpr) = func {
