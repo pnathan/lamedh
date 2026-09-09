@@ -238,6 +238,8 @@ uses to build CADR/CADDR/etc."
 (PRINT (ASSOC (QUOTE B) (LIST (CONS (QUOTE A) 1) (CONS (QUOTE B) 2))))
 (NEWLINE)
 (PRINT (ASSOC (QUOTE Z) (LIST (CONS (QUOTE A) 1))))
+(NEWLINE)
+(PRINT (CONCAT "A" "B" "C"))
 LISP
     want_out='T
 T
@@ -302,7 +304,8 @@ a docstring
 (() T 2 ())
 (EXPANDED 5)
 (B . 2)
-()'
+()
+ABC'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

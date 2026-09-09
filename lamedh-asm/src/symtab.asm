@@ -27,12 +27,15 @@
 %include "src/tags.inc"
 
 extern data_alloc
+extern string_bytes
+extern string_len
 
 section .bss
 align 8
 global symtab_buckets
 symtab_buckets: resq 512
 gensym_counter: resq 1
+intern_tagged_scratch: resb 256
 
 section .text
 
@@ -75,6 +78,82 @@ fnv1a_hash:
     dec rsi
     jmp .loop
 .done:
+    ret
+
+; intern_tagged(rdi=tagged value) -> rax = tagged symbol. The
+; Lisp-visible INTERN predicate (compiler.asm) — a genuine Rust-level
+; builtin in the reference (environment.rs/evaluator/builtins_tail.rs),
+; needed by lib/27-modules.lisp's own $MODULE-QUALIFY
+; (`(intern (concat ... ":" ...))`, building a fresh qualified symbol
+; from a string at runtime). A String argument is uppercased into a
+; local scratch buffer first (matching the reference's own
+; `s.to_uppercase()`, and this reader's own case-normalization for
+; every symbol read from source text) then interned; a Symbol argument
+; is returned as-is (already interned, under its own existing name —
+; matching the reference's own "reuse the name" branch). v0 scope: any
+; other value type is out of the reference's own documented contract
+; too (a hard error there); this host has no error-signaling primitive
+; wired to this specific check yet, so it silently returns the
+; original tagged value unchanged rather than interning anything —
+; not a case any real caller (this one included) actually hits.
+global intern_tagged
+intern_tagged:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi                    ; rbx = original tagged value, kept
+                                     ; live across string_bytes/
+                                     ; string_len (both take the
+                                     ; *tagged* pointer, not raw)
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .asis
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    je .asis
+    cmp qword [rax], HDR_STRING
+    jne .asis
+
+    mov rdi, rbx
+    call string_bytes
+    mov r12, rax                      ; bytes ptr
+    mov rdi, rbx
+    call string_len
+    mov r13, rax                        ; len
+
+    cmp r13, 255
+    jbe .fits
+    mov r13, 255                          ; defensive cap, matching
+                                           ; read_symbol's own
+.fits:
+    xor rcx, rcx
+.upper_loop:
+    cmp rcx, r13
+    jae .upper_done
+    mov al, [r12+rcx]
+    cmp al, 'a'
+    jb .store
+    cmp al, 'z'
+    ja .store
+    sub al, 32
+.store:
+    mov [intern_tagged_scratch+rcx], al
+    inc rcx
+    jmp .upper_loop
+.upper_done:
+    mov rdi, intern_tagged_scratch
+    mov rsi, r13
+    call intern_symbol
+    jmp .out
+
+.asis:
+    mov rax, rbx
+.out:
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ; intern_symbol(rdi=name ptr, rsi=len) -> rax = tagged symbol pointer

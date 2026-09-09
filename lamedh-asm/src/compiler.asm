@@ -108,6 +108,7 @@ extern stringp_tagged
 extern symbolp_tagged
 extern module_source_lookup_tagged
 extern eval_module_source_tagged
+extern intern_tagged
 extern boundp_tagged
 extern code_char_string
 extern random_tagged
@@ -135,6 +136,7 @@ kw_stringp: db "STRINGP"
 kw_symbolp: db "SYMBOLP"
 kw_module_source_lookup: db "$MODULE-SOURCE-LOOKUP"
 kw_eval_module_source: db "$EVAL-MODULE-SOURCE"
+kw_intern: db "INTERN"
 kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
@@ -183,6 +185,7 @@ kw_return:      db "RETURN"
 kw_return_from: db "RETURN-FROM"
 kw_while:       db "WHILE"
 kw_string_length: db "STRING-LENGTH"
+kw_string_length_star: db "STRING-LENGTH*"
 kw_string_ref:    db "STRING-REF"
 kw_string_append: db "STRING-APPEND"
 kw_substring:     db "SUBSTRING"
@@ -4929,6 +4932,28 @@ compile_form:
 
 .not_string_length:
     mov rdi, r12
+    mov rsi, kw_string_length_star
+    mov rdx, 14
+    call sym_is
+    test rax, rax
+    jz .not_string_length_star
+    ; (STRING-LENGTH* s) — the reference's own actual name for this
+    ; primitive (environment.rs registers only "STRING-LENGTH*", never
+    ; a bare "STRING-LENGTH"); lib/14-strings.lisp's own STRING-INDEX-OF
+    ; calls it under this exact spelling. Same host routine STRING-LENGTH
+    ; already uses — this kernel just also answers to the reference's
+    ; own name, matching v0's existing STRING-LENGTH alias rather than
+    ; replacing it (README's own "v0 limits" tracks naming gaps like
+    ; this honestly rather than silently renaming established surface).
+    mov rdi, r13
+    call car
+    lea rsi, [rel string_length_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_string_length_star:
+    mov rdi, r12
     mov rsi, kw_string_ref
     mov rdx, 10
     call sym_is
@@ -5358,6 +5383,22 @@ compile_form:
     jmp .out
 
 .not_eval_module_source:
+    mov rdi, r12
+    mov rsi, kw_intern
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_intern
+    ; (INTERN x) — a genuine Rust-level builtin (environment.rs),
+    ; needed by lib/27-modules.lisp's own $MODULE-QUALIFY.
+    mov rdi, r13
+    call car
+    lea rsi, [rel intern_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_intern:
     mov rdi, r12
     mov rsi, kw_boundp
     mov rdx, 6

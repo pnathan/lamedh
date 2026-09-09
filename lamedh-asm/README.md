@@ -1500,10 +1500,53 @@ bugs no existing test had exercised:
     for the key comparison, matching the reference's own structural
     `==`.
 
-  **`07-shell.lisp` is the next wall** (traps; not yet root-caused —
-  likely something in its own shell-capability-gated primitives this
-  host's `SHELL` capability surface doesn't fully cover yet, but
-  unconfirmed).
+  **`07-shell.lisp` now loads too**, and with it `27-modules.lisp`'s
+  own `WITH-MODULE`/`DEFMODULE` machinery is fully exercised for the
+  first time (`07-shell.lisp` is the first file that actually *uses*
+  `WITH-MODULE`, not just defines it) — which needed four more genuine
+  Rust-level builtins, each found the same way: try the next file,
+  bisect to the first form that traps, check `environment.rs` for a
+  name lib code calls that this host never registered:
+  - **`INTERN`** (`intern_tagged`, `symtab.asm`) — `(intern x)`
+    uppercases a String into a local scratch buffer (matching the
+    reference's own `s.to_uppercase()`) then interns it, or returns a
+    Symbol argument unchanged; `27-modules.lisp`'s own
+    `$MODULE-QUALIFY` (`(intern (concat (princ-to-string module) ":"
+    (princ-to-string name)))`) builds every qualified name this way —
+    `tests/cases/061_intern.asm` covers both argument shapes.
+  - **`CONCAT`** (`lib/prelude.lisp`) — variadic string concatenation,
+    also needed by `$MODULE-QUALIFY`'s three-argument call; ordinary
+    library code over the existing 2-argument `STRING-APPEND`, no new
+    kernel primitive.
+  - **`STRING-LENGTH*`** (`compiler.asm`) — not a new primitive at
+    all, but a *naming* gap: `environment.rs` registers only
+    `"STRING-LENGTH*"`, never a bare `"STRING-LENGTH"` — this kernel
+    had only ever implemented the latter spelling (matching this
+    project's own docs, not the reference's actual name), invisible
+    until `lib/14-strings.lisp`'s own `STRING-INDEX-OF` called it by
+    its real name. Now answers to both spellings over the same host
+    routine. `tests/cases/061_intern.asm` covers the reference's own
+    name.
+  - **`SEXPR-RENAME`** (`lib/prelude.lisp`) — a genuine Rust-level
+    builtin (`evaluator/builtins_core.rs`) backing `WITH-MODULE`
+    itself: rebuilds a form, replacing every symbol that is a key in a
+    given hash table and not already qualified (its name contains
+    `":"`) with its mapped value, leaving a `QUOTE`/`QUASIQUOTE`-headed
+    cons untouched at every level. Ordinary library code over
+    `SYMBOLP`/`GETHASH`/`STRING-INDEX-OF`/`ATOM`/`CONS`, forward-
+    referencing the latter two (defined later, in reference stdlib
+    files loaded well before `27-modules.lisp`'s own first use of
+    this) the same way every other forward reference in this project
+    already relies on. Verified manually end to end (`(with-module
+    foomod (defun bar (x) (+ x 1))) (foomod:bar 5)` => `6`) rather than
+    via an automated regression case: its own `STRING-INDEX-OF`
+    dependency isn't available in either the standalone kernel-only
+    harness (`tests/cases/*.asm`, no prelude at all) or
+    `file_runner_prelude` (lamedh-asm's own small prelude only, no
+    reference stdlib files) — only the full accumulated-file
+    conformance testing this section describes exercises it for real.
+
+  **`09-lisp15.lisp` is the next wall**, not yet root-caused.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver

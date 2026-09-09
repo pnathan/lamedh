@@ -207,6 +207,18 @@
 ; that primitive under the name examples/fizzbuzz/main.lisp expects.
 (DEFUN NUMBER->STRING (N) (PRINC-TO-STRING N))
 
+; CONCAT — a genuine Rust-level builtin (evaluator/builtins_core.rs):
+; variadic string concatenation, needed by lib/27-modules.lisp's own
+; $MODULE-QUALIFY (`(concat (princ-to-string module) ":" (princ-to-
+; string name))`, three arguments). Ordinary library code over the
+; existing 2-argument STRING-APPEND — no new kernel primitive needed.
+(DEFUN CONCAT (&REST STRS)
+  (IF (NULL STRS)
+      ""
+      (IF (NULL (CDR STRS))
+          (CAR STRS)
+          (STRING-APPEND (CAR STRS) (APPLY #'CONCAT (CDR STRS))))))
+
 ; GETP/PUTP — symbol property lists (KERNEL.md Part XI). SYMBOL-PLIST
 ; and SET-SYMBOL-PLIST! (compiler.asm/symtab.asm) are the only new
 ; kernel surface this needed: a symbol's plist slot is an ordinary
@@ -258,6 +270,34 @@
           (CONS (CAR PL) (REMPROP-ONTO IND (CDR PL))))))
 (DEFUN REMPROP (SYM IND)
   (SET-SYMBOL-PLIST! SYM (REMPROP-ONTO IND (SYMBOL-PLIST SYM))))
+
+; SEXPR-RENAME — a genuine Rust-level builtin in the reference
+; (evaluator/builtins_core.rs, backing lib/27-modules.lisp's own
+; WITH-MODULE), rebuilding FORM with every symbol that is (a) a key in
+; TABLE (an ordinary hash table, symbol -> symbol) and (b) not already
+; qualified (its name contains ":", which also exempts keywords)
+; replaced by its mapped value; a cons headed by the literal symbol
+; QUOTE or QUASIQUOTE is returned untouched, checked at every cons
+; level (not just the top), matching the reference's own semantics —
+; forward-references GETHASH/STRING-INDEX-OF (this file's own GETHASH
+; already exists; STRING-INDEX-OF is reference stdlib, lib/14-
+; strings.lisp, loaded well before lib/27-modules.lisp's own first use
+; of this), the same tolerance every other forward reference in this
+; project already relies on (a global call resolves through the
+; self-patching inline cache at actual call time, not at the calling
+; function's own compile time).
+(DEFUN SEXPR-RENAME (FORM TABLE)
+  (IF (ATOM FORM)
+      (IF (AND (SYMBOLP FORM)
+               (GETHASH TABLE FORM)
+               (NULL (STRING-INDEX-OF (PRINC-TO-STRING FORM) ":")))
+          (GETHASH TABLE FORM)
+          FORM)
+      (IF (IF (SYMBOLP (CAR FORM))
+              (OR (EQ (CAR FORM) (QUOTE QUOTE)) (EQ (CAR FORM) (QUOTE QUASIQUOTE)))
+              ())
+          FORM
+          (CONS (SEXPR-RENAME (CAR FORM) TABLE) (SEXPR-RENAME (CDR FORM) TABLE)))))
 
 ; RPLACA/RPLACD — needs no new kernel primitive at all: the reference's
 ; own doc comment for both (evaluator/builtins_extra.rs) is explicit
