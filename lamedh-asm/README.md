@@ -65,7 +65,8 @@ programs this stage targets.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
   and `REMAINDER`.
-- `PROGN`, `COND`, `AND`, `OR` as real special forms (Part VII).
+- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*` as real special forms
+  (Part VII).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
   `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
@@ -267,11 +268,19 @@ into conformance incrementally, tracked honestly rather than silently:
   is `NIL`. `LAMBDA` bodies are no longer single-expression-only —
   multiple forms are implicitly `PROGN`-wrapped (`compile_lambda` now
   compiles `cddr` of the whole form through `compile_progn`, not just
-  `caddr` through `compile_form`).
+  `caddr` through `compile_form`). `LET` (parallel) and `LET*`
+  (sequential) also exist now (`tests/cases/026_let.asm`), sharing the
+  enclosing function's own stack frame rather than allocating one of
+  their own — a `LET` reserves its slots with a plain `sub rsp` at
+  entry and releases them with `add rsp` at exit, addressed via the
+  same `[rbp+disp]` scheme as every other local, at whatever depth
+  `current_frame_depth` says is next-free (tracked and restored around
+  nested `LAMBDA`/`LET`/`LET*` the same way `current_scope` already
+  is).
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
-  special forms (`LET`/`LET*`/`SETQ`/`BLOCK`/`PROG`/`WHILE`/`FOR`/
-  `UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet;
-  the condition system (Part VIII),
+  special forms (`SETQ`/`BLOCK`/`PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/
+  `VAU`/`DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet; the condition
+  system (Part VIII),
   capability gating (Part IX), and fuel (Part X) don't exist yet;
   proper tail calls (Part VI) aren't implemented (see v0 limits
   below); the hash table/array/float primitive *names* (`HT-*`/

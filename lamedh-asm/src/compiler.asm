@@ -116,6 +116,8 @@ kw_progn:  db "PROGN"
 kw_cond:   db "COND"
 kw_and:    db "AND"
 kw_or:     db "OR"
+kw_let:      db "LET"
+kw_let_star: db "LET*"
 kw_string_length: db "STRING-LENGTH"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -165,6 +167,22 @@ catch_stack_top: resq 1
 ; slot) because nothing in that span recurses into compile_lambda —
 ; recursive compilation only happens later, while compiling the body.
 rest_sym_scratch: resq 1
+
+; current_frame_depth: how many rbp-relative local slots are already
+; considered reserved in the *current* function's own frame (params +
+; frees + REST slot, plus whatever LET/LET* nesting is currently
+; active) — the same "how deep am I" count compile_lambda already
+; computes for its own prologue, just kept live across LET/LET* so
+; they know where their own slots start. Saved/restored around a
+; nested LAMBDA's or LET's body exactly like current_scope is.
+current_frame_depth: resq 1
+
+; lambda_frame_depth_scratch: holds a LAMBDA's own computed base_index
+; (params+frees+REST slot count) from where it's computed (prologue
+; emission) until where it's needed (installing current_frame_depth
+; right before the body compiles) — same one-cell-is-safe reasoning as
+; rest_sym_scratch: nothing recurses into compile_lambda in between.
+lambda_frame_depth_scratch: resq 1
 
 section .text
 
@@ -1048,6 +1066,252 @@ compile_or:
     pop rbx
     ret
 
+; let_binding_names(rdi = ((name init) (name init) ...) bindings list)
+; -> rax = (name name ...), order preserved. The name-only projection
+; build_frame_from_list needs (it wants a plain symbol list, and a LET
+; binding is a 2-element list, not a bare symbol).
+let_binding_names:
+    push rbx
+    mov rbx, rdi
+    cmp rbx, IMM_NIL
+    jne .have
+    mov rax, IMM_NIL
+    jmp .out
+.have:
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call car                            ; name
+    push rax
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call let_binding_names
+    pop rdi
+    mov rsi, rax
+    call cons
+.out:
+    pop rbx
+    ret
+
+; compile_let(rdi = the full (LET ((name init)...) body...) form)
+;
+; Parallel binding: every init is compiled and evaluated in the OUTER
+; scope, in order — none can see any other binding this same LET
+; introduces — before any of them becomes visible. This works by
+; building the LET's own (name . disp) frame *before* evaluating any
+; init (via build_frame_from_list, disps starting right after however
+; many rbp-relative slots are already reserved, tracked by
+; current_frame_depth) but not *installing* it into current_scope
+; until every init has been compiled; each init's computed value is
+; stored into its slot via a lookup against that not-yet-installed
+; frame directly (frame_lookup), not through current_scope.
+;
+; A LET shares its enclosing function's own stack frame (no push rbp
+; of its own — it isn't a call): it reserves its own slots with a
+; plain `sub rsp` at entry and releases them with `add rsp` at exit,
+; nested cleanly inside whatever the enclosing function already
+; reserved. This only works because every compile_XXX helper in this
+; compiler leaves the target's rsp exactly as it found it across its
+; own call (compile_binop's own push/pop of operands is the same
+; discipline) — so by the time compile_form dispatches to compile_let,
+; rsp is guaranteed back at its enclosing-function baseline, and it is
+; again by the time compile_let returns.
+compile_let:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                        ; bindings list (original head)
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov r13, rax                          ; body forms list
+
+    mov rdi, r12
+    call list_length
+    mov r14, rax                              ; k = number of bindings
+
+    mov eax, r14d
+    imul eax, eax, 8
+    mov edi, eax
+    call emit_sub_rsp_imm32
+
+    mov rdi, r12
+    call let_binding_names
+    mov rdi, rax
+    mov rsi, [current_frame_depth]
+    call build_frame_from_list
+    push rax                                    ; [new_frame]
+
+    mov rbx, r12                                  ; cursor over original bindings
+.init_loop:
+    cmp rbx, IMM_NIL
+    je .inits_done
+    mov rdi, rbx
+    call car
+    mov r15, rax                                    ; binding = (name init)
+    mov rdi, r15
+    call cadr
+    mov rdi, rax
+    call compile_form                                   ; init -> target rax
+    mov rdi, r15
+    call car                                              ; name
+    mov rdi, rax
+    mov rsi, [rsp]                                          ; new_frame
+    call frame_lookup                                         ; -> disp
+    mov esi, eax
+    mov dil, REG_RAX
+    call emit_store_local
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .init_loop
+.inits_done:
+    pop r15                                            ; new_frame
+
+    mov rdi, r15
+    mov rsi, [current_scope]
+    call append_lists
+    mov r15, rax                                          ; new_scope
+
+    mov rax, [current_scope]
+    push rax                                                ; [old_scope]
+    mov [current_scope], r15
+
+    mov rax, [current_frame_depth]
+    push rax                                                  ; [old_frame_depth, old_scope]
+    add rax, r14
+    mov [current_frame_depth], rax
+
+    mov rdi, r13
+    call compile_progn                                          ; body -> target rax
+
+    pop rax
+    mov [current_frame_depth], rax
+    pop rax
+    mov [current_scope], rax
+
+    mov dil, REG_RSP
+    mov eax, r14d
+    imul eax, eax, 8
+    mov esi, eax
+    call emit_add_reg_imm32
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_let_star(rdi = the full (LET* ((name init)...) body...) form)
+;
+; Sequential binding: each init sees every earlier binding of the same
+; LET* (but not later ones). Structurally identical to compile_let
+; except each binding's frame entry is installed into current_scope
+; immediately after its own init is stored, one at a time, instead of
+; building the whole frame up front and installing it only once every
+; init has run.
+compile_let_star:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                        ; bindings list
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov r13, rax                          ; body forms list
+
+    mov rdi, r12
+    call list_length
+    mov r14, rax                              ; k
+
+    mov eax, r14d
+    imul eax, eax, 8
+    mov edi, eax
+    call emit_sub_rsp_imm32
+
+    mov rax, [current_frame_depth]
+    push rax                                    ; [old_frame_depth]
+    mov rax, [current_scope]
+    push rax                                      ; [old_scope, old_frame_depth]
+
+    mov rbx, r12                                    ; cursor over bindings
+.loop:
+    cmp rbx, IMM_NIL
+    je .bindings_done
+    mov rdi, rbx
+    call car
+    mov r15, rax                                        ; binding = (name init)
+
+    mov rdi, r15
+    call cadr
+    mov rdi, rax
+    call compile_form                                        ; init -> target rax (sees every
+                                                              ; earlier LET* binding already
+                                                              ; installed below)
+
+    mov rax, [current_frame_depth]
+    mov esi, eax
+    add esi, 1
+    imul esi, esi, -8
+    mov dil, REG_RAX
+    call emit_store_local                                       ; slot at -8*(depth+1)
+
+    mov rdi, r15
+    call car                                                       ; name
+    push rax
+    mov rax, [current_frame_depth]
+    add rax, 1
+    imul rax, rax, -8
+    mov rsi, rax
+    pop rdi
+    call cons                                                        ; (name . disp)
+    mov rdi, rax
+    mov rsi, [current_scope]
+    call cons                                                          ; (pair . scope)
+    mov [current_scope], rax
+
+    mov rax, [current_frame_depth]
+    inc rax
+    mov [current_frame_depth], rax
+
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .loop
+.bindings_done:
+    mov rdi, r13
+    call compile_progn                                              ; body -> target rax
+
+    pop rax
+    mov [current_scope], rax                                          ; [old_frame_depth]
+    pop rax
+    mov [current_frame_depth], rax
+
+    mov dil, REG_RSP
+    mov eax, r14d
+    imul eax, eax, 8
+    mov esi, eax
+    call emit_add_reg_imm32
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; compile_if(rdi = the full (IF test then else) form)
 ;
 ; Backpatched forward branches: the je/jmp targets aren't known until the
@@ -1236,6 +1500,10 @@ compile_lambda:
     inc rax
 .no_rest_bump2:
     add rax, rbx
+    mov [lambda_frame_depth_scratch], rax     ; stash base_index for
+                                               ; current_frame_depth,
+                                               ; installed right before
+                                               ; the body compiles below
     imul eax, eax, 8
     mov edi, eax
     call emit_sub_rsp_imm32
@@ -1382,13 +1650,28 @@ compile_lambda:
     call emit_store_local                                                                   ; target: REST slot = acc
 .no_rest_loop:
 
-    ; compile the body with the new scope installed
+    ; compile the body with the new scope AND a fresh current_frame_depth
+    ; installed (this lambda's own base_index, stashed above — a LET/
+    ; LET* inside the body allocates its own slots starting right after
+    ; this function's own params/frees/REST slot, never colliding with
+    ; an *enclosing* function's LET nesting, which is exactly why the
+    ; old value must be saved and restored around this, same as
+    ; current_scope just above it).
     mov rax, [current_scope]
     push rax                                    ; [old_scope, new_scope, param_frame, jmp_over_site]
     mov rax, [rsp+8]
     mov [current_scope], rax
+
+    mov rax, [current_frame_depth]
+    push rax                                      ; [old_frame_depth, old_scope, new_scope, param_frame, jmp_over_site]
+    mov rax, [lambda_frame_depth_scratch]
+    mov [current_frame_depth], rax
+
     mov rdi, r13
     call compile_progn
+
+    pop rax
+    mov [current_frame_depth], rax
     pop rax
     mov [current_scope], rax                       ; [new_scope, param_frame, jmp_over_site]
 
@@ -2764,6 +3047,28 @@ compile_form:
     jmp .out
 
 .not_or:
+    mov rdi, r12
+    mov rsi, kw_let_star
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_let_star
+    mov rdi, rbx
+    call compile_let_star
+    jmp .out
+
+.not_let_star:
+    mov rdi, r12
+    mov rsi, kw_let
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_let
+    mov rdi, rbx
+    call compile_let
+    jmp .out
+
+.not_let:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1
