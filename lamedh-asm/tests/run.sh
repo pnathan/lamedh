@@ -181,6 +181,14 @@ else
 (PRINT `(A `(B ,(+ 1 2))))
 (NEWLINE)
 (PRINT (EQ (QUOTE Z) `Z))
+(NEWLINE)
+(FOR (I 1 3) (PRINT I))
+(NEWLINE)
+(FOR (I 3 1 -1) (PRINT I))
+(NEWLINE)
+(PRINT (FOR (I 1 3) (PRINT I)))
+(NEWLINE)
+(PRINT (HANDLER-CASE (FOR (I 1 5 0) (PRINT I)) (E (X) (QUOTE CAUGHT))))
 LISP
     want_out='T
 T
@@ -222,7 +230,11 @@ T
 (1 2 3)
 (A 5 7 8 9 B)
 (A (QUASIQUOTE (B 3)))
-T'
+T
+123
+321
+123()
+CAUGHT'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

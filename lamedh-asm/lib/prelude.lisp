@@ -414,3 +414,48 @@
               (LIST (QUOTE CONS) (QQ-EXPAND (CAR FORM)) (QQ-EXPAND (CDR FORM)))))))
 
 (DEFMACRO QUASIQUOTE (TEMPLATE) (QQ-EXPAND TEMPLATE))
+
+; FOR (KERNEL.md Part VII): "(for (var start end [step]) body...)
+; evaluates start, end, and step once (fixnums; a zero step is an
+; error), iterates var from start to end *inclusive* in one reused
+; frame, and returns NIL" — explicitly licensed to be derived from
+; LET/WHILE/tail-calls (Part XII axis 3), same recipe DOTIMES already
+; uses: a LET binds var/end/step exactly once, WHILE re-tests a
+; direction-aware continuation predicate, and the body's own trailing
+; SETQ mutates var *in place* rather than rebinding it — which is
+; exactly what gives "one reused frame every closure in the body
+; shares" for free, the same way it already does for DOTIMES.
+; GENSYM (not a fixed internal name) for the end/step bindings, so a
+; nested FOR can't collide with an outer one's — the same hygiene fix
+; DOTIMES itself needed (see "KERNEL.md conformance" above).
+(DEFUN FOR-STEP-OF (SPEC)
+  (IF (NULL (CDR (CDR (CDR SPEC))))
+      1
+      (CAR (CDR (CDR (CDR SPEC))))))
+
+(DEFUN FOR-CHECK-STEP (STEP)
+  (IF (= STEP 0) (ERROR "FOR: step must be non-zero" STEP) STEP))
+
+; direction-aware inclusive bound test: counting up (step > 0)
+; continues while var <= end; counting down continues while end <= var.
+(DEFUN FOR-CONTINUE-P (VAR END STEP)
+  (IF (< 0 STEP) (<= VAR END) (<= END VAR)))
+
+(DEFMACRO FOR (SPEC &REST BODY)
+  (LET ((VAR (CAR SPEC))
+        (START (CAR (CDR SPEC)))
+        (END (CAR (CDR (CDR SPEC))))
+        (STEP-FORM (FOR-STEP-OF SPEC))
+        (END-SYM (GENSYM))
+        (STEP-SYM (GENSYM)))
+    (LIST (QUOTE LET)
+          (LIST (LIST VAR START)
+                (LIST END-SYM END)
+                (LIST STEP-SYM (LIST (QUOTE FOR-CHECK-STEP) STEP-FORM)))
+          (LIST (QUOTE WHILE)
+                (LIST (QUOTE FOR-CONTINUE-P) VAR END-SYM STEP-SYM)
+                (CONS (QUOTE PROGN)
+                      (APPEND BODY
+                              (LIST (LIST (QUOTE SETQ) VAR
+                                          (LIST (QUOTE +) VAR STEP-SYM))))))
+          (QUOTE ()))))

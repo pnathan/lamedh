@@ -471,9 +471,28 @@ into conformance incrementally, tracked honestly rather than silently:
   level regardless of how many `(QUASIQUOTE ...)` conses structurally
   surround it. `UNQUOTE-SPLICING` splices correctly at any list
   position, including immediately before a dotted tail (``(1 ,@ys . 2)``).
-  Most of the rest of Part VII's
-  special forms (`PROG`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`)
-  still don't exist; capability gating
+  **`FOR` now also exists** (`file_runner_prelude`'s own coverage in
+  `tests/run.sh`), derived from `LET`/`WHILE`/tail-calls exactly the
+  way Part XII axis 3 explicitly licenses (the reference's own doc
+  comment says as much): `(for (var start end [step]) body...)`
+  evaluates `start`/`end`/`step` once into a single `LET` frame (`step`
+  defaults to `1` when omitted, and a zero `step` signals an ordinary
+  `ERROR` — `(handler-case (for (i 1 5 0) ...) ...)` catches it),
+  `WHILE` re-tests a direction-aware inclusive-bound predicate
+  (counting up continues while `var <= end`, counting down while
+  `end <= var`), and the body's own trailing `SETQ` mutates `var` *in
+  place* rather than rebinding it on each pass — precisely what gives
+  "one reused frame every closure in the body shares" (the spec's own
+  exact phrase) for free, the same mechanism `DOTIMES` already relies
+  on. `GENSYM` (not a fixed internal name) for the end/step bindings
+  means a nested `FOR` can't collide with an outer one's, the same
+  hygiene fix `DOTIMES` itself needed. Most of the rest of Part VII's
+  special forms (`PROG`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`)
+  still don't exist — `UNWIND-PROTECT` in particular needs real
+  integration with the `CATCH`/`THROW` unwind machinery itself (running
+  cleanup forms for *any* exit passing through, not just ones this
+  form itself catches), not just another `CATCH`/`THROW` derivation
+  the way `BLOCK`/`HANDLER-CASE` were; capability gating
   (Part IX) and fuel (Part X) don't exist yet; proper tail calls
   (Part VI) aren't implemented (see v0 limits below); the array
   primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/
@@ -813,8 +832,8 @@ It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 `MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, `RPLACD`, `DEF`,
 `FUNCALL`, `>`/`>=`/`<=`, `MAX`/`MIN`, `FOR-EACH`, `FILTER`, `SOME`,
 `EVERY`, `MAKE-HASH-TABLE`, `SETHASH`, `GETHASH`, `REMHASH`, `KEYS`,
-and `QUASIQUOTE` (with its own `UNQUOTE`/`UNQUOTE-SPLICING` reader
-support) — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
+`QUASIQUOTE` (with its own `UNQUOTE`/`UNQUOTE-SPLICING` reader
+support), and `FOR` — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
 over kernel primitives, no compiler change needed (see
 `lib/prelude.lisp`'s own comments for exactly why; `DOTIMES` is
 derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part XII axis 3's
