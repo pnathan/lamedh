@@ -1145,14 +1145,30 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             }
                         }
                         // Restore the enclosing budget MINUS what this fence
-                        // spent (None remaining = exhaustion disarmed the
-                        // counter: everything spent). Runs on error paths too.
+                        // spent (0 remaining = exhausted, possibly mid-grace:
+                        // everything armed to this fence counts as spent).
+                        // Runs on error paths too.
                         crate::evaluator::core::fuel_fence_leave();
                         let know = crate::evaluator::core::kernel_fuel_remaining();
                         let spent = karmed.saturating_sub(know.unwrap_or(0));
                         crate::evaluator::core::set_kernel_fuel(
                             prev.map(|p| p.saturating_sub(spent)),
                         );
+                        // This is the OWNING fence for any FuelExhausted that
+                        // reached here (issue #457): it rode the
+                        // Return/Go/Throw/ReturnFrom-style propagation path
+                        // past any guest HANDLER-CASE positioned inside this
+                        // very fence, so it is only now — on the way back out
+                        // to code OUTSIDE the fence — converted into the
+                        // ordinary catchable condition guest code expects.
+                        // `set_kernel_fuel` above already cleared the grace
+                        // state for the (now restored) enclosing extent.
+                        let result = match result {
+                            Err(LispError::FuelExhausted) => Err(LispError::Generic(
+                                "fuel exhausted (kernel step budget)".to_string(),
+                            )),
+                            other => other,
+                        };
                         Ok(TcoStep::Done(result))
                     }
                     SpecialForm::WithCapabilities => {
