@@ -1300,3 +1300,23 @@ than smoothed over:
   so Part II does not describe one; when a design lands in the reference,
   Part II gains its grammar and Part XII its declared axis (which host
   feature names exist).
+- **Cache macro expansion per call site** (issue #460): today every macro
+  call re-runs the macro body from scratch on every invocation, including
+  every iteration of a compiled loop, because macro dispatch shares one
+  code path with `VAU`/fexpr dispatch, which genuinely must run fresh
+  every call. Since a macro's expansion is otherwise a function of its
+  definition and the literal call-site operand forms, caching it once
+  per call site is sound and matches how every other Lisp treats
+  `DEFMACRO`; `VAU` and fexprs are unaffected and stay uncached by
+  design. Once implemented, Part VI gains the cache's existence and its
+  one-time-global-observation semantics as a normative rule, and Part X
+  gains a note that fuel step counts may differ between a cache hit and
+  a cache miss.
+- **Fix two binder-identity gaps `VAU` and `APPLY` leave open** (issues
+  #461, #462): `VAU` construction and application do not guard dynamic-
+  variable parameters the way macros and fexprs do (#461), and `VAU`
+  construction plus `APPLY`-on-fexpr/`VAU` do not use the canonical
+  binder id that #285/#287 established for gensym'd or foreign-table
+  parameter names (#462) — a regression of that fix's coverage, not a
+  new class of bug. Both are reference-implementation defects to fix,
+  not host latitude Part XII grants.
