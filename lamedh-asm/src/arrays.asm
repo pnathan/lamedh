@@ -2,7 +2,7 @@
 ; slot vector (HDR_ARRAY: [0]=header [8]=len [16..]=len*8 tagged slot
 ; bytes, each slot one full tagged value). Fixed size at creation (no
 ; grow/shrink), and — unlike every value type before it — mutable:
-; ARRAY-SET rewrites a slot in place. Nothing else in this kernel
+; STORE rewrites a slot in place. Nothing else in this kernel
 ; mutates a heap value after creation (captured closure values are
 ; copied by value; the hash table library that used to sit on top of
 ; just CONS/CAR/CDR was persistent for exactly this reason — no
@@ -12,7 +12,7 @@
 ;
 ; This is what makes a *real* hash table possible as library code: a
 ; bucket array plus small per-bucket alist chains, both built from
-; primitives already in this kernel (CONS for the chains, ARRAY-SET for
+; primitives already in this kernel (CONS for the chains, STORE for
 ; the bucket slots) — see tests/cases/021_hashtable_array.asm and the
 ; README's kernel-surface section.
 

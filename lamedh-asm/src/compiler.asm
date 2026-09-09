@@ -139,10 +139,10 @@ kw_fsub:     db "F-"
 kw_fmul:     db "F*"
 kw_fdiv:     db "F/"
 kw_flt:      db "F<"
-kw_make_array:   db "MAKE-ARRAY"
-kw_array_ref:    db "ARRAY-REF"
-kw_array_set:    db "ARRAY-SET"
-kw_array_length: db "ARRAY-LENGTH"
+kw_make_array:   db "ARRAY"
+kw_array_ref:    db "FETCH"
+kw_array_set:    db "STORE"
+kw_array_length: db "ARRAY-LENGTH*"
 kw_hash_code:    db "HASH-CODE"
 kw_mod:          db "MOD"
 kw_remainder:    db "REMAINDER"
@@ -3560,7 +3560,7 @@ compile_form:
 .not_float_binop:
     mov rdi, r12
     mov rsi, kw_make_array
-    mov rdx, 10
+    mov rdx, 5
     call sym_is
     test rax, rax
     jz .not_make_array
@@ -3574,7 +3574,7 @@ compile_form:
 .not_make_array:
     mov rdi, r12
     mov rsi, kw_array_length
-    mov rdx, 12
+    mov rdx, 13
     call sym_is
     test rax, rax
     jz .not_array_length
@@ -3602,7 +3602,7 @@ compile_form:
 .not_hash_code:
     mov rdi, r12
     mov rsi, kw_array_ref
-    mov rdx, 9
+    mov rdx, 5
     call sym_is
     test rax, rax
     jz .not_array_ref
@@ -3662,7 +3662,7 @@ compile_form:
 .not_remainder:
     mov rdi, r12
     mov rsi, kw_array_set
-    mov rdx, 9
+    mov rdx, 5
     call sym_is
     test rax, rax
     jz .not_array_set

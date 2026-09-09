@@ -1,8 +1,8 @@
 ; 022_hashtable_array — a *real* hash table, expected O(1) per
 ; operation, replacing the O(n) persistent alist of
 ; tests/cases/020_hashtable.asm. Still pure Lamedh library code, not a
-; kernel primitive: it's built entirely on MAKE-ARRAY/ARRAY-REF/
-; ARRAY-SET/HASH-CODE/MOD (021_arrays.asm) plus the same CONS/CAR/CDR/
+; kernel primitive: it's built entirely on ARRAY/FETCH/
+; STORE/HASH-CODE/MOD (021_arrays.asm) plus the same CONS/CAR/CDR/
 ; EQ/NULL/IF this kernel already exposed for exactly this purpose —
 ; only the bucket array and the mutation primitive to write into it are
 ; new kernel surface; the hashing/bucketing/chaining *policy* is all
@@ -12,7 +12,7 @@
 ; would grow it; this is the honestly-scoped v0, same spirit as every
 ; other v0 limit in this project); each bucket holds a short alist
 ; chain of (key . val) pairs for whatever hashed to it. HT-SET!
-; *mutates* the table in place (ARRAY-SET on the bucket slot) — unlike
+; *mutates* the table in place (STORE on the bucket slot) — unlike
 ; the old alist version, this is no longer a persistent structure,
 ; because a real RPLACD-free hash table needs somewhere to mutate, and
 ; the bucket array is it.
@@ -29,7 +29,7 @@ section .rodata
 d1: db "(DEFINE HT-NBUCKETS 61)"
 d1_len: equ $ - d1
 
-d2: db "(DEFINE HT-MAKE (LAMBDA () (MAKE-ARRAY HT-NBUCKETS)))"
+d2: db "(DEFINE HT-MAKE (LAMBDA () (ARRAY HT-NBUCKETS)))"
 d2_len: equ $ - d2
 
 ; walks one bucket's chain looking for KEY -> the (key . val) pair, or NIL
@@ -45,13 +45,13 @@ d5: db "(DEFINE HT-INDEX (LAMBDA (KEY) (MOD (HASH-CODE KEY) HT-NBUCKETS)))"
 d5_len: equ $ - d5
 
 ; HT-SET!(ht key val) -> val, mutating HT in place
-d6: db "(DEFINE HT-SET! (LAMBDA (HT KEY VAL) (ARRAY-SET HT (HT-INDEX KEY) (CONS (CONS KEY VAL) (HT-BUCKET-REMOVE (ARRAY-REF HT (HT-INDEX KEY)) KEY)))))"
+d6: db "(DEFINE HT-SET! (LAMBDA (HT KEY VAL) (STORE HT (HT-INDEX KEY) (CONS (CONS KEY VAL) (HT-BUCKET-REMOVE (FETCH HT (HT-INDEX KEY)) KEY)))))"
 d6_len: equ $ - d6
 
-d7: db "(DEFINE HT-GET (LAMBDA (HT KEY) (IF (NULL (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (CDR (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)))))"
+d7: db "(DEFINE HT-GET (LAMBDA (HT KEY) (IF (NULL (HT-BUCKET-ASSOC (FETCH HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (CDR (HT-BUCKET-ASSOC (FETCH HT (HT-INDEX KEY)) KEY)))))"
 d7_len: equ $ - d7
 
-d8: db "(DEFINE HT-HAS-KEY (LAMBDA (HT KEY) (IF (NULL (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (QUOTE T))))"
+d8: db "(DEFINE HT-HAS-KEY (LAMBDA (HT KEY) (IF (NULL (HT-BUCKET-ASSOC (FETCH HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (QUOTE T))))"
 d8_len: equ $ - d8
 
 ; --- exercise it ---

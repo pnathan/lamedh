@@ -1,5 +1,5 @@
-; 021_arrays — the array value type: MAKE-ARRAY/ARRAY-REF/ARRAY-SET/
-; ARRAY-LENGTH, the first kernel primitives that mutate a heap value
+; 021_arrays — the array value type: ARRAY/FETCH/STORE/
+; ARRAY-LENGTH*, the first kernel primitives that mutate a heap value
 ; after creation, plus HASH-CODE and MOD — the small extra surface an
 ; array-backed hash table library needs beyond CONS/CAR/CDR/EQ.
 
@@ -12,22 +12,22 @@ extern print_fixnum
 extern print_newline
 
 section .rodata
-d1: db "(DEFINE A (MAKE-ARRAY 5))"
+d1: db "(DEFINE A (ARRAY 5))"
 d1_len: equ $ - d1
-e1: db "(ARRAY-LENGTH A)"                    ; 5
+e1: db "(ARRAY-LENGTH* A)"                    ; 5
 e1_len: equ $ - e1
-e2: db "(IF (NULL (ARRAY-REF A 0)) 111 222)"  ; 111 (fresh slot is NIL)
+e2: db "(IF (NULL (FETCH A 0)) 111 222)"  ; 111 (fresh slot is NIL)
 e2_len: equ $ - e2
-e3: db "(ARRAY-SET A 2 42)"                    ; 42 (ARRAY-SET returns its value)
+e3: db "(STORE A 2 42)"                    ; 42 (STORE returns its value)
 e3_len: equ $ - e3
-e4: db "(ARRAY-REF A 2)"                        ; 42 (mutation visible on read-back)
+e4: db "(FETCH A 2)"                        ; 42 (mutation visible on read-back)
 e4_len: equ $ - e4
-e5: db "(ARRAY-REF A 0)"                          ; 0-tagged NIL untouched: still NIL, print as 0? no
+e5: db "(FETCH A 0)"                          ; 0-tagged NIL untouched: still NIL, print as 0? no
 e5_len: equ $ - e5
 ; overwrite twice; second write wins
-e6: db "(ARRAY-SET A 2 99)"
+e6: db "(STORE A 2 99)"
 e6_len: equ $ - e6
-e7: db "(ARRAY-REF A 2)"                            ; 99
+e7: db "(FETCH A 2)"                            ; 99
 e7_len: equ $ - e7
 
 ; MOD

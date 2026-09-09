@@ -71,8 +71,8 @@ programs this stage targets.
   (Part VIII's condition system).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
-  `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
-  `ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`/`HASH-CODE` — see "The
+  `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `ARRAY`/
+  `FETCH`/`STORE`/`ARRAY-LENGTH*`/`HASH-CODE` — see "The
   kernel surface" below.
 - String and float literals (`"..."`, `3.14`) read as heapobjs
   (`HDR_STRING`, `HDR_FLOAT`) and are self-evaluating, exactly like a
@@ -199,15 +199,20 @@ specifically to test where the line falls:
   name would inline these; a real function call per float operation is
   the cost of not yet teaching `codegen.asm` about XMM registers at
   all (see Roadmap).
-- **`MAKE-ARRAY`/`ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`** are a fixed-
-  length, index-addressable slot vector (`HDR_ARRAY`, `arrays.asm`) —
-  and `ARRAY-SET` is the **first primitive in this kernel that mutates
-  a heap value after creation**. Every value type before it either
-  can't be rewritten at all (fixnums, immediates) or is captured/read
-  but never mutated in place (a closure's captured values are copied by
-  value at creation; a cons built by `CONS` is never `RPLACD`'d).
-  Scoped as narrowly as that one capability: no grow/shrink, no bounds
-  check (v0 — see limits below).
+- **`ARRAY`/`FETCH`/`STORE`/`ARRAY-LENGTH*`** are a fixed-length,
+  index-addressable slot vector (`HDR_ARRAY`, `arrays.asm`), named to
+  match [KERNEL.md](https://github.com/pnathan/lamedh/pull/453) Part
+  XI/IV exactly — `ARRAY`, `FETCH`, `STORE`, and `ARRAY-LENGTH*` are the
+  spec's own primitive names, not this project's earlier `MAKE-ARRAY`/
+  `ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH` — and `STORE` is the **first
+  primitive in this kernel that mutates a heap value after creation**.
+  Every value type before it either can't be rewritten at all (fixnums,
+  immediates) or is captured/read but never mutated in place (a
+  closure's captured values are copied by value at creation; a cons
+  built by `CONS` is never `RPLACD`'d). Scoped as narrowly as that one
+  capability: no grow/shrink, no bounds check (v0 — see limits below;
+  Part IV requires an out-of-range index to be a catchable error, not
+  yet true here).
 - **`HASH-CODE`/`MOD`/`REMAINDER`** round out the small extra kernel
   surface a *real* hash table needs beyond plain list processing:
   `HASH-CODE` returns a stable, always-non-negative fixnum for a
@@ -226,9 +231,9 @@ specifically to test where the line falls:
   and still isn't one even with real, expected-O(1) performance.
   `HT-MAKE`/`HT-SET!`/`HT-GET`/`HT-HAS-KEY`/`HT-BUCKET-ASSOC`/
   `HT-BUCKET-REMOVE` (`tests/cases/022_hashtable_array.asm`) are six
-  small `DEFINE`s: a fixed-size `MAKE-ARRAY` bucket table, each bucket
+  small `DEFINE`s: a fixed-size `ARRAY` bucket table, each bucket
   a short `CONS`-built alist chain, `HASH-CODE`+`MOD` picking the
-  bucket, `ARRAY-SET` mutating that one bucket slot on `HT-SET!`. Only
+  bucket, `STORE` mutating that one bucket slot on `HT-SET!`. Only
   the four primitives above are new kernel surface; the hashing/
   bucketing/chaining *policy* is all library code, exactly like the
   persistent alist version it replaces
@@ -328,10 +333,12 @@ into conformance incrementally, tracked honestly rather than silently:
   special forms (`PROG`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
   `QUASIQUOTE`) don't exist yet; capability gating
   (Part IX) and fuel (Part X) don't exist yet; proper tail calls
-  (Part VI) aren't implemented (see v0 limits below); the hash
-  table/array/float primitive *names* (`HT-*`/`ARRAY-*`/`F+` etc.)
-  don't match Part XI's required exact names (`MAKE-HASH-TABLE`/
-  `ARRAY`/`FETCH`/`STORE`/contagion-based `+`) —
+  (Part VI) aren't implemented (see v0 limits below); the array
+  primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/
+  `STORE`/`ARRAY-LENGTH*`, no longer `MAKE-ARRAY`/`ARRAY-REF`/
+  `ARRAY-SET`/`ARRAY-LENGTH`), but the hash table and float primitive
+  *names* (`HT-*`, `F+` etc.) still don't match Part XI's required
+  exact names (`MAKE-HASH-TABLE` and contagion-based `+`) —
   Part XI is explicit that this is the actual conformance bar, not a
   detail; there is no character type, no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values, no `GENSYM`/
@@ -355,10 +362,10 @@ into conformance incrementally, tracked honestly rather than silently:
   variable visible to the closure that captured it (or vice versa).
 - No garbage collector. No bignums, `vau`, first-class conditions, or
   dynamic variables yet.
-- Arrays are fixed-size at creation (`MAKE-ARRAY` doesn't grow/shrink)
-  and `ARRAY-REF`/`ARRAY-SET` do no bounds checking — an out-of-range
+- Arrays are fixed-size at creation (`ARRAY` doesn't grow/shrink)
+  and `FETCH`/`STORE` do no bounds checking — an out-of-range
   index reads or writes adjacent heap memory rather than raising
-  anything. `ARRAY-SET` is also the only mutation primitive in this
+  anything. `STORE` is also the only mutation primitive in this
   kernel; nothing else (a cons, a closure's captured values) can be
   rewritten after creation.
 - The array-backed hash table (`HT-MAKE` et al.) is a fixed 61-bucket
@@ -513,10 +520,13 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   unbound variable) signaling catchable conditions instead of
   misbehaving.
 - A resizable hash table (grow the bucket array and rehash past some
-  load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD`-style
-  cons mutation now that `ARRAY-SET` has established the pattern;
-  `EQUAL`-style structural equality, so the hash table (and `EQ`-only
-  callers generally) can take string/list keys, not just
+  load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD` —
+  **not** as in-place cons mutation (Part XII, axis 2, requires cons
+  cells to stay immutable on every host: `RPLACA`/`RPLACD` must return
+  a *new* cons cell sharing the untouched half of the original, the
+  same non-destructive contract `STORE` deliberately does not extend to
+  cons cells); `EQUAL`-style structural equality, so the hash table
+  (and `EQ`-only callers generally) can take string/list keys, not just
   pointer-identity-comparable ones.
 - String mutation/building primitives (`STRING-REF`, `STRING-APPEND`,
   `SUBSTRING`) and a real `FORMAT` built on top of `PRINT`/`FD-WRITE`
