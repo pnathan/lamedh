@@ -13,6 +13,8 @@ extern data_alloc
 extern intern_symbol
 extern make_string
 extern make_float
+extern string_bytes
+extern string_len
 
 section .bss
 align 8
@@ -61,6 +63,58 @@ reader_init:
     mov [reader_buf], rdi
     mov qword [reader_pos], 0
     mov [reader_end], rsi
+    ret
+
+; read_from_string_tagged(rdi=tagged string) -> rax = the first tagged
+; form read from the string's bytes, or IMM_EOF if it holds no form
+; (KERNEL.md Part XI: READ-FROM-STRING). reader_buf/reader_pos/
+; reader_end are single global cells, not a stack — reading one whole
+; file is normally a single top-level loop with nothing else touching
+; them, but this primitive can itself be *called from currently
+; running compiled code* (e.g. inside an EVAL'd form, itself invoked
+; from a file_runner.asm-style driver loop that is mid-file), so the
+; caller's own reader position must survive a call here exactly the
+; way a callee-saved register would: saved before, restored after,
+; even though this reads and discards only one form and leaves any
+; further bytes in the given string unread.
+global read_from_string_tagged
+read_from_string_tagged:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi                      ; source string
+
+    mov r12, [reader_buf]
+    push r12
+    mov r12, [reader_pos]
+    push r12
+    mov r12, [reader_end]
+    push r12                            ; [saved_end, saved_pos, saved_buf]
+
+    mov rdi, rbx
+    call string_bytes
+    mov r12, rax
+    mov rdi, rbx
+    call string_len
+    mov r13, rax
+    mov rdi, r12
+    mov rsi, r13
+    call reader_init
+    call read_form
+    mov rbx, rax                          ; result (rbx: source string is
+                                           ; dead by now)
+
+    pop r12
+    mov [reader_end], r12
+    pop r12
+    mov [reader_pos], r12
+    pop r12
+    mov [reader_buf], r12
+
+    mov rax, rbx
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ; reader_peek() -> rax = zero-extended char, or -1 if at end. Clobbers rax,rcx.

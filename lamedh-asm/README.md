@@ -249,6 +249,34 @@ specifically to test where the line falls:
   (`tests/cases/031_overflow.asm` exercises `+` wrapping at `2^61-1`
   and `-` wrapping at `-2^61`, this representation's actual dynamic
   range, plus both clearing primitives).
+- **`STRING-REF`/`STRING-APPEND`/`SUBSTRING`** round out the string
+  surface beyond `STRING-LENGTH`/`PRINT` (`tests/cases/036_string_ops.asm`)
+  — see "v0 limits" below for their exact scope (byte-indexed, no
+  bounds check, no character type).
+- **`EVAL`/`READ-FROM-STRING`/`PRINC-TO-STRING`** are Part XI's
+  reflection primitives (`tests/cases/037_eval_read_princ.asm`) — the
+  single highest-leverage addition per issue #452's own text, since it
+  unlocks everything above it in this list plus `ERRORSET`'s spec-exact
+  behavior at once. `EVAL` is `compile_thunk` (`eval_form` in
+  `compiler.asm`, next to it) plus one indirect call to the resulting
+  native function — exposing the driver's own top-level mechanism to
+  *compiled* Lamedh code, the same "the compiler is just more compiled
+  code" idea `DEFMACRO` already rests on, one level up. `READ-FROM-
+  STRING` (`read_from_string_tagged`, `reader.asm`) is the more
+  delicate of the two: `reader_buf`/`reader_pos`/`reader_end` are
+  single global cells, not a stack, so calling this *from currently
+  running compiled code* — e.g. inside a form a file-reading driver is
+  itself mid-file evaluating — must save and restore the caller's own
+  reader position around its own use, exactly the way a callee-saved
+  register would, or the driver's next top-level read would resume from
+  the wrong place. `PRINC-TO-STRING` (`princ_to_string`, `print.asm`)
+  redirects `write_buf` — the single point every leaf of `print_value`'s
+  dispatch already funnels through — into an in-memory buffer instead
+  of stdout for the duration of one call, needing no change to
+  `print_value`/`print_string`/`print_symbol`/`print_list`/
+  `print_fixnum`/`float_print` at all; nested calls (a value that
+  itself prints via `PRINC-TO-STRING` while being rendered by an outer
+  one) save and restore the same way `READ-FROM-STRING` does.
 - **Hash tables are not a kernel primitive at all** — the concrete
   demonstration issue #452's kernel/library boundary was framed around,
   and still isn't one even with real, expected-O(1) performance.
@@ -332,14 +360,20 @@ into conformance incrementally, tracked honestly rather than silently:
   to the *next* enclosing one, since the catching `HANDLER-CASE`'s own
   frame is already popped by the time its handler body runs. `(ERROR)`
   with 0/1/2 arguments, and `HANDLER-CASE`'s unconditional catching (no
-  typed clause) match the spec exactly. `ERRORSET` is narrower than
-  the spec's own: it compiles and runs its form directly as ordinary
-  Lamedh source, not "evaluates a value that is itself then run as
-  code" — this kernel has no `EVAL` primitive yet to do that second
-  step with (see Roadmap). No native failure (division by zero, index
-  out of range, wrong arity, unbound variable) signals a condition
-  yet — those still misbehave exactly as before; only explicit `ERROR`
-  calls go through this system so far.
+  typed clause) match the spec exactly. `ERRORSET` now matches the
+  spec exactly too, now that `EVAL` exists (see "The kernel surface"
+  below): `(errorset '(car 5))`'s protected form is compiled and run to
+  get a *value* (ordinarily the quoted list it evaluates to) and that
+  value is itself then run as code via `eval_form`, the second step the
+  spec requires and this kernel previously had no way to take. No
+  native failure (division by zero, index out of range, wrong arity,
+  unbound variable, **or an argument of the wrong type to `CAR`/`CDR`**)
+  signals a condition yet — those still misbehave exactly as before
+  (verified directly: `(errorset '(car 5))` now genuinely attempts to
+  run `(CAR 5)`, which segfaults rather than erroring, since `CAR`
+  itself does no type check — a pre-existing gap this change makes more
+  reachable, not a new one); only explicit `ERROR` calls go through
+  this system so far.
 - **`BLOCK`/`RETURN-FROM`** are the same CATCH/THROW derivation
   trick again, one call site simpler than `HANDLER-CASE`: `name` is
   *unevaluated*, so it's used directly as the catch frame's tag (no
@@ -369,7 +403,12 @@ into conformance incrementally, tracked honestly rather than silently:
   Part XI is explicit that this is the actual conformance bar, not a
   detail; there is no character type, no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values, no `GENSYM`/
-  property lists, no `EVAL`/`READ-FROM-STRING`; the printer has no
+  property lists. `EVAL`, `READ-FROM-STRING`, and `PRINC-TO-STRING`
+  now exist (`tests/cases/037_eval_read_princ.asm`) — Part XI's own
+  reflection primitives, and the single highest-leverage addition per
+  issue #452: `EVAL` is `compile_thunk` (already existed, for the
+  driver's own use) plus one indirect call, exposed to *compiled*
+  Lamedh code for the first time. The printer has no
   cycle detection (unreachable anyway — cons cells are immutable here).
   `PRINT` now emits Part III's required opaque, non-readable tags for
   the two compound types this kernel has: `<lambda>` for a closure and
@@ -631,16 +670,21 @@ producer | build/lamedhc             # or read a program from stdin
   writing them, not extending the compiler; `BLOCK`/`RETURN-FROM` are
   the next candidate for the same `CATCH`/`THROW`-derivation treatment
   `HANDLER-CASE` already got.
-- A real `EVAL` primitive (form + optional environment), so `ERRORSET`
-  can match the spec exactly ("evaluate a value that is itself then
-  run as code") instead of just compiling its argument form directly;
-  native failures (division by zero, index out of range, wrong arity,
-  unbound variable) signaling catchable conditions instead of
+- `EVAL` now exists (`eval_form`, exposed as `(EVAL form)`) and
+  `ERRORSET` uses it to match the spec exactly, but it takes no second
+  (environment) argument — there being no environment-as-value in this
+  kernel yet to pass one with; native failures (division by zero, index
+  out of range, wrong arity, unbound variable, an argument of the wrong
+  type to `CAR`/`CDR`) signaling catchable conditions instead of
   misbehaving — calling a non-callable value now fails deterministically
   (`emit_check_callable`, `native_errors.asm`) rather than segfaulting,
   but still as a hard `exit(1)`, not yet a condition `HANDLER-CASE` can
   catch; the same treatment for the others in this list is the natural
-  next step once real native-failure-to-condition plumbing exists.
+  next step once real native-failure-to-condition plumbing exists —
+  `(errorset '(car 5))` demonstrates the gap concretely now that
+  `ERRORSET` actually runs its evaluated form as code: `CAR` on a
+  non-cons segfaults rather than signaling, escaping the very
+  `ERRORSET` that was supposed to catch it.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD` —
   **not** as in-place cons mutation (Part XII, axis 2, requires cons

@@ -73,6 +73,8 @@ extern string_length_tagged
 extern string_ref_tagged
 extern string_append
 extern substring
+extern read_from_string_tagged
+extern princ_to_string
 extern file_open
 extern file_close
 extern file_write
@@ -141,6 +143,9 @@ kw_string_length: db "STRING-LENGTH"
 kw_string_ref:    db "STRING-REF"
 kw_string_append: db "STRING-APPEND"
 kw_substring:     db "SUBSTRING"
+kw_read_from_string: db "READ-FROM-STRING"
+kw_princ_to_string:  db "PRINC-TO-STRING"
+kw_eval:             db "EVAL"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
 kw_fd_write: db "FD-WRITE"
@@ -3177,13 +3182,14 @@ compile_handler_case:
     ret
 
 ; compile_errorset(rdi = the full (ERRORSET form [ignored]) form)
-; Narrower than KERNEL.md's own ERRORSET: `form` is compiled and run
-; directly as ordinary Lamedh source, not "evaluated as a value that
-; is itself then run as code" — this kernel has no EVAL primitive yet
-; to do that second step with (see README roadmap). Catches any ERROR
-; signaled within it: returns a one-element list (value) on success
-; (so a successful NIL return is distinguishable from failure), or NIL
-; if caught.
+; Matches KERNEL.md's own ERRORSET exactly, now that EVAL exists:
+; `form` is compiled and run to get a *value* (the idiom is
+; `(errorset '(car 5))`, so this is ordinarily a QUOTE), and that value
+; is itself then run as code via eval_form — the second step ERRORSET's
+; own spec requires, previously missing (see README roadmap; EVAL is
+; new). Catches any ERROR signaled while either step runs: returns a
+; one-element list (value) on success (so a successful NIL return is
+; distinguishable from failure), or NIL if caught.
 compile_errorset:
     push rbx
     push r12
@@ -3197,7 +3203,19 @@ compile_errorset:
     mov rbx, rax                       ; resume-target placeholder addr
 
     mov rdi, r12
-    call compile_form                     ; protected -> target rax
+    call compile_form                     ; protected -> target rax = the
+                                           ; value to run as code (usually
+                                           ; a quoted form)
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr                        ; target: rdi = that value
+    lea rax, [rel eval_form]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                   ; target: rax = &eval_form
+    mov dil, REG_RAX
+    call emit_call_reg                          ; target: call eval_form ->
+                                                 ; rax = its result
 
     call emit_pop_catch_frame
     mov dil, REG_RDI
@@ -3710,6 +3728,48 @@ compile_form:
     jmp .out
 
 .not_substring:
+    mov rdi, r12
+    mov rsi, kw_read_from_string
+    mov rdx, 16
+    call sym_is
+    test rax, rax
+    jz .not_read_from_string
+    mov rdi, r13
+    call car
+    lea rsi, [rel read_from_string_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_read_from_string:
+    mov rdi, r12
+    mov rsi, kw_princ_to_string
+    mov rdx, 15
+    call sym_is
+    test rax, rax
+    jz .not_princ_to_string
+    mov rdi, r13
+    call car
+    lea rsi, [rel princ_to_string]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_princ_to_string:
+    mov rdi, r12
+    mov rsi, kw_eval
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_eval
+    mov rdi, r13
+    call car
+    lea rsi, [rel eval_form]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_eval:
     mov rdi, r12
     mov rsi, kw_fd_open
     mov rdx, 7
@@ -4332,5 +4392,26 @@ compile_thunk:
     call emit_leave
     call emit_ret
     pop rax
+    pop rbx
+    ret
+
+; eval_form(rdi = tagged sexpr) -> rax = the form's value, evaluated in
+; the global environment (KERNEL.md Part XI's EVAL, one-argument form —
+; there is no environment-as-value in this kernel to pass a second
+; argument for; see README). This is compile_thunk plus the one step
+; compile_thunk's own callers (file_runner.asm, every tests/cases/
+; lamedh_main) already do by hand: compile the form into a fresh native
+; function, then call it. Exposing this to *compiled* Lamedh code as
+; (EVAL form) is what makes reflection possible from within a running
+; program, not just from the host driver — the same "the compiler is
+; just more compiled code" idea DEFMACRO's own invoke_closure_host
+; already rests on (see README's "kernel surface" section), one level
+; up.
+global eval_form
+eval_form:
+    push rbx
+    mov rbx, rdi
+    call compile_thunk           ; rax = fresh native 0-arg function
+    call rax                       ; -> rax = its result
     pop rbx
     ret
