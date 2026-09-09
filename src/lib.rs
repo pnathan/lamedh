@@ -213,6 +213,7 @@
 //! | `35-json.lisp` | optional | `json` | `JSON:PARSE`/`STRINGIFY`: object<->hash table, array<->`Array`, `true`/`false`/`null`<->`T`/`NIL`/`:NULL`, `JSON:NULL-P` |
 //! | `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
 //! | `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
+//! | `45-hm-check.lisp` | optional | `hm-check` | Portable Hindley-Milner checker over a small core language (`HM-CHECK-LAMBDA`/`HM-CHECK-EXPR`), including row-polymorphic records and nominal type application — see issue #451; not wired into `defun`/`defrecord` |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -3194,6 +3195,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("42-os-linux.lisp", include_str!("../lib/42-os-linux.lisp")),
     ("43-tls.lisp", include_str!("../lib/43-tls.lisp")),
     ("44-regex.lisp", include_str!("../lib/44-regex.lisp")),
+    ("45-hm-check.lisp", include_str!("../lib/45-hm-check.lisp")),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -3372,6 +3374,11 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         "REGEX",
         "44-regex.lisp",
         include_str!("../lib/44-regex.lisp"),
+    ),
+    (
+        "HM-CHECK",
+        "45-hm-check.lisp",
+        include_str!("../lib/45-hm-check.lisp"),
     ),
     (
         "DOC-RENDERER",
