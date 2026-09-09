@@ -406,12 +406,19 @@ into conformance incrementally, tracked honestly rather than silently:
   table with no resizing, no key removal, and `EQ`-only key comparison
   (symbol/fixnum keys hash well; a string or list key would need
   `EQUAL`-style structural equality this kernel doesn't have).
-- Strings are immutable byte buffers only: no `STRING-REF`,
-  `STRING-APPEND`, `SUBSTRING`, or any string-building primitive yet —
-  just reader literals, `STRING-LENGTH`, and `PRINT`. Escapes are
-  limited to `\n`, `\t`, `\"`, `\\` (anything else after a backslash is
-  copied through literally); a literal longer than the reader's 4KB
-  scratch buffer is silently truncated.
+- Strings are immutable byte buffers: reader literals, `STRING-LENGTH`,
+  `PRINT`, and now `STRING-REF`/`STRING-APPEND`/`SUBSTRING`
+  (`tests/cases/036_string_ops.asm`) — the small extra surface `FORMAT`
+  needs (README Roadmap). `STRING-REF` returns a byte's numeric value
+  as a fixnum, not a `Char` — this kernel has no character type yet
+  (see below), so a byte's own value is the closest honest answer
+  available; `STRING-APPEND` and `SUBSTRING` return fresh strings,
+  neither argument mutated, matching every other value's immutability
+  here. All three are byte-indexed, not Unicode-scalar-indexed — Part
+  IV's own indexing rule remains unmet, tracked as ongoing work below.
+  Escapes are limited to `\n`, `\t`, `\"`, `\\` (anything else after a
+  backslash is copied through literally); a literal longer than the
+  reader's 4KB scratch buffer is silently truncated.
 - Float arithmetic (`F+`/`F-`/`F*`/`F/`/`F<`) is a real host-routine
   call per operation, not an inlined target instruction — see "The
   kernel surface" above. `PRINT` of a float is always fixed
@@ -560,12 +567,20 @@ producer | build/lamedhc             # or read a program from stdin
   `(FORMAT stream control &REST args)`, is no longer blocked by the
   `&REST` restriction either — `&REST` now works for any fixed-parameter
   count, including `FORMAT`'s 2 (`tests/cases/033_rest_below3.asm`; see
-  "Calling convention" above). What's still actually missing before
-  `FORMAT` itself is real: a way to walk a control string's characters
-  at compile time to find `~a`/`~%` directives (no string-indexing
-  primitive yet) and a `PRINC-TO-STRING`/`PRIN1-TO-STRING`-shaped
-  primitive (Part XI) to render an argument's value into a string
-  rather than straight to a file descriptor. Examples that need
+  "Calling convention" above), though `FORMAT` itself turns out not to
+  need `&REST` at all: it's naturally a `DEFMACRO`, not a function — a
+  macro transformer already sees a call's unevaluated operand forms
+  directly, so there's no runtime variadic dispatch to build. What
+  `FORMAT`-as-macro needs from the kernel — a way to walk a control
+  string's bytes at macro-expansion time for `~a`/`~%` directives — now
+  exists (`STRING-REF`/`SUBSTRING`, `tests/cases/036_string_ops.asm`),
+  and `~a`'s own rendering is just `PRINT`, which already writes a
+  string's raw bytes unquoted (the "aesthetic," not "readable,"
+  convention `~a` wants). Only `(format nil ...)` (returning a string
+  rather than writing to a stream) needs something this kernel still
+  lacks — capturing `PRINT`'s output into a string instead of stdout —
+  and only a small minority of the corpus's own `FORMAT` calls are that
+  form. Examples that need
   networking, regex, or TLS are out of scope for this from-scratch host
   regardless (Part IX capabilities this kernel has no I/O surface for
   yet); everything else in that directory is the honest bar. There is
@@ -635,7 +650,17 @@ producer | build/lamedhc             # or read a program from stdin
   cons cells); `EQUAL`-style structural equality, so the hash table
   (and `EQ`-only callers generally) can take string/list keys, not just
   pointer-identity-comparable ones.
-- String mutation/building primitives (`STRING-REF`, `STRING-APPEND`,
-  `SUBSTRING`) and a real `FORMAT` built on top of `PRINT`/`FD-WRITE`
-  and variadic args.
+- `FORMAT` itself, now that its prerequisites exist: `STRING-REF`/
+  `SUBSTRING` to walk a control string for `~a`/`~%` directives at
+  macro-expansion time (`FORMAT` is naturally a `DEFMACRO`, not a
+  function — no runtime variadic dispatch needed, since the number and
+  literal text of a call's arguments are already visible to the macro
+  transformer as unevaluated operand forms) and `PRINT`'s existing
+  runtime-tag dispatch for `~a`'s own rendering (it already prints a
+  string's raw bytes unquoted, which is exactly `~a`'s "aesthetic," not
+  `~s`'s "readable," output convention). `(format nil ...)` (returning
+  a string rather than writing to a stream) additionally needs a way to
+  capture `PRINT`'s output into a string instead of stdout — deferred,
+  since the overwhelming majority of the corpus's own `FORMAT` calls
+  write directly to a stream.
 - AArch64 backend (currently x86-64 Linux only).

@@ -70,6 +70,9 @@ extern print_fixnum
 extern print_newline
 extern print_value
 extern string_length_tagged
+extern string_ref_tagged
+extern string_append
+extern substring
 extern file_open
 extern file_close
 extern file_write
@@ -135,6 +138,9 @@ kw_block:       db "BLOCK"
 kw_return_from: db "RETURN-FROM"
 kw_while:       db "WHILE"
 kw_string_length: db "STRING-LENGTH"
+kw_string_ref:    db "STRING-REF"
+kw_string_append: db "STRING-APPEND"
+kw_substring:     db "SUBSTRING"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
 kw_fd_write: db "FD-WRITE"
@@ -3637,6 +3643,73 @@ compile_form:
     jmp .out
 
 .not_string_length:
+    mov rdi, r12
+    mov rsi, kw_string_ref
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_string_ref
+    mov rdi, r13
+    call car                            ; string form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; index form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel string_ref_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_string_ref:
+    mov rdi, r12
+    mov rsi, kw_string_append
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_string_append
+    mov rdi, r13
+    call car                            ; string A form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; string B form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel string_append]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_string_append:
+    mov rdi, r12
+    mov rsi, kw_substring
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_substring
+    mov rdi, r13
+    call car                            ; string form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rbx, rax                          ; (start-form end-form)
+    mov rdi, rbx
+    call car                                ; start form
+    push rax
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call car                                  ; end form
+    mov rdx, rax
+    pop rsi                                     ; start form
+    pop rdi                                       ; string form
+    lea rcx, [rel substring]
+    call compile_ternary_hostcall
+    jmp .out
+
+.not_substring:
     mov rdi, r12
     mov rsi, kw_fd_open
     mov rdx, 7

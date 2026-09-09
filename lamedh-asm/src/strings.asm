@@ -94,6 +94,117 @@ string_bytes:
     add rax, 16
     ret
 
+; string_ref_tagged(rdi=tagged string, rsi=tagged fixnum index) -> rax
+; = tagged fixnum, the byte value (0..255) at that index. No bounds
+; check (v0 — same scope as ARRAY's FETCH/STORE) and no Char type to
+; return instead (v0 — see README): a byte's numeric value is the
+; closest honest answer this kernel can give until one exists.
+global string_ref_tagged
+string_ref_tagged:
+    push rbx
+    mov rbx, rdi
+    call string_bytes
+    mov rcx, rsi
+    UNTAG_FIXNUM rcx
+    movzx rax, byte [rax+rcx]
+    TO_FIXNUM rax
+    pop rbx
+    ret
+
+; string_append(rdi=tagged string, rsi=tagged string) -> rax = a fresh
+; tagged HDR_STRING heapobj, the byte-for-byte concatenation of both —
+; neither argument is modified (strings are immutable, like every
+; other value in this kernel; see the header comment above).
+global string_append
+string_append:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi                      ; string A (tagged)
+    mov r12, rsi                        ; string B (tagged)
+
+    call string_len                       ; rax = len(A)
+    mov r13, rax
+    mov rdi, r12
+    call string_len                          ; rax = len(B)
+    mov r14, rax
+
+    mov rdi, r13
+    add rdi, r14
+    add rdi, 17                                ; header+len+bytes+NUL
+    call data_alloc
+    mov r15, rax                                 ; the new object (untagged)
+    mov qword [r15], HDR_STRING
+    lea rax, [r13+r14]
+    mov [r15+8], rax                              ; total length
+
+    mov rdi, rbx
+    call string_bytes                               ; rax = A's bytes
+    mov rsi, rax
+    lea rdi, [r15+16]
+    xor rcx, rcx
+.copy_a:
+    cmp rcx, r13
+    jae .copy_a_done
+    mov dl, [rsi+rcx]
+    mov [rdi+rcx], dl
+    inc rcx
+    jmp .copy_a
+.copy_a_done:
+
+    mov rdi, r12
+    call string_bytes                               ; rax = B's bytes
+    mov rsi, rax
+    lea rdi, [r15+16+r13]
+    xor rcx, rcx
+.copy_b:
+    cmp rcx, r14
+    jae .copy_b_done
+    mov dl, [rsi+rcx]
+    mov [rdi+rcx], dl
+    inc rcx
+    jmp .copy_b
+.copy_b_done:
+
+    lea rax, [r13+r14]
+    mov byte [r15+16+rax], 0                          ; trailing NUL
+    mov rax, r15
+    or rax, TAG_HEAPOBJ
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; substring(rdi=tagged string, rsi=tagged fixnum start, rdx=tagged
+; fixnum end) -> rax = a fresh tagged HDR_STRING heapobj holding bytes
+; [start,end) of the source. No bounds check (v0 — same scope as
+; ARRAY's FETCH/STORE): start>end or an out-of-range index copies
+; adjacent heap memory rather than raising anything.
+global substring
+substring:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi                       ; source string
+    mov r12, rsi
+    UNTAG_FIXNUM r12                     ; raw start
+    mov r13, rdx
+    UNTAG_FIXNUM r13                     ; raw end
+    call string_bytes                      ; rax = source bytes
+    add rax, r12                             ; rax = &bytes[start]
+    mov rdi, rax
+    mov rsi, r13
+    sub rsi, r12                               ; len = end-start
+    call make_string
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; print_string(rdi=tagged string) -> writes its raw bytes to stdout, no
 ; trailing newline (matches print_fixnum's own convention).
 global print_string
