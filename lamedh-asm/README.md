@@ -1297,13 +1297,47 @@ bugs no existing test had exercised:
     exercises this yet, `06-require.lisp` included); `LET*` does not
     support dynamic bindings at all yet, only plain `LET`.
 
-  Not yet attempted: `08-vau.lisp` onward — needs `$VAU`/`vau` itself
+  `08-vau.lisp` itself is a hard wall — it needs `$VAU`/`vau` itself
   (Kernel-style operatives with a captured *dynamic* environment
   parameter), which this compiled, lexically-addressed host has no
   representation for at all yet (see "v0 limits" below) and is a
-  substantially larger undertaking than `DEFDYNAMIC` above, likely
+  substantially larger undertaking than any primitive above, likely
   needing environments as a first-class heap value before `vau` can be
-  attempted honestly.
+  attempted honestly. But `08-vau.lisp`'s own position in the
+  reference's load order does *not* block every later file the way a
+  strictly sequential reading would suggest: skipping it and checking
+  each later Prelude file's *own* direct dependencies (not just its
+  position in the list) found that **`12-control.lisp`,
+  `13-functional.lisp`, `14-strings.lisp`, `15-sets-hash.lisp`,
+  `17-arrays.lisp`, `18-format.lisp`, and `21-cl-compat.lisp` — the
+  rest of the Prelude tier — all also load completely, unmodified,
+  with zero further kernel or prelude changes**, once loaded after
+  `00-core.lisp` through `06-require.lisp` but skipping `08-vau.lisp`
+  itself (confirmed via `build/lamedhc` on the concatenation, exit 0).
+  That is every Prelude-tier file `src/lib.rs`'s own `STDLIB_SOURCES`
+  lists except `08-vau.lisp`.
+  Every optional-tier file checked past that point, though —
+  `16-conditions.lisp` (`defvau restart-case`/`handler-bind`/
+  `with-retry-restart`), `19-call-graph.lisp`, `07-shell.lisp`,
+  `09-lisp15.lisp`, `10-testing.lisp`, and `28-types.lisp` — traps
+  immediately, and not always for the same reason at first glance:
+  `19-call-graph.lisp`/`07-shell.lisp`/`09-lisp15.lisp`/
+  `10-testing.lisp`/`28-types.lisp` don't use `vau` directly at all,
+  but every one of them opens with `(defmodule ...)`, and `DEFMODULE`
+  itself is defined in `27-modules.lisp` — which `src/lib.rs`'s own
+  comment explains loads deliberately early, right after
+  `20-condensation.lisp`, specifically so every later optional file
+  can rely on it — and `27-modules.lisp` (like `20-condensation.lisp`)
+  is itself built on `defvau`. So the real wall isn't `08-vau.lisp`'s
+  position in the list, it's `vau` the primitive: every file from
+  `16-conditions.lisp` onward needs it, either directly or
+  transitively through `DEFMODULE`, with no exceptions found yet.
+  The confirmed-loadable set is `00-core` through `06-require` plus
+  `12-control`/`13-functional`/`14-strings`/`15-sets-hash`/
+  `17-arrays`/`18-format`/`21-cl-compat` — the entire Prelude tier
+  bar `08-vau.lisp` itself — with the whole Optional tier (everything
+  from `07-shell.lisp` on, in `STDLIB_SOURCES`'s own grouping) blocked
+  on `vau`.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
