@@ -313,12 +313,12 @@ print_string:
 
 ; print_symbol(rdi=tagged symbol) -> writes its interned name bytes
 ; verbatim (already uppercased at intern time; see symtab.asm's
-; layout — name_len at [addr+8], name bytes starting at [addr+40]).
+; layout — name_len at [addr+8], name bytes starting at [addr+48]).
 print_symbol:
     mov rax, rdi
     UNTAG_PTR rax
     mov rdx, [rax+8]
-    lea rsi, [rax+40]
+    lea rsi, [rax+48]
     jmp write_buf
 
 ; print_list(rdi=tagged cons) -> "(a b c)", or "(a . b)" for an

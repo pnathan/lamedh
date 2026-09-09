@@ -32,7 +32,7 @@
 %define IMM_EOF         ( (4 << 2) | TAG_IMMEDIATE )   ; 19
 
 ; --- heapobj header tags (word at [addr], untagged raw address) ---
-%define HDR_SYMBOL      1     ; [8 name-len][8*n name bytes][8 value][8 next-in-bucket]
+%define HDR_SYMBOL      1     ; [8 name-len][8 value][8 macro][8 next-in-bucket][8 plist][8*n name bytes] (symtab.asm has the authoritative layout)
 %define HDR_CLOSURE     2     ; [8 native-code-ptr][8 nargs][8 nfree][8*nfree captured]
 %define HDR_STRING      3     ; [8 len][len bytes, padded]
 %define HDR_FLOAT       4     ; [8 bytes: one IEEE754 double]

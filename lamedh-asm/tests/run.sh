@@ -117,6 +117,13 @@ else
 (PRINT (REDUCE #'* (IOTA 5 1) 1))
 (NEWLINE)
 (DOTIMES (I 3) (FORMAT T "i=~a~%" I))
+(PRINT (GETP (QUOTE ZORP) (QUOTE COLOR)))
+(NEWLINE)
+(PUTP (QUOTE ZORP) (QUOTE COLOR) (QUOTE RED))
+(PUTP (QUOTE ZORP) (QUOTE COLOR) (QUOTE BLUE))
+(PRINT (GETP (QUOTE ZORP) (QUOTE COLOR)))
+(NEWLINE)
+(PRINT (EQUAL (MAPCAR NUMBER->STRING (LIST 1 2 3)) (LIST "1" "2" "3")))
 LISP
     want_out='T
 T
@@ -132,7 +139,10 @@ UNLESS-TRUE
 120
 i=0
 i=1
-i=2'
+i=2
+()
+BLUE
+T'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

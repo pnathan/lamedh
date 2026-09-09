@@ -445,8 +445,33 @@ into conformance incrementally, tracked honestly rather than silently:
   exact names (`MAKE-HASH-TABLE` and contagion-based `+`) —
   Part XI is explicit that this is the actual conformance bar, not a
   detail; there is no character type, no Unicode-codepoint string
-  indexing, no typed arrays, no environments-as-values, no property
-  lists (`GETP`/`PUTP`). `EVAL`, `READ-FROM-STRING`, and
+  indexing, no typed arrays, no environments-as-values. **Symbol
+  property lists (`GETP`/`PUTP`) now exist**
+  (`tests/cases/046_plist.asm`, plus `file_runner_prelude`'s own GETP/
+  PUTP coverage): every symbol gained a fourth mutable slot, `plist`
+  (offset 40, shifting name bytes from 40 to 48 — `symtab.asm`'s own
+  layout comment is the source of truth), read and written by two new
+  kernel primitives, `SYMBOL-PLIST` (a `compile_unary_hostcall`) and
+  `SET-SYMBOL-PLIST!` (a `compile_binary_hostcall`); `GETP`/`PUTP`
+  themselves are ordinary `lib/prelude.lisp` library code over those
+  two plus `CONS`/`CAR`/`CDR`/`EQ` — an ordinary `CONS`-built alist of
+  `(indicator . value)` pairs, `PUTP` always prepending a fresh pair
+  rather than searching for and replacing one (cons cells stay
+  immutable regardless — Part XII axis 2 — and `GETP`'s first-match
+  walk order means a later `PUTP` for the same indicator correctly
+  shadows an earlier one without needing in-place update). **v0 scope,
+  narrower than the reference on purpose**: indicator equality here is
+  `EQ`, not the reference's own name-text unification (`environment.rs`
+  extracts a symbol-or-string indicator's name text and keys a
+  per-symbol map by that text, so a symbol indicator and a string
+  indicator spelling the same name are the same property there); this
+  kernel's `EQ` is genuine value equality on strings now (see above),
+  so two string indicators with identical text already unify, and two
+  symbol indicators of the same name already unify (interning), but a
+  *symbol* indicator and a *string* indicator sharing text do not
+  unify with each other here — an honest gap until a `SYMBOL-NAME`
+  primitive exists to key on name text the same way the reference
+  does. `EVAL`, `READ-FROM-STRING`, and
   `PRINC-TO-STRING` now exist (`tests/cases/037_eval_read_princ.asm`) —
   Part XI's own reflection primitives, and the single highest-leverage
   addition per issue #452: `EVAL` is `compile_thunk` (already existed,
@@ -675,7 +700,7 @@ does, just from an in-memory buffer instead of an mmap'd file.
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 `REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
 `+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
-`MAPCAR`, and `NUMBER->STRING` — each an
+`MAPCAR`, `NUMBER->STRING`, `GETP`, and `PUTP` — each an
 ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler change
 needed for any of it (see `lib/prelude.lisp`'s own comments for exactly
 why; `DOTIMES` is derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part

@@ -187,3 +187,38 @@
 ; plain decimal text (print_value's own fixnum case); this is just
 ; that primitive under the name examples/fizzbuzz/main.lisp expects.
 (DEFUN NUMBER->STRING (N) (PRINC-TO-STRING N))
+
+; GETP/PUTP — symbol property lists (KERNEL.md Part XI). SYMBOL-PLIST
+; and SET-SYMBOL-PLIST! (compiler.asm/symtab.asm) are the only new
+; kernel surface this needed: a symbol's plist slot is an ordinary
+; CONS-built alist of (indicator . value) pairs, read/written exactly
+; the way DEFINE/SETQ already read/write a symbol's separate value
+; slot. GETP walks the alist looking for an EQ indicator match; PUTP
+; always prepends a fresh (indicator . value) pair rather than
+; searching for and replacing an existing one — GETP's own
+; first-match-wins walk order means a later PUTP correctly shadows an
+; earlier one for the same indicator, and cons cells staying immutable
+; (Part XII axis 2) means there is no in-place update to do anyway.
+;
+; v0 scope, narrower than the reference on purpose: indicator equality
+; here is EQ, not the reference's own name-text unification (its GETP/
+; PUTP extract a symbol or string indicator's name text and key a
+; per-symbol map by that text, so a symbol indicator and a string
+; indicator spelling the same name are treated as identical property).
+; This kernel's EQ is genuine value equality on strings now (see
+; README "KERNEL.md conformance"), so two string indicators with the
+; same text already unify correctly, and two symbol indicators of the
+; same name already unify too (interning), but a *symbol* indicator
+; and a *string* indicator sharing text do not unify with each other —
+; an honest, narrower interpretation until a SYMBOL-NAME primitive
+; exists to extract a symbol's name as its own string for GETP/PUTP to
+; key on the same way the reference does.
+(DEFUN GETP-ONTO (IND PL)
+  (IF (NULL PL)
+      (QUOTE ())
+      (IF (EQ (CAR (CAR PL)) IND)
+          (CDR (CAR PL))
+          (GETP-ONTO IND (CDR PL)))))
+(DEFUN GETP (SYM IND) (GETP-ONTO IND (SYMBOL-PLIST SYM)))
+(DEFUN PUTP (SYM IND VAL)
+  (SET-SYMBOL-PLIST! SYM (CONS (CONS IND VAL) (SYMBOL-PLIST SYM))))

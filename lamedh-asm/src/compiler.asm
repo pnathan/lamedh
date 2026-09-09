@@ -101,6 +101,8 @@ extern clear_flag
 extern clear_all_flags
 extern fail_not_callable
 extern gensym
+extern symbol_plist
+extern set_symbol_plist
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -108,6 +110,8 @@ section .rodata
 kw_quote:  db "QUOTE"
 kw_function: db "FUNCTION"
 kw_gensym: db "GENSYM"
+kw_symbol_plist: db "SYMBOL-PLIST"
+kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
 kw_lambda: db "LAMBDA"
@@ -3595,6 +3599,47 @@ compile_form:
     jmp .out
 
 .not_gensym:
+    mov rdi, r12
+    mov rsi, kw_symbol_plist
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_symbol_plist
+    ; (SYMBOL-PLIST sym) — one operand, an ordinary unary hostcall
+    ; reading the symbol's plist slot (symtab.asm). GETP/PUTP
+    ; themselves are prelude library code over this and
+    ; SET-SYMBOL-PLIST! below, per KERNEL.md Part XII axis 3.
+    mov rdi, r13
+    call car
+    mov rdi, rax
+    lea rsi, [rel symbol_plist]
+    call compile_unary_hostcall
+    jmp .out
+
+.not_symbol_plist:
+    mov rdi, r12
+    mov rsi, kw_set_symbol_plist
+    mov rdx, 17
+    call sym_is
+    test rax, rax
+    jz .not_set_symbol_plist
+    ; (SET-SYMBOL-PLIST! sym new-plist) — overwrites the symbol's
+    ; plist slot outright; PUTP always passes a freshly CONSed pair
+    ; onto the front of the existing plist, never any other value.
+    mov rdi, r13
+    call car                            ; sym form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; new-plist form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel set_symbol_plist]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_set_symbol_plist:
     mov rdi, r12
     mov rsi, kw_if
     mov rdx, 2

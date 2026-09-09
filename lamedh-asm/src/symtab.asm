@@ -11,7 +11,14 @@
 ;                        emitted as a runtime load, since macro expansion
 ;                        is a host-time computation, not a target one)
 ;   [32] next         (raw ptr to next symbol in this bucket, or 0)
-;   [40] name bytes, padded to a multiple of 8
+;   [40] plist        (tagged LispVal; an alist of (indicator . value)
+;                        pairs built with ordinary CONS, IMM_NIL until
+;                        PUTP first extends it — KERNEL.md Part XI's
+;                        "symbol property lists (GETP/PUTP)". A mutable
+;                        slot on the symbol itself, the same way [16]
+;                        already is for DEFINE/SETQ — not a new kind of
+;                        mutation this kernel didn't already have.)
+;   [48] name bytes, padded to a multiple of 8
 ;
 ; A fixed 512-bucket direct-chained hash table (FNV-1a), sized generously
 ; for the fixed test/bench corpus this v0 targets — see README roadmap
@@ -87,7 +94,7 @@ intern_symbol:
     jz .not_found
     cmp qword [rbx+8], r13         ; compare name_len
     jne .next
-    lea rdi, [rbx+40]
+    lea rdi, [rbx+48]
     mov rsi, r12
     mov rdx, r13
     call bytes_equal
@@ -102,11 +109,11 @@ intern_symbol:
     jmp .scan
 
 .not_found:
-    ; allocate: 40 header bytes + name, padded to 8
+    ; allocate: 48 header bytes + name, padded to 8
     mov rdi, r13
     add rdi, 7
     and rdi, ~7
-    add rdi, 40
+    add rdi, 48
     call data_alloc                ; rax = raw new symbol address
     mov rbx, rax
 
@@ -117,9 +124,10 @@ intern_symbol:
     mov rdi, [r14]
     mov [rbx+32], rdi              ; next = old bucket head
     mov [r14], rbx                 ; bucket head = new symbol
+    mov qword [rbx+40], IMM_NIL     ; empty plist until PUTP first extends it
 
     ; copy name bytes
-    lea rdi, [rbx+40]
+    lea rdi, [rbx+48]
     mov rsi, r12
     mov rcx, r13
     rep movsb
@@ -213,7 +221,7 @@ gensym:
     mov rdi, rbx
     add rdi, 7
     and rdi, ~7
-    add rdi, 40
+    add rdi, 48
     call data_alloc                ; rax = raw new symbol address;
                                     ; data_alloc preserves r13/r14 (the
                                     ; digit run), the original counter
@@ -225,9 +233,10 @@ gensym:
     mov qword [r12+16], IMM_UNBOUND
     mov qword [r12+24], IMM_NIL
     mov qword [r12+32], 0           ; not linked into any bucket chain
+    mov qword [r12+40], IMM_NIL     ; empty plist
 
-    mov byte [r12+40], 'G'
-    lea rdi, [r12+41]
+    mov byte [r12+48], 'G'
+    lea rdi, [r12+49]
     mov rsi, r13
     mov rcx, r14
     rep movsb
@@ -240,6 +249,35 @@ gensym:
     pop r13
     pop r12
     pop rbx
+    ret
+
+; symbol_plist(rdi=tagged symbol) -> rax = its plist slot's current
+; value (IMM_NIL until some PUTP has run). The SYMBOL-PLIST kernel
+; primitive's host half (compiler.asm) — GETP/PUTP themselves are
+; ordinary prelude library code over this plus SET-SYMBOL-PLIST!/CONS/
+; CAR/CDR/EQ, per KERNEL.md Part XII axis 3's usual license, matching
+; every other derived form in lib/prelude.lisp.
+global symbol_plist
+symbol_plist:
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov rax, [rax+40]
+    ret
+
+; set_symbol_plist(rdi=tagged symbol, rsi=new plist value) -> rax = rsi.
+; The SET-SYMBOL-PLIST! kernel primitive's host half — an ordinary
+; mutable-slot write, the same way DEFINE/SETQ already write a
+; symbol's separate value slot ([16]); PUTP (lib/prelude.lisp) is the
+; only caller, always storing a freshly CONSed (indicator . value)
+; pair onto the front of the existing plist, never mutating a cons
+; cell itself (this kernel's cons cells stay immutable — Part XII,
+; axis 2).
+global set_symbol_plist
+set_symbol_plist:
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov [rax+40], rsi
+    mov rax, rsi
     ret
 
 section .rodata
