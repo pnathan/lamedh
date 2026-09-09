@@ -459,11 +459,39 @@ into conformance incrementally, tracked honestly rather than silently:
   (Part VI) aren't implemented (see v0 limits below); the array
   primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/
   `STORE`/`ARRAY-LENGTH*`, no longer `MAKE-ARRAY`/`ARRAY-REF`/
-  `ARRAY-SET`/`ARRAY-LENGTH`), but the hash table and float primitive
-  *names* (`HT-*`, `F+` etc.) still don't match Part XI's required
-  exact names (`MAKE-HASH-TABLE` and contagion-based `+`) —
-  Part XI is explicit that this is the actual conformance bar, not a
-  detail; there is no character type, no Unicode-codepoint string
+  `ARRAY-SET`/`ARRAY-LENGTH`); **the hash table now also uses Part XI's
+  required exact names** — `MAKE-HASH-TABLE`/`SETHASH`/`GETHASH`/
+  `REMHASH`/`KEYS`, promoted from `tests/cases/022_hashtable_array.asm`'s
+  own demonstration into real `lib/prelude.lisp` library code
+  (`file_runner_prelude`'s own coverage in `tests/run.sh`), with the
+  exact arities and return values the spec requires: `(make-hash-table)`
+  takes no arguments, `sethash`/`remhash` return `T`, `gethash` returns
+  `NIL` for an absent key. No new kernel primitive needed — `ARRAY`/
+  `FETCH`/`STORE`/`HASH-CODE`/`MOD` plus ordinary `CONS`/`CAR`/`CDR`/`EQ`
+  build a fixed 61-bucket array of alist chains, same design as the
+  test it promotes. Writing this exposed one real, previously-latent
+  kernel bug: `HASH-CODE` (`hash_code_tagged`, `arrays.asm`) hashed
+  strings and floats by their own heap *address*, not content — so two
+  separately-built, `EQ`-equal (content-equal, per this session's
+  earlier `lisp_eq` fix) strings or floats could land in *different*
+  buckets, making a value genuinely stored under an equal key
+  unfindable. `HASH-CODE` must agree with `EQ` for a hash table to work
+  at all, so it now hashes a string's actual bytes (`fnv1a_hash`,
+  `symtab.asm`, exported and reused rather than duplicated) and a
+  float's raw bit pattern, normalized first so it agrees with
+  `float_eq_exact`'s own rules: every `NaN` bit pattern folds to one
+  canonical value (`NaN` is `EQ` to `NaN` regardless of payload bits),
+  and `-0.0`'s bits fold to `+0.0`'s (the two are `EQ` per IEEE `==`) —
+  every other value's sign bit stays significant, since a genuinely
+  different signed number must not collapse into its negation's
+  bucket. Every other heapobj (symbols, closures, arrays — pointer
+  identity is the only `EQ` rule for these) still hashes by its own
+  stable heap address, unaffected. **v0 scope, narrower than the spec
+  on purpose**: key equality is `EQ`, not the reference's own full
+  recursive `EQ`/`EQUAL` union, so a cons/array/lambda-shaped key does
+  not yet find itself by structural content; no resizing (fixed 61
+  buckets, same as the demonstration this promotes). There is no
+  character type, no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values. **Symbol
   property lists (`GETP`/`PUTP`) now exist**
   (`tests/cases/046_plist.asm`, plus `file_runner_prelude`'s own GETP/
@@ -937,13 +965,17 @@ bugs no existing test had exercised:
   global) on constructs the reference's full `lib/*.lisp` standard
   library provides that this kernel does not yet, which the same
   frequency count also surfaces as the next tier, roughly by how many
-  examples each would unblock: a real hash-table *value* (`MAKE-HASH-TABLE`/
-  `GETHASH`/`HAS-KEY-P`) — this kernel's only hash table today is the
-  `HT-*` alist-of-buckets-over-`ARRAY` demonstration in
-  `tests/cases/022_hashtable_array.asm`, never promoted to real,
-  reference-named prelude code, and it is indistinguishable from a
-  plain array at the value level, which blocks a generic `PUT!`/`REF`
-  the way the reference's own protocol dispatch has them; string/char
+  examples each would unblock. **`MAKE-HASH-TABLE`/`SETHASH`/`GETHASH`/
+  `REMHASH`/`KEYS` now exist** (see "KERNEL.md conformance" above) —
+  promoted from the `HT-*` demonstration in
+  `tests/cases/022_hashtable_array.asm` into real `lib/prelude.lisp`
+  code under Part XI's own required names — but re-measuring the full
+  corpus afterward still shows the same 2/50 passing: no example in
+  this corpus happens to be blocked *only* on the hash table primitive
+  itself, since a generic `PUT!`/`REF` dispatch (what the reference's
+  own protocol system actually exposes to calling code) still needs
+  the multi-type dispatch system below, not just the hash table value
+  underneath it. String/char
   operations (`STRING->LIST`, `STRING-JOIN`, `STRING-DOWNCASE`,
   `CODE-CHAR`/`CHAR-CODE` — no character type yet, see "v0 limits");
   `DEFRECORD` and the protocol/dispatch system (`DEFPROTOCOL`/

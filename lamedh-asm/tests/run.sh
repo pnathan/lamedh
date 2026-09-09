@@ -147,6 +147,24 @@ else
 (PRINT (FILTER (LAMBDA (X) (> X 2)) (LIST 1 2 3 4)))
 (NEWLINE)
 (PRINT (LIST (SOME (LAMBDA (X) (> X 3)) (LIST 1 2 3)) (EVERY (LAMBDA (X) (> X 0)) (LIST 1 2 3))))
+(NEWLINE)
+(DEFINE HT (MAKE-HASH-TABLE))
+(SETHASH HT (QUOTE A) 1)
+(SETHASH HT (QUOTE B) 2)
+(SETHASH HT (QUOTE A) 99)
+(PRINT (LIST (GETHASH HT (QUOTE A)) (GETHASH HT (QUOTE B)) (GETHASH HT (QUOTE C))))
+(NEWLINE)
+(SETHASH HT "STR-KEY" 42)
+(PRINT (GETHASH HT (STRING-APPEND "STR-" "KEY")))
+(NEWLINE)
+(SETHASH HT 0.0 111)
+(PRINT (GETHASH HT -0.0))
+(NEWLINE)
+(PRINT (REMHASH HT (QUOTE A)))
+(NEWLINE)
+(PRINT (GETHASH HT (QUOTE A)))
+(NEWLINE)
+(PRINT (EQUAL (KEYS HT) (KEYS HT)))
 LISP
     want_out='T
 T
@@ -175,7 +193,13 @@ T
 (T () T T 9 3)
 123
 (3 4)
-(() T)'
+(() T)
+(99 2 ())
+42
+111
+T
+()
+T'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

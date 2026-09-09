@@ -302,3 +302,70 @@
   (IF (NULL L)
       T
       (IF (PRED (CAR L)) (EVERY PRED (CDR L)) (QUOTE ()))))
+
+; The real hash table (KERNEL.md Part IV/XI): MAKE-HASH-TABLE/SETHASH/
+; GETHASH/REMHASH/KEYS, the exact names and arities Part XI requires —
+; `(make-hash-table)` takes no arguments, `sethash`/`remhash` return
+; `T`, `gethash` returns `NIL` for an absent key (indistinguishable
+; from a stored `NIL`, per spec), `keys` returns the stored keys in
+; unspecified order. Promoting tests/cases/022_hashtable_array.asm's
+; own design to real library code: a fixed 61-bucket ARRAY, each slot
+; an alist chain of (key . value) pairs, HASH-CODE+MOD picking the
+; bucket, STORE mutating that one slot — no new kernel primitive
+; needed, only ARRAY/FETCH/STORE/HASH-CODE/MOD plus the CONS/CAR/CDR/
+; EQ/NULL this kernel already had. HT-* names below are this
+; implementation's own private helpers, not part of the Part XI
+; surface (a plain, unenforced naming convention — this kernel has no
+; module system to actually hide them).
+;
+; v0 scope, narrower than the spec on purpose: key equality here is
+; `EQ` (now genuine value equality on fixnums/floats/chars/strings/
+; symbols, see README "KERNEL.md conformance"), not the spec's own
+; full recursive `EQ`/`EQUAL` union, so a cons/array/lambda-shaped key
+; does not yet find itself by structural content the way the reference
+; requires; no resizing (a fixed 61 buckets, same as the array-alist
+; demonstration this promotes); no bounded allocation ceiling
+; (Part IV's array ceiling doesn't apply to a fixed-size bucket array
+; anyway, since MAKE-HASH-TABLE takes no size argument to police).
+(DEFUN HT-INDEX (KEY) (MOD (HASH-CODE KEY) 61))
+
+(DEFUN HT-BUCKET-ASSOC (BUCKET KEY)
+  (IF (NULL BUCKET)
+      (QUOTE ())
+      (IF (EQ (CAR (CAR BUCKET)) KEY)
+          (CAR BUCKET)
+          (HT-BUCKET-ASSOC (CDR BUCKET) KEY))))
+
+(DEFUN HT-BUCKET-REMOVE (BUCKET KEY)
+  (IF (NULL BUCKET)
+      (QUOTE ())
+      (IF (EQ (CAR (CAR BUCKET)) KEY)
+          (HT-BUCKET-REMOVE (CDR BUCKET) KEY)
+          (CONS (CAR BUCKET) (HT-BUCKET-REMOVE (CDR BUCKET) KEY)))))
+
+(DEFUN HT-BUCKET-KEYS (BUCKET)
+  (IF (NULL BUCKET)
+      (QUOTE ())
+      (CONS (CAR (CAR BUCKET)) (HT-BUCKET-KEYS (CDR BUCKET)))))
+
+(DEFUN HT-KEYS-LOOP (TABLE I ACC)
+  (IF (= I (ARRAY-LENGTH* TABLE))
+      ACC
+      (HT-KEYS-LOOP TABLE (+ I 1) (APPEND (HT-BUCKET-KEYS (FETCH TABLE I)) ACC))))
+
+(DEFUN MAKE-HASH-TABLE () (ARRAY 61))
+
+(DEFUN SETHASH (TABLE KEY VALUE)
+  (STORE TABLE (HT-INDEX KEY)
+         (CONS (CONS KEY VALUE) (HT-BUCKET-REMOVE (FETCH TABLE (HT-INDEX KEY)) KEY)))
+  T)
+
+(DEFUN GETHASH (TABLE KEY)
+  (LET ((PAIR (HT-BUCKET-ASSOC (FETCH TABLE (HT-INDEX KEY)) KEY)))
+    (IF (NULL PAIR) (QUOTE ()) (CDR PAIR))))
+
+(DEFUN REMHASH (TABLE KEY)
+  (STORE TABLE (HT-INDEX KEY) (HT-BUCKET-REMOVE (FETCH TABLE (HT-INDEX KEY)) KEY))
+  T)
+
+(DEFUN KEYS (TABLE) (HT-KEYS-LOOP TABLE 0 (QUOTE ())))

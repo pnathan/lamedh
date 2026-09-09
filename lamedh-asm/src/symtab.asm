@@ -56,7 +56,11 @@ bytes_equal:
     xor rax, rax
     ret
 
-; fnv1a_hash(rdi=ptr, rsi=len) -> rax = 64-bit hash
+; fnv1a_hash(rdi=ptr, rsi=len) -> rax = 64-bit hash. Exported so
+; arrays.asm's hash_code_tagged can hash a string's bytes with it too
+; (HASH-CODE must agree with EQ — lisp_eq, strings.asm, is now content
+; equality for strings, so two equal-content strings must hash equal).
+global fnv1a_hash
 fnv1a_hash:
     mov rax, 0xcbf29ce484222325     ; FNV offset basis
     mov r8, 0x100000001b3            ; FNV prime

@@ -106,16 +106,25 @@ array_set:
 ; hash_code_tagged(rdi=tagged value) -> rax = tagged fixnum hash code,
 ; always non-negative, masked to 30 bits so a caller can safely scale
 ; or add it without overflowing a fixnum. Well-defined for fixnum keys
-; (their own magnitude) and any heapobj (its own stable heap address,
-; since nothing in this kernel relocates a heap value once allocated) —
-; which in practice means symbols, the hash table library's only
-; well-distributed key type; strings/floats/arrays/closures also hash
-; (by address, not content — two equal-content strings hash
-; differently) rather than erroring, but two conses or two structurally
-; equal values are NOT guaranteed the same hash, since only EQ (pointer
-; identity), not structural equality, exists in this kernel. Anything
-; else (a cons, an immediate other than a fixnum) hashes to a constant
-; 0 — correct but degenerate (a single bucket).
+; (their own magnitude), strings (content, fnv1a_hash — symtab.asm),
+; floats (the raw bit pattern, normalized first so this agrees with
+; lisp_eq's own EQ rule: -0.0 is folded to +0.0's bits since the two
+; are EQ, and every NaN bit pattern is folded to one canonical value
+; since KERNEL.md Part IV makes NaN EQ to NaN regardless of payload
+; bits), and any other heapobj (its own stable heap address, since
+; nothing in this kernel relocates a heap value once allocated) — in
+; practice symbols and closures/arrays, where only pointer identity is
+; ever EQ anyway, so an address-derived hash cannot disagree with EQ
+; the way a content-blind hash on strings/floats used to (HASH-CODE
+; must agree with EQ for the hash table library, lib/prelude.lisp's
+; own SETHASH/GETHASH, to work at all — two EQ keys landing in
+; different buckets would make a stored value unfindable). Two conses
+; or two structurally-but-not-pointer-equal values are NOT guaranteed
+; the same hash, since only EQ, not full structural equality, exists
+; as a kernel primitive. Anything else (a cons, an immediate other
+; than a fixnum) hashes to a constant 0 — correct but degenerate (a
+; single bucket).
+extern fnv1a_hash
 global hash_code_tagged
 hash_code_tagged:
     mov rax, rdi
@@ -138,11 +147,64 @@ hash_code_tagged:
     TO_FIXNUM rax
     ret
 .heapobj_key:
-    mov rax, rdi
-    UNTAG_PTR rax
+    push rbx
+    mov rbx, rdi
+    UNTAG_PTR rbx
+    mov rax, [rbx]
+    cmp rax, HDR_STRING
+    je .string_key
+    cmp rax, HDR_FLOAT
+    je .float_key
+    mov rax, rbx
     shr rax, 4                       ; heap addresses are 16-byte aligned
     and rax, 0x3FFFFFFF
     TO_FIXNUM rax
+    pop rbx
+    ret
+.string_key:
+    mov rdx, [rbx+8]                   ; len
+    lea rdi, [rbx+16]
+    mov rsi, rdx
+    call fnv1a_hash
+    and rax, 0x3FFFFFFF
+    TO_FIXNUM rax
+    pop rbx
+    ret
+.float_key:
+    mov rax, [rbx+8]                   ; raw double bits
+    ; NaN: exponent all-1 (bits 62..52) and a non-zero mantissa —
+    ; fold every payload/sign variant to one canonical bit pattern so
+    ; every NaN hashes identically, matching float_eq_exact's own
+    ; "NaN is EQ to NaN regardless of bits" rule.
+    mov rcx, rax
+    mov rdx, 0x7FF0000000000000
+    and rcx, rdx
+    cmp rcx, rdx
+    jne .not_nan
+    mov rcx, rax
+    and rcx, 0x000FFFFFFFFFFFFF
+    test rcx, rcx
+    jz .not_nan
+    mov rax, 0x7FF8000000000000          ; canonical NaN bit pattern
+    jmp .have_bits
+.not_nan:
+    ; -0.0 and +0.0 are EQ (IEEE ==) but differ only in the sign bit —
+    ; fold both to the same all-zero bits so they hash equal. Only a
+    ; zero magnitude gets folded: every other value's sign bit is part
+    ; of a genuinely different (and correctly non-EQ) number, so it
+    ; must stay significant to the hash.
+    mov rcx, rax
+    and rcx, 0x7FFFFFFFFFFFFFFF     ; magnitude, sign bit cleared
+    test rcx, rcx
+    jnz .have_bits
+    xor rax, rax
+.have_bits:
+    mov rcx, rax
+    shr rcx, 32
+    xor rax, rcx
+    and rax, 0x3FFFFFFF
+    TO_FIXNUM rax
+    pop rbx
     ret
 
 ; mod_tagged(rdi=tagged a, rsi=tagged b) -> rax = tagged (a mod b), the
