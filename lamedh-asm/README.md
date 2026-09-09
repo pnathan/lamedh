@@ -496,7 +496,17 @@ into conformance incrementally, tracked honestly rather than silently:
   used one fixed literal name, so a `DOTIMES` nested inside another
   using that same name as its own loop variable would silently
   collide; it now binds a fresh `GENSYM`'d name on every expansion
-  instead. The printer has no
+  instead. **`RPLACA`/`RPLACD` now also exist**, needing no new kernel
+  primitive at all: KERNEL.md Part XII axis 2 requires cons cells to
+  stay immutable on every host, so both must return a *new* cons cell
+  sharing the untouched half of the original rather than mutating in
+  place — precisely what a plain `CONS` of the replaced half onto the
+  untouched other half already gives, character for character, so
+  they are two one-line `lib/prelude.lisp` `DEFUN`s over existing
+  `CONS`/`CAR`/`CDR` (`file_runner_prelude` in `tests/run.sh` covers
+  both, including that `(RPLACA pair 9)` with the result discarded
+  leaves `pair` itself printing unchanged — proof it really is
+  non-destructive, not merely undocumented). The printer has no
   cycle detection (unreachable anyway — cons cells are immutable here).
   `PRINT` now emits Part III's required opaque, non-readable tags for
   the two compound types this kernel has: `<lambda>` for a closure and
@@ -700,7 +710,7 @@ does, just from an in-memory buffer instead of an mmap'd file.
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 `REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
 `+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
-`MAPCAR`, `NUMBER->STRING`, `GETP`, and `PUTP` — each an
+`MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, and `RPLACD` — each an
 ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler change
 needed for any of it (see `lib/prelude.lisp`'s own comments for exactly
 why; `DOTIMES` is derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part
@@ -900,12 +910,8 @@ bugs no existing test had exercised:
   non-cons segfaults rather than signaling, escaping the very
   `ERRORSET` that was supposed to catch it.
 - A resizable hash table (grow the bucket array and rehash past some
-  load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD` —
-  **not** as in-place cons mutation (Part XII, axis 2, requires cons
-  cells to stay immutable on every host: `RPLACA`/`RPLACD` must return
-  a *new* cons cell sharing the untouched half of the original, the
-  same non-destructive contract `STORE` deliberately does not extend to
-  cons cells); the hash table still hashes/compares keys with `EQ`
+  load factor, instead of a fixed 61 buckets); the hash table still
+  hashes/compares keys with `EQ`
   (pointer identity on cons, now value equality on strings/floats/
   fixnums/characters/symbols — see "KERNEL.md conformance" above), not
   `EQUAL`, so a *list*-shaped key still isn't found by an independently-

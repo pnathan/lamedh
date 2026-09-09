@@ -124,6 +124,14 @@ else
 (PRINT (GETP (QUOTE ZORP) (QUOTE COLOR)))
 (NEWLINE)
 (PRINT (EQUAL (MAPCAR NUMBER->STRING (LIST 1 2 3)) (LIST "1" "2" "3")))
+(NEWLINE)
+(PRINT (RPLACA (CONS 1 2) 9))
+(NEWLINE)
+(PRINT (RPLACD (CONS 1 2) 9))
+(NEWLINE)
+(DEFINE PAIR (CONS 1 2))
+(RPLACA PAIR 9)
+(PRINT PAIR)
 LISP
     want_out='T
 T
@@ -142,7 +150,10 @@ i=1
 i=2
 ()
 BLUE
-T'
+T
+(9 . 2)
+(1 . 9)
+(1 . 2)'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

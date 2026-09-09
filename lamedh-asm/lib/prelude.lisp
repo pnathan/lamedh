@@ -222,3 +222,14 @@
 (DEFUN GETP (SYM IND) (GETP-ONTO IND (SYMBOL-PLIST SYM)))
 (DEFUN PUTP (SYM IND VAL)
   (SET-SYMBOL-PLIST! SYM (CONS (CONS IND VAL) (SYMBOL-PLIST SYM))))
+
+; RPLACA/RPLACD — needs no new kernel primitive at all: the reference's
+; own doc comment for both (evaluator/builtins_extra.rs) is explicit
+; that "this implementation returns a NEW cons cell rather than
+; modifying the original" precisely to keep cons cells immutable and
+; circular lists impossible, which is exactly KERNEL.md Part XII axis
+; 2's own requirement — a plain CONS of the replaced half onto the
+; untouched other half already *is* that contract, character for
+; character, with no compiler change needed.
+(DEFUN RPLACA (C NEWCAR) (CONS NEWCAR (CDR C)))
+(DEFUN RPLACD (C NEWCDR) (CONS (CAR C) NEWCDR))
