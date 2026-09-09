@@ -25,6 +25,7 @@ section .bss
 align 8
 global symtab_buckets
 symtab_buckets: resq 512
+gensym_counter: resq 1
 
 section .text
 
@@ -155,6 +156,90 @@ bootstrap_globals:
     mov rbx, rax
     UNTAG_PTR rbx
     mov [rbx+16], rax
+    ret
+
+; gensym() -> rax = tagged symbol, a fresh HDR_SYMBOL object with the
+; exact same layout intern_symbol builds, except it is never linked
+; into symtab_buckets — so no name, however constructed, can ever
+; INTERN or otherwise look it up again, matching KERNEL.md Part XI's
+; "fresh uninterned symbol, never EQ to anything else" requirement:
+; EQ on symbols is pointer identity (lisp_eq, strings.asm, falls
+; through to false for any non-string/float heapobj pair, symbols
+; included), so an object no lookup path can ever return again is
+; automatically never EQ to anything but itself. Name format matches
+; the Rust reference exactly (environment.rs: `format!("G{:04}",
+; counter)`) — "G" followed by the counter, zero-padded to at least 4
+; digits, growing wider past 9999 rather than wrapping or truncating.
+global gensym
+gensym:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 32
+
+    mov rax, [gensym_counter]
+    mov r12, rax
+    inc rax
+    mov [gensym_counter], rax
+
+    ; render r12 as decimal into [rsp..rsp+31], back to front, then
+    ; left-pad with '0' to a minimum width of 4 digits.
+    mov rax, r12
+    mov r9, 10
+    lea r13, [rsp+31]
+    mov byte [r13], 0
+    xor r14, r14
+.divloop:
+    xor rdx, rdx
+    div r9
+    add dl, '0'
+    dec r13
+    mov [r13], dl
+    inc r14
+    test rax, rax
+    jnz .divloop
+.padloop:
+    cmp r14, 4
+    jae .paddone
+    dec r13
+    mov byte [r13], '0'
+    inc r14
+    jmp .padloop
+.paddone:
+    ; r13 = start of the digit run, r14 = its length; total name is
+    ; "G" (1 byte) followed by those r14 digit bytes.
+    lea rbx, [r14+1]              ; name_len = 1 + digit count
+    mov rdi, rbx
+    add rdi, 7
+    and rdi, ~7
+    add rdi, 40
+    call data_alloc                ; rax = raw new symbol address;
+                                    ; data_alloc preserves r13/r14 (the
+                                    ; digit run), the original counter
+                                    ; value in r12 is already dead here
+    mov r12, rax
+
+    mov qword [r12], HDR_SYMBOL
+    mov [r12+8], rbx
+    mov qword [r12+16], IMM_UNBOUND
+    mov qword [r12+24], IMM_NIL
+    mov qword [r12+32], 0           ; not linked into any bucket chain
+
+    mov byte [r12+40], 'G'
+    lea rdi, [r12+41]
+    mov rsi, r13
+    mov rcx, r14
+    rep movsb
+
+    mov rax, r12
+    or rax, TAG_HEAPOBJ
+
+    add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 section .rodata

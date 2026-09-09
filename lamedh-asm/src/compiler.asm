@@ -100,12 +100,14 @@ extern flag_set_p
 extern clear_flag
 extern clear_all_flags
 extern fail_not_callable
+extern gensym
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
 section .rodata
 kw_quote:  db "QUOTE"
 kw_function: db "FUNCTION"
+kw_gensym: db "GENSYM"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
 kw_lambda: db "LAMBDA"
@@ -3576,6 +3578,23 @@ compile_form:
     jmp .out
 
 .not_function:
+    mov rdi, r12
+    mov rsi, kw_gensym
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_gensym
+    ; (GENSYM) — no operand to compile, matching CLEAR-ALL-FLAGS's own
+    ; nullary shape; the fresh symbol is entirely a runtime effect of
+    ; calling the gensym host routine (symtab.asm), never a compile-time
+    ; computation, since two separate (GENSYM) calls at the same call
+    ; site (e.g. inside a loop or recursive function) must each return a
+    ; genuinely distinct symbol.
+    lea rsi, [rel gensym]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_gensym:
     mov rdi, r12
     mov rsi, kw_if
     mov rdx, 2

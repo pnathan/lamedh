@@ -146,19 +146,26 @@
 ; DOTIMES — (dotimes (var count) body...) runs body with var bound to
 ; 0, 1, ..., count-1 in turn, derived from LET/WHILE/SETQ (all kernel
 ; primitives — KERNEL.md Part XII axis 3 explicitly allows this).
-; COUNT is evaluated once, into a fixed internal temporary name — a
-; real but narrow v0 limitation (no GENSYM yet, see README): a nested
-; DOTIMES using that exact name as its own loop variable would collide.
+; COUNT is evaluated once, into a hygienic internal temporary: GENSYM
+; (symtab.asm's gensym, exposed as the GENSYM builtin) runs here at
+; macro-expansion time — the transformer body is ordinary compiled code
+; invoked once per DOTIMES call site (invoke_macro, compiler.asm), so
+; each expansion gets its own fresh, never-EQ-to-anything-else symbol
+; spliced in as an unevaluated datum (COUNT-SYM below is a bare
+; variable reference to that already-a-value symbol, not a QUOTEd
+; literal name) — a nested DOTIMES can no longer collide with an outer
+; one's own count variable the way a single fixed literal name would.
 (DEFMACRO DOTIMES (SPEC &REST BODY)
-  (LIST (QUOTE LET)
-        (LIST (LIST (CAR SPEC) 0)
-              (LIST (QUOTE DOTIMES-COUNT) (CAR (CDR SPEC))))
-        (LIST (QUOTE WHILE)
-              (LIST (QUOTE <) (CAR SPEC) (QUOTE DOTIMES-COUNT))
-              (CONS (QUOTE PROGN)
-                    (APPEND BODY
-                            (LIST (LIST (QUOTE SETQ) (CAR SPEC)
-                                        (LIST (QUOTE +) (CAR SPEC) 1))))))))
+  (LET ((COUNT-SYM (GENSYM)))
+    (LIST (QUOTE LET)
+          (LIST (LIST (CAR SPEC) 0)
+                (LIST COUNT-SYM (CAR (CDR SPEC))))
+          (LIST (QUOTE WHILE)
+                (LIST (QUOTE <) (CAR SPEC) COUNT-SYM)
+                (CONS (QUOTE PROGN)
+                      (APPEND BODY
+                              (LIST (LIST (QUOTE SETQ) (CAR SPEC)
+                                          (LIST (QUOTE +) (CAR SPEC) 1)))))))))
 
 ; EQUAL — deep structural equality (KERNEL.md Part IV): EQ on either
 ; side being an atom, else the recursive conjunction of car and cdr.

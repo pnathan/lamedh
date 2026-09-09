@@ -445,13 +445,33 @@ into conformance incrementally, tracked honestly rather than silently:
   exact names (`MAKE-HASH-TABLE` and contagion-based `+`) —
   Part XI is explicit that this is the actual conformance bar, not a
   detail; there is no character type, no Unicode-codepoint string
-  indexing, no typed arrays, no environments-as-values, no `GENSYM`/
-  property lists. `EVAL`, `READ-FROM-STRING`, and `PRINC-TO-STRING`
-  now exist (`tests/cases/037_eval_read_princ.asm`) — Part XI's own
-  reflection primitives, and the single highest-leverage addition per
-  issue #452: `EVAL` is `compile_thunk` (already existed, for the
-  driver's own use) plus one indirect call, exposed to *compiled*
-  Lamedh code for the first time. The printer has no
+  indexing, no typed arrays, no environments-as-values, no property
+  lists (`GETP`/`PUTP`). `EVAL`, `READ-FROM-STRING`, and
+  `PRINC-TO-STRING` now exist (`tests/cases/037_eval_read_princ.asm`) —
+  Part XI's own reflection primitives, and the single highest-leverage
+  addition per issue #452: `EVAL` is `compile_thunk` (already existed,
+  for the driver's own use) plus one indirect call, exposed to
+  *compiled* Lamedh code for the first time. **`GENSYM`
+  (`tests/cases/045_gensym.asm`) now also exists** — a new nullary
+  compiler form (`compile_nullary_hostcall`, the same shape
+  `CLEAR-ALL-FLAGS` already used) reaching a new host routine in
+  `symtab.asm` that builds an ordinary `HDR_SYMBOL` object exactly like
+  `intern_symbol` does, except it is never linked into
+  `symtab_buckets` — so no name, however constructed, can ever look it
+  up again, and it is correctly not `EQ` to anything, including an
+  ordinary reader-interned symbol that happens to print with the exact
+  same text (`lisp_eq`, "KERNEL.md conformance" above, is pointer
+  identity for two `HDR_SYMBOL` heapobjs, so two genuinely distinct
+  objects are never confused regardless of what their name bytes say).
+  Naming matches the Rust reference exactly: `"G"` plus a monotonic
+  per-process counter, zero-padded to at least 4 digits
+  (`environment.rs`'s own `format!("G{:04}", counter)`). This also
+  fixed a real, previously-documented hygiene bug in the prelude's own
+  `DOTIMES` (see "The prelude" below): its internal loop-count binding
+  used one fixed literal name, so a `DOTIMES` nested inside another
+  using that same name as its own loop variable would silently
+  collide; it now binds a fresh `GENSYM`'d name on every expansion
+  instead. The printer has no
   cycle detection (unreachable anyway — cons cells are immutable here).
   `PRINT` now emits Part III's required opaque, non-readable tags for
   the two compound types this kernel has: `<lambda>` for a closure and
@@ -659,7 +679,10 @@ It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler change
 needed for any of it (see `lib/prelude.lisp`'s own comments for exactly
 why; `DOTIMES` is derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part
-XII axis 3's explicit license). `DEFUN` and `WHEN`/`UNLESS` take any
+XII axis 3's explicit license, and now hygienically `GENSYM`s its
+internal loop-count binding — see "KERNEL.md conformance" above for
+why an earlier fixed-name version could collide on nesting).
+`DEFUN` and `WHEN`/`UNLESS` take any
 number of body forms directly (`(NAME PARAMS &REST BODY)`, the same way
 `LAMBDA`'s own body already does) — `invoke_macro` (see "The kernel
 surface" above) forwards every operand at a macro call site, not just
