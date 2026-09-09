@@ -118,6 +118,7 @@ kw_and:    db "AND"
 kw_or:     db "OR"
 kw_let:      db "LET"
 kw_let_star: db "LET*"
+kw_setq:     db "SETQ"
 kw_string_length: db "STRING-LENGTH"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -1362,6 +1363,67 @@ compile_if:
 
     pop r14
     pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_setq(rdi = the full (SETQ var1 val1 var2 val2 ...) form)
+; Each pair is processed left to right: the val is compiled and
+; evaluated, then stored into var's *first* lexically bound frame slot
+; (frame_lookup against current_scope — this reaches an enclosing
+; LET/LET*'s or a LAMBDA's own param/free slot, whichever is nearest),
+; or into var's global value cell if it isn't lexically bound anywhere
+; (the same absolute-address store DEFINE itself uses). This kernel
+; has no dynamic-variable mechanism yet (no DEFDYNAMIC/DEFVAR), so
+; that half of KERNEL.md Part VI's SETQ resolution doesn't apply here;
+; nor does "create a fresh binding in the enclosing frame" for a name
+; that's neither lexically bound nor previously DEFINE'd — such a name
+; simply gets its (always-existing, symtab-reserved) global cell
+; written, a narrower but still useful approximation. Leaves the last
+; val's value in rax, matching the spec.
+compile_setq:
+    push rbx
+    push r12
+    mov rbx, rdi
+    call cdr
+    mov rbx, rax                    ; cursor over the flat var/val list
+.loop:
+    cmp rbx, IMM_NIL
+    je .out
+    mov rdi, rbx
+    call car
+    mov r12, rax                        ; var symbol
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call car                                ; val form
+    mov rdi, rax
+    call compile_form                          ; -> target rax = val
+
+    mov rdi, r12
+    mov rsi, [current_scope]
+    call frame_lookup
+    cmp rax, FRAME_NOT_FOUND
+    je .global
+    mov esi, eax
+    mov dil, REG_RAX
+    call emit_store_local
+    jmp .next
+.global:
+    mov rdi, r12
+    UNTAG_PTR rdi
+    add rdi, 16
+    mov rsi, rdi
+    mov dil, REG_RAX
+    call emit_store_mem64
+.next:
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov rbx, rax
+    jmp .loop
+.out:
     pop r12
     pop rbx
     ret
@@ -3069,6 +3131,17 @@ compile_form:
     jmp .out
 
 .not_let:
+    mov rdi, r12
+    mov rsi, kw_setq
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_setq
+    mov rdi, rbx
+    call compile_setq
+    jmp .out
+
+.not_setq:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1

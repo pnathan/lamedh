@@ -65,8 +65,8 @@ programs this stage targets.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
   and `REMAINDER`.
-- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*` as real special forms
-  (Part VII).
+- `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ` as real special
+  forms (Part VII).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
   `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
@@ -276,11 +276,22 @@ into conformance incrementally, tracked honestly rather than silently:
   same `[rbp+disp]` scheme as every other local, at whatever depth
   `current_frame_depth` says is next-free (tracked and restored around
   nested `LAMBDA`/`LET`/`LET*` the same way `current_scope` already
-  is).
+  is). `SETQ` also exists (`tests/cases/027_setq.asm`): it writes the
+  first lexically bound slot found via `frame_lookup` against
+  `current_scope` (a `LET`/`LET*` binding or a `LAMBDA` param/free
+  slot, whichever is nearest), or the target symbol's global value
+  cell — the same absolute-address store `DEFINE` itself uses — when
+  it isn't lexically bound anywhere. This kernel has no dynamic-
+  variable mechanism yet, so the dynamic half of Part VI's `SETQ`
+  resolution rule doesn't apply, and a name that's neither lexically
+  bound nor previously `DEFINE`'d just gets its (always-reserved)
+  global cell written rather than a fresh binding created in the
+  enclosing frame — a narrower but still useful approximation of the
+  spec's own fallback rule.
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
-  special forms (`SETQ`/`BLOCK`/`PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/
-  `VAU`/`DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet; the condition
-  system (Part VIII),
+  special forms (`BLOCK`/`PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/`VAU`/
+  `DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet; the condition system
+  (Part VIII),
   capability gating (Part IX), and fuel (Part X) don't exist yet;
   proper tail calls (Part VI) aren't implemented (see v0 limits
   below); the hash table/array/float primitive *names* (`HT-*`/
