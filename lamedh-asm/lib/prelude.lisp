@@ -159,3 +159,24 @@
                     (APPEND BODY
                             (LIST (LIST (QUOTE SETQ) (CAR SPEC)
                                         (LIST (QUOTE +) (CAR SPEC) 1))))))))
+
+; EQUAL — deep structural equality (KERNEL.md Part IV): EQ on either
+; side being an atom, else the recursive conjunction of car and cdr.
+; Library code in the reference too, over just EQ/ATOM/CAR/CDR, all
+; kernel primitives here already.
+(DEFUN EQUAL (A B)
+  (IF (ATOM A)
+      (EQ A B)
+      (IF (ATOM B)
+          (QUOTE ())
+          (IF (EQUAL (CAR A) (CAR B)) (EQUAL (CDR A) (CDR B)) (QUOTE ())))))
+
+; MAPCAR — apply FN to each element of L, collecting the results.
+; examples/fizzbuzz/main.lisp's own self-check uses this.
+(DEFUN MAPCAR (FN L)
+  (IF (NULL L) (QUOTE ()) (CONS (FN (CAR L)) (MAPCAR FN (CDR L)))))
+
+; NUMBER->STRING — PRINC-TO-STRING already renders a fixnum as its
+; plain decimal text (print_value's own fixnum case); this is just
+; that primitive under the name examples/fizzbuzz/main.lisp expects.
+(DEFUN NUMBER->STRING (N) (PRINC-TO-STRING N))

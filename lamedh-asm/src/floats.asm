@@ -147,6 +147,47 @@ float_lt:
     pop rbx
     ret
 
+; float_eq_exact(rdi=tagged float a, rsi=tagged float b) -> rax = 1/0.
+; KERNEL.md Part IV: IEEE `==` plus an explicit carve-out that NaN is
+; EQ to NaN — so (eq 0.0 -0.0) is true (IEEE says they're equal) and
+; (eq nan nan) is also true (the carve-out), neither of which a bare
+; native float comparison alone gives. The EQ builtin's slow path for
+; two HDR_FLOAT heapobjs (lisp_eq, strings.asm) — a plain tagged-value
+; compare there would treat two boxed floats with the same numeric
+; value as unequal, since each holds its own distinct address.
+global float_eq_exact
+float_eq_exact:
+    push rbx
+    mov rbx, rsi
+    call float_val                    ; xmm0 = a
+    movsd xmm2, xmm0
+    mov rdi, rbx
+    call float_val                       ; xmm0 = b
+    movsd xmm3, xmm0
+
+    ucomisd xmm2, xmm2                      ; PF set iff a is NaN
+    setp r8b
+    ucomisd xmm3, xmm3                        ; PF set iff b is NaN
+    setp r9b
+    movzx eax, r8b
+    movzx ecx, r9b
+    and eax, ecx
+    test eax, eax
+    jnz .true                                   ; both NaN -> EQ
+
+    ucomisd xmm2, xmm3
+    setz al                                       ; ZF: numerically equal
+    setnp cl                                        ; NP: ordered (neither NaN)
+    movzx eax, al
+    movzx ecx, cl
+    and eax, ecx
+    jmp .out
+.true:
+    mov eax, 1
+.out:
+    pop rbx
+    ret
+
 ; float_print(rdi=tagged float) -> writes a fixed 6-decimal-place
 ; representation to stdout (no scientific notation, no shortest
 ; round-trip formatting — see README roadmap). The FLOAT-printing half

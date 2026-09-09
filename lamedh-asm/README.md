@@ -309,10 +309,11 @@ specifically to test where the line falls:
   (`tests/cases/020_hashtable.asm`, kept as-is: a smaller, purely
   functional alternative when mutation isn't wanted). No resizing (a
   fixed 61-bucket table — a real implementation would grow it as load
-  increases); no key removal; a real key comparison would need
-  `EQUAL`-style structural equality to support string/list keys, not
-  just `EQ`'s pointer identity — fine for the symbol/fixnum keys this
-  library is tested with, a real limit for anything else.
+  increases); no key removal; key comparison is `EQ`, which (see
+  "KERNEL.md conformance" below) is now value equality for strings,
+  floats, fixnums, characters, and symbols — string keys work correctly
+  now, not just symbol/fixnum ones — but a *list*-shaped key still needs
+  `EQUAL`-style structural equality this kernel doesn't have.
 
 Symbols carry a dedicated macro slot (`symtab.asm`, offset 24) distinct
 from their ordinary value cell, so a name can be a macro or a function
@@ -332,7 +333,31 @@ into conformance incrementally, tracked honestly rather than silently:
 - **Matches**: `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL` (names and basic
   semantics); `EQ` on cons cells is pointer identity, which the spec's
   own Part IV explicitly leaves undefined (issue #454) rather than
-  requiring the reference's hardcoded `NIL`; `MOD`/`REMAINDER` now
+  requiring the reference's hardcoded `NIL`. `EQ` on fixnums/characters/
+  symbols was always correct — those tags *are* the value, so a bare
+  tagged-word compare (`compile_eq`'s original body) already gives value
+  equality for free — but `EQ` on strings and floats was silently wrong
+  in the same way: two independently heap-allocated `HDR_STRING`/
+  `HDR_FLOAT` objects holding identical content compared unequal, since
+  the compare was still just the two heap addresses. Part IV requires
+  value equality there too, so `compile_eq` now delegates to a new
+  `lisp_eq` host routine (`strings.asm`) via `compile_binary_hostcall`:
+  a fast pointer-equal exit, then (only for two `TAG_HEAPOBJ` operands of
+  the same header) a length/byte-for-byte compare for strings or a call
+  to `float_eq_exact` (`floats.asm`) for floats — the latter is IEEE `==`
+  plus the spec's own explicit carve-out that `NaN` is `EQ` to `NaN`, so
+  `(eq 0.0 -0.0)` and `(eq (F/ 0.0 0.0) (F/ 0.0 0.0))` are both `T`
+  despite plain `==` disagreeing with `EQ` on the latter
+  (`tests/cases/044_eq_value_equality.asm`). A string and a float (or
+  either against a fixnum) are never `EQ` regardless of content —
+  different `HDR_*` tags fail before any value compare runs. This bug
+  was found by, and this fix was required for, `EQUAL` (see "The
+  prelude" below): `EQUAL`'s recursion bottoms out at `EQ` on atoms, so
+  `examples/fizzbuzz/main.lisp`'s own self-check — which builds two
+  independent lists of strings and compares them with `EQUAL` — reliably
+  found unequal what should have been equal until this fix; fizzbuzz's
+  full example, self-check included, now runs unmodified to `OK`/exit 0.
+  `MOD`/`REMAINDER` now
   match Part V's exact Euclidean/truncated split; `PRINT` now produces
   Part III's PRIN1-style readable text for every value this kernel
   has — `NIL` as `()`, `T` as `T`, a symbol as its name, a cons
@@ -461,8 +486,10 @@ into conformance incrementally, tracked honestly rather than silently:
   rewritten after creation.
 - The array-backed hash table (`HT-MAKE` et al.) is a fixed 61-bucket
   table with no resizing, no key removal, and `EQ`-only key comparison
-  (symbol/fixnum keys hash well; a string or list key would need
-  `EQUAL`-style structural equality this kernel doesn't have).
+  (symbol/fixnum/string/float keys all hash and compare correctly now
+  that `EQ` is value equality on those — see "KERNEL.md conformance"
+  below; a list-shaped key would still need `EQUAL`-style structural
+  equality this kernel doesn't have).
 - Strings are immutable byte buffers: reader literals, `STRING-LENGTH`,
   `PRINT`, and now `STRING-REF`/`STRING-APPEND`/`SUBSTRING`
   (`tests/cases/036_string_ops.asm`) — the small extra surface `FORMAT`
@@ -627,7 +654,8 @@ does, just from an in-memory buffer instead of an mmap'd file.
 
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 `REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
-`+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, and `DOTIMES` — each an
+`+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
+`MAPCAR`, and `NUMBER->STRING` — each an
 ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler change
 needed for any of it (see `lib/prelude.lisp`'s own comments for exactly
 why; `DOTIMES` is derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part
@@ -679,7 +707,7 @@ no boundary guard) — `examples/factorial/main.lisp` uses `(1+ i)`
 directly, and without this, `1+` read as the number `1` followed by
 the symbol `+`, splitting a call like `(1+ i)` into two malformed forms.
 
-Writing this much prelude surfaced four real, previously-latent
+Writing this much prelude surfaced five real, previously-latent
 bugs no existing test had exercised:
 
 - **The bare symbol `T`, evaluated as a variable, was unbound.**
@@ -738,6 +766,22 @@ bugs no existing test had exercised:
   for the fallback path. `tests/cases/042_one_plus_minus.asm` explicitly
   covers plain leading-`1` numbers (`1`, `15`, `100`, a bare `1` at the
   end of a list) alongside `1+`/`1-` themselves for exactly this reason.
+- **`EQ` on strings and floats was pointer equality, not the value
+  equality Part IV requires.** `EQUAL`'s own base case is `EQ` on atoms,
+  so two independently-read or independently-built strings with
+  identical content — exactly what `examples/fizzbuzz/main.lisp`'s
+  self-check constructs and compares — reliably came back unequal.
+  Diagnosed down to the minimal case, `(EQ "hi" "hi")` returning `NIL`.
+  Fixed by giving `compile_eq` a real value-equality host routine,
+  `lisp_eq` (`strings.asm`), for the two-heapobj case, plus
+  `float_eq_exact` (`floats.asm`) for the IEEE-`==`-plus-`NaN`-carve-out
+  float rule Part IV also specifies — see "KERNEL.md conformance" above
+  for the exact semantics and `tests/cases/044_eq_value_equality.asm`
+  for the regression coverage. `examples/fizzbuzz/main.lisp` now runs
+  to completion unmodified, self-check included (`OK`, exit 0) —
+  previously it printed its Fizz/Buzz output correctly but then trapped
+  via an unmatched `THROW` when its self-check's `EQUAL` comparison came
+  back falsely unequal.
 
 ## Roadmap
 
@@ -754,12 +798,17 @@ bugs no existing test had exercised:
   and the one genuine, documented divergence — its self-check hits this
   kernel's narrower 62-bit fixnum range at exactly `20!`, not a bug).
   `DEFUN`, `FORMAT`, `1+`/`1-`, `FUNCTION`/`#'`, `IOTA`, `REDUCE`, and
-  `DOTIMES` are all real now. `examples/fizzbuzz/main.lisp` is the next
-  concrete data point: it needs `mapcar`, `equal`, and `number->string`,
-  none written yet — same story as before, ordinary library code once
-  written (`equal` is explicitly library code in the reference too —
-  see KERNEL.md Part IV — needing only `EQ`/`CAR`/`CDR`, all present),
-  not a new kernel gap. Examples that need networking, regex, or TLS
+  `DOTIMES` are all real now. **`examples/fizzbuzz/main.lisp` now runs
+  unmodified too, self-check included** (`OK`, exit 0): `MAPCAR`,
+  `EQUAL`, and `NUMBER->STRING` are all ordinary prelude library code
+  now (`equal` is explicitly library code in the reference too — see
+  KERNEL.md Part IV — needing only `EQ`/`CAR`/`CDR`, all present), and
+  getting `EQUAL` to actually agree with itself on two independently
+  built string lists needed one real kernel fix: `EQ` on strings/floats
+  was pointer equality, not the value equality Part IV requires (see
+  "KERNEL.md conformance" above, `lisp_eq`/`float_eq_exact`) — fizzbuzz's
+  own self-check is exactly the case that exposed it. Examples that need
+  networking, regex, or TLS
   are out of scope for this from-scratch host regardless (Part IX
   capabilities this kernel has no I/O surface for yet); everything else
   in that directory is the honest bar.
@@ -808,9 +857,11 @@ bugs no existing test had exercised:
   cells to stay immutable on every host: `RPLACA`/`RPLACD` must return
   a *new* cons cell sharing the untouched half of the original, the
   same non-destructive contract `STORE` deliberately does not extend to
-  cons cells); `EQUAL`-style structural equality, so the hash table
-  (and `EQ`-only callers generally) can take string/list keys, not just
-  pointer-identity-comparable ones.
+  cons cells); the hash table still hashes/compares keys with `EQ`
+  (pointer identity on cons, now value equality on strings/floats/
+  fixnums/characters/symbols — see "KERNEL.md conformance" above), not
+  `EQUAL`, so a *list*-shaped key still isn't found by an independently-
+  built equal list, only string/number/symbol keys benefit so far.
 - `FORMAT` itself, now that its prerequisites exist: `STRING-REF`/
   `SUBSTRING` to walk a control string for `~a`/`~%` directives at
   macro-expansion time (`FORMAT` is naturally a `DEFMACRO`, not a

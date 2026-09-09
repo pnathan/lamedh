@@ -12,8 +12,99 @@
 
 extern data_alloc
 extern write_buf
+extern float_eq_exact
 
 section .text
+
+; lisp_eq(rdi=tagged a, rsi=tagged b) -> rax = IMM_TRUE/IMM_NIL. The
+; EQ builtin's actual implementation (compiler.asm's compile_eq calls
+; here instead of emitting a bare tagged-value compare). KERNEL.md
+; Part IV: "value equality" for fixnum/float/char/string means two
+; freshly computed, unshared values holding the same value must be EQ
+; — a raw pointer/tagged-value compare gets this right for free for
+; fixnums, characters, symbols, and every immediate (their tagged
+; representation already *is* their value), but is wrong for two
+; separately heap-allocated strings or floats with identical content,
+; which a plain compare would call unequal. EQ on two distinct cons
+; cells stays pointer identity here, which is undefined behavior a
+; portable program must not rely on either way (KERNEL.md Part IV,
+; issue #454) — this kernel picks the pointer-identity answer, one of
+; the two the spec allows.
+global lisp_eq
+lisp_eq:
+    cmp rdi, rsi
+    je .true_fast
+
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .false_fast
+    mov rax, rsi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .false_fast
+
+    push rbx
+    push r12
+    mov rbx, rdi
+    UNTAG_PTR rbx
+    mov r12, rsi
+    UNTAG_PTR r12
+    mov rax, [rbx]
+    cmp rax, [r12]
+    jne .false_slow
+
+    cmp rax, HDR_STRING
+    je .cmp_string
+    cmp rax, HDR_FLOAT
+    je .cmp_float
+    jmp .false_slow                     ; different heapobj kind, or a
+                                         ; kind with no value-equality
+                                         ; rule (symbol, closure, array,
+                                         ; ... — identity only, and the
+                                         ; fast path above already
+                                         ; covers "same object")
+
+.cmp_string:
+    mov rax, [rbx+8]
+    cmp rax, [r12+8]
+    jne .false_slow
+    mov rcx, rax
+    lea rdi, [rbx+16]
+    lea rsi, [r12+16]
+    xor rdx, rdx
+.strcmp_loop:
+    cmp rdx, rcx
+    jae .true_slow
+    mov al, [rdi+rdx]
+    cmp al, [rsi+rdx]
+    jne .false_slow
+    inc rdx
+    jmp .strcmp_loop
+
+.cmp_float:
+    mov rdi, rbx
+    or rdi, TAG_HEAPOBJ
+    mov rsi, r12
+    or rsi, TAG_HEAPOBJ
+    call float_eq_exact
+    test rax, rax
+    jz .false_slow
+    ; fall through: true
+
+.true_slow:
+    pop r12
+    pop rbx
+.true_fast:
+    mov rax, IMM_TRUE
+    ret
+
+.false_slow:
+    pop r12
+    pop rbx
+.false_fast:
+    mov rax, IMM_NIL
+    ret
 
 ; make_string(rdi=byte buf, rsi=len) -> rax = tagged HDR_STRING heapobj,
 ; copying (rsi) bytes out of (rdi) into the new object. Always writes

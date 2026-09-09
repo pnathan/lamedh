@@ -21,6 +21,7 @@
 extern car
 extern cdr
 extern cons
+extern lisp_eq
 extern intern_symbol
 extern codegen_here
 extern patch_rel32
@@ -730,28 +731,17 @@ bool_from_al:
     mov edi, IMM_NIL
     jmp emit_add_rax_imm32
 
-; compile_eq(rdi=arg1 form, rsi=arg2 form) — raw 64-bit equality, valid
-; across every tag (pointer or immediate) uniformly.
+; compile_eq(rdi=arg1 form, rsi=arg2 form) — lisp_eq (strings.asm):
+; a raw tagged-value compare gets fixnums/characters/symbols/every
+; immediate right for free (their tagged bits *are* their value), but
+; is wrong for two separately heap-allocated strings or floats with
+; identical content (KERNEL.md Part IV's "value equality" for those
+; types) — an earlier version of this function was exactly that bare
+; compare, silently nonconformant on both types the moment they were
+; used as EQ operands rather than compared some other way.
 compile_eq:
-    push rbx
-    mov rbx, rsi
-    call compile_form
-    mov dil, REG_RAX
-    call emit_push_reg
-    mov rdi, rbx
-    call compile_form
-    mov dil, REG_RBX
-    mov sil, REG_RAX
-    call emit_mov_rr
-    mov dil, REG_RAX
-    call emit_pop_reg
-    mov dil, REG_RAX
-    mov sil, REG_RBX
-    call emit_cmp_rr
-    call emit_sete_al
-    call bool_from_al
-    pop rbx
-    ret
+    lea rdx, [rel lisp_eq]
+    jmp compile_binary_hostcall
 
 ; compile_atom(rdi=arg form) — true unless the value is a cons.
 compile_atom:
