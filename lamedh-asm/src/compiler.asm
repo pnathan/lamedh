@@ -879,6 +879,107 @@ compile_binop_overflow_guard:
     pop rbx
     ret
 
+; emit_coerce_char_in_rax() — target: if rax currently holds a tagged
+; Char, replaces it in place with a tagged fixnum holding that Char's
+; code point; otherwise leaves rax exactly as given. KERNEL.md Part V:
+; "A Char operand is unconditionally coerced to its code point" in
+; +/-/*/</=' own contagion rule — compile_binop below calls this right
+; after compiling each operand, while it is still fresh in target rax
+; and before being relocated to rbx or the machine stack, so both
+; operands of every compiled arithmetic/comparison op get the same
+; treatment regardless of which one this is.
+;
+; A Char is a tagged immediate (chars.asm/tags.inc: enumeration index
+; 256+code, tag bits 11), never overlapping a fixnum's own tag bits
+; (00) or any other immediate's enumeration index (0..4) — so the
+; check is: tag bits == TAG_IMMEDIATE, and the enumeration index falls
+; in [256, 511]. Only rax-specific codegen helpers exist
+; (emit_and_rax_imm32 and friends), which is exactly why this only
+; ever operates on rax rather than an arbitrary target register —
+; compile_binop's own call sites are placed accordingly.
+emit_coerce_char_in_rax:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov dil, REG_RCX
+    mov sil, REG_RAX
+    call emit_mov_rr                     ; target: rcx = rax (original)
+
+    mov edi, TAG_MASK
+    call emit_and_rax_imm32                ; target: rax &= TAG_MASK
+    mov edi, TAG_IMMEDIATE
+    call emit_sub_rax_imm32                  ; target: rax -= TAG_IMMEDIATE
+    call emit_jne                              ; not an immediate -> skip
+    mov rbx, rax                                 ; [site: not_immediate]
+
+    mov dil, REG_RAX
+    mov sil, REG_RCX
+    call emit_mov_rr                               ; target: rax = rcx (original)
+    mov dil, REG_RAX
+    mov sil, 2
+    call emit_sar_imm8                                ; target: rax = enum index
+    mov edi, IMM_CHAR_BASE
+    call emit_sub_rax_imm32                             ; target: rax -= 256
+
+    mov rsi, 0
+    call emit_cmp_rax_imm64                               ; target: cmp rax, 0
+    call emit_jl                                            ; rax<0 -> skip (index was <256)
+    mov r12, rax                                              ; [site: below_range]
+
+    mov rsi, 255
+    mov dil, REG_RDX
+    call emit_mov_reg_imm64                                     ; target: rdx = 255
+    mov dil, REG_RDX
+    mov sil, REG_RAX
+    call emit_cmp_rr                                              ; target: cmp rdx, rax
+    call emit_jl                                                    ; 255<rax -> skip (index was >511)
+    mov r13, rax                                                      ; [site: above_range]
+
+    ; in range: rax already holds the raw code point (0..255) —
+    ; tagging it as a fixnum is exactly a <<2, done here via *4 (no
+    ; general left-shift emitter exists, only emit_sar_imm8's right
+    ; shift; a small multiply is the same bit pattern for a value this
+    ; small and produces the correct tag-00 result either way). This
+    ; success path must jump clean over the restore stub below — every
+    ; failure site left rax holding an intermediate scratch value
+    ; (tag bits, or enum_index-256), never the original operand, so
+    ; each of them needs rax explicitly restored from rcx before
+    ; reaching the shared exit; the success path must not re-run that
+    ; restore, or it would clobber the very fixnum it just computed.
+    mov edi, 4
+    call emit_imul_rax_imm32
+    call emit_jmp32
+    mov r14, rax                     ; [site: success, over the restore stub]
+
+    call codegen_here
+    mov rdi, rbx
+    mov rsi, rax
+    call patch_rel32                    ; not_immediate -> restore stub
+    mov rdi, r12
+    mov rsi, rax
+    call patch_rel32                      ; below_range -> restore stub
+    mov rdi, r13
+    mov rsi, rax
+    call patch_rel32                        ; above_range -> restore stub
+
+    mov dil, REG_RAX
+    mov sil, REG_RCX
+    call emit_mov_rr                          ; restore stub: rax = rcx
+
+    call codegen_here
+    mov rdi, r14
+    mov rsi, rax
+    call patch_rel32                            ; success -> here (past
+                                                 ; the restore stub)
+
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; compile_binop(rdi=lhs form, rsi=rhs form, dl='+'/'-'/'*'/'<'/'=' as ASCII)
 ; Compiles both operands (lhs pushed across rhs's own compilation, since
 ; rhs may itself contain calls that would otherwise clobber rax), then
@@ -890,11 +991,14 @@ compile_binop:
     mov r12, rsi                  ; save rhs form (rdi is about to change)
 
     call compile_form              ; rdi = lhs -> rax
+    call emit_coerce_char_in_rax     ; Part V contagion: a Char lhs
+                                      ; becomes its code point here
     mov dil, REG_RAX
     call emit_push_reg               ; push lhs
 
     mov rdi, r12
     call compile_form                 ; rhs -> rax
+    call emit_coerce_char_in_rax        ; same contagion for rhs
     mov dil, REG_RBX
     mov sil, REG_RAX
     call emit_mov_rr                   ; rbx = rhs

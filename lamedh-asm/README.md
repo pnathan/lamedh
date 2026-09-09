@@ -626,10 +626,27 @@ into conformance incrementally, tracked honestly rather than silently:
   session's other native-failure work) rather than silently wrapping
   or crashing; `CODE-CHAR` returns a one-character *string*, not a
   `Char` — an asymmetric pair the spec states outright, not an
-  inconsistency this kernel introduced. **v0 scope, narrower than the
-  spec on purpose**: `+`/`-`/`*`/`<`/`=` don't coerce a `Char` operand
-  to its code point yet (Part V's contagion rule), only `CHAR-CODE`
-  does that conversion explicitly; `CHAR-CODE` only accepts a `Char`
+  inconsistency this kernel introduced. **`+`/`-`/`*`/`<`/`=` now
+  coerce a `Char` operand to its code point** (`tests/cases/055_char_contagion.asm`),
+  Part V's own contagion rule — `emit_coerce_char_in_rax`
+  (`compiler.asm`) runs right after `compile_binop` compiles each
+  operand, replacing a tagged `Char` in place with a tagged fixnum
+  holding its code point (or leaving anything else — an ordinary
+  fixnum, a symbol, a cons — completely unchanged), so `(+ 'a' 1)` is
+  `98` and `(= 'a' 97)` is `T` even though `(eq 'a' 97)` correctly
+  stays `NIL` (`EQ`'s own path never calls this — contagion is
+  specifically an arithmetic/comparison rule, not an identity one).
+  A first draft of this check shipped a real bug before it reached
+  `make test`: the three "this isn't actually a Char" exit paths each
+  left `rax` holding an *intermediate scratch value* (tag bits, or a
+  half-computed range check) rather than restoring the operand's
+  original value, silently corrupting every ordinary non-`Char`
+  arithmetic operand — caught immediately by the existing regression
+  suite (`043_function_sharp_quote` and others going from correct
+  results to `0`/negative garbage), not shipped; fixed by giving the
+  three failure sites their own explicit `rax = rcx` (the saved
+  original) restore stub, with the success path jumping clean over it.
+  `CHAR-CODE` only accepts a `Char`
   argument, not the reference's own "or a non-empty string's first
   code point" overload; `CODE-CHAR`/`MAKE-CHAR` are restricted to
   `0..255` (one byte) rather than the reference's full Unicode code
