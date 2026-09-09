@@ -812,10 +812,27 @@ into conformance incrementally, tracked honestly rather than silently:
 
 - A lambda body may have multiple forms, implicitly `PROGN`-wrapped
   (no longer a v0 limit — see "KERNEL.md conformance" above).
-- A nested `LAMBDA` may only capture free variables from its
-  *immediately* enclosing lambda's own frame — a variable needed from
-  two levels up needs manual re-threading through the middle lambda for
-  now; deeper transitive free-variable propagation isn't implemented.
+- ~~A nested `LAMBDA` may only capture free variables from its
+  *immediately* enclosing lambda's own frame~~ — **this was never
+  actually true and has been corrected as a documentation bug, not a
+  code change** (`docs/spec-tco-capture-gc.md` section 1; probes
+  verified against `build/lamedhc`, pinned in
+  `tests/cases/066_transitive_capture.asm`). `scan_free_vars`
+  (`compiler.asm`) never stops at a nested `LAMBDA` — it walks a
+  lambda's whole body as one subtree, so a variable three levels up
+  (`(LAMBDA (A) (LAMBDA (B) (LAMBDA (C) (+ A (+ B C)))))`, a `LET`-
+  bound name in a middle lambda, stack-passed outer params, a `&REST`
+  middle lambda, a macro-produced inner lambda) is already captured
+  transitively with no manual re-threading. What genuinely is a
+  measured, real defect: a macro call at lambda-nesting depth D is
+  expanded **2D+1 times** at compile time (`compile_lambda` scans the
+  body twice per nesting level, once to size the frame and once to
+  re-derive it for the closure-construction copy loop, and each scan
+  re-runs the macro's own transformer), and the scan is
+  shadowing-blind (`(LAMBDA (X) (LAMBDA (X) X))` captures the outer
+  `X` into a slot the inner closure never reads) — both fixed by a
+  single memoized, shadow-aware analysis pass (`analyze_lambda_captures`/
+  `macroexpand_once`) landing per the spec's own incremental plan.
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
@@ -1621,12 +1638,11 @@ bugs no existing test had exercised:
     a call whose head is a global bound as a macro, it now expands
     the call (the same `invoke_macro` `compile_form` itself uses) and
     scans the *expansion* in the raw call's place, rather than walking
-    the call's own unexpanded operands. This is still v0's documented
-    single-level free-variable capture (a variable needed from two
-    lambda-nesting levels up still needs manual re-threading — see
-    "Known gaps" below) with one more thing it now sees through: a
-    macro standing between a closure and the free variable it
-    captures. `lib/25-variants.lisp`'s `$variant-ctor-forms` (its own
+    the call's own unexpanded operands (multi-level capture itself
+    was never actually limited to one level — see "v0 limits" above
+    for the correction — this fix is specifically about seeing
+    through a macro standing between a closure and the free variable
+    it captures, at any nesting depth). `lib/25-variants.lisp`'s `$variant-ctor-forms` (its own
     `` `(forall ,params ...) `` backquote template, built inside a
     `(mapcar (lambda (spec) ...) field-specs)` closure capturing the
     enclosing function's own `params`) hit this exactly.
@@ -1998,10 +2014,17 @@ bugs no existing test had exercised:
   building a new one.)
 - A real register allocator (linear-scan to start) instead of spilling
   every local to a fixed stack slot.
-- Proper tail calls: frame-reuse `jmp` for calls in tail position.
-- A copying or generational GC for the data heap.
-- General (not single-level) free-variable propagation through nested
-  lambdas.
+- Proper tail calls: frame-reuse `jmp` for calls in tail position —
+  spec written (`docs/spec-tco-capture-gc.md` section 2), not yet
+  implemented.
+- A reference-counting GC for the data heap — spec written
+  (`docs/spec-tco-capture-gc.md` section 3, landing last), not yet
+  implemented.
+- A single memoized, shadow-aware free-variable analysis pass to
+  replace `scan_free_vars`'s current double-scan-per-lambda-level —
+  general transitive capture *itself* already works (see "v0 limits"
+  above); this is a compile-time-cost and over-capture fix, not a
+  correctness one (spec section 1).
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured
   variable is visible across closures over it.
 - XMM support in `codegen.asm`, so float arithmetic can be inlined as
