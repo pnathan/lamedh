@@ -486,13 +486,48 @@ into conformance incrementally, tracked honestly rather than silently:
   exact phrase) for free, the same mechanism `DOTIMES` already relies
   on. `GENSYM` (not a fixed internal name) for the end/step bindings
   means a nested `FOR` can't collide with an outer one's, the same
-  hygiene fix `DOTIMES` itself needed. Most of the rest of Part VII's
-  special forms (`PROG`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`)
-  still don't exist — `UNWIND-PROTECT` in particular needs real
-  integration with the `CATCH`/`THROW` unwind machinery itself (running
-  cleanup forms for *any* exit passing through, not just ones this
-  form itself catches), not just another `CATCH`/`THROW` derivation
-  the way `BLOCK`/`HANDLER-CASE` were; capability gating
+  hygiene fix `DOTIMES` itself needed. **`UNWIND-PROTECT` now also
+  exists** (`tests/cases/052_unwind_protect.asm`), and needed exactly
+  the real `CATCH`/`THROW`-unwind integration a previous version of
+  this README named as the reason it couldn't be another simple
+  derivation the way `BLOCK`/`HANDLER-CASE` were: `compile_throw` and
+  `emit_throw_baked` (ERROR's own signaling path) were first
+  refactored to both funnel through one shared host routine,
+  `native_throw` (`native_errors.asm` — previously only native
+  failures like `CAR`/`CDR`'s wrong-type check used it, while THROW/
+  ERROR each hand-encoded their own separate copy of the identical
+  search loop as target machine code), so there is exactly one place
+  a passing throw's search can notice something. `UNWIND-PROTECT`
+  installs a "marker" frame on the same catch stack (reusing the
+  32-byte slot shape, but frame[8] holds the cleanup closure where an
+  ordinary frame keeps its saved rbp) tagged with a fresh shared
+  `unwind_protect_marker_tag()` — the same one-shared-tag trick
+  `handler_case_tag` already uses. `native_throw`'s search now checks
+  every frame it passes for this tag: a match fires that frame's
+  cleanup closure (`invoke_thunk`, a tail-call into the closure's own
+  code pointer with 0 args) and permanently shrinks `catch_stack_top`
+  past it *before* the call, so a `CATCH`/`THROW` the cleanup performs
+  on its own can never re-observe or re-fire the very marker it's
+  nested inside — then the search continues below it. Verified
+  directly: a `THROW` passing straight through an `UNWIND-PROTECT`
+  that never catches it still fires the cleanup before the enclosing
+  `CATCH` delivers its value; nested `UNWIND-PROTECT`s unwind in LIFO
+  order; the body's own value is captured *before* cleanup runs, even
+  when cleanup mutates the same variable the body just read; and a
+  native failure (`CAR` on a non-cons) passing through fires the
+  cleanup exactly the same way a Lisp-level `THROW` does. **v0 scope,
+  narrower than the spec on purpose**: "an error raised by a cleanup
+  form is discarded" is not yet true — a cleanup form's own uncaught
+  condition propagates as an ordinary new `native_throw` search, which
+  can end up superseding whichever throw was already being processed,
+  rather than being silently swallowed so the original throw
+  continues; implementing that exactly needs the cleanup invocation
+  itself wrapped in a synthetic innermost catch on `handler_case_tag()`
+  — a real next step, deliberately not attempted here to keep this
+  change's blast radius to the primary, spec-critical guarantee
+  (cleanup runs on every exit path, full stop). Most of the rest of
+  Part VII's special forms (`PROG`/`VAU`/`DEFDYNAMIC`) still don't
+  exist; capability gating
   (Part IX) and fuel (Part X) don't exist yet; proper tail calls
   (Part VI) aren't implemented (see v0 limits below); the array
   primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/

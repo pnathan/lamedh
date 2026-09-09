@@ -17,8 +17,40 @@ extern catch_stack_top
 extern handler_case_tag
 extern make_error
 extern make_string
+extern intern_symbol
 
 section .text
+
+; unwind_protect_marker_tag() -> rax = the single shared interned
+; symbol every UNWIND-PROTECT installs its catch-stack marker frame
+; with (compile_unwind_protect, compiler.asm) — the same one-shared-
+; tag trick handler_case_tag (conditions.asm) already uses, safe for
+; the identical reason: native_throw's search below walks the stack
+; from the top regardless, so it can recognize *any* marker frame it
+; passes on the way to a real match, not just ones a specific
+; UNWIND-PROTECT call site is looking for.
+global unwind_protect_marker_tag
+unwind_protect_marker_tag:
+    mov rdi, unwind_marker_tag_name
+    mov rsi, 23
+    jmp intern_symbol
+
+; invoke_thunk(rdi=tagged closure) -> rax = the closure's own return
+; value, called with zero arguments. A tail call into the closure's
+; own code pointer (rdi is left exactly as given — the closure's self-
+; pointer for reading its own captured free variables, per this
+; kernel's calling convention), so the closure's own `ret` returns
+; directly to invoke_thunk's own caller. Used for UNWIND-PROTECT
+; cleanup thunks, both here (native_throw, when a marker frame is
+; passed during an unwind) and in compile_unwind_protect's own normal-
+; completion epilogue.
+global invoke_thunk
+invoke_thunk:
+    mov rcx, rdi
+    UNTAG_PTR rcx
+    mov rcx, [rcx+8]                  ; code ptr
+    xor rax, rax                        ; nargs = 0
+    jmp rcx
 
 ; native_throw(rdi=tag, rsi=value) — never returns. The exact same
 ; catch-stack search, restore, and jump compile_throw's *generated*
@@ -33,6 +65,22 @@ section .text
 ; [24]=resume target, searched from the top for an EQ (raw pointer/
 ; immediate) match. Trapping (int3) on no match is the same v0 failure
 ; mode compile_throw's own generated code falls back to.
+;
+; UNWIND-PROTECT support (KERNEL.md Part VII): every frame the search
+; passes without matching is now checked against
+; unwind_protect_marker_tag() above; a match there is not a real catch
+; target (nothing ever THROWs to it directly) but a marker
+; compile_unwind_protect installed, with the cleanup closure sitting in
+; frame[8] where an ordinary frame keeps its saved rbp. Passing one
+; during a search fires its cleanup (invoke_thunk) right there, and
+; catch_stack_top is shrunk to remove the marker *before* the call —
+; not just at the end like an ordinary skipped frame — so a CATCH or
+; THROW the cleanup form performs on its own can never re-observe or
+; re-fire the very marker it's nested inside. v0 scope: unlike the
+; reference, an error raised *by* a cleanup form here is not discarded
+; — it propagates as an ordinary new native_throw search of its own,
+; which can end up superseding the throw currently being processed
+; (see README "KERNEL.md conformance" for the exact tradeoff and why).
 global native_throw
 native_throw:
     push rbx
@@ -50,8 +98,33 @@ native_throw:
     imul rcx, rcx, 32
     lea rdx, [rel catch_stack]
     add rdx, rcx                          ; rdx = frame_addr
-    cmp qword [rdx], rbx
+    mov rcx, [rdx]                          ; rcx = this frame's tag
+    cmp rcx, rbx
     je .match
+
+    push rdx                                  ; frame_addr — caller-saved,
+    call unwind_protect_marker_tag              ; must survive this call
+    mov r8, rax
+    pop rdx
+    cmp qword [rdx], r8
+    jne .continue_search
+
+    ; marker frame: shrink catch_stack_top now (permanently removing
+    ; it) before firing its cleanup — see the comment above this
+    ; routine for why the ordering matters.
+    mov [rel catch_stack_top], r13
+    push rbx                                    ; invoke_thunk runs
+    push r12                                      ; arbitrary compiled
+    push r13                                        ; Lamedh code, which
+    mov rdi, [rdx+8]                                  ; this kernel's own
+    call invoke_thunk                                   ; codegen never
+    pop r13                                               ; promises to
+    pop r12                                                 ; preserve —
+    pop rbx                                                   ; stack-save
+                                                                 ; rather than
+                                                                 ; trust any
+                                                                 ; register
+.continue_search:
     mov rax, r13                            ; continue searching below this one
     jmp .loop
 .match:
@@ -100,3 +173,6 @@ fail_wrong_type:
     mov rsi, r12
     call native_throw                        ; never returns
     ; unreachable
+
+section .rodata
+unwind_marker_tag_name: db "%UNWIND-PROTECT-MARKER%"

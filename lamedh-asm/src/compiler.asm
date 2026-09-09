@@ -154,6 +154,7 @@ kw_setq:     db "SETQ"
 kw_error:         db "ERROR"
 kw_handler_case:  db "HANDLER-CASE"
 kw_errorset:      db "ERRORSET"
+kw_unwind_protect: db "UNWIND-PROTECT"
 kw_error_p:       db "ERROR-P"
 kw_error_message: db "ERROR-MESSAGE"
 kw_error_data:    db "ERROR-DATA"
@@ -2750,15 +2751,24 @@ compile_catch:
     ret
 
 ; compile_throw(rdi = (THROW tag value) form)
-; Searches the catch stack from the top for an EQ tag match, then
-; restores rbp/rsp to that frame's saved state and jumps to its resume
-; point with the thrown value in rax — an ordinary longjmp. Trapping
-; (int3) on no match is the v0 failure mode; see README.
+; Compiles tag and value, then emits a call into native_throw
+; (native_errors.asm) with rdi=tag, rsi=value — the exact same catch-
+; stack search/restore/jump this used to hand-encode inline as target
+; machine code, now written once as an ordinary host routine and
+; reused from both here and every native failure (CAR/CDR's wrong-type
+; check, calling a non-callable value) that needs to signal into the
+; same CATCH/HANDLER-CASE/ERRORSET machinery. Folding THROW itself
+; into that one shared implementation, rather than keeping two
+; hand-encoded copies of the same search loop in sync, is also what
+; makes UNWIND-PROTECT's cleanup-on-any-passing-throw semantics
+; (KERNEL.md Part VII) implementable at all: native_throw's walk is
+; the one and only place that needs to notice an unwind-protect marker
+; frame on its way past — see "KERNEL.md conformance" below.
+extern native_throw
 compile_throw:
     push rbx
     push r12
     push r13
-    push r14
     mov rbx, rdi
     call cadr
     mov r12, rax                    ; tag form
@@ -2766,11 +2776,6 @@ compile_throw:
     call caddr
     mov r13, rax                      ; value form
 
-    ; The tag must survive the value form's own compilation, and no
-    ; register survives that: compile_binop parks its RHS in rbx, and
-    ; every call path parks the callee's code pointer there too. So the
-    ; tag goes on the machine stack (like compile_binop's own lhs) and
-    ; is reloaded into rbx only once the value is computed and pushed.
     mov rdi, r12
     call compile_form                    ; tag -> target rax
     mov dil, REG_RAX
@@ -2778,126 +2783,19 @@ compile_throw:
 
     mov rdi, r13
     call compile_form                          ; value -> target rax
-    mov dil, REG_RAX
-    call emit_push_reg                            ; target: push value
-
-    mov dil, REG_RBX
-    mov esi, 8
-    call emit_load_rsp_disp8                        ; target: rbx = tag (under value)
-
-    lea rsi, [rel catch_stack_top]
-    mov dil, REG_RAX
-    call emit_load_mem64                            ; target: rax = top
     mov dil, REG_RSI
     mov sil, REG_RAX
-    call emit_mov_rr                                   ; target: rsi = remaining count
-
-    call codegen_here
-    mov r12, rax                                          ; loop_start
-
-    mov dil, REG_RAX
-    mov sil, REG_RSI
-    call emit_mov_rr
-    mov rsi, 0
-    call emit_cmp_rax_imm64
-    call emit_je                                            ; rax = unmatched_site (deferred)
-    mov r13, rax
-
-    mov dil, REG_RAX
-    mov sil, REG_RSI
-    call emit_mov_rr
-    mov edi, 1
-    call emit_sub_rax_imm32
-    mov dil, REG_RSI
-    mov sil, REG_RAX
-    call emit_mov_rr                                          ; target: rsi = index
-
-    mov dil, REG_RAX
-    mov sil, REG_RSI
-    call emit_mov_rr
-    mov edi, 32
-    call emit_imul_rax_imm32
-    lea rax, [rel catch_stack]
-    mov edi, eax
-    call emit_add_rax_imm32                                     ; target: rax = frame_addr
-
-    mov dil, REG_RDX
-    mov sil, REG_RAX
-    mov edx, 0
-    call emit_load_based                                          ; target: rdx = frame[0] (tag)
-    mov dil, REG_RDX
-    mov sil, REG_RBX
-    call emit_cmp_rr
-    call emit_jne                                                   ; rax = continue_site (deferred)
-    mov r14, rax
-
-    ; --- match: rax still = frame_addr ---
-    ; catch_stack_top is stored *before* any frame field is loaded into
-    ; rcx: emit_store_mem64 uses rcx as its own scratch (unless the
-    ; source register itself is rcx), and would otherwise clobber the
-    ; saved-rsp value the very next few instructions depend on.
-    ;
-    ; The stored count is index+1, not index: resume target now lands in
-    ; CATCH's shared epilogue (see compile_catch), which always does its
-    ; own "-1" on the way out — landing there with the count pre-bumped
-    ; by one is what makes that shared decrement land on the correct
-    ; final count either way (a normal return or a caught throw).
-    ; rax must not move here — it still holds frame_addr, needed by the
-    ; loads just below — so the +1 goes straight into rsi, not through
-    ; the usual rax shuttle.
-    mov dil, REG_RSI
-    mov esi, 1
-    call emit_add_reg_imm32                                                     ; rsi += 1
-    lea rsi, [rel catch_stack_top]
-    mov dil, REG_RSI
-    call emit_store_mem64                                                     ; catch_stack_top = index + 1
-
-    mov dil, REG_RCX
-    mov sil, REG_RAX
-    mov edx, 16
-    call emit_load_based                                              ; rcx = saved rsp
-    mov dil, REG_RDX
-    mov sil, REG_RAX
-    mov edx, 8
-    call emit_load_based                                                ; rdx = saved rbp
-    mov dil, REG_RBX
-    mov sil, REG_RAX
-    mov edx, 24
-    call emit_load_based                                                  ; rbx = resume target
+    call emit_mov_rr                              ; target: rsi = value
     mov dil, REG_RDI
-    mov esi, 0
-    call emit_load_rsp_disp8                                                ; rdi = thrown value (unpopped)
+    call emit_pop_reg                                ; target: rdi = tag (restored)
 
-    mov dil, REG_RSP
-    mov sil, REG_RCX
-    call emit_mov_rr                                                            ; rsp = saved rsp
-    mov dil, REG_RBP
-    mov sil, REG_RDX
-    call emit_mov_rr                                                              ; rbp = saved rbp
+    lea rax, [rel native_throw]
+    mov rsi, rax
     mov dil, REG_RAX
-    mov sil, REG_RDI
-    call emit_mov_rr                                                                ; rax = thrown value
-    mov dil, REG_RBX
-    call emit_jmp_reg                                                                 ; -> resume target
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                                 ; never returns
 
-    call codegen_here
-    mov rdi, r14
-    mov rsi, rax
-    call patch_rel32                       ; continue_site -> here
-
-    call emit_jmp32
-    mov rdi, rax
-    mov rsi, r12
-    call patch_rel32                       ; jmp back to loop_start
-
-    call codegen_here
-    mov rdi, r13
-    mov rsi, rax
-    call patch_rel32                       ; unmatched_site -> here
-    mov rdi, 0xCC
-    call emit8                             ; no matching CATCH — trap
-
-    pop r14
     pop r13
     pop r12
     pop rbx
@@ -3023,125 +2921,31 @@ emit_install_catch_frame:
 ; installed with this exact tag. Unlike compile_throw, the tag is a
 ; compile-time constant (not a form to compile) and the value is
 ; already sitting in target rax (built by a host function call, not
-; evaluated fresh) — this is what ERROR's signaling needs.
+; evaluated fresh) — this is what ERROR's signaling needs. Emits a
+; call into native_throw (native_errors.asm), the same shared
+; implementation compile_throw itself now uses, rather than a second
+; hand-encoded copy of the search loop — so ERROR's own THROW-to-
+; handler_case_tag() also correctly fires any UNWIND-PROTECT cleanup
+; it passes on the way to its handler (see native_throw's own comment).
 emit_throw_baked:
     push rbx
-    push r12
-    push r13
-    push r14
-    mov r12, rdi                  ; tag
-
-    mov dil, REG_RAX
-    call emit_push_reg               ; push value (already computed)
-
-    mov rsi, r12
-    mov dil, REG_RAX
-    call emit_mov_reg_imm64             ; rax = tag
-    mov dil, REG_RBX
-    mov sil, REG_RAX
-    call emit_mov_rr                       ; rbx = tag
-
-    lea rsi, [rel catch_stack_top]
-    mov dil, REG_RAX
-    call emit_load_mem64
+    mov rbx, rdi                  ; save tag — dil is rdi's own low byte,
+                                   ; so the emit_mov_rr call just below
+                                   ; would otherwise destroy it in place
     mov dil, REG_RSI
     mov sil, REG_RAX
-    call emit_mov_rr                          ; rsi = remaining count
+    call emit_mov_rr                       ; target: rsi = value
 
-    call codegen_here
-    mov r13, rax                                 ; loop_start
-
-    mov dil, REG_RAX
-    mov sil, REG_RSI
-    call emit_mov_rr
-    mov rsi, 0
-    call emit_cmp_rax_imm64
-    call emit_je
-    mov r14, rax                                    ; unmatched_site
-
-    mov dil, REG_RAX
-    mov sil, REG_RSI
-    call emit_mov_rr
-    mov edi, 1
-    call emit_sub_rax_imm32
-    mov dil, REG_RSI
-    mov sil, REG_RAX
-    call emit_mov_rr                                    ; rsi = index
-
-    mov dil, REG_RAX
-    mov sil, REG_RSI
-    call emit_mov_rr
-    mov edi, 32
-    call emit_imul_rax_imm32
-    lea rax, [rel catch_stack]
-    mov edi, eax
-    call emit_add_rax_imm32                               ; rax = frame_addr
-
-    mov dil, REG_RDX
-    mov sil, REG_RAX
-    mov edx, 0
-    call emit_load_based                                     ; rdx = frame[0] tag
-    mov dil, REG_RDX
-    mov sil, REG_RBX
-    call emit_cmp_rr
-    call emit_jne
-    push rax                                                    ; [continue_site]
-
-    mov dil, REG_RSI
-    mov esi, 1
-    call emit_add_reg_imm32
-    lea rsi, [rel catch_stack_top]
-    mov dil, REG_RSI
-    call emit_store_mem64                                          ; top = index+1
-
-    mov dil, REG_RCX
-    mov sil, REG_RAX
-    mov edx, 16
-    call emit_load_based                                             ; rcx = saved rsp
-    mov dil, REG_RDX
-    mov sil, REG_RAX
-    mov edx, 8
-    call emit_load_based                                               ; rdx = saved rbp
-    mov dil, REG_RBX
-    mov sil, REG_RAX
-    mov edx, 24
-    call emit_load_based                                                 ; rbx = resume target
+    mov rsi, rbx
     mov dil, REG_RDI
-    mov esi, 0
-    call emit_load_rsp_disp8                                               ; rdi = thrown value (unpopped)
+    call emit_mov_reg_imm64                  ; target: rdi = tag
 
-    mov dil, REG_RSP
-    mov sil, REG_RCX
-    call emit_mov_rr
-    mov dil, REG_RBP
-    mov sil, REG_RDX
-    call emit_mov_rr
+    lea rax, [rel native_throw]
+    mov rsi, rax
     mov dil, REG_RAX
-    mov sil, REG_RDI
-    call emit_mov_rr
-    mov dil, REG_RBX
-    call emit_jmp_reg
-
-    call codegen_here
-    pop rdi                                                                   ; continue_site
-    mov rsi, rax
-    call patch_rel32
-
-    call emit_jmp32
-    mov rdi, rax
-    mov rsi, r13
-    call patch_rel32
-
-    call codegen_here
-    mov rdi, r14
-    mov rsi, rax
-    call patch_rel32
-    mov rdi, 0xCC
-    call emit8                             ; no matching CATCH — trap
-
-    pop r14
-    pop r13
-    pop r12
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                          ; never returns
     pop rbx
     ret
 
@@ -3384,6 +3188,191 @@ compile_errorset:
     mov rsi, rax
     call patch_rel32
 
+    pop r12
+    pop rbx
+    ret
+
+; compile_unwind_protect(rdi = (UNWIND-PROTECT body-form cleanup...)
+; form) — KERNEL.md Part VII: body-form is evaluated, then every
+; cleanup form runs *unconditionally* — after a normal return, an
+; error, or any other non-local exit passing through — and the body's
+; own outcome (its value, or the propagating throw/error) is what this
+; form ultimately delivers. Unlike BLOCK/HANDLER-CASE, which only need
+; to react to a throw that targets *them specifically*, this needs to
+; react to *any* throw merely passing through on its way somewhere
+; else — which is exactly why compile_throw/emit_throw_baked were
+; first refactored to funnel every THROW/ERROR through one shared host
+; routine, native_throw (native_errors.asm): that is now the one place
+; a passing throw's search can notice this form's own "marker" frame
+; on the catch stack and fire its cleanup right there, before
+; continuing to search for the real target. See native_throw's own
+; comment for the marker-frame mechanics.
+;
+; The marker frame reuses the ordinary 32-byte catch_stack slot shape,
+; but not its ordinary meaning: frame[0] = the shared
+; unwind_protect_marker_tag() (never a real CATCH/THROW target — see
+; conditions.asm's handler_case_tag for the identical one-shared-tag
+; precedent) and frame[8] = the cleanup closure itself, in place of
+; where an ordinary frame keeps its saved rbp (frame[16]/frame[24] are
+; unused, since a marker is never jumped to directly). The cleanup
+; forms compile as an ordinary zero-parameter LAMBDA — a real closure
+; over the enclosing lexical scope, built from a synthesized
+; (LAMBDA () cleanup...) AST via the same CONS/intern_symbol host
+; calls the reader itself uses, then handed to compile_lambda exactly
+; like any other LAMBDA form — so free variables in cleanup forms
+; resolve normally, with no new capture mechanism needed.
+;
+; v0 scope, narrower than the spec on purpose: "an error raised by a
+; cleanup form is discarded" is NOT yet true here — a cleanup form
+; that itself signals an uncaught condition propagates as an ordinary
+; new native_throw search, which can end up superseding whichever
+; throw was already being processed, rather than being silently
+; swallowed so the original throw continues. Implementing the
+; spec's exact discard behavior needs the cleanup invocation itself
+; wrapped in a synthetic innermost HANDLER-CASE-shaped catch (the same
+; handler_case_tag() ERROR always throws to) — a real next step, not
+; attempted here to keep this change's blast radius to the primary,
+; spec-critical guarantee: cleanup runs on every exit path, full stop.
+extern unwind_protect_marker_tag
+extern invoke_thunk
+compile_unwind_protect:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi
+    call cdr
+    mov r12, rax                     ; (body-form cleanup...)
+    mov rdi, r12
+    call car
+    mov r13, rax                       ; body-form
+    mov rdi, r12
+    call cdr
+    mov r12, rax                         ; cleanup-forms list (0 or more)
+
+    ; Synthesize (LAMBDA () cleanup-forms...) and compile it as an
+    ; ordinary LAMBDA — target rax ends up holding the fresh closure.
+    ; Cons cells are immutable here, so this builds outside-in: the
+    ; empty param list consed onto the cleanup-forms list first, then
+    ; the LAMBDA symbol consed onto that.
+    mov rdi, IMM_NIL
+    mov rsi, r12
+    call cons                                        ; (() . cleanup-forms)
+    mov r12, rax
+    mov rdi, kw_lambda
+    mov rsi, 6
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r12
+    call cons                                          ; (LAMBDA () cleanup...)
+    mov rdi, rax
+    call compile_lambda                                  ; target rax = closure
+    mov dil, REG_RAX
+    call emit_push_reg                                     ; target: push closure
+
+    ; Install the marker frame: frame[0]=marker_tag frame[8]=closure
+    ; frame[16]=0 frame[24]=0; catch_stack_top += 1.
+    call unwind_protect_marker_tag
+    mov r14, rax                                             ; marker tag (host)
+
+    mov dil, REG_RAX
+    mov rsi, r14
+    call emit_mov_reg_imm64                                    ; target rax = marker_tag
+    mov dil, REG_RAX
+    call emit_push_reg                                           ; push it (over closure)
+
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64                                          ; target rax = top
+    mov edi, 32
+    call emit_imul_rax_imm32
+    lea rax, [rel catch_stack]
+    mov edi, eax
+    call emit_add_rax_imm32                                         ; target rax = frame_addr
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                                                  ; target rbx = frame_addr
+
+    mov dil, REG_RAX
+    call emit_pop_reg                                                   ; target rax = marker_tag
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 0
+    call emit_store_based                                                 ; frame[0] = marker_tag
+
+    mov dil, REG_RAX
+    mov esi, 0
+    call emit_load_rsp_disp8                                                ; target rax = closure (still on stack)
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 8
+    call emit_store_based                                                     ; frame[8] = closure
+    mov dil, REG_RAX
+    call emit_pop_reg                                                           ; discard closure copy (balance stack)
+
+    mov dil, REG_RAX
+    mov rsi, 0
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 16
+    call emit_store_based                                                         ; frame[16] = 0
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    mov edx, 24
+    call emit_store_based                                                           ; frame[24] = 0
+
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64
+    mov edi, 1
+    call emit_add_rax_imm32
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_store_mem64                                                           ; top += 1
+
+    ; --- compile body-form ---
+    mov rdi, r13
+    call compile_form                                                     ; target rax = body result
+
+    ; --- normal-completion epilogue: fire cleanup, pop the marker ---
+    mov dil, REG_RAX
+    call emit_push_reg                                                      ; save body result
+
+    lea rsi, [rel catch_stack_top]
+    mov dil, REG_RAX
+    call emit_load_mem64
+    mov edi, 1
+    call emit_sub_rax_imm32
+    mov edi, 32
+    call emit_imul_rax_imm32
+    lea rax, [rel catch_stack]
+    mov edi, eax
+    call emit_add_rax_imm32                                                  ; target rax = frame_addr (top-1)
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                                                           ; target rbx = frame_addr
+
+    mov dil, REG_RDI
+    mov sil, REG_RBX
+    mov edx, 8
+    call emit_load_based                                                         ; target rdi = closure
+
+    lea rax, [rel invoke_thunk]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                                                             ; call invoke_thunk(rdi) ->
+                                                                                    ; rax = result (discarded)
+
+    call emit_pop_catch_frame                                                        ; catch_stack_top -= 1
+
+    mov dil, REG_RAX
+    call emit_pop_reg                                                                  ; target rax = body result
+                                                                                        ; (restored)
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret
@@ -4604,6 +4593,17 @@ compile_form:
     jmp .out
 
 .not_errorset:
+    mov rdi, r12
+    mov rsi, kw_unwind_protect
+    mov rdx, 14
+    call sym_is
+    test rax, rax
+    jz .not_unwind_protect
+    mov rdi, rbx
+    call compile_unwind_protect
+    jmp .out
+
+.not_unwind_protect:
     mov rdi, r12
     mov rsi, kw_error
     mov rdx, 5
