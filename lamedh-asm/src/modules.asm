@@ -21,11 +21,16 @@
 ; file_runner.asm already does for lib/prelude.lisp — proof this is
 ; the real file, not a copy. v0 scope, narrower than the reference on
 ; purpose: only the modules with no networking/TLS/regex/OS dependency
-; (SHELL through PROTOCOLS in the reference's own OPTIONAL_MODULES
-; order) are embedded; TEXT (30-text.lisp) onward is out of scope for
-; the same reason ../examples/*/main.lisp's own network/regex/TLS
-; examples already are (see README Roadmap) — this freestanding,
-; no-libc host has no I/O primitives for any of that yet.
+; are embedded — SHELL through PROTOCOLS in the reference's own
+; OPTIONAL_MODULES order, plus TEXT (30-text.lisp): despite an earlier
+; version of this comment lumping it in with the networking tier,
+; 30-text.lisp's own header is explicit that it is "100% Lisp" over
+; three Rust primitives this kernel already had (STRING->UTF8*/
+; UTF8->STRING*/UTF8->STRING-LOSSY*, lib/14-strings.lisp) — no
+; capability, no I/O, no OS dependency at all. PORTS (31-ports.lisp)
+; onward genuinely does need real file-descriptor/OS-capability
+; primitives this freestanding, no-libc host does not have yet (see
+; README Roadmap), which is where embedding actually stops.
 
 %include "src/tags.inc"
 
@@ -65,6 +70,7 @@ MODULE_SRC instrument, "../lib/26-instrument.lisp"
 MODULE_SRC modules_mod, "../lib/27-modules.lisp"
 MODULE_SRC types, "../lib/28-types.lisp"
 MODULE_SRC protocols, "../lib/29-protocols.lisp"
+MODULE_SRC text, "../lib/30-text.lisp"
 
 origin_embedded: db "embedded"
 origin_embedded_len: equ $ - origin_embedded
@@ -94,6 +100,7 @@ MODULE_NAME instrument, "INSTRUMENT"
 MODULE_NAME modules_mod, "MODULES"
 MODULE_NAME types, "TYPES"
 MODULE_NAME protocols, "PROTOCOLS"
+MODULE_NAME text, "TEXT"
 
 align 8
 module_table:
@@ -111,6 +118,7 @@ module_table:
     dq module_name_modules_mod, module_name_modules_mod_len, modules_mod_src_start, modules_mod_src_end
     dq module_name_types, module_name_types_len, types_src_start, types_src_end
     dq module_name_protocols, module_name_protocols_len, protocols_src_start, protocols_src_end
+    dq module_name_text, module_name_text_len, text_src_start, text_src_end
 module_table_end:
 %define MODULE_ROW_BYTES 32
 %define MODULE_TABLE_COUNT ((module_table_end - module_table) / MODULE_ROW_BYTES)

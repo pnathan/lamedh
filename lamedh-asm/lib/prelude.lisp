@@ -127,6 +127,84 @@
 (DEFUN < (A B) (< A B))
 (DEFUN = (A B) (= A B))
 
+; $LENGTH — the reference's own Rust-level builtin (evaluator/builtins_
+; core.rs) backing lib/01-list.lisp's LENGTH wrapper. No host-
+; representation access is needed to count a proper list's own cons
+; cells, so this is an ordinary recursive Lisp definition rather than a
+; new kernel primitive, per this project's stated preference. Never
+; called at all until something in the reference stdlib actually
+; invokes LENGTH (lib/25-variants.lisp's DEFVARIANT does, via
+; `(length params)`), which is why an entirely unbound $LENGTH went
+; unnoticed until now.
+(DEFUN $LENGTH (LST) (IF (NULL LST) 0 (+ 1 ($LENGTH (CDR LST)))))
+
+; $LIST->ARRAY/$ARRAY->LIST — the reference's own Rust-level builtins
+; (evaluator/builtins_core.rs) backing lib/17-arrays.lisp's LIST->ARRAY/
+; ARRAY->LIST wrappers. Ordinary Lisp over this kernel's own ARRAY
+; (= MAKE-ARRAY, allocates N NIL-filled slots), FETCH, STORE, and
+; ARRAY-LENGTH* special forms — ARRAY mutation (STORE on a freshly
+; allocated, not-yet-shared array) is exactly the documented allowed
+; case (lib/17-arrays.lisp's own header comment: "arrays are mutable;
+; only cons aliasing is the concern"). Never called until
+; lib/30-text.lisp's STRING->UTF8 goes through LIST->ARRAY of one
+; CODE-CHAR per byte.
+(DEFUN $LIST->ARRAY-FILL! (ARR LST I)
+  (IF (NULL LST)
+      ARR
+      (PROGN (STORE ARR I (CAR LST))
+             ($LIST->ARRAY-FILL! ARR (CDR LST) (+ I 1)))))
+(DEFUN $LIST->ARRAY (LST)
+  ($LIST->ARRAY-FILL! (ARRAY ($LENGTH LST)) LST 0))
+(DEFUN $ARRAY->LIST-LOOP (ARR I N)
+  (IF (NOT (< I N)) (QUOTE ()) (CONS (FETCH ARR I) ($ARRAY->LIST-LOOP ARR (+ I 1) N))))
+(DEFUN $ARRAY->LIST (ARR) ($ARRAY->LIST-LOOP ARR 0 (ARRAY-LENGTH* ARR)))
+
+; STRING->UTF8*/UTF8->STRING*/UTF8->STRING-LOSSY* — the three genuine
+; Rust-level builtins (evaluator/builtins_core.rs) lib/30-text.lisp's
+; TEXT module wraps. This kernel's own STRING representation
+; (tags.inc's HDR_STRING: "[8 len][len bytes, padded]") already stores
+; a string's raw UTF-8 bytes directly — STRING-LENGTH is a BYTE count,
+; not a codepoint count ("héllo" is 6, not 5) — so STRING->UTF8 is
+; nearly a straight byte copy into an Array<Char>, and UTF8->STRING is
+; its inverse (CONCAT already accepts CHAR values directly, confirmed
+; by direct testing, so re-assembling one CHAR per array element back
+; into a STRING is exactly APPLY of CONCAT over the array's elements).
+; KNOWN LIMITATION: this kernel does no UTF-8 well-formedness
+; validation at all (no Rust `std::str::from_utf8` equivalent exists
+; here) — UTF8->STRING* and UTF8->STRING-LOSSY* are therefore
+; identical, unlike the reference, where UTF8->STRING errors on
+; malformed input and UTF8->STRING-LOSSY replaces it with U+FFFD.
+; Honest for this v0 scope (matching this project's stated preference
+; for the Lisp layer over new kernel work), not a hidden gap.
+(DEFUN $STRING->UTF8-LOOP (S I N)
+  (IF (NOT (< I N))
+      (QUOTE ())
+      (CONS (CODE-CHAR (STRING-REF S I)) ($STRING->UTF8-LOOP S (+ I 1) N))))
+(DEFUN STRING->UTF8* (S)
+  ($LIST->ARRAY ($STRING->UTF8-LOOP S 0 (STRING-LENGTH S))))
+(DEFUN UTF8->STRING* (ARR)
+  (APPLY #'CONCAT ($ARRAY->LIST ARR)))
+(DEFUN UTF8->STRING-LOSSY* (ARR)
+  (UTF8->STRING* ARR))
+
+; CAR/CDR/CONS/ATOM/EQ/NULL as ordinary global closures, exactly the same
+; bridge as +/-/*/</= above, for exactly the same reason: each of these is
+; ALSO a compiler.asm special form dispatched purely at compile time in
+; *operator* position (compile_form checks this dispatch before an
+; ordinary call ever would, so `(CAR X)` etc. keep the fast inline path
+; unconditionally) — but with no bridge, the bare symbol CAR/CDR/CONS/
+; ATOM/EQ/NULL had nothing bound to it as a value, so `#'CAR` (FUNCTION,
+; compiler.asm) compiled as an ordinary variable read of a permanently
+; unbound global, and passing one as a higher-order argument (`(MAPCAR
+; #'CAR field-specs)`, lib/20-condensation.lisp's condense-field-names,
+; needed transitively by lib/25-variants.lisp's DEFVARIANT) trapped.
+(DEFUN CAR (X) (CAR X))
+(DEFUN CDR (X) (CDR X))
+(DEFUN CONS (A B) (CONS A B))
+(DEFUN ATOM (X) (ATOM X))
+(DEFUN EQ (A B) (EQ A B))
+(DEFUN NULL (X) (NULL X))
+
 (DEFUN APPEND (A B) (IF (NULL A) B (CONS (CAR A) (APPEND (CDR A) B))))
 
 ; IOTA — (iota n start) is the n-element list (start start+1 ... start+n-1).
@@ -206,6 +284,83 @@
 ; plain decimal text (print_value's own fixnum case); this is just
 ; that primitive under the name examples/fizzbuzz/main.lisp expects.
 (DEFUN NUMBER->STRING (N) (PRINC-TO-STRING N))
+
+; RECORD-DECLARE/VARIANT-DECLARE/DECLARE-TYPE! — three genuine
+; Rust-level builtins (environment.rs) that register CHECKER-ONLY
+; metadata (field-name/type declarations for the reference's own HM
+; type checker) with no runtime effect on values at all. This kernel
+; has no type checker of any kind, so these are honest no-ops: every
+; real call site (lib/20-condensation.lisp's DEFRECORD, lib/25-
+; variants.lisp's DEFVARIANT) passes only QUOTE'd literal data with no
+; side effects to lose by skipping the registration, and RECORD-NEW
+; (compiler.asm) needs no field-count lookup from RECORD-DECLARE's own
+; registry either — every generated constructor already keeps its own
+; field count in sync with what it declares, by construction, so
+; there is nothing here for a checker-less kernel to validate against.
+; RECORD-DECLARE is NOT a pure no-op after all: it is the only place
+; that ever learns a record brand's field NAMES in order (RECORD-NEW
+; only ever sees positional values, tags.inc's own HDR_RECORD layout
+; stores no field names at all) — and RECORD-REF (below) needs exactly
+; that name-to-position mapping to resolve `(record-ref self 'field)`
+; the way every DEFRECORD/DEFVARIANT-generated getter calls it. So this
+; records field-name order on the brand symbol's plist (GETP/PUTP,
+; above) as a byproduct of what is otherwise still checker-only
+; metadata; CTOR-SPEC is either a bare brand symbol or `(brand
+; params...)` for a parametric record/variant, and only the brand
+; (the CAR, when it's a list) matters here.
+(DEFUN RECORD-DECLARE (CTOR-SPEC FIELD-SPECS)
+  (PUTP (IF (CONSP CTOR-SPEC) (CAR CTOR-SPEC) CTOR-SPEC)
+        "RECORD-FIELD-NAMES"
+        (MAPCAR #'CAR FIELD-SPECS)))
+(DEFUN VARIANT-DECLARE (&REST IGNORED) T)
+(DEFUN DECLARE-TYPE! (&REST IGNORED) T)
+
+; DECLARE-PROTOCOL-DISPATCH! — another genuine Rust-level checker-only
+; builtin (registers a protocol's dispatch argument position with the
+; HM checker, lib/29-protocols.lisp's DEFPROTOCOL), same honest no-op
+; story as DECLARE-TYPE!/RECORD-DECLARE's checker half: this kernel's
+; runtime dispatch (DEFPROTOCOL's own generated lambda, using NTH on
+; the already-known dispatch index) needs no registry lookup here at
+; all.
+(DEFUN DECLARE-PROTOCOL-DISPATCH! (&REST IGNORED) T)
+
+; DECLARE-INSTANCE! — another genuine Rust-level checker-only builtin
+; (registers one DEFINSTANCE's scheme with the HM checker,
+; lib/29-protocols.lisp), same honest no-op story as DECLARE-TYPE!/
+; DECLARE-PROTOCOL-DISPATCH!: this kernel's runtime dispatch table
+; (DEFINSTANCE's own SETHASH into $PROTOCOL-INSTANCES) needs no
+; checker registry at all.
+(DEFUN DECLARE-INSTANCE! (&REST IGNORED) T)
+
+; RECORD-REF/RECORD-WITH (KERNEL.md condensation layer) — generic
+; by-name field access over any record, used by every DEFRECORD/
+; DEFVARIANT-generated getter (`(defun ,getter (self) (record-ref self
+; ',(car spec)))`). Resolves FIELD to a position via the name order
+; RECORD-DECLARE stashed on the brand's plist, then indexes into
+; RECORD-FIELDS' positional value list (record_fields_tagged,
+; arrays.asm) — no new kernel primitive needed, same as GETP/PUTP.
+(DEFUN $RECORD-FIELD-INDEX (NAMES FIELD IDX)
+  (IF (NULL NAMES)
+      -1
+      (IF (EQ (CAR NAMES) FIELD)
+          IDX
+          ($RECORD-FIELD-INDEX (CDR NAMES) FIELD (+ IDX 1)))))
+(DEFUN $NTH (LST N)
+  (IF (= N 0) (CAR LST) ($NTH (CDR LST) (- N 1))))
+
+; NTH — a genuine Rust-level builtin (evaluator/builtins_core.rs),
+; `(nth n list)` 0-indexed (lib/99-help-data.lisp's own documented
+; signature/arg order — note the reverse of $NTH just above). Used by
+; lib/29-protocols.lisp's DEFPROTOCOL dispatch (`(nth (protocol-
+; dispatch-idx name) args)`) and never called before that file, same
+; story as $LENGTH.
+(DEFUN NTH (N LST)
+  (IF (= N 0) (CAR LST) (NTH (- N 1) (CDR LST))))
+
+(DEFUN RECORD-REF (SELF FIELD)
+  ($NTH (RECORD-FIELDS SELF)
+        ($RECORD-FIELD-INDEX (GETP (RECORD-BRAND SELF) "RECORD-FIELD-NAMES")
+                              FIELD 0)))
 
 ; CONCAT — a genuine Rust-level builtin (evaluator/builtins_core.rs):
 ; variadic string concatenation, needed by lib/27-modules.lisp's own

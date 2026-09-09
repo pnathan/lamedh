@@ -1575,8 +1575,178 @@ bugs no existing test had exercised:
   **This one special form unblocked five files at once**:
   `09-lisp15.lisp`, `10-testing.lisp`, `22-guard.lisp`,
   `23-match.lisp`, and `24-rules.lisp` all now load completely,
-  unmodified, with no further changes needed. **`25-variants.lisp` is
-  the next wall**, not yet root-caused.
+  unmodified, with no further changes needed.
+
+  **`25-variants.lisp` through `30-text.lisp` all load completely,
+  unmodified now too** — the entire Optional tier this host embeds
+  (`SHELL` through `PROTOCOLS`, plus `TEXT`), on top of the entire
+  Prelude tier. This took several more genuine gaps, found the same
+  way as everything above (bisect to the first form that traps, check
+  `environment.rs`/`evaluator/builtins_core.rs` for a name lib code
+  calls that this host never registered):
+  - **Kernel special forms as `#'`-values** — `#'CAR` (`(FUNCTION
+    CAR)`) compiled as an ordinary *variable* read of the bare symbol
+    `CAR`, but `CAR`/`CDR`/`CONS`/`ATOM`/`EQ`/`NULL` are purely
+    compile-time-dispatched special forms in operator position
+    (`compile_form`'s own fast inline path, checked before an ordinary
+    call ever would be) — never assigned to their own global value
+    slots — so `#'CAR` read as *unbound* and calling the result
+    segfaulted. `+`/`-`/`*`/`</=` already had exactly this bridge
+    (`lib/prelude.lisp`'s own `(DEFUN + (A B) (+ A B))` — the inner
+    `(+ A B)` still compiles to the fast inline binop unconditionally,
+    but now the bare symbol `+` also has an ordinary closure value to
+    read); `CAR`/`CDR`/`CONS`/`ATOM`/`EQ`/`NULL` now get the identical
+    treatment. This was `lib/20-condensation.lisp`'s own
+    `condense-field-names` (`(mapcar #'car field-specs)`), needed
+    transitively by `25-variants.lisp`'s `DEFVARIANT`.
+  - **`scan_free_vars` is now macro-aware** (`compiler.asm`) — a real,
+    previously-undiscovered closure-conversion bug, not a missing
+    primitive: a nested `LAMBDA` whose body is a *macro call* (not a
+    literal reference) to a free variable — e.g. a backquote template
+    the macro's own transformer builds, referencing a variable that
+    never appears in the call's own raw syntax at all — silently
+    failed to capture that variable into the closure, because
+    `scan_free_vars` (the free-variable analysis that decides what a
+    nested `LAMBDA` must capture, run on the *raw, unexpanded* syntax
+    tree before a single byte of the body is emitted) has no way to
+    see a reference that only exists inside a macro's expansion.
+    Reduced to a syntax-independent repro:
+    `(defmacro wrap-with-outer (x) (cons 'cons (cons 'outer (cons x '()))))`
+    inside `(defun make-adder (outer) (lambda (x) (wrap-with-outer x)))`
+    — `outer` never appears in `(wrap-with-outer x)`'s own call-site
+    text, only in the macro's own expansion, and the compiled closure
+    read garbage/NIL for it instead of the captured value. Fixed by
+    making `scan_free_vars` macro-aware exactly the way
+    `compile_form`'s own macro dispatch already is: when it encounters
+    a call whose head is a global bound as a macro, it now expands
+    the call (the same `invoke_macro` `compile_form` itself uses) and
+    scans the *expansion* in the raw call's place, rather than walking
+    the call's own unexpanded operands. This is still v0's documented
+    single-level free-variable capture (a variable needed from two
+    lambda-nesting levels up still needs manual re-threading — see
+    "Known gaps" below) with one more thing it now sees through: a
+    macro standing between a closure and the free variable it
+    captures. `lib/25-variants.lisp`'s `$variant-ctor-forms` (its own
+    `` `(forall ,params ...) `` backquote template, built inside a
+    `(mapcar (lambda (spec) ...) field-specs)` closure capturing the
+    enclosing function's own `params`) hit this exactly.
+  - **`$LENGTH`** (`lib/prelude.lisp`) — a genuine Rust-level builtin
+    (`evaluator/builtins_core.rs`) backing `lib/01-list.lisp`'s
+    `LENGTH` wrapper, entirely unbound here until `DEFVARIANT`'s own
+    `(length params)` call became the first thing in the accumulated
+    conformance corpus to actually *invoke* `LENGTH` rather than just
+    define it — `LENGTH`'s own definition compiles fine either way,
+    since defining a function never calls what's in its body. Ordinary
+    recursive Lisp, no host-representation access needed.
+  - **The record subsystem** (`tags.inc`'s new `HDR_RECORD` header tag;
+    `RECORD-NEW`/`RECORD-BRAND`/`RECORD-FIELDS`, `arrays.asm`/
+    `compiler.asm`) — a fixed-size, brand-tagged tuple
+    (`[8 brand][8 nfields][8*nfields tagged values]`) backing
+    `lib/20-condensation.lisp`'s `DEFRECORD` and `25-variants.lisp`'s
+    `DEFVARIANT`, the reference's own `StructObj`. `RECORD-NEW` takes a
+    compile-time-constant-length variadic field list — `compile_
+    record_new` (`compiler.asm`) fully unrolls it at *compile* time (a
+    host-side loop over a scratch counter, never a target-level loop)
+    since the field count is always a Lisp-source constant at a real
+    call site (a generated constructor), needing no runtime length
+    check at all. `RECORD-DECLARE` turned out not to be a pure no-op:
+    it is the only place that ever learns a record brand's field
+    *names* in order (the tuple itself stores only positional values),
+    so it now stashes that name order on the brand symbol's plist
+    (`GETP`/`PUTP`), which **`RECORD-REF`** (`lib/prelude.lisp`) reads
+    back to resolve `(record-ref self 'field)` — every `DEFRECORD`/
+    `DEFVARIANT`-generated getter's own call shape — to a position,
+    then indexes `RECORD-FIELDS`' positional list. `VARIANT-DECLARE`/
+    `DECLARE-TYPE!` stay honest no-ops (this kernel has no HM checker
+    of any kind to feed). `print_value` (`strings.asm`) also gained a
+    real `HDR_RECORD` case (`#S(BRAND field...)`, matching the
+    reference's own `#S`-printable format) and an `HDR_OPERATIVE` one
+    (`<lambda>`, matching `HDR_CLOSURE`) — both previously fell through
+    to `print_fixnum` and printed the raw heap pointer as if it were an
+    integer. `tests/cases/063_records_and_macro_free_vars.asm` covers
+    `RECORD-NEW`/`RECORD-BRAND`/`RECORD-FIELDS` and the `scan_free_vars`
+    fix together (deliberately using no `LIST`/`FUNCALL`/`DEFUN`/
+    `CONCAT` — all prelude-only — since standalone kernel tests run
+    with no prelude loaded at all, a lesson learned the hard way
+    mid-session when an early draft of this same test used `DEFUN` and
+    traced into `fail_wrong_type` for entirely the wrong reason).
+  - **`NTH`** (`lib/prelude.lisp`) — another genuine Rust-level
+    builtin, `(nth n list)` 0-indexed, needed by `29-protocols.lisp`'s
+    `DEFPROTOCOL` dispatch (`(nth (protocol-dispatch-idx name) args)`).
+  - **`$LIST->ARRAY`/`$ARRAY->LIST`** (`lib/prelude.lisp`) — the
+    Rust-level builtins behind `lib/17-arrays.lisp`'s `LIST->ARRAY`/
+    `ARRAY->LIST` wrappers, needed once `STRING->UTF8*` (below) went
+    through them for the first time. Ordinary Lisp over this kernel's
+    own `ARRAY`/`STORE`/`FETCH`/`ARRAY-LENGTH*` special forms.
+  - **`SET`** (`set_symbol_value`, `symtab.asm`, plus a `compiler.asm`
+    hostcall dispatch) — a genuine new kernel primitive, not
+    library-expressible: Lisp 1.5's `SET` (`(set sym-form val-form)`)
+    *evaluates* its first operand to find out *which* symbol to
+    assign, unlike `DEFINE`/`SETQ`, whose target is a literal name
+    baked into the emitted store address at compile time — there is no
+    way to write "assign to a dynamically-computed symbol's value
+    slot" in terms of any existing primitive. `29-protocols.lisp`'s
+    `DEFPROTOCOL` rebinds its own dynamically-named protocol symbol
+    this way (`(set name (lambda (&rest args) ...))`). Same shape as
+    the already-existing `SET-SYMBOL-PLIST!`, writing the symbol's
+    separate value slot (`[16]`) instead of its plist slot (`[40]`).
+  - **`DECLARE-PROTOCOL-DISPATCH!`/`DECLARE-INSTANCE!`**
+    (`lib/prelude.lisp`) — two more checker-only Rust-level builtins
+    (`DEFPROTOCOL`/`DEFINSTANCE` registering dispatch position/instance
+    scheme with the HM checker), honest no-ops for the same reason
+    `DECLARE-TYPE!`/`RECORD-DECLARE`'s checker half already is: this
+    kernel has no HM checker at all, and both protocol dispatch
+    (`DEFPROTOCOL`'s own generated lambda, an ordinary `NTH`-indexed
+    runtime lookup) and instance registration (`DEFINSTANCE`'s own
+    `SETHASH` into `$PROTOCOL-INSTANCES`) already work with no checker
+    registry involved.
+  - **`STRING->UTF8*`/`UTF8->STRING*`/`UTF8->STRING-LOSSY*`**
+    (`lib/prelude.lisp`) — the three Rust-level builtins
+    `lib/30-text.lisp`'s `TEXT` module wraps. This kernel's own
+    `HDR_STRING` representation already stores a string's raw UTF-8
+    bytes directly (`STRING-LENGTH` is a *byte* count, not a codepoint
+    count — `(string-length "héllo")` is `6`, not `5`), so
+    `STRING->UTF8` is nearly a straight byte copy into an
+    `Array<Char>` (`STRING-REF`/`CODE-CHAR`/`$LIST->ARRAY`) and
+    `UTF8->STRING` its inverse (`$ARRAY->LIST` plus `APPLY`/`CONCAT` —
+    `CONCAT` accepts `CHAR` values directly, confirmed by direct
+    testing). **Known, honestly-documented limitation**: this kernel
+    does no UTF-8 well-formedness validation at all (no
+    `std::str::from_utf8` equivalent exists here), so
+    `UTF8->STRING*`/`UTF8->STRING-LOSSY*` are identical here — the
+    reference's own `UTF8->STRING` errors on malformed input and
+    `UTF8->STRING-LOSSY` replaces it with U+FFFD; this v0 does neither.
+    `src/modules.asm`'s embedded module registry now includes `TEXT`
+    (`30-text.lisp`) alongside the 14 files already there — an earlier
+    version of that file's own header comment lumped `TEXT` in with
+    the genuinely OS/networking-dependent tier (`PORTS` onward), which
+    turned out to be wrong: `30-text.lisp`'s own header is explicit
+    that it is "100% Lisp" over primitives this kernel already had,
+    no capability or I/O dependency at all. `PORTS` (`31-ports.lisp`)
+    onward is where real file-descriptor/OS-capability primitives this
+    freestanding, no-libc host does not have yet actually become
+    necessary (see "Known gaps" below) — confirmed by trying it: it
+    needs genuine host I/O this project has made a deliberate choice
+    not to build.
+    `tests/cases/064_set_and_array_bytes.asm` covers `SET` and the
+    `ARRAY`/`STORE`/`FETCH`/`CODE-CHAR`/`STRING-REF` primitives
+    `STRING->UTF8*`/`UTF8->STRING*` are built from;
+    `tests/cases/060_module_source.asm` now also checks
+    `$MODULE-SOURCE-LOOKUP("TEXT")`.
+
+  **The confirmed-loadable set is now the entire Prelude tier plus
+  every Optional-tier file with no OS/networking/TLS/regex dependency**
+  — `00-core` through `21-cl-compat`, then (module-system load order)
+  `20-condensation`, `27-modules`, `11-optimizer-vau`, `19-call-graph`,
+  `07-shell`, `09-lisp15`, `10-testing`, `22-guard`, `23-match`,
+  `24-rules`, `25-variants`, `26-instrument`, `28-types`,
+  `29-protocols`, and `30-text` — **30 of the reference's own 47
+  `STDLIB_SOURCES` files, every one of them not gated on real OS I/O**.
+  The remaining 17 (`31-ports` through `44-regex`, `97-doc-renderer`
+  through `99-help-data`) need genuine file-descriptor/socket/TLS/
+  regex host primitives this freestanding, no-libc kernel does not
+  implement and, per this project's own scope, is not trying to (see
+  "Known gaps").
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver

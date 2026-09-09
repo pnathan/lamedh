@@ -26,6 +26,16 @@ e1_len: equ $ - e1                                                ; T
 e2: db '(PRINT ($MODULE-SOURCE-LOOKUP "NOT-A-REAL-MODULE"))'
 e2_len: equ $ - e2                                                  ; ()
 
+e2b: db '(PRINT (IF ($MODULE-SOURCE-LOOKUP "TEXT") T (QUOTE ())))'
+e2b_len: equ $ - e2b                              ; T — 30-text.lisp is
+                                                   ; pure Lisp (its own
+                                                   ; header: "100%
+                                                   ; Lisp"), no OS/
+                                                   ; capability
+                                                   ; dependency, unlike
+                                                   ; every module past
+                                                   ; it (PORTS onward).
+
 e3: db '($EVAL-MODULE-SOURCE "test" "(DEFINE FROM-MODULE 42)")'
 e3_len: equ $ - e3
 
@@ -55,6 +65,11 @@ lamedh_main:
     mov rsi, e2_len
     call run_thunk_discard
     call print_newline               ; ()
+
+    mov rdi, e2b
+    mov rsi, e2b_len
+    call run_thunk_discard
+    call print_newline               ; T
 
     mov rdi, e3
     mov rsi, e3_len

@@ -109,6 +109,8 @@ extern symbolp_tagged
 extern module_source_lookup_tagged
 extern eval_module_source_tagged
 extern intern_tagged
+extern record_brand_tagged
+extern record_fields_tagged
 extern boundp_tagged
 extern code_char_string
 extern random_tagged
@@ -124,6 +126,7 @@ extern logxor_tagged
 extern ash_tagged
 extern symbol_plist
 extern set_symbol_plist
+extern set_symbol_value
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -137,11 +140,15 @@ kw_symbolp: db "SYMBOLP"
 kw_module_source_lookup: db "$MODULE-SOURCE-LOOKUP"
 kw_eval_module_source: db "$EVAL-MODULE-SOURCE"
 kw_intern: db "INTERN"
+kw_record_new: db "RECORD-NEW"
+kw_record_brand: db "RECORD-BRAND"
+kw_record_fields: db "RECORD-FIELDS"
 kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
 kw_symbol_plist: db "SYMBOL-PLIST"
 kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
+kw_set: db "SET"
 kw_apply: db "APPLY"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
@@ -774,6 +781,43 @@ scan_free_vars:
     test rax, rax
     jnz .done                            ; (QUOTE ...) — do not descend
 
+    ; If the head is a global bound as a macro, this call's own literal
+    ; syntax `(head arg...)` never mentions whatever free variables the
+    ; EXPANSION actually references (e.g. a variable that only appears
+    ; inside a backquote template the transformer builds, like
+    ; lib/25-variants.lisp's `` `(forall ,params ...) ``) — expand right
+    ; here, exactly the way compile_form's own macro dispatch
+    ; (invoke_macro, further down) does, and scan the expansion in
+    ; place of the raw call. Without this, a nested LAMBDA whose body
+    ; macro-expands to reference an outer free variable never captures
+    ; it into the closure, and the reference resolves to whatever
+    ; garbage/NIL happens to sit at the wrong frame slot once the
+    ; expansion is actually compiled.
+    mov rax, r14
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_macro_head
+    mov rax, r14
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .not_macro_head
+    mov rax, [rax+24]                    ; macro slot
+    cmp rax, IMM_NIL
+    je .not_macro_head
+    mov r14, rax                           ; macro closure (tagged)
+    mov rdi, rbx
+    call cdr
+    mov rsi, rax                             ; args list
+    mov rdi, r14
+    call invoke_macro                          ; rax = expansion
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, r13
+    call scan_free_vars
+    mov r13, rax
+    jmp .done
+
+.not_macro_head:
     mov rdi, r14
     mov rsi, r12
     mov rdx, r13
@@ -2950,6 +2994,118 @@ compile_call_args:
     pop rbx
     ret
 
+; compile_record_new(rdi = args list [brand-form, field-form1...N]) —
+; RECORD-NEW, the reference's own runtime constructor for a StructObj
+; (HDR_RECORD, tags.inc): every DEFRECORD/DEFVARIANT-generated
+; constructor compiles through this (`(defun ,ctor ,argnames
+; (record-new ',ctor ,@argnames))`). Field count is a compile-time
+; constant here (the args list's own length), so this unrolls
+; entirely at compile time — no target-level loop — the same
+; technique compile_lambda's own free-variable-copying loop uses, one
+; level simpler since there is no re-derivation step needed.
+;
+; Evaluation order: fields are compiled via compile_call_args (right-
+; to-left, landing on the target stack with field0 topmost — its own
+; existing, already-tested ordering, reused unchanged), then the
+; brand is compiled and pushed on top of that — so after both steps
+; the target stack (top to bottom) holds brand, field0, field1, ...,
+; fieldN-1, exactly the pop order the allocation code below wants.
+compile_record_new:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi                  ; args list: (brand-form field-form...)
+
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call compile_call_args          ; pushes field0..fieldN-1 (field0
+                                     ; topmost); rax = nfields
+    mov r12, rax                      ; nfields (compile-time constant
+                                       ; from here on)
+
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call compile_form                   ; brand -> target rax
+    mov dil, REG_RAX
+    call emit_push_reg                    ; push brand (now topmost)
+
+    ; --- allocate: 24 + nfields*8 bytes ---
+    mov eax, r12d
+    imul eax, eax, 8
+    add eax, 24
+    mov rsi, rax
+    mov dil, REG_RDI
+    call emit_mov_reg_imm64                 ; target: rdi = alloc size
+    lea rax, [rel data_alloc]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                        ; target: call rax ->
+                                               ; rax = raw addr
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_mov_rr                            ; target: rbx = raw
+                                                 ; addr (store base)
+
+    mov rsi, HDR_RECORD
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov edx, 0
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    call emit_store_based                         ; [rbx+0] = HDR_RECORD
+
+    mov dil, REG_RAX
+    call emit_pop_reg                               ; target: rax =
+                                                     ; brand (popped)
+    mov edx, 8
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    call emit_store_based                             ; [rbx+8] = brand
+
+    mov rsi, r12
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov edx, 16
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    call emit_store_based                             ; [rbx+16] = nfields
+
+    xor r13, r13                    ; host-side (compile-time) unroll
+                                     ; index, not a target register
+.floop:
+    cmp r13, r12
+    jae .fdone
+    mov dil, REG_RAX
+    call emit_pop_reg                 ; target: rax = field[r13]
+                                       ; (popped in forward order,
+                                       ; since field0 was topmost)
+    mov eax, r13d
+    imul eax, eax, 8
+    add eax, 24
+    mov edx, eax
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    call emit_store_based               ; [rbx+24+i*8] = rax
+    inc r13
+    jmp .floop
+.fdone:
+
+    mov dil, REG_RAX
+    mov sil, REG_RBX
+    call emit_mov_rr
+    mov edi, TAG_HEAPOBJ
+    call emit_or_rax_imm32              ; target: rax = tagged record —
+                                         ; final result
+
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; emit_check_callable() — target: rax holds a tagged value about to be
 ; treated as a closure and called. Verifies it is actually a
 ; HDR_CLOSURE (or HDR_OPERATIVE — a $VAU/DEFVAU operative shares the
@@ -4764,6 +4920,35 @@ compile_form:
 
 .not_set_symbol_plist:
     mov rdi, r12
+    mov rsi, kw_set
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_set
+    ; (SET sym-form val-form) — Lisp 1.5's SET (KERNEL.md/the
+    ; reference's own environment.rs builtin): unlike DEFINE/SETQ,
+    ; whose target is a literal name known at compile time, SET
+    ; evaluates its first operand to find out WHICH symbol to assign
+    ; at runtime (lib/29-protocols.lisp's DEFPROTOCOL rebinds a
+    ; dynamically-named protocol symbol this way) — an ordinary
+    ; evaluated-both-operands hostcall over the new set_symbol_value
+    ; primitive (symtab.asm), same shape as SET-SYMBOL-PLIST! just
+    ; above.
+    mov rdi, r13
+    call car                            ; sym form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; val form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel set_symbol_value]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_set:
+    mov rdi, r12
     mov rsi, kw_apply
     mov rdx, 5
     call sym_is
@@ -5493,6 +5678,47 @@ compile_form:
     jmp .out
 
 .not_intern:
+    mov rdi, r12
+    mov rsi, kw_record_new
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_record_new
+    ; (RECORD-NEW brand-form field-form...) — see compile_record_new's
+    ; own comment.
+    mov rdi, r13
+    call compile_record_new
+    jmp .out
+
+.not_record_new:
+    mov rdi, r12
+    mov rsi, kw_record_brand
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_record_brand
+    mov rdi, r13
+    call car
+    lea rsi, [rel record_brand_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_record_brand:
+    mov rdi, r12
+    mov rsi, kw_record_fields
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_record_fields
+    mov rdi, r13
+    call car
+    lea rsi, [rel record_fields_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_record_fields:
     mov rdi, r12
     mov rsi, kw_boundp
     mov rdx, 6

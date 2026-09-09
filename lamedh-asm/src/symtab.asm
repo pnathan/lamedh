@@ -388,6 +388,25 @@ set_symbol_plist:
     mov rax, rsi
     ret
 
+; set_symbol_value(rdi=tagged symbol, rsi=new value) -> rax = rsi.
+; The Lisp 1.5 SET kernel primitive's host half (KERNEL.md/the
+; reference's own environment.rs SET builtin): unlike DEFINE/SETQ,
+; whose target symbol is a literal, known-at-compile-time name (baked
+; directly into the emitted store), SET's own first argument is an
+; ordinary evaluated expression that only produces WHICH symbol to
+; assign at runtime (lib/29-protocols.lisp's DEFPROTOCOL rebinds a
+; dynamically-named protocol symbol this way) — so this needs a real
+; runtime write to the symbol's value slot ([16], the same slot
+; DEFINE/SETQ/an ordinary global read already use), not a compile-time
+; store address. Same shape as set_symbol_plist just below.
+global set_symbol_value
+set_symbol_value:
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov [rax+16], rsi
+    mov rax, rsi
+    ret
+
 ; boundp_tagged(rdi=tagged symbol) -> rax = IMM_TRUE/IMM_NIL. Reads the
 ; symbol's own value slot ([16], the same one DEFINE/SETQ/an ordinary
 ; global variable reference already use) and compares it against

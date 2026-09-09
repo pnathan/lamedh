@@ -522,6 +522,56 @@ print_value:
     call write_buf
     jmp .out
 .not_closure:
+    mov rax, rbx
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_record
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_OPERATIVE
+    jne .not_operative
+    mov rsi, lambda_tag
+    mov rdx, lambda_tag_len
+    call write_buf
+    jmp .out
+.not_operative:
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_RECORD
+    jne .not_record
+    push r12
+    push r13
+    mov rsi, record_tag_open
+    mov rdx, record_tag_open_len
+    call write_buf
+    mov rax, rbx
+    UNTAG_PTR rax
+    mov rdi, [rax+8]                    ; brand symbol
+    call print_value
+    mov rax, rbx
+    UNTAG_PTR rax
+    mov r12, [rax+16]                     ; nfields
+    xor r13, r13
+.record_fields_loop:
+    cmp r13, r12
+    jae .record_fields_done
+    mov rsi, space_buf
+    mov rdx, 1
+    call write_buf
+    mov rax, rbx
+    UNTAG_PTR rax
+    mov rdi, [rax+24+r13*8]
+    call print_value
+    inc r13
+    jmp .record_fields_loop
+.record_fields_done:
+    mov rsi, rparen_buf
+    mov rdx, 1
+    call write_buf
+    pop r13
+    pop r12
+    jmp .out
+.not_record:
     mov rdi, rbx
     call print_fixnum
 .out:
@@ -547,3 +597,5 @@ float64_tag_len: equ $ - float64_tag
 colon_buf: db ":"
 lambda_tag:     db "<lambda>"
 lambda_tag_len: equ $ - lambda_tag
+record_tag_open:     db "#S("
+record_tag_open_len: equ $ - record_tag_open

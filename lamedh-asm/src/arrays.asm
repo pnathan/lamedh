@@ -23,8 +23,57 @@ extern intern_symbol
 extern make_float
 extern float_val
 extern fail_wrong_type
+extern cons
 
 section .text
+
+; record_brand_tagged(rdi=tagged value) -> rax = the record's brand
+; symbol, or IMM_NIL if not a record (RECORD-BRAND, matching the
+; reference's own "non-record argument -> NIL" contract, no error).
+global record_brand_tagged
+record_brand_tagged:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .no
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_RECORD
+    jne .no
+    mov rax, [rax+8]
+    ret
+.no:
+    mov rax, IMM_NIL
+    ret
+
+; record_fields_tagged(rdi=tagged record) -> rax = tagged list of the
+; record's own field values, in declared order (RECORD-FIELDS). v0
+; scope: no type check on a non-record argument (this host has no
+; general error-signaling convenience for "wrong record-ish shape"
+; yet outside CAR/CDR/CALL's own dedicated checks) — every real call
+; site (record accessors, VARIANT-CASE's own dispatch) already knows
+; its argument is a record by construction.
+global record_fields_tagged
+record_fields_tagged:
+    push rbx
+    push r12
+    mov rbx, rdi
+    UNTAG_PTR rbx
+    mov r12, [rbx+16]                 ; nfields
+    mov rax, IMM_NIL
+    dec r12
+.loop:
+    cmp r12, 0
+    jl .done
+    mov rdi, [rbx+24+r12*8]
+    mov rsi, rax
+    call cons
+    dec r12
+    jmp .loop
+.done:
+    pop r12
+    pop rbx
+    ret
 
 ; make_array(rdi=tagged fixnum n) -> rax = tagged HDR_ARRAY heapobj, n
 ; slots, each initialized to IMM_NIL.
