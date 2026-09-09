@@ -21,7 +21,9 @@ file, that citation is the place in the reference where the rule is
 implemented. Lamedh has a few genuinely surprising rules — surprising
 enough that a competent implementer guessing from "it's a Lisp" gets them
 wrong — and those are exactly the rules a spec exists to pin down. Part
-IV's `EQ` rule for cons cells is the sharpest example; see there.
+IV's `EQ` rule for cons cells (pointer identity, resolved by issue #454
+after a period as a hard-coded-`NIL` defect) is a sharp example of the
+kind of rule this document exists to catch and pin down precisely.
 
 **A small, closed set of declared axes is where hosts are allowed to
 differ**, listed in full in Part XII. Outside that list, a host's observable
@@ -42,10 +44,9 @@ the message is the reference's own and a host may choose its own.
 **This is a Lisp 1.5 dialect with modern extensions, not a reimplementation
 of Common Lisp or Scheme.** Where a rule below looks unusual next to CL or
 Scheme habit (fixed-arity-plus-rest lambda lists with no `&optional`/`&key`;
-a condition system with no type hierarchy; `EQ` false on every cons pair;
-a two-armed-only `IF`), that is not an oversight — it is what the language
-is, and it is the language that the entire `lib/*.lisp` corpus already
-runs in production against.
+a condition system with no type hierarchy; a two-armed-only `IF`), that is
+not an oversight — it is what the language is, and it is the language
+that the entire `lib/*.lisp` corpus already runs in production against.
 
 ## Part II — Lexical grammar (the reader)
 
@@ -348,35 +349,36 @@ returns a `Char`'s code, or for a non-empty string the full code point of
 its **first** character (which may exceed 255; the empty string is an
 error); `(code-char n)` returns a **one-character string**, not a `Char`.
 
-**`EQ` is defined per-type, and one of its rules is currently unsettled —
-flagged here as an open defect rather than frozen as normative, precisely
-because it is exactly the kind of surprising rule a spec exists to catch
-before three hosts each guess differently:**
-
-> **The reference implementation makes `EQ` unconditionally `NIL` whenever
-> either argument is a cons cell — including comparing a cons cell against
-> itself.** `(let ((x (cons 1 2))) (eq x x))` returns `NIL`. The code
-> (`src/evaluator/builtins_core.rs`, `BuiltinFunc::Eq`) justifies this with
-> a comment citing the Lisp 1.5 manual's position that `EQ` is defined only
-> on atoms — but the 1.5 manual describing `EQ` as guaranteed only on
-> atoms is not the same claim as "must be `false` on every non-atom pair,"
-> and real Lisp 1.5 implementations, and every Lisp since, use `EQ` on
-> lists as pointer-identity comparison in practice: `(eq x x)` for the
-> same actual cons cell is true everywhere else this operator exists.
-> Hard-coding it to `NIL` here is a stronger and more surprising
-> restriction than the manual actually requires. **This document does not
-> require a conformant host to reproduce this behavior.** It is tracked
-> as a defect against the reference implementation, issue #454, rather
-> than settled here as intended semantics. Until #454 resolves, `EQ` on
-> cons cells is **undefined behavior a portable program must not rely on
-> either way** — neither on it being `NIL`, nor on it being pointer
-> identity.
+**`EQ` on cons cells is pointer/identity comparison of the underlying
+allocation** (resolved by issue #454; formerly a hard-coded, unconditional
+`NIL` whenever either argument was a cons cell — including comparing a
+cons cell against itself — justified by a misreading of the Lisp 1.5
+manual's silence on non-atoms as a mandate that `EQ` on non-atoms be
+`false`; that was a stronger and more surprising restriction than the
+manual actually requires, and diverged from every Lisp since, where `EQ`
+on lists is pointer identity and `(eq x x)` for the same actual cons cell
+is true). **This is now a MUST-match rule, not host latitude:**
+`(let ((x (cons 1 2))) (eq x x))` is `T`; `(eq (cons 1 2) (cons 1 2))` is
+`NIL` for two separately allocated, even structurally-identical, cons
+cells; aliasing an existing cons cell through a second binding, or
+reaching it via a different path (e.g. `(cdr (cons 0 x))` when `x` is a
+cons), is `T` because it is the same underlying allocation. In the Rust
+reference (`src/evaluator/builtins_core.rs`, `BuiltinFunc::Eq`) this
+compares the `car` and `cdr` fields' `Shared`/`Rc` pointers with
+`Shared::ptr_eq`, not the general structural `PartialEq for LispVal`
+relation described below — `cons` always allocates fresh `car`/`cdr`
+cells, and cloning a `LispVal::Cons` only bumps their refcounts, so two
+`Shared` pointers are equal exactly when they denote the same allocation.
+A host on a different representation (e.g. a single boxed pair cell) must
+reproduce the same observable rule: pointer identity of the cons cell
+itself, not of its contents.
 
 For every other pair of values, `EQ` is the relation implemented by
 `PartialEq for LispVal` (`src/lib.rs`), which is also the relation used
-by `EQUAL` at the leaves, by `CATCH` tag matching (Part VI), and by hash
-table keys (below). Two values of **different types are never `EQ`**.
-Within one type:
+by `EQUAL` at the leaves (for atoms; `EQUAL` never asks whether two
+conses are `EQ` to each other — see below), by `CATCH` tag matching
+(Part VI), and by hash table keys (below). Two values of **different
+types are never `EQ`**. Within one type:
 
 - **Fixnum, float, character, string**: value equality. Two freshly
   computed, unshared values holding the same value **are** `EQ`:
@@ -423,8 +425,10 @@ library code (`lib/04-predicates.lisp`): `(equal a b)` is `(eq a b)` when
 `a` is an atom (anything that is not a cons), `NIL` when `a` is a cons and
 `b` is not, and otherwise the conjunction of `(equal (car a) (car b))` and
 `(equal (cdr a) (cdr b))`. It never asks whether two conses are `EQ` to
-each other, so two structurally identical lists are `EQUAL` regardless of
-the `EQ`-on-cons defect. `EQUAL` on any pair of non-cons values is
+each other, so two structurally identical but separately allocated lists
+are `EQUAL` even though (since issue #454) they are not `EQ` — the two
+relations coincide only when the same cons cell is compared to itself.
+`EQUAL` on any pair of non-cons values is
 therefore exactly `EQ` on them, including identity for hash tables and
 arrays and structure for records. **`EQUAL` performs no numeric
 contagion**: `(equal 5 5.0)` is `NIL`, `(equal 'a' 97)` is `NIL`. A host
@@ -1263,8 +1267,6 @@ than smoothed over:
   primitives that call them; a per-primitive check that no acquiring
   operation in `src/evaluator/builtins_net.rs` and `builtins_os.rs` skips
   its gate is the remaining yardstick-consistency item.
-- **Resolve issue #454** (`EQ` on cons cells) and update Part IV from
-  "undefined, open defect" to a real rule once it lands.
 - **Get the portable HM type checker (#451) actually running**,
   unmodified, on every host that has the Part XI `EVAL` hook —
   prioritized above the other items in this list, per Part XI's own
