@@ -67,8 +67,9 @@ programs this stage targets.
   and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
   (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound.
 - `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`,
-  `BLOCK`/`RETURN-FROM`, `WHILE` as real special forms (Part VI/VII),
-  plus `ERROR`/`ERRORSET`/`ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA`
+  `BLOCK`/`RETURN-FROM`, `WHILE`, `PROG`/`GO`/`RETURN` (lexical v0 scope
+  — see "KERNEL.md conformance" above) as real special forms (Part
+  VI/VII), plus `ERROR`/`ERRORSET`/`ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA`
   (Part VIII's condition system).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
@@ -745,7 +746,64 @@ into conformance incrementally, tracked honestly rather than silently:
   tagged heapobj pointer's raw bits as a signed fixnum and printed
   meaningless garbage instead of a tag; there is still no hash table
   primitive to tag (`<hash-table>`), since hash tables here are library
-  code over `ARRAY`, not a distinct value type. This list is
+  code over `ARRAY`, not a distinct value type. **`PROG`/`GO`/`RETURN`
+  (Part VII) now exist** (`file_runner_prelude`'s own PROG/GO/RETURN
+  coverage in `tests/run.sh` — not a standalone `tests/cases/*.asm`
+  case; see why below): `compile_prog`/`compile_go`/`compile_return`
+  (`compiler.asm`) bind each variable in `(PROG (vars...) items...)` to
+  `NIL` (reusing `compile_let`'s own frame-building machinery), then
+  walk `items` once, treating a bare symbol item as a label rather than
+  evaluating it — the well-known Lisp 1.5 `PROG` gotcha, kept
+  deliberately rather than "fixed": `(PROG (X) (SETQ X 42) X)` yields
+  `NIL`, not `42`, because the trailing `X` is consumed as a label, never
+  compiled as an expression. `(GO label)` emits an unconditional jump
+  recorded in a compile-time-only bookkeeping buffer (`current_prog_ctx`,
+  a fixed-capacity scratch area allocated on the *compiler's own* host
+  stack via `sub rsp` for the duration of `compile_prog`, not part of
+  the target program's runtime state); every `GO` and `RETURN` is
+  resolved in one final backpatching pass after all of a `PROG`'s own
+  labels have been seen, so forward and backward jumps need no special
+  cases (`(GO LOOP)` jumping backward to re-run the loop body, and
+  `(GO SKIP)` jumping forward over code that must never run, are the
+  same mechanism). `(RETURN value)` (value defaults to `NIL`) and
+  falling off the end of the item list both converge on the same exit
+  jump target. **v0 scope, narrower than the spec on purpose**: `GO`/
+  `RETURN` here are *lexical*, resolved only within the same `PROG`'s
+  own body (including when nested inside an ordinary `IF`/`WHEN`/`LET`
+  there) — not the spec's own dynamic-extent version, reachable through
+  an arbitrary function call away from the `PROG` that established it.
+  `current_prog_ctx` is explicitly reset to `0` (not saved-and-restored)
+  around a nested `LAMBDA`'s own body compilation, so a `GO`/`RETURN`
+  inside a closure defined within a `PROG` correctly fails to resolve
+  (traps, `int3`) rather than jumping into a different, already-returned
+  invocation's code — deliberately narrower than dynamic extent to avoid
+  unbounded catch-stack growth on an ordinary `GO`-based loop, unlike
+  `UNWIND-PROTECT`'s one-shot marker frame (see "KERNEL.md conformance"
+  above). A nested `PROG`'s own labels/`GO`/`RETURN` correctly do not
+  interfere with an enclosing `PROG`'s, since each has its own
+  `current_prog_ctx` buffer (saved and restored around the inner
+  `compile_prog` call, the same nesting pattern `current_scope`/
+  `current_frame_depth` already use). `GO`/`RETURN` used outside any
+  lexically enclosing `PROG` is a v0 trap (`int3`), not a catchable
+  condition — this kernel has no compile-time diagnostics surface yet
+  (see Roadmap). One genuine test-authoring mistake, not a compiler bug,
+  was found while adding coverage for this: a first-draft standalone
+  `tests/cases/056_prog.asm` case used `WHEN` in its loop-exit test, and
+  `WHEN` is a `lib/prelude.lisp` `DEFMACRO`, not a kernel special
+  form — invisible to the standalone harness, which links only the
+  shared core and never loads the prelude (the same category of mistake
+  `QUASIQUOTE`'s own test made earlier this session, see "The prelude"
+  below); every backward-`GO`-loop scenario in that file compiled `WHEN`
+  as a call to an unbound global instead of a conditional and printed
+  `0`, while the two scenarios without `WHEN` passed, which is what
+  correctly pointed at `WHEN` rather than at `compile_prog` itself
+  (confirmed by piping the identical form through `build/lamedhc`, which
+  does load the prelude, and getting the correct result). Moved to
+  `file_runner_prelude` instead, covering a backward-counting loop, the
+  trailing-bare-symbol-is-a-label gotcha, a sum loop (proving `RETURN`'s
+  value is delivered correctly), a forward `GO` (jumping past code that
+  must never run), and a nested `PROG` whose own labels don't interfere
+  with the outer one's. This list is
   deliberately specific so it can shrink honestly, item by item, rather
   than being replaced by a vaguer
   "in progress" note.

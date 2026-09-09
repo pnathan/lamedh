@@ -164,6 +164,9 @@ kw_error_p:       db "ERROR-P"
 kw_error_message: db "ERROR-MESSAGE"
 kw_error_data:    db "ERROR-DATA"
 kw_block:       db "BLOCK"
+kw_prog:        db "PROG"
+kw_go:          db "GO"
+kw_return:      db "RETURN"
 kw_return_from: db "RETURN-FROM"
 kw_while:       db "WHILE"
 kw_string_length: db "STRING-LENGTH"
@@ -248,6 +251,23 @@ rest_sym_scratch: resq 1
 ; they know where their own slots start. Saved/restored around a
 ; nested LAMBDA's or LET's body exactly like current_scope is.
 current_frame_depth: resq 1
+
+; current_prog_ctx: the host address of the innermost active PROG's own
+; scratch bookkeeping buffer (labels_seen/pending_gos/pending_returns
+; and their counts — compile_prog's own local machine-stack allocation,
+; see its comment), or 0 when no PROG is active. compile_form's GO/
+; RETURN dispatch reads this to find its way back to the enclosing
+; PROG, however deeply nested the GO/RETURN form itself is inside
+; ordinary IF/WHEN/LET expressions within a PROG item — the same
+; "compiler-global, saved/restored around nesting" technique
+; current_scope/current_frame_depth already use. v0 scope: GO/RETURN
+; are lexical only, not the spec's own dynamic-extent version — reset
+; to 0 (not saved-and-restored-to-the-outer-value) around a nested
+; LAMBDA's own body compilation (compile_lambda), so a GO/RETURN
+; textually inside a closure defined within a PROG item correctly
+; fails to resolve (an unknown-label compile-time trap) rather than
+; silently jumping into a different, already-returned function's code.
+current_prog_ctx: resq 1
 
 ; lambda_frame_depth_scratch: holds a LAMBDA's own computed base_index
 ; (params+frees+REST slot count) from where it's computed (prologue
@@ -2030,9 +2050,21 @@ compile_lambda:
     mov rax, [lambda_frame_depth_scratch]
     mov [current_frame_depth], rax
 
+    mov rax, [current_prog_ctx]
+    push rax                                        ; [old_prog_ctx, old_frame_depth, ...]
+    mov qword [current_prog_ctx], 0                    ; a nested LAMBDA body
+                                                        ; starts with no active
+                                                        ; PROG of its own — see
+                                                        ; current_prog_ctx's own
+                                                        ; comment on why GO/
+                                                        ; RETURN mustn't reach
+                                                        ; through this boundary
+
     mov rdi, r13
     call compile_progn
 
+    pop rax
+    mov [current_prog_ctx], rax
     pop rax
     mov [current_frame_depth], rax
     pop rax
@@ -3579,6 +3611,345 @@ compile_return_from:
     pop rbx
     ret
 
+; --- PROG/GO/RETURN (KERNEL.md Part VII) ---
+;
+; "(prog (vars...) item...) binds each var to NIL, then executes the
+; items in order, treating a bare symbol item as a label. (go label)
+; jumps to a label in the innermost dynamically enclosing PROG ...
+; (return value) exits the innermost PROG with value; falling off the
+; end yields NIL." v0 scope, narrower than the spec on purpose: GO/
+; RETURN here are *lexical*, not dynamic-extent — they only resolve
+; when textually within the same PROG's own body (including nested
+; inside ordinary IF/WHEN/LET expressions there), not when reached via
+; a call into a separate function. A fully dynamic-extent GO would
+; need the same catch-stack-marker machinery UNWIND-PROTECT uses, but
+; re-installed on *every* pass through a label — which would grow the
+; catch stack without bound on an ordinary GO-based loop, unlike
+; UNWIND-PROTECT's own one-shot marker. This lexical v0 covers the
+; overwhelmingly common real usage (an imperative loop with labels,
+; every GO/RETURN written directly inside the PROG that owns them)
+; without that cost, and is honestly narrower where it diverges.
+;
+; compile_prog reserves a small host-side (compile-time only, not
+; target-runtime) scratch buffer on its own machine stack frame:
+; labels_seen (symbol -> address, filled in as each label is reached),
+; pending_gos (site -> label symbol, one per GO — resolved in one pass
+; once every label in the body has been seen), and pending_returns
+; (site only — every RETURN converges on the same exit point, patched
+; once that is known). Fixed 32-entry capacity each; PROG bodies
+; needing more silently degrade (a v0 bound, same spirit as
+; catch_stack's own fixed 256 frames) rather than growing dynamically.
+%define PROG_LABELS_CAP 32
+%define PROG_GOS_CAP 32
+%define PROG_RETURNS_CAP 32
+%define PROG_LABELS_OFF 0
+%define PROG_GOS_OFF 512
+%define PROG_RETURNS_OFF 1024
+%define PROG_LABELS_COUNT_OFF 1280
+%define PROG_GOS_COUNT_OFF 1288
+%define PROG_RETURNS_COUNT_OFF 1296
+%define PROG_CTX_SIZE 1304
+
+; compile_prog(rdi = the full (PROG (vars...) item...) form)
+compile_prog:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi
+    call cadr
+    mov r12, rax                     ; vars list
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov r13, rax                       ; items list
+
+    mov rdi, r12
+    call list_length
+    push rax                              ; [k]
+
+    mov eax, [rsp]
+    imul eax, eax, 8
+    mov edi, eax
+    call emit_sub_rsp_imm32                  ; reserve var slots (rbp-
+                                              ; relative — independent
+                                              ; of this bookkeeping's
+                                              ; own rsp-relative stack)
+
+    mov rdi, r12
+    mov rsi, [current_frame_depth]
+    call build_frame_from_list
+    mov r14, rax                               ; new_frame
+
+    mov rbx, r12
+.var_init_loop:
+    cmp rbx, IMM_NIL
+    je .vars_done
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    mov rsi, r14
+    call frame_lookup
+    mov esi, eax
+    mov rax, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_store_local
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .var_init_loop
+.vars_done:
+    mov rdi, r14
+    mov rsi, [current_scope]
+    call append_lists
+    mov r14, rax                                 ; new_scope
+
+    mov rax, [current_scope]
+    push rax                                       ; [old_scope, k]
+    mov [current_scope], r14
+
+    mov rax, [current_frame_depth]
+    push rax                                         ; [old_frame_depth, old_scope, k]
+    mov rcx, [rsp+16]                                  ; k
+    add rax, rcx
+    mov [current_frame_depth], rax
+
+    sub rsp, PROG_CTX_SIZE                               ; [buffer, old_frame_depth, old_scope, k]
+    mov rax, rsp                                           ; buffer address
+    mov qword [rax+PROG_LABELS_COUNT_OFF], 0
+    mov qword [rax+PROG_GOS_COUNT_OFF], 0
+    mov qword [rax+PROG_RETURNS_COUNT_OFF], 0
+
+    mov rcx, [current_prog_ctx]
+    push rcx                                                 ; [old_prog_ctx, buffer, old_frame_depth, old_scope, k]
+    mov [current_prog_ctx], rax
+
+    ; --- walk items ---
+    mov rbx, r13                    ; items cursor
+.item_loop:
+    cmp rbx, IMM_NIL
+    je .items_done
+    mov rdi, rbx
+    call car
+    mov r12, rax                      ; item
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax                        ; advance cursor
+
+    cmp r12, IMM_NIL
+    je .ordinary_item
+    mov rax, r12
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .ordinary_item
+    mov rax, r12
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .ordinary_item
+
+    ; label item: record {symbol, this address} in labels_seen.
+    call codegen_here
+    mov r13, rax
+    mov rax, [current_prog_ctx]
+    mov rcx, [rax+PROG_LABELS_COUNT_OFF]
+    cmp rcx, PROG_LABELS_CAP
+    jae .item_loop
+    mov rdx, rcx
+    shl rdx, 4
+    mov [rax+PROG_LABELS_OFF+rdx], r12
+    mov [rax+PROG_LABELS_OFF+rdx+8], r13
+    inc rcx
+    mov [rax+PROG_LABELS_COUNT_OFF], rcx
+    jmp .item_loop
+
+.ordinary_item:
+    mov rdi, r12
+    call compile_form                     ; value discarded — items
+                                           ; are not tail positions
+    jmp .item_loop
+.items_done:
+
+    ; --- resolve every pending GO against the now-complete label table ---
+    mov rbx, [current_prog_ctx]
+    xor r12, r12                    ; scan index over pending_gos
+.resolve_gos_loop:
+    mov rcx, [rbx+PROG_GOS_COUNT_OFF]
+    cmp r12, rcx
+    jae .resolve_gos_done
+    mov rdx, r12
+    shl rdx, 4
+    mov r13, [rbx+PROG_GOS_OFF+rdx]           ; site
+    mov r14, [rbx+PROG_GOS_OFF+rdx+8]           ; target label symbol
+    xor r15, r15                                  ; scan index over labels_seen
+.find_label_loop:
+    mov rax, [rbx+PROG_LABELS_COUNT_OFF]
+    cmp r15, rax
+    jae .next_go                                    ; unknown label: v0
+                                                     ; leaves this GO's
+                                                     ; displacement at
+                                                     ; its 0 placeholder
+                                                     ; (falls through to
+                                                     ; the next
+                                                     ; instruction)
+                                                     ; rather than
+                                                     ; trapping — see
+                                                     ; README
+    mov rdx, r15
+    shl rdx, 4
+    cmp qword [rbx+PROG_LABELS_OFF+rdx], r14
+    je .label_found
+    inc r15
+    jmp .find_label_loop
+.label_found:
+    mov rdx, r15
+    shl rdx, 4
+    mov rsi, [rbx+PROG_LABELS_OFF+rdx+8]
+    mov rdi, r13
+    call patch_rel32
+.next_go:
+    inc r12
+    jmp .resolve_gos_loop
+.resolve_gos_done:
+
+    ; --- falling off the end: rax = NIL; every RETURN converges here ---
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    call codegen_here
+    mov r12, rax                       ; exit address
+
+    mov rbx, [current_prog_ctx]
+    xor r13, r13
+.patch_returns_loop:
+    mov rcx, [rbx+PROG_RETURNS_COUNT_OFF]
+    cmp r13, rcx
+    jae .patch_returns_done
+    mov rdx, r13
+    shl rdx, 3
+    mov rdi, [rbx+PROG_RETURNS_OFF+rdx]
+    mov rsi, r12
+    call patch_rel32
+    inc r13
+    jmp .patch_returns_loop
+.patch_returns_done:
+
+    ; --- teardown ---
+    pop rax
+    mov [current_prog_ctx], rax
+    add rsp, PROG_CTX_SIZE
+    pop rax
+    mov [current_frame_depth], rax
+    pop rax
+    mov [current_scope], rax
+    pop rax                                ; k
+    imul eax, eax, 8
+    mov esi, eax
+    mov dil, REG_RSP
+    call emit_add_reg_imm32                   ; release var slots
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_go(rdi = the full (GO label) form) — label is unevaluated.
+; Emits an unconditional jump, recorded in the innermost active PROG's
+; pending_gos for later resolution once every label in that PROG's own
+; body has been seen (compile_prog above). Outside any PROG (v0's
+; lexical scoping can't find an enclosing one), this traps.
+compile_go:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, [current_prog_ctx]
+    test r12, r12
+    jz .no_prog
+
+    mov rdi, rbx
+    call cadr
+    mov rbx, rax                  ; label symbol
+
+    call emit_jmp32
+    mov rcx, rax                    ; site
+
+    mov rdx, [r12+PROG_GOS_COUNT_OFF]
+    cmp rdx, PROG_GOS_CAP
+    jae .out
+    mov rsi, rdx
+    shl rsi, 4
+    mov [r12+PROG_GOS_OFF+rsi], rcx
+    mov [r12+PROG_GOS_OFF+rsi+8], rbx
+    inc rdx
+    mov [r12+PROG_GOS_COUNT_OFF], rdx
+    jmp .out
+.no_prog:
+    mov rdi, 0xCC
+    call emit8                      ; GO outside any (lexically
+                                     ; visible) PROG — a v0 trap
+.out:
+    ; control never reaches past the jmp/trap above, but compile_form
+    ; callers expect target rax to hold something regardless.
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    pop r12
+    pop rbx
+    ret
+
+; compile_return(rdi = the full (RETURN [value]) form) — value defaults
+; to NIL. Compiles value (if any) into target rax, then emits an
+; unconditional jump recorded in the innermost active PROG's
+; pending_returns, resolved once that PROG knows its own exit address
+; (every RETURN and the fall-off-the-end case converge on the same
+; point). Outside any PROG, this traps, same as GO above.
+compile_return:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, [current_prog_ctx]
+    test r12, r12
+    jz .no_prog
+
+    mov rdi, rbx
+    call cdr
+    cmp rax, IMM_NIL
+    je .no_value
+    mov rdi, rax
+    call car
+    mov rdi, rax
+    call compile_form                  ; value -> target rax
+    jmp .have_value
+.no_value:
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+.have_value:
+    call emit_jmp32
+    mov rcx, rax                          ; site
+
+    mov rdx, [r12+PROG_RETURNS_COUNT_OFF]
+    cmp rdx, PROG_RETURNS_CAP
+    jae .out
+    mov rsi, rdx
+    shl rsi, 3
+    mov [r12+PROG_RETURNS_OFF+rsi], rcx
+    inc rdx
+    mov [r12+PROG_RETURNS_COUNT_OFF], rdx
+    jmp .out
+.no_prog:
+    mov rdi, 0xCC
+    call emit8                      ; RETURN outside any PROG — a v0 trap
+.out:
+    pop r12
+    pop rbx
+    ret
+
 ; compile_while(rdi = (WHILE test body...) form) -> always NIL.
 ; test is re-evaluated before each pass (a forward branch, patched
 ; once the loop's overall end is known); the backward jump back to the
@@ -4869,6 +5240,39 @@ compile_form:
     jmp .out
 
 .not_return_from:
+    mov rdi, r12
+    mov rsi, kw_prog
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_prog
+    mov rdi, rbx
+    call compile_prog
+    jmp .out
+
+.not_prog:
+    mov rdi, r12
+    mov rsi, kw_go
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_go
+    mov rdi, rbx
+    call compile_go
+    jmp .out
+
+.not_go:
+    mov rdi, r12
+    mov rsi, kw_return
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_return
+    mov rdi, rbx
+    call compile_return
+    jmp .out
+
+.not_return:
     mov rdi, r12
     mov rsi, kw_while
     mov rdx, 5

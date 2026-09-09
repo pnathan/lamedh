@@ -204,6 +204,16 @@ else
 (PRINT (FEATURE-ENABLED-P (QUOTE SHELL)))
 (NEWLINE)
 (PRINT (HANDLER-CASE (WITH-CAPABILITIES (QUOTE (SHELL)) (FD-OPEN (QUOTE X) 0)) (E (X) (QUOTE CAUGHT))))
+(NEWLINE)
+(PRINT (PROG (I) (SETQ I 0) LOOP (WHEN (= I 5) (RETURN I)) (PRINT I) (SETQ I (+ I 1)) (GO LOOP)))
+(NEWLINE)
+(PRINT (PROG (X) (SETQ X 42) X))
+(NEWLINE)
+(PRINT (PROG (I ACC) (SETQ I 1) (SETQ ACC 0) LOOP (WHEN (> I 5) (RETURN ACC)) (SETQ ACC (+ ACC I)) (SETQ I (+ I 1)) (GO LOOP)))
+(NEWLINE)
+(PRINT (PROG (X) (GO SKIP) (SETQ X 1) SKIP (SETQ X 2) (RETURN X)))
+(NEWLINE)
+(PRINT (PROG (I) (SETQ I 0) OUTER (WHEN (= I 3) (RETURN I)) (PROG (J) (SETQ J 0) INNER (WHEN (= J 2) (RETURN 0)) (SETQ J (+ J 1)) (GO INNER)) (SETQ I (+ I 1)) (GO OUTER)))
 LISP
     want_out='T
 T
@@ -256,7 +266,12 @@ T
 T
 ()
 T
-CAUGHT'
+CAUGHT
+012345
+()
+15
+2
+3'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then
