@@ -365,6 +365,15 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
             // Parse earmuff symbols (*name*) - dynamic variable naming convention
             // Must come before regular symbols and operators
             parse_earmuff_symbol(env.clone()),
+            // Parse plus-earmuff symbols (+name+) - CL-style constant naming
+            // convention (e.g. `+NUMERIC-PRECISION-MODEL+`, `+HOST-TRAITS+`,
+            // KERNEL.md Part XII / issue #463). Must come before `parse_number`
+            // would otherwise be a non-issue (no leading digit means
+            // `parse_number` already fails on `+NAME+`), but must come before
+            // the final operator-symbol fallback below, which would otherwise
+            // greedily consume only the leading `+` and strand the rest of the
+            // token as a separate, wrongly-trailing-`+` symbol.
+            parse_plus_earmuff_symbol(env.clone()),
             parse_keyword_symbol(env.clone()),
             map(
                 recognize(pair(
@@ -420,6 +429,24 @@ fn parse_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResul
                 alpha1,
                 many0(alt((alphanumeric1, tag("-")))),
                 tag("*"),
+            ))),
+            |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
+        )(input)
+    }
+}
+
+/// Parse plus-earmuff symbols: +name+ (Common-Lisp-style constant naming
+/// convention). Examples: +numeric-precision-model+, +host-traits+.
+/// Mirrors [`parse_earmuff_symbol`]'s asterisk-earmuff grammar exactly,
+/// with `+` in place of `*`.
+fn parse_plus_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        map(
+            recognize(tuple((
+                tag("+"),
+                alpha1,
+                many0(alt((alphanumeric1, tag("-")))),
+                tag("+"),
             ))),
             |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
         )(input)

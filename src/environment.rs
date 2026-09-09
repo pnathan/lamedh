@@ -1721,6 +1721,48 @@ impl Environment {
             );
         }
 
+        // Host-trait registry (issue #463; KERNEL.md Part XII). A portable
+        // program has no way to *ask* which of Part XII's declared-axis
+        // models this host implements, short of fragile behavioral probing
+        // (deliberately overflowing a computation and checking
+        // `(flag-set-p 'OVERFLOW)`). `+HOST-TRAITS+` is a single collective
+        // registry — an alist of `(AXIS-NAME . CHOSEN-VALUE)` pairs — rather
+        // than one top-level constant per axis, since Part XII is expected
+        // to grow more axes over time (KERNEL.md Part XIII notes #459's
+        // reader-level `#+`/`#-` feature dispatch as a plausible sibling
+        // registry to design alongside this one; #459 has not landed in
+        // this codebase yet, so this registry stands alone for now).
+        //
+        // `NUMERIC-PRECISION-MODEL` is Part XII axis 1's entry, and the
+        // first concrete member of the registry. This host's `LispVal`
+        // integer is a Rust `i64` (see `LispVal::Number` in `src/lib.rs`),
+        // and `+`/`-`/`*`//` (`BuiltinFunc::Plus`/`Minus`/`Multiply`/
+        // `Divide` in `src/evaluator/builtins_core.rs`) use `checked_*`
+        // arithmetic that falls back to `wrapping_*` and sets the
+        // `OVERFLOW` flag on over/underflow, rather than promoting to an
+        // arbitrary-precision representation — so this host is on the
+        // WRAPAROUND-64 model, not ARBITRARY-PRECISION. `+NUMERIC-
+        // PRECISION-MODEL+` is also bound directly (the name Part XII and
+        // issue #463 call out by name), so portable code can read it
+        // without an alist lookup; its value must always match the
+        // registry's `NUMERIC-PRECISION-MODEL` entry.
+        let numeric_precision_model_sym = env.intern_symbol("WRAPAROUND-64");
+        let numeric_precision_axis_sym = env.intern_symbol("NUMERIC-PRECISION-MODEL");
+        env.set(
+            "+NUMERIC-PRECISION-MODEL+".to_string(),
+            LispVal::Symbol(numeric_precision_model_sym.clone()),
+        );
+        env.set(
+            "+HOST-TRAITS+".to_string(),
+            LispVal::Cons {
+                car: Shared::new(LispVal::Cons {
+                    car: Shared::new(LispVal::Symbol(numeric_precision_axis_sym)),
+                    cdr: Shared::new(LispVal::Symbol(numeric_precision_model_sym)),
+                }),
+                cdr: Shared::new(LispVal::Nil),
+            },
+        );
+
         env
     }
 
