@@ -1726,7 +1726,7 @@ impl Jit {
                 if let Some(msg) = ctx.pending_error.borrow_mut().take() {
                     return Err(msg);
                 }
-                return Ok(Value::from_word(w, &ret));
+                return Ok(Value::from_word(w, &ret, &ctx));
             }
         }
         // Compound signature: the full membrane (write-back and all).
@@ -1800,7 +1800,7 @@ impl Jit {
             overflow: ctx.overflow.get(),
             div_by_zero: ctx.div_by_zero.get(),
         };
-        let result = Value::from_word(w, &ret);
+        let result = Value::from_word(w, &ret, &ctx);
         // Skip the write-back copy-out for a parameter the static may-mutate
         // analysis (`core_may_mutate_slot`, computed at define-time into
         // `f.may_mutate`) proves this function's body never writes through —
@@ -1824,7 +1824,7 @@ impl Jit {
                     return None;
                 }
                 let mutates = may_mutate.get(i).copied().unwrap_or(true);
-                (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty))
+                (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty, &ctx))
             })
             .collect();
         Ok((result, updated, flags))
@@ -1926,7 +1926,7 @@ impl Jit {
             return Err(msg);
         }
         let ret = f.ret.borrow().clone();
-        Ok((Value::from_word(w, &ret), log))
+        Ok((Value::from_word(w, &ret, &ctx), log))
     }
 
     /// Drop every compiled edition (force the interpreter path). Test/diagnostic.

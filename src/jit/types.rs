@@ -404,7 +404,11 @@ impl Value {
 
     /// Read a runtime word back into a boundary value of type `ty`, copying
     /// compound buffers out of the arena (so the result outlives the call).
-    pub(super) fn from_word(w: u64, ty: &Ty) -> Value {
+    // `ctx` is unused outside the recursive calls today; it starts threading
+    // through here so the boxed arm (issue #476 Phase 2) can resolve a handle
+    // against `ctx`'s root table without another signature-wide ripple.
+    #[allow(clippy::only_used_in_recursion)]
+    pub(super) fn from_word(w: u64, ty: &Ty, ctx: &Ctx) -> Value {
         match ty {
             Ty::Int64 => Value::Int(w as i64),
             Ty::Float64 => Value::Float(f64::from_bits(w)),
@@ -416,7 +420,7 @@ impl Value {
                 let mut items = Vec::with_capacity(len);
                 for i in 0..len {
                     let ew = unsafe { *base.add(i + 1) };
-                    items.push(Value::from_word(ew, elem));
+                    items.push(Value::from_word(ew, elem, ctx));
                 }
                 Value::Array(items)
             }
@@ -425,7 +429,7 @@ impl Value {
                 let mut fields = Vec::with_capacity(def.fields.len());
                 for (i, (_, ft)) in def.fields.iter().enumerate() {
                     let fw = unsafe { *base.add(i + 1) };
-                    fields.push(Value::from_word(fw, ft));
+                    fields.push(Value::from_word(fw, ft, ctx));
                 }
                 Value::Struct(fields)
             }
