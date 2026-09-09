@@ -1473,6 +1473,23 @@ pub fn core_node_count(core: &Core) -> usize {
 /// `0..n_funcs`. This is a cheap subject-reduction-style structural check the
 /// suite runs on every defined function to catch lowering bugs that would
 /// otherwise corrupt memory or panic only on a lucky input.
+///
+/// Issue #476 (boxed handles), phase 3a: the "no `Core::Cmp` may ever be
+/// elaborated at boxed type" invariant — two distinct handles can alias the
+/// same underlying object, so comparing handle words would silently be
+/// wrong — has no separate check to add *here*. `Core::Cmp`/`Core::Bin`
+/// carry a [`NumKind`], not a [`Ty`](super::types::Ty), and `NumKind` is
+/// exhaustively `{I, F}`; there is no `NumKind::Boxed` and no way to
+/// construct one, so a boxed operand cannot reach a `Cmp`/`Bin` node in the
+/// first place — the type system enforces it at construction, one layer up
+/// in `elaboration.rs` (`Cx::reject_boxed_arith_cmp`), which is also the
+/// only place `Ty` information still exists (this function's `Core` carries
+/// none). Verified in `tests.rs`: `elaboration_rejects_*_on_boxed_operands`
+/// exercise the elaborator's refusal directly, and `num_kind_has_no_boxed_variant`
+/// pins the `NumKind` shape this comment relies on — if a future change ever
+/// added a boxed-flavored `NumKind`, that match stops being exhaustive and
+/// fails to *compile*, catching the regression before it could reach this
+/// function at all.
 pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), String> {
     match core {
         Core::LitI(_) | Core::LitF(_) => Ok(()),

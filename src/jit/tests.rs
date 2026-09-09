@@ -2118,3 +2118,111 @@ fn ctx_leaf_has_empty_boxed_table() {
     assert!(ctx.boxed.borrow().is_empty());
     assert_eq!(ctx.unbox(0), LispVal::Nil);
 }
+
+// --- boxed: phase 3a — elaboration guards against arithmetic/comparison ----
+//
+// A `boxed` handle is inert cargo: it supports only movement, `equal`,
+// `hash-code`, and general-array access (issue #476 §3). Arithmetic and
+// ordering comparison must be rejected with a clear, shared message
+// (`BOXED_ARITH_CMP_MSG`) — critically for comparison, so that no
+// `Core::Cmp` node is ever built over a boxed operand: two distinct handles
+// can alias the same object, so comparing handle words would be silently
+// wrong (not just disallowed).
+
+/// `+`/`-`/`*`/`/`/`mod`, at 1 and 2+ arg arities, all refuse a boxed
+/// operand with the exact shared message — not some generic "expects
+/// numeric operands, got Boxed" fallback.
+#[test]
+fn elaboration_rejects_arithmetic_on_boxed_operands() {
+    for src in [
+        "(defun-typed (bad int64) ((x boxed)) (+ x 1))",
+        "(defun-typed (bad int64) ((x boxed)) (+ 1 x))",
+        "(defun-typed (bad int64) ((x boxed)) (- x))",
+        "(defun-typed (bad int64) ((x boxed)) (- x 1))",
+        "(defun-typed (bad int64) ((x boxed)) (* x 1))",
+        "(defun-typed (bad int64) ((x boxed) (y int64)) (/ x y))",
+        "(defun-typed (bad int64) ((x boxed) (y int64)) (mod x y))",
+    ] {
+        let err = def_err(src);
+        assert_eq!(
+            err, BOXED_ARITH_CMP_MSG,
+            "unexpected message for `{src}`: {err}"
+        );
+    }
+}
+
+/// `<`/`>`/`<=`/`>=`/`=`/`/=` all refuse two boxed operands with the exact
+/// shared message, and — the load-bearing case — refuse BEFORE any
+/// `Core::Cmp` node could be built, so a malformed compiled core comparing
+/// two aliasing handles can never be produced by `defun-typed` in the first
+/// place.
+#[test]
+fn elaboration_rejects_comparison_on_boxed_operands() {
+    for op in ["<", ">", "<=", ">=", "=", "/="] {
+        let src = format!("(defun-typed (bad bool) ((x boxed) (y boxed)) ({op} x y))");
+        let err = def_err(&src);
+        assert_eq!(
+            err, BOXED_ARITH_CMP_MSG,
+            "unexpected message for `{src}`: {err}"
+        );
+    }
+}
+
+/// `min`/`max` (both the type-checked-only and the 2-arg compiled-select
+/// path) and `abs` are comparison-/arithmetic-shaped and must refuse a
+/// boxed operand with the same shared message.
+#[test]
+fn elaboration_rejects_min_max_and_abs_on_boxed_operands() {
+    for src in [
+        "(defun-typed (bad boxed) ((x boxed) (y boxed)) (min x y))",
+        "(defun-typed (bad boxed) ((x boxed) (y boxed)) (max x y))",
+        "(defun-typed (bad boxed) ((x boxed)) (abs x))",
+    ] {
+        let err = def_err(src);
+        assert_eq!(
+            err, BOXED_ARITH_CMP_MSG,
+            "unexpected message for `{src}`: {err}"
+        );
+    }
+}
+
+/// Movement alone — `boxed` flowing through `if` branches with no arithmetic
+/// or comparison applied to it — must keep compiling; the guard targets
+/// operators, not the type itself (issue #476 §3's "movement only" scope).
+#[test]
+fn boxed_if_branches_without_operators_still_compile() {
+    let j = build(&["(defun-typed (pick boxed) ((c bool) (x boxed) (y boxed)) (if c x y))"]);
+    assert_eq!(
+        agree(
+            &j,
+            "pick",
+            &[
+                Value::Bool(true),
+                Value::Boxed(LispVal::Number(1)),
+                Value::Boxed(LispVal::Number(2)),
+            ]
+        ),
+        Value::Boxed(LispVal::Number(1))
+    );
+}
+
+/// Structural pin for the doc comment on `verify_core`: `Core::Cmp`/
+/// `Core::Bin` carry a `NumKind`, not a `Ty`, and `NumKind` is exhaustively
+/// `{I, F}` — there is no boxed-flavored variant, so a boxed operand cannot
+/// reach a `Cmp`/`Bin` node at all; the elaborator's refusal above is the
+/// only enforcement point because it is the only place `Ty` information
+/// exists. This match has no wildcard arm: if `NumKind` ever grew a variant
+/// standing in for `boxed`, this stops being exhaustive and the crate fails
+/// to *compile*, catching the regression before `verify_core` (which has no
+/// type information at all) could ever be asked to catch it at runtime.
+#[test]
+fn num_kind_has_no_boxed_variant() {
+    fn describe(k: NumKind) -> &'static str {
+        match k {
+            NumKind::I => "int64",
+            NumKind::F => "float64",
+        }
+    }
+    assert_eq!(describe(NumKind::I), "int64");
+    assert_eq!(describe(NumKind::F), "float64");
+}

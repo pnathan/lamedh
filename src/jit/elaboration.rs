@@ -61,10 +61,34 @@ pub(super) struct Cx<'a> {
     pub(super) avoid_gen: RefCell<Vec<u32>>,
 }
 
+/// Issue #476: a `boxed` handle is inert cargo — the only operations that
+/// may look inside one are the boxed intrinsics (`equal`, `hash-code`,
+/// `fetch`/`store`/`array-length*`). Arithmetic and ordering comparison are
+/// meaningless on a handle word (it is a root-table index, not a number),
+/// and critically: two DISTINCT handles can denote the SAME underlying
+/// object (aliasing, `Ty::Boxed`'s own doc comment), so comparing handle
+/// words with `Core::Cmp` would be outright wrong, not merely disallowed —
+/// no `Core::Cmp` node may ever be elaborated at boxed type. This message is
+/// shared by every arithmetic/comparison elaborator so the guard reads
+/// identically everywhere it fires.
+pub(super) const BOXED_ARITH_CMP_MSG: &str =
+    "boxed values support only movement, equal, hash-code, and general-array access";
+
 impl Cx<'_> {
     /// A fresh type variable from this definition's inference state.
     fn fresh(&self) -> Ty {
         self.infer.borrow_mut().fresh()
+    }
+
+    /// Reject an operand whose WALKED type is already known to be `boxed`
+    /// (issue #476). Used by every arithmetic/comparison elaborator, in both
+    /// checker and codegen mode, so a boxed operand is refused uniformly —
+    /// and, for comparison, so no `Core::Cmp` node is ever built over it.
+    fn reject_boxed_arith_cmp(&self, t: &Ty) -> Result<(), String> {
+        if matches!(self.walk(t), Ty::Boxed) {
+            return Err(BOXED_ARITH_CMP_MSG.to_string());
+        }
+        Ok(())
     }
 
     /// A resolved operand type the EVALUATOR would reject for arithmetic /
@@ -358,6 +382,7 @@ impl Cx<'_> {
         // (`/`/`MOD` can never reach here: pinned to exactly 2 args above.)
         if args.len() == 1 {
             let (a, ta) = self.elab(&args[0], scope, max)?;
+            self.reject_boxed_arith_cmp(&ta)?;
             if self.checking {
                 return Ok((Core::LitI(0), self.walk(&ta)));
             }
@@ -382,8 +407,10 @@ impl Cx<'_> {
         // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
         // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&ty)?;
         for arg in &args[1..] {
             let (b, tb) = self.elab(arg, scope, max)?;
+            self.reject_boxed_arith_cmp(&tb)?;
             if self.unify(&ty, &tb).is_err() {
                 return Err(format!(
                     "`{op}` operands disagree: {:?} vs {:?}",
@@ -436,6 +463,12 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
+        // #476: reject before unify/resolve so no `Core::Cmp` is ever built
+        // over a boxed operand — two distinct handles can alias the same
+        // object, so comparing handle words would be silently wrong, not
+        // merely disallowed.
+        self.reject_boxed_arith_cmp(&ta)?;
+        self.reject_boxed_arith_cmp(&tb)?;
         if self.unify(&ta, &tb).is_err() {
             return Err(format!(
                 "`{op}` operands disagree: {:?} vs {:?}",
@@ -993,8 +1026,10 @@ impl Cx<'_> {
             return Err("`min`/`max` require at least one argument".to_string());
         }
         let (_, mut ty) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&ty)?;
         for a in &args[1..] {
             let (_, tb) = self.elab(a, scope, max)?;
+            self.reject_boxed_arith_cmp(&tb)?;
             self.unify(&ty, &tb)
                 .map_err(|e| format!("`min`/`max`: {e}"))?;
             ty = self.walk(&ty);
@@ -2236,6 +2271,7 @@ impl Cx<'_> {
             return Err(format!("`abs` expects 1 argument, got {}", args.len()));
         }
         let (xc, tx) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&tx)?;
         let rt = self
             .resolve(&tx)
             .map_err(|_| "`abs`: cannot infer operand type".to_string())?;
@@ -2269,6 +2305,8 @@ impl Cx<'_> {
         }
         let (ac, ta) = self.elab(&args[0], scope, max)?;
         let (bc, tb) = self.elab(&args[1], scope, max)?;
+        self.reject_boxed_arith_cmp(&ta)?;
+        self.reject_boxed_arith_cmp(&tb)?;
         self.unify(&ta, &tb)
             .map_err(|e| format!("min/max operands disagree: {e}"))?;
         let rt = self
