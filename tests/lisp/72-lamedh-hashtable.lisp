@@ -315,3 +315,61 @@
     (assert-equal (lht-hash (/ 0.0 0.0)) (lht-hash (/ -0.0 0.0)))
     (assert-equal (lht-hash (make-char 65)) (lht-hash (make-char 65)))
     (assert-equal (lht-hash (cons 1 2)) (lht-hash (cons 1 2)))))
+
+;;; ---- the MAP wrapper ------------------------------------------------------
+
+(deftest map-make-picks-native-backend-on-this-host
+  ;; This host (the Rust reference binary) always has MAKE-HASH-TABLE
+  ;; bound, so MAKE-MAP must prefer it over LHT.
+  (assert-true (hash-table-p (make-map))))
+
+(deftest map-p-accepts-either-backend
+  (progn
+    (assert-true (map-p (make-hash-table)))
+    (assert-true (map-p (make-lht)))
+    (assert-false (map-p (array 8)))
+    (assert-false (map-p 42))))
+
+(deftest map-ops-work-on-a-native-table
+  (let ((m (make-hash-table)))
+    (progn
+      (map-put! m 'map-native-key 1)
+      (assert-equal (map-get m 'map-native-key) 1)
+      (assert-true (map-has-key-p m 'map-native-key))
+      (assert-equal (map-count m) 1)
+      (assert-equal (map-keys m) '(map-native-key))
+      (map-remove! m 'map-native-key)
+      (assert-false (map-has-key-p m 'map-native-key))
+      (assert-equal (map-count m) 0))))
+
+(deftest map-ops-work-on-an-lht-table
+  ;; The same MAP-* calls, unmodified, against the pure-Lamedh backend --
+  ;; this is the whole point: callers need not know which backend a table
+  ;; they were handed actually is.
+  (let ((m (make-lht)))
+    (progn
+      (map-put! m 'map-lht-key 1)
+      (assert-equal (map-get m 'map-lht-key) 1)
+      (assert-true (map-has-key-p m 'map-lht-key))
+      (assert-equal (map-count m) 1)
+      (assert-equal (map-keys m) '(map-lht-key))
+      (map-remove! m 'map-lht-key)
+      (assert-false (map-has-key-p m 'map-lht-key))
+      (assert-equal (map-count m) 0))))
+
+(deftest map-each-and-map-alist-agree-across-backends
+  (let ((native (make-hash-table))
+        (lht (make-lht))
+        (native-acc nil)
+        (lht-acc nil))
+    (progn
+      (map-put! native 'map-each-a 1)
+      (map-put! native 'map-each-b 2)
+      (map-put! lht 'map-each-a 1)
+      (map-put! lht 'map-each-b 2)
+      (map-each native (lambda (k v) (csetq native-acc (cons (cons k v) native-acc))))
+      (map-each lht (lambda (k v) (csetq lht-acc (cons (cons k v) lht-acc))))
+      (assert-equal (sort-by native-acc (lambda (kv) (princ-to-string (car kv))) #'string<)
+                     (sort-by lht-acc (lambda (kv) (princ-to-string (car kv))) #'string<))
+      (assert-equal (sort-by (map->alist native) (lambda (kv) (princ-to-string (car kv))) #'string<)
+                     (sort-by (map->alist lht) (lambda (kv) (princ-to-string (car kv))) #'string<)))))

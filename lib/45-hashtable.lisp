@@ -374,3 +374,90 @@ indistinguishable from absence)."
     (store ht 6 0)
     (store ht 7 0)
     ht))
+
+;;; ---- MAP: a portable wrapper over native-or-LHT --------------------------
+;;;
+;;; Not every host provides the native HASH-TABLE builtin -- it's a
+;;; convenience layer (`lib/15-sets-hash.lisp`) over `LispVal::HashTable`,
+;;; not one of KERNEL.md Part XI's minimal required primitives -- which is
+;;; the whole reason LHT exists (issue #458). MAKE-MAP/MAP-GET/etc. below
+;;; let calling code stay agnostic to which backend a given host (and hence
+;;; a given table object) actually has, without paying for it: this is
+;;; deliberately NOT built on `lib/29-protocols.lisp`'s DEFPROTOCOL/
+;;; DEFINSTANCE machinery (a per-call type-key computation plus a
+;;; HASH-TABLE-lookup plus an ASSOC over the instance list) -- LHT already
+;;; earns back real overhead by using HASH-CODE (#474) directly, and
+;;; layering a general dispatch registry back on top of every MAP-GET/
+;;; MAP-PUT! call would give a meaningful fraction of that back for no
+;;; reason. A protocol dispatch would also not even discriminate LHT from
+;;; any other value here: `$protocol-type-key` keys on `(record-brand v)`
+;;; else structural kind, and LHT is deliberately a bare ARRAY (see this
+;;; file's header), not a DEFRECORD, so it has no brand to dispatch on --
+;;; giving it one would mean depending on the condensation layer this file
+;;; otherwise avoids on principle. Below is instead one HASH-TABLE-P
+;;; branch per call: on any host, this compiles to (and should stay) the
+;;; cheapest possible dispatch -- one comparison, one conditional jump.
+;;;
+;;; MAKE-MAP alone decides which *backend* a fresh table uses (once, via
+;;; BOUNDP, at construction); MAP-GET/MAP-PUT!/etc. below instead re-check
+;;; the concrete TABLE argument's own kind on every call, so they work
+;;; uniformly on a table built by MAKE-HASH-TABLE or MAKE-LHT directly, not
+;;; only one built by MAKE-MAP.
+
+(defun map-p (x)
+  "True if X is a table this MAP-* API accepts -- either backend."
+  (or (hash-table-p x) (lht-p x)))
+
+(declare-type! 'map-p '(forall (a) (-> (a) bool)))
+
+(defun make-map ()
+  "Construct a table using the fastest backend this host provides: the
+native HASH-TABLE builtin when bound, else the pure-Lamedh LHT."
+  (if (boundp 'make-hash-table) (make-hash-table) (make-lht)))
+
+(defun map-get (m k)
+  "Portable GETHASH/LHT-GET, dispatched by M's own kind."
+  (if (hash-table-p m) (gethash m k) (lht-get m k)))
+
+(declare-type! 'map-get '(forall (a b) (-> (a b) any)))
+
+(defun map-put! (m k v)
+  "Portable SETHASH/LHT-PUT!, dispatched by M's own kind."
+  (if (hash-table-p m) (sethash m k v) (lht-put! m k v)))
+
+(declare-type! 'map-put! '(forall (a b c) (-> (a b c) bool)))
+
+(defun map-remove! (m k)
+  "Portable REMHASH/LHT-REMOVE!, dispatched by M's own kind."
+  (if (hash-table-p m) (remhash m k) (lht-remove! m k)))
+
+(declare-type! 'map-remove! '(forall (a b) (-> (a b) bool)))
+
+(defun map-has-key-p (m k)
+  "Portable HAS-KEY-P/LHT-HAS-KEY-P, dispatched by M's own kind."
+  (if (hash-table-p m) (has-key-p m k) (lht-has-key-p m k)))
+
+(declare-type! 'map-has-key-p '(forall (a b) (-> (a b) bool)))
+
+(defun map-count (m)
+  "Portable HASH-TABLE-COUNT*/LHT-COUNT, dispatched by M's own kind."
+  (if (hash-table-p m) (hash-table-count* m) (lht-count m)))
+
+(declare-type! 'map-count '(-> (any) int64))
+
+(defun map-keys (m)
+  "Portable KEYS/LHT-KEYS, dispatched by M's own kind."
+  (if (hash-table-p m) (keys m) (lht-keys m)))
+
+(declare-type! 'map-keys '(-> (any) any))
+
+(defun map-each (m fn)
+  "Portable MAPHASH/LHT-EACH, dispatched by M's own kind. Calls (FN key
+value) for each entry; returns NIL."
+  (if (hash-table-p m) (maphash m fn) (lht-each m fn)))
+
+(defun map->alist (m)
+  "Portable HASH->ALIST/LHT->ALIST, dispatched by M's own kind."
+  (if (hash-table-p m) (hash->alist m) (lht->alist m)))
+
+(declare-type! 'map->alist '(-> (any) any))
