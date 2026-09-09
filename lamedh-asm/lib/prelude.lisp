@@ -369,3 +369,48 @@
   T)
 
 (DEFUN KEYS (TABLE) (HT-KEYS-LOOP TABLE 0 (QUOTE ())))
+
+; QUASIQUOTE (KERNEL.md Part VII): the standard technique — a DEFMACRO
+; whose transformer walks the (unevaluated) template at macro-expansion
+; time and emits ordinary CONS/APPEND/QUOTE code that rebuilds it at
+; runtime, evaluating each UNQUOTE'd subform in the caller's own
+; environment when that generated code actually runs. No new kernel
+; primitive needed — the reader's `` ` ``/`,`/`,@` macros
+; (reader.asm) already produce (QUASIQUOTE tpl)/(UNQUOTE e)/
+; (UNQUOTE-SPLICING e) forms exactly like `'` already produces
+; (QUOTE x); everything past that is this macro, over CONS/CAR/CDR/EQ/
+; APPEND/ATOM this kernel already had.
+;
+; QQ-EXPAND(form) mirrors the spec's own recursive rule exactly:
+; - an atom rebuilds as itself: (QUOTE form).
+; - a cons that IS (UNQUOTE e) (checked wherever this recursion reaches
+;   a cons, not just at the top — this is what gives "no nesting-level
+;   tracking" for free: an inner `,` is found and substituted the same
+;   way regardless of how many enclosing (QUASIQUOTE ...) conses sit
+;   around it, since QUASIQUOTE is just an ordinary symbol to this
+;   walk, never special-cased) rebuilds as e itself, to be evaluated
+;   when the generated code runs.
+; - otherwise, if this cons's CAR is itself (UNQUOTE-SPLICING e) — "a
+;   list element" position — rebuilds as (APPEND e (QQ-EXPAND cdr)):
+;   e's value (which must be a proper list) is spliced in, followed by
+;   the processed rest, which works before a dotted tail too, since
+;   the tail is just wherever this same recursion's CDR call bottoms
+;   out.
+; - otherwise, rebuilds as (CONS (QQ-EXPAND car) (QQ-EXPAND cdr)) —
+;   an ordinary cons, processed structurally on both halves.
+(DEFUN QQ-UNQUOTE-FORM-P (FORM)
+  (IF (ATOM FORM) (QUOTE ()) (EQ (CAR FORM) (QUOTE UNQUOTE))))
+
+(DEFUN QQ-SPLICE-HEAD-P (X)
+  (IF (ATOM X) (QUOTE ()) (EQ (CAR X) (QUOTE UNQUOTE-SPLICING))))
+
+(DEFUN QQ-EXPAND (FORM)
+  (IF (ATOM FORM)
+      (LIST (QUOTE QUOTE) FORM)
+      (IF (QQ-UNQUOTE-FORM-P FORM)
+          (CAR (CDR FORM))
+          (IF (QQ-SPLICE-HEAD-P (CAR FORM))
+              (LIST (QUOTE APPEND) (CAR (CDR (CAR FORM))) (QQ-EXPAND (CDR FORM)))
+              (LIST (QUOTE CONS) (QQ-EXPAND (CAR FORM)) (QQ-EXPAND (CDR FORM)))))))
+
+(DEFMACRO QUASIQUOTE (TEMPLATE) (QQ-EXPAND TEMPLATE))

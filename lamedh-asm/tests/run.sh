@@ -165,6 +165,22 @@ else
 (PRINT (GETHASH HT (QUOTE A)))
 (NEWLINE)
 (PRINT (EQUAL (KEYS HT) (KEYS HT)))
+(NEWLINE)
+(PRINT (LOGAND 12 10))
+(NEWLINE)
+(PRINT (ASH 1 4))
+(NEWLINE)
+(RANDOM-SEED! 7)
+(PRINT (< (RANDOM 1000000) 1000000))
+(NEWLINE)
+(PRINT `(1 2 3))
+(NEWLINE)
+(DEFINE QQ-X 5)
+(PRINT `(A ,QQ-X ,@(LIST 7 8 9) B))
+(NEWLINE)
+(PRINT `(A `(B ,(+ 1 2))))
+(NEWLINE)
+(PRINT (EQ (QUOTE Z) `Z))
 LISP
     want_out='T
 T
@@ -199,6 +215,13 @@ T
 111
 T
 ()
+T
+8
+16
+T
+(1 2 3)
+(A 5 7 8 9 B)
+(A (QUASIQUOTE (B 3)))
 T'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?

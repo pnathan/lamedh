@@ -573,6 +573,35 @@ read_form:
     jmp .quote_fixed
 
 .not_quote:
+    cmp al, 96                         ; ` (backtick)
+    jne .not_quasiquote
+    inc qword [reader_pos]
+    call read_form
+    mov r12, rax                        ; templated datum
+    jmp .quasiquote_fixed
+
+.not_quasiquote:
+    cmp al, ','                        ; ,  or  ,@
+    jne .not_unquote
+    mov rax, [reader_pos]
+    mov rcx, [reader_buf]
+    inc rax
+    cmp rax, [reader_end]
+    jae .plain_unquote
+    movzx rax, byte [rcx+rax]
+    cmp al, '@'
+    jne .plain_unquote
+    add qword [reader_pos], 2             ; consume ',' and '@'
+    call read_form
+    mov r12, rax
+    jmp .unquote_splicing_fixed
+.plain_unquote:
+    inc qword [reader_pos]                  ; consume ','
+    call read_form
+    mov r12, rax
+    jmp .unquote_fixed
+
+.not_unquote:
     cmp al, '#'
     jne .not_sharp_quote
     mov rax, [reader_pos]
@@ -684,6 +713,48 @@ read_form:
     mov rdi, rax
     mov rsi, r12
     call cons                          ; (FUNCTION . (datum . nil))
+    jmp .out
+
+.quasiquote_fixed:
+    ; datum is in r12; build (QUASIQUOTE datum), same shape as QUOTE.
+    mov rdi, r12
+    mov rsi, IMM_NIL
+    call cons
+    mov r12, rax
+    mov rdi, symbuf_quasiquote
+    mov rsi, 10
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    jmp .out
+
+.unquote_fixed:
+    ; datum is in r12; build (UNQUOTE datum), same shape as QUOTE.
+    mov rdi, r12
+    mov rsi, IMM_NIL
+    call cons
+    mov r12, rax
+    mov rdi, symbuf_unquote
+    mov rsi, 7
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    jmp .out
+
+.unquote_splicing_fixed:
+    ; datum is in r12; build (UNQUOTE-SPLICING datum), same shape as QUOTE.
+    mov rdi, r12
+    mov rsi, IMM_NIL
+    call cons
+    mov r12, rax
+    mov rdi, symbuf_unquote_splicing
+    mov rsi, 16
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r12
+    call cons
 
 .out:
     pop r12
@@ -692,6 +763,9 @@ read_form:
 section .rodata
 symbuf_quote: db "QUOTE"
 symbuf_function: db "FUNCTION"
+symbuf_quasiquote: db "QUASIQUOTE"
+symbuf_unquote: db "UNQUOTE"
+symbuf_unquote_splicing: db "UNQUOTE-SPLICING"
 car_err_msg: db "CAR: expected a cons or NIL"
 car_err_msg_len: equ $ - car_err_msg
 cdr_err_msg: db "CDR: expected a cons or NIL"

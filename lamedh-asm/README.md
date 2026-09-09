@@ -454,9 +454,26 @@ into conformance incrementally, tracked honestly rather than silently:
   `+`/`-` set a global `OVERFLOW` flag on wraparound, queried with
   `FLAG-SET-P` and cleared with `CLEAR-FLAG`/`CLEAR-ALL-FLAGS` — see
   "The kernel surface" above. `*` does not set it yet (same section).
-- **Not yet conforming, tracked as ongoing work**: most of Part VII's
-  special forms (`PROG`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
-  `QUASIQUOTE`) don't exist yet; capability gating
+- **`QUASIQUOTE`/`UNQUOTE`/`UNQUOTE-SPLICING` now exist** (`file_runner_prelude`'s
+  own coverage in `tests/run.sh`, `lib/prelude.lisp`), via the standard
+  technique: a `DEFMACRO` (`QQ-EXPAND`) whose transformer walks the
+  unevaluated template at macro-expansion time and emits `CONS`/
+  `APPEND`/`QUOTE` code that rebuilds it at runtime, evaluating each
+  `UNQUOTE`'d subform in the caller's own environment when that
+  generated code actually runs — no new kernel primitive beyond the
+  reader's three new macro characters (`` ` ``/`,`/`,@`, `reader.asm`,
+  reusing the exact mechanism `'` already had). Matches KERNEL.md's own
+  "no nesting-level tracking" rule exactly, verified against the
+  spec's own worked example: `` `(a `(b ,(+ 1 2))) `` produces
+  `(A (QUASIQUOTE (B 3)))`, since the recursive expander never treats
+  an inner `` ` `` specially — it's just an ordinary symbol in the
+  template — so an inner `,` is found and substituted at the *outer*
+  level regardless of how many `(QUASIQUOTE ...)` conses structurally
+  surround it. `UNQUOTE-SPLICING` splices correctly at any list
+  position, including immediately before a dotted tail (``(1 ,@ys . 2)``).
+  Most of the rest of Part VII's
+  special forms (`PROG`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`)
+  still don't exist; capability gating
   (Part IX) and fuel (Part X) don't exist yet; proper tail calls
   (Part VI) aren't implemented (see v0 limits below); the array
   primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/
@@ -795,7 +812,9 @@ It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
 `+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
 `MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, `RPLACD`, `DEF`,
 `FUNCALL`, `>`/`>=`/`<=`, `MAX`/`MIN`, `FOR-EACH`, `FILTER`, `SOME`,
-and `EVERY` — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
+`EVERY`, `MAKE-HASH-TABLE`, `SETHASH`, `GETHASH`, `REMHASH`, `KEYS`,
+and `QUASIQUOTE` (with its own `UNQUOTE`/`UNQUOTE-SPLICING` reader
+support) — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
 over kernel primitives, no compiler change needed (see
 `lib/prelude.lisp`'s own comments for exactly why; `DOTIMES` is
 derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part XII axis 3's
