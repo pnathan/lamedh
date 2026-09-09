@@ -120,3 +120,94 @@ fn interned_symbols_unaffected() {
         "2"
     );
 }
+
+// --- issue #462: VAU construction and APPLY-on-fexpr/VAU reopened the
+// #285 class of bug for two paths #287's fix didn't cover: VAU's
+// constructor bound `sb.id` directly instead of the canonical
+// `env.binder_id`, and APPLY's fexpr/VAU dispatch bound by re-interning the
+// parameter name (`env.set`) instead of by canonical id (`set_id`), unlike
+// `apply_unevaluated`'s direct-call dispatch. Modeled directly on #285's own
+// repro above, substituting a VAU/fexpr definition and an APPLY call.
+
+#[test]
+fn gensym_as_vau_operands_parameter_direct_call() {
+    let env = e();
+    // VAU's constructor must resolve the operands-param gensym via the
+    // canonical binder id, not `sb.id`.
+    let out = eval_line(
+        "(progn (setq g (gensym))
+                (setq v (eval (list 'vau (list g 'e) g)))
+                (v 1 2 3))",
+        &env,
+    );
+    assert_eq!(out, "(1 2 3)");
+}
+
+#[test]
+fn gensym_as_vau_env_parameter_direct_call() {
+    let env = e();
+    let out = eval_line(
+        "(progn (setq g (gensym))
+                (setq z 99)
+                (setq v (eval (list 'vau (list 'x g) (list 'eval ''z g))))
+                (v))",
+        &env,
+    );
+    assert_eq!(out, "99");
+}
+
+#[test]
+fn gensym_as_vau_operands_parameter_via_apply() {
+    let env = e();
+    // Before the fix, APPLY-on-VAU bound by re-interning the parameter
+    // name via `env.set`, not by the gensym's canonical id.
+    let out = eval_line(
+        "(progn (setq g (gensym))
+                (setq v (eval (list 'vau (list g 'e) g)))
+                (apply v '(1 2 3)))",
+        &env,
+    );
+    assert_eq!(out, "(1 2 3)");
+}
+
+#[test]
+fn gensym_as_vau_env_parameter_via_apply() {
+    let env = e();
+    let out = eval_line(
+        "(progn (setq g (gensym))
+                (setq z 55)
+                (setq v (eval (list 'vau (list 'x g) (list 'eval ''z g))))
+                (apply v '()))",
+        &env,
+    );
+    assert_eq!(out, "55");
+}
+
+#[test]
+fn gensym_as_fexpr_single_parameter_via_apply() {
+    let env = e();
+    // Before the fix, APPLY-on-fexpr's single-parameter case bound by
+    // re-interning the parameter name via `env.set`.
+    let out = eval_line(
+        "(progn (setq g (gensym))
+                (setq fx (eval (list 'fexpr (list g) (list 'car g))))
+                (apply fx '((+ 1 2))))",
+        &env,
+    );
+    assert_eq!(out, "(+ 1 2)");
+}
+
+#[test]
+fn gensym_as_fexpr_multi_parameter_via_apply() {
+    let env = e();
+    // Before the fix, APPLY-on-fexpr's multi-parameter loop bound each
+    // parameter by re-interning its name via `env.set`.
+    let out = eval_line(
+        "(progn (setq g1 (gensym))
+                (setq g2 (gensym))
+                (setq fx (eval (list 'fexpr (list g1 g2) (list 'list g1 g2))))
+                (apply fx '(a b)))",
+        &env,
+    );
+    assert_eq!(out, "(A B)");
+}

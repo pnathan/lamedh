@@ -1735,22 +1735,35 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             ))));
                         }
                         let (op_param, op_param_id) = if let LispVal::Symbol(s) = &param_list[0] {
-                            let sb = s.borrow();
-                            if let Err(e) = check_param_name(&sb.name, "vau") {
-                                return Ok(TcoStep::Done(Err(e)));
+                            {
+                                let sb = s.borrow();
+                                if let Err(e) = check_param_name(&sb.name, "vau") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                             }
-                            (sb.name.clone(), sb.id)
+                            let name = s.borrow().name.clone();
+                            // Use the canonical per-table binder id for this
+                            // symbol object (issue #462, matching
+                            // make_fexpr/make_macro/build_lambda), not the
+                            // raw `sb.id` field -- a gensym'd or foreign-
+                            // symbol-table parameter name must bind the id
+                            // the body's references to that symbol actually
+                            // resolve to.
+                            (name, env.binder_id(s))
                         } else {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau operands parameter must be a symbol".to_string(),
                             ))));
                         };
                         let (env_param, env_param_id) = if let LispVal::Symbol(s) = &param_list[1] {
-                            let sb = s.borrow();
-                            if let Err(e) = check_param_name(&sb.name, "vau") {
-                                return Ok(TcoStep::Done(Err(e)));
+                            {
+                                let sb = s.borrow();
+                                if let Err(e) = check_param_name(&sb.name, "vau") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                             }
-                            (sb.name.clone(), sb.id)
+                            let name = s.borrow().name.clone();
+                            (name, env.binder_id(s))
                         } else {
                             return Ok(TcoStep::Done(Err(LispError::Generic(
                                 "vau environment parameter must be a symbol".to_string(),
