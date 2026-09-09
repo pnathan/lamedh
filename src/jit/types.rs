@@ -1056,6 +1056,7 @@ pub fn core_references_slot(core: &Core, slot: usize) -> bool {
 /// invisible to this pass and reads as an escape of `a` (a bare `Var(a-slot)`
 /// as a `Let` initializer is not one of the five exempt forms), which is
 /// sound (just conservative) since this pass makes no claim about `b`.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
     match core {
         Core::LitI(_) | Core::LitF(_) => false,

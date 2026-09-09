@@ -352,11 +352,20 @@ impl Ctx<'_> {
     /// receiver that turned out not to be a `LispVal::Array` when a
     /// [`BoxedOp::Aref`]/[`BoxedOp::Aset`]/[`BoxedOp::Len`] tried to look
     /// inside it (issue #476). `who` is the operation's own spelling
-    /// (`"FETCH"`/`"STORE"`/`"ARRAY-LENGTH*"`), matching the tree-walker's
-    /// wording for the same misuse.
+    /// (`"FETCH"`/`"STORE"`/`"ARRAY-LENGTH*"`), and the message must match the
+    /// tree-walker's own wording for the same misuse verbatim: `FETCH`/`STORE`
+    /// (`apply.rs:1713,1761`) say "first argument", but `ARRAY-LENGTH*`
+    /// (`apply.rs:1776`) says just "argument" — no "first", since it takes
+    /// only one. Hard-coding "first" for all three would make the boxed path
+    /// diverge from the plain `(array-length* 5)` misuse text.
     fn record_boxed_not_array(&self, who: &str, got: &LispVal) {
+        let article = if who == "ARRAY-LENGTH*" {
+            "argument"
+        } else {
+            "first argument"
+        };
         self.set_pending_error(format!(
-            "{who}: first argument must be an array, got {}",
+            "{who}: {article} must be an array, got {}",
             crate::printer::print(got)
         ));
     }

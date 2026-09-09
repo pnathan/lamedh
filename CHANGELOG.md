@@ -1,3 +1,36 @@
+# v0.5.0 — unreleased
+
+## jit: `Ty::Boxed`, an opaque compileable handle to any `LispVal` (#476)
+
+A new compileable type, surface name `boxed`, lets typed code carry an
+arbitrary, un-narrowed `LispVal` as a native `u64` word — a 1-based index
+into a per-call root table on `Ctx`, not a raw pointer, so it can never
+dangle across the table's own growth and needs no lifetime management
+beyond the call that produced it (handles never enter a `LispVal`, so they
+cannot outlive their call or be observed by `fork_world`). Boxing a
+`Shared`-backed value (array, cons, symbol, hash table, …) clones the
+handle, not the contents, so a `store` through it mutates the caller's own
+object with no write-back path required — for the inline scalar variants
+(number, float, char, nil) it is an ordinary value copy, sound because
+they're immutable.
+
+Five intrinsics are the only way to look inside a handle, all routed
+through one shared `boxed_op` so the interpreter, closure, and native tiers
+can never diverge: `BoxedEqual`, `BoxedHash` (via #474's `hash-code`), and
+a general-array trio `BoxedAref`/`BoxedAset`/`BoxedLen` that error-record
+(never panic) on a non-array receiver or an out-of-range index, matching
+the tree-walker's own `FETCH`/`STORE`/`ARRAY-LENGTH*` wording. A general
+(non-typed) array now crosses the typed/untyped boundary as one handle
+word instead of being copied element-by-element, which is what makes an
+`O(1)`-per-call boundary possible for functions that only touch a few
+elements of a large array.
+
+Arithmetic, comparison (`Cmp`), CAR/CDR and other compiled introspection,
+cons allocation, narrowing, and a boxed→`int64` coercion are all
+deliberately out of scope for v1; `boxed` is never inferred, only written
+explicitly in a `defun-typed`/`declare-typed` signature. See
+`docs/typed-jit-design.md` §0.5.0 for the full design writeup.
+
 # v0.4.0 — 2026-07-16
 
 The 0.4.0 arc: more of the typed JIT's surface compiles to native code,

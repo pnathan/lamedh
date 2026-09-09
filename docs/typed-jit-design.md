@@ -342,6 +342,136 @@ closure compiler, and Cranelift backend (bit-for-bit differential tests).
   mismatched element type does not match this arm and is rejected at the
   membrane rather than reinterpreted. Builtins `typed-array`/`typed-array-p`.
 
+### 0.5.0: `Ty::Boxed`, an opaque handle to an arbitrary `LispVal` (#476)
+
+Everything above types a *closed* set of unboxable scalars/compounds — `int64`,
+`float64`, `bool`, `char`, arrays and structs over those. `Ty::Boxed` (surface
+name `boxed`) widens the compileable lattice by exactly one escape hatch: a
+compileable *handle* to an arbitrary `LispVal` that the typed core carries
+around, passes, and returns, but never looks inside except through a small,
+closed set of intrinsics.
+
+- **Representation: a table index, not a pointer.** A `boxed` value is a
+  native `u64` like every other compiled scalar, but it is not the `LispVal`
+  itself — it is a 1-based index into `Ctx.boxed: RefCell<Vec<LispVal>>`, a
+  root table allocated fresh for each top-level call into typed code. Word `0`
+  is reserved for boxed `NIL` and needs no table slot at all, which is what
+  lets a freshly `jit_alloc`'d, zero-filled `(array boxed)` read as all-`NIL`
+  with no initialization pass. Boxing pushes a clone of the `LispVal` onto the
+  table and returns its index (`Ctx::box_value`); unboxing clones the entry
+  back out (`Ctx::unbox`), recording a boxed-error and substituting `NIL` on an
+  out-of-range index rather than panicking, matching every other `Ctx` error
+  discipline in this module.
+
+  A raw `*const LispVal` was the tempting alternative and was rejected: the
+  call arena's pointer-stability trick (`Box<[u64]>`, used for arrays/structs)
+  depends on a buffer that never moves once allocated, but `Ctx.boxed` is a
+  plain growable `Vec<LispVal>`, and a pointer taken before a `push` that
+  triggers reallocation would dangle silently — exactly the kind of bug a
+  differential test across tiers would not catch, because all three tiers
+  would dangle together. An index into the table has no such hazard: it stays
+  valid across the table's own growth, and it is meaningless once the table
+  that produced it is gone (see the next point), so there is nothing to catch
+  a stale index doing.
+
+- **Call-scoped lifetime, and why that answers the GC question.** `Ctx` (and
+  therefore its `boxed` table) lives for exactly one top-level membrane call:
+  every tier threads the same `&Ctx` through the whole call tree (portable
+  Core evaluation, the closure edition, and — via `call_indirect` on a shared
+  `ctx_ptr` — native-to-native calls), and it is dropped when that top-level
+  call returns. A handle is only ever valid *while the call that produced it
+  is still running*; it cannot be stashed in a global, closed over past the
+  call's return, or observed by `fork_world`, because handles never enter a
+  `LispVal` — they exist only as `u64` words inside typed code and inside
+  `Ctx`, both of which end together. This sidesteps the original issue's GC
+  question entirely: there is no boxed-value lifetime to manage beyond "as
+  long as the call lasts," because nothing outlives the call that could hold a
+  handle in the first place.
+
+  The corollary the doc comments call out explicitly: the table is
+  **append-only per call**. A compiled loop that boxes a fresh value every
+  iteration grows the table linearly for the lifetime of that one call — fine
+  for a boundary box (once per call, as in the LHT probe loop below), a
+  latent cost for a hypothetical box-in-a-tight-loop pattern. A free list is a
+  possible follow-up; v1 does not need one because nothing in the accepted
+  scope boxes per-iteration.
+
+- **The aliasing property, and why it is a feature, not a leak.** Boxing does
+  not deep-copy: `ctx.box_value(lv)` stores `lv.clone()`, and `LispVal`'s
+  `Shared`-backed variants (`Array`, `Cons`, `Symbol`, `HashTable`, and
+  `String` where applicable) clone the `Rc`/`RefCell` handle, not its
+  contents. So a `store`/`fetch` through a boxed handle to one of those
+  variants mutates the *same* underlying object the caller holds — there is
+  no write-back path at all, because there is nothing to write back; the
+  handle and the caller's own value are already the same allocation. This is
+  exactly the property the `#216` write-back pass gives typed scalar arrays on
+  purpose, arriving here for free from `Rc` semantics instead of an explicit
+  copy-out. The inline `LispVal` variants (`Number`, `Float`, `Char`, `Nil`)
+  are ordinary value copies on box/unbox, which is sound only because they are
+  immutable — there is no "same object" for a plain machine word to alias.
+
+- **v1 non-goals (§3 of the design plan; deliberately out of scope, not
+  merely undone):**
+  - **No `CAR`/`CDR` or any other compiled introspection** through a boxed
+    handle. A `boxed` value is inert cargo to the typed core; the only things
+    that look inside one are the five intrinsics below.
+  - **No cons allocation** from typed code — a handle cannot be built by
+    consing two other values together inside the typed island.
+  - **No boxed arithmetic.** `+`/`-`/`*`/`/`/`mod` refuse boxed operands at
+    elaboration with a message naming exactly what a `boxed` value does
+    support (movement, `equal`, `hash-code`, general-array access), matching
+    the discipline `verify_core` re-checks at the Core level so a malformed
+    core fails a test, not a runtime assertion.
+  - **No `Cmp` node at boxed type.** Two handles may denote the same object
+    through different indices, so ordering/equality-as-`Cmp` is not
+    elaborated for `boxed` operands at all; identity/value questions go
+    through `BoxedEqual` instead, which unboxes and defers to
+    `PartialEq for LispVal` — the same relation the tree-walker's `equal`
+    already implements, so there is nothing new to keep in sync.
+  - **No narrowing.** A `boxed` value is never refined to "known to be a
+    `Symbol`" or similar inside typed code; if that distinction matters, the
+    value must cross back out to the interpreter to be inspected.
+  - **No boxed → `int64` coercion.** Deferred; the honest reason is that a
+    checked coercion needs exactly the kind of type-tag inspection §3 already
+    rules out for v1, and nothing in the accepted scope (the LHT probe loop)
+    needs it — `LHT-FIND`/`-PUT!`/`-GET` stay interpreted for this reason and
+    say so rather than quietly reaching for a shortcut.
+  - **`Ty::Boxed` stays distinct from `Ty::Any`.** `Any` remains the gradual
+    top type or JIT-general escape hatch; `Boxed` is deliberately a narrower,
+    single-purpose "opaque but nameable" type with its own membrane rules
+    (§4), and unifying the two would blur exactly the refusal set above.
+
+  **The five intrinsics** (`BoxedOp` in `src/jit/types.rs`, dispatched through
+  one shared `boxed_op` in `src/jit/runtime.rs` so all three tiers can never
+  diverge): `BoxedEqual` (→ `bool`, via `PartialEq for LispVal`), `BoxedHash`
+  (→ `int64`, via `#474`'s `hash_code`), and the general-array trio
+  `BoxedAref`/`BoxedAset`/`BoxedLen` (handle × `int64` [× handle] →
+  handle/`int64`), which error-record — never panic — on a non-array receiver
+  or an out-of-range index, in each case matching the tree-walker's own
+  `FETCH`/`STORE`/`ARRAY-LENGTH*` wording for the same misuse. A general array
+  crosses the boundary as *one* handle word rather than being materialized
+  element-by-element, which is why `boxed` is what makes an `O(1)`-per-call
+  boundary for a general (non-typed-array) array possible at all — the
+  alternative (a copy-in/copy-out `(array boxed)` membrane) would make every
+  call touching such an array `O(n)` regardless of how little of it the
+  callee actually reads.
+
+  **Membrane refusals, each with its own test:** a `boxed` element inside a
+  `TypedArrayObj`'s zero-copy fast path is refused by `elem_ty_matches`, and
+  `is_flat_scalar_array` excludes any type involving `Boxed` from the `#216`
+  write-back pass — both because a caller's raw scalar buffer must never be
+  reinterpreted as (or have written into it) a set of table indices, which
+  would be meaningless outside the call that produced them. `NativeTy::from_ty`
+  maps `Ty::Boxed` to `None` rather than falling into its wildcard case, so a
+  raw native entry point (which has no `Ctx` table to resolve a handle
+  against) simply cannot be given a boxed-typed signature.
+
+  **Inference policy:** `Boxed` is never inferred — it enters a signature only
+  where `defun-typed`/`declare-typed` writes it explicitly. An
+  otherwise-un-annotated function that would resolve to `Any`/`Symbol`/`List`
+  keeps falling back to the interpreter exactly as before #476; nothing about
+  this feature silently changes what compiles today.
+
 ## 5. The spike
 
 Smallest thing that proves the whole thesis end to end. See

@@ -475,6 +475,10 @@ impl Infer {
             )),
             Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char | Ty::Struct(_) | Ty::Boxed => Ok(w),
             Ty::Array(elem) => Ok(Ty::Array(Box::new(self.resolve(elem)?))),
+            Ty::Any => Err(format!(
+                "type {} is not compileable (write an explicit `boxed` annotation in a defun-typed/declare-typed signature to carry it through typed code opaquely)",
+                super::ty_name(&w)
+            )),
             other => Err(format!("type {} is not compileable", super::ty_name(other))),
         }
     }

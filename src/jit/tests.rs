@@ -2482,7 +2482,7 @@ fn boxed_array_ops_on_non_array_handle_record_type_error() {
         .call("B-LEN", &[Value::Boxed(LispVal::Number(5))])
         .unwrap_err();
     assert!(
-        err.contains("ARRAY-LENGTH*: first argument must be an array"),
+        err.contains("ARRAY-LENGTH*: argument must be an array"),
         "got: {err}"
     );
 }
