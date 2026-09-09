@@ -1852,6 +1852,26 @@ bugs no existing test had exercised:
   principled boundary of "the entire standard lib, excluding key 3P
   dependencies" now: sockets/TLS/regex, not file I/O.
 
+- **`MAX`/`MIN` fixed: silently wrong (not just narrow), now genuinely
+  variadic.** Found in direct response to "match the Rust level of arg
+  call paths" — `MAX`/`MIN` (`lib/prelude.lisp`) were ordinary
+  2-parameter `DEFUN`s, and this kernel does no arity checking at a
+  call site at all, so `(max 1 3 9)` silently returned `3`: the third
+  argument was simply never read, not an error. Ordinary user-defined
+  `LAMBDA`/`DEFUN` calls, `APPLY`, and `FUNCALL` already support up to
+  32 arguments correctly (`tests/cases/015_32args.asm`, register-passed
+  plus stack-passed operands, already covered before this session) —
+  the actual gap was `MAX`/`MIN` specifically never folding past two.
+  Now a variadic fold over the same 2-argument core
+  (`$MAX-FOLD`/`$MIN-FOLD`), the identical idiom `REDUCE` already
+  establishes for a variadic reference builtin over a fixed binary
+  primitive. `LOGAND`/`LOGIOR`/`LOGXOR` (real compiler special forms,
+  not `DEFUN`s) have the analogous gap but errors out differently (a
+  third operand is silently ignored at the AST level, same
+  compile-time `car`/`cadr` extraction, still fixed 2-operand) — not
+  yet fixed, tracked in "Known gaps" below alongside `&KEY`/`&OPTIONAL`
+  as the next arg-shape items to close.
+
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
   (`make lamedhc` builds `build/lamedhc`, `src/file_runner.asm`) that
@@ -1962,6 +1982,14 @@ bugs no existing test had exercised:
   `&OPTIONAL name`/`&OPTIONAL (name default)` and `&KEY name`/
   `&KEY (name default)` forms, alongside the `&REST` case
   `split_rest_params` already handles.
+- `LOGAND`/`LOGIOR`/`LOGXOR` variadic folding — real compiler special
+  forms (unlike `MAX`/`MIN`, fixed above), each dispatch extracts
+  exactly `car`/`cadr` of the operand list and silently ignores
+  anything past the second operand at the AST level, same bug shape as
+  the old `MAX`/`MIN` had. Fixing this needs a host-side left-fold
+  over the raw operand list into a nested 2-operand AST (`(LOGAND
+  (LOGAND a b) c)`) before dispatching to `compile_binary_hostcall`,
+  not just a Lisp-level `DEFUN` rewrite — real work, not yet done.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle

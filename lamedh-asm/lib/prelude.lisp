@@ -495,8 +495,22 @@
 (DEFUN >= (A B) (NOT (< A B)))
 (DEFUN <= (A B) (NOT (< B A)))
 
-(DEFUN MAX (A B) (IF (< A B) B A))
-(DEFUN MIN (A B) (IF (< A B) A B))
+; MAX/MIN — the reference's own MAX/MIN take any number of arguments
+; (a variadic fold); an earlier version of these was fixed 2-argument,
+; silently WRONG (not even an error) on a third argument — `(max 1 3
+; 9)` returned `3`, since calling a 2-parameter DEFUN with a third
+; argument here simply never reads it, no arity check at all. Folding
+; over the 2-argument core below is exactly the same idiom REDUCE
+; already establishes for a variadic reference builtin over a fixed
+; binary primitive.
+(DEFUN $MAX2 (A B) (IF (< A B) B A))
+(DEFUN $MAX-FOLD (ACC REST)
+  (IF (NULL REST) ACC ($MAX-FOLD ($MAX2 ACC (CAR REST)) (CDR REST))))
+(DEFUN MAX (FIRST &REST REST) ($MAX-FOLD FIRST REST))
+(DEFUN $MIN2 (A B) (IF (< A B) A B))
+(DEFUN $MIN-FOLD (ACC REST)
+  (IF (NULL REST) ACC ($MIN-FOLD ($MIN2 ACC (CAR REST)) (CDR REST))))
+(DEFUN MIN (FIRST &REST REST) ($MIN-FOLD FIRST REST))
 
 ; DEF — the reference's own alternate top-level binding form
 ; (evaluator/special_forms.rs's SpecialForm::Def): like DEFINE, but

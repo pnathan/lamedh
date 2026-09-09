@@ -140,7 +140,7 @@ else
 (NEWLINE)
 (PRINT (FUNCALL #'LIST 1 2 3 4 5))
 (NEWLINE)
-(PRINT (LIST (> 5 3) (> 3 5) (>= 5 5) (<= 4 5) (MAX 3 9) (MIN 3 9)))
+(PRINT (LIST (> 5 3) (> 3 5) (>= 5 5) (<= 4 5) (MAX 3 9) (MIN 3 9) (MAX 1 3 9) (MIN 5 2 8 1 9)))
 (NEWLINE)
 (FOR-EACH (LAMBDA (X) (PRINT X)) (LIST 1 2 3))
 (NEWLINE)
@@ -268,7 +268,7 @@ T
 42
 7
 (1 2 3 4 5)
-(T () T T 9 3)
+(T () T T 9 3 9 1)
 123
 (3 4)
 (() T)
