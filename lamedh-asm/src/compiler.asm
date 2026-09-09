@@ -137,6 +137,7 @@ kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
 kw_apply: db "APPLY"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
+kw_defdynamic: db "DEFDYNAMIC"
 kw_lambda: db "LAMBDA"
 kw_defmacro: db "DEFMACRO"
 kw_cons:   db "CONS"
@@ -593,6 +594,113 @@ append_lists:
     mov rsi, rax
     call cons
 .out:
+    pop r12
+    pop rbx
+    ret
+
+; build_list2(rdi=a, rsi=b) -> rax = (a b). build_list3(rdi=a, rsi=b,
+; rdx=c) -> rax = (a b c). Small host-side AST-construction helpers,
+; the same cons-chaining idiom compile_unwind_protect's own synthetic
+; (LAMBDA () cleanup...) already uses, factored out because
+; compile_let's dynamic-variable rewrite (below) builds several
+; two/three-element forms — (SETQ name val), (tmp name) bindings.
+build_list2:
+    push rbx
+    mov rbx, rdi
+    mov rdi, rsi
+    mov rsi, IMM_NIL
+    call cons
+    mov rdi, rbx
+    mov rsi, rax
+    call cons
+    pop rbx
+    ret
+
+build_list3:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, rsi
+    mov rdi, rdx
+    mov rsi, IMM_NIL
+    call cons
+    mov rdi, r12
+    mov rsi, rax
+    call cons
+    mov rdi, rbx
+    mov rsi, rax
+    call cons
+    pop r12
+    pop rbx
+    ret
+
+; DEFDYNAMIC marks a symbol as dynamic by PUTP-ing a dedicated marker
+; indicator onto its plist directly (host-side cons/symbol_plist/
+; set_symbol_plist calls, bypassing the compiled PUTP function
+; entirely) — the same "compile-time symbol metadata, visible
+; immediately to every later compile-time check in this process"
+; idiom DEFMACRO's own macro slot already relies on, applied to the
+; plist instead of a dedicated header field so no symbol layout change
+; is needed.
+kw_dynamic_marker: db "LAMEDH-ASM-DYNAMIC-MARKER"
+kw_dynamic_marker_len: equ $ - kw_dynamic_marker
+
+; mark_symbol_dynamic(rdi=tagged symbol) — no return value used.
+mark_symbol_dynamic:
+    push rbx
+    mov rbx, rdi
+    call symbol_plist                  ; rdi unchanged = symbol; rax = old plist
+    push rax                             ; [old_plist]
+    mov rdi, kw_dynamic_marker
+    mov rsi, kw_dynamic_marker_len
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, IMM_TRUE
+    call cons                              ; (marker . T)
+    mov rdi, rax
+    pop rsi                                  ; old_plist
+    call cons                                  ; ((marker . T) . old_plist)
+    mov rdi, rbx
+    mov rsi, rax
+    call set_symbol_plist
+    pop rbx
+    ret
+
+; is_symbol_dynamic(rdi=tagged symbol) -> rax = 1/0. Walks the plist
+; (an ordinary alist) looking for the dynamic marker indicator by EQ
+; (pointer identity — both sides are the one interned marker symbol),
+; the same indicator-equality rule GETP/PUTP already document.
+is_symbol_dynamic:
+    push rbx
+    push r12
+    push r13
+    call symbol_plist                    ; rdi unchanged = symbol; rax = plist
+    mov r12, rax                            ; plist cursor
+    mov rdi, kw_dynamic_marker
+    mov rsi, kw_dynamic_marker_len
+    call intern_symbol
+    mov r13, rax                              ; marker symbol
+.loop:
+    cmp r12, IMM_NIL
+    je .no
+    mov rdi, r12
+    call car
+    mov rbx, rax                                ; pair
+    mov rdi, rbx
+    call car
+    cmp rax, r13
+    je .yes
+    mov rdi, r12
+    call cdr
+    mov r12, rax
+    jmp .loop
+.yes:
+    mov rax, 1
+    jmp .done
+.no:
+    xor rax, rax
+.done:
+    pop r13
     pop r12
     pop rbx
     ret
@@ -1387,6 +1495,37 @@ compile_let:
     call cdr
     mov r13, rax                          ; body forms list
 
+    ; --- prescan: does any binding name carry the DEFDYNAMIC marker? ---
+    ; A dynamic variable's whole point is that a *different*,
+    ; separately-compiled function can read the same global while
+    ; lexically inside this LET's dynamic extent (KERNEL.md Part VI) —
+    ; 06-require.lisp's own *require-stack* is exactly this shape:
+    ; $require-load's LET rebinds it, and $require-note-dependency, an
+    ; entirely separate function, reads it as a plain global while that
+    ; LET's dynamic extent is still active on the call stack. Ordinary
+    ; lexical shadowing (the fast path below) only ever affects
+    ; references written textually inside this LET's own body, which is
+    ; silently wrong for that case, so a dynamic binding needs the
+    ; genuinely different save-global/restore-global treatment in
+    ; .dynamic_rewrite below instead.
+    mov rbx, r12
+.dynp_scan:
+    cmp rbx, IMM_NIL
+    je .dynp_scan_done
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call car
+    mov rdi, rax
+    call is_symbol_dynamic
+    test rax, rax
+    jnz .dynamic_rewrite
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .dynp_scan
+.dynp_scan_done:
+
     mov rdi, r12
     call list_length
     mov r14, rax                              ; k = number of bindings
@@ -1456,6 +1595,177 @@ compile_let:
     imul eax, eax, 8
     mov esi, eax
     call emit_add_reg_imm32
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; --- dynamic-variable rewrite (KERNEL.md Part VI) ---
+;
+; At least one binding name in this LET carries the DEFDYNAMIC marker.
+; Rather than teach the lexical binding machinery above a second mode,
+; this rewrites the whole LET into an equivalent form built entirely
+; from existing special forms — the same "derive it, don't hand-roll
+; new codegen" philosophy compile_unwind_protect's own synthetic
+; (LAMBDA () cleanup...) already demonstrates, and UNWIND-PROTECT is
+; exactly the primitive dynamic rebinding needs: restore-on-every-exit,
+; including a THROW/ERROR passing through:
+;
+;   (LET ((tmp1 dyn1) (val1 init1) (tmp2 dyn2) (val2 init2) ...)
+;     (UNWIND-PROTECT
+;         (PROGN (SETQ dyn1 val1) (SETQ dyn2 val2) ... body...)
+;       (SETQ dyn1 tmp1) (SETQ dyn2 tmp2) ...))
+;
+; tmp_i/val_i are fresh GENSYMs, ordinary LEXICAL bindings of the
+; *outer* LET (never touching dyn_i itself, so a plain variable
+; reference to dyn_i anywhere — including inside the UNWIND-PROTECT's
+; cleanup closure, or in a wholly separate function called during this
+; dynamic extent — still resolves to the real global slot, per
+; compile_setq/the ordinary global-reference fallback). Evaluating
+; every tmp_i (dyn_i's OLD value) and val_i (the new init) up front, in
+; one outer LET, preserves ordinary LET's parallel-evaluation semantics
+; even though the actual global writes happen sequentially afterward.
+; v0 scope, narrower than the spec on purpose: every binding in a LET
+; that has *any* dynamic binding is given this save/restore treatment,
+; even one that isn't itself DEFDYNAMIC'd — mixing dynamic and
+; ordinary lexical bindings in one LET is not yet distinguished (no
+; reference stdlib file exercises this yet); LET* does not support
+; dynamic bindings at all yet, only plain LET.
+.dynamic_rewrite:
+    push rbp
+    sub rsp, 40                       ; [rsp+0]=outer_bindings acc
+                                       ; [rsp+8]=setq_forms acc
+                                       ; [rsp+16]=restore_forms acc
+                                       ; [rsp+24]=this iteration's VAL_i
+                                       ; [rsp+32]=this iteration's TMP_i
+    mov qword [rsp+0], IMM_NIL
+    mov qword [rsp+8], IMM_NIL
+    mov qword [rsp+16], IMM_NIL
+
+    mov rbx, r12                        ; cursor over original bindings
+.dynr_loop:
+    cmp rbx, IMM_NIL
+    je .dynr_done
+    mov rdi, rbx
+    call car
+    mov r12, rax                            ; binding = (name init)
+    mov rdi, r12
+    call car
+    mov r14, rax                              ; name (dyn_i)
+    mov rdi, r12
+    call cdr
+    mov rdi, rax
+    call car
+    mov r15, rax                                ; init
+
+    call gensym
+    mov [rsp+24], rax                             ; VAL_i
+    call gensym
+    mov [rsp+32], rax                               ; TMP_i
+
+    ; pair1 = (TMP_i dyn_i) — captures the OLD global value
+    mov rdi, [rsp+32]
+    mov rsi, r14
+    call build_list2
+    mov r12, rax
+    ; pair2 = (VAL_i init) — captures the NEW value
+    mov rdi, [rsp+24]
+    mov rsi, r15
+    call build_list2
+    mov rbp, rax
+
+    ; outer_bindings = cons(pair1, cons(pair2, outer_bindings))
+    mov rdi, rbp
+    mov rsi, [rsp+0]
+    call cons
+    mov rdi, r12
+    mov rsi, rax
+    call cons
+    mov [rsp+0], rax
+
+    ; setq_forms += (SETQ dyn_i VAL_i)
+    mov rdi, kw_setq
+    mov rsi, 4
+    call intern_symbol
+    mov rbp, rax
+    mov rdi, rbp
+    mov rsi, r14
+    mov rdx, [rsp+24]
+    call build_list3
+    mov rdi, rax
+    mov rsi, [rsp+8]
+    call cons
+    mov [rsp+8], rax
+
+    ; restore_forms += (SETQ dyn_i TMP_i)
+    mov rdi, kw_setq
+    mov rsi, 4
+    call intern_symbol
+    mov rbp, rax
+    mov rdi, rbp
+    mov rsi, r14
+    mov rdx, [rsp+32]
+    call build_list3
+    mov rdi, rax
+    mov rsi, [rsp+16]
+    call cons
+    mov [rsp+16], rax
+
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .dynr_loop
+.dynr_done:
+    ; protected_form = (PROGN setq_forms... body...)
+    mov rdi, [rsp+8]
+    mov rsi, r13
+    call append_lists
+    mov rbp, rax
+    mov rdi, kw_progn
+    mov rsi, 5
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, rbp
+    call cons
+    mov rbp, rax                          ; protected_form
+
+    ; unwind_protect_form = (UNWIND-PROTECT protected_form . restore_forms)
+    mov rdi, rbp
+    mov rsi, [rsp+16]
+    call cons
+    mov rbp, rax
+    mov rdi, kw_unwind_protect
+    mov rsi, 14
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, rbp
+    call cons
+    mov rbp, rax                          ; unwind_protect_form
+
+    ; synthetic = (LET outer_bindings unwind_protect_form)
+    mov rdi, rbp
+    mov rsi, IMM_NIL
+    call cons
+    mov rbp, rax
+    mov rdi, [rsp+0]
+    mov rsi, rbp
+    call cons
+    mov rbp, rax
+    mov rdi, kw_let
+    mov rsi, 3
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, rbp
+    call cons
+    mov rbp, rax                          ; synthetic LET form
+
+    add rsp, 40
+    mov rdi, rbp
+    pop rbp
+    call compile_form                       ; -> target rax = result
 
     pop r15
     pop r14
@@ -1693,6 +2003,40 @@ compile_define:
     push rax
     mov rdi, rbx
     call caddr                          ; value form
+    mov rdi, rax
+    call compile_form                     ; -> rax
+    pop rdi                                ; name symbol
+    UNTAG_PTR rdi
+    add rdi, 16                              ; &value cell
+    mov rsi, rdi
+    mov dil, REG_RAX
+    call emit_store_mem64
+    pop rbx
+    ret
+
+; compile_defdynamic(rdi = the full (DEFDYNAMIC name init-form
+; [docstring]) form) — KERNEL.md Part VI's dynamic variables. Beyond
+; DEFINE's own "store the value" (name unevaluated, init-form
+; compiled/evaluated normally, docstring ignored — no plist storage
+; for it yet, unlike DEF's), this marks the symbol dynamic
+; (mark_symbol_dynamic, immediate host-side effect: visible to every
+; later compile_let's own prescan in this same process, exactly the
+; way DEFMACRO's own macro-slot install already is), which is what
+; makes a *later* `(LET ((name ...)) ...)` rewrite into a genuine
+; save/restore-the-global binding instead of ordinary lexical shadowing
+; (see compile_let's own .dynamic_rewrite). Requires DEFDYNAMIC to run,
+; as an ordinary top-level form, before any LET that rebinds the name —
+; the same top-level-and-before-use discipline DEFMACRO already needs
+; for its own compile-time visibility.
+compile_defdynamic:
+    push rbx
+    mov rbx, rdi
+    call cadr                          ; name symbol
+    push rax
+    mov rdi, rax
+    call mark_symbol_dynamic
+    mov rdi, rbx
+    call caddr                          ; init form
     mov rdi, rax
     call compile_form                     ; -> rax
     pop rdi                                ; name symbol
@@ -4245,6 +4589,17 @@ compile_form:
     jmp .out
 
 .not_define:
+    mov rdi, r12
+    mov rsi, kw_defdynamic
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_defdynamic
+    mov rdi, rbx
+    call compile_defdynamic
+    jmp .out
+
+.not_defdynamic:
     mov rdi, r12
     mov rsi, kw_lambda
     mov rdx, 6

@@ -819,8 +819,10 @@ into conformance incrementally, tracked honestly rather than silently:
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
-- No garbage collector. No bignums, `vau`, first-class conditions, or
-  dynamic variables yet.
+- No garbage collector. No bignums, `vau`, or first-class conditions
+  yet. Dynamic variables now exist (`DEFDYNAMIC`/dynamic-extent `LET`
+  — see "KERNEL.md conformance" above) but only via plain `LET`, not
+  `LET*`, and only when every binding in the `LET` is dynamic.
 - Arrays are fixed-size at creation (`ARRAY` doesn't grow/shrink)
   and `FETCH`/`STORE` do no bounds checking — an out-of-range
   index reads or writes adjacent heap memory rather than raising
@@ -1223,13 +1225,85 @@ bugs no existing test had exercised:
     with three arguments whenever the `DEFUN` body led with a string
     literal — `PROG2`, `00-core.lisp`'s own first `defun`, has exactly
     such a docstring, so this was the very first defun call to trap.
-  Not yet attempted: `01-list.lisp` onward — `08-vau.lisp` in
-  particular needs `$VAU`/`vau` itself (Kernel-style operatives with a
-  captured *dynamic* environment parameter), which this compiled,
-  lexically-addressed host has no representation for at all yet (see
-  "v0 limits" below) and is a substantially larger undertaking than
-  any of the four primitives above, likely needing environments as a
-  first-class heap value before `vau` can be attempted honestly.
+  **`01-list.lisp` through `06-require.lisp` now also load completely,
+  unmodified**, needing exactly one further genuinely new feature —
+  **`DEFDYNAMIC` / dynamic-extent `LET` rebinding (KERNEL.md Part
+  VI)** — the "dynamic variables" gap this README has named as
+  outstanding since the session that first wrote it. `06-require.lisp`
+  is the file that needed it: `(defdynamic *require-stack* nil ...)`
+  at its top, then `$require-load`'s own
+  `(let ((*require-stack* (cons name *require-stack*))) ...)`, which
+  must be visible to `$require-note-dependency` — an entirely separate,
+  separately-compiled function called during that `LET`'s dynamic
+  extent — reading `*require-stack*` as a plain global. Ordinary
+  lexical shadowing (what this compiler's `LET` already did) gets that
+  wrong by construction: a separately-compiled function's own body has
+  no lexical knowledge of a caller's `LET`, so it would still read the
+  stale global. Implemented as two additions:
+  - **`DEFDYNAMIC`** (`compile_defdynamic`, `compiler.asm`) — like
+    `DEFINE` (name unevaluated, init-form compiled and stored into the
+    symbol's global value cell normally), plus one immediate host-side
+    effect: `mark_symbol_dynamic` sets a dedicated marker indicator on
+    the symbol's own plist directly (via `symbol_plist`/
+    `set_symbol_plist`, bypassing the compiled `PUTP` function
+    entirely) — the same "compile-time symbol metadata, visible
+    immediately to every later compile-time check in this process"
+    idiom `DEFMACRO`'s own macro-slot install already relies on,
+    reused here instead of a new symbol-layout field. Requires
+    `DEFDYNAMIC` to run, as an ordinary top-level form, before any
+    `LET` that rebinds the name — the same top-level-and-before-use
+    discipline `DEFMACRO` already needs for its own compile-time
+    visibility.
+  - **Dynamic-extent `LET`** (`compile_let`'s new `.dynamic_rewrite`
+    path, `compiler.asm`) — a prescan checks every binding name against
+    the marker (`is_symbol_dynamic`); if any is dynamic, the whole
+    `LET` is rewritten, at compile time, into an equivalent form built
+    entirely from existing special forms rather than new codegen —
+    the same derivation philosophy `compile_unwind_protect`'s own
+    synthetic `(LAMBDA () cleanup...)` already demonstrates, and
+    `UNWIND-PROTECT` is exactly the primitive dynamic rebinding needs
+    (restore-on-every-exit, including a `THROW`/`ERROR` passing
+    through):
+    ```
+    (LET ((tmp1 dyn1) (val1 init1) (tmp2 dyn2) (val2 init2) ...)
+      (UNWIND-PROTECT
+          (PROGN (SETQ dyn1 val1) (SETQ dyn2 val2) ... body...)
+        (SETQ dyn1 tmp1) (SETQ dyn2 tmp2) ...))
+    ```
+    `tmp_i`/`val_i` are fresh `GENSYM`s, ordinary *lexical* bindings of
+    the outer `LET` — they never shadow `dyn_i` itself, so every
+    reference to `dyn_i` anywhere, including inside the
+    `UNWIND-PROTECT`'s own cleanup closure (confirmed empirically: a
+    `LET`-local captured by an enclosing `UNWIND-PROTECT`'s cleanup
+    lambda already worked correctly before this change, `(LET ((X 1))
+    (UNWIND-PROTECT (PROGN (PRINT X) 0) (PRINT X)))` printing `1` twice
+    — this is only a *read* of the captured value, so the "captured by
+    value, no `SETQ` visible back" v0 limit doesn't apply), still
+    resolves to the real global slot via `compile_setq`'s own ordinary
+    global-write fallback. Evaluating every `tmp_i` (the *old* value)
+    and `val_i` (the new init) up front, in one outer `LET`, preserves
+    ordinary `LET`'s parallel-evaluation semantics even though the
+    actual global writes happen sequentially afterward.
+    `tests/cases/057_defdynamic.asm` covers: a separately-compiled
+    function seeing the rebound value across the call, restoration on
+    normal `LET` exit, the `LET` body's own reference seeing the new
+    value, and restoration firing correctly when a `THROW` passes
+    straight through the dynamic extent without ever reaching the
+    `LET`'s own normal exit path. **v0 scope, narrower than the spec on
+    purpose**: every binding in a `LET` that has *any* dynamic binding
+    gets this save/restore treatment, even one that isn't itself
+    `DEFDYNAMIC`'d — mixing dynamic and ordinary lexical bindings in
+    one `LET` is not yet distinguished (no reference stdlib file
+    exercises this yet, `06-require.lisp` included); `LET*` does not
+    support dynamic bindings at all yet, only plain `LET`.
+
+  Not yet attempted: `08-vau.lisp` onward — needs `$VAU`/`vau` itself
+  (Kernel-style operatives with a captured *dynamic* environment
+  parameter), which this compiled, lexically-addressed host has no
+  representation for at all yet (see "v0 limits" below) and is a
+  substantially larger undertaking than `DEFDYNAMIC` above, likely
+  needing environments as a first-class heap value before `vau` can be
+  attempted honestly.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
