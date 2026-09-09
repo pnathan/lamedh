@@ -85,6 +85,7 @@ extern array_set
 extern array_length_tagged
 extern hash_code_tagged
 extern mod_tagged
+extern remainder_tagged
 extern emit_jl
 extern emit_load_stack_arg
 
@@ -101,7 +102,7 @@ kw_car:    db "CAR"
 kw_cdr:    db "CDR"
 kw_eqp:    db "EQ"
 kw_atom:   db "ATOM"
-kw_nullp:  db "NULLP"
+kw_nullp:  db "NULL"
 kw_add:    db "+"
 kw_sub:    db "-"
 kw_mul:    db "*"
@@ -128,6 +129,7 @@ kw_array_set:    db "ARRAY-SET"
 kw_array_length: db "ARRAY-LENGTH"
 kw_hash_code:    db "HASH-CODE"
 kw_mod:          db "MOD"
+kw_remainder:    db "REMAINDER"
 kw_rest:   db "&REST"
 
 section .data
@@ -2134,7 +2136,7 @@ compile_form:
 .not_atom:
     mov rdi, r12
     mov rsi, kw_nullp
-    mov rdx, 5
+    mov rdx, 4
     call sym_is
     test rax, rax
     jz .not_nullp
@@ -2415,6 +2417,26 @@ compile_form:
     jmp .out
 
 .not_mod:
+    mov rdi, r12
+    mov rsi, kw_remainder
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_remainder
+    mov rdi, r13
+    call car                            ; a form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; b form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel remainder_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_remainder:
     mov rdi, r12
     mov rsi, kw_array_set
     mov rdx, 9

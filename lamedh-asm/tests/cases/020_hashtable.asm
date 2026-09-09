@@ -1,6 +1,6 @@
 ; 020_hashtable — a hash table as *pure Lamedh library code*, not a new
 ; kernel primitive: an alist (list of (key . val) conses), built from
-; nothing but CONS/CAR/CDR/EQ/NULLP/IF/DEFINE — every primitive this
+; nothing but CONS/CAR/CDR/EQ/NULL/IF/DEFINE — every primitive this
 ; kernel already exposed for exactly this purpose (see README's "kernel
 ; surface" section and issue #452's kernel/library boundary). This is
 ; the deliberate demonstration that a hash table does *not* need to be
@@ -33,15 +33,15 @@ d2: db "(DEFINE HT-SET (LAMBDA (HT KEY VAL) (CONS (CONS KEY VAL) HT)))"
 d2_len: equ $ - d2
 
 ; HT-ASSOC(ht, key) -> the first (key . val) pair for key, or NIL.
-d3: db "(DEFINE HT-ASSOC (LAMBDA (HT KEY) (IF (NULLP HT) (QUOTE ()) (IF (EQ (CAR (CAR HT)) KEY) (CAR HT) (HT-ASSOC (CDR HT) KEY)))))"
+d3: db "(DEFINE HT-ASSOC (LAMBDA (HT KEY) (IF (NULL HT) (QUOTE ()) (IF (EQ (CAR (CAR HT)) KEY) (CAR HT) (HT-ASSOC (CDR HT) KEY)))))"
 d3_len: equ $ - d3
 
 ; HT-GET(ht, key) -> the bound value, or NIL if key is absent.
-d4: db "(DEFINE HT-GET (LAMBDA (HT KEY) (IF (NULLP (HT-ASSOC HT KEY)) (QUOTE ()) (CDR (HT-ASSOC HT KEY)))))"
+d4: db "(DEFINE HT-GET (LAMBDA (HT KEY) (IF (NULL (HT-ASSOC HT KEY)) (QUOTE ()) (CDR (HT-ASSOC HT KEY)))))"
 d4_len: equ $ - d4
 
 ; HT-HAS-KEY(ht, key) -> TRUE/NIL.
-d5: db "(DEFINE HT-HAS-KEY (LAMBDA (HT KEY) (IF (NULLP (HT-ASSOC HT KEY)) (QUOTE ()) (QUOTE T))))"
+d5: db "(DEFINE HT-HAS-KEY (LAMBDA (HT KEY) (IF (NULL (HT-ASSOC HT KEY)) (QUOTE ()) (QUOTE T))))"
 d5_len: equ $ - d5
 
 ; Build a small table: 'A -> 1, 'B -> 2, then shadow 'A -> 99.
@@ -56,7 +56,7 @@ e1: db "(HT-GET T2 (QUOTE A))"           ; 99 (shadowed)
 e1_len: equ $ - e1
 e2: db "(HT-GET T2 (QUOTE B))"           ; 2
 e2_len: equ $ - e2
-e3: db "(IF (NULLP (HT-GET T2 (QUOTE C))) 111 222)"    ; 111 (missing key)
+e3: db "(IF (NULL (HT-GET T2 (QUOTE C))) 111 222)"    ; 111 (missing key)
 e3_len: equ $ - e3
 e4: db "(IF (HT-HAS-KEY T2 (QUOTE A)) 1 0)"             ; 1
 e4_len: equ $ - e4

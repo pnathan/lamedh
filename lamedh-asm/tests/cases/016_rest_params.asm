@@ -15,8 +15,8 @@ extern print_fixnum
 extern print_newline
 
 section .rodata
-; SUM-LIST: recursive helper, sums a proper list via CAR/CDR/NULLP/IF.
-d1: db "(DEFINE SUM-LIST (LAMBDA (L) (IF (NULLP L) 0 (+ (CAR L) (SUM-LIST (CDR L))))))"
+; SUM-LIST: recursive helper, sums a proper list via CAR/CDR/NULL/IF.
+d1: db "(DEFINE SUM-LIST (LAMBDA (L) (IF (NULL L) 0 (+ (CAR L) (SUM-LIST (CDR L))))))"
 d1_len: equ $ - d1
 
 ; F: 3 fixed (all register-spilled) + REST.

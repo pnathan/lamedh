@@ -64,7 +64,7 @@ programs this stage targets.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums.
-- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`, `DEFMACRO`, `CATCH`/`THROW`,
+- `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
   `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
   `ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`/`HASH-CODE`/`MOD` — see "The
@@ -109,7 +109,7 @@ them. This project is the concrete first attempt at drawing that line
 for a from-scratch host, and three of its later primitives exist
 specifically to test where the line falls:
 
-- **`CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULLP`** compile to calls into the
+- **`CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`** compile to calls into the
   same host routines the reader and compiler already use internally
   (`reader.asm`'s `car`/`cdr`/`cons`), reached from *compiled Lamedh
   code* for the first time — previously only the compiler itself could
@@ -203,14 +203,19 @@ specifically to test where the line falls:
   value at creation; a cons built by `CONS` is never `RPLACD`'d).
   Scoped as narrowly as that one capability: no grow/shrink, no bounds
   check (v0 — see limits below).
-- **`HASH-CODE`/`MOD`** round out the small extra kernel surface a
-  *real* hash table needs beyond plain list processing: `HASH-CODE`
-  returns a stable, always-non-negative fixnum for a fixnum (its own
-  magnitude) or any heapobj (its own heap address — stable since
-  nothing here relocates), letting different key *values* land in
-  different buckets without needing structural hashing; `MOD` is
-  ordinary integer remainder, which nothing so far exposed (`compile_binop`
-  only ever grew `+ - * < =`).
+- **`HASH-CODE`/`MOD`/`REMAINDER`** round out the small extra kernel
+  surface a *real* hash table needs beyond plain list processing:
+  `HASH-CODE` returns a stable, always-non-negative fixnum for a
+  fixnum (its own magnitude) or any heapobj (its own heap address —
+  stable since nothing here relocates), letting different key
+  *values* land in different buckets without needing structural
+  hashing; `MOD` and `REMAINDER` are two distinct integer-division
+  operators (neither previously existed — `compile_binop` only ever
+  grew `+ - * < =`), matching the [KERNEL.md](https://github.com/pnathan/lamedh/pull/453)
+  spec exactly: `MOD` is Euclidean (always `0 &lt;= r &lt; |b|`),
+  `REMAINDER` is truncated (sign follows the dividend) — they disagree
+  exactly when the operands' signs differ (`(MOD -7 2)` is `1`,
+  `(REMAINDER -7 2)` is `-1`).
 - **Hash tables are not a kernel primitive at all** — the concrete
   demonstration issue #452's kernel/library boundary was framed around,
   and still isn't one even with real, expected-O(1) performance.
@@ -235,6 +240,38 @@ from their ordinary value cell, so a name can be a macro or a function
 without ambiguity; macro-hood is checked at compile time only; a
 reference to a global name that isn't a macro never pays for the check
 at runtime.
+
+## KERNEL.md conformance
+
+[KERNEL.md](https://github.com/pnathan/lamedh/pull/453) (issue #452) is
+the host-agnostic Lamedh specification: the exact primitive names,
+semantics, special forms, condition/capability/fuel systems, and reader/
+printer rules a host must match so the shared `lib/*.lisp` corpus loads
+unmodified. This project predates that document; it is being brought
+into conformance incrementally, tracked honestly rather than silently:
+
+- **Matches**: `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL` (names and basic
+  semantics); `EQ` on cons cells is pointer identity, which the spec's
+  own Part IV explicitly leaves undefined (issue #454) rather than
+  requiring the reference's hardcoded `NIL`; `MOD`/`REMAINDER` now
+  match Part V's exact Euclidean/truncated split.
+- **Not yet conforming, tracked as ongoing work**: most of Part VII's
+  special forms (`COND`/`AND`/`OR`/`PROGN`/`LET`/`LET*`/`SETQ`/`BLOCK`/
+  `PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
+  `QUASIQUOTE`) don't exist yet; the condition system (Part VIII),
+  capability gating (Part IX), and fuel (Part X) don't exist yet;
+  proper tail calls (Part VI) aren't implemented (see v0 limits
+  below); the hash table/array/float primitive *names* (`HT-*`/
+  `ARRAY-*`/`F+` etc.) don't match Part XI's required exact names
+  (`MAKE-HASH-TABLE`/`ARRAY`/`FETCH`/`STORE`/contagion-based `+`) —
+  Part XI is explicit that this is the actual conformance bar, not a
+  detail; there is no character type, no Unicode-codepoint string
+  indexing, no typed arrays, no environments-as-values, no `GENSYM`/
+  property lists, no `EVAL`/`READ-FROM-STRING`; the printer doesn't
+  yet handle symbols, `NIL`, or cons lists (only fixnums/strings/
+  floats). This list is deliberately specific so it can shrink
+  honestly, item by item, rather than being replaced by a vaguer
+  "in progress" note.
 
 ## v0 limits (known, not silent)
 

@@ -145,12 +145,36 @@ hash_code_tagged:
     TO_FIXNUM rax
     ret
 
-; mod_tagged(rdi=tagged a, rsi=tagged b) -> rax = tagged (a mod b).
-; Assumes both are non-negative (true of everything hash_code_tagged
-; produces and every bucket count this library uses) — no defensive
-; sign correction, unlike a general-purpose MOD.
+; mod_tagged(rdi=tagged a, rsi=tagged b) -> rax = tagged (a mod b), the
+; Euclidean remainder: always in 0 <= r < |b| (KERNEL.md Part V — this
+; is MOD, distinct from REMAINDER below, and the two disagree exactly
+; when the operands' signs differ).
 global mod_tagged
 mod_tagged:
+    mov rax, rdi
+    UNTAG_FIXNUM rax
+    mov rcx, rsi
+    UNTAG_FIXNUM rcx
+    cqo
+    idiv rcx                     ; rdx = truncated remainder (sign of a)
+    test rdx, rdx
+    jns .nonneg
+    mov rax, rcx
+    test rax, rax
+    jns .babs
+    neg rax
+.babs:
+    add rdx, rax                   ; rdx += |b|
+.nonneg:
+    mov rax, rdx
+    TO_FIXNUM rax
+    ret
+
+; remainder_tagged(rdi=tagged a, rsi=tagged b) -> rax = tagged
+; (a remainder b), the truncated remainder: sign follows the dividend,
+; not the divisor (KERNEL.md Part V — REMAINDER, distinct from MOD).
+global remainder_tagged
+remainder_tagged:
     mov rax, rdi
     UNTAG_FIXNUM rax
     mov rcx, rsi

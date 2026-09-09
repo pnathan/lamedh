@@ -16,7 +16,7 @@ d1: db "(DEFINE A (MAKE-ARRAY 5))"
 d1_len: equ $ - d1
 e1: db "(ARRAY-LENGTH A)"                    ; 5
 e1_len: equ $ - e1
-e2: db "(IF (NULLP (ARRAY-REF A 0)) 111 222)"  ; 111 (fresh slot is NIL)
+e2: db "(IF (NULL (ARRAY-REF A 0)) 111 222)"  ; 111 (fresh slot is NIL)
 e2_len: equ $ - e2
 e3: db "(ARRAY-SET A 2 42)"                    ; 42 (ARRAY-SET returns its value)
 e3_len: equ $ - e3

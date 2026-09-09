@@ -1,4 +1,4 @@
-; 010_list_builtins — CAR/CDR/CONS/EQ/ATOM/NULLP reachable from compiled
+; 010_list_builtins — CAR/CDR/CONS/EQ/ATOM/NULL reachable from compiled
 ; Lamedh source for the first time (previously only the reader and
 ; compiler themselves could call the underlying host routines).
 
@@ -25,7 +25,7 @@ e6: db "(ATOM 1)"
 e6_len: equ $ - e6
 e7: db "(ATOM (CONS 1 2))"
 e7_len: equ $ - e7
-e8: db "(NULLP (CDR (CONS 1 (QUOTE ()))))"
+e8: db "(NULL (CDR (CONS 1 (QUOTE ()))))"
 e8_len: equ $ - e8
 
 section .text

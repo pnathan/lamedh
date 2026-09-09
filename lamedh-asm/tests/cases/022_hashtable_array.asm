@@ -3,7 +3,7 @@
 ; tests/cases/020_hashtable.asm. Still pure Lamedh library code, not a
 ; kernel primitive: it's built entirely on MAKE-ARRAY/ARRAY-REF/
 ; ARRAY-SET/HASH-CODE/MOD (021_arrays.asm) plus the same CONS/CAR/CDR/
-; EQ/NULLP/IF this kernel already exposed for exactly this purpose —
+; EQ/NULL/IF this kernel already exposed for exactly this purpose —
 ; only the bucket array and the mutation primitive to write into it are
 ; new kernel surface; the hashing/bucketing/chaining *policy* is all
 ; DEFINE'd Lamedh, same as before.
@@ -33,12 +33,12 @@ d2: db "(DEFINE HT-MAKE (LAMBDA () (MAKE-ARRAY HT-NBUCKETS)))"
 d2_len: equ $ - d2
 
 ; walks one bucket's chain looking for KEY -> the (key . val) pair, or NIL
-d3: db "(DEFINE HT-BUCKET-ASSOC (LAMBDA (BUCKET KEY) (IF (NULLP BUCKET) (QUOTE ()) (IF (EQ (CAR (CAR BUCKET)) KEY) (CAR BUCKET) (HT-BUCKET-ASSOC (CDR BUCKET) KEY)))))"
+d3: db "(DEFINE HT-BUCKET-ASSOC (LAMBDA (BUCKET KEY) (IF (NULL BUCKET) (QUOTE ()) (IF (EQ (CAR (CAR BUCKET)) KEY) (CAR BUCKET) (HT-BUCKET-ASSOC (CDR BUCKET) KEY)))))"
 d3_len: equ $ - d3
 
 ; a copy of BUCKET with any existing binding for KEY dropped, so
 ; HT-SET! doesn't leak a duplicate on every update to the same key
-d4: db "(DEFINE HT-BUCKET-REMOVE (LAMBDA (BUCKET KEY) (IF (NULLP BUCKET) (QUOTE ()) (IF (EQ (CAR (CAR BUCKET)) KEY) (HT-BUCKET-REMOVE (CDR BUCKET) KEY) (CONS (CAR BUCKET) (HT-BUCKET-REMOVE (CDR BUCKET) KEY))))))"
+d4: db "(DEFINE HT-BUCKET-REMOVE (LAMBDA (BUCKET KEY) (IF (NULL BUCKET) (QUOTE ()) (IF (EQ (CAR (CAR BUCKET)) KEY) (HT-BUCKET-REMOVE (CDR BUCKET) KEY) (CONS (CAR BUCKET) (HT-BUCKET-REMOVE (CDR BUCKET) KEY))))))"
 d4_len: equ $ - d4
 
 d5: db "(DEFINE HT-INDEX (LAMBDA (KEY) (MOD (HASH-CODE KEY) HT-NBUCKETS)))"
@@ -48,10 +48,10 @@ d5_len: equ $ - d5
 d6: db "(DEFINE HT-SET! (LAMBDA (HT KEY VAL) (ARRAY-SET HT (HT-INDEX KEY) (CONS (CONS KEY VAL) (HT-BUCKET-REMOVE (ARRAY-REF HT (HT-INDEX KEY)) KEY)))))"
 d6_len: equ $ - d6
 
-d7: db "(DEFINE HT-GET (LAMBDA (HT KEY) (IF (NULLP (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (CDR (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)))))"
+d7: db "(DEFINE HT-GET (LAMBDA (HT KEY) (IF (NULL (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (CDR (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)))))"
 d7_len: equ $ - d7
 
-d8: db "(DEFINE HT-HAS-KEY (LAMBDA (HT KEY) (IF (NULLP (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (QUOTE T))))"
+d8: db "(DEFINE HT-HAS-KEY (LAMBDA (HT KEY) (IF (NULL (HT-BUCKET-ASSOC (ARRAY-REF HT (HT-INDEX KEY)) KEY)) (QUOTE ()) (QUOTE T))))"
 d8_len: equ $ - d8
 
 ; --- exercise it ---
@@ -68,7 +68,7 @@ e1: db "(HT-GET HT (QUOTE A))"                ; 99
 e1_len: equ $ - e1
 e2: db "(HT-GET HT (QUOTE B))"                ; 2
 e2_len: equ $ - e2
-e3: db "(IF (NULLP (HT-GET HT (QUOTE C))) 111 222)"    ; 111 (missing key)
+e3: db "(IF (NULL (HT-GET HT (QUOTE C))) 111 222)"    ; 111 (missing key)
 e3_len: equ $ - e3
 e4: db "(IF (HT-HAS-KEY HT (QUOTE A)) 1 0)"             ; 1
 e4_len: equ $ - e4
