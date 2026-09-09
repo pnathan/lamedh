@@ -227,29 +227,33 @@ generator-backed axiom (DECLARED)."
 ;; The host's native SEE-TYPE is still consulted, for exactly one thing it can
 ;; say that a checker structurally cannot: TYPED. That verdict does not report
 ;; a checking result at all -- it reports a CODEGEN artifact (a natively
-;; compiled function's monomorphic signature and its execution tier), which no
-;; portable library can observe and which the portable checker therefore
-;; reports honestly as DYNAMIC ("not a plain lambda"). Preferring the native
-;; answer in precisely that case keeps `condense-verified-p`'s TYPED guarantee
-;; intact on a host that compiles, and costs nothing on one that does not.
+;; compiled function's monomorphic signature and its execution TIER), which no
+;; portable library can observe. Deferring to the host for precisely that
+;; verdict, and for nothing else, keeps `condense-verified-p`'s TYPED
+;; guarantee and the trace's tier information intact on a host that compiles,
+;; and costs nothing on one that does not.
+;;
+;; Note this is NOT a coverage gap in the portable checker: one-door `defun`
+;; keeps the original closure behind the native membrane, so `see-source`
+;; still reaches the body and HM-SEE-TYPE reports a genuine CHECKED scheme for
+;; a compiled function. The host simply knows one more fact about it.
 (def $condense-native-see-type (if (boundp 'see-type) (eval 'see-type) nil))
 
 (defun condense-verdict (sym)
   "SYM's checker verdict, in SEE-TYPE's shape: (TYPED sig tier) |
 (DECLARED s) | (CHECKED s) | (TYPE-ERROR msg) | (DYNAMIC reason).
 
-The portable checker answers, through its per-symbol cache (HM-VERDICT):
-checking is a tree-walked analysis, so a verdict is computed once per
+The portable checker answers -- through its per-symbol cache (HM-VERDICT),
+since checking is a tree-walked analysis whose result is computed once per
 definition and dropped when the symbol is redefined or the type registry
-changes. The host's native checker is consulted only where the portable one
-honestly reports DYNAMIC and the host can report the one thing a portable
-checker cannot see -- TYPED, i.e. that this name is a natively compiled
-function rather than a plain lambda."
-  (let ((portable (hm-verdict sym)))
-    (if (and $condense-native-see-type (eq (car portable) 'dynamic))
-        (let ((native (funcall $condense-native-see-type sym)))
-          (if (eq (car native) 'typed) native portable))
-        portable)))
+changes. The host's native checker answers only when it reports TYPED, the
+one verdict that states a codegen fact rather than a checking result."
+  (let ((native (if $condense-native-see-type
+                    (funcall $condense-native-see-type sym)
+                    nil)))
+    (if (and native (eq (car native) 'typed))
+        native
+        (hm-verdict sym))))
 
 (defun condense-check-type-one (sym)
   (let ((verdict (condense-verdict sym)))

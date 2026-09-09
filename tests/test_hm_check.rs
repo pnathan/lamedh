@@ -569,13 +569,18 @@ fn the_condensation_layer_runs_off_the_portable_checker() {
     );
     // The one thing the native checker is still consulted for is TYPED — a
     // codegen fact (a natively compiled function's signature and execution
-    // tier) that no portable checker can observe: one-door `defun` has
-    // rebound this name to a native membrane, so it is no longer a plain
-    // lambda and the portable checker says DYNAMIC, honestly. The seam
-    // prefers the host's TYPED there, so `condense-verified-p`'s guarantee
-    // is unchanged on a host that compiles.
+    // tier) that no portable checker can observe, so the seam defers to the
+    // host for exactly that verdict and nothing else.
+    //
+    // This is not a coverage gap: one-door `defun` keeps the original
+    // closure behind the native membrane, so `see-source` still reaches the
+    // body and the portable checker reports a genuine CHECKED scheme for the
+    // very same function. The host just knows one more fact about it.
     ev(&e, "(defun ctyped-demo (n) (+ n 1))");
     assert_eq!(ev(&e, "(car (see-type 'ctyped-demo))"), "TYPED");
-    assert_eq!(ev(&e, "(car (hm-see-type 'ctyped-demo))"), "DYNAMIC");
+    assert_eq!(
+        ev(&e, "(hm-see-type 'ctyped-demo)"),
+        "(CHECKED (-> (INT64) INT64))"
+    );
     assert_eq!(ev(&e, "(car (condense-verdict 'ctyped-demo))"), "TYPED");
 }

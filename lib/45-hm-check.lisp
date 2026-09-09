@@ -1682,9 +1682,16 @@ body normalization."
 
 Uses only SEE-SOURCE -- an existing, portable reflection primitive the
 condensation layer already depends on -- so no new host hook is needed. A
-variadic lambda, a non-lambda value, a native/typed membrane, and an unbound
-name all yield NIL, exactly as the native `checker_lambda_source` returns None
-for each: none of them is a plain lambda whose body the checker can see."
+variadic lambda, a non-lambda value and an unbound name all yield NIL: none of
+them is a plain lambda whose body this checker can see.
+
+Note this is slightly BROADER than the reference host's own
+`checker_lambda_source`, which requires the live binding to be a
+`LispVal::Lambda` and so gives up on a natively compiled function. One-door
+`defun` keeps the original closure behind the native membrane, and SEE-SOURCE
+reconstructs from it, so the portable checker still reports a real CHECKED
+scheme where the host reports TYPED. Broader visibility is safe -- it can only
+turn a DYNAMIC non-answer into a checked one, never the reverse."
   (let ((src (handler-case (see-source name) (error (e) nil))))
     (if (and (consp src)
              (eq (car src) 'lambda)
@@ -1744,9 +1751,9 @@ this from its provisional registry entry; this is the portable equivalent)."
   "The PORTABLE checker's verdict for SYM, in SEE-TYPE's own shape:
 
   (DECLARED scheme)    an axiom asserted via DECLARE-TYPE!
-  (CHECKED scheme)     a plain lambda the checker accepts
+  (CHECKED scheme)     a lambda whose body the checker accepts
   (TYPE-ERROR \"msg\")   the checker rejects it
-  (DYNAMIC \"reason\")   variadic, a builtin, a membrane, or not a function
+  (DYNAMIC \"reason\")   variadic, a builtin, or not a function at all
 
 This is the whole of what a host with no native checker can honestly say --
 and, on a host that HAS one, exactly the part of its answer that is portable.
