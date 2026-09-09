@@ -229,33 +229,54 @@
   (assert-equal (hm-dropped-declarations) nil))
 
 ;;; ---- the DEFUN hook ------------------------------------------------------
+;;;
+;;; These demo functions are defined at TOP LEVEL on purpose. A DEFUN inside a
+;;; DEFTEST body binds inside the test closure, where SEE-SOURCE cannot reach
+;;; it, so the checker would honestly (and uninterestingly) report DYNAMIC.
+;;; Bodies are chosen so one-door DEFUN leaves them INTERPRETED, which keeps
+;;; the verdicts here about the checker rather than about the compiler.
+
+(defun hm-hook-demo (a b) (concat a b))
+(defun hm-cache-demo (x) (concat x "!"))
+(defun hm-classify-demo (x) (car x))
+(defun hm-condense-demo (x) (concat x "!"))
 
 (deftest hm-defun-hook-drives-the-portable-checker
+  ;; $HM-ON-DEFUN is exactly what `$defun-auto-compile` calls on every single
+  ;; definition in the language. Under the EAGER policy it checks the
+  ;; definition on the spot and caches the verdict; under LAZY it only drops
+  ;; the stale one. Calling it directly is calling what DEFUN calls.
   (let ((prev (hm-check-policy! 'eager)))
     (progn
-      ;; Defining a function under the EAGER policy runs the portable checker
-      ;; through `$defun-auto-compile` -- the one door every DEFUN goes
-      ;; through -- and caches the verdict.
-      (defun hm-hook-demo (a b) (+ a b))
-      (assert-equal (car (hm-verdict 'hm-hook-demo)) 'checked)
-      ;; Redefining invalidates the cache, so the verdict tracks the body.
-      (defun hm-hook-demo (a b) (concat a b))
-      (assert-equal (hm-verdict 'hm-hook-demo) '(checked (-> (string string) string)))
+      (hm-invalidate! 'hm-hook-demo)
+      (assert-nil (has-key-p $hm-verdicts 'hm-hook-demo))
+      ($hm-on-defun 'hm-hook-demo)
+      (assert-true (has-key-p $hm-verdicts 'hm-hook-demo))
+      (assert-equal (hm-verdict 'hm-hook-demo)
+                    '(checked (-> (string string) string)))
+      (hm-check-policy! 'lazy)
+      (hm-invalidate! 'hm-hook-demo)
+      ($hm-on-defun 'hm-hook-demo)
+      ;; LAZY leaves the verdict uncomputed until something asks for it.
+      (assert-nil (has-key-p $hm-verdicts 'hm-hook-demo))
       (hm-check-policy! prev))))
 
 (deftest hm-verdict-is-cached-and-invalidated
-  ;; Bodies chosen so one-door DEFUN leaves them INTERPRETED: a natively
-  ;; compiled function is a membrane, not a plain lambda, which the portable
-  ;; checker honestly reports as DYNAMIC.
-  (defun hm-cache-demo (x) (concat x "!"))
   (assert-equal (hm-verdict 'hm-cache-demo) '(checked (-> (string) string)))
-  (defun hm-cache-demo (x) (car x))
-  (assert-equal (hm-verdict 'hm-cache-demo) '(checked (forall (a) (-> ((list a)) a)))))
+  (assert-true (has-key-p $hm-verdicts 'hm-cache-demo))
+  ;; The DEFUN hook drops it, so a redefinition can never be served a stale
+  ;; verdict...
+  ($hm-on-defun 'hm-cache-demo)
+  (assert-nil (has-key-p $hm-verdicts 'hm-cache-demo))
+  (assert-equal (hm-verdict 'hm-cache-demo) '(checked (-> (string) string)))
+  ;; ... and so does any change to the type registry, since a verdict is
+  ;; derived from the whole of it.
+  (hm-registry-changed!)
+  (assert-nil (has-key-p $hm-verdicts 'hm-cache-demo)))
 
 ;;; ---- interop with the condensation layer ---------------------------------
 
 (deftest hm-verdicts-classify-through-condense-classify
-  (defun hm-classify-demo (x) (concat x "!"))
   (assert-equal (condense-classify (hm-verdict 'hm-classify-demo)) 'checked)
   (assert-equal (condense-classify (hm-see-type 'hm-axiom-demo)) 'declared)
   (assert-equal (condense-classify '(type-error "boom")) 'type-error)
@@ -271,7 +292,6 @@
   ;; The condensation layer is defined against CONDENSE-VERDICT, and the
   ;; PORTABLE checker is what answers through it -- so CONDENSE-CLASSIFY, the
   ;; dynamic frontier and EDIT!'s type barrier are all driven by this port.
-  (defun hm-condense-demo (x) (concat x "!"))
   (assert-equal (condense-verdict 'hm-condense-demo)
                 (hm-see-type 'hm-condense-demo))
   (assert-equal (condense-classify (condense-verdict 'string-upcase)) 'declared))
