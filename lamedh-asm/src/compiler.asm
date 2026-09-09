@@ -388,6 +388,57 @@ cadddr:
     mov rdi, rax
     jmp car
 
+; fold_binop_ast(rdi=head symbol (tagged), rsi=operand form list, at
+; least 2 elements) -> rax = a fresh cons AST folding every operand
+; left-to-right into nested 2-operand calls under HEAD: `(op0 op1 op2
+; op3)` becomes `(HEAD (HEAD (HEAD op0 op1) op2) op3)`. Used by
+; LOGAND/LOGIOR/LOGXOR's own dispatch (compile_form, further down) to
+; give those real compiler special forms the reference's own variadic
+; behavior without teaching compile_binary_hostcall anything about
+; operand counts — the fold happens once, host-side, over the raw
+; (unevaluated) operand forms themselves, and the result is handed
+; back to compile_form to compile normally, terminating at the
+; existing exact-2-operand case.
+fold_binop_ast:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi                    ; head symbol
+    mov rdi, rsi
+    call car
+    mov r12, rax                      ; acc = op0
+    mov rdi, rsi
+    call cdr
+    mov r13, rax                        ; rest = (op1 op2 ...)
+.loop:
+    cmp r13, IMM_NIL
+    je .done
+    mov rdi, r13
+    call car
+    mov r14, rax                          ; op
+    mov rdi, r14
+    mov rsi, IMM_NIL
+    call cons                                ; (op)
+    mov rsi, rax
+    mov rdi, r12
+    call cons                                  ; (acc op)
+    mov rsi, rax
+    mov rdi, rbx
+    call cons                                    ; (head acc op)
+    mov r12, rax
+    mov rdi, r13
+    call cdr
+    mov r13, rax
+    jmp .loop
+.done:
+    mov rax, r12
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; sym_is(rdi=tagged value, rsi=name ptr, rdx=name len) -> rax=1/0.
 ; True only if rdi is itself the (unique, interned) symbol named by
 ; (rsi,rdx) — an EQ pointer compare after one intern lookup.
@@ -6203,6 +6254,22 @@ compile_form:
     call sym_is
     test rax, rax
     jz .not_logand
+    ; LOGAND/LOGIOR/LOGXOR (KERNEL.md Part XI): the reference's own
+    ; builtins take any number of operands (a variadic fold); this
+    ; dispatch used to just take car/cadr of the operand list and
+    ; silently ignore anything past the second (same bug shape MAX/MIN
+    ; had, lib/prelude.lisp, fixed there as a Lisp-level fold — these
+    ; can't be, being real compiler special forms). More than two
+    ; operands now folds host-side into a nested 2-operand AST
+    ; (`(LOGAND (LOGAND a b) c)`, fold_binop_ast below) and recompiles
+    ; that in this call's place, terminating at the exact-2-operand
+    ; base case below, unchanged.
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call cdr
+    cmp rax, IMM_NIL
+    jne .logand_fold
     mov rdi, r13
     call car
     push rax
@@ -6215,6 +6282,13 @@ compile_form:
     lea rdx, [rel logand_tagged]
     call compile_binary_hostcall
     jmp .out
+.logand_fold:
+    mov rdi, r12
+    mov rsi, r13
+    call fold_binop_ast
+    mov rdi, rax
+    call compile_form
+    jmp .out
 
 .not_logand:
     mov rdi, r12
@@ -6223,6 +6297,12 @@ compile_form:
     call sym_is
     test rax, rax
     jz .not_logior
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call cdr
+    cmp rax, IMM_NIL
+    jne .logior_fold
     mov rdi, r13
     call car
     push rax
@@ -6235,6 +6315,13 @@ compile_form:
     lea rdx, [rel logior_tagged]
     call compile_binary_hostcall
     jmp .out
+.logior_fold:
+    mov rdi, r12
+    mov rsi, r13
+    call fold_binop_ast
+    mov rdi, rax
+    call compile_form
+    jmp .out
 
 .not_logior:
     mov rdi, r12
@@ -6243,6 +6330,12 @@ compile_form:
     call sym_is
     test rax, rax
     jz .not_logxor
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call cdr
+    cmp rax, IMM_NIL
+    jne .logxor_fold
     mov rdi, r13
     call car
     push rax
@@ -6254,6 +6347,13 @@ compile_form:
     pop rdi
     lea rdx, [rel logxor_tagged]
     call compile_binary_hostcall
+    jmp .out
+.logxor_fold:
+    mov rdi, r12
+    mov rsi, r13
+    call fold_binop_ast
+    mov rdi, rax
+    call compile_form
     jmp .out
 
 .not_logxor:

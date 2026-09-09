@@ -1866,11 +1866,18 @@ bugs no existing test had exercised:
   (`$MAX-FOLD`/`$MIN-FOLD`), the identical idiom `REDUCE` already
   establishes for a variadic reference builtin over a fixed binary
   primitive. `LOGAND`/`LOGIOR`/`LOGXOR` (real compiler special forms,
-  not `DEFUN`s) have the analogous gap but errors out differently (a
-  third operand is silently ignored at the AST level, same
-  compile-time `car`/`cadr` extraction, still fixed 2-operand) — not
-  yet fixed, tracked in "Known gaps" below alongside `&KEY`/`&OPTIONAL`
-  as the next arg-shape items to close.
+  not `DEFUN`s) had the identical bug shape, fixed the same session:
+  a third-or-later operand was silently dropped at the AST level (a
+  fixed `car`/`cadr` extraction, nothing past the second operand ever
+  read) rather than combined in. Since these are compile-time special
+  forms, not library code, the fix is a compile-time one instead of a
+  Lisp-level fold: **`fold_binop_ast`** (`compiler.asm`) — given the
+  operand list has more than two elements, folds it host-side into a
+  nested 2-operand AST (`(op0 op1 op2 op3)` becomes `(LOGAND (LOGAND
+  (LOGAND op0 op1) op2) op3)`) and hands that back to `compile_form`
+  to compile normally, terminating at the unchanged exact-2-operand
+  case. `tests/cases/049_bitwise.asm` now also covers all three with
+  three operands.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
@@ -1960,11 +1967,12 @@ bugs no existing test had exercised:
   reproducible. `LOGAND`/`LOGIOR`/`LOGXOR` reuse the same tagged-word
   trick `tags.inc` already documents for `+`/`-`: a fixnum's tag bits
   are always `00`, so a plain bitwise AND/OR/XOR of two *tagged* words
-  is already correctly tagged, no untag/retag needed. **v0 scope**:
-  `LOGAND`/`LOGIOR`/`LOGXOR` are fixed 2-operand, not the reference's
-  own variadic fold (no general variadic-primitive-call mechanism
-  exists yet — the same reason every other multi-operand builtin here
-  is a fixed shape); `ASH`'s overflow/sign-extension behavior is scaled
+  is already correctly tagged, no untag/retag needed. `LOGAND`/
+  `LOGIOR`/`LOGXOR` are now the reference's own variadic fold too
+  (`fold_binop_ast`, see the `MAX`/`MIN` entry above for the fix and
+  the bug it replaced — a third-or-later operand used to be silently
+  dropped, not an error). **v0 scope**: `ASH`'s overflow/sign-extension
+  behavior is scaled
   to this kernel's own 62-bit fixnum width rather than the reference's
   64-bit one (Part XII axis 1's existing width divergence, not a new
   one). None of this is surprising — it is the gap between "a
@@ -1982,14 +1990,6 @@ bugs no existing test had exercised:
   `&OPTIONAL name`/`&OPTIONAL (name default)` and `&KEY name`/
   `&KEY (name default)` forms, alongside the `&REST` case
   `split_rest_params` already handles.
-- `LOGAND`/`LOGIOR`/`LOGXOR` variadic folding — real compiler special
-  forms (unlike `MAX`/`MIN`, fixed above), each dispatch extracts
-  exactly `car`/`cadr` of the operand list and silently ignores
-  anything past the second operand at the AST level, same bug shape as
-  the old `MAX`/`MIN` had. Fixing this needs a host-side left-fold
-  over the raw operand list into a nested 2-operand AST (`(LOGAND
-  (LOGAND a b) c)`) before dispatching to `compile_binary_hostcall`,
-  not just a Lisp-level `DEFUN` rewrite — real work, not yet done.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle

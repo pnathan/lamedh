@@ -5,9 +5,10 @@
 ; already 00, so a plain AND/OR/XOR of the tagged words is already
 ; correctly tagged); LOGNOT and ASH need an untag/retag since a shift
 ; or a full bit-flip must operate on the value, not the tag-prefixed
-; representation. v0 scope: LOGAND/LOGIOR/LOGXOR are fixed 2-operand,
-; not the reference's own variadic fold (see bitwise.asm's own
-; comment).
+; representation. LOGAND/LOGIOR/LOGXOR are now the reference's own
+; variadic fold too (fold_binop_ast, compiler.asm — a third-or-later
+; operand used to be silently dropped rather than folded in, the same
+; bug shape MAX/MIN had before that was fixed at the Lisp level).
 
 %include "src/tags.inc"
 
@@ -39,6 +40,14 @@ e8_len: equ $ - e8
 ; shift by 0 is a no-op, either direction.
 e9: db "(ASH 7 0)"                                         ; 7
 e9_len: equ $ - e9
+; variadic fold: a third (and later) operand used to be silently
+; dropped rather than combined in.
+e10: db "(LOGAND 12 10 6)"                                   ; 0
+e10_len: equ $ - e10
+e11: db "(LOGIOR 1 2 4)"                                       ; 7
+e11_len: equ $ - e11
+e12: db "(LOGXOR 1 3 5)"                                         ; 7
+e12_len: equ $ - e12
 
 section .text
 
@@ -83,6 +92,15 @@ lamedh_main:
     call run_and_print_fixnum        ; -1
     mov rdi, e9
     mov rsi, e9_len
+    call run_and_print_fixnum        ; 7
+    mov rdi, e10
+    mov rsi, e10_len
+    call run_and_print_fixnum        ; 0
+    mov rdi, e11
+    mov rsi, e11_len
+    call run_and_print_fixnum        ; 7
+    mov rdi, e12
+    mov rsi, e12_len
     call run_and_print_fixnum        ; 7
 
     xor rax, rax
