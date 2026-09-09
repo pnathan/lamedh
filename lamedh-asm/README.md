@@ -129,14 +129,32 @@ specifically to test where the line falls:
   directly from host code — `invoke_closure_host` does an ordinary
   indirect call through the closure's stored code pointer, synchronously,
   at compile time, with the call site's raw unevaluated argument forms
-  as arguments (`raw_args_to_regs`). Nothing distinguishes "the compiler"
-  from "compiled code" here; they are both just x86-64 machine code
-  running in the same process, so a macro transformer needs no
-  interpreter of its own. Whatever it returns is recursively compiled in
-  its place. `COND`/`AND`/`OR`/`LET`/the CL-compat layer all become
-  ordinary Lamedh source once this exists, the same way they already are
-  in the reference implementation's `lib/08-vau.lisp` and
-  `lib/21-cl-compat.lisp` — see `tests/cases/011_defmacro.asm` for
+  as arguments (`raw_args_to_regs`). **`raw_args_to_regs` only ever
+  forwards the first 3 operand forms at a macro call site**, silently
+  dropping anything past the third — a real, separate limitation from
+  the `&REST`/`nfixed` restriction that was lifted (see "Calling
+  convention" below): a transformer's own parameter arity is
+  unrestricted now, but a *call site* with more than 3 syntactic
+  operands still loses data regardless of how the macro declares its
+  params. `invoke_closure_host` also did not set the incoming argument
+  count (target `rax`) at all before calling the transformer until a
+  real bug surfaced it: a `&REST`-taking transformer with `nfixed<3`
+  reads that count at runtime to decide which register slots hold real
+  `REST` data, and reading whatever host-side garbage happened to be in
+  `rax` instead corrupted that decision silently rather than erroring
+  — `lib/prelude.lisp`'s own `DEFUN` macro (`(NAME PARAMS &REST BODY)`,
+  `nfixed=2`) is exactly this shape and is what exposed it
+  (`tests/cases/038_macro_rest_below3.asm`); fixed by computing the real
+  count (capped at 3, matching what `raw_args_to_regs` can actually
+  forward) at the call site and threading it through. Nothing
+  distinguishes "the compiler" from "compiled code" here; they are both
+  just x86-64 machine code running in the same process, so a macro
+  transformer needs no interpreter of its own. Whatever it returns is
+  recursively compiled in its place. `COND`/`AND`/`OR`/`LET`/the
+  CL-compat layer all become ordinary Lamedh source once this exists,
+  the same way they already are in the reference implementation's
+  `lib/08-vau.lisp` and `lib/21-cl-compat.lisp` — see
+  `tests/cases/011_defmacro.asm` for
   `UNLESS` derived from `IF` this way, with no change to the compiler.
 - **`CATCH`/`THROW`** is the other "control" candidate: a fixed-depth
   stack of installed catch points (`compiler.asm`'s `catch_stack` —
@@ -596,56 +614,77 @@ build/lamedhc path/to/program.lisp   # run a file
 producer | build/lamedhc             # or read a program from stdin
 ```
 
+## The prelude
+
+`lamedhc` runs `lib/prelude.lisp` before any user program — pulled
+directly into the binary with nasm's `incbin` (`file_runner.asm`), not
+looked up on disk: there is no filesystem convention, install location,
+or argv-relative path resolution to invent for a freestanding, no-libc
+project, so the prelude is compiled in exactly the way any other
+literal datum in this compiler is, and runs through the identical
+`reader_init`/`read_form`/`compile_thunk` loop the user's own source
+does, just from an in-memory buffer instead of an mmap'd file.
+
+It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, and `LIST` —
+each an ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler
+change needed for any of it (see `lib/prelude.lisp`'s own comments for
+exactly why). `DEFUN` and `WHEN`/`UNLESS` are deliberately
+single-body-form only: a `DEFMACRO` transformer is invoked through
+`raw_args_to_regs`/`invoke_closure_host`, which forwards at most 3
+syntactic operands per call site (see "The kernel surface" above) — a
+second body form at a `DEFUN` or `WHEN`/`UNLESS` call site would
+silently vanish rather than erroring, so a caller wanting more than one
+body form wraps it in an explicit `PROGN`.
+
+Writing even this small a prelude surfaced two real, previously-latent
+bugs no existing test had exercised:
+
+- **The bare symbol `T`, evaluated as a variable, was unbound.**
+  `T` is not a keyword and not the `IMM_TRUE` immediate `EQ`/comparisons
+  return (a genuinely different value) — it is an ordinary
+  reader-interned symbol, and per KERNEL.md Part IV must be "bound to
+  itself in the global environment." Nothing in this kernel ever did
+  that binding; every existing test that used `T` did so only via
+  `EQ`/comparison results or as quoted data, never as a bare evaluated
+  variable, so the gap was invisible until `lib/prelude.lisp`'s own
+  `NOT` returned bare `T` directly. The observed failure was exactly
+  as ugly as an unbound-variable bug gets: `PRINT` of the unbound
+  symbol's `IMM_UNBOUND` cell fell through to `print_fixnum`, printing
+  the fixnum `3`. `bootstrap_globals` (`symtab.asm`, called once from
+  `boot.asm` right after the heaps are set up, before *any* Lisp code
+  — the prelude included — runs) fixes this for every binary this
+  project builds, tests included, not just `lamedhc`
+  (`tests/cases/039_t_self_bound.asm`).
+- **`invoke_closure_host` never set the incoming argument count.**
+  Documented above under `DEFMACRO`; `tests/cases/
+  038_macro_rest_below3.asm` is the regression test.
+
 ## Roadmap
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
-  unmodified.** Every example in the Rust reference's own corpus uses
-  `DEFUN` and `FORMAT`; `DEFUN` is now a one-`DEFMACRO` addition (the
-  kernel already has everything it needs — `DEFINE`, `LAMBDA`, `CONS`;
-  `tests/cases/032_defun_macro.asm`), and `FORMAT`'s natural signature,
-  `(FORMAT stream control &REST args)`, is no longer blocked by the
-  `&REST` restriction either — `&REST` now works for any fixed-parameter
-  count, including `FORMAT`'s 2 (`tests/cases/033_rest_below3.asm`; see
-  "Calling convention" above), though `FORMAT` itself turns out not to
-  need `&REST` at all: it's naturally a `DEFMACRO`, not a function — a
-  macro transformer already sees a call's unevaluated operand forms
-  directly, so there's no runtime variadic dispatch to build. What
-  `FORMAT`-as-macro needs from the kernel — a way to walk a control
-  string's bytes at macro-expansion time for `~a`/`~%` directives — now
-  exists (`STRING-REF`/`SUBSTRING`, `tests/cases/036_string_ops.asm`),
-  and `~a`'s own rendering is just `PRINT`, which already writes a
-  string's raw bytes unquoted (the "aesthetic," not "readable,"
-  convention `~a` wants). Only `(format nil ...)` (returning a string
-  rather than writing to a stream) needs something this kernel still
-  lacks — capturing `PRINT`'s output into a string instead of stdout —
-  and only a small minority of the corpus's own `FORMAT` calls are that
-  form. Examples that need
+  unmodified.** There is now a real file-loading driver
+  (`make lamedhc` builds `build/lamedhc`, `src/file_runner.asm`) that
+  runs `lib/prelude.lisp` and then a named file or stdin through the
+  same read-compile-run loop, and calling anything that isn't a real
+  closure fails deterministically (`emit_check_callable`,
+  `native_errors.asm`) rather than segfaulting undefined-behavior-style
+  — not yet a `HANDLER-CASE`-catchable condition, but at least an
+  observable one. Every example uses `DEFUN` and `FORMAT`. `DEFUN`
+  is real now, in the prelude (single-body-form; see "The prelude"
+  above for why). `FORMAT` is not yet: its natural shape is a
+  `DEFMACRO`, and this kernel now has everything `FORMAT`-as-macro
+  needs internally — `STRING-REF`/`SUBSTRING` to walk a control
+  string's bytes at macro-expansion time, `PRINT` for `~a`'s stream
+  form, and `PRINC-TO-STRING` (`tests/cases/037_eval_read_princ.asm`)
+  to cover `(format nil ...)` too — but a realistic `FORMAT` call site
+  (`(format t "~a! = ~a~%" a b)`, say) routinely has 4+ syntactic
+  operands, past `raw_args_to_regs`'s own 3-operand forwarding cap for
+  macro invocation (see "The kernel surface" and "The prelude" above) —
+  the concrete next blocker, and a different one from the `&REST`/
+  `nfixed` restriction that's already fixed. Examples that need
   networking, regex, or TLS are out of scope for this from-scratch host
   regardless (Part IX capabilities this kernel has no I/O surface for
-  yet); everything else in that directory is the honest bar. There is
-  now a real file-loading driver — `make lamedhc` builds `build/lamedhc`
-  (`src/file_runner.asm`, linked via boot.asm/the shared core exactly
-  like a test case, just with a runtime read-eval loop over a whole
-  source text instead of one hardcoded literal): `lamedhc
-  path/to/program.lisp` or `producer | lamedhc` reads the named file, or
-  stdin when no path is given, and runs every top-level form in it in
-  order. `lamedhc ../examples/factorial/main.lisp` still fails today —
-  calling the unbound global `DEFUN` as a function, since there is no
-  prelude loaded before the program's own forms — but no longer
-  segfaults doing it: `emit_check_callable` now guards both of
-  `compile_call`'s paths (`tests/cases/034_not_callable.asm`,
-  `035_not_callable_indirect.asm`), so calling anything that isn't a
-  `HDR_CLOSURE` heapobj — an unbound global, a `LET`-bound non-function
-  value — fails deterministically (a message to stderr, `exit(1)`)
-  instead of dereferencing whatever address an unbound global's
-  `IMM_UNBOUND` tag bits happen to mask to. This is not yet a
-  `HANDLER-CASE`-catchable condition (`native_errors.asm` is explicit
-  about that gap), but it turns undefined behavior into something a
-  caller can at least observe deterministically — which is exactly the
-  next-most-honest data point: the driver works, failures are now
-  legible, and a from-scratch `lib/00-core.lisp`-equivalent prelude
-  (starting with `DEFUN`, now that it needs no compiler change) is the
-  remaining piece before that command means anything.
+  yet); everything else in that directory is the honest bar.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle

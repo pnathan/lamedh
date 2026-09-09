@@ -2018,23 +2018,39 @@ compile_lambda:
     pop rbx
     ret
 
-; invoke_closure_host(rdi=tagged closure, rsi=arg0, rdx=arg1, rcx=arg2)
-; -> rax = result. Calls an *already-compiled* Lamedh closure directly
-; from host code, synchronously, right now — not by emitting target
-; instructions. This works because a compiled closure and the compiler
-; itself are both just x86-64 machine code in the same process; there is
-; no barrier between "host" and "target" beyond which code is calling
-; which. It is the entire mechanism a macro transformer needs: the
-; transformer is an ordinary compiled closure, and expanding a macro
-; call means invoking it now instead of emitting a call to it.
+; invoke_closure_host(rdi=tagged closure, rsi=arg0, rdx=arg1, rcx=arg2,
+; r8=nargs actually supplied, 0..3) -> rax = result. Calls an
+; *already-compiled* Lamedh closure directly from host code,
+; synchronously, right now — not by emitting target instructions. This
+; works because a compiled closure and the compiler itself are both
+; just x86-64 machine code in the same process; there is no barrier
+; between "host" and "target" beyond which code is calling which. It is
+; the entire mechanism a macro transformer needs: the transformer is an
+; ordinary compiled closure, and expanding a macro call means invoking
+; it now instead of emitting a call to it.
+;
+; nargs must be the caller's own responsibility, not silently omitted:
+; a &REST-taking transformer's prologue (compile_lambda) reads the
+; incoming nargs (in target rax, per the ordinary compiled-code calling
+; convention every compile_call site also honors) to decide which of
+; its register-argument slots hold real REST data versus unread
+; leftover bytes — passing whatever garbage happened to be in rax
+; before this call, as an earlier version of this routine did, corrupts
+; that decision silently instead of erroring, with a transformer that
+; takes fewer than 3 fixed parameters plus &REST (issues #452/#461's
+; own scope, but exercised for the first time by lib/prelude.lisp's own
+; DEFUN — see the README).
 global invoke_closure_host
 invoke_closure_host:
     push rbx
-    mov rbx, rdi
-    UNTAG_PTR rbx
-    mov rax, [rbx+8]              ; code_ptr
-    call rax                        ; rdi/rsi/rdx/rcx already match the
-                                     ; closure calling convention exactly
+    push r12
+    mov r12, rdi
+    UNTAG_PTR r12
+    mov rbx, [r12+8]               ; code_ptr
+    mov rax, r8                      ; nargs (the caller's responsibility)
+    call rbx                           ; rdi/rsi/rdx/rcx already match the
+                                        ; closure calling convention exactly
+    pop r12
     pop rbx
     ret
 
@@ -4358,6 +4374,16 @@ compile_form:
     mov rbx, rax                            ; macro closure (tagged)
     mov rdi, r13
     call raw_args_to_regs                     ; -> rsi,rdx,rcx (raw forms)
+    mov rdi, r13
+    call list_length
+    cmp rax, 3
+    jbe .macro_nargs_ok
+    mov rax, 3                                  ; raw_args_to_regs itself
+                                                 ; only ever forwards the
+                                                 ; first 3 (a pre-existing,
+                                                 ; separate limitation)
+.macro_nargs_ok:
+    mov r8, rax
     mov rdi, rbx
     call invoke_closure_host                     ; rax = expansion
     mov rdi, rax

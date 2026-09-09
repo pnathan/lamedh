@@ -132,3 +132,30 @@ intern_symbol:
     pop r12
     pop rbx
     ret
+
+; bootstrap_globals() — binds the symbol T to itself in the global
+; environment (KERNEL.md Part IV: "T is an ordinary interned symbol,
+; bound to itself in the global environment"). Must run once, before
+; any compiled code can reference T as a variable: a symbol's value
+; cell is IMM_UNBOUND until something writes it, and nothing else in
+; this kernel ever writes T's — evaluating the bare symbol `T` (as
+; opposed to the *separate* IMM_TRUE immediate value EQ/comparisons
+; return, which every prior test exercised instead) fell through to
+; print_fixnum on whatever garbage its unbound cell held, since nothing
+; had ever referenced it as a variable before lib/prelude.lisp's own
+; NOT/WHEN/UNLESS used it as one directly. `NIL` needs no such
+; bootstrapping: it is a distinct immediate value, not a symbol at all,
+; per Part IV, and every other symbol is correctly unbound until
+; DEFINEd, matching the spec's own default.
+global bootstrap_globals
+bootstrap_globals:
+    mov rdi, t_name
+    mov rsi, 1
+    call intern_symbol
+    mov rbx, rax
+    UNTAG_PTR rbx
+    mov [rbx+16], rax
+    ret
+
+section .rodata
+t_name: db "T"

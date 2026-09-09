@@ -23,13 +23,58 @@ extern compile_thunk
 
 %define SRC_BUF_BYTES (16 * 1024 * 1024)
 
+section .rodata
+; prelude.lisp, pulled directly into the binary — no filesystem lookup,
+; no install location, no argv-relative path resolution to invent for
+; a freestanding/no-libc project (see README): the prelude is real
+; Lisp source, run through the exact same reader_init/read_form/
+; compile_thunk loop the user's own program is, just from an in-memory
+; buffer instead of an mmap'd file. `lib/prelude.lisp` explains why
+; each form in it needs no compiler change.
+prelude_start:
+    incbin "lib/prelude.lisp"
+prelude_end:
+prelude_len: equ prelude_end - prelude_start
+
 section .text
+
+; run_buffer(rdi=buf, rsi=len) — the read+compile+run loop every
+; tests/cases/*.asm case already does by hand for one hardcoded literal
+; at a time, generalized to a runtime loop over an arbitrary buffer:
+; read a top-level form, compile it to a fresh native thunk, call it
+; for its side effects, repeat until EOF. Used for both the prelude
+; and the user's own source text below.
+run_buffer:
+    call reader_init
+.loop:
+    call read_form
+    cmp rax, IMM_EOF
+    je .done
+    mov rdi, rax
+    call compile_thunk
+    ; Every compiled thunk is called this way, everywhere in this
+    ; project (every tests/cases/*.asm lamedh_main does the same
+    ; push+call-through-the-stack-slot+pop, not a bare `call rax`):
+    ; the extra push keeps rsp 16-byte aligned at the callee's entry,
+    ; which floats.asm's host routines rely on for aligned SSE moves —
+    ; a bare `call rax` here shifts alignment by 8 and faults (SIGBUS)
+    ; the moment compiled code calls into one of them.
+    push rax
+    call qword [rsp]
+    add rsp, 8
+    jmp .loop
+.done:
+    ret
 
 global lamedh_main
 lamedh_main:
     push rbx
     push r12
     push r13
+
+    mov rdi, prelude_start
+    mov rsi, prelude_len
+    call run_buffer
 
     ; One anonymous mmap holds the entire source text; 16 MiB is the
     ; same generous v0 sizing the data/code heaps already use
@@ -95,24 +140,8 @@ lamedh_main:
 
     mov rdi, r12
     mov rsi, r13
-    call reader_init
+    call run_buffer
 
-    ; Read, compile, and run every top-level form in turn — a program
-    ; is a sequence of independent thunks, each run for its side
-    ; effects (PRINT, etc.) the moment it's compiled, same as every
-    ; existing test's own lamedh_main already does by hand.
-.form_loop:
-    call read_form
-    cmp rax, IMM_EOF
-    je .done
-    mov rdi, rax
-    call compile_thunk
-    push rax
-    call qword [rsp]
-    add rsp, 8
-    jmp .form_loop
-
-.done:
     xor rax, rax
     jmp .out
 

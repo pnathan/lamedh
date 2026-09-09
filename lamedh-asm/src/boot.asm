@@ -14,6 +14,7 @@
 
 extern heap_init_all
 extern lamedh_main
+extern bootstrap_globals
 
 section .bss
 align 8
@@ -41,6 +42,8 @@ _start:
     mov rdi, DATA_HEAP_BYTES
     mov rsi, CODE_HEAP_BYTES
     call heap_init_all
+
+    call bootstrap_globals            ; binds the symbol T to itself
 
     call lamedh_main               ; rax = exit code
 

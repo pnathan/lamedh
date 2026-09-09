@@ -75,6 +75,47 @@ else
         echo "FAIL  file_runner_missing_file  exit: got $got_exit want 1"
         fail=$((fail+1))
     fi
+
+    # lib/prelude.lisp, loaded automatically before this file: DEFUN,
+    # NOT, WHEN, UNLESS, LIST, and the bare symbol T evaluated as a
+    # variable (bootstrap_globals, symtab.asm) — every one of these
+    # found a real bug the first time it was actually exercised this
+    # way (see the commit history), so this is a real regression net,
+    # not a formality.
+    prelude_prog="$BUILD/file_runner_prelude_case.lisp"
+    cat > "$prelude_prog" <<'LISP'
+(PRINT T)
+(NEWLINE)
+(PRINT (NOT (QUOTE ())))
+(NEWLINE)
+(PRINT (NOT 1))
+(NEWLINE)
+(DEFUN SQUARE2 (X) (* X X))
+(PRINT (SQUARE2 6))
+(NEWLINE)
+(WHEN T (PRINT (QUOTE WHEN-TRUE)))
+(NEWLINE)
+(WHEN (QUOTE ()) (PRINT (QUOTE WHEN-FALSE-UNREACHABLE)))
+(UNLESS (QUOTE ()) (PRINT (QUOTE UNLESS-TRUE)))
+(NEWLINE)
+(PRINT (LIST 1 2 3))
+LISP
+    want_out='T
+T
+()
+36
+WHEN-TRUE
+UNLESS-TRUE
+(1 2 3)'
+    got_out=$("$runner_bin" "$prelude_prog")
+    got_exit=$?
+    if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then
+        echo "ok    file_runner_prelude"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_prelude  stdout: got [$got_out] want [$want_out] exit: got $got_exit"
+        fail=$((fail+1))
+    fi
 fi
 
 for case_asm in tests/cases/*.asm; do
