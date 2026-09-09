@@ -71,7 +71,7 @@ whitespace and are a parse error wherever they appear outside a string
   immediately followed by a line break or by end of input does not match
   the comment production and is a **parse error** in the reference
   (`parse_comment` requires at least one comment character). See Part XII,
-  axis 7.
+  axis 6.
 - A *block comment* runs from `#|` to the matching `|#` and **nests**: an
   inner `#|` increments a depth counter that an inner `|#` decrements, so
   `#| a #| b |# c |#` is one comment. Block comments are not recognized
@@ -239,15 +239,17 @@ exhausting its native stack. The reference's default limit is 512 levels
 (`DEFAULT_READER_DEPTH`) and a stdlib-loaded environment raises it to
 50,000; the exact number is a host detail, not part of the language.
 
-**What is grammar-minimal versus library-extensible.** Decimal integers,
-symbols (all four productions), strings, proper and dotted lists,
-`NIL`/`T`, and the quote family are the required minimum — `lib/*.lisp`
-cannot be written without them. Octal/hex-suffix and radix-prefix
-integers, floats, block comments, character literals, and `#S(...)`
-records are each a layered extension: a host may defer them, as long as
-it does not change what they mean once implemented (Part XII, axis 4,
-grants latitude on *whether a from-scratch host has parsed them yet*, not
-on *meaning*).
+**Every production in this grammar is required, not layered.** Decimal
+integers, symbols (all four productions), strings, proper and dotted
+lists, `NIL`/`T`, and the quote family are what a bare `lib/*.lisp`-running
+host cannot do without; octal/hex-suffix and radix-prefix integers,
+floats, block comments, character literals, and `#S(...)` records are no
+longer optional latitude either — a conformant host implements all of
+them, with exactly the meaning stated above. There is no
+partial-conformance status for a host still missing one of these: it is
+not yet conformant, full stop, and says so in its own documentation
+(Part XIII) rather than being spec-permitted to treat the gap as
+conformant-with-an-excuse.
 
 ## Part III — Printed representation
 
@@ -543,7 +545,7 @@ zero divisor is an error in both:
   `(mod -7 2)` is `1`, `(mod 7 -2)` is `1`.
 - On the one overflowing input, `(mod i64::MIN -1)`, the reference
   returns `0` **without** setting `OVERFLOW`, whereas `/` and `REMAINDER`
-  on `(i64::MIN, -1)` set the flag. See Part XII, axis 5.
+  on `(i64::MIN, -1)` set the flag. See Part XII, axis 4.
 
 **Comparison** (`<`/`LESSP`, `>`/`GREATERP`, `=`): each takes **two or
 more** operands (one is an error) and is a monotone chain — `(< a b c)`
@@ -1181,7 +1183,16 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    signed range, both models must agree with each other and with the Rust
    reference exactly — this axis only has teeth once a computation's true
    result leaves that range. Integer *literals* are outside this axis:
-   Part II's overflow-to-float rule applies on every host.
+   Part II's overflow-to-float rule applies on every host. **Which model a
+   host picked must itself be introspectable, not only documented**: a
+   host binds a global constant, named `+NUMERIC-PRECISION-MODEL+`, to the
+   symbol `WRAPAROUND-64` or `ARBITRARY-PRECISION` accordingly, using the
+   global-environment mutation primitive Part XI already requires — no
+   new kernel primitive is needed to satisfy this. This introspectability
+   requirement is not itself an axis: every host must expose its choice
+   this way, whichever of the two models it picked; only the underlying
+   choice of model varies. Not yet implemented anywhere, including the
+   Rust reference — tracked as issue #463 (Part XIII).
 2. **Destructive cons mutation is not an axis: cons cells must be
    immutable on every host.** `RPLACA` and `RPLACD` return a **new** cons
    cell sharing the untouched half of the original
@@ -1208,27 +1219,18 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    result conforms as long as the observable behavior — including which
    positions are and are not tail positions, and the invisibility of
    non-local exits to `HANDLER-CASE` — matches.
-4. **Reader/printer extension timing** (Part II's closing paragraph): a
-   host may defer implementing radix-prefixed/suffixed integer literals,
-   floats, block comments, character literals, or `#S(...)` records
-   without losing conformance on the primitives it has implemented, as
-   long as what it *has* implemented means exactly what this document
-   says. A host is not conformant merely because it has an excuse for
-   what it's missing; it is on a documented path to conformance, and
-   should say so in its own documentation, tracked as that host's own
-   issue-tracker business rather than audited here (Part XIII).
-5. **`MOD`'s overflow edge case** (Part V): a host may either reproduce
+4. **`MOD`'s overflow edge case** (Part V): a host may either reproduce
    the reference's silent `0` on `(mod i64::MIN -1)` without setting
    `OVERFLOW`, or set the same flag `/` and `REMAINDER` set for that
    input. Both conform; the latter is a correctness improvement, since no
    corpus code depends on the former.
-6. **Native surface beyond this document.** A host may implement more
+5. **Native surface beyond this document.** A host may implement more
    than Part XI requires natively, for performance or because its host
    language already supplies it (the Rust reference's JIT and
    performance-sensitive paths are themselves full of this) — as long as
    the extra native surface is not required by `lib/*.lisp` and does not
    change the observable behavior of anything that is.
-7. **The empty line comment** (Part II): the reference rejects a `;`
+6. **The empty line comment** (Part II): the reference rejects a `;`
    immediately followed by a line break or end of input as a parse error.
    A host may instead treat it as an empty comment. Because no text that
    loads on the reference contains one, this leniency cannot change the
@@ -1300,6 +1302,17 @@ than smoothed over:
   so Part II does not describe one; when a design lands in the reference,
   Part II gains its grammar and Part XII its declared axis (which host
   feature names exist).
+- **Expose declared-axis choices as an introspectable global trait**
+  (issue #463), starting with `+NUMERIC-PRECISION-MODEL+` for Part XII
+  axis 1: a portable program should be able to ask which model a host
+  implements rather than infer it behaviorally (e.g. by deliberately
+  overflowing a computation and checking `OVERFLOW`). No new kernel
+  primitive is required — Part XI's global-mutation primitive already
+  suffices — only a naming convention and the discipline of every host
+  actually binding it. Not yet implemented anywhere, reference included.
+  Natural to design alongside #459's feature registry, since both are
+  "what does this host claim to support," queried at read time versus at
+  run time.
 - **Cache macro expansion per call site** (issue #460): today every macro
   call re-runs the macro body from scratch on every invocation, including
   every iteration of a compiled loop, because macro dispatch shares one
