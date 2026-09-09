@@ -501,6 +501,7 @@ pub enum BuiltinFunc {
     Index,
     Eval,
     Eq,
+    HashCode,
     Not,
     NumericEquals,
     MakeHashTable,
@@ -2918,12 +2919,31 @@ impl Hash for LispVal {
             LispVal::OsChild(c) => {
                 Shared::as_ptr(c).hash(state);
             }
-            LispVal::Builtin(_)
-            | LispVal::Lambda(_)
-            | LispVal::Fexpr(_)
-            | LispVal::Macro(_)
-            | LispVal::Vau(_) => {
-                // Functions are not hashable by value.
+            LispVal::Builtin(b) => {
+                // `PartialEq for BuiltinFunc` is derived (variant equality),
+                // so the discriminant alone is a sound, EQUAL-consistent
+                // hash: two `Builtin`s compare equal iff they are the same
+                // variant.
+                std::mem::discriminant(b).hash(state);
+            }
+            LispVal::Lambda(l) => {
+                // `PartialEq for Lambda` requires `Shared::ptr_eq(&self.env,
+                // &other.env)` alongside structural params/body equality, so
+                // hashing only the captured environment's pointer is
+                // EQUAL-consistent (equal closures share an env, hence a
+                // hash) without walking the body on every lookup (issue
+                // #474: closures were previously unhashable-by-value,
+                // degenerately colliding every lambda into one bucket).
+                Shared::as_ptr(&l.env).hash(state);
+            }
+            LispVal::Fexpr(f) => {
+                Shared::as_ptr(&f.env).hash(state);
+            }
+            LispVal::Macro(m) => {
+                Shared::as_ptr(&m.env).hash(state);
+            }
+            LispVal::Vau(v) => {
+                Shared::as_ptr(&v.env).hash(state);
             }
             #[cfg(feature = "concurrency")]
             LispVal::Channel(c) => std::sync::Arc::as_ptr(c).hash(state),
