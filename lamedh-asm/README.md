@@ -63,11 +63,13 @@ programs this stage targets.
   value cell lives at a fixed heap address decided at intern time, so a
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
-- Binary `+ - * < =` operating on unboxed tagged fixnums.
+- Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
+  and `REMAINDER`.
+- `PROGN`, `COND`, `AND`, `OR` as real special forms (Part VII).
 - `CAR`/`CDR`/`CONS`/`EQ`/`ATOM`/`NULL`, `DEFMACRO`, `CATCH`/`THROW`,
   `PRINT`/`NEWLINE`, `STRING-LENGTH`, `FD-OPEN`/`FD-CLOSE`/`FD-WRITE`/
   `FD-READ`, `FLOAT`/`F+`/`F-`/`F*`/`F/`/`F<`, and `MAKE-ARRAY`/
-  `ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`/`HASH-CODE`/`MOD` — see "The
+  `ARRAY-REF`/`ARRAY-SET`/`ARRAY-LENGTH`/`HASH-CODE` — see "The
   kernel surface" below.
 - String and float literals (`"..."`, `3.14`) read as heapobjs
   (`HDR_STRING`, `HDR_FLOAT`) and are self-evaluating, exactly like a
@@ -258,11 +260,18 @@ into conformance incrementally, tracked honestly rather than silently:
   Part III's PRIN1-style readable text for every value this kernel
   has — `NIL` as `()`, `T` as `T`, a symbol as its name, a cons
   recursively as a proper or dotted list — not just fixnums/strings/
-  floats (`tests/cases/024_print_readable.asm`).
+  floats (`tests/cases/024_print_readable.asm`). `PROGN`, `COND`,
+  `AND`, `OR` now exist (`tests/cases/025_progn_cond_and_or.asm`) with
+  the spec's exact edge cases: `(progn)` is `NIL`, a `COND` clause
+  with no body returns the test's own value, `(and)` is `T`, `(or)`
+  is `NIL`. `LAMBDA` bodies are no longer single-expression-only —
+  multiple forms are implicitly `PROGN`-wrapped (`compile_lambda` now
+  compiles `cddr` of the whole form through `compile_progn`, not just
+  `caddr` through `compile_form`).
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
-  special forms (`COND`/`AND`/`OR`/`PROGN`/`LET`/`LET*`/`SETQ`/`BLOCK`/
-  `PROG`/`WHILE`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
-  `QUASIQUOTE`) don't exist yet; the condition system (Part VIII),
+  special forms (`LET`/`LET*`/`SETQ`/`BLOCK`/`PROG`/`WHILE`/`FOR`/
+  `UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/`QUASIQUOTE`) don't exist yet;
+  the condition system (Part VIII),
   capability gating (Part IX), and fuel (Part X) don't exist yet;
   proper tail calls (Part VI) aren't implemented (see v0 limits
   below); the hash table/array/float primitive *names* (`HT-*`/
@@ -280,7 +289,8 @@ into conformance incrementally, tracked honestly rather than silently:
 
 ## v0 limits (known, not silent)
 
-- A lambda body is a single expression (no implicit `PROGN`).
+- A lambda body may have multiple forms, implicitly `PROGN`-wrapped
+  (no longer a v0 limit — see "KERNEL.md conformance" above).
 - A nested `LAMBDA` may only capture free variables from its
   *immediately* enclosing lambda's own frame — a variable needed from
   two levels up needs manual re-threading through the middle lambda for
@@ -422,7 +432,6 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
   every local to a fixed stack slot.
 - Proper tail calls: frame-reuse `jmp` for calls in tail position.
 - A copying or generational GC for the data heap.
-- Multi-expression lambda bodies (`PROGN`).
 - `&REST` params without the `nfixed>=3` restriction (would need a
   register/stack-boundary-crossing rest list, not just a stack-only
   one).

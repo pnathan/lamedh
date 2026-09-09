@@ -112,6 +112,10 @@ kw_catch:  db "CATCH"
 kw_throw:  db "THROW"
 kw_print:  db "PRINT"
 kw_newline: db "NEWLINE"
+kw_progn:  db "PROGN"
+kw_cond:   db "COND"
+kw_and:    db "AND"
+kw_or:     db "OR"
 kw_string_length: db "STRING-LENGTH"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -803,6 +807,247 @@ compile_binop:
     pop rbx
     ret
 
+; compile_progn(rdi = forms list) — emits code evaluating each form in
+; order; target rax holds the last one's value, or NIL for an empty
+; list (KERNEL.md Part VI: "(progn) is NIL"). This is what a multi-
+; form LAMBDA/LET/LET* body compiles through — compile_form's callers
+; already preserve rbx/r12/r13/r14 across a nested compile_form call,
+; so a plain host-side loop over the list is enough; no special
+; backpatching is needed since nothing branches here.
+compile_progn:
+    push rbx
+    mov rbx, rdi
+    cmp rbx, IMM_NIL
+    jne .have
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    jmp .out
+.have:
+.loop:
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call compile_form
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    cmp rbx, IMM_NIL
+    jne .loop
+.out:
+    pop rbx
+    ret
+
+; compile_cond(rdi = the full (COND clause...) form)
+;
+; Each clause is (test body...). Tests are tried in order; the first
+; truthy one's body (compile_progn'd) becomes the result and every
+; later clause is skipped. No clause matching -> NIL. Each clause's
+; "test was NIL" branch is a backpatched forward jump to wherever the
+; *next* clause starts being generated (unknown until then, same
+; reasoning as compile_if); each clause's "body is done" jump instead
+; targets the form's overall end, unknown until every clause has been
+; compiled, so those end-jump sites accumulate in a host-side list
+; (consed as compile-time data, not target code) and get patched in
+; one pass once the real end address is known.
+compile_cond:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi
+    call cdr
+    mov rbx, rax                      ; clauses cursor
+    mov r12, IMM_NIL                    ; acc: end-jump patch sites
+.loop:
+    cmp rbx, IMM_NIL
+    je .no_match
+    mov rdi, rbx
+    call car
+    mov r14, rax                          ; clause
+    mov rdi, r14
+    call car
+    mov rdi, rax
+    call compile_form                         ; test -> target rax
+    mov rsi, IMM_NIL
+    call emit_cmp_rax_imm64
+    call emit_je                                ; -> rax = skip-clause site
+    push rax                                      ; [skip_site, ...]
+
+    mov rdi, r14
+    call cdr
+    cmp rax, IMM_NIL
+    je .no_body                                       ; "(test)" with no body:
+                                                        ; the test's own value
+                                                        ; (already in target
+                                                        ; rax) stands
+    mov rdi, rax
+    call compile_progn                              ; body -> target rax
+.no_body:
+    call emit_jmp32                                    ; -> rax = end-jump site
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    mov r12, rax
+
+    call codegen_here                                     ; next-clause label
+    pop rdi                                                  ; skip_site
+    mov rsi, rax
+    call patch_rel32
+
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .loop
+
+.no_match:
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                                     ; rax = NIL
+
+    call codegen_here                                              ; end label
+    mov r13, rax                                                     ; end addr (rax gets clobbered below)
+    mov rbx, r12
+.patch_loop:
+    cmp rbx, IMM_NIL
+    je .out
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    mov rsi, r13
+    call patch_rel32
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .patch_loop
+.out:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_and(rdi = the full (AND form...) form)
+; (AND) -> T. Otherwise forms are evaluated left to right; the first
+; NIL short-circuits the rest with NIL as the result; if none is NIL,
+; the last form's value is the result. Same end-jump-list-then-patch
+; technique as compile_cond, one jump per short-circuiting form.
+compile_and:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    call cdr
+    mov rbx, rax                     ; forms cursor
+    mov r12, IMM_NIL                   ; acc: short-circuit end-jump sites
+    cmp rbx, IMM_NIL
+    jne .have
+    mov rsi, IMM_TRUE
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    jmp .out
+.have:
+.loop:
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call compile_form                    ; form -> target rax
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    cmp rbx, IMM_NIL
+    je .last_done                          ; last form: its value stands
+    mov rsi, IMM_NIL
+    call emit_cmp_rax_imm64
+    call emit_je                             ; -> rax = end-jump site (NIL case)
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    mov r12, rax
+    jmp .loop
+.last_done:
+    call codegen_here
+    mov r13, rax
+    mov rbx, r12
+.patch_loop:
+    cmp rbx, IMM_NIL
+    je .out
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    mov rsi, r13
+    call patch_rel32
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .patch_loop
+.out:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; compile_or(rdi = the full (OR form...) form)
+; (OR) -> NIL. Otherwise forms are evaluated left to right; the first
+; non-NIL short-circuits the rest with that value as the result; if
+; every form is NIL, the result is NIL (the last form's own NIL value,
+; already correct with no extra work). Mirrors compile_and exactly,
+; short-circuiting on "not NIL" (emit_jne) instead of "is NIL".
+compile_or:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    call cdr
+    mov rbx, rax
+    mov r12, IMM_NIL
+    cmp rbx, IMM_NIL
+    jne .have
+    mov rsi, IMM_NIL
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    jmp .out
+.have:
+.loop:
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    call compile_form
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    cmp rbx, IMM_NIL
+    je .last_done
+    mov rsi, IMM_NIL
+    call emit_cmp_rax_imm64
+    call emit_jne                            ; -> rax = end-jump site (non-NIL case)
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    mov r12, rax
+    jmp .loop
+.last_done:
+    call codegen_here
+    mov r13, rax
+    mov rbx, r12
+.patch_loop:
+    cmp rbx, IMM_NIL
+    je .out
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    mov rsi, r13
+    call patch_rel32
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .patch_loop
+.out:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; compile_if(rdi = the full (IF test then else) form)
 ;
 ; Backpatched forward branches: the je/jmp targets aren't known until the
@@ -903,8 +1148,16 @@ compile_lambda:
     mov r12, rax                        ; fixed params list (&REST stripped)
     mov [rest_sym_scratch], rdx           ; rest_sym, or IMM_NIL if none
     mov rdi, rbx
-    call caddr
-    mov r13, rax                       ; body (single form)
+    call cdr
+    mov rdi, rax
+    call cdr
+    mov r13, rax                       ; body forms list (cddr of whole form;
+                                        ; scan_free_vars walks a list of forms
+                                        ; exactly like it walks a list of
+                                        ; subforms already, so this needs no
+                                        ; change there — only the final
+                                        ; compile_form call below becomes
+                                        ; compile_progn)
 
     call emit_jmp32
     push rax                              ; [jmp_over_site]
@@ -1135,7 +1388,7 @@ compile_lambda:
     mov rax, [rsp+8]
     mov [current_scope], rax
     mov rdi, r13
-    call compile_form
+    call compile_progn
     pop rax
     mov [current_scope], rax                       ; [new_scope, param_frame, jmp_over_site]
 
@@ -2465,6 +2718,52 @@ compile_form:
     jmp .out
 
 .not_array_set:
+    mov rdi, r12
+    mov rsi, kw_progn
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_progn
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call compile_progn
+    jmp .out
+
+.not_progn:
+    mov rdi, r12
+    mov rsi, kw_cond
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_cond
+    mov rdi, rbx
+    call compile_cond
+    jmp .out
+
+.not_cond:
+    mov rdi, r12
+    mov rsi, kw_and
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_and
+    mov rdi, rbx
+    call compile_and
+    jmp .out
+
+.not_and:
+    mov rdi, r12
+    mov rsi, kw_or
+    mov rdx, 2
+    call sym_is
+    test rax, rax
+    jz .not_or
+    mov rdi, rbx
+    call compile_or
+    jmp .out
+
+.not_or:
     mov rdi, r12
     mov rsi, kw_add
     mov rdx, 1
