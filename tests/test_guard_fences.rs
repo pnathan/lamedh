@@ -3,7 +3,9 @@
 //! budget and capability authority, pure Lisp ("Phase 1").
 
 use lamedh::environment::Environment;
-use lamedh::{Shared, eval_line, with_large_stack};
+use lamedh::{INTERPRETER_STACK_SIZE, Shared, eval_line, with_large_stack};
+use std::sync::mpsc;
+use std::time::Duration;
 
 fn env() -> Shared<Environment> {
     Environment::with_stdlib()
@@ -29,6 +31,141 @@ fn fuel_exhaustion_is_a_catchable_error_and_env_survives() {
         );
         // The interpreter is healthy afterwards.
         assert_eq!(eval_line("(+ 1 2)", &e), "3");
+    });
+}
+
+/// Run `f` on a large-stack interpreter thread and fail (rather than hang
+/// forever) if it does not finish within `timeout` — the guard a fuel-bypass
+/// regression test needs, since a reopened bypass hangs indefinitely instead
+/// of erroring.
+fn eval_line_with_timeout(src: &'static str, timeout: Duration) -> String {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(INTERPRETER_STACK_SIZE)
+        .spawn(move || {
+            let e = env();
+            let _ = tx.send(eval_line(src, &e));
+        })
+        .expect("failed to spawn interpreter thread");
+    rx.recv_timeout(timeout).unwrap_or_else(|_| {
+        panic!(
+            "timed out after {timeout:?} waiting for: {src}\n\
+             (a fuel bypass would hang here instead of erroring)"
+        )
+    })
+}
+
+// --------------------------------------------- issue #457: fuel bypass ----
+
+#[test]
+fn fuel_exhausted_inside_fence_cannot_be_caught_and_looped_past() {
+    // The issue's own reproduction: a HANDLER-CASE positioned INSIDE the very
+    // WITH-FUEL fence that exhausts, with a handler that never returns.
+    // Before the #457 fix, exhaustion unconditionally disarmed the counter
+    // (-1, unlimited) as it signalled, so the handler ran forever with
+    // unmetered fuel. Bounded by a hard wall-clock timeout: a reopened
+    // bypass hangs rather than erroring, so this must fail fast, not hang
+    // the suite.
+    let out = eval_line_with_timeout(
+        "(with-fuel 1000
+           (handler-case
+               (progn
+                 (defun issue457-spin (n) (issue457-spin (+ n 1)))
+                 (issue457-spin 0))
+             (error (er)
+               (defun issue457-handler-loop () (issue457-handler-loop))
+               (issue457-handler-loop))))",
+        Duration::from_secs(20),
+    );
+    assert!(
+        out.contains("fuel exhausted"),
+        "expected the owning WITH-FUEL frame to re-signal a catchable \
+         fuel-exhausted error to code outside the fence (the inside handler \
+         must never run), got: {out}"
+    );
+}
+
+#[test]
+fn fuel_grace_lets_unwind_protect_cleanup_run_but_stays_bounded() {
+    with_large_stack(|| {
+        let e = env();
+        eval_line("(def issue457b-cleanup-ran 'not-run)", &e);
+        // UNWIND-PROTECT's cleanup form is Rust-level control flow (it is
+        // not an ordinary guest HANDLER-CASE), so it is exactly what the
+        // grace allowance exists to fund: it must still run after the body
+        // exhausts fuel, evaluated under the fence's converted, ordinary
+        // catchable error.
+        let out = eval_line(
+            "(handler-case
+               (with-fuel 1000
+                 (unwind-protect
+                     (progn
+                       (defun issue457b-spin (n) (issue457b-spin (+ n 1)))
+                       (issue457b-spin 0))
+                   (setq issue457b-cleanup-ran 'ran)))
+               (error (er) 'caught))",
+            &e,
+        );
+        assert_eq!(
+            out, "CAUGHT",
+            "expected an ordinary catchable error outside the fence, got: {out}"
+        );
+        assert_eq!(
+            eval_line("issue457b-cleanup-ran", &e),
+            "RAN",
+            "the grace allowance must let UNWIND-PROTECT cleanup run after exhaustion"
+        );
+        // The interpreter is healthy afterwards.
+        assert_eq!(eval_line("(+ 1 2)", &e), "3");
+    });
+}
+
+#[test]
+fn fuel_grace_allowance_is_fixed_and_non_renewable() {
+    // A guest cannot defeat the grace allowance by putting an infinite loop
+    // in the cleanup form itself: grace is a small, fixed budget, not a
+    // second unconditional disarm. Bounded by a hard timeout — an unbounded
+    // grace would hang here instead of the fence eventually re-signalling.
+    let out = eval_line_with_timeout(
+        "(handler-case
+           (with-fuel 1000
+             (unwind-protect
+                 (progn
+                   (defun issue457c-spin (n) (issue457c-spin (+ n 1)))
+                   (issue457c-spin 0))
+               (defun issue457c-cleanup-spin (n) (issue457c-cleanup-spin (+ n 1)))
+               (issue457c-cleanup-spin 0)))
+           (error (er) 'caught))",
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        out, "CAUGHT",
+        "a looping cleanup form must not grant unlimited fuel either, got: {out}"
+    );
+}
+
+#[test]
+fn fuel_grace_does_not_leak_between_sibling_exhaustions() {
+    with_large_stack(|| {
+        let e = env();
+        // Two independent inner fences exhaust in turn inside one outer
+        // fence. Each must get its own fresh grace allowance (reset on
+        // (re)arm) rather than the first exhaustion's used-up grace state
+        // silently starving the second, and the outer fence must survive
+        // both.
+        let out = eval_line(
+            "(with-fuel 100000
+               (defun issue457d-spin1 (n) (issue457d-spin1 (+ n 1)))
+               (defun issue457d-spin2 (n) (issue457d-spin2 (+ n 1)))
+               (list
+                 (handler-case (with-fuel 50 (issue457d-spin1 0))
+                   (error (er) 'first-caught))
+                 (handler-case (with-fuel 50 (issue457d-spin2 0))
+                   (error (er) 'second-caught))
+                 (if (kernel-fuel-remaining) 'outer-alive 'outer-dead)))",
+            &e,
+        );
+        assert_eq!(out, "(FIRST-CAUGHT SECOND-CAUGHT OUTER-ALIVE)");
     });
 }
 

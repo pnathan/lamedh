@@ -427,6 +427,18 @@ pub enum LispError {
     /// Raised by `(error ...)`; trapped by `ERRORSET` (→ NIL) and bound by the
     /// handler variable in `HANDLER-CASE`.
     Signaled(Box<LispVal>),
+    /// Kernel-fuel exhaustion (issue #457), riding the same "not really an
+    /// error" propagation path as `Return`/`Go`/`Throw`/`ReturnFrom`: ordinary
+    /// guest `HANDLER-CASE` does **not** intercept this variant, so code
+    /// positioned *inside* the exhausted `WITH-FUEL` fence cannot catch its
+    /// own exhaustion signal and loop past it. Only the owning `WITH-FUEL`
+    /// special form (the fence whose armed budget hit zero) converts this
+    /// back into an ordinary catchable [`LispError::Generic`] for code
+    /// outside the fence; Rust-level `UNWIND-PROTECT`/`CATCH`/`BLOCK` frames
+    /// still see it and run cleanup, funded by a small fixed non-renewable
+    /// grace allowance (`charge_kernel_fuel` in `evaluator/core.rs`) rather
+    /// than an unconditional disarm.
+    FuelExhausted,
 }
 
 impl PartialEq for LispError {
@@ -436,6 +448,7 @@ impl PartialEq for LispError {
             (LispError::Go(a), LispError::Go(b)) => a == b,
             (LispError::Return(v1), LispError::Return(v2)) => v1 == v2,
             (LispError::Signaled(a), LispError::Signaled(b)) => a == b,
+            (LispError::FuelExhausted, LispError::FuelExhausted) => true,
             _ => false,
         }
     }
@@ -457,6 +470,11 @@ impl fmt::Display for LispError {
                 LispVal::Error(e) => write!(f, "Error: {}", e.message),
                 other => write!(f, "Error: {}", crate::printer::print(other)),
             },
+            // Displayed only when no owning WITH-FUEL frame converted this
+            // first (e.g. a host driver that arms fuel directly, outside any
+            // Lisp WITH-FUEL fence): keep the exact legacy wording so
+            // top-level CLI/host output is unchanged by issue #457's fix.
+            LispError::FuelExhausted => write!(f, "Error: fuel exhausted (kernel step budget)"),
         }
     }
 }
@@ -1109,6 +1127,24 @@ pub enum Code {
         args: Vec<Shared<Code>>,
         /// Original AST form for the macro/fexpr/vau fallback path.
         original: LispVal,
+        /// Per-call-site macro expansion cache (issue #460).
+        ///
+        /// `None` until the callee first evaluates to a `LispVal::Macro`.
+        /// On a cache hit (`Shared::ptr_eq` between the cached
+        /// `CachedExpansion::macro_id` and the freshly evaluated callee),
+        /// execution resumes straight from `code` — the macro body never
+        /// re-runs. On a miss (first expansion, or the binding was
+        /// redefined), `expand_macro` runs fresh, and only on `Ok` is the
+        /// result compiled and stored here; an expansion that errors is
+        /// never cached, so the next call retries. `fexpr`/`vau` dispatch
+        /// never touches this slot — only macros are cached, by design
+        /// (their semantics require staying fresh every call).
+        ///
+        /// Reset to `None` by `fork_world`'s `copy_code`: a cached
+        /// expansion's `code` and `macro_id` hold prototype-world symbol
+        /// cells, so carrying it into a forked world would be a
+        /// cross-world identity leak.
+        expansion: SharedCell<Option<CachedExpansion>>,
     },
     /// `(setq v1 e1 v2 e2 …)` — evaluate each `ei` in order and store it into
     /// `vi` (created in the current environment if not already bound,
@@ -1268,6 +1304,23 @@ impl PartialEq for Macro {
     }
 }
 
+/// A memoized, per-call-site macro expansion (issue #460).
+///
+/// Stored in `Code::Call::expansion`. `macro_id` is the exact `Shared<Macro>`
+/// whose expansion `code` (already `compile`d) was cached; a cache hit
+/// requires `Shared::ptr_eq` against the call site's freshly evaluated
+/// callee, so redefining the macro (which produces a new `Shared<Macro>`)
+/// invalidates the cache automatically on the next call — no reverse index
+/// or redefinition hook needed. Never populated from a failed expansion:
+/// an error is never cached, so the next call always re-attempts expansion.
+#[derive(Debug, Clone)]
+pub struct CachedExpansion {
+    /// Identity of the macro this expansion was computed from.
+    pub macro_id: Shared<Macro>,
+    /// The compiled expansion, ready to `ExecTail`.
+    pub code: Shared<Code>,
+}
+
 /// The function signature for host-registered (native) Lisp callables.
 pub type NativeFn = dyn Fn(&[LispVal], &Shared<Environment>) -> Result<LispVal, LispError>;
 
@@ -1364,7 +1417,14 @@ pub enum LispVal {
     /// A fexpr (unevaluated-argument function).  See [`Fexpr`].
     Fexpr(Box<Fexpr>),
     /// A macro (code-returning function).  See [`Macro`].
-    Macro(Box<Macro>),
+    ///
+    /// `Shared`, not `Box` (issue #460): a compiled call site caches its
+    /// expansion keyed on the identity of the macro value it expanded
+    /// (`Shared::ptr_eq`), so the macro binding itself needs a stable
+    /// pointer identity to compare against on every call. `PartialEq`
+    /// stays structural (see `impl PartialEq for Macro`) — `EQUAL` on two
+    /// macros is unaffected by this change.
+    Macro(Shared<Macro>),
     /// A Kernel-style vau operative.  See [`Vau`].
     Vau(Box<Vau>),
     /// A cons cell.  Children use [`Shared`] (not `Box`) so cloning a list is
