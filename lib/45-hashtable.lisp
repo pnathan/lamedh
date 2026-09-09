@@ -403,6 +403,26 @@ indistinguishable from absence)."
 ;;; the concrete TABLE argument's own kind on every call, so they work
 ;;; uniformly on a table built by MAKE-HASH-TABLE or MAKE-LHT directly, not
 ;;; only one built by MAKE-MAP.
+;;;
+;;; MAP-GET/MAP-PUT!/etc. are DEFMACROs, not DEFUNs: a DEFUN wrapper adds a
+;;; full extra interpreted call frame on top of the HASH-TABLE-P branch and
+;;; the winning op's own call -- measured at ~1.4x the direct-call cost on
+;;; this host, not egregious but not the "one comparison, one jump" this
+;;; section promises either. Since #460 (main, cached per compiled call
+;;; site), a macro call's expansion is only run once per call SITE, not
+;;; once per call: after the first hit, evaluating the site re-executes the
+;;; already-expanded `(if (hash-table-p ...) ...)` directly, with no
+;;; wrapper frame at all -- including every iteration of a loop whose body
+;;; contains the call, exactly like every mainstream Lisp's DEFMACRO.
+;;; Each macro below LET-binds its table argument once (a GENSYM'd temp,
+;;; following this file's own `lib/12-control.lisp` DOTIMES precedent) --
+;;; required because the expansion references it twice (once in the
+;;; HASH-TABLE-P test, once in the taken branch), and naive substitution
+;;; would silently double-evaluate a table argument with side effects (e.g.
+;;; `(map-get (side-effecting-lookup) k)`). The key/value/fn arguments need
+;;; no such protection: each appears once per branch, and the branches are
+;;; mutually exclusive, so exactly one evaluation happens at runtime
+;;; regardless of the textual duplication across the expansion's two arms.
 
 (defun map-p (x)
   "True if X is a table this MAP-* API accepts -- either backend."
@@ -415,49 +435,67 @@ indistinguishable from absence)."
 native HASH-TABLE builtin when bound, else the pure-Lamedh LHT."
   (if (boundp 'make-hash-table) (make-hash-table) (make-lht)))
 
-(defun map-get (m k)
+(defmacro map-get (m k)
   "Portable GETHASH/LHT-GET, dispatched by M's own kind."
-  (if (hash-table-p m) (gethash m k) (lht-get m k)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'gethash tmp k)
+                (list 'lht-get tmp k)))))
 
-(declare-type! 'map-get '(forall (a b) (-> (a b) any)))
-
-(defun map-put! (m k v)
+(defmacro map-put! (m k v)
   "Portable SETHASH/LHT-PUT!, dispatched by M's own kind."
-  (if (hash-table-p m) (sethash m k v) (lht-put! m k v)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'sethash tmp k v)
+                (list 'lht-put! tmp k v)))))
 
-(declare-type! 'map-put! '(forall (a b c) (-> (a b c) bool)))
-
-(defun map-remove! (m k)
+(defmacro map-remove! (m k)
   "Portable REMHASH/LHT-REMOVE!, dispatched by M's own kind."
-  (if (hash-table-p m) (remhash m k) (lht-remove! m k)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'remhash tmp k)
+                (list 'lht-remove! tmp k)))))
 
-(declare-type! 'map-remove! '(forall (a b) (-> (a b) bool)))
-
-(defun map-has-key-p (m k)
+(defmacro map-has-key-p (m k)
   "Portable HAS-KEY-P/LHT-HAS-KEY-P, dispatched by M's own kind."
-  (if (hash-table-p m) (has-key-p m k) (lht-has-key-p m k)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'has-key-p tmp k)
+                (list 'lht-has-key-p tmp k)))))
 
-(declare-type! 'map-has-key-p '(forall (a b) (-> (a b) bool)))
-
-(defun map-count (m)
+(defmacro map-count (m)
   "Portable HASH-TABLE-COUNT*/LHT-COUNT, dispatched by M's own kind."
-  (if (hash-table-p m) (hash-table-count* m) (lht-count m)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'hash-table-count* tmp)
+                (list 'lht-count tmp)))))
 
-(declare-type! 'map-count '(-> (any) int64))
-
-(defun map-keys (m)
+(defmacro map-keys (m)
   "Portable KEYS/LHT-KEYS, dispatched by M's own kind."
-  (if (hash-table-p m) (keys m) (lht-keys m)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'keys tmp)
+                (list 'lht-keys tmp)))))
 
-(declare-type! 'map-keys '(-> (any) any))
-
-(defun map-each (m fn)
+(defmacro map-each (m fn)
   "Portable MAPHASH/LHT-EACH, dispatched by M's own kind. Calls (FN key
 value) for each entry; returns NIL."
-  (if (hash-table-p m) (maphash m fn) (lht-each m fn)))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'maphash tmp fn)
+                (list 'lht-each tmp fn)))))
 
-(defun map->alist (m)
+(defmacro map->alist (m)
   "Portable HASH->ALIST/LHT->ALIST, dispatched by M's own kind."
-  (if (hash-table-p m) (hash->alist m) (lht->alist m)))
-
-(declare-type! 'map->alist '(-> (any) any))
+  (let ((tmp (gensym)))
+    (list 'let (list (list tmp m))
+          (list 'if (list 'hash-table-p tmp)
+                (list 'hash->alist tmp)
+                (list 'lht->alist tmp)))))
