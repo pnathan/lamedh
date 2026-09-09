@@ -93,6 +93,7 @@ extern set_overflow_flag
 extern flag_set_p
 extern clear_flag
 extern clear_all_flags
+extern fail_not_callable
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -2160,6 +2161,87 @@ compile_call_args:
     pop rbx
     ret
 
+; emit_check_callable() — target: rax holds a tagged value about to be
+; treated as a closure and called. Verifies it is actually a
+; HDR_CLOSURE heapobj; if not, calls fail_not_callable (native_errors.asm)
+; instead of letting the caller's own subsequent `and rax,~TAG_MASK` +
+; dereference run on whatever address an unbound global (IMM_NIL) or
+; other non-closure value happens to produce — previously a near-NULL
+; dereference (a segfault), since IMM_NIL's tag bits mask to a null
+; pointer. KERNEL.md Part VIII lists calling a non-callable value among
+; the native-failure classes a host must signal for; this is the v0
+; stand-in (a deterministic exit, not yet a HANDLER-CASE-catchable
+; condition — see native_errors.asm).
+;
+; On success, leaves target rax holding exactly the tagged value it was
+; given: every register used as scratch (rdi, rbx) is restored, so a
+; caller can insert one `call emit_check_callable` right after loading
+; a value it's about to call, with no other change to its own logic.
+; Does not touch rsi/rdx/rcx, which both call sites that use this have
+; live forwarded-argument values in.
+emit_check_callable:
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr                       ; rdi = rax (save tagged value)
+
+    mov edi, TAG_MASK
+    call emit_and_rax_imm32                ; rax &= TAG_MASK
+    mov edi, TAG_HEAPOBJ
+    call emit_sub_rax_imm32                ; rax -= TAG_HEAPOBJ (ZF iff a match)
+    call emit_jne                          ; -> fail
+    push rax                                 ; [tag_fail_site]
+
+    mov dil, REG_RAX
+    mov sil, REG_RDI
+    call emit_mov_rr                          ; rax = rdi (tagged value again)
+    mov edi, 0xFFFFFFFC
+    call emit_and_rax_imm32                   ; rax = raw pointer
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    mov edx, 0
+    call emit_load_based                        ; rbx = header word
+    mov rsi, HDR_CLOSURE
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                       ; rax = HDR_CLOSURE
+    mov dil, REG_RBX
+    mov sil, REG_RAX
+    call emit_cmp_rr                                ; cmp rbx, rax
+    call emit_jne                                     ; -> fail
+    push rax                                            ; [hdr_fail_site, tag_fail_site]
+
+    mov dil, REG_RAX
+    mov sil, REG_RDI
+    call emit_mov_rr                                      ; rax = rdi (restore tagged value)
+    call emit_jmp32                                         ; -> success
+    push rax                                                  ; [ok_site, hdr_fail_site, tag_fail_site]
+
+    call codegen_here                                           ; fail:
+    push rax                                                      ; [fail_addr, ok_site, hdr_fail_site, tag_fail_site]
+    ; patch_rel32 clobbers rax internally (lea rax,[rdi+4]), so
+    ; fail_addr must be reloaded from memory for the second call
+    ; rather than trusted to survive in a register across the first.
+    mov rdi, [rsp+16]
+    mov rsi, [rsp]
+    call patch_rel32                                              ; hdr_fail_site -> fail
+    mov rdi, [rsp+24]
+    mov rsi, [rsp]
+    call patch_rel32                                                ; tag_fail_site -> fail
+    add rsp, 8                                                        ; discard fail_addr
+
+    lea rax, [rel fail_not_callable]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                                                ; never returns
+
+    call codegen_here                                                   ; success:
+    mov rdi, [rsp]
+    mov rsi, rax
+    call patch_rel32                                                      ; ok_site -> success
+    add rsp, 24
+    ret
+
 ; compile_call(rdi=operator form, rsi=args list)
 ; A general application (f arg...). If f is a symbol that is not locally
 ; bound (i.e. a genuine global), the call site is compiled through a
@@ -2261,6 +2343,8 @@ compile_call:
     mov sil, REG_RAX
     call emit_load_local_zero_disp                            ; rax = tagged closure (global's value)
 
+    call emit_check_callable                                   ; die cleanly if it isn't one
+
     mov dil, REG_RAX
     call emit_push_reg                                          ; save tagged closure
 
@@ -2341,6 +2425,7 @@ compile_call:
 
     mov rdi, rbx
     call compile_form                             ; operator -> target rax
+    call emit_check_callable                        ; die cleanly if it isn't one
     mov dil, REG_RAX
     call emit_push_reg                               ; push closure (now on
                                                       ; top, above every arg)

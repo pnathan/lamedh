@@ -576,13 +576,22 @@ producer | build/lamedhc             # or read a program from stdin
   path/to/program.lisp` or `producer | lamedhc` reads the named file, or
   stdin when no path is given, and runs every top-level form in it in
   order. `lamedhc ../examples/factorial/main.lisp` still fails today —
-  segfaults, in fact, calling the unbound global `DEFUN` as a function,
-  since there is no prelude loaded before the program's own forms and
-  no error yet for calling a non-callable value — which is exactly the
-  next-most-honest data point: the driver works, and a from-scratch
-  `lib/00-core.lisp`-equivalent prelude (starting with `DEFUN`, now that
-  it needs no compiler change) is the remaining piece before that
-  command means anything.
+  calling the unbound global `DEFUN` as a function, since there is no
+  prelude loaded before the program's own forms — but no longer
+  segfaults doing it: `emit_check_callable` now guards both of
+  `compile_call`'s paths (`tests/cases/034_not_callable.asm`,
+  `035_not_callable_indirect.asm`), so calling anything that isn't a
+  `HDR_CLOSURE` heapobj — an unbound global, a `LET`-bound non-function
+  value — fails deterministically (a message to stderr, `exit(1)`)
+  instead of dereferencing whatever address an unbound global's
+  `IMM_UNBOUND` tag bits happen to mask to. This is not yet a
+  `HANDLER-CASE`-catchable condition (`native_errors.asm` is explicit
+  about that gap), but it turns undefined behavior into something a
+  caller can at least observe deterministically — which is exactly the
+  next-most-honest data point: the driver works, failures are now
+  legible, and a from-scratch `lib/00-core.lisp`-equivalent prelude
+  (starting with `DEFUN`, now that it needs no compiler change) is the
+  remaining piece before that command means anything.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
@@ -612,7 +621,11 @@ producer | build/lamedhc             # or read a program from stdin
   run as code") instead of just compiling its argument form directly;
   native failures (division by zero, index out of range, wrong arity,
   unbound variable) signaling catchable conditions instead of
-  misbehaving.
+  misbehaving — calling a non-callable value now fails deterministically
+  (`emit_check_callable`, `native_errors.asm`) rather than segfaulting,
+  but still as a hard `exit(1)`, not yet a condition `HANDLER-CASE` can
+  catch; the same treatment for the others in this list is the natural
+  next step once real native-failure-to-condition plumbing exists.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); `RPLACA`/`RPLACD` —
   **not** as in-place cons mutation (Part XII, axis 2, requires cons
