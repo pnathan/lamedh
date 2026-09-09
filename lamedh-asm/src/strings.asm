@@ -175,6 +175,8 @@ print_list:
 extern print_fixnum
 extern is_float
 extern float_print
+extern is_array
+extern array_length_tagged
 global print_value
 print_value:
     push rbx
@@ -231,6 +233,35 @@ print_value:
     jmp .out
 .not_float:
     mov rdi, rbx
+    call is_array
+    test rax, rax
+    jz .not_array
+    mov rsi, array_tag_open
+    mov rdx, array_tag_open_len
+    call write_buf
+    mov rdi, rbx
+    call array_length_tagged
+    mov rdi, rax
+    call print_fixnum
+    mov rsi, array_tag_close
+    mov rdx, 1
+    call write_buf
+    jmp .out
+.not_array:
+    mov rax, rbx
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_closure
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_CLOSURE
+    jne .not_closure
+    mov rsi, lambda_tag
+    mov rdx, lambda_tag_len
+    call write_buf
+    jmp .out
+.not_closure:
+    mov rdi, rbx
     call print_fixnum
 .out:
     pop rbx
@@ -243,3 +274,8 @@ lparen_buf: db "("
 rparen_buf: db ")"
 space_buf:  db " "
 dot_buf:    db " . "
+array_tag_open:     db "<array:"
+array_tag_open_len: equ $ - array_tag_open
+array_tag_close:    db ">"
+lambda_tag:     db "<lambda>"
+lambda_tag_len: equ $ - lambda_tag

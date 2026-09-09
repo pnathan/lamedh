@@ -343,10 +343,17 @@ into conformance incrementally, tracked honestly rather than silently:
   detail; there is no character type, no Unicode-codepoint string
   indexing, no typed arrays, no environments-as-values, no `GENSYM`/
   property lists, no `EVAL`/`READ-FROM-STRING`; the printer has no
-  cycle detection (unreachable anyway — cons cells are immutable here)
-  and no opaque-value tags (`<lambda>` etc.) for closures/arrays/hash
-  tables yet. This list is deliberately specific so it can shrink
-  honestly, item by item, rather than being replaced by a vaguer
+  cycle detection (unreachable anyway — cons cells are immutable here).
+  `PRINT` now emits Part III's required opaque, non-readable tags for
+  the two compound types this kernel has: `<lambda>` for a closure and
+  `<array:N>` for an array (`tests/cases/030_print_opaque.asm`) — before
+  this, either fell through to `print_fixnum`, which reinterprets a
+  tagged heapobj pointer's raw bits as a signed fixnum and printed
+  meaningless garbage instead of a tag; there is still no hash table
+  primitive to tag (`<hash-table>`), since hash tables here are library
+  code over `ARRAY`, not a distinct value type. This list is
+  deliberately specific so it can shrink honestly, item by item, rather
+  than being replaced by a vaguer
   "in progress" note.
 
 ## v0 limits (known, not silent)
