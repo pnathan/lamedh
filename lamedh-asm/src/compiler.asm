@@ -3741,6 +3741,13 @@ compile_call:
     push r14
     mov rbx, rdi                    ; operator form
     mov r12, rsi                      ; args
+    mov r14, rdx                      ; tail flag — live only through
+                                       ; .indirect_path (docs/spec-tco-
+                                       ; capture-gc.md section 2.6 step
+                                       ; 3); the named-global path below
+                                       ; overwrites r14 with cell_addr
+                                       ; before using it, since named-
+                                       ; path tail calls are a later step
 
     mov rax, rbx
     and rax, TAG_MASK
@@ -3887,6 +3894,39 @@ compile_call:
     mov rsi, r12
     mov dil, REG_RAX
     call emit_mov_reg_imm64
+
+    ; --- indirect tail call (docs/spec-tco-capture-gc.md section 2.6
+    ; step 3): reuse this function's own frame instead of growing the
+    ; native stack, when it's actually safe to. Three compile-time
+    ; conditions, all required: (1) r14 (this call's own tail flag, the
+    ; rdx compile_call was given) is 1 — the call's VALUE must be the
+    ; enclosing function's own return value with nothing left to do
+    ; afterward; (2) [current_lambda_depth] is nonzero — the defensive
+    ; belt-and-suspenders guard: never emit a tail jump while compiling
+    ; a top-level thunk, regardless of any bug upstream in the tail_ctx
+    ; plumbing; (3) nargs<=3 — v0 scope, no stack-passed args to worry
+    ; about, so `leave` alone (no manual stack cleanup at all) is
+    ; exactly correct: it resets rsp to this function's own entry-time
+    ; rbp, discarding every LET/LET* slot this call might be nested
+    ; under, which is correct because this genuinely is the last thing
+    ; the function will ever do. rax/rsi/rdx/rcx (nargs, arg0-2) and
+    ; rbx (code_ptr) are all already in their final places above and
+    ; survive `leave` untouched (it only touches rsp/rbp) — a bare
+    ; `emit_jmp_reg` after it is the entire difference from the
+    ; ordinary call path just below.
+    cmp r14, 1
+    jne .i_ordinary_call
+    cmp qword [current_lambda_depth], 0
+    je .i_ordinary_call
+    cmp r12, 3
+    ja .i_ordinary_call
+    call emit_leave
+    mov dil, REG_RBX
+    call emit_jmp_reg
+    jmp .out                              ; nothing after a tail jump is
+                                           ; ever reached at runtime
+
+.i_ordinary_call:
     mov dil, REG_RBX
     call emit_call_reg
 
