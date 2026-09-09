@@ -28,8 +28,41 @@
 //! | `; comment` | Ignored to end of line |
 //! | `#\| comment \|#` | Block comment (nests) |
 //! | `#!...` (first line) | Shebang line, ignored |
+//! | `#+feature form` | `form`, when `feature` is present; otherwise read and discarded, producing no value (issue #459) |
+//! | `#-feature form` | The complement of `#+` |
 //!
 //! Parse errors are reported with 1-based line/column positions (issue #238).
+//!
+//! ## Reader `#+`/`#-` conditionals (issue #459)
+//!
+//! `#+feature-expr form` reads `form` normally when `feature-expr` is
+//! satisfied by the reading [`Environment`]'s reader-feature set, and reads
+//! it as if it were whitespace otherwise: `form` is still parsed
+//! structurally (so unbalanced parens or malformed syntax inside a skipped
+//! form is still a parse error, and surrounding list/vector parsing is
+//! unaffected), but it contributes no value at the read site. `#-feature-expr
+//! form` is the exact complement. A `feature-expr` is an atomic symbol
+//! (case-folded and interned like any other symbol; a leading `:` is
+//! optional and ignored -- `#+rust` and `#+:rust` are equivalent) tested for
+//! membership in the environment's reader-feature set
+//! ([`Environment::reader_feature_enabled`]), or one of `(AND e...)`,
+//! `(OR e...)`, `(NOT e)` combining nested feature expressions, matching
+//! Common Lisp's own grammar closely enough that porting familiarity
+//! carries over. Conditionals nest and chain (`#+a #-b form` reads `form`
+//! when `a` is present and `b` is absent) and are resolved purely at read
+//! time -- there is no runtime trace of a skipped form.
+//!
+//! This is a **layered, optional** reader extension, not part of the
+//! grammar-minimal kernel surface (`KERNEL.md` Part II documents the
+//! reference's grammar for it; Part XII lists it as a declared axis a host
+//! may omit entirely, exactly like float literals or radix literals, as
+//! long as no `lib/*.lisp` file it loads relies on it). The reader-feature
+//! set itself -- which names exist, and whether more can be added -- is a
+//! per-host fact set by the embedding host at startup
+//! ([`Environment::enable_reader_feature`] /
+//! [`Environment::disable_reader_feature`]), deliberately kept separate
+//! from the sandbox capability grants `Environment::enable_feature` toggles
+//! (see that field's doc comment in `src/environment.rs` for why).
 //!
 //! Symbols are **always** uppercased during interning, so `foo`, `FOO`, and
 //! `Foo` all resolve to the same interned `Symbol` named `"FOO"`.
@@ -99,7 +132,7 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
             return Err(too_deep_error(input));
         }
         preceded(
-            ws,
+            skip_ws_and_conditionals(env.clone(), remaining),
             alt((
                 parse_atom(env.clone()),
                 parse_string,
@@ -118,6 +151,159 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
                 parse_function_shorthand(env.clone(), remaining),
             )),
         )(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `#+`/`#-` reader conditionals (issue #459) -- see the module doc comment
+// above for the grammar and semantics.
+// ---------------------------------------------------------------------------
+
+/// Skip ordinary whitespace/comments (`ws`) plus any number of leading
+/// `#+`/`#-` conditionals, looping so that chained directives
+/// (`#+a #-b form`) and a directive immediately followed by another
+/// directive are both handled without recursing back through `parse_expr`'s
+/// top-level dispatch. A conditional that resolves to "skip" has its guarded
+/// form parsed (via `parse_expr`, so nested conditionals and every other
+/// production apply) and discarded right here -- read as if it were
+/// whitespace; one that resolves to "keep" only has its `#+`/`#-` prefix
+/// consumed, leaving the guarded form for the caller's own parse.
+///
+/// Used both as `parse_expr`'s whitespace-skipping prefix and directly by
+/// [`read_next_with_depth_limit`], so that a source text consisting only of
+/// whitespace and skipped conditionals reads as "no more forms" rather than
+/// an end-of-input parse error.
+fn skip_ws_and_conditionals(
+    env: Shared<Environment>,
+    remaining: usize,
+) -> impl Fn(&str) -> IResult<&str, ()> {
+    move |input: &str| {
+        let mut current = input;
+        loop {
+            let (rest, _) = ws(current)?;
+            match parse_conditional_directive(rest, &env, remaining) {
+                Ok((rest2, keep)) => {
+                    if keep {
+                        // The guarded form is read normally by the caller (or
+                        // the next loop iteration, for a chained directive)
+                        // rather than here -- but a directive still promises
+                        // a form must follow, exactly as the discard branch
+                        // below requires one. Failing to check that here
+                        // would make a bare `#+feature` at true end-of-input
+                        // silently mean "no more forms" when the feature is
+                        // present while the identical shape with an absent
+                        // feature (falling into the discard branch) errors --
+                        // an asymmetry with no principled reader-level
+                        // justification. So peek past whitespace/comments
+                        // without consuming, and fail the same way the
+                        // discard branch's `cut` would on a missing form.
+                        let (peek, _) = ws(rest2)?;
+                        if peek.is_empty() {
+                            return Err(nom::Err::Failure(nom::error::Error::new(
+                                rest2,
+                                nom::error::ErrorKind::Eof,
+                            )));
+                        }
+                        current = rest2;
+                    } else {
+                        // Read the guarded form structurally, then discard it.
+                        let (rest3, _) = preceded(
+                            ws,
+                            parse_expr(env.clone(), remaining.saturating_sub(1)),
+                        )(rest2)?;
+                        current = rest3;
+                    }
+                }
+                Err(nom::Err::Error(_)) => return Ok((rest, ())),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+/// Try to parse one `#+feature-expr` or `#-feature-expr` prefix (not the
+/// guarded form that follows it). Returns `Ok((rest, keep))` where `keep`
+/// says whether the form that follows should be read normally (`true`) or
+/// read-and-discarded (`false`). No `#+`/`#-` tag at `input` is an ordinary
+/// `Error` (so [`skip_ws_and_conditionals`] can treat this as "no more
+/// conditionals here" and stop looping); once the tag itself has matched,
+/// everything after it is committed with `cut` -- a malformed feature
+/// expression is a hard `Failure`, mirroring `parse_list`'s `cut` after `(`
+/// (there is no other `#+`/`#-`-shaped production to fall back to).
+fn parse_conditional_directive<'a>(
+    input: &'a str,
+    env: &Shared<Environment>,
+    remaining: usize,
+) -> IResult<&'a str, bool> {
+    let (rest, tag_str) = alt((tag("#+"), tag("#-")))(input)?;
+    let positive = tag_str == "#+";
+    let (rest, feature_val) = cut(preceded(
+        ws,
+        parse_expr(env.clone(), remaining.saturating_sub(1)),
+    ))(rest)?;
+    let truth = eval_feature_expr(env, &feature_val).map_err(|_| {
+        nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+    })?;
+    Ok((rest, if positive { truth } else { !truth }))
+}
+
+/// Evaluate a parsed feature expression (an atomic symbol, or `(AND ...)`,
+/// `(OR ...)`, `(NOT e)` over feature expressions) against `env`'s reader-
+/// feature set. Symbol names are matched exactly as
+/// [`Environment::reader_feature_enabled`] does (case already folded by the
+/// reader; a leading `:` is stripped there).
+fn eval_feature_expr(env: &Shared<Environment>, expr: &LispVal) -> Result<bool, String> {
+    match expr {
+        LispVal::Symbol(sym) => Ok(env.reader_feature_enabled(&sym.borrow().name)),
+        LispVal::Cons { car, .. } => {
+            let LispVal::Symbol(op) = car.as_ref() else {
+                return Err("feature expression list must start with a symbol".to_string());
+            };
+            let op_name = op.borrow().name.to_uppercase();
+            let args = feature_expr_list_to_vec(expr)?;
+            let args = &args[1..];
+            match op_name.as_str() {
+                "AND" => {
+                    for a in args {
+                        if !eval_feature_expr(env, a)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                "OR" => {
+                    for a in args {
+                        if eval_feature_expr(env, a)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                "NOT" => match args {
+                    [only] => Ok(!eval_feature_expr(env, only)?),
+                    _ => Err("NOT takes exactly one feature expression".to_string()),
+                },
+                other => Err(format!("unknown feature expression operator {other}")),
+            }
+        }
+        _ => Err("feature expression must be a symbol or an (AND|OR|NOT ...) form".to_string()),
+    }
+}
+
+/// Walk a proper list `LispVal` into a `Vec` (erroring on a dotted or
+/// non-list tail), mirroring [`parse_struct_literal`]'s own list walk.
+fn feature_expr_list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, String> {
+    let mut items = Vec::new();
+    let mut cur = list.clone();
+    loop {
+        match cur {
+            LispVal::Nil => return Ok(items),
+            LispVal::Cons { car, cdr } => {
+                items.push(car.as_ref().clone());
+                cur = cdr.as_ref().clone();
+            }
+            _ => return Err("feature expression list must be a proper list".to_string()),
+        }
     }
 }
 
@@ -365,6 +551,15 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
             // Parse earmuff symbols (*name*) - dynamic variable naming convention
             // Must come before regular symbols and operators
             parse_earmuff_symbol(env.clone()),
+            // Parse plus-earmuff symbols (+name+) - CL-style constant naming
+            // convention (e.g. `+NUMERIC-PRECISION-MODEL+`, `+HOST-TRAITS+`,
+            // KERNEL.md Part XII / issue #463). Must come before `parse_number`
+            // would otherwise be a non-issue (no leading digit means
+            // `parse_number` already fails on `+NAME+`), but must come before
+            // the final operator-symbol fallback below, which would otherwise
+            // greedily consume only the leading `+` and strand the rest of the
+            // token as a separate, wrongly-trailing-`+` symbol.
+            parse_plus_earmuff_symbol(env.clone()),
             parse_keyword_symbol(env.clone()),
             map(
                 recognize(pair(
@@ -420,6 +615,24 @@ fn parse_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResul
                 alpha1,
                 many0(alt((alphanumeric1, tag("-")))),
                 tag("*"),
+            ))),
+            |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
+        )(input)
+    }
+}
+
+/// Parse plus-earmuff symbols: +name+ (Common-Lisp-style constant naming
+/// convention). Examples: +numeric-precision-model+, +host-traits+.
+/// Mirrors [`parse_earmuff_symbol`]'s asterisk-earmuff grammar exactly,
+/// with `+` in place of `*`.
+fn parse_plus_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        map(
+            recognize(tuple((
+                tag("+"),
+                alpha1,
+                many0(alt((alphanumeric1, tag("-")))),
+                tag("+"),
             ))),
             |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
         )(input)
@@ -726,21 +939,34 @@ pub fn read_next_with_depth_limit<'a>(
     env: &Shared<Environment>,
     depth_limit: usize,
 ) -> Result<Option<(LispVal, &'a str)>, (usize, String)> {
-    let rest = skip_ws(input);
+    let to_result = |e: nom::Err<nom::error::Error<&'a str>>| -> (usize, String) {
+        match e {
+            nom::Err::Error(e) | nom::Err::Failure(e) => {
+                let detail = if e.code == TOO_DEEP_KIND {
+                    format!("nesting too deep (limit {depth_limit})")
+                } else {
+                    error_detail(e.input)
+                };
+                (input.len() - e.input.len(), detail)
+            }
+            nom::Err::Incomplete(_) => (input.len(), "incomplete input".to_string()),
+        }
+    };
+    // A source text can consist entirely of whitespace/comments and
+    // conditionals that resolve to "skip" (an entirely `#+`/`#-`'d-out
+    // file, or one whose only forms are behind an absent feature) -- that
+    // is "no more forms", not a parse error, so this pre-skip must itself
+    // be conditional-aware (issue #459).
+    let rest = match skip_ws_and_conditionals(env.clone(), depth_limit)(input) {
+        Ok((rest, ())) => rest,
+        Err(e) => return Err(to_result(e)),
+    };
     if rest.is_empty() {
         return Ok(None);
     }
     match parse_expr(env.clone(), depth_limit)(rest) {
         Ok((rem, val)) => Ok(Some((val, rem))),
-        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
-            let detail = if e.code == TOO_DEEP_KIND {
-                format!("nesting too deep (limit {depth_limit})")
-            } else {
-                error_detail(e.input)
-            };
-            Err((input.len() - e.input.len(), detail))
-        }
-        Err(nom::Err::Incomplete(_)) => Err((input.len(), "incomplete input".to_string())),
+        Err(e) => Err(to_result(e)),
     }
 }
 

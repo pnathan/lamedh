@@ -427,6 +427,18 @@ pub enum LispError {
     /// Raised by `(error ...)`; trapped by `ERRORSET` (→ NIL) and bound by the
     /// handler variable in `HANDLER-CASE`.
     Signaled(Box<LispVal>),
+    /// Kernel-fuel exhaustion (issue #457), riding the same "not really an
+    /// error" propagation path as `Return`/`Go`/`Throw`/`ReturnFrom`: ordinary
+    /// guest `HANDLER-CASE` does **not** intercept this variant, so code
+    /// positioned *inside* the exhausted `WITH-FUEL` fence cannot catch its
+    /// own exhaustion signal and loop past it. Only the owning `WITH-FUEL`
+    /// special form (the fence whose armed budget hit zero) converts this
+    /// back into an ordinary catchable [`LispError::Generic`] for code
+    /// outside the fence; Rust-level `UNWIND-PROTECT`/`CATCH`/`BLOCK` frames
+    /// still see it and run cleanup, funded by a small fixed non-renewable
+    /// grace allowance (`charge_kernel_fuel` in `evaluator/core.rs`) rather
+    /// than an unconditional disarm.
+    FuelExhausted,
 }
 
 impl PartialEq for LispError {
@@ -436,6 +448,7 @@ impl PartialEq for LispError {
             (LispError::Go(a), LispError::Go(b)) => a == b,
             (LispError::Return(v1), LispError::Return(v2)) => v1 == v2,
             (LispError::Signaled(a), LispError::Signaled(b)) => a == b,
+            (LispError::FuelExhausted, LispError::FuelExhausted) => true,
             _ => false,
         }
     }
@@ -457,6 +470,11 @@ impl fmt::Display for LispError {
                 LispVal::Error(e) => write!(f, "Error: {}", e.message),
                 other => write!(f, "Error: {}", crate::printer::print(other)),
             },
+            // Displayed only when no owning WITH-FUEL frame converted this
+            // first (e.g. a host driver that arms fuel directly, outside any
+            // Lisp WITH-FUEL fence): keep the exact legacy wording so
+            // top-level CLI/host output is unchanged by issue #457's fix.
+            LispError::FuelExhausted => write!(f, "Error: fuel exhausted (kernel step budget)"),
         }
     }
 }

@@ -88,7 +88,8 @@ order (`parse_expr`); the first match wins:
 
 1. *atom*: `1+`/`1-` literal symbols, then numeric literals (float,
    radix-prefixed, hex-suffixed, octal-suffixed, decimal — in that order),
-   then earmuff symbol, keyword symbol, general symbol, operator symbol;
+   then earmuff symbol, plus-earmuff symbol, keyword symbol, general
+   symbol, operator symbol;
 2. string literal;
 3. `#S(` record literal;
 4. `(` list;
@@ -116,6 +117,14 @@ constituent of anything and is a parse error outside strings.
   `-`: `*foo*` and `*a-b1*` are earmuff symbols, but `*foo?*` is not —
   it reads as the operator symbol `*` followed by the general symbol
   `FOO?*`, and `*a_b*` reads as `*` then `A_B*`.
+- *Plus-earmuff*: `+ letter (letter | digit | -)* +`, e.g.
+  `+NUMERIC-PRECISION-MODEL+`, `+HOST-TRAITS+` (issue #463; the
+  Common-Lisp-style constant naming convention). Tried before the keyword
+  and general productions, mirroring *Earmuff* exactly with `+` in place
+  of `*`. The tail admits only letters, digits, and `-`, same as
+  *Earmuff*; a bare `+` or `+` not closed by a matching trailing `+`
+  (`+foo`, `+`, `++`) is unaffected and falls through to the general or
+  operator productions as before.
 - *Keyword*: `: (letter | & | $) (letter | digit | - * ? ! + = < > _)*`.
   The tail excludes `:` and may not begin with `?`: `:foo:bar` reads as
   two symbols `:FOO` `:BAR`, and `:?x` is a parse error. A keyword's
@@ -1035,30 +1044,40 @@ and lets compiled code run unmetered has not implemented this section;
 the reference refuses to JIT-compile while a budget is armed for exactly
 this reason.
 
-**Exhaustion is an ordinary `HANDLER-CASE`-catchable condition**, unlike an
-unmatched `THROW` (Part VIII), specifically so that cleanup code —
-`UNWIND-PROTECT` cleanup forms, a `HANDLER-CASE` handler, the fence's own
-budget restore — can run instead of being re-killed on its own first
-step. That is why exhaustion **disarms** the counter as it signals: with
-the counter stuck at zero, every cleanup step would re-signal forever.
-
-**The consequence, tracked as issue #457:** because the counter stays
-disarmed until the fence that armed it exits, **guest code that catches
+**Exhaustion does not disarm the counter, and is not an ordinary
+`HANDLER-CASE`-catchable condition (resolved by issue #457).** Earlier
+behavior — documented here until the fix landed — disarmed the counter
+(unlimited) the instant it signalled, as an ordinary catchable condition,
+specifically so cleanup code could run without being re-killed on its own
+first step. That was a genuine sandboxing hole: **guest code that caught
 the exhaustion condition with a `HANDLER-CASE` positioned inside the very
-fence that exhausted runs unmetered from that point until the fence
-exits** — and a handler that loops and never returns runs indefinitely.
-`(with-fuel 100 (handler-case (loop-forever) (error (e) (kernel-fuel-
-remaining))))` returns `NIL` (unarmed) rather than a small number. The
-window is bounded to that one fence: an enclosing fence re-arms on the
-inner fence's exit, debiting the inner fence's whole budget as spent. What
-conformance requires is narrower than "reproduce this disarm mechanism":
-a host **must** let ordinary cleanup code run after exhaustion — some
-disarming or grace mechanism is required, not merely permitted — but a
-host is free to choose a narrower mechanism (for instance a small fixed
-cleanup allowance) that closes the catch-and-reloop window; doing so is an
-improvement over the yardstick, not a divergence from it, as long as
-ordinary cleanup still runs. Once #457 is fixed in the reference this
-paragraph will be tightened to forbid the unconditional bypass.
+fence that exhausted ran unmetered, indefinitely, from that point until the
+fence exited** — a handler that loops and never returns ran forever with
+no budget at all, not merely "until the fence's cleanup finishes."
+
+The reference now signals exhaustion as a distinct, **not**
+`HANDLER-CASE`-catchable control-flow condition, riding the same
+propagation path as `RETURN`/`GO`/`THROW`/`RETURN-FROM` (Part VIII) —
+ordinary guest `HANDLER-CASE` clauses do not intercept it, so code
+positioned inside the exhausted fence cannot catch its own exhaustion and
+loop past it. In place of an unconditional disarm, a small, fixed,
+non-renewable **grace allowance** is granted the instant the counter first
+hits zero, charged against the enclosing fence's already-known remaining
+budget (never free), so `UNWIND-PROTECT` cleanup forms and the owning
+`WITH-FUEL` frame's own bookkeeping can still take metered steps on the way
+back out. Only the owning `WITH-FUEL` fence — the one whose armed budget
+hit zero — converts the signal back into an ordinary catchable condition,
+and only for code **outside** that fence; once the grace allowance is
+itself spent, further steps keep re-signalling with no further grant.
+
+**This is now a MUST-match rule, not host latitude**: a conformant host
+must not let guest code positioned inside the exhausted fence intercept and
+loop past its own exhaustion signal, unconditionally or indefinitely. A
+host is free to choose its own grace-allowance size, or a different
+mechanism entirely, as long as (a) ordinary `HANDLER-CASE` inside the fence
+cannot catch the raw exhaustion signal, and (b) any post-exhaustion
+allowance is bounded and charged against the enclosing budget, not
+unlimited.
 
 **`(with-fuel budget-form body...)` is a special form, and nested fences
 attenuate**, following the exact algorithm of `SpecialForm::WithFuel`
@@ -1195,8 +1214,27 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    new kernel primitive is needed to satisfy this. This introspectability
    requirement is not itself an axis: every host must expose its choice
    this way, whichever of the two models it picked; only the underlying
-   choice of model varies. Not yet implemented anywhere, including the
-   Rust reference — tracked as issue #463 (Part XIII).
+   choice of model varies. Implemented on the Rust reference (issue #463):
+   `Environment::new_with_builtins` (`src/environment.rs`, and so every
+   environment built on it — `with_stdlib`, `with_prelude`, sandboxed
+   environments alike) binds `+NUMERIC-PRECISION-MODEL+` to `WRAPAROUND-64`,
+   matching `src/evaluator/builtins_core.rs`'s `+`/`-`/`*`//`
+   (`checked_*` arithmetic over `i64` falling back to `wrapping_*` and
+   setting `OVERFLOW`, never promoting to arbitrary precision). It is also
+   the first entry of `+HOST-TRAITS+`, a single collective registry — an
+   alist of `(AXIS-NAME . CHOSEN-VALUE)` pairs, `((NUMERIC-PRECISION-MODEL
+   . WRAPAROUND-64))` on the reference today — that later axes needing the
+   same introspectable-choice treatment are expected to add entries to,
+   rather than each minting its own top-level constant. Reading either
+   global requires the reader to parse `+earmuff+`-style tokens
+   (`parse_plus_earmuff_symbol` in `src/reader.rs`, added alongside this
+   change; previously only `*earmuff*` was supported and a leading `+` was
+   consumed as the bare `+` operator symbol). Other hosts (SBCL: #455,
+   `lamedh-asm`: #456) still need to bind their own choice the same way.
+   Issue #459 (reader-level `#+`/`#-` feature-conditional dispatch) had not
+   landed when this was implemented; `+HOST-TRAITS+` stands alone for now,
+   but is a plausible registry to share with #459's feature list if and
+   when that lands, per the discussion on issue #463.
 2. **Destructive cons mutation is not an axis: cons cells must be
    immutable on every host.** `RPLACA` and `RPLACD` return a **new** cons
    cell sharing the untouched half of the original
@@ -1289,13 +1327,12 @@ than smoothed over:
   available for anything else, has not delivered on Part XI's reflection
   requirements no matter how precisely their observable behavior is
   pinned down here.
-- **Fix the kernel-fuel catch-and-reloop bypass** (issue #457): guest
-  code that catches the fuel-exhausted condition inside its own fence and
-  never returns from the handler gets an unconditional fuel bypass for
-  the rest of that fence, not bounded cleanup grace — a defect in the
-  reference, not a tolerable quirk. Once fixed, Part X's framing of this
-  as permitted-but-not-required host behavior is to be tightened to
-  disallow unconditional bypass outright.
+- ~~Fix the kernel-fuel catch-and-reloop bypass~~ (issue #457) — **done**:
+  exhaustion now signals a distinct, not-`HANDLER-CASE`-catchable
+  control-flow condition (Part VIII-shaped), paired with a small fixed
+  non-renewable grace allowance charged against the enclosing fence's
+  budget instead of an unconditional disarm. Part X now states this as a
+  MUST-match rule.
 - **Add reader-level feature-conditional dispatch** (issue #459). The
   reader has no `#+`/`#-` (Common-Lisp `*features*`-style) syntax, or any
   other mechanism, by which a single shared `lib/*.lisp` file can branch
@@ -1303,18 +1340,12 @@ than smoothed over:
   dispatches are those listed in Part II. Nothing implementable exists yet,
   so Part II does not describe one; when a design lands in the reference,
   Part II gains its grammar and Part XII its declared axis (which host
-  feature names exist).
-- **Expose declared-axis choices as an introspectable global trait**
-  (issue #463), starting with `+NUMERIC-PRECISION-MODEL+` for Part XII
-  axis 1: a portable program should be able to ask which model a host
-  implements rather than infer it behaviorally (e.g. by deliberately
-  overflowing a computation and checking `OVERFLOW`). No new kernel
-  primitive is required — Part XI's global-mutation primitive already
-  suffices — only a naming convention and the discipline of every host
-  actually binding it. Not yet implemented anywhere, reference included.
-  Natural to design alongside #459's feature registry, since both are
-  "what does this host claim to support," queried at read time versus at
-  run time.
+  feature names exist). Part XII axis 1's `+HOST-TRAITS+` registry (issue
+  #463, implemented) is a plausible registry to share this data with,
+  since both are "what does this host claim to support," queried at read
+  time by this issue versus at run time by #463 — not designed together
+  since #463 landed first and #459 had not landed, but not precluded
+  either.
 - **Cache macro expansion per call site** (issue #460): today every macro
   call re-runs the macro body from scratch on every invocation, including
   every iteration of a compiled loop, because macro dispatch shares one
