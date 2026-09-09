@@ -11,47 +11,97 @@
 ; only recognizes that one spelling (see compiler.asm; a genuinely
 ; dotted parameter list is not supported and misbehaves).
 ;
-; Every macro below takes at most 3 *syntactic operands at its own call
-; site* — not to be confused with how many fixed parameters a LAMBDA or
-; DEFUN-defined function may take, which is unrestricted (see the
-; README's "Calling convention" section on &REST). A macro transformer
-; is invoked from host code, at compile time, through
-; raw_args_to_regs/invoke_closure_host (compiler.asm), which only ever
-; forwards the *first three* unevaluated operand forms at a call site,
-; silently dropping anything past the third — a separate, real
-; limitation from the &REST/nfixed restriction that was lifted, and not
-; yet fixed (see README Roadmap). DEFUN and WHEN/UNLESS are therefore
-; deliberately single-body-form here: `(DEFUN NAME (PARAMS) BODY)` is
-; 3 operands (NAME, PARAMS, BODY) and `(WHEN TEST BODY)` is 2 — a
-; second body form at either call site would silently vanish rather
-; than erroring. A caller wanting more than one body form must wrap it
-; in an explicit PROGN: `(DEFUN NAME (PARAMS) (PROGN form1 form2))`.
+; A macro call site's operand count is no longer capped at 3
+; (invoke_macro, compiler.asm, forwards every operand — see the
+; README's "kernel surface" section), so DEFUN and WHEN/UNLESS below
+; take any number of body forms directly, the same way LAMBDA's own
+; body already does.
 
-(DEFMACRO DEFUN (NAME PARAMS BODY)
+(DEFMACRO DEFUN (NAME PARAMS &REST BODY)
   (CONS (QUOTE DEFINE)
         (CONS NAME
-              (CONS (CONS (QUOTE LAMBDA) (CONS PARAMS (CONS BODY (QUOTE ()))))
+              (CONS (CONS (QUOTE LAMBDA) (CONS PARAMS BODY))
                     (QUOTE ())))))
 
 (DEFUN NOT (X) (IF X (QUOTE ()) T))
 
 ; WHEN/UNLESS — the one-armed IF forms KERNEL.md Part VI's own IF
 ; section names as the reason IF itself stays strictly two-armed: IF
-; takes *exactly* three operands here (test/then/else), so WHEN's
-; expansion must supply an explicit NIL else-branch, not omit it. Each
-; call site is 2 operands (TEST, BODY), well within the 3-operand
-; macro-invocation cap explained above.
-(DEFMACRO WHEN (TEST BODY)
-  (CONS (QUOTE IF) (CONS TEST (CONS BODY (CONS (QUOTE ()) (QUOTE ()))))))
+; takes *exactly* three operands here (test/then/else), so each
+; expansion must supply an explicit NIL else-branch, not omit it, and
+; wraps its (possibly multiple) body forms in PROGN, matching COND's
+; own "last body form is in tail position" convention.
+(DEFMACRO WHEN (TEST &REST BODY)
+  (CONS (QUOTE IF)
+        (CONS TEST
+              (CONS (CONS (QUOTE PROGN) BODY)
+                    (CONS (QUOTE ()) (QUOTE ()))))))
 
-(DEFMACRO UNLESS (TEST BODY)
-  (CONS (QUOTE IF) (CONS TEST (CONS (QUOTE ()) (CONS BODY (QUOTE ()))))))
+(DEFMACRO UNLESS (TEST &REST BODY)
+  (CONS (QUOTE IF)
+        (CONS TEST
+              (CONS (QUOTE ())
+                    (CONS (CONS (QUOTE PROGN) BODY) (QUOTE ()))))))
 
-; LIST — an ordinary function, not a macro, so it is not subject to
-; the 3-operand cap above at all: every argument is already evaluated
-; before this runs (through the general application path, which
-; already supports any number of arguments — see "Calling convention"),
-; and a &REST parameter already collects exactly that evaluated surplus
-; into a fresh proper list, so the rest parameter itself *is* the
-; answer.
+; LIST — an ordinary function, not a macro: every argument is already
+; evaluated before this runs, and a &REST parameter already collects
+; exactly that evaluated surplus into a fresh proper list, so the rest
+; parameter itself *is* the answer.
 (DEFUN LIST (&REST ITEMS) ITEMS)
+
+(DEFUN REVERSE-ONTO (L ACC)
+  (IF (NULL L) ACC (REVERSE-ONTO (CDR L) (CONS (CAR L) ACC))))
+(DEFUN REVERSE (L) (REVERSE-ONTO L (QUOTE ())))
+
+; FORMAT — every example in ../examples/*/main.lisp uses this (README
+; Roadmap). A DEFMACRO, not a function: its control string is a literal
+; (self-evaluating) argument, so the macro transformer receives the
+; actual string value directly as unevaluated syntax and can walk its
+; bytes with STRING-REF at macro-expansion (compile) time, splitting it
+; into literal runs (each becoming a PRINT of that substring) and `~a`
+; directives (each becoming a PRINT of the corresponding, still-
+; unevaluated, argument form) — the expansion is an ordinary PROGN of
+; PRINT/NEWLINE calls, run once the expansion is itself compiled and
+; executed, not built by any runtime variadic mechanism.
+;
+; v0 scope, honestly narrow rather than silently wrong: only `~a` and
+; `~%` are recognized (every other directive's `~` and the following
+; character are copied through literally — including `~~`, which is
+; therefore not an escape for a literal tilde yet); the STREAM operand
+; is accepted but ignored — `(format t ...)` and `(format nil ...)`
+; currently behave identically, always writing to stdout, so
+; `(format nil ...)`'s "return a string instead" behavior is not yet
+; implemented (PRINC-TO-STRING/STRING-APPEND exist and could build one,
+; a natural next step); and running out of ARGS before the control
+; string's own `~a` count runs out prints `()` for the missing ones
+; (CAR of NIL is NIL, not an error, so this degrades rather than
+; crashing) instead of signaling anything.
+; NOT (< a b) rather than (>= a b): this kernel's compile_binop only
+; ever grew "+ - * < =" (see README "What's compiled") — there is no
+; native >, >=, or <=.
+(DEFUN FORMAT-FIND-TILDE (CTRL I)
+  (IF (NOT (< I (STRING-LENGTH CTRL)))
+      I
+      (IF (= (STRING-REF CTRL I) 126)
+          I
+          (FORMAT-FIND-TILDE CTRL (+ I 1)))))
+
+(DEFUN FORMAT-BUILD (CTRL IDX ARGS ACC)
+  (IF (NOT (< IDX (STRING-LENGTH CTRL)))
+      ACC
+      (IF (NOT (= (STRING-REF CTRL IDX) 126))
+          (LET ((NEXT (FORMAT-FIND-TILDE CTRL IDX)))
+            (FORMAT-BUILD CTRL NEXT ARGS
+              (CONS (LIST (QUOTE PRINT) (SUBSTRING CTRL IDX NEXT)) ACC)))
+          (IF (NOT (< (+ IDX 1) (STRING-LENGTH CTRL)))
+              ACC
+              (IF (= (STRING-REF CTRL (+ IDX 1)) 97)
+                  (FORMAT-BUILD CTRL (+ IDX 2) (CDR ARGS)
+                    (CONS (LIST (QUOTE PRINT) (CAR ARGS)) ACC))
+                  (IF (= (STRING-REF CTRL (+ IDX 1)) 37)
+                      (FORMAT-BUILD CTRL (+ IDX 2) ARGS
+                        (CONS (LIST (QUOTE NEWLINE)) ACC))
+                      (FORMAT-BUILD CTRL (+ IDX 2) ARGS ACC)))))))
+
+(DEFMACRO FORMAT (STREAM CTRL &REST ARGS)
+  (CONS (QUOTE PROGN) (REVERSE (FORMAT-BUILD CTRL 0 ARGS (QUOTE ())))))

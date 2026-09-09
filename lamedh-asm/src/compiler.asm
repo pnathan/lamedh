@@ -2018,74 +2018,118 @@ compile_lambda:
     pop rbx
     ret
 
-; invoke_closure_host(rdi=tagged closure, rsi=arg0, rdx=arg1, rcx=arg2,
-; r8=nargs actually supplied, 0..3) -> rax = result. Calls an
-; *already-compiled* Lamedh closure directly from host code,
-; synchronously, right now — not by emitting target instructions. This
-; works because a compiled closure and the compiler itself are both
-; just x86-64 machine code in the same process; there is no barrier
-; between "host" and "target" beyond which code is calling which. It is
-; the entire mechanism a macro transformer needs: the transformer is an
-; ordinary compiled closure, and expanding a macro call means invoking
-; it now instead of emitting a call to it.
+; invoke_macro(rdi=tagged closure, rsi=raw args list) -> rax = result.
+; Calls an *already-compiled* Lamedh closure directly from host code,
+; synchronously, right now, with the call site's raw unevaluated
+; operand forms as arguments — not by emitting target instructions.
+; This works because a compiled closure and the compiler itself are
+; both just x86-64 machine code in the same process; there is no
+; barrier between "host" and "target" beyond which code is calling
+; which. It is the entire mechanism a macro transformer needs: the
+; transformer is an ordinary compiled closure, and expanding a macro
+; call means invoking it now instead of emitting a call to it.
 ;
-; nargs must be the caller's own responsibility, not silently omitted:
-; a &REST-taking transformer's prologue (compile_lambda) reads the
-; incoming nargs (in target rax, per the ordinary compiled-code calling
-; convention every compile_call site also honors) to decide which of
-; its register-argument slots hold real REST data versus unread
-; leftover bytes — passing whatever garbage happened to be in rax
-; before this call, as an earlier version of this routine did, corrupts
-; that decision silently instead of erroring, with a transformer that
-; takes fewer than 3 fixed parameters plus &REST (issues #452/#461's
-; own scope, but exercised for the first time by lib/prelude.lisp's own
-; DEFUN — see the README).
-global invoke_closure_host
-invoke_closure_host:
+; Supersedes an earlier raw_args_to_regs+invoke_closure_host pair that
+; only ever forwarded the first 3 operand forms (silently dropping the
+; rest) and did not pass the real argument count at all — a real,
+; previously-latent bug lib/prelude.lisp's own DEFUN
+; ((NAME PARAMS &REST BODY), nfixed=2) exposed, since a &REST-taking
+; transformer's prologue (compile_lambda) reads the incoming nargs (in
+; target rax, per the ordinary compiled-code calling convention every
+; compile_call site also honors) to decide which register-argument
+; slots hold real REST data. This version handles any number of
+; call-site operands (capped at MAX_MACRO_ARGS, matching this
+; project's own "generous fixed size, not an unbounded general answer"
+; v0 sizing elsewhere — see README): the first 3 go in rsi/rdx/rcx as
+; before, and any beyond that are pushed onto the *real* host stack
+; immediately before the call, in the same order compile_call_args'
+; own target-code convention produces (operand index 3 ends up closest
+; to the return address, index 4 next, and so on), so a transformer
+; with more than 3 fixed/REST parameters sees its stack-passed operands
+; at exactly the offsets build_param_frame already expects — the exact
+; layout an ordinary compiled call site would produce, just assembled
+; by hand here instead of emitted.
+%define MAX_MACRO_ARGS 32
+global invoke_macro
+invoke_macro:
     push rbx
     push r12
-    mov r12, rdi
-    UNTAG_PTR r12
-    mov rbx, [r12+8]               ; code_ptr
-    mov rax, r8                      ; nargs (the caller's responsibility)
-    call rbx                           ; rdi/rsi/rdx/rcx already match the
-                                        ; closure calling convention exactly
-    pop r12
-    pop rbx
-    ret
+    push r13
+    push r14
+    push r15
+    mov r12, rdi                    ; closure
+    mov r13, rsi                      ; args list cursor
 
-; raw_args_to_regs(rdi=args list) -> sets rsi,rdx,rcx (host registers)
-; from up to 3 elements of the list, taken as-is — car'd, never compiled
-; or evaluated. This is how a macro transformer receives its arguments:
-; unevaluated syntax, not values.
-raw_args_to_regs:
-    push rbx
-    mov rbx, rdi
+    sub rsp, MAX_MACRO_ARGS*8           ; scratch array, host-stack-resident
+    mov r14, rsp                          ; scratch array base
+    xor r15, r15                            ; count so far
+.collect:
+    cmp r13, IMM_NIL
+    je .collected
+    cmp r15, MAX_MACRO_ARGS
+    jae .collected
+    mov rdi, r13
+    call car
+    mov [r14+r15*8], rax
+    mov rdi, r13
+    call cdr
+    mov r13, rax
+    inc r15
+    jmp .collect
+.collected:
+    ; r15 = n, capped. Registers first.
     xor rsi, rsi
     xor rdx, rdx
     xor rcx, rcx
-    cmp rbx, IMM_NIL
-    je .out
-    mov rdi, rbx
-    call car
-    mov rsi, rax
-    mov rdi, rbx
-    call cdr
-    mov rbx, rax
-    cmp rbx, IMM_NIL
-    je .out
-    mov rdi, rbx
-    call car
-    mov rdx, rax
-    mov rdi, rbx
-    call cdr
-    mov rbx, rax
-    cmp rbx, IMM_NIL
-    je .out
-    mov rdi, rbx
-    call car
-    mov rcx, rax
-.out:
+    cmp r15, 1
+    jb .regs_done
+    mov rsi, [r14+0]
+    cmp r15, 2
+    jb .regs_done
+    mov rdx, [r14+8]
+    cmp r15, 3
+    jb .regs_done
+    mov rcx, [r14+16]
+.regs_done:
+
+    ; Extra operands (index 3..n-1), pushed highest-index first so
+    ; index 3 ends up topmost — closest to the return address `call`
+    ; is about to push, matching [rbp+16] once the callee's own
+    ; `push rbp` lands.
+    mov rbx, r15
+    dec rbx
+.push_extra:
+    cmp rbx, 3
+    jl .extra_done
+    push qword [r14+rbx*8]
+    dec rbx
+    jmp .push_extra
+.extra_done:
+
+    mov rbx, r12
+    UNTAG_PTR rbx
+    mov rbx, [rbx+8]                   ; code_ptr
+    mov rdi, r12                         ; tagged closure (self) — a
+                                          ; transformer's own prologue
+                                          ; extracts captured free vars
+                                          ; from this, same as any
+                                          ; other compiled closure
+    mov rax, r15                           ; nargs
+    call rbx                                 ; -> rax = result
+
+    mov rbx, r15
+    sub rbx, 3
+    jle .no_extra_cleanup
+    lea rsp, [rsp + rbx*8]                     ; discard the extra
+                                                ; operands this call
+                                                ; itself pushed
+.no_extra_cleanup:
+    add rsp, MAX_MACRO_ARGS*8                    ; discard scratch array
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop rbx
     ret
 
@@ -2431,6 +2475,28 @@ compile_call:
     mov rdi, rax
     pop rsi                                                                     ; trampoline_entry
     call patch_rel32                                                              ; call site -> trampoline
+
+    ; Anything past the 3rd argument was left on the *target* stack by
+    ; compile_call_args, positioned for the callee's own stack-passed
+    ; params (build_param_frame) — the callee's own `leave`/`ret` only
+    ; unwinds what it pushed *after* its own `push rbp`, never these
+    ; caller-pushed extra args sitting below the return address. Without
+    ; this cleanup they stay on the stack after the call returns,
+    ; corrupting anything the *enclosing* expression pushed for its own
+    ; safekeeping around this call (compile_binop's own lhs, a
+    ; compile_binary_hostcall's arg1, ...) — a real, previously-latent
+    ; bug: `(CONS 'X (F a b c d))` for any 4+-arg F silently returned
+    ; garbage instead of X as its car. nargs is a compile-time constant
+    ; here (this call site's own syntactic argument count), so the
+    ; cleanup amount is too.
+    cmp r13, 3
+    jbe .named_no_cleanup
+    mov rax, r13
+    sub rax, 3
+    imul eax, eax, -8
+    mov edi, eax
+    call emit_sub_rsp_imm32
+.named_no_cleanup:
     jmp .out
 
 .indirect_path:
@@ -2492,6 +2558,20 @@ compile_call:
     call emit_mov_reg_imm64
     mov dil, REG_RBX
     call emit_call_reg
+
+    ; Same stack cleanup as the named-global path above, and for the
+    ; same reason: anything past the 3rd argument was left on the
+    ; target stack by compile_call_args for the callee's own
+    ; stack-passed params, and nothing unwinds it after the call
+    ; returns without this.
+    cmp r12, 3
+    jbe .i_no_cleanup
+    mov rax, r12
+    sub rax, 3
+    imul eax, eax, -8
+    mov edi, eax
+    call emit_sub_rsp_imm32
+.i_no_cleanup:
 
 .out:
     pop r14
@@ -4372,22 +4452,11 @@ compile_form:
     cmp rax, IMM_NIL
     je .not_macro_call
     mov rbx, rax                            ; macro closure (tagged)
-    mov rdi, r13
-    call raw_args_to_regs                     ; -> rsi,rdx,rcx (raw forms)
-    mov rdi, r13
-    call list_length
-    cmp rax, 3
-    jbe .macro_nargs_ok
-    mov rax, 3                                  ; raw_args_to_regs itself
-                                                 ; only ever forwards the
-                                                 ; first 3 (a pre-existing,
-                                                 ; separate limitation)
-.macro_nargs_ok:
-    mov r8, rax
     mov rdi, rbx
-    call invoke_closure_host                     ; rax = expansion
+    mov rsi, r13
+    call invoke_macro                         ; rax = expansion
     mov rdi, rax
-    call compile_form                              ; recompile in its place
+    call compile_form                           ; recompile in its place
     jmp .out
 
 .not_macro_call:

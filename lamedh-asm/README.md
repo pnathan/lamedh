@@ -126,27 +126,27 @@ specifically to test where the line falls:
   `LAMBDA` (`compile_defmacro` reuses `compile_lambda` directly, wrapping
   the body in a synthetic `(LAMBDA params body)` built with `cons`), and
   expanding a macro call means invoking that *already-compiled closure*
-  directly from host code — `invoke_closure_host` does an ordinary
-  indirect call through the closure's stored code pointer, synchronously,
-  at compile time, with the call site's raw unevaluated argument forms
-  as arguments (`raw_args_to_regs`). **`raw_args_to_regs` only ever
-  forwards the first 3 operand forms at a macro call site**, silently
-  dropping anything past the third — a real, separate limitation from
-  the `&REST`/`nfixed` restriction that was lifted (see "Calling
-  convention" below): a transformer's own parameter arity is
-  unrestricted now, but a *call site* with more than 3 syntactic
-  operands still loses data regardless of how the macro declares its
-  params. `invoke_closure_host` also did not set the incoming argument
-  count (target `rax`) at all before calling the transformer until a
-  real bug surfaced it: a `&REST`-taking transformer with `nfixed<3`
+  directly from host code — `invoke_macro` does an ordinary indirect
+  call through the closure's stored code pointer, synchronously, at
+  compile time, with the call site's raw unevaluated operand forms as
+  arguments, for *any* number of operands: the first 3 go in
+  `rsi`/`rdx`/`rcx`, and any beyond that are pushed onto the real host
+  stack immediately before the call, in the same order
+  `compile_call_args`' own target-code convention produces, so a
+  transformer with more than 3 fixed/`REST` parameters sees its
+  stack-passed operands at exactly the offsets `build_param_frame`
+  already expects (`tests/cases/040_macro_many_args.asm`). This
+  supersedes an earlier `raw_args_to_regs`+`invoke_closure_host` pair
+  that only forwarded the first 3 operand forms (silently dropping the
+  rest — a real, separate limitation from the `&REST`/`nfixed`
+  restriction that was lifted below) and, worse, never set the incoming
+  argument count (target `rax`) at all: a `&REST`-taking transformer
   reads that count at runtime to decide which register slots hold real
   `REST` data, and reading whatever host-side garbage happened to be in
-  `rax` instead corrupted that decision silently rather than erroring
-  — `lib/prelude.lisp`'s own `DEFUN` macro (`(NAME PARAMS &REST BODY)`,
+  `rax` corrupted that decision silently rather than erroring —
+  `lib/prelude.lisp`'s own `DEFUN` macro (`(NAME PARAMS &REST BODY)`,
   `nfixed=2`) is exactly this shape and is what exposed it
-  (`tests/cases/038_macro_rest_below3.asm`); fixed by computing the real
-  count (capped at 3, matching what `raw_args_to_regs` can actually
-  forward) at the call site and threading it through. Nothing
+  (`tests/cases/038_macro_rest_below3.asm`). Nothing
   distinguishes "the compiler" from "compiled code" here; they are both
   just x86-64 machine code running in the same process, so a macro
   transformer needs no interpreter of its own. Whatever it returns is
@@ -625,18 +625,24 @@ literal datum in this compiler is, and runs through the identical
 `reader_init`/`read_form`/`compile_thunk` loop the user's own source
 does, just from an in-memory buffer instead of an mmap'd file.
 
-It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, and `LIST` —
-each an ordinary `DEFMACRO`/`DEFUN` over kernel primitives, no compiler
-change needed for any of it (see `lib/prelude.lisp`'s own comments for
-exactly why). `DEFUN` and `WHEN`/`UNLESS` are deliberately
-single-body-form only: a `DEFMACRO` transformer is invoked through
-`raw_args_to_regs`/`invoke_closure_host`, which forwards at most 3
-syntactic operands per call site (see "The kernel surface" above) — a
-second body form at a `DEFUN` or `WHEN`/`UNLESS` call site would
-silently vanish rather than erroring, so a caller wanting more than one
-body form wraps it in an explicit `PROGN`.
+It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
+`REVERSE`, and `FORMAT` — each an ordinary `DEFMACRO`/`DEFUN` over
+kernel primitives, no compiler change needed for any of it (see
+`lib/prelude.lisp`'s own comments for exactly why). `DEFUN` and
+`WHEN`/`UNLESS` take any number of body forms directly
+(`(NAME PARAMS &REST BODY)`, the same way `LAMBDA`'s own body already
+does) — `invoke_macro` (see "The kernel surface" above) forwards every
+operand at a macro call site, not just the first 3, so this no longer
+needs the single-body-form workaround an earlier version of this
+prelude required. `FORMAT` walks its control string with `STRING-REF`
+at macro-expansion time, recognizing only `~a`/`~%` (v0 — see
+`lib/prelude.lisp`'s own comments for the exact scope, including that
+the `STREAM` argument is currently accepted but ignored — no
+`(format nil ...)` support yet); `(format t "~a! = ~a~%" n
+(factorial n))`, the exact idiom `examples/factorial/main.lisp` uses,
+now works end to end.
 
-Writing even this small a prelude surfaced two real, previously-latent
+Writing even this small a prelude surfaced three real, previously-latent
 bugs no existing test had exercised:
 
 - **The bare symbol `T`, evaluated as a variable, was unbound.**
@@ -655,9 +661,33 @@ bugs no existing test had exercised:
   — the prelude included — runs) fixes this for every binary this
   project builds, tests included, not just `lamedhc`
   (`tests/cases/039_t_self_bound.asm`).
-- **`invoke_closure_host` never set the incoming argument count.**
-  Documented above under `DEFMACRO`; `tests/cases/
-  038_macro_rest_below3.asm` is the regression test.
+- **`invoke_closure_host` never set the incoming argument count**, and
+  **`raw_args_to_regs` only forwarded the first 3 operand forms.**
+  Both documented above under `DEFMACRO`; `tests/cases/
+  038_macro_rest_below3.asm` and `040_macro_many_args.asm` are the
+  regression tests.
+- **A call with more than 3 arguments never cleaned up its own
+  stack-passed extra arguments after returning.** `compile_call_args`
+  leaves argument index 3 onward on the *target* stack, positioned for
+  the callee's own `build_param_frame`-addressed parameters; a callee's
+  `leave`/`ret` only unwinds what it pushed after its own `push rbp`,
+  never those caller-pushed extras sitting below the return address —
+  cleaning them up is the *caller*'s job, and neither of `compile_call`'s
+  two paths did it. Invisible as long as a `>3`-arg call's result was
+  used immediately; corrupting the moment the *enclosing* expression had
+  already pushed something of its own onto the stack around the call —
+  `compile_binop`'s own lhs, a `compile_binary_hostcall`'s arg1, and so
+  on — since the extra bytes were still sitting in the slot the caller
+  expected to pop its own saved value back from.
+  `(CONS 'X (F a b c d))` for any 4+-arg `F` silently returned garbage
+  instead of `X` as its `car` — `lib/prelude.lisp`'s own `FORMAT` macro
+  (whose expansion is exactly a `CONS` of a literal `PROGN` onto a
+  multi-argument call chain) is what surfaced this for real. Fixed by
+  emitting `add rsp, (nargs-3)*8` (via `emit_sub_rsp_imm32` with a
+  negative immediate) right after the call returns, on both paths —
+  `nargs` is a compile-time constant per call site, so the cleanup
+  amount is too. `tests/cases/041_call_stack_cleanup.asm` is the
+  regression test.
 
 ## Roadmap
 
@@ -669,22 +699,17 @@ bugs no existing test had exercised:
   closure fails deterministically (`emit_check_callable`,
   `native_errors.asm`) rather than segfaulting undefined-behavior-style
   — not yet a `HANDLER-CASE`-catchable condition, but at least an
-  observable one. Every example uses `DEFUN` and `FORMAT`. `DEFUN`
-  is real now, in the prelude (single-body-form; see "The prelude"
-  above for why). `FORMAT` is not yet: its natural shape is a
-  `DEFMACRO`, and this kernel now has everything `FORMAT`-as-macro
-  needs internally — `STRING-REF`/`SUBSTRING` to walk a control
-  string's bytes at macro-expansion time, `PRINT` for `~a`'s stream
-  form, and `PRINC-TO-STRING` (`tests/cases/037_eval_read_princ.asm`)
-  to cover `(format nil ...)` too — but a realistic `FORMAT` call site
-  (`(format t "~a! = ~a~%" a b)`, say) routinely has 4+ syntactic
-  operands, past `raw_args_to_regs`'s own 3-operand forwarding cap for
-  macro invocation (see "The kernel surface" and "The prelude" above) —
-  the concrete next blocker, and a different one from the `&REST`/
-  `nfixed` restriction that's already fixed. Examples that need
-  networking, regex, or TLS are out of scope for this from-scratch host
-  regardless (Part IX capabilities this kernel has no I/O surface for
-  yet); everything else in that directory is the honest bar.
+  observable one. `DEFUN` and `FORMAT` are both real now (see "The
+  prelude" above), including the exact `(format t "~a! = ~a~%" n
+  (factorial n))` idiom `examples/factorial/main.lisp` itself uses.
+  That file still doesn't run unmodified: it also uses `reduce`, `iota`,
+  `1+`, `#'*` (function shorthand, i.e. `FUNCTION`/`#'` — Part VI), and
+  `dotimes` (Part VII, derivable from `WHILE`/`LET`/`SETQ`, all of which
+  exist), none written yet — each is ordinary library code once written,
+  not a new kernel gap the way `DEFUN`/`FORMAT` were. Examples that
+  need networking, regex, or TLS are out of scope for this from-scratch
+  host regardless (Part IX capabilities this kernel has no I/O surface
+  for yet); everything else in that directory is the honest bar.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
