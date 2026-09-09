@@ -203,46 +203,47 @@
 ;;; ─── Retroactive entry points ─────────────────────────────────────────────
 
 (defun call-graph-add! (name)
-  "Add NAME to $CALL-GRAPH by retrieving its definition via SEE-SOURCE.
-   Useful for functions defined before this file was loaded (e.g. all stdlib
-   helpers in files 00–18).  Returns NAME on success, NIL if NAME is not
-   an inspectable user function.
+  "Add NAME to $CALL-GRAPH by retrieving its definition. Useful for
+   functions defined before this file was loaded (e.g. all stdlib helpers
+   in files 00-18). Returns NAME on success, NIL if NAME is not an
+   inspectable user function.
 
-   SEE-SOURCE returns two different shapes depending on how NAME was
-   defined: an ordinary DEFUN/lambda-backed function reconstructs to
-   `(lambda params body...)`, but a `defun*`/`defun-typed`-defined function
-   returns its own original defining form, `(defun-typed name params
-   body...)` -- one extra leading NAME element, and PARAMS one position
-   later. Blindly taking (cadr lam)/(cddr lam) as though every shape were
-   `(lambda ...)` misreads a typed function's NAME as its parameter list,
-   which then crashes CG-COLLECT-FORMS (a CAR on a bare symbol) -- not a
-   caught error, since it happens after SEE-SOURCE's own ERRORSET has
-   already returned successfully. Branch on the form's head symbol instead."
-  (let ((src (errorset (list 'see-source (list 'quote name)))))
-    (if (null src)
-        nil
-        ;; errorset returns a one-element list on success: (form)
-        (let* ((form   (car src))
-               (head   (if (consp form) (car form) nil))
-               (params (cond
-                         ((eq head 'lambda) (cadr form))
-                         ((eq head 'defun-typed) (caddr form))
-                         (t nil)))
-               (body   (cond
-                         ((eq head 'lambda) (cddr form))
-                         ((eq head 'defun-typed) (cdddr form))
-                         (t nil))))
-          (if (or (eq head 'lambda) (eq head 'defun-typed))
-              (progn
-                (errorset (list 'defun-update-call-graph!
-                                 (list 'quote name)
-                                 (list 'quote params)
-                                 (list 'quote body)))
-                name)
-              ;; An unrecognized source-form shape: not an error, just not
-              ;; something this analysis knows how to walk -- same
-              ;; "not inspectable" outcome as SEE-SOURCE failing outright.
-              nil)))))
+   A `defun*`/`defun-typed`-defined function carries a `call-graph-info`
+   plist entry of `(params . body)` with plain (untyped) param symbols,
+   populated at definition time -- SEE-SOURCE's reconstructed form for
+   these has no single fixed shape to walk generically (DEFUN-TYPED's
+   params are typed `(ARG TY)` pairs, and DEFUN*'s source form varies with
+   classic/flat/typed param style, optional docstring, and optional
+   return-type annotation), so this analysis reads the pre-parsed pair
+   instead of trying to re-derive it from the printed form. An ordinary
+   DEFUN/lambda-backed function has no such entry and instead reconstructs
+   via SEE-SOURCE to `(lambda params body...)`."
+  (let ((info (get name 'call-graph-info)))
+    (if (consp info)
+        (progn
+          (errorset (list 'defun-update-call-graph!
+                           (list 'quote name)
+                           (list 'quote (car info))
+                           (list 'quote (cdr info))))
+          name)
+        (let ((src (errorset (list 'see-source (list 'quote name)))))
+          (if (null src)
+              nil
+              ;; errorset returns a one-element list on success: (form)
+              (let* ((form (car src))
+                     (head (if (consp form) (car form) nil)))
+                (if (eq head 'lambda)
+                    (progn
+                      (errorset (list 'defun-update-call-graph!
+                                       (list 'quote name)
+                                       (list 'quote (cadr form))
+                                       (list 'quote (cddr form))))
+                      name)
+                    ;; An unrecognized source-form shape: not an error, just
+                    ;; not something this analysis knows how to walk -- same
+                    ;; "not inspectable" outcome as SEE-SOURCE failing
+                    ;; outright.
+                    nil)))))))
 
 (defun call-graph-add-many! (names)
   "Call call-graph-add! for each symbol in NAMES.

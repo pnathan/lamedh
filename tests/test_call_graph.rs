@@ -189,11 +189,19 @@ fn call_graph_survives_a_defun_star_typed_function_in_the_graph() {
     eval_line("(defun cg-normal-a (x) (cg-normal-util x))", &env);
     eval_line("(defun cg-normal-util (x) x)", &env);
 
-    // The typed function itself must be inspectable, not silently poisoned.
+    // The typed function itself must be inspectable, not silently poisoned
+    // -- and its own body must be walked for real, not just "not error":
+    // CG-TYPED-LEAF's body `(+ n 1)` calls `+` and nothing else, so a
+    // correctly-parsed params/body pair must find exactly that, not an
+    // empty list (which is what a params-list mismatch that silently
+    // discards the body -- returning NIL from CALL-GRAPH-ADD! instead of
+    // erroring -- would otherwise produce unnoticed).
     let leaf_callees = sorted_members("(call-graph-callees 'cg-typed-leaf)", &env);
-    assert!(
-        !leaf_callees.iter().any(|c| c.starts_with("ERROR")),
-        "call-graph-callees on a defun*-typed function should not error, got {:?}",
+    assert_eq!(
+        leaf_callees,
+        vec!["+".to_owned()],
+        "call-graph-callees on a defun*-typed function should find its real \
+         callees, got {:?}",
         leaf_callees
     );
 

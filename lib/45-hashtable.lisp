@@ -250,7 +250,16 @@ policy below is violated; treated as an internal-error safety net)."
 ;;; ---- growth / rehashing ---------------------------------------------------
 
 (defun lht-should-grow-p (ht)
-  (>= (* (+ (lht-count ht) (lht--tombstones ht)) $lht-grow-num)
+  "Gate growth on NEXT-SLOT, not COUNT+TOMBSTONES: LHT-PUT! always claims a
+fresh payload slot on a miss (pidx = NEXT-SLOT), even when the bucket it
+claims was a tombstone -- reusing a tombstoned bucket index does not reuse
+its old payload index. So NEXT-SLOT is a strict upper bound on
+COUNT+TOMBSTONES that keeps climbing under insert/delete churn even while
+COUNT+TOMBSTONES itself stays flat, and it is NEXT-SLOT -- not
+COUNT+TOMBSTONES -- that indexes the KEYS/VALS payload arrays (each sized
+CAPACITY). Gating on the wrong one lets NEXT-SLOT walk past CAPACITY under
+churn with no growth ever triggering, and STORE then faults out of bounds."
+  (>= (* (lht--next-slot ht) $lht-grow-num)
       (* (lht--capacity ht) $lht-grow-den)))
 
 (defun lht-next-capacity (cap count)
@@ -289,12 +298,15 @@ duplicate keys yet (used only during rehash), and claim it for PAYLOAD-IDX."
                                next-slot (+ i 1))))))
 
 (defun lht-grow! (ht)
-  "Double (or more) HT's capacity in place, compacting away tombstones."
+  "Rehash HT in place, compacting away tombstones -- capacity grows only if
+the live count needs it (LHT-NEXT-CAPACITY starts its doubling search from
+the current capacity), so a tombstone-heavy table under insert/delete churn
+recompacts at its existing size instead of growing unboundedly."
   (let* ((old-buckets (lht--buckets ht))
          (old-keys (lht--keys ht))
          (old-vals (lht--vals ht))
          (old-cap (lht--capacity ht))
-         (new-cap (lht-next-capacity (* old-cap 2) (lht-count ht)))
+         (new-cap (lht-next-capacity old-cap (lht-count ht)))
          (new-buckets (typed-array new-cap 'int64))
          (new-keys (array new-cap))
          (new-vals (array new-cap)))
@@ -355,7 +367,7 @@ indistinguishable from absence)."
         t)))
 
 (declare-type! 'lht-has-key-p '(forall (a b) (-> (a b) bool)))
-(declare-type! 'lht-put! '(forall (a b) (-> (a a b) bool)))
+(declare-type! 'lht-put! '(forall (a b c) (-> (a b c) bool)))
 (declare-type! 'lht-remove! '(forall (a b) (-> (a b) bool)))
 
 (defun lht-keys-loop (buckets keys cap i acc)

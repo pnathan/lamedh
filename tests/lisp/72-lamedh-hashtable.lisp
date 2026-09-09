@@ -77,6 +77,24 @@
       (assert-equal (lht-get h 'lht-churn) 2)
       (assert-equal (lht-count h) 1))))
 
+(deftest lht-repeated-single-key-churn-does-not-overflow-payload-arrays
+  ;; LHT-PUT! always claims a fresh payload slot (NEXT-SLOT) on a miss, even
+  ;; when it reuses a tombstoned bucket -- so COUNT+TOMBSTONES stays flat
+  ;; under repeated put/remove of one key while NEXT-SLOT keeps climbing.
+  ;; Gating growth on COUNT+TOMBSTONES instead of NEXT-SLOT would let
+  ;; NEXT-SLOT walk past CAPACITY with no growth ever triggering, faulting
+  ;; STORE out of bounds well before this many ops.
+  (let ((h (make-lht)))
+    (progn
+      (mapc (lambda (i)
+              (progn
+                (lht-put! h 'lht-single-churn i)
+                (lht-remove! h 'lht-single-churn)))
+            (iota 200))
+      (lht-put! h 'lht-single-churn 'final)
+      (assert-equal (lht-get h 'lht-single-churn) 'final)
+      (assert-equal (lht-count h) 1))))
+
 (deftest lht-string-keys
   (let ((h (make-lht)))
     (progn
