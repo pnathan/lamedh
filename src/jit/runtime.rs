@@ -348,6 +348,19 @@ impl Ctx<'_> {
         }
     }
 
+    /// Record the evaluator's own "expects an array" type error for a boxed
+    /// receiver that turned out not to be a `LispVal::Array` when a
+    /// [`BoxedOp::Aref`]/[`BoxedOp::Aset`]/[`BoxedOp::Len`] tried to look
+    /// inside it (issue #476). `who` is the operation's own spelling
+    /// (`"FETCH"`/`"STORE"`/`"ARRAY-LENGTH*"`), matching the tree-walker's
+    /// wording for the same misuse.
+    fn record_boxed_not_array(&self, who: &str, got: &LispVal) {
+        self.set_pending_error(format!(
+            "{who}: first argument must be an array, got {}",
+            crate::printer::print(got)
+        ));
+    }
+
     /// A `Ctx` for a *leaf* native call from a raw entry point (issue #424).
     /// The function table is empty: a leaf's native code never performs a
     /// cross-function call, so it never indexes `funcs` — the only `Ctx` state
@@ -468,6 +481,28 @@ pub(crate) unsafe extern "C" fn jit_bad_char(ctx: *const core::ffi::c_void, n: i
 #[cfg(feature = "jit")]
 pub(crate) extern "C" fn jit_ftrans(op: u64, x: f64) -> u64 {
     super::types::FUnOp::from_opcode(op).apply_word(x)
+}
+
+/// Host trampoline for the boxed-handle intrinsics (issue #476 phase 3b/3c):
+/// `op` is the [`BoxedOp`] discriminant, `a`/`b`/`c` the raw argument words
+/// (unused positions are ignored — see [`BoxedOp`]'s doc comment for which
+/// apply to which op). Calls [`boxed_op`] directly, the single evaluator the
+/// Core interpreter and closure edition also call, so native code can never
+/// diverge from the other two tiers.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_boxed_op(
+    ctx: *const core::ffi::c_void,
+    op: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+) -> u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    boxed_op(super::types::BoxedOp::from_opcode(op), a, b, c, ctx)
 }
 
 /// Host trampoline a native edition calls immediately before making a
@@ -652,6 +687,79 @@ unsafe fn field_get(base: u64, idx: usize) -> u64 {
 #[inline]
 unsafe fn field_set(base: u64, idx: usize, val: u64) {
     unsafe { *(base as *mut u64).add(idx + 1) = val }
+}
+
+// --- boxed-handle intrinsics shared by all three tiers (issue #476) --------
+
+/// The single source of truth for [`BoxedOp`] (issue #476 phase 3b/3c): the
+/// Core interpreter ([`eval_core_nontail`]/[`eval_core_traced`]), the closure
+/// edition ([`compile`]), and native code (via the `jit_boxed_op` trampoline,
+/// `native.rs`) all call this directly, so the three tiers can never diverge
+/// on `equal`/`hash-code`/general-array access over a handle — exactly the
+/// role [`FUnOp::apply_word`] plays for the float intrinsics.
+///
+/// `a`/`b`/`c` are raw handle/int64 words; which ones a given `op` reads is
+/// documented on [`BoxedOp`]'s variants (unused positions are ignored, so
+/// callers may pass `0`).
+pub(super) fn boxed_op(op: BoxedOp, a: u64, b: u64, c: u64, ctx: &Ctx) -> u64 {
+    match op {
+        BoxedOp::Equal => {
+            let (la, lb) = (ctx.unbox(a), ctx.unbox(b));
+            (la == lb) as u64
+        }
+        BoxedOp::Hash => {
+            let la = ctx.unbox(a);
+            from_i(crate::hash_code(&la))
+        }
+        BoxedOp::Aref => {
+            let base = ctx.unbox(a);
+            let idx = as_i(b);
+            match &base {
+                LispVal::Array(arr) => {
+                    let v = arr.borrow();
+                    if idx < 0 || idx as usize >= v.len() {
+                        ctx.record_index_error(idx, v.len() as i64, false);
+                        return 0;
+                    }
+                    ctx.box_value(v[idx as usize].clone())
+                }
+                other => {
+                    ctx.record_boxed_not_array("FETCH", other);
+                    0
+                }
+            }
+        }
+        BoxedOp::Aset => {
+            let base = ctx.unbox(a);
+            let idx = as_i(b);
+            match &base {
+                LispVal::Array(arr) => {
+                    let len = arr.borrow().len();
+                    if idx < 0 || idx as usize >= len {
+                        ctx.record_index_error(idx, len as i64, true);
+                        return c;
+                    }
+                    let val = ctx.unbox(c);
+                    arr.borrow_mut()[idx as usize] = val;
+                    c
+                }
+                other => {
+                    ctx.record_boxed_not_array("STORE", other);
+                    c
+                }
+            }
+        }
+        BoxedOp::Len => {
+            let base = ctx.unbox(a);
+            match &base {
+                LispVal::Array(arr) => from_i(arr.borrow().len() as i64),
+                other => {
+                    ctx.record_boxed_not_array("ARRAY-LENGTH*", other);
+                    0
+                }
+            }
+        }
+    }
 }
 
 /// Bounds-checked load of `field` of inline element `elem_idx` of an
@@ -1113,6 +1221,19 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             }
             0
         }
+        Core::BoxedOp(op, args) => {
+            let vals: Vec<u64> = args
+                .iter()
+                .map(|a| eval_core_nontail(a, env, ctx))
+                .collect();
+            boxed_op(
+                *op,
+                vals.first().copied().unwrap_or(0),
+                vals.get(1).copied().unwrap_or(0),
+                vals.get(2).copied().unwrap_or(0),
+                ctx,
+            )
+        }
     }
 }
 
@@ -1413,6 +1534,20 @@ pub(super) fn eval_core_traced(
             }
             step!("for", 0, *slot, NO_CALLEE)
         }
+        Core::BoxedOp(op, args) => {
+            let vals: Vec<u64> = args
+                .iter()
+                .map(|a| eval_core_traced(a, env, ctx, depth + 1, log))
+                .collect();
+            let r = boxed_op(
+                *op,
+                vals.first().copied().unwrap_or(0),
+                vals.get(1).copied().unwrap_or(0),
+                vals.get(2).copied().unwrap_or(0),
+                ctx,
+            );
+            step!("boxedop", r, NO_SLOT, NO_CALLEE)
+        }
     }
 }
 
@@ -1465,6 +1600,7 @@ pub fn core_node_count(core: &Core) -> usize {
                 + core_node_count(i)
                 + fields.iter().map(core_node_count).sum::<usize>()
         }
+        Core::BoxedOp(_, args) => args.iter().map(core_node_count).sum(),
     }
 }
 
@@ -1594,6 +1730,12 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
             verify_core(i, n_slots, n_funcs)?;
             for f in fields {
                 verify_core(f, n_slots, n_funcs)?;
+            }
+            Ok(())
+        }
+        Core::BoxedOp(_, args) => {
+            for a in args {
+                verify_core(a, n_slots, n_funcs)?;
             }
             Ok(())
         }
@@ -1885,6 +2027,20 @@ pub fn compile(core: &Core) -> Compiled {
                     }
                 }
                 0
+            })
+        }
+        Core::BoxedOp(op, args) => {
+            let op = *op;
+            let cargs: Vec<Compiled> = args.iter().map(compile).collect();
+            Rc::new(move |e, c| {
+                let vals: Vec<u64> = cargs.iter().map(|ca| ca(e, c)).collect();
+                boxed_op(
+                    op,
+                    vals.first().copied().unwrap_or(0),
+                    vals.get(1).copied().unwrap_or(0),
+                    vals.get(2).copied().unwrap_or(0),
+                    c,
+                )
             })
         }
     }

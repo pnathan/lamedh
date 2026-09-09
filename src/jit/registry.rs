@@ -2271,6 +2271,18 @@ impl Jit {
                 out.push(format!("{l_end}:"));
                 out.push(format!("    {dst} = li   0        ; for yields nil"));
             }
+            Core::BoxedOp(op, args) => {
+                let mut argregs = Vec::with_capacity(args.len());
+                for a in args {
+                    let t = fresh(reg);
+                    self.dis_emit(a, &t, out, reg, lab);
+                    argregs.push(t);
+                }
+                out.push(format!(
+                    "    {dst} = boxed {op:?}({})   ; issue #476 handle intrinsic",
+                    argregs.join(", ")
+                ));
+            }
         }
     }
 }
@@ -2358,6 +2370,11 @@ fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
             inline_call_ids(i, out);
             for f in fields {
                 inline_call_ids(f, out);
+            }
+        }
+        Core::BoxedOp(_, args) => {
+            for a in args {
+                inline_call_ids(a, out);
             }
         }
     }

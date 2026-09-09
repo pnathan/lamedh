@@ -708,6 +708,81 @@ pub enum Core {
     /// [`Core::FieldSet`]); out-of-range `i` records the index error and is
     /// a no-op.
     InlineFieldSet(Box<Core>, Box<Core>, usize, usize, Box<Core>),
+    /// A boxed-handle intrinsic (issue #476 phase 3b/3c): the only node that
+    /// looks inside a `Ty::Boxed` handle. See [`BoxedOp`] for what each op
+    /// does and which of `args` it uses. Elaborated from `(equal a b)`,
+    /// `(hash-code x)`, and `(fetch/store/array-length* h ...)` at a boxed
+    /// operand/receiver (`elaboration.rs`, next to `elab_fetch`/`elab_store`/
+    /// `elab_array_len`). All three executors call the single shared
+    /// evaluator [`super::runtime::boxed_op`] — reuse, not reimplementation,
+    /// exactly like [`FUnOp::apply_word`] for the float intrinsics — so the
+    /// tree interpreter, the closure edition, and (via the `jit_boxed_op`
+    /// trampoline) native code agree bit-for-bit.
+    BoxedOp(BoxedOp, Vec<Core>),
+}
+
+/// Boxed-handle intrinsics (issue #476): the only operations allowed to look
+/// inside a `Ty::Boxed` handle. Movement (`Var`/`Let`/`Assign`/`If`/`Call`
+/// argument/return/struct field) needs no `Core` node at all — a handle is
+/// already a plain `u64` word, indistinguishable in machinery from `int64`.
+/// These are the exception: `equal`/`hash-code` compare or hash the boxed
+/// `LispVal` itself, and the array trio index into a general `LispVal::Array`
+/// a handle may denote — crossing as one handle word rather than
+/// element-wise is load-bearing (issue #476 §1(a)), so `fetch`/`store`/
+/// `array-length*` on a boxed receiver must themselves be intrinsics, not a
+/// materialize-then-`Core::ArrayGet` desugaring. `#[repr(u64)]` mirrors
+/// [`FUnOp`] so the native trampoline (`jit_boxed_op`) dispatches on a single
+/// `u64` opcode exactly like `jit_ftrans` does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
+pub enum BoxedOp {
+    /// `(equal a b)` at boxed operands -> `bool` (`0`/`1`). Args: `[a, b]`.
+    /// `PartialEq for LispVal` (`src/lib.rs`) is the exact relation — the one
+    /// `EQUAL` already uses, so this needs no new semantics, only reuse.
+    Equal,
+    /// `(hash-code x)` -> `int64`. Args: `[x]`. Calls `crate::hash_code`, the
+    /// #474 implementation extracted out of `BuiltinFunc::HashCode`, so the
+    /// interpreter builtin and all three typed tiers agree bit-for-bit and
+    /// inherit `EQUAL a b => hash-code a == hash-code b` for free.
+    Hash,
+    /// `(fetch h i)` at a boxed receiver -> handle. Args: `[h, i]`. Indexes
+    /// the general `LispVal::Array` `h` denotes — NOT the flat arena buffer
+    /// `Core::ArrayGet` indexes. Out-of-range or a non-array handle records
+    /// the evaluator's own error (`Ctx::record_index_error` / a type-error
+    /// message) and substitutes the NIL handle (`0`), matching every other
+    /// fallible `Ctx` operation's panic-free discipline.
+    Aref,
+    /// `(store h i v)` at a boxed receiver -> handle (the stored value's own
+    /// handle, mirroring `Core::ArraySet`'s "evaluates to the stored value"
+    /// contract). Args: `[h, i, v]`; `v` is itself a handle — a boxed
+    /// receiver's element is boxed, matching the "boxed is never inferred,
+    /// only where a signature writes it" policy (no silent int/float
+    /// auto-boxing). Mutates the SAME `Shared` allocation the caller's array
+    /// uses (issue #476 §1(b): aliasing is the point, not a copy-in/copy-out
+    /// membrane).
+    Aset,
+    /// `(array-length* h)` at a boxed receiver -> `int64`. Args: `[h]`.
+    Len,
+}
+
+impl BoxedOp {
+    /// The `jit_boxed_op` opcode (the `#[repr(u64)]` discriminant).
+    pub fn opcode(self) -> u64 {
+        self as u64
+    }
+
+    /// Inverse of [`Self::opcode`], for the trampoline. Panics on an unknown
+    /// code — the native backend only ever passes an op's own discriminant.
+    pub fn from_opcode(op: u64) -> BoxedOp {
+        match op {
+            0 => BoxedOp::Equal,
+            1 => BoxedOp::Hash,
+            2 => BoxedOp::Aref,
+            3 => BoxedOp::Aset,
+            4 => BoxedOp::Len,
+            other => panic!("jit_boxed_op: unknown BoxedOp opcode {other}"),
+        }
+    }
 }
 
 /// Unary floating-point intrinsics that lower to native code. Each takes one
@@ -888,6 +963,7 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
                 || core_may_mutate_slot(i, slot)
                 || core_may_mutate_slot(v, slot)
         }
+        Core::BoxedOp(_, args) => args.iter().any(|a| core_may_mutate_slot(a, slot)),
     }
 }
 
@@ -950,6 +1026,7 @@ pub fn core_references_slot(core: &Core, slot: usize) -> bool {
                 || core_references_slot(i, slot)
                 || core_references_slot(v, slot)
         }
+        Core::BoxedOp(_, args) => args.iter().any(|a| core_references_slot(a, slot)),
     }
 }
 
@@ -1051,6 +1128,11 @@ pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
                 || allocation_escapes(i, slot)
                 || allocation_escapes(v, slot)
         }
+        // A boxed handle is never a `Core::ArrayNew`/`Core::StructNew` arena
+        // buffer, so the `!is_var_slot` stack-alloc exemption other array/
+        // struct ops get never applies here — any reference conservatively
+        // counts as escaping, same philosophy as `Core::Call`'s args.
+        Core::BoxedOp(_, args) => args.iter().any(|a| allocation_escapes(a, slot)),
     }
 }
 
@@ -1313,6 +1395,12 @@ fn inline_xform(
             *field,
             *stride,
             Box::new(inline_xform(v, shift, registry, allow_inline, next)),
+        ),
+        Core::BoxedOp(op, args) => Core::BoxedOp(
+            *op,
+            args.iter()
+                .map(|a| inline_xform(a, shift, registry, allow_inline, next))
+                .collect(),
         ),
     }
 }
@@ -1594,5 +1682,16 @@ pub(super) fn stride_walk(core: &Core, sc: &StrideCtx, discard: bool) -> Result<
             *stride,
             Box::new(stride_walk(v, sc, false)?),
         )),
+        // No recognized pattern touches a boxed intrinsic's operands: a bare
+        // `Var(sc.slot)` anywhere inside conservatively aborts the whole
+        // rewrite via the `Core::Var` arm above, same as an unrecognized call
+        // argument.
+        Core::BoxedOp(op, args) => {
+            let mut out = Vec::with_capacity(args.len());
+            for a in args {
+                out.push(stride_walk(a, sc, false)?);
+            }
+            Ok(Core::BoxedOp(*op, out))
+        }
     }
 }
