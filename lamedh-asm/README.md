@@ -408,15 +408,34 @@ into conformance incrementally, tracked honestly rather than silently:
   below): `(errorset '(car 5))`'s protected form is compiled and run to
   get a *value* (ordinarily the quoted list it evaluates to) and that
   value is itself then run as code via `eval_form`, the second step the
-  spec requires and this kernel previously had no way to take. No
-  native failure (division by zero, index out of range, wrong arity,
-  unbound variable, **or an argument of the wrong type to `CAR`/`CDR`**)
-  signals a condition yet — those still misbehave exactly as before
-  (verified directly: `(errorset '(car 5))` now genuinely attempts to
-  run `(CAR 5)`, which segfaults rather than erroring, since `CAR`
-  itself does no type check — a pre-existing gap this change makes more
-  reachable, not a new one); only explicit `ERROR` calls go through
-  this system so far.
+  spec requires and this kernel previously had no way to take.
+  **`CAR`/`CDR` on an argument that is neither a cons nor `NIL` now
+  signal a real, catchable condition too** — `(errorset '(car 5))`
+  genuinely catches it and returns `NIL` now, instead of segfaulting on
+  an out-of-bounds dereference (`tests/cases/047_car_cdr_type_errors.asm`).
+  This is the first *native* (non-`ERROR`-call) failure this kernel
+  signals as a condition: `car`/`cdr` (`reader.asm`) now check the tag
+  before dereferencing, and on mismatch tail-call a new
+  `fail_wrong_type` host routine (`native_errors.asm`) that builds an
+  ordinary two-field condition — message text plus the culprit value
+  itself as `data` — and throws it to the shared `handler_case_tag()`
+  via a new `native_throw(tag, value)` routine, the exact same
+  catch-stack search/restore/jump `compile_throw`'s own *generated*
+  code performs for a Lisp-level `(THROW ...)`, just factored out once
+  as an ordinary callable subroutine so native code can reach the same
+  machinery instead of needing a second, parallel failure path. v0
+  scope, narrower than the reference on purpose: the message text is a
+  fixed string per caller ("CAR: expected a cons or NIL"), not the
+  reference's own interpolated "CAR: expected a list, got 5" —
+  `ERROR-DATA` still exposes the actual culprit value, just not folded
+  into the message text. Division by zero, index out of range, wrong
+  arity, and unbound-variable reads are still unchanged — those still
+  misbehave exactly as before (division by zero and out-of-range array
+  access still segfault or produce garbage; calling with the wrong
+  arity is still unchecked; an unbound-variable *read* still returns
+  the `IMM_UNBOUND` immediate rather than erroring) — only explicit
+  `ERROR` calls and now `CAR`/`CDR`'s own type check go through this
+  system so far.
 - **`BLOCK`/`RETURN-FROM`** are the same CATCH/THROW derivation
   trick again, one call site simpler than `HANDLER-CASE`: `name` is
   *unevaluated*, so it's used directly as the catch frame's tag (no
@@ -897,18 +916,19 @@ bugs no existing test had exercised:
 - `EVAL` now exists (`eval_form`, exposed as `(EVAL form)`) and
   `ERRORSET` uses it to match the spec exactly, but it takes no second
   (environment) argument — there being no environment-as-value in this
-  kernel yet to pass one with; native failures (division by zero, index
-  out of range, wrong arity, unbound variable, an argument of the wrong
-  type to `CAR`/`CDR`) signaling catchable conditions instead of
-  misbehaving — calling a non-callable value now fails deterministically
-  (`emit_check_callable`, `native_errors.asm`) rather than segfaulting,
-  but still as a hard `exit(1)`, not yet a condition `HANDLER-CASE` can
-  catch; the same treatment for the others in this list is the natural
-  next step once real native-failure-to-condition plumbing exists —
-  `(errorset '(car 5))` demonstrates the gap concretely now that
-  `ERRORSET` actually runs its evaluated form as code: `CAR` on a
-  non-cons segfaults rather than signaling, escaping the very
-  `ERRORSET` that was supposed to catch it.
+  kernel yet to pass one with. Native-failure-to-condition plumbing now
+  exists for one case (`CAR`/`CDR` on a non-cons/non-`NIL` argument —
+  see "KERNEL.md conformance" above, `fail_wrong_type`/`native_throw`,
+  `native_errors.asm`) and the same `native_throw` routine is reusable
+  for the rest of this list: division by zero, index out of range,
+  wrong arity, and an unbound-variable *read* still misbehave exactly
+  as before (segfault, garbage, or the raw `IMM_UNBOUND` immediate,
+  respectively) rather than signaling. Calling a non-callable value
+  still fails deterministically (`emit_check_callable`,
+  `native_errors.asm`) but as a hard `exit(1)`, not yet a condition
+  `HANDLER-CASE` can catch — the natural next step, now that
+  `native_throw` exists, is switching `fail_not_callable`'s call sites
+  over to it the same way `car`/`cdr` now are.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); the hash table still
   hashes/compares keys with `EQ`

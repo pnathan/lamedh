@@ -15,6 +15,7 @@ extern make_string
 extern make_float
 extern string_bytes
 extern string_len
+extern fail_wrong_type
 
 section .bss
 align 8
@@ -39,21 +40,54 @@ cons:
     pop r8
     ret
 
-; car(rdi=tagged cons) -> rax
+; car(rdi=tagged cons) -> rax. KERNEL.md Part IV/XI: (car nil) is nil;
+; anything else that isn't a cons is a native failure, now signaled as
+; a real catchable condition (fail_wrong_type, native_errors.asm)
+; instead of the UNTAG_PTR-and-dereference below simply segfaulting —
+; every *internal* caller of car (the compiler/reader/printer walking
+; their own, always-proper lists) only ever hits the fast cons path or
+; the nil path, exactly like before; only a genuinely malformed
+; argument from Lamedh source (`(CAR 5)`) reaches .wrong_type.
 global car
 car:
+    cmp rdi, IMM_NIL
+    je .nil_case
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_CONS
+    jne .wrong_type
     mov rax, rdi
     UNTAG_PTR rax
     mov rax, [rax]
     ret
+.nil_case:
+    mov rax, IMM_NIL
+    ret
+.wrong_type:
+    mov rsi, car_err_msg
+    mov rdx, car_err_msg_len
+    jmp fail_wrong_type
 
-; cdr(rdi=tagged cons) -> rax
+; cdr(rdi=tagged cons) -> rax. Same rule as car above.
 global cdr
 cdr:
+    cmp rdi, IMM_NIL
+    je .nil_case
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_CONS
+    jne .wrong_type
     mov rax, rdi
     UNTAG_PTR rax
     mov rax, [rax+8]
     ret
+.nil_case:
+    mov rax, IMM_NIL
+    ret
+.wrong_type:
+    mov rsi, cdr_err_msg
+    mov rdx, cdr_err_msg_len
+    jmp fail_wrong_type
 
 ; --- reader -----------------------------------------------------------
 
@@ -576,3 +610,7 @@ read_form:
 section .rodata
 symbuf_quote: db "QUOTE"
 symbuf_function: db "FUNCTION"
+car_err_msg: db "CAR: expected a cons or NIL"
+car_err_msg_len: equ $ - car_err_msg
+cdr_err_msg: db "CDR: expected a cons or NIL"
+cdr_err_msg_len: equ $ - cdr_err_msg
