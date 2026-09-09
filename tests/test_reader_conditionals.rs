@@ -118,7 +118,7 @@ fn entirely_conditioned_out_buffer_reads_no_forms() {
 fn conditioned_out_form_amid_others_reads_the_rest() {
     let e = env();
     let forms = read_all("1 #+nonexistent-feature 2 3", &e).unwrap();
-    let rendered: Vec<String> = forms.iter().map(|v| print(&v)).collect();
+    let rendered: Vec<String> = forms.iter().map(print).collect();
     assert_eq!(rendered, vec!["1", "3"]);
 }
 
