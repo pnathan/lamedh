@@ -47,6 +47,7 @@ extern emit_leave
 extern emit_cmp_rax_imm64
 extern emit_je
 extern emit_jne
+extern emit_jno
 extern emit_jmp32
 extern emit_call32
 extern emit_load_mem64
@@ -88,6 +89,10 @@ extern mod_tagged
 extern remainder_tagged
 extern emit_jl
 extern emit_load_stack_arg
+extern set_overflow_flag
+extern flag_set_p
+extern clear_flag
+extern clear_all_flags
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -146,6 +151,9 @@ kw_array_length: db "ARRAY-LENGTH*"
 kw_hash_code:    db "HASH-CODE"
 kw_mod:          db "MOD"
 kw_remainder:    db "REMAINDER"
+kw_flag_set_p:      db "FLAG-SET-P"
+kw_clear_flag:      db "CLEAR-FLAG"
+kw_clear_all_flags: db "CLEAR-ALL-FLAGS"
 kw_rest:   db "&REST"
 
 section .data
@@ -596,6 +604,16 @@ scan_free_vars:
 ; code heap and the host binary's .text are farther apart than a rel32
 ; call can reach).
 
+; compile_nullary_hostcall(rsi=host fn address) — CLEAR-ALL-FLAGS's
+; shape: no argument form to compile, target rax ends up holding
+; whatever the host routine itself returns.
+compile_nullary_hostcall:
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg
+    ret
+
 ; compile_unary_hostcall(rdi=arg form, rsi=host fn address)
 compile_unary_hostcall:
     push rbx
@@ -765,6 +783,44 @@ compile_newline_form:
     call emit_mov_reg_imm64
     ret
 
+; compile_binop_overflow_guard() — emits target code testing the hardware
+; overflow flag (OF) left by the +/- instruction compile_binop just
+; emitted, and calling set_overflow_flag (overflow.asm) when it's set:
+;
+;     jno .skip
+;     push rax          ; result register — every GPR is caller-saved
+;     mov rcx, set_overflow_flag
+;     call rcx
+;     pop rax
+; .skip:
+;
+; The tagged (shifted-left-by-2) representation means +/- on it is
+; bit-for-bit ordinary 64-bit two's-complement arithmetic on a value
+; already multiplied by 4 (see overflow.asm's own header), so OF here
+; already means exactly what KERNEL.md Part V's fixed-width model
+; requires it to mean for this representation. `*` is not wired to this
+; (see overflow.asm) — the same emitted-code technique would report the
+; wrong condition there, not the right one with extra steps.
+compile_binop_overflow_guard:
+    push rbx
+    call emit_jno                          ; target: jno rel32; rax=patch site
+    mov rbx, rax
+    mov dil, REG_RAX
+    call emit_push_reg                       ; target: push rax
+    lea rsi, [rel set_overflow_flag]
+    mov dil, REG_RCX
+    call emit_mov_reg_imm64                    ; target: rcx = set_overflow_flag
+    mov dil, REG_RCX
+    call emit_call_reg                           ; target: call rcx
+    mov dil, REG_RAX
+    call emit_pop_reg                              ; target: pop rax
+    call codegen_here
+    mov rdi, rbx
+    mov rsi, rax
+    call patch_rel32                                 ; .skip: lands here
+    pop rbx
+    ret
+
 ; compile_binop(rdi=lhs form, rsi=rhs form, dl='+'/'-'/'*'/'<'/'=' as ASCII)
 ; Compiles both operands (lhs pushed across rhs's own compilation, since
 ; rhs may itself contain calls that would otherwise clobber rax), then
@@ -792,6 +848,7 @@ compile_binop:
     mov dil, REG_RAX
     mov sil, REG_RBX
     call emit_add_rr
+    call compile_binop_overflow_guard
     jmp .done
 .not_add:
     cmp bl, '-'
@@ -799,6 +856,7 @@ compile_binop:
     mov dil, REG_RAX
     mov sil, REG_RBX
     call emit_sub_rr
+    call compile_binop_overflow_guard
     jmp .done
 .not_sub:
     cmp bl, '*'
@@ -3687,6 +3745,45 @@ compile_form:
     jmp .out
 
 .not_array_set:
+    mov rdi, r12
+    mov rsi, kw_flag_set_p
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_flag_set_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel flag_set_p]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_flag_set_p:
+    mov rdi, r12
+    mov rsi, kw_clear_flag
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_clear_flag
+    mov rdi, r13
+    call car
+    lea rsi, [rel clear_flag]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_clear_flag:
+    mov rdi, r12
+    mov rsi, kw_clear_all_flags
+    mov rdx, 15
+    call sym_is
+    test rax, rax
+    jz .not_clear_all_flags
+    lea rsi, [rel clear_all_flags]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_clear_all_flags:
     mov rdi, r12
     mov rsi, kw_progn
     mov rdx, 5

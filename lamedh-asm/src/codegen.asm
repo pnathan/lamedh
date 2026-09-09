@@ -333,6 +333,21 @@ emit_cmp_rax_imm64:
     mov sil, 1                       ; src=rcx
     jmp emit_cmp_rr
 
+; emit_jno(rel32 placeholder) -> rax = address of the rel32 field.
+; 0F 81 <rel32> — jump if the hardware overflow flag (OF) is clear.
+global emit_jno
+emit_jno:
+    mov rdi, 0x0F
+    call emit8
+    mov rdi, 0x81
+    call emit8
+    call codegen_here
+    push rax
+    mov rdi, 0
+    call emit32
+    pop rax
+    ret
+
 ; emit_je(rel32 placeholder) -> rax = address of the rel32 field.
 ; 0F 84 <rel32>
 global emit_je

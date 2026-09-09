@@ -64,7 +64,8 @@ programs this stage targets.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
-  and `REMAINDER`.
+  and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
+  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound.
 - `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`,
   `BLOCK`/`RETURN-FROM`, `WHILE` as real special forms (Part VI/VII),
   plus `ERROR`/`ERRORSET`/`ERROR-P`/`ERROR-MESSAGE`/`ERROR-DATA`
@@ -226,6 +227,28 @@ specifically to test where the line falls:
   `REMAINDER` is truncated (sign follows the dividend) — they disagree
   exactly when the operands' signs differ (`(MOD -7 2)` is `1`,
   `(REMAINDER -7 2)` is `-1`).
+- **`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`** make fixnum overflow
+  *observable* (`overflow.asm`), the "make it observable somehow" half
+  of KERNEL.md Part V/Part XII axis 1's fixed-width model that issue
+  #456 flagged as entirely missing. Fixnum `+`/`-` already run directly
+  on the tagged (shifted-left-by-2) representation — tag bits are zero
+  and cancel, so the emitted `add`/`sub` is bit-for-bit ordinary 64-bit
+  two's-complement arithmetic on a value pre-multiplied by 4, which is
+  exactly the "tag-cancellation wraparound arithmetic" KERNEL.md's own
+  Part I names as one of the two reasons axis 1 exists. `compile_binop`
+  now emits one extra check right after a compiled `+`/`-`: `jno .skip`
+  around a call to `set_overflow_flag`, reusing the hardware overflow
+  flag the `add`/`sub` instruction already computed — no separate
+  range check needed, and no cost at all on the non-overflowing path
+  beyond one predicted-not-taken branch. `*` is deliberately not wired
+  to this yet: its compiled form runs `imul` on the already-shifted
+  operands and corrects with a `sar` afterward, so `imul`'s own OF
+  reflects overflow of that pre-correction, extra-shifted product, not
+  of the represented fixnum multiplication — reusing it would be a
+  different bug wearing this feature's name
+  (`tests/cases/031_overflow.asm` exercises `+` wrapping at `2^61-1`
+  and `-` wrapping at `-2^61`, this representation's actual dynamic
+  range, plus both clearing primitives).
 - **Hash tables are not a kernel primitive at all** — the concrete
   demonstration issue #452's kernel/library boundary was framed around,
   and still isn't one even with real, expected-O(1) performance.
@@ -329,6 +352,10 @@ into conformance incrementally, tracked honestly rather than silently:
   ordinary backward-branch loop — nothing to derive, since a backward
   jump to an already-known target needs no forward-patching machinery
   at all, unlike everything above it.
+- **Fixnum overflow is now observable** (Part V / Part XII axis 1):
+  `+`/`-` set a global `OVERFLOW` flag on wraparound, queried with
+  `FLAG-SET-P` and cleared with `CLEAR-FLAG`/`CLEAR-ALL-FLAGS` — see
+  "The kernel surface" above. `*` does not set it yet (same section).
 - **Not yet conforming, tracked as ongoing work**: most of Part VII's
   special forms (`PROG`/`FOR`/`UNWIND-PROTECT`/`VAU`/`DEFDYNAMIC`/
   `QUASIQUOTE`) don't exist yet; capability gating
@@ -493,6 +520,20 @@ and exit code against `tests/cases/NAME.expected` / `.exitcode`
 
 ## Roadmap
 
+- **The concrete conformance target: `../examples/*/main.lisp` running
+  unmodified.** Every example in the Rust reference's own corpus uses
+  `DEFUN` and `FORMAT`; `DEFUN` is now a one-`DEFMACRO` addition (the
+  kernel already has everything it needs — `DEFINE`, `LAMBDA`, `CONS`),
+  but `FORMAT`'s natural signature, `(FORMAT stream control &REST
+  args)`, has only 2 fixed parameters, and this compiler's `&REST`
+  support requires `nfixed>=3` (see below) — so a spec-shaped variadic
+  standard library is blocked on exactly that restriction, not on
+  anything more exotic. Examples that need networking, regex, or TLS
+  are out of scope for this from-scratch host regardless (Part IX
+  capabilities this kernel has no I/O surface for yet); everything
+  else in that directory is the honest bar. There is no file-loading
+  driver yet either — every test here still runs one hand-assembled
+  `lamedh_main` per case, not `lamedhc examples/factorial/main.lisp`.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
