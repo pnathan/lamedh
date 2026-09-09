@@ -3390,7 +3390,7 @@ mod worldfork {
                     env: self.copy_env(&f.env)?,
                     param_ids: f.param_ids.clone(),
                 })),
-                LispVal::Macro(m) => LispVal::Macro(Box::new(Macro {
+                LispVal::Macro(m) => LispVal::Macro(Shared::new(Macro {
                     params: m.params.clone(),
                     rest_param: m.rest_param.clone(),
                     body: Box::new(self.copy_val(&m.body)?),
@@ -3541,6 +3541,13 @@ mod worldfork {
                     callee,
                     args,
                     original,
+                    // Deliberately not copied (issue #460): a cached
+                    // expansion's `macro_id` and `code` hold prototype-world
+                    // symbol cells, so carrying it into the forked world
+                    // would be a cross-world identity leak. The forked call
+                    // site starts cold and re-expands (and re-caches) on its
+                    // own first call, against its own copied macro binding.
+                    expansion: _,
                 } => {
                     let mut cargs = Vec::with_capacity(args.len());
                     for a in args {
@@ -3550,6 +3557,7 @@ mod worldfork {
                         callee: self.copy_code(callee)?,
                         args: cargs,
                         original: self.copy_val(original)?,
+                        expansion: SharedCell::new(None),
                     }
                 }
                 Code::SetVar(pairs) => {

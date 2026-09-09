@@ -47,8 +47,8 @@
 
 #![allow(clippy::mutable_key_type)]
 use crate::{
-    BuiltinFunc, ElemTy, LispError, LispVal, PortObj, Shared, SharedCell, SpecialForm, StructObj,
-    TypedArrayObj,
+    BuiltinFunc, CachedExpansion, ElemTy, LispError, LispVal, PortObj, Shared, SharedCell,
+    SpecialForm, StructObj, TypedArrayObj,
     environment::{DynamicBinding, Environment},
 };
 use std::cell::Cell;
