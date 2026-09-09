@@ -14,7 +14,7 @@ AS=nasm
 ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/"
 LD=ld
 
-CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/codegen.asm src/compiler.asm"
+CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/codegen.asm src/compiler.asm"
 
 pass=0
 fail=0
@@ -234,6 +234,10 @@ template below, the exact shape lib/02-cxr.lisp's own `defcxr` macro
 uses to build CADR/CADDR/etc."
   (LIST (QUOTE QUOTE) (LIST (QUOTE EXPANDED) X)))
 (PRINT (DOC-MACRO 5))
+(NEWLINE)
+(PRINT (ASSOC (QUOTE B) (LIST (CONS (QUOTE A) 1) (CONS (QUOTE B) 2))))
+(NEWLINE)
+(PRINT (ASSOC (QUOTE Z) (LIST (CONS (QUOTE A) 1))))
 LISP
     want_out='T
 T
@@ -296,7 +300,9 @@ CAUGHT
 a docstring
 (() 2)
 (() T 2 ())
-(EXPANDED 5)'
+(EXPANDED 5)
+(B . 2)
+()'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then

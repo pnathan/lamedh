@@ -20,6 +20,9 @@ extern tag_char
 
 section .bss
 align 8
+global reader_buf
+global reader_pos
+global reader_end
 reader_buf: resq 1
 reader_pos: resq 1
 reader_end: resq 1

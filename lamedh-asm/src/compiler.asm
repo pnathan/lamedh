@@ -106,6 +106,8 @@ extern make_char_from_fixnum
 extern char_code_tagged
 extern stringp_tagged
 extern symbolp_tagged
+extern module_source_lookup_tagged
+extern eval_module_source_tagged
 extern boundp_tagged
 extern code_char_string
 extern random_tagged
@@ -131,6 +133,8 @@ kw_gensym: db "GENSYM"
 kw_jit_optimize: db "JIT-OPTIMIZE"
 kw_stringp: db "STRINGP"
 kw_symbolp: db "SYMBOLP"
+kw_module_source_lookup: db "$MODULE-SOURCE-LOOKUP"
+kw_eval_module_source: db "$EVAL-MODULE-SOURCE"
 kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
@@ -5311,6 +5315,49 @@ compile_form:
     jmp .out
 
 .not_symbolp:
+    mov rdi, r12
+    mov rsi, kw_module_source_lookup
+    mov rdx, 21
+    call sym_is
+    test rax, rax
+    jz .not_module_source_lookup
+    ; ($MODULE-SOURCE-LOOKUP name-string) -- the embedded half of
+    ; REQUIRE's module resolution (modules.asm); a genuine Rust-level
+    ; builtin in the reference (environment.rs), needed by
+    ; lib/06-require.lisp's own $require-resolve.
+    mov rdi, r13
+    call car
+    lea rsi, [rel module_source_lookup_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_module_source_lookup:
+    mov rdi, r12
+    mov rsi, kw_eval_module_source
+    mov rdx, 19
+    call sym_is
+    test rax, rax
+    jz .not_eval_module_source
+    ; ($EVAL-MODULE-SOURCE name-string source-string) — the other half
+    ; of REQUIRE's module loading (modules.asm), a genuine Rust-level
+    ; builtin in the reference: parses and evaluates every top-level
+    ; form in source-string, exactly the way file_runner.asm's own
+    ; run_buffer does for a real file.
+    mov rdi, r13
+    call car                            ; name form
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car                              ; source form
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel eval_module_source_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_eval_module_source:
     mov rdi, r12
     mov rsi, kw_boundp
     mov rdx, 6

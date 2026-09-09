@@ -1445,23 +1445,65 @@ bugs no existing test had exercised:
   `(provide 'name)`/`(require 'name)` call goes through —
   `tests/cases/059_symbolp.asm` covers it, including that `NIL` is
   correctly not a symbol (this reader's own "NIL" special case, see
-  above). **`27-modules.lisp` is the next wall**: it opens with
-  `(require 'condensation)`, and `require`'s own resolution path
-  (`06-require.lisp`'s `$require-resolve`) needs `$MODULE-SOURCE-
-  LOOKUP` — yet another genuine Rust-level builtin (`environment.rs`),
-  backing the reference's own embedded-module-by-name registry (the
-  numbered optional library files, keyed by name) that this from-
-  scratch host has no equivalent of at all yet. This is a real
-  feature gap, not a one-primitive fix: it needs either an embedded
-  registry mapping module names to source text (this project would
-  need to `incbin` every optional `lib/*.lisp` file the way
-  `file_runner.asm` already does for the prelude, then dispatch on
-  name) or, for the specific case of a module already loaded directly
-  by concatenation (as this conformance testing does, unlike the
-  reference's own `with_stdlib()` bootstrap, which the `06-require.lisp`
-  file header notes calls `$require-mark-loaded!` for exactly this
-  reason), a matching driver-side "mark already-loaded" step this
-  project's own `file_runner.asm` does not yet have either.
+  above). **The embedded module registry now exists too**
+  (`src/modules.asm`, a new file), unblocking `27-modules.lisp`,
+  `11-optimizer-vau.lisp`, and `19-call-graph.lisp`: `27-modules.lisp`
+  opens with `(require 'condensation)`, and `require`'s own resolution
+  path (`06-require.lisp`'s `$require-resolve`) needs two more genuine
+  Rust-level builtins (`environment.rs`) neither of which existed here
+  before —
+  - **`$MODULE-SOURCE-LOOKUP`** (`module_source_lookup_tagged`,
+    `src/modules.asm`) — `("NAME")` returns `(source . origin)` for a
+    known module or `NIL`. The embedded tier is a fixed table of
+    `(name, source-start, source-end)` rows built from `incbin`-ing
+    the reference's own, *unmodified* `../lib/*.lisp` files directly
+    (the same technique `file_runner.asm` already uses for
+    `lib/prelude.lisp`, proof this is the real file rather than a
+    copy) — matching the reference's own `OPTIONAL_MODULES` table
+    (`src/lib.rs`) name-for-name and file-for-file, for every module
+    with no networking/TLS/regex/OS dependency (`SHELL` through
+    `PROTOCOLS` in the reference's own table order: `07-shell.lisp`
+    through `29-protocols.lisp`, 14 files). `TEXT` (`30-text.lisp`)
+    onward is out of scope for the same reason
+    `../examples/*/main.lisp`'s own network/regex/TLS examples already
+    are. The reference's own first resolution tier (a Rust embedder
+    registering additional sources at runtime,
+    `env.registered_module_source`) has no equivalent here and isn't
+    needed for this conformance target; the third tier (disk,
+    capability-gated) was already ordinary Lisp
+    (`$require-resolve-disk`) needing no kernel support at all.
+  - **`$EVAL-MODULE-SOURCE`** (`eval_module_source_tagged`,
+    `src/modules.asm`) — `("name" "source text")` parses and evaluates
+    every top-level form in the source string, exactly the read/
+    compile/run loop `file_runner.asm`'s own `run_buffer` already uses
+    for a real file, reusing `reader_init`/`read_form`/`compile_thunk`
+    directly rather than duplicating that loop as a distinct mechanism.
+    `reader_buf`/`reader_pos`/`reader_end` are single global cells, not
+    a stack (`read_from_string_tagged`'s own comment, `reader.asm`,
+    already documents this for its own single-form read) — `REQUIRE`
+    reaches this while genuinely mid-file (an ordinary Lisp-level
+    library call, itself invoked from another still-open
+    `file_runner.asm`-driven top-level form), so the caller's own
+    reader position is saved before and restored after, the same
+    save/reader_init/restore pattern `read_from_string_tagged` already
+    established, generalized from one form to a whole loop of them.
+  - **`ASSOC`** (`lib/prelude.lisp`) — a third genuine Rust-level
+    builtin (`evaluator/builtins_extra.rs`), surfaced by
+    `27-modules.lisp`'s own `DEFMODULE` (`(assoc ':export sections)`).
+    Ordinary library code over `EQUAL`/`ATOM`/`CAR`/`CDR`, all already
+    available — ``(not (atom (car alist)))`` inlines what `CONSP`
+    would check (not yet defined at this point in lamedh-asm's own
+    small prelude; the reference's own `01-list.lisp` defines `CONSP`
+    identically) rather than depending on it; matches the reference's
+    own "malformed alist elements are skipped, not an error"
+    graceful-degradation behavior, and uses `EQUAL` rather than `EQ`
+    for the key comparison, matching the reference's own structural
+    `==`.
+
+  **`07-shell.lisp` is the next wall** (traps; not yet root-caused —
+  likely something in its own shell-capability-gated primitives this
+  host's `SHELL` capability surface doesn't fully cover yet, but
+  unconfirmed).
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver

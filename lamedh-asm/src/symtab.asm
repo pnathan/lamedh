@@ -37,6 +37,7 @@ gensym_counter: resq 1
 section .text
 
 ; bytes_equal(rdi=ptr1, rsi=ptr2, rdx=len) -> rax = 1 if equal else 0
+global bytes_equal
 bytes_equal:
     xor rax, rax
 .loop:

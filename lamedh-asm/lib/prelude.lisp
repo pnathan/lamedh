@@ -178,6 +178,25 @@
           (QUOTE ())
           (IF (EQUAL (CAR A) (CAR B)) (EQUAL (CDR A) (CDR B)) (QUOTE ())))))
 
+; ASSOC — a genuine Rust-level builtin in the reference
+; (evaluator/builtins_extra.rs), missing here until
+; lib/27-modules.lisp's own DEFMODULE surfaced the gap
+; (`(assoc ':export sections)`). Ordinary library code over EQUAL/
+; ATOM/CAR/CDR, all already available — no new kernel primitive
+; needed. `(NOT (ATOM (CAR ALIST)))` inlines what CONSP would check
+; (not yet defined at this point in lamedh-asm's own small prelude;
+; the reference's own 01-list.lisp defines CONSP identically as
+; `(not (atom x))`) rather than depending on it. Matches the
+; reference's own "malformed alist elements are skipped, not an
+; error" graceful-degradation behavior; EQUAL rather than EQ for the
+; key comparison, matching the reference's own structural `==`.
+(DEFUN ASSOC (KEY ALIST)
+  (IF (NULL ALIST)
+      (QUOTE ())
+      (IF (IF (ATOM (CAR ALIST)) (QUOTE ()) (EQUAL (CAR (CAR ALIST)) KEY))
+          (CAR ALIST)
+          (ASSOC KEY (CDR ALIST)))))
+
 ; MAPCAR — apply FN to each element of L, collecting the results.
 ; examples/fizzbuzz/main.lisp's own self-check uses this.
 (DEFUN MAPCAR (FN L)
