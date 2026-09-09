@@ -166,24 +166,37 @@
 ; a string's raw UTF-8 bytes directly — STRING-LENGTH is a BYTE count,
 ; not a codepoint count ("héllo" is 6, not 5) — so STRING->UTF8 is
 ; nearly a straight byte copy into an Array<Char>, and UTF8->STRING is
-; its inverse (CONCAT already accepts CHAR values directly, confirmed
-; by direct testing, so re-assembling one CHAR per array element back
-; into a STRING is exactly APPLY of CONCAT over the array's elements).
-; KNOWN LIMITATION: this kernel does no UTF-8 well-formedness
-; validation at all (no Rust `std::str::from_utf8` equivalent exists
-; here) — UTF8->STRING* and UTF8->STRING-LOSSY* are therefore
-; identical, unlike the reference, where UTF8->STRING errors on
-; malformed input and UTF8->STRING-LOSSY replaces it with U+FFFD.
+; its inverse. KNOWN LIMITATION: this kernel does no UTF-8
+; well-formedness validation at all (no Rust `std::str::from_utf8`
+; equivalent exists here) — UTF8->STRING* and UTF8->STRING-LOSSY* are
+; therefore identical, unlike the reference, where UTF8->STRING errors
+; on malformed input and UTF8->STRING-LOSSY replaces it with U+FFFD.
 ; Honest for this v0 scope (matching this project's stated preference
 ; for the Lisp layer over new kernel work), not a hidden gap.
+;
+; $CHAR-ARRAY-ELEM-BYTE normalizes one Array<Char> element to its raw
+; byte value: found necessary (not just a defensive nicety) by
+; lib/31-ports.lisp's own $READ-LINE-ACC!, which builds its
+; Array<Char> from PORT-READ-BYTE!'s raw-integer results and hands it
+; straight to TEXT:UTF8->STRING-LOSSY — so an element here is
+; genuinely EITHER a one-character string (this kernel's own CODE-CHAR
+; produces those, not a genuine Char immediate — see byte_value_of's
+; own comment, ports.asm) OR a bare fixnum 0-255, never a Char
+; immediate in any real call path this kernel's own Lisp code takes.
+(DEFUN $CHAR-ARRAY-ELEM-BYTE (X) (IF (STRINGP X) (STRING-REF X 0) X))
 (DEFUN $STRING->UTF8-LOOP (S I N)
   (IF (NOT (< I N))
       (QUOTE ())
       (CONS (CODE-CHAR (STRING-REF S I)) ($STRING->UTF8-LOOP S (+ I 1) N))))
 (DEFUN STRING->UTF8* (S)
   ($LIST->ARRAY ($STRING->UTF8-LOOP S 0 (STRING-LENGTH S))))
+(DEFUN $UTF8->STRING-LOOP (ARR I N)
+  (IF (NOT (< I N))
+      ""
+      (STRING-APPEND (CODE-CHAR ($CHAR-ARRAY-ELEM-BYTE (FETCH ARR I)))
+                     ($UTF8->STRING-LOOP ARR (+ I 1) N))))
 (DEFUN UTF8->STRING* (ARR)
-  (APPLY #'CONCAT ($ARRAY->LIST ARR)))
+  ($UTF8->STRING-LOOP ARR 0 (ARRAY-LENGTH* ARR)))
 (DEFUN UTF8->STRING-LOSSY* (ARR)
   (UTF8->STRING* ARR))
 

@@ -1763,22 +1763,94 @@ bugs no existing test had exercised:
   `tests/cases/060_module_source.asm` now also checks
   `$MODULE-SOURCE-LOOKUP("HELP-DATA")`.
 
+  **Real file descriptors landed too — `31-ports.lisp` (and, on top of
+  it, `32-base64.lisp`/`33-hex.lisp`/`34-url.lisp`/`35-json.lisp`/
+  `36-mime.lisp`) now load.** This was in direct response to review
+  feedback pushing back on an earlier version of this README claiming
+  file I/O was out of scope for a "freestanding, no-libc kernel" —
+  correctly: `FD-OPEN`/`FD-READ`/`FD-WRITE`/`FD-CLOSE` (`fileio.asm`)
+  already existed, bare raw-syscall primitives; what was actually
+  missing was the reference's own richer `PortObj` abstraction
+  `31-ports.lisp` is written against (`PORT-OPEN-INPUT-FILE*`/
+  `PORT-READ-BYTE*`/... — 24 Rust-level builtins in the reference,
+  `evaluator/builtins_ports.rs`), with its own mutable cursor/buffer
+  state, real files AND in-memory byte buffers AND stdin/stdout/
+  stderr all as one uniform port value. New: **`src/ports.asm`**
+  (`tags.inc`'s new `HDR_PORT` header tag — `[fd][kind][name][flags]
+  [mem_buf][mem_pos]`, mutated in place after creation the same
+  allowed way `STORE` already mutates an ordinary `Array`) and a new
+  **`SET`-shaped `SEEK`/`POSITION`** pair signaling
+  (`fail_wrong_type`/`native_throw`) on a non-seekable port exactly as
+  `31-ports.lisp`'s own docstrings promise. `PORT-OPEN-INPUT-FILE*`/
+  `PORT-OPEN-OUTPUT-FILE*`/`PORT-OPEN-APPEND-FILE*` are `READ-FS`/
+  `CREATE-FS`-gated, same rule as `FD-OPEN`; `PORT-STDIN*` needs `IO`;
+  `PORT-STDOUT*`/`PORT-STDERR*` need nothing, matching `PRINC`/`PRIN1`
+  already writing to stdout unconditionally.
+
+  Two more real, previously-undiscovered bugs surfaced while making
+  this actually work end to end, neither specific to ports:
+  - **This kernel's own `CODE-CHAR` returns a one-character STRING,
+    not a genuine `Char` immediate** (`code_char_string`, `chars.asm`)
+    — and `STRING-APPEND`/`CONCAT` do not accept a genuine `Char`
+    immediate at all (confirmed by direct testing: both segfault on
+    one from `MAKE-CHAR`). So an "Array<Char>" byte in this kernel's
+    own real usage is, in practice, always a one-character string or a
+    bare fixnum, never a `Char` — `ports.asm`'s own `byte_value_of`
+    handles all three shapes uniformly (a genuine `Char` too, for
+    completeness), and `lib/prelude.lisp`'s `UTF8->STRING*` was
+    rewritten off `CONCAT`/`APPLY` (which silently assumed every
+    element was already a proper string) onto an explicit
+    `$CHAR-ARRAY-ELEM-BYTE` normalizer, needed once `31-ports.lisp`'s
+    own `$READ-LINE-ACC!` started feeding it an array of bare
+    integers straight from `PORT-READ-BYTE!`.
+  - **The 16 MiB data heap (`boot.asm`) was simply too small** once a
+    `WITH-MODULE` body got big enough (`31-ports.lisp`'s own 24
+    exported functions) — `PRINC-TO-STRING` (`print.asm`) allocates a
+    fresh, never-freed 64KB capture buffer on *every* call (no GC — see
+    "Known gaps"), and `lib/27-modules.lisp`'s own `SEXPR-RENAME` calls
+    it once per renamed reference; on top of the entire accumulated
+    stdlib already resident, this genuinely exhausted the arena,
+    corrupting later `data_alloc` calls into unmapped memory instead of
+    erroring — the exact "count of defuns in one `WITH-MODULE` body"-
+    dependent crash this looked like at first (isolated with a
+    10-trivial-`defun` module reproducing it with zero port-specific
+    content at all) was really just "how much heap is left when this
+    particular body happens to run." Bumped to 256 MiB data / 64 MiB
+    code — both are virtual `mmap` reservations, so this costs nothing
+    until actually touched.
+
+  `tests/cases/065_ports.asm` covers the in-memory round trip, a real
+  file (write/close/reopen/seek/position/read/idempotent double-close),
+  and `PORT-STDOUT*`, at the kernel-primitive level (no prelude);
+  `tests/run.sh`'s `stdlib_conformance` check now also opens a memory
+  port and reads two lines back through the qualified `PORTS:`/`TEXT:`
+  API. **Known gap, found but not yet closed**: `32-base64.lisp`
+  through `36-mime.lisp` load (compile without trapping) but their own
+  `ENCODE`/`DECODE`-style functions take `&KEY`/`&OPTIONAL` parameters
+  — a parameter-list feature this kernel's `LAMBDA`/`DEFUN` do not
+  implement at all (confirmed: calling `(base64:encode ...)` traps) —
+  so these five files are loadable but not yet actually usable; adding
+  `&KEY`/`&OPTIONAL` is real, separate, not-yet-attempted work (see
+  "Known gaps" below).
+
   **The confirmed-loadable set is now the entire Prelude tier plus
-  every Optional-tier file with no OS/networking/TLS/regex
-  dependency** — `00-core` through `21-cl-compat`, then (module-system
-  load order) `20-condensation`, `27-modules`, `11-optimizer-vau`,
+  every Optional-tier file with no networking/TLS/regex dependency**
+  — `00-core` through `21-cl-compat`, then (module-system load order)
+  `20-condensation`, `27-modules`, `11-optimizer-vau`,
   `19-call-graph`, `07-shell`, `09-lisp15`, `10-testing`, `22-guard`,
   `23-match`, `24-rules`, `25-variants`, `26-instrument`, `28-types`,
-  `29-protocols`, `30-text`, `97-doc-renderer`, `98-help-system`, and
-  `99-help-data` — **33 of the reference's own 47 `STDLIB_SOURCES`
-  files, every one of them not gated on real OS I/O**. The remaining
-  14 (`31-ports` through `44-regex`) need genuine file-descriptor/
-  socket/TLS/regex host primitives this freestanding, no-libc kernel
-  does not implement and, per this project's own scope, is not trying
-  to (see "Known gaps") — this is the actual, principled boundary of
-  "the entire standard lib, excluding key 3P dependencies": every
-  reference stdlib file with no such dependency now loads, unmodified,
-  and every one still excluded genuinely has one.
+  `29-protocols`, `30-text`, `31-ports`, `32-base64`, `33-hex`,
+  `34-url`, `35-json`, `36-mime`, `97-doc-renderer`, `98-help-system`,
+  and `99-help-data` — **40 of the reference's own 47 `STDLIB_SOURCES`
+  files**. The remaining 8 (`37-net` through `44-regex`) need real DNS
+  resolution and socket address types (`37-net.lisp`'s own header:
+  "the actual `std::net` address types are representation-access work
+  the Lisp layer cannot do on its own"), TCP/UDP/HTTP built on top of
+  those, and TLS/regex — genuinely different, larger engineering than
+  a `read(2)`/`write(2)` wrapper, and explicitly agreed out of scope in
+  review ("Agreed on tls/re/socket interop"). This is the actual,
+  principled boundary of "the entire standard lib, excluding key 3P
+  dependencies" now: sockets/TLS/regex, not file I/O.
 
 - **The concrete conformance target: `../examples/*/main.lisp` running
   unmodified.** There is now a real file-loading driver
@@ -1880,10 +1952,22 @@ bugs no existing test had exercised:
   library," and it is exactly what "run 100% of the examples" now
   honestly requires, tracked here so the next pass has a measured
   starting point instead of a guess.
+- `&OPTIONAL`/`&KEY` parameter-list support in `LAMBDA`/`DEFUN` — found
+  missing while chasing `32-base64.lisp` through `36-mime.lisp`: each
+  loads (compiles without trapping — `&KEY`/`&OPTIONAL` in a parameter
+  list are just ordinary symbols to `split_rest_params` today, no
+  special handling at all), but their own `ENCODE`/`DECODE`-shaped
+  functions declare `&KEY` defaults and actually calling one traps.
+  Real, separate work: parameter-list parsing needs a new dispatch for
+  `&OPTIONAL name`/`&OPTIONAL (name default)` and `&KEY name`/
+  `&KEY (name default)` forms, alongside the `&REST` case
+  `split_rest_params` already handles.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
-  compared — the falsifiable form of "beats C."
+  compared — the falsifiable form of "beats C." (Reviewer note: use
+  the existing `benchmarks/` harness in the workspace root rather than
+  building a new one.)
 - A real register allocator (linear-scan to start) instead of spilling
   every local to a fixed stack slot.
 - Proper tail calls: frame-reuse `jmp` for calls in tail position.

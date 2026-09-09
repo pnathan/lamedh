@@ -27,11 +27,14 @@
 ; 30-text.lisp's own header is explicit that it is "100% Lisp" over
 ; three Rust primitives this kernel already had (STRING->UTF8*/
 ; UTF8->STRING*/UTF8->STRING-LOSSY*, lib/14-strings.lisp) — no
-; capability, no I/O, no OS dependency at all. PORTS (31-ports.lisp)
-; through REGEX (44-regex.lisp) genuinely do need real file-
-; descriptor/socket/TLS/regex primitives this freestanding, no-libc
-; host does not have yet (see README Roadmap) — but the reference's
-; own OPTIONAL_MODULES table doesn't stop there: DOC-RENDERER
+; capability, no I/O, no OS dependency at all. PORTS (31-ports.lisp) is
+; embedded too now: it needs real file descriptors, but this host
+; already has them (src/ports.asm — PORT-OPEN-INPUT-FILE*/PORT-READ-
+; BYTE*/... over ordinary open(2)/read(2)/write(2)/close(2)/lseek(2)
+; syscalls, plus in-memory ports over Arrays and stdin/stdout/stderr
+; ports). NET (37-net.lisp) through REGEX (44-regex.lisp) — sockets,
+; TLS, regex — are where this freestanding, no-libc host's real,
+; deliberate boundary actually is (see README Roadmap): DOC-RENDERER
 ; (97-doc-renderer.lisp), HELP-SYSTEM (98-help-system.lisp), and
 ; HELP-DATA (99-help-data.lisp) come after the whole networking/OS
 ; block in file-number order but have no such dependency themselves —
@@ -78,6 +81,7 @@ MODULE_SRC modules_mod, "../lib/27-modules.lisp"
 MODULE_SRC types, "../lib/28-types.lisp"
 MODULE_SRC protocols, "../lib/29-protocols.lisp"
 MODULE_SRC text, "../lib/30-text.lisp"
+MODULE_SRC ports, "../lib/31-ports.lisp"
 MODULE_SRC doc_renderer, "../lib/97-doc-renderer.lisp"
 MODULE_SRC help_system, "../lib/98-help-system.lisp"
 MODULE_SRC help_data, "../lib/99-help-data.lisp"
@@ -111,6 +115,7 @@ MODULE_NAME modules_mod, "MODULES"
 MODULE_NAME types, "TYPES"
 MODULE_NAME protocols, "PROTOCOLS"
 MODULE_NAME text, "TEXT"
+MODULE_NAME ports, "PORTS"
 MODULE_NAME doc_renderer, "DOC-RENDERER"
 MODULE_NAME help_system, "HELP-SYSTEM"
 MODULE_NAME help_data, "HELP-DATA"
@@ -132,6 +137,7 @@ module_table:
     dq module_name_types, module_name_types_len, types_src_start, types_src_end
     dq module_name_protocols, module_name_protocols_len, protocols_src_start, protocols_src_end
     dq module_name_text, module_name_text_len, text_src_start, text_src_end
+    dq module_name_ports, module_name_ports_len, ports_src_start, ports_src_end
     dq module_name_doc_renderer, module_name_doc_renderer_len, doc_renderer_src_start, doc_renderer_src_end
     dq module_name_help_system, module_name_help_system_len, help_system_src_start, help_system_src_end
     dq module_name_help_data, module_name_help_data_len, help_data_src_start, help_data_src_end

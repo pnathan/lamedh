@@ -9,8 +9,21 @@
 
 %include "src/syscalls.inc"
 
-%define DATA_HEAP_BYTES  (16 * 1024 * 1024)
-%define CODE_HEAP_BYTES  (16 * 1024 * 1024)
+; 256 MiB data heap (up from 16 MiB): loading the full accumulated
+; reference stdlib (33+ files) plus PRINC-TO-STRING's own per-call
+; CAPTURE_BUF_BYTES allocation (print.asm, 64KB, never freed — no GC
+; yet, see README roadmap) inside a heavy WITH-MODULE body (e.g.
+; lib/31-ports.lisp's 24 exported functions, each renamed via
+; SEXPR-RENAME calling PRINC-TO-STRING per reference) genuinely
+; exhausted the old 16 MiB arena, corrupting subsequent data_alloc
+; calls into unmapped memory rather than erroring — found by bisecting
+; an apparently load-order/count-dependent crash down to data_alloc
+; simply running out of room. Both heaps are anonymous mmap
+; reservations (virtual address space only; physical pages are
+; committed lazily as touched), so this costs nothing until actually
+; used.
+%define DATA_HEAP_BYTES  (256 * 1024 * 1024)
+%define CODE_HEAP_BYTES  (64 * 1024 * 1024)
 
 extern heap_init_all
 extern lamedh_main

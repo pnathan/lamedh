@@ -14,7 +14,7 @@ AS=nasm
 ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/"
 LD=ld
 
-CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/codegen.asm src/compiler.asm"
+CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/ports.asm src/codegen.asm src/compiler.asm"
 
 pass=0
 fail=0
@@ -336,7 +336,7 @@ ABC'
     # file's own isolated load-test cannot (this exact test caught
     # none at the time it was added, but is here so a regression would
     # be caught here rather than being separately rediscovered).
-    stdlib_files="00-core 01-list 02-cxr 03-meta 04-predicates 05-math 06-require 08-vau 12-control 13-functional 14-strings 15-sets-hash 16-conditions 17-arrays 18-format 21-cl-compat 20-condensation 27-modules 11-optimizer-vau 19-call-graph 07-shell 09-lisp15 10-testing 22-guard 23-match 24-rules 25-variants 26-instrument 28-types 29-protocols 30-text 97-doc-renderer 98-help-system 99-help-data"
+    stdlib_files="00-core 01-list 02-cxr 03-meta 04-predicates 05-math 06-require 08-vau 12-control 13-functional 14-strings 15-sets-hash 16-conditions 17-arrays 18-format 21-cl-compat 20-condensation 27-modules 11-optimizer-vau 19-call-graph 07-shell 09-lisp15 10-testing 22-guard 23-match 24-rules 25-variants 26-instrument 28-types 29-protocols 30-text 31-ports 32-base64 33-hex 34-url 35-json 36-mime 97-doc-renderer 98-help-system 99-help-data"
     stdlib_prog="$BUILD/stdlib_conformance.lisp"
     : > "$stdlib_prog"
     for f in $stdlib_files; do
@@ -352,11 +352,19 @@ ABC'
 (PRINT (SOME 42))
 (NEWLINE)
 (PRINT (GET-DOC (QUOTE +)))
+(NEWLINE)
+(PORTS:WITH-OPEN-PORT (P (PORTS:OPEN-OUTPUT-BYTES))
+  (PORTS:WRITE-STRING! P "ports-ok"))
+(DEFINE MP (PORTS:OPEN-INPUT-BYTES (TEXT:STRING->UTF8 "a
+b")))
+(PRINT (PORTS:READ-LINE! MP))
+(PRINT (PORTS:READ-LINE! MP))
 LISP
     stdlib_want='3
 (1 4 9)
 #S(SOME 42)
-((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.500000 2.500000) 4.000000) ((+) 0)) (SEE-ALSO - * /))'
+((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.500000 2.500000) 4.000000) ((+) 0)) (SEE-ALSO - * /))
+ab'
     stdlib_got=$("$runner_bin" "$stdlib_prog")
     stdlib_exit=$?
     if [ "$stdlib_got" = "$stdlib_want" ] && [ "$stdlib_exit" = "0" ]; then

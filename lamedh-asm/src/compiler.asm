@@ -127,6 +127,30 @@ extern ash_tagged
 extern symbol_plist
 extern set_symbol_plist
 extern set_symbol_value
+extern port_open_input_file_tagged
+extern port_open_output_file_tagged
+extern port_open_append_file_tagged
+extern port_open_input_bytes_tagged
+extern port_open_output_bytes_tagged
+extern port_output_contents_tagged
+extern port_stdin_tagged
+extern port_stdout_tagged
+extern port_stderr_tagged
+extern port_read_byte_tagged
+extern port_read_bytes_tagged
+extern port_write_byte_tagged
+extern port_write_bytes_tagged
+extern port_flush_tagged
+extern port_close_tagged
+extern port_open_p_tagged
+extern port_input_p_tagged
+extern port_output_p_tagged
+extern port_seekable_p_tagged
+extern port_position_tagged
+extern port_seek_tagged
+extern port_p_tagged
+extern port_name_tagged
+extern port_kind_tagged
 
 %define FRAME_NOT_FOUND 0x7FFFFFFF
 
@@ -149,6 +173,30 @@ not_callable_err_msg_len: equ $ - not_callable_err_msg
 kw_symbol_plist: db "SYMBOL-PLIST"
 kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
 kw_set: db "SET"
+kw_port_open_input_file: db "PORT-OPEN-INPUT-FILE*"
+kw_port_open_output_file: db "PORT-OPEN-OUTPUT-FILE*"
+kw_port_open_append_file: db "PORT-OPEN-APPEND-FILE*"
+kw_port_open_input_bytes: db "PORT-OPEN-INPUT-BYTES*"
+kw_port_open_output_bytes: db "PORT-OPEN-OUTPUT-BYTES*"
+kw_port_output_contents: db "PORT-OUTPUT-CONTENTS*"
+kw_port_stdin: db "PORT-STDIN*"
+kw_port_stdout: db "PORT-STDOUT*"
+kw_port_stderr: db "PORT-STDERR*"
+kw_port_read_byte: db "PORT-READ-BYTE*"
+kw_port_read_bytes: db "PORT-READ-BYTES*"
+kw_port_write_byte: db "PORT-WRITE-BYTE*"
+kw_port_write_bytes: db "PORT-WRITE-BYTES*"
+kw_port_flush: db "PORT-FLUSH*"
+kw_port_close: db "PORT-CLOSE*"
+kw_port_open_p: db "PORT-OPEN-P*"
+kw_port_input_p: db "PORT-INPUT-P*"
+kw_port_output_p: db "PORT-OUTPUT-P*"
+kw_port_seekable_p: db "PORT-SEEKABLE-P*"
+kw_port_position: db "PORT-POSITION*"
+kw_port_seek: db "PORT-SEEK*"
+kw_port_p: db "PORT-P*"
+kw_port_name: db "PORT-NAME*"
+kw_port_kind: db "PORT-KIND*"
 kw_apply: db "APPLY"
 kw_if:     db "IF"
 kw_define: db "DEFINE"
@@ -4948,6 +4996,360 @@ compile_form:
     jmp .out
 
 .not_set:
+    ; PORT-* (ports.asm) — lib/31-ports.lisp's synchronous binary ports
+    ; over real files, in-memory byte buffers, and stdin/stdout/
+    ; stderr. Every one below is an ordinary unary/binary/nullary
+    ; hostcall over a genuine Rust-level builtin in the reference
+    ; (evaluator/builtins_ports.rs), same idiom as SYMBOL-PLIST/
+    ; SET-SYMBOL-PLIST!/RECORD-BRAND above.
+    mov rdi, r12
+    mov rsi, kw_port_open_input_file
+    mov rdx, 21
+    call sym_is
+    test rax, rax
+    jz .not_port_open_input_file
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_open_input_file_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_open_input_file:
+    mov rdi, r12
+    mov rsi, kw_port_open_output_file
+    mov rdx, 22
+    call sym_is
+    test rax, rax
+    jz .not_port_open_output_file
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_open_output_file_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_open_output_file:
+    mov rdi, r12
+    mov rsi, kw_port_open_append_file
+    mov rdx, 22
+    call sym_is
+    test rax, rax
+    jz .not_port_open_append_file
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_open_append_file_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_open_append_file:
+    mov rdi, r12
+    mov rsi, kw_port_open_input_bytes
+    mov rdx, 22
+    call sym_is
+    test rax, rax
+    jz .not_port_open_input_bytes
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_open_input_bytes_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_open_input_bytes:
+    mov rdi, r12
+    mov rsi, kw_port_open_output_bytes
+    mov rdx, 23
+    call sym_is
+    test rax, rax
+    jz .not_port_open_output_bytes
+    lea rsi, [rel port_open_output_bytes_tagged]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_port_open_output_bytes:
+    mov rdi, r12
+    mov rsi, kw_port_output_contents
+    mov rdx, 21
+    call sym_is
+    test rax, rax
+    jz .not_port_output_contents
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_output_contents_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_output_contents:
+    mov rdi, r12
+    mov rsi, kw_port_stdin
+    mov rdx, 11
+    call sym_is
+    test rax, rax
+    jz .not_port_stdin
+    lea rsi, [rel port_stdin_tagged]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_port_stdin:
+    mov rdi, r12
+    mov rsi, kw_port_stdout
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_port_stdout
+    lea rsi, [rel port_stdout_tagged]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_port_stdout:
+    mov rdi, r12
+    mov rsi, kw_port_stderr
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_port_stderr
+    lea rsi, [rel port_stderr_tagged]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_port_stderr:
+    mov rdi, r12
+    mov rsi, kw_port_read_byte
+    mov rdx, 15
+    call sym_is
+    test rax, rax
+    jz .not_port_read_byte
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_read_byte_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_read_byte:
+    mov rdi, r12
+    mov rsi, kw_port_read_bytes
+    mov rdx, 16
+    call sym_is
+    test rax, rax
+    jz .not_port_read_bytes
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel port_read_bytes_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_port_read_bytes:
+    mov rdi, r12
+    mov rsi, kw_port_write_byte
+    mov rdx, 16
+    call sym_is
+    test rax, rax
+    jz .not_port_write_byte
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel port_write_byte_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_port_write_byte:
+    mov rdi, r12
+    mov rsi, kw_port_write_bytes
+    mov rdx, 17
+    call sym_is
+    test rax, rax
+    jz .not_port_write_bytes
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel port_write_bytes_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_port_write_bytes:
+    mov rdi, r12
+    mov rsi, kw_port_flush
+    mov rdx, 11
+    call sym_is
+    test rax, rax
+    jz .not_port_flush
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_flush_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_flush:
+    mov rdi, r12
+    mov rsi, kw_port_close
+    mov rdx, 11
+    call sym_is
+    test rax, rax
+    jz .not_port_close
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_close_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_close:
+    mov rdi, r12
+    mov rsi, kw_port_open_p
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_port_open_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_open_p_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_open_p:
+    mov rdi, r12
+    mov rsi, kw_port_input_p
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_port_input_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_input_p_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_input_p:
+    mov rdi, r12
+    mov rsi, kw_port_output_p
+    mov rdx, 14
+    call sym_is
+    test rax, rax
+    jz .not_port_output_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_output_p_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_output_p:
+    mov rdi, r12
+    mov rsi, kw_port_seekable_p
+    mov rdx, 16
+    call sym_is
+    test rax, rax
+    jz .not_port_seekable_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_seekable_p_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_seekable_p:
+    mov rdi, r12
+    mov rsi, kw_port_position
+    mov rdx, 14
+    call sym_is
+    test rax, rax
+    jz .not_port_position
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_position_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_position:
+    mov rdi, r12
+    mov rsi, kw_port_seek
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_port_seek
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel port_seek_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_port_seek:
+    mov rdi, r12
+    mov rsi, kw_port_p
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_port_p
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_p_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_p:
+    mov rdi, r12
+    mov rsi, kw_port_name
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_port_name
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_name_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_name:
+    mov rdi, r12
+    mov rsi, kw_port_kind
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_port_kind
+    mov rdi, r13
+    call car
+    lea rsi, [rel port_kind_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_port_kind:
     mov rdi, r12
     mov rsi, kw_apply
     mov rdx, 5

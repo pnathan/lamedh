@@ -52,6 +52,13 @@
 %define HDR_TYPED_ARRAY 7     ; [8 len][8 elem-type: 0=INT64 1=FLOAT64][len*8 bytes: raw untagged int64/double slots]
 %define HDR_OPERATIVE   8     ; identical layout to HDR_CLOSURE ([8 native-code-ptr][8 nargs][8 nfree][8*nfree captured]) — a $VAU operative is literally a LAMBDA-built closure with its header word overwritten (compile_vau, compiler.asm); the distinct tag is what a call site's compile-time check (compile_form's operative-call check) uses to choose "don't evaluate the operands" over the ordinary calling convention.
 %define HDR_RECORD      9     ; [8 brand symbol][8 nfields][8*nfields tagged field values] — the reference's own StructObj (branded, checker-denotable, per KERNEL.md's condensation layer, lib/20-condensation.lisp's DEFRECORD and lib/25-variants.lisp's DEFVARIANT): a fixed-size, brand-tagged tuple, no type-checking or field-name lookup at this v0 tier (RECORD-DECLARE/VARIANT-DECLARE/DECLARE-TYPE! are pure metadata no-ops here — this host has no HM checker at all — so record_new_tagged trusts its caller's own arg count with no validation, same as every generated constructor already keeping itself in sync by construction).
+%define HDR_PORT       10     ; [8 fd (raw int64, -1 for a memory port)][8 kind symbol][8 name string][8 flags (raw bits: 0=open 1=input 2=output 3=seekable)][8 mem_buf (tagged Array<Char>, or NIL for a file/std port)][8 mem_pos (raw int64: read cursor for a memory input port, bytes-used-so-far for a memory output port)] — the reference's own PortObj (lib/31-ports.lisp), backing synchronous binary ports over real files, in-memory byte buffers, and stdin/stdout/stderr. Unlike every other heapobj this kernel builds, a port's own slots (flags/mem_buf/mem_pos) are mutated in place after creation by ports.asm's own host routines — the same kind of allowed representation-level mutation STORE already performs on an ordinary Array (arrays.asm), never exposed as a general Lisp-level mutation primitive of its own.
+
+; --- port flag bits (ports.asm) ---
+%define PORT_OPEN       1
+%define PORT_INPUT      2
+%define PORT_OUTPUT     4
+%define PORT_SEEKABLE   8
 
 ; fixnum <-> machine-integer conversion
 %macro TO_FIXNUM 1        ; reg <- (reg << 2), tag 00 is already 0 after shift
