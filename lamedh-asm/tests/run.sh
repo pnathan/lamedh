@@ -480,12 +480,20 @@ T'
         '(PRINT (LIST (EXP 1) (LOG (EXP 1)) (EXP 2) (EXP 3)))'
     err_case read_eof 1 "" "READ: end of input" \
         '(PRINT (READ))'
-    # READ from a real stdin: two lines, two data.
-    printf '(1 2 3)\nfoo bar\n' > "$BUILD/err_read_stdin.txt"
-    printf '(PRINT (READ))\n(NEWLINE)\n(PRINT (READ))\n' > "$BUILD/err_read_stdin.lisp"
+    err_case write_stderr 0 "out" "to stderr" \
+        '(WRITE-STRING "out") (WRITE-LINE "to stderr" *STDERR*) (PRINT-TO *STDERR* (LIST 1 2))'
+    err_case fd_read_line_eof 0 "()" "" \
+        '(PRINT (FD-READ-LINE *STDIN*))'
+    err_case fd_write_bad_fd 1 "" "FD-WRITE: write failed (data: -errno): -9" \
+        '(FD-WRITE 999 "x")'
+    # The stream layer against a real stdin: READ twice, then READ-LINE
+    # for the rest (a final unterminated line comes back once), then
+    # NIL at end of input.
+    printf '(1 2 3)\nfoo bar\nlast line\ntail' > "$BUILD/err_read_stdin.txt"
+    printf '(PRINT (READ))\n(NEWLINE)\n(PRINT (READ))\n(NEWLINE)\n(PRINT (READ-LINE))\n(NEWLINE)\n(PRINT (READ-LINE))\n(NEWLINE)\n(PRINT (READ-LINE))\n' > "$BUILD/err_read_stdin.lisp"
     got_exit=0
     got_out=$("$runner_bin" "$BUILD/err_read_stdin.lisp" < "$BUILD/err_read_stdin.txt" 2>/dev/null) || got_exit=$?
-    if [ "$got_exit" = "0" ] && [ "$got_out" = "$(printf '(1 2 3)\nFOO')" ]; then
+    if [ "$got_exit" = "0" ] && [ "$got_out" = "$(printf '(1 2 3)\nFOO\nlast line\ntail\n()')" ]; then
         echo "ok    file_runner_errors/read_stdin"
         pass=$((pass+1))
     else

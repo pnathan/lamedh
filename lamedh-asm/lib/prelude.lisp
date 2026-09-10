@@ -1126,3 +1126,51 @@
 (DEFUN ROUND (X) (ROUND X))
 (DEFUN TRUNCATE (X) (TRUNCATE X))
 (DEFUN ROT (X N) (ROT X N))
+
+; --- Streams: the fd layer -------------------------------------------
+; The kernel has exactly two I/O primitives beyond PRINT: (FD-READ fd n)
+; -> the string ONE read(2) returned (up to n bytes, "" at end of
+; input) and (FD-WRITE fd string) -> writes every byte. An fd is a
+; plain fixnum, so the process's standard streams are fds 0/1/2 with
+; no primitive of their own; everything stream-shaped is Lisp here,
+; over those two: line reading, the reference's READ (one line from
+; stdin, one datum parsed from it), READ-LINE, WRITE-STRING and
+; WRITE-LINE. Reading fd 0 needs the IO capability (fileio.asm).
+(DEFINE *STDIN* 0)
+(DEFINE *STDOUT* 1)
+(DEFINE *STDERR* 2)
+(DEFINE $NEWLINE-STRING (CODE-CHAR 10))
+; FD-READ-LINE — the bytes up to (excluding) the next newline, one
+; read(2) of a single byte at a time so nothing past the newline is
+; consumed from a shared fd (what the reference's read_line contract
+; needs); NIL at end of input with nothing read, a final unterminated
+; line returned once.
+(DEFUN FD-READ-LINE (FD) ($FD-READ-LINE-LOOP FD "" (QUOTE ())))
+(DEFUN $FD-READ-LINE-LOOP (FD ACC ANY)
+  (LET ((B (FD-READ FD 1)))
+    (IF (EQ (STRING-LENGTH B) 0)
+        (IF ANY ACC (QUOTE ()))
+        (IF (EQ (STRING-REF B 0) 10)
+            ACC
+            ($FD-READ-LINE-LOOP FD (STRING-APPEND ACC B) T)))))
+(DEFUN READ-LINE (&OPTIONAL FD) (FD-READ-LINE (IF FD FD *STDIN*)))
+; READ — one datum from the next line of FD (default stdin): the
+; reference's READ builtin (read_line, then parse). End of input, or a
+; line holding no datum, is a condition.
+(DEFUN READ (&OPTIONAL FD)
+  (LET ((LINE (FD-READ-LINE (IF FD FD *STDIN*))))
+    (IF (NULL LINE)
+        (ERROR "READ: end of input")
+        (LET ((V (READ-FROM-STRING LINE)))
+          (IF (EQ V (READ-FROM-STRING ""))
+              (ERROR "READ: no datum on the line" LINE)
+              V)))))
+(DEFUN WRITE-STRING (S &OPTIONAL FD) (FD-WRITE (IF FD FD *STDOUT*) S))
+(DEFUN WRITE-LINE (S &OPTIONAL FD)
+  (LET ((F (IF FD FD *STDOUT*)))
+    (FD-WRITE F S)
+    (FD-WRITE F $NEWLINE-STRING)
+    S))
+; PRINT-TO — PRINT's text (PRINC-TO-STRING) to any fd: (PRINT-TO
+; *STDERR* x) is the error-stream PRINT.
+(DEFUN PRINT-TO (FD X) (FD-WRITE FD (PRINC-TO-STRING X)) X)

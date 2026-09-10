@@ -1049,9 +1049,18 @@ concrete reason it landed last of the three features in its spec:
   `<=`/`>`/`>=`/`=` yet, and no mixed fixnum/float arithmetic (`(F+ 1
   2.0)` does not work — both operands must already be floats; use
   `FLOAT` to convert first).
-- File I/O does not loop on a short `read`/`write`, and folds a
-  negative syscall result (an error) to an empty string rather than
-  signaling anything — there being no conditions yet to raise.
+- File descriptor I/O is exactly Linux's: `(FD-READ fd n)` returns
+  the string one `read(2)` returned (up to `n` bytes, `""` at end of
+  input) and `(FD-WRITE fd s)` writes every byte, looping on a short
+  write; a negative result from either is a real condition whose data
+  is the negated errno. An fd is a plain fixnum, so the standard
+  streams are fds 0/1/2 with no primitive of their own — reading fd 0
+  requires the `IO` capability — and everything stream-shaped is
+  Lisp in `lib/prelude.lisp` over those two primitives: `*STDIN*`/
+  `*STDOUT*`/`*STDERR*`, `FD-READ-LINE`, `READ-LINE`, `READ` (the
+  reference's: one line from stdin, one datum parsed from it),
+  `WRITE-STRING`, `WRITE-LINE`, `PRINT-TO`. `PRINT`/`NEWLINE` still
+  write straight to stdout from the kernel.
 - `THROW` with no matching `CATCH`, and an `ERROR` (or any native
   condition — undefined function, `CAR` of a fixnum, wrong arity) that
   no `HANDLER-CASE`/`ERRORSET` catches, prints one line to stderr —
@@ -1210,9 +1219,10 @@ concrete reason it landed last of the three features in its spec:
     (`sqrtsd`, `roundsd`). Each accepts a fixnum or a float and
     signals a real condition otherwise; result types match the
     reference (float from the first six, fixnum from the last four).
-    `READ` reads one line from stdin (capability `IO`) and parses one
-    datum from it, exactly the reference's `read_line`-then-parse
-    contract; end of input or a line with no datum is a condition.
+    `READ` is prelude Lisp over `FD-READ` (see the fd bullet above):
+    one line from stdin (capability `IO`), one datum parsed from it,
+    exactly the reference's `read_line`-then-parse contract; end of
+    input or a line with no datum is a condition.
     `ROT` rotates within this kernel's 62-bit fixnum width (the
     reference rotates a 64-bit word; wider values do not exist here),
     so `(ROT (ROT x n) (- n))` is `x` for every fixnum. All have value

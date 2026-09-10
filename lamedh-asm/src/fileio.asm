@@ -21,6 +21,7 @@ extern make_string
 extern string_len
 extern string_bytes
 extern require_capability
+extern fail_wrong_type
 
 section .text
 
@@ -90,36 +91,64 @@ file_close:
 
 ; file_write(rdi=tagged fd fixnum, rsi=tagged string) -> rax = the
 ; string itself (PRINT's own return-what-you-were-given convention).
-; Writes the string's raw bytes to fd in one syscall; does not loop on
-; a short write (v0 — fine for a pipe/regular file under this project's
-; own message sizes, see README roadmap).
+; Writes the string's raw bytes to fd, looping on a short write until
+; every byte is out (a pipe or a terminal can accept less than asked);
+; a negative result (an error) is a real condition, data = the negated
+; errno as a fixnum. This is the one write primitive: stdout and
+; stderr are fds 1 and 2, and the prelude's WRITE-STRING/WRITE-LINE
+; are plain Lisp over it.
 global file_write
 file_write:
     push rbx
     push r12
+    push r13
+    push r14
     mov rbx, rdi                     ; tagged fd
     mov r12, rsi                       ; tagged string
     mov rdi, r12
     call string_len
-    mov rdx, rax                            ; len
+    mov r14, rax                            ; bytes left
     mov rdi, r12
     call string_bytes
-    mov rsi, rax                               ; buf
+    mov r13, rax                               ; cursor
+.loop:
+    test r14, r14
+    jz .done
     mov rax, rbx
     UNTAG_FIXNUM rax
     mov rdi, rax                                  ; fd
+    mov rsi, r13
+    mov rdx, r14
     mov eax, SYS_write
     syscall
+    cmp rax, 0
+    jl .error
+    add r13, rax
+    sub r14, rax
+    jmp .loop
+.done:
     mov rax, r12
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret
+.error:
+    mov rdi, rax
+    TO_FIXNUM rdi                                 ; -errno, tagged
+    mov rsi, write_err_msg
+    mov rdx, write_err_msg_len
+    call fail_wrong_type                          ; never returns
 
 ; file_read(rdi=tagged fd fixnum, rsi=tagged max-len fixnum) -> rax =
-; tagged string of however many bytes were actually read — shorter
-; than max-len at EOF, empty (not NIL) at EOF-with-nothing-left. A
-; negative syscall result (an error) is folded to an empty string
-; rather than propagated (v0 — no error signaling yet, see README).
+; tagged string of however many bytes ONE read(2) returned — up to
+; max-len, fewer when fewer were available (a pipe, a terminal line),
+; empty (not NIL) at end of input. Exactly read(2)'s own contract; a
+; caller wanting a line or a whole file loops (the prelude's
+; FD-READ-LINE does). A negative result is a real condition, data =
+; the negated errno. Reading fd 0 requires the IO capability (the
+; reference's own "stdin-consuming read operations" gate; a file fd
+; was gated when FD-OPEN acquired it).
 global file_read
 file_read:
     push rbx
@@ -129,11 +158,16 @@ file_read:
     mov rax, rsi
     UNTAG_FIXNUM rax
     mov r12, rax                        ; raw maxlen
-
+    mov rax, rbx
+    UNTAG_FIXNUM rax
+    test rax, rax
+    jnz .gated
+    mov rdi, 4                          ; IO capability bit
+    call require_capability
+.gated:
     mov rdi, r12
     call data_alloc_raw                    ; scratch buffer, explicitly freed
     mov r13, rax
-
     mov rax, rbx
     UNTAG_FIXNUM rax
     mov rdi, rax                              ; fd
@@ -142,9 +176,7 @@ file_read:
     mov eax, SYS_read
     syscall                                          ; rax = bytes read (or <0)
     cmp rax, 0
-    jns .ok
-    xor rax, rax
-.ok:
+    jl .error
     mov rdi, r13
     mov rsi, rax
     call make_string
@@ -156,3 +188,19 @@ file_read:
     pop r12
     pop rbx
     ret
+.error:
+    push rax
+    mov rdi, r13
+    call data_free
+    pop rdi
+    TO_FIXNUM rdi                                 ; -errno, tagged
+    mov rsi, read_err_msg
+    mov rdx, read_err_msg_len
+    call fail_wrong_type                          ; never returns
+
+section .rodata
+write_err_msg: db "FD-WRITE: write failed (data: -errno)"
+write_err_msg_len: equ $ - write_err_msg
+read_err_msg: db "FD-READ: read failed (data: -errno)"
+read_err_msg_len: equ $ - read_err_msg
+section .text

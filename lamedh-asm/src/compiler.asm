@@ -93,7 +93,6 @@ extern float_ceiling
 extern float_round
 extern float_truncate
 extern rot_tagged
-extern read_stdin_tagged
 extern file_open
 extern file_close
 extern file_write
@@ -314,7 +313,6 @@ kw_ceiling: db "CEILING"
 kw_round:  db "ROUND"
 kw_truncate: db "TRUNCATE"
 kw_rot:    db "ROT"
-kw_read:   db "READ"
 kw_eval:             db "EVAL"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -8624,7 +8622,7 @@ compile_form:
 .not_charp:
     ; --- math library (floats.asm): SQRT SIN COS TAN EXP LOG FLOOR
     ; CEILING ROUND TRUNCATE, each a unary host call; LOG also takes a
-    ; base; ROT (bitwise.asm) a binary one; READ (reader.asm) nullary.
+    ; base; ROT (bitwise.asm) a binary one.
     mov rdi, r12
     mov rsi, kw_sqrt
     mov rdx, 4
@@ -8802,17 +8800,6 @@ compile_form:
     jmp .out
 
 .not_rot:
-    mov rdi, r12
-    mov rsi, kw_read
-    mov rdx, 4
-    call sym_is
-    test rax, rax
-    jz .not_read
-    lea rsi, [rel read_stdin_tagged]
-    call compile_nullary_hostcall
-    jmp .out
-
-.not_read:
     mov rdi, r12
     mov rsi, kw_eval
     mov rdx, 4
