@@ -1201,9 +1201,23 @@ concrete reason it landed last of the three features in its spec:
     now a 62-slot array with a marker so `HASH-TABLE-P` can tell it from
     an array. `JIT-OPTIMIZE` was already a no-op special form here (the
     code is native already) and `CONSP` comes from `lib/01-list.lisp`.
-  - Not done: float math beyond `+ - * / <` (`SQRT`, `SIN`, `EXP`,
-    `FLOOR`/`ROUND` on floats), `READ` from stdin, `SHELL`/`CHMOD`/
-    `FILE-P`, and `ROT`. Each is a clear `not a function` now.
+  - **Math library, `READ`, `ROT` — since landed.** `SQRT`, `SIN`,
+    `COS`, `TAN`, `EXP`, `LOG` (one- and two-argument), `FLOOR`,
+    `CEILING`, `ROUND` (half away from zero, the reference's choice),
+    `TRUNCATE` are kernel keywords over `floats.asm`: no libc here, so
+    the transcendentals are the x87 instructions themselves (`fsin`,
+    `fcos`, `fptan`, `f2xm1`/`fscale`, `fyl2x`) and the rest SSE
+    (`sqrtsd`, `roundsd`). Each accepts a fixnum or a float and
+    signals a real condition otherwise; result types match the
+    reference (float from the first six, fixnum from the last four).
+    `READ` reads one line from stdin (capability `IO`) and parses one
+    datum from it, exactly the reference's `read_line`-then-parse
+    contract; end of input or a line with no datum is a condition.
+    `ROT` rotates within this kernel's 62-bit fixnum width (the
+    reference rotates a 64-bit word; wider values do not exist here),
+    so `(ROT (ROT x n) (- n))` is `x` for every fixnum. All have value
+    bindings too (`#'SQRT` works). Still not implemented: `SHELL`/
+    `CHMOD`/`FILE-P` (each a clear `not a function`).
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers

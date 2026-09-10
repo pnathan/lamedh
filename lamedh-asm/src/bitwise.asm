@@ -165,3 +165,49 @@ ash_tagged:
 section .rodata
 bitwise_range_msg: db "expected a fixnum"
 bitwise_range_msg_len: equ $ - bitwise_range_msg
+
+section .text
+; rot_tagged(rdi=tagged fixnum, rsi=tagged count) -> rax = tagged
+; fixnum: the value rotated left by count bits (negative counts rotate
+; right), within this kernel's 62-bit fixnum width. The reference
+; rotates a 64-bit machine word; values needing more than 62 bits do
+; not exist here, so a 62-bit rotation is what keeps (ROT (ROT x n)
+; (- n)) = x true for every fixnum this kernel can represent.
+global rot_tagged
+rot_tagged:
+    mov rax, rdi
+    UNTAG_FIXNUM rax
+    mov rdx, rax
+    mov rcx, rsi
+    UNTAG_FIXNUM rcx
+    ; count mod 62, made non-negative
+    mov r8, rcx
+    mov rcx, 62
+    push rdx
+    mov rax, r8
+    cqo
+    idiv rcx                              ; rdx = count rem 62 (sign of count)
+    mov rcx, rdx
+    pop rdx
+    test rcx, rcx
+    jns .count_ok
+    add rcx, 62
+.count_ok:
+    mov rax, rdx
+    mov r9, 0x3FFFFFFFFFFFFFFF            ; 62-bit mask
+    and rax, r9
+    mov r8, rax
+    shl rax, cl                           ; low part: v << c
+    neg rcx
+    add rcx, 62                           ; 62 - c
+    cmp rcx, 62
+    je .no_high                           ; c == 0: shr by 62 would be 62 mod 64 — avoid
+    shr r8, cl                            ; high part: v >> (62-c)
+    or rax, r8
+.no_high:
+    and rax, r9
+    ; sign-extend from bit 61
+    shl rax, 2
+    sar rax, 2
+    TO_FIXNUM rax
+    ret

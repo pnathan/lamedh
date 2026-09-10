@@ -402,7 +402,7 @@ T'
         local f="$BUILD/err_$name.lisp" got_out got_err got_exit
         printf '%s\n' "$prog" > "$f"
         got_exit=0
-        got_out=$("$runner_bin" "$f" 2>"$f.stderr") || got_exit=$?
+        got_out=$("$runner_bin" "$f" 2>"$f.stderr" </dev/null) || got_exit=$?
         got_err=$(cat "$f.stderr")
         if [ "$got_exit" = "$want_exit" ] && [[ "$got_out" == *"$want_out"* ]] && [[ "$got_err" == *"$want_err"* ]]; then
             echo "ok    file_runner_errors/$name"
@@ -470,6 +470,28 @@ T'
         '(DEFUN S (N) (IF (EQ N 0) 0 (+ 1 (S (- N 1))))) (PRINT (S 50000000))'
     err_case deep_rest_recursion_fast 0 "(1 2 3 4)" "" \
         '(DEFUN R (N &REST XS) (IF (EQ N 0) XS (R (- N 1) 1 2 3 4))) (PRINT (R 100000))'
+    err_case math_library 0 "(4.000000 1.500000 2 -3 3 3 -3 2 -2 1.000000 0.000000 3.000000 0.000000 1.000000 0.000000 2 1 1 -2305843009213693952 2)" "" \
+        '(PRINT (LIST (SQRT 16) (SQRT 2.25) (FLOOR 2.5) (FLOOR -2.5) (CEILING 2.1) (ROUND 2.5) (ROUND -2.5) (ROUND 2.4) (TRUNCATE -2.7) (EXP 0) (LOG 1) (LOG 8 2) (SIN 0) (COS 0) (TAN 0) (ROT 1 1) (ROT 2 -1) (ROT 1 62) (ROT 1 -1) (ROT (ROT 2 -1) 1)))'
+    err_case math_as_values 0 "(4.000000 3 (1 4 9))" "" \
+        '(PRINT (LIST (FUNCALL (FUNCTION SQRT) 16) (APPLY (FUNCTION ROUND) (LIST 2.5)) (MAPCAR (LAMBDA (X) (TRUNCATE (SQRT (* X X X X)))) (LIST 1 2 3))))'
+    err_case math_type_error 1 "" "expected a number (fixnum or float): x" \
+        '(PRINT (SQRT "x"))'
+    err_case exp_log_roundtrip 0 "(2.718281 1.000000 7.389056 20.085536)" "" \
+        '(PRINT (LIST (EXP 1) (LOG (EXP 1)) (EXP 2) (EXP 3)))'
+    err_case read_eof 1 "" "READ: end of input" \
+        '(PRINT (READ))'
+    # READ from a real stdin: two lines, two data.
+    printf '(1 2 3)\nfoo bar\n' > "$BUILD/err_read_stdin.txt"
+    printf '(PRINT (READ))\n(NEWLINE)\n(PRINT (READ))\n' > "$BUILD/err_read_stdin.lisp"
+    got_exit=0
+    got_out=$("$runner_bin" "$BUILD/err_read_stdin.lisp" < "$BUILD/err_read_stdin.txt" 2>/dev/null) || got_exit=$?
+    if [ "$got_exit" = "0" ] && [ "$got_out" = "$(printf '(1 2 3)\nFOO')" ]; then
+        echo "ok    file_runner_errors/read_stdin"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_errors/read_stdin  exit: got $got_exit stdout: [$got_out]"
+        fail=$((fail+1))
+    fi
 
     # stdlib_conformance — the actual conformance target this project
     # tracks in README's "KERNEL.md conformance" section: every one of

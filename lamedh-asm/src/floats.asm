@@ -18,6 +18,7 @@
 extern data_alloc
 extern print_fixnum
 extern write_buf
+extern fail_wrong_type
 
 section .text
 
@@ -282,3 +283,187 @@ print_fixnum6:
 section .rodata
 minus_buf: db "-"
 dot_buf: db "."
+
+; ---------------------------------------------------------------------
+; Math library (the reference's SQRT/SIN/COS/TAN/EXP/LOG/FLOOR/CEILING/
+; ROUND/TRUNCATE builtins, builtins_core.rs's apply_math_lib). No libc
+; here, so the transcendentals are the x87 instructions themselves
+; (fsin/fcos/fptan/f2xm1/fyl2x — the same hardware libm ultimately
+; reduces to for these on x86-64) and the rest is SSE (sqrtsd,
+; roundsd). Every routine takes a tagged fixnum OR float (as_f64's own
+; contract in the reference) and signals a real condition for anything
+; else; SQRT/SIN/COS/TAN/EXP/LOG return a float, FLOOR/CEILING/ROUND/
+; TRUNCATE a fixnum — exactly the reference's result types.
+
+section .text
+; float_arg(rdi=tagged fixnum or float) -> xmm0 = the value as a double
+float_arg:
+    mov rax, rdi
+    and rax, TAG_MASK
+    jnz .not_fixnum
+    mov rax, rdi
+    UNTAG_FIXNUM rax
+    cvtsi2sd xmm0, rax
+    ret
+.not_fixnum:
+    push rdi
+    call is_float
+    pop rdi
+    test rax, rax
+    jz .bad
+    jmp float_val
+.bad:
+    mov rsi, math_type_msg
+    mov rdx, math_type_msg_len
+    call fail_wrong_type                  ; never returns
+
+global float_sqrt
+float_sqrt:
+    call float_arg
+    sqrtsd xmm0, xmm0
+    jmp make_float
+
+; x87 helpers: the value travels through a 16-byte stack scratch,
+; xmm0 -> st0 -> xmm0.
+global float_sin
+float_sin:
+    call float_arg
+    sub rsp, 16
+    movsd [rsp], xmm0
+    fld qword [rsp]
+    fsin
+    fstp qword [rsp]
+    movsd xmm0, [rsp]
+    add rsp, 16
+    jmp make_float
+
+global float_cos
+float_cos:
+    call float_arg
+    sub rsp, 16
+    movsd [rsp], xmm0
+    fld qword [rsp]
+    fcos
+    fstp qword [rsp]
+    movsd xmm0, [rsp]
+    add rsp, 16
+    jmp make_float
+
+global float_tan
+float_tan:
+    call float_arg
+    sub rsp, 16
+    movsd [rsp], xmm0
+    fld qword [rsp]
+    fptan                                 ; pushes 1.0 on top of tan(x)
+    fstp st0                              ; discard the 1.0
+    fstp qword [rsp]
+    movsd xmm0, [rsp]
+    add rsp, 16
+    jmp make_float
+
+; e^x = 2^(x*log2 e): split x*log2e into integer and fraction, f2xm1
+; on the fraction (its domain is [-1,1]), fscale by the integer.
+global float_exp
+float_exp:
+    call float_arg
+    sub rsp, 16
+    movsd [rsp], xmm0
+    fldl2e                                ; st0 = log2(e)
+    fmul qword [rsp]                      ; st0 = x*log2(e)
+    fld st0                               ; st0 = t, st1 = t
+    frndint                               ; st0 = n = rint(t)
+    fsub st1, st0                         ; st1 = t - n (fraction)
+    fxch st1                              ; st0 = frac, st1 = n
+    f2xm1                                 ; st0 = 2^frac - 1
+    fld1
+    faddp st1, st0                        ; st0 = 2^frac, st1 = n
+    fscale                                ; st0 = 2^frac * 2^n
+    fstp st1                              ; pop n, keep result
+    fstp qword [rsp]
+    movsd xmm0, [rsp]
+    add rsp, 16
+    jmp make_float
+
+; ln x = ln2 * log2(x): fyl2x computes st1 * log2(st0).
+global float_log
+float_log:
+    call float_arg
+    sub rsp, 16
+    movsd [rsp], xmm0
+    fldln2                                ; st0 = ln 2
+    fld qword [rsp]                       ; st0 = x, st1 = ln 2
+    fyl2x                                 ; st0 = ln2 * log2(x) = ln x
+    fstp qword [rsp]
+    movsd xmm0, [rsp]
+    add rsp, 16
+    jmp make_float
+
+; float_log_base(rdi=x, rsi=base) -> ln x / ln base (the reference's
+; two-argument LOG).
+global float_log_base
+float_log_base:
+    push rbx
+    push r12
+    mov rbx, rsi
+    call float_log                        ; rax = tagged ln x
+    mov r12, rax
+    mov rdi, rbx
+    call float_log                        ; rax = tagged ln base
+    mov rdi, r12
+    mov rsi, rax
+    call float_div
+    pop r12
+    pop rbx
+    ret
+
+; roundsd immediates: 9 = floor, 10 = ceiling, 11 = truncate (each with
+; the inexact exception suppressed).
+global float_floor
+float_floor:
+    call float_arg
+    roundsd xmm0, xmm0, 9
+    jmp float_to_fixnum_result
+global float_ceiling
+float_ceiling:
+    call float_arg
+    roundsd xmm0, xmm0, 10
+    jmp float_to_fixnum_result
+global float_truncate
+float_truncate:
+    call float_arg
+    roundsd xmm0, xmm0, 11
+float_to_fixnum_result:
+    cvttsd2si rax, xmm0
+    TO_FIXNUM rax
+    ret
+
+; ROUND: half away from zero (Rust's f64::round, the reference's
+; documented choice — not roundsd's half-to-even). r = trunc(x); the
+; remainder x - r is exact in binary floating point, so comparing it
+; against +-0.5 decides the adjustment exactly.
+global float_round
+float_round:
+    call float_arg
+    roundsd xmm1, xmm0, 11                ; xmm1 = trunc(x)
+    subsd xmm0, xmm1                      ; xmm0 = x - trunc(x), in (-1, 1)
+    cvttsd2si rax, xmm1                   ; rax = trunc(x)
+    mov rcx, 0x3FE0000000000000           ; 0.5
+    movq xmm2, rcx
+    comisd xmm0, xmm2
+    jb .not_up                            ; remainder < 0.5
+    inc rax
+    jmp .done
+.not_up:
+    mov rcx, 0xBFE0000000000000           ; -0.5
+    movq xmm2, rcx
+    comisd xmm0, xmm2
+    ja .done                              ; remainder > -0.5
+    dec rax
+.done:
+    TO_FIXNUM rax
+    ret
+
+section .rodata
+math_type_msg: db "expected a number (fixnum or float)"
+math_type_msg_len: equ $ - math_type_msg

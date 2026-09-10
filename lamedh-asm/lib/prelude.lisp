@@ -1113,3 +1113,16 @@
   (HANDLER-CASE
       (LET ((V (READ-FROM-STRING S))) (IF (NUMBERP V) V (QUOTE ())))
     (ERROR (E) (QUOTE ()))))
+
+; Value bindings for the math-library keywords (same idiom as above).
+(DEFUN SQRT (X) (SQRT X))
+(DEFUN SIN (X) (SIN X))
+(DEFUN COS (X) (COS X))
+(DEFUN TAN (X) (TAN X))
+(DEFUN EXP (X) (EXP X))
+(DEFUN LOG (X &REST BASE) (IF (NULL BASE) (LOG X) (LOG X (CAR BASE))))
+(DEFUN FLOOR (X) (FLOOR X))
+(DEFUN CEILING (X) (CEILING X))
+(DEFUN ROUND (X) (ROUND X))
+(DEFUN TRUNCATE (X) (TRUNCATE X))
+(DEFUN ROT (X N) (ROT X N))

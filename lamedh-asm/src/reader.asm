@@ -18,6 +18,7 @@ extern string_bytes
 extern string_len
 extern fail_wrong_type
 extern tag_char
+extern require_capability
 
 section .bss
 align 8
@@ -810,3 +811,75 @@ car_err_msg: db "CAR: expected a cons or NIL"
 car_err_msg_len: equ $ - car_err_msg
 cdr_err_msg: db "CDR: expected a cons or NIL"
 cdr_err_msg_len: equ $ - cdr_err_msg
+
+; ---------------------------------------------------------------------
+; read_stdin_tagged() -> rax = one datum read from standard input: the
+; reference's READ builtin (builtins_extra.rs) — capability IO, reads
+; ONE LINE and parses one form from it. Bytes are read one at a time
+; so nothing past the newline is consumed (the same reason the
+; reference uses read_line). End of input with nothing read, or a line
+; holding no form, is a real condition. The reader's own global
+; position is saved and restored around the parse exactly as
+; read_from_string_tagged does above.
+%define READ_LINE_BYTES 65536
+section .bss
+read_line_buf: resb READ_LINE_BYTES
+section .rodata
+read_eof_msg: db "READ: end of input"
+read_eof_msg_len: equ $ - read_eof_msg
+read_empty_msg: db "READ: no datum on the line"
+read_empty_msg_len: equ $ - read_empty_msg
+section .text
+global read_stdin_tagged
+read_stdin_tagged:
+    push rbx
+    push r12
+    push r13
+    mov rdi, 4                            ; IO capability bit
+    call require_capability
+    xor r12, r12                          ; bytes read so far
+.line_loop:
+    cmp r12, READ_LINE_BYTES
+    jae .have_line
+    xor edi, edi                          ; STDIN
+    lea rsi, [read_line_buf + r12]
+    mov edx, 1
+    xor eax, eax                          ; SYS_read
+    syscall
+    cmp rax, 1
+    jne .have_line                        ; EOF or error: stop here
+    movzx eax, byte [read_line_buf + r12]
+    inc r12
+    cmp al, 10
+    jne .line_loop
+.have_line:
+    test r12, r12
+    jz .eof
+    push qword [reader_buf]
+    push qword [reader_pos]
+    push qword [reader_end]
+    lea rdi, [read_line_buf]
+    mov rsi, r12
+    call reader_init
+    call read_form
+    mov rbx, rax
+    pop qword [reader_end]
+    pop qword [reader_pos]
+    pop qword [reader_buf]
+    cmp rbx, IMM_EOF
+    je .empty
+    mov rax, rbx
+    pop r13
+    pop r12
+    pop rbx
+    ret
+.eof:
+    mov rdi, IMM_NIL
+    mov rsi, read_eof_msg
+    mov rdx, read_eof_msg_len
+    call fail_wrong_type                  ; never returns
+.empty:
+    mov rdi, IMM_NIL
+    mov rsi, read_empty_msg
+    mov rdx, read_empty_msg_len
+    call fail_wrong_type                  ; never returns

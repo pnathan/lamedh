@@ -81,6 +81,19 @@ extern fixp_tagged
 extern floatp_tagged
 extern arrayp_tagged
 extern charp_tagged
+extern float_sqrt
+extern float_sin
+extern float_cos
+extern float_tan
+extern float_exp
+extern float_log
+extern float_log_base
+extern float_floor
+extern float_ceiling
+extern float_round
+extern float_truncate
+extern rot_tagged
+extern read_stdin_tagged
 extern file_open
 extern file_close
 extern file_write
@@ -290,6 +303,18 @@ kw_fixp:   db "FIXP"
 kw_floatp: db "FLOATP"
 kw_arrayp: db "ARRAYP"
 kw_charp:  db "CHARP"
+kw_sqrt:   db "SQRT"
+kw_sin:    db "SIN"
+kw_cos:    db "COS"
+kw_tan:    db "TAN"
+kw_exp:    db "EXP"
+kw_log:    db "LOG"
+kw_floor:  db "FLOOR"
+kw_ceiling: db "CEILING"
+kw_round:  db "ROUND"
+kw_truncate: db "TRUNCATE"
+kw_rot:    db "ROT"
+kw_read:   db "READ"
 kw_eval:             db "EVAL"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -8597,6 +8622,197 @@ compile_form:
     jmp .out
 
 .not_charp:
+    ; --- math library (floats.asm): SQRT SIN COS TAN EXP LOG FLOOR
+    ; CEILING ROUND TRUNCATE, each a unary host call; LOG also takes a
+    ; base; ROT (bitwise.asm) a binary one; READ (reader.asm) nullary.
+    mov rdi, r12
+    mov rsi, kw_sqrt
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_sqrt
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_sqrt]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_sqrt:
+    mov rdi, r12
+    mov rsi, kw_sin
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_sin
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_sin]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_sin:
+    mov rdi, r12
+    mov rsi, kw_cos
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_cos
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_cos]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_cos:
+    mov rdi, r12
+    mov rsi, kw_tan
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_tan
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_tan]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_tan:
+    mov rdi, r12
+    mov rsi, kw_exp
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_exp
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_exp]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_exp:
+    mov rdi, r12
+    mov rsi, kw_floor
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_floor
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_floor]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_floor:
+    mov rdi, r12
+    mov rsi, kw_ceiling
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_ceiling
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_ceiling]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_ceiling:
+    mov rdi, r12
+    mov rsi, kw_round
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jz .not_round
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_round]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_round:
+    mov rdi, r12
+    mov rsi, kw_truncate
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jz .not_truncate
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_truncate]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_truncate:
+    mov rdi, r12
+    mov rsi, kw_log
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_log
+    mov rdi, r13
+    call list_length
+    cmp rax, 2
+    je .log_base
+    mov rdi, r13
+    call car
+    lea rsi, [rel float_log]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+.log_base:
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel float_log_base]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_log:
+    mov rdi, r12
+    mov rsi, kw_rot
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_rot
+    mov rdi, r13
+    call car
+    push rax
+    mov rdi, r13
+    call cdr
+    mov rdi, rax
+    call car
+    mov rsi, rax
+    pop rdi
+    lea rdx, [rel rot_tagged]
+    call compile_binary_hostcall
+    jmp .out
+
+.not_rot:
+    mov rdi, r12
+    mov rsi, kw_read
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_read
+    lea rsi, [rel read_stdin_tagged]
+    call compile_nullary_hostcall
+    jmp .out
+
+.not_read:
     mov rdi, r12
     mov rsi, kw_eval
     mov rdx, 4
