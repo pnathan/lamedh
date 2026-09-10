@@ -220,7 +220,7 @@ generator-backed axiom (DECLARED)."
 ;; The condensation layer's honesty machinery -- CONDENSE-CHECK-TYPE, the
 ;; dynamic frontier, EDIT!'s type barrier -- is defined against
 ;; CONDENSE-VERDICT rather than against SEE-TYPE directly, and CONDENSE-VERDICT
-;; runs the PORTABLE checker (lib/45-hm-check.lisp, issue #451). That is the
+;; runs the PORTABLE checker (lib/46-hm-check.lisp, issue #451). That is the
 ;; whole point of the port: one implementation of the checking logic, shared by
 ;; every host, driving the same classification everywhere.
 ;;
@@ -651,7 +651,7 @@ condensation change plane. PARAMS non-nil = a parametric record."
             ;; Compiled tier: native branded type, constructor, accessors.
             ;; DEFSTRUCT-TYPED is a host special form that registers the brand
             ;; in the *native* checker's registry directly, bypassing
-            ;; RECORD-DECLARE -- so the portable checker (lib/45-hm-check.lisp,
+            ;; RECORD-DECLARE -- so the portable checker (lib/46-hm-check.lisp,
             ;; issue #451) is told about this tier explicitly, right here, and
             ;; the two registries stay in lockstep across BOTH tiers. On a host
             ;; with no native checker HM-DECLARE-RECORD! is the only

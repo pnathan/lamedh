@@ -212,7 +212,7 @@ pub(super) fn make_macro(
         rest_param = Some(rest_name);
         rest_param_id = Some(env.binder_id(tail_sym));
     }
-    Ok(LispVal::Macro(Box::new(crate::Macro {
+    Ok(LispVal::Macro(Shared::new(crate::Macro {
         params: params_vec,
         rest_param,
         body: Box::new(body.clone()),

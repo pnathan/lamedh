@@ -1,4 +1,4 @@
-;;; 45-hm-check.lisp -- the PORTABLE Hindley-Milner type checker, in Lamedh
+;;; 46-hm-check.lisp -- the PORTABLE Hindley-Milner type checker, in Lamedh
 ;;; (issue #451).
 ;;;
 ;;; ---- what this is ---------------------------------------------------------

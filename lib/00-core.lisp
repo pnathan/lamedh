@@ -30,7 +30,7 @@
 ;;   1. the host's native compile attempt (`jit-optimize`), when the host has
 ;;      one -- unchanged;
 ;;   2. `$HM-ON-DEFUN`, the PORTABLE type checker's definition hook
-;;      (lib/45-hm-check.lisp, issue #451). Every `defun` in the language
+;;      (lib/46-hm-check.lisp, issue #451). Every `defun` in the language
 ;;      routes through here, so this is the one door the portable checker
 ;;      needs: under `(hm-check-policy! 'eager)` it checks the new definition
 ;;      on the spot and records the verdict, which is what a host with no
@@ -46,7 +46,7 @@
 ;;      are recomputed instead; see that file's "why there is no verdict
 ;;      cache" note.
 ;;
-;; Guarded by BOUNDP because 45-hm-check.lisp loads long after this file --
+;; Guarded by BOUNDP because 46-hm-check.lisp loads long after this file --
 ;; the same pattern `$CG-PENDING`/`$CALL-GRAPH` already use below.
 (def $defun-auto-compile
   (lambda (name)

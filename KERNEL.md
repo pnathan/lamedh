@@ -421,6 +421,8 @@ types are never `EQ`**. Within one type:
   host handle** (ports, network handles, process handles): identity.
   Two separately constructed, content-identical tables or arrays are
   never `EQ` or `EQUAL`; `(let ((h (make-hash-table))) (eq h h))` is `T`.
+  See Part XI's `hash-code` for the corresponding kernel primitive that
+  exposes this identity as an inspectable, hashable value.
 - **Records** (`#S(...)` values, `DEFRECORD` instances): structural — same
   brand name **and** fields pairwise `EQ`-or-`EQUAL` (the recursive
   relation). `(eq #S(p 1) #S(p 1))` is `T`; `(equal #S(p 1) #S(q 1))` is
@@ -796,12 +798,34 @@ arguments starts with an empty registry (Part IV).
 - **A macro** — `(defmacro name (params...) body)` or the anonymous
   `(macro (params...) body...)` — has a lambda-style parameter list
   (fixed parameters plus optional `&REST`/dotted rest) checked with the
-  same arity rules as lambdas. At **every** call the body runs in a fresh
-  child of the definition environment with the unevaluated operands
-  bound, producing an *expansion*; the expansion is then evaluated in the
-  **caller's** environment, in tail position. **Expansion is never
-  cached**: each call re-runs the macro body. `(macroexpand form)`
-  performs one expansion step without evaluating the result.
+  same arity rules as lambdas. The body runs in a fresh child of the
+  definition environment with the unevaluated operands bound, producing
+  an *expansion*; the expansion is then evaluated in the **caller's**
+  environment, in tail position. **Expansion is cached per compiled call
+  site (issue #460), normative behavior, not host latitude**: a compiled
+  call site (a macro call appearing in a `defun`/`lambda` body) runs the
+  macro body on its first execution and memoizes the resulting expansion,
+  keyed on the identity of the macro value bound at that call site; every
+  later execution of that same call site reuses the cached expansion
+  without re-running the macro body, **provided the call site's operator
+  still resolves to the identical macro value** — redefining the macro
+  (a fresh `defmacro`/`setq` produces a new macro identity) invalidates
+  the cache and the next call re-expands. An expansion that signals an
+  error is never cached; the next call always retries. **The accepted
+  semantic consequence**: a macro body that reads global or dynamic state
+  (a mutable global, a dynamic variable, `gensym`, any other side effect)
+  observes that state **once**, at the call site's first expansion, not on
+  every call — this matches every mainstream Lisp's `DEFMACRO` contract. A
+  macro that must observe live state on every call is the wrong tool;
+  `VAU`/fexpr genuinely require live execution per call and are **never**
+  cached, by design, regardless of where they appear. Only compiled call
+  sites participate: a bare top-level form (read and evaluated once by a
+  host's REPL/loader), `(apply macro-value args)`, and the tree-walker's
+  own uncompiled dispatch path all re-expand fresh every time, with no
+  cache involved. `(macroexpand form)` likewise always performs one fresh
+  expansion step without evaluating the result and without touching any
+  call-site cache — it resolves the operator by symbol name and is not
+  itself a `Code::Call` site.
 - `DEFEXPR` and `DEFMACRO` take three or four operands (`name params
   [docstring] body`); the body is a single form. They bind `name` in the
   current environment (globally, at top level) and return the symbol.
@@ -1044,6 +1068,24 @@ and lets compiled code run unmetered has not implemented this section;
 the reference refuses to JIT-compile while a budget is armed for exactly
 this reason.
 
+**Per-call-site macro expansion caching (Part VI, issue #460) changes fuel
+step counts between a cache hit and a cache miss, and this is expected,
+not a conformance concern.** Expanding a macro's body costs steps like any
+other evaluation; a cache miss (the call site's first execution, or its
+first execution after the cached macro was redefined) pays that cost,
+while a cache hit skips the macro body entirely and jumps straight to
+running the cached, already-compiled expansion — charging only the
+expansion's own steps, not the macro body's. A tight loop that calls the
+same compiled macro-call site repeatedly therefore consumes measurably
+less fuel than an equivalent hand-unrolled sequence of first-time
+expansions would, or than the identical loop did before this cache
+existed. Fuel's budget was never a promise of an exact step count for a
+given program (Part X's own framing throughout), only a ceiling on total
+work, so this is a sound reduction in charged work, not a divergence a
+host must reproduce bit-for-bit — but a host implementing this cache
+should expect its fuel-exhaustion tests, if any pin exact remaining
+counts across macro-heavy loops, to need updating.
+
 **Exhaustion does not disarm the counter, and is not an ordinary
 `HANDLER-CASE`-catchable condition (resolved by issue #457).** Earlier
 behavior — documented here until the fix landed — disarmed the counter
@@ -1171,6 +1213,35 @@ set (Part XII says which forms have that latitude):
   implements every other primitive in this document but cannot run the
   portable checker has not delivered a platform serious programs can be
   written against.
+- **Identity/value hashing**: `(hash-code v)` takes exactly one value of
+  any type and returns a fixnum such that `(equal a b)` implies
+  `(hash-code a)` = `(hash-code b)` — the one property a hash function must
+  have to back a hash table. It is required precisely because Part IV's
+  equality contract is identity-based for hash tables, arrays, typed
+  arrays, environments, closures, macros, fexprs, `vau` operatives, and
+  every opaque host handle (ports, network handles, process handles): with
+  no primitive exposing that identity as an inspectable value, portable
+  Lisp-layer code (e.g. a hash table implemented over `array`/
+  `typed-array`, issue #458) has no sound choice for these types but to
+  fold every value into one hash bucket, which is correct but degenerate.
+  `hash-code` need not be injective — two unequal values may legitimately
+  share a code (an ordinary hash collision, or a freed identity-typed
+  allocation whose address a later, unrelated allocation reuses) — only the
+  one implication above is required. It is **not** guaranteed stable
+  across process runs, host versions, or a `fork_world` boundary (a
+  forked world's copied objects are new allocations with new codes), and a
+  moving/compacting-GC host is not required to derive it from a raw
+  address at all — see Part XII, axis 7. The Rust reference
+  (`BuiltinFunc::HashCode`, `src/evaluator/apply.rs`) is a thin wrapper
+  over the existing `Hash for LispVal` impl (`src/lib.rs`) that already
+  backs the native `HashTable`'s `HashMap<LispVal, LispVal>` and is
+  therefore already required to agree with `PartialEq for LispVal` (the
+  relation `EQUAL` and hash-table keys use): value hash for
+  fixnum/float/char/string, structural recursion for cons cells, and the
+  underlying `Shared`/`Rc` allocation's pointer for every identity-compared
+  type, including closures/macros/fexprs/`vau` (hashed via their captured
+  environment's pointer, consistent with those types' `PartialEq`, which
+  requires the same captured environment).
 - **Capability-gated I/O**: Part IX.
 - **Step-budget fencing (fuel)**: Part X — a native step counter charged
   on every evaluation step, the `WITH-FUEL` fence with attenuation-only
@@ -1278,6 +1349,23 @@ if a rule in Parts II–XI doesn't appear here, it is not optional.
    loads on the reference contains one, this leniency cannot change the
    meaning of any conforming program; it only accepts text the reference
    rejects.
+7. **How `hash-code` derives its result for identity-compared types.** The
+   only required property is Part XI's: `(equal a b)` implies
+   `(hash-code a)` = `(hash-code b)`. The reference derives it from each
+   allocation's pointer address (`Shared`/`Rc::as_ptr`), stable for the
+   object's lifetime but reused once the object is freed and its memory is
+   handed to a later, unrelated allocation, and not reproducible across
+   process runs or `fork_world`'s copied worlds. A host with a moving or
+   compacting collector, where an object's address can change during its
+   lifetime, must not use a raw address; it may instead stamp a
+   lazily-assigned per-object counter into the object on first `hash-code`
+   call (stable for the object's lifetime by construction, regardless of
+   later moves) or any other means consistent with its own `EQ`/`EQUAL`.
+   Whichever scheme a host picks, `hash-code` values for otherwise-`EQUAL`
+   compound values built from atoms (numbers, characters, strings, cons
+   structure) must still agree with every other host, since those types
+   are covered by Part IV's MUST-match value-equality rules, not this
+   axis; only the derivation for identity-compared types varies.
 
 ## Part XIII — Status and open work
 
@@ -1346,18 +1434,13 @@ than smoothed over:
   time by this issue versus at run time by #463 — not designed together
   since #463 landed first and #459 had not landed, but not precluded
   either.
-- **Cache macro expansion per call site** (issue #460): today every macro
-  call re-runs the macro body from scratch on every invocation, including
-  every iteration of a compiled loop, because macro dispatch shares one
-  code path with `VAU`/fexpr dispatch, which genuinely must run fresh
-  every call. Since a macro's expansion is otherwise a function of its
-  definition and the literal call-site operand forms, caching it once
-  per call site is sound and matches how every other Lisp treats
-  `DEFMACRO`; `VAU` and fexprs are unaffected and stay uncached by
-  design. Once implemented, Part VI gains the cache's existence and its
+- ~~Cache macro expansion per call site~~ (issue #460) — **done**: every
+  compiled call site now caches its macro expansion, keyed on the macro
+  binding's identity; `VAU`/fexpr dispatch is unaffected and stays
+  uncached by design. Part VI states the cache's existence and its
   one-time-global-observation semantics as a normative rule, and Part X
-  gains a note that fuel step counts may differ between a cache hit and
-  a cache miss.
+  notes that fuel step counts may differ between a cache hit and a cache
+  miss.
 - **Fix two binder-identity gaps `VAU` and `APPLY` leave open** (issues
   #461, #462): `VAU` construction and application do not guard dynamic-
   variable parameters the way macros and fexprs do (#461), and `VAU`

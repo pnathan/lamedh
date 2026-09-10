@@ -1,5 +1,5 @@
 ;; Lisp-level regression coverage for the portable Hindley-Milner checker
-;; (lib/45-hm-check.lisp, issue #451), alongside tests/test_hm_check.rs's
+;; (lib/46-hm-check.lisp, issue #451), alongside tests/test_hm_check.rs's
 ;; string-pinned host-visible assertions.
 ;;
 ;; The checker is a port of the reference host's own checker, so the standard

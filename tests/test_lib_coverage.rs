@@ -331,7 +331,10 @@ fn test_macro_partialeq_same_env() {
         param_ids: vec![0],
         rest_param_id: Some(1),
     };
-    assert_eq!(LispVal::Macro(Box::new(m1)), LispVal::Macro(Box::new(m2)));
+    assert_eq!(
+        LispVal::Macro(Shared::new(m1)),
+        LispVal::Macro(Shared::new(m2))
+    );
 }
 
 // ---------------------------------------------------------------------------

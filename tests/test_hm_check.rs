@@ -1,5 +1,5 @@
 //! Integration tests for the PORTABLE Hindley-Milner checker
-//! (`lib/45-hm-check.lisp`, issue #451).
+//! (`lib/46-hm-check.lisp`, issue #451).
 //!
 //! The checker is a port of this host's own checker — `src/jit/infer.rs`'s
 //! inference substrate, `src/jit/types.rs`'s type vocabulary,

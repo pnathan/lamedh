@@ -213,7 +213,8 @@
 //! | `35-json.lisp` | optional | `json` | `JSON:PARSE`/`STRINGIFY`: object<->hash table, array<->`Array`, `true`/`false`/`null`<->`T`/`NIL`/`:NULL`, `JSON:NULL-P` |
 //! | `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
 //! | `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
-//! | `45-hm-check.lisp` | core | — | The portable Hindley-Milner checker (issue #451): the type vocabulary, unification with row polymorphism and nominal subsumption, the declaration registry, and the bidirectional elaborator over real Lamedh surface syntax — `HM-SEE-TYPE`, `HM-CHECK-LAMBDA`, `HM-CHECK-EXPR`, `HM-VERDICT`, `HM-AUDIT`. Loads before `20-condensation.lisp` so its declaration-plane wrappers see every `declare-type!`/`record-declare`/`variant-declare`/`declare-instance!` the stdlib makes |
+//! | `45-hashtable.lisp` | optional | `hashtable` | A hash table built from scratch in pure Lamedh (issue #458): open addressing over `TYPED-ARRAY`/`ARRAY`, not the native `HASH-TABLE` builtin -- `MAKE-LHT`/`LHT-GET`/`LHT-PUT!`/`LHT-REMOVE!`/`LHT-KEYS`/`LHT-EACH` |
+//! | `46-hm-check.lisp` | core | — | The portable Hindley-Milner checker (issue #451): the type vocabulary, unification with row polymorphism and nominal subsumption, the declaration registry, and the bidirectional elaborator over real Lamedh surface syntax — `HM-SEE-TYPE`, `HM-CHECK-LAMBDA`, `HM-CHECK-EXPR`, `HM-VERDICT`, `HM-AUDIT`. Loads before `20-condensation.lisp` so its declaration-plane wrappers see every `declare-type!`/`record-declare`/`variant-declare`/`declare-instance!` the stdlib makes |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -502,6 +503,7 @@ pub enum BuiltinFunc {
     Index,
     Eval,
     Eq,
+    HashCode,
     Not,
     NumericEquals,
     MakeHashTable,
@@ -1128,6 +1130,24 @@ pub enum Code {
         args: Vec<Shared<Code>>,
         /// Original AST form for the macro/fexpr/vau fallback path.
         original: LispVal,
+        /// Per-call-site macro expansion cache (issue #460).
+        ///
+        /// `None` until the callee first evaluates to a `LispVal::Macro`.
+        /// On a cache hit (`Shared::ptr_eq` between the cached
+        /// `CachedExpansion::macro_id` and the freshly evaluated callee),
+        /// execution resumes straight from `code` — the macro body never
+        /// re-runs. On a miss (first expansion, or the binding was
+        /// redefined), `expand_macro` runs fresh, and only on `Ok` is the
+        /// result compiled and stored here; an expansion that errors is
+        /// never cached, so the next call retries. `fexpr`/`vau` dispatch
+        /// never touches this slot — only macros are cached, by design
+        /// (their semantics require staying fresh every call).
+        ///
+        /// Reset to `None` by `fork_world`'s `copy_code`: a cached
+        /// expansion's `code` and `macro_id` hold prototype-world symbol
+        /// cells, so carrying it into a forked world would be a
+        /// cross-world identity leak.
+        expansion: SharedCell<Option<CachedExpansion>>,
     },
     /// `(setq v1 e1 v2 e2 …)` — evaluate each `ei` in order and store it into
     /// `vi` (created in the current environment if not already bound,
@@ -1287,6 +1307,23 @@ impl PartialEq for Macro {
     }
 }
 
+/// A memoized, per-call-site macro expansion (issue #460).
+///
+/// Stored in `Code::Call::expansion`. `macro_id` is the exact `Shared<Macro>`
+/// whose expansion `code` (already `compile`d) was cached; a cache hit
+/// requires `Shared::ptr_eq` against the call site's freshly evaluated
+/// callee, so redefining the macro (which produces a new `Shared<Macro>`)
+/// invalidates the cache automatically on the next call — no reverse index
+/// or redefinition hook needed. Never populated from a failed expansion:
+/// an error is never cached, so the next call always re-attempts expansion.
+#[derive(Debug, Clone)]
+pub struct CachedExpansion {
+    /// Identity of the macro this expansion was computed from.
+    pub macro_id: Shared<Macro>,
+    /// The compiled expansion, ready to `ExecTail`.
+    pub code: Shared<Code>,
+}
+
 /// The function signature for host-registered (native) Lisp callables.
 pub type NativeFn = dyn Fn(&[LispVal], &Shared<Environment>) -> Result<LispVal, LispError>;
 
@@ -1383,7 +1420,14 @@ pub enum LispVal {
     /// A fexpr (unevaluated-argument function).  See [`Fexpr`].
     Fexpr(Box<Fexpr>),
     /// A macro (code-returning function).  See [`Macro`].
-    Macro(Box<Macro>),
+    ///
+    /// `Shared`, not `Box` (issue #460): a compiled call site caches its
+    /// expansion keyed on the identity of the macro value it expanded
+    /// (`Shared::ptr_eq`), so the macro binding itself needs a stable
+    /// pointer identity to compare against on every call. `PartialEq`
+    /// stays structural (see `impl PartialEq for Macro`) — `EQUAL` on two
+    /// macros is unaffected by this change.
+    Macro(Shared<Macro>),
     /// A Kernel-style vau operative.  See [`Vau`].
     Vau(Box<Vau>),
     /// A cons cell.  Children use [`Shared`] (not `Box`) so cloning a list is
@@ -2877,12 +2921,31 @@ impl Hash for LispVal {
             LispVal::OsChild(c) => {
                 Shared::as_ptr(c).hash(state);
             }
-            LispVal::Builtin(_)
-            | LispVal::Lambda(_)
-            | LispVal::Fexpr(_)
-            | LispVal::Macro(_)
-            | LispVal::Vau(_) => {
-                // Functions are not hashable by value.
+            LispVal::Builtin(b) => {
+                // `PartialEq for BuiltinFunc` is derived (variant equality),
+                // so the discriminant alone is a sound, EQUAL-consistent
+                // hash: two `Builtin`s compare equal iff they are the same
+                // variant.
+                std::mem::discriminant(b).hash(state);
+            }
+            LispVal::Lambda(l) => {
+                // `PartialEq for Lambda` requires `Shared::ptr_eq(&self.env,
+                // &other.env)` alongside structural params/body equality, so
+                // hashing only the captured environment's pointer is
+                // EQUAL-consistent (equal closures share an env, hence a
+                // hash) without walking the body on every lookup (issue
+                // #474: closures were previously unhashable-by-value,
+                // degenerately colliding every lambda into one bucket).
+                Shared::as_ptr(&l.env).hash(state);
+            }
+            LispVal::Fexpr(f) => {
+                Shared::as_ptr(&f.env).hash(state);
+            }
+            LispVal::Macro(m) => {
+                Shared::as_ptr(&m.env).hash(state);
+            }
+            LispVal::Vau(v) => {
+                Shared::as_ptr(&v.env).hash(state);
             }
             #[cfg(feature = "concurrency")]
             LispVal::Channel(c) => std::sync::Arc::as_ptr(c).hash(state),
@@ -3166,7 +3229,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     // list's ORDER matters -- the same reason 20-condensation.lisp already
     // loads out of numeric order below).
     //
-    // Why so early: `45-hm-check.lisp` mirrors the checker's DECLARATION
+    // Why so early: `46-hm-check.lisp` mirrors the checker's DECLARATION
     // PLANE (`declare-type!`, `record-declare`, `variant-declare`,
     // `declare-instance!`, `declare-protocol-dispatch!`) by wrapping those
     // entry points, so every registration made by `defrecord`, `defvariant`,
@@ -3175,7 +3238,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     // *before* the first such call, which means before 20-condensation.lisp.
     // It needs nothing beyond the Prelude above (conditions, lists,
     // functional, sets/hash, strings), so this is the earliest sound slot.
-    ("45-hm-check.lisp", include_str!("../lib/45-hm-check.lisp")),
+    ("46-hm-check.lisp", include_str!("../lib/46-hm-check.lisp")),
     // ---- Module system ----
     // condensation + modules must load ahead of every optional so those
     // optionals can be wrapped in DEFMODULE/WITH-MODULE (issue #56). The
@@ -3229,6 +3292,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("42-os-linux.lisp", include_str!("../lib/42-os-linux.lisp")),
     ("43-tls.lisp", include_str!("../lib/43-tls.lisp")),
     ("44-regex.lisp", include_str!("../lib/44-regex.lisp")),
+    (
+        "45-hashtable.lisp",
+        include_str!("../lib/45-hashtable.lisp"),
+    ),
     (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
@@ -3407,6 +3474,11 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         "REGEX",
         "44-regex.lisp",
         include_str!("../lib/44-regex.lisp"),
+    ),
+    (
+        "HASHTABLE",
+        "45-hashtable.lisp",
+        include_str!("../lib/45-hashtable.lisp"),
     ),
     (
         "DOC-RENDERER",

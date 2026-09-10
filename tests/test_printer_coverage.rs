@@ -85,7 +85,7 @@ fn test_print_fexpr() {
 #[test]
 fn test_print_macro() {
     let env = Environment::new_with_builtins();
-    let mac = LispVal::Macro(Box::new(Macro {
+    let mac = LispVal::Macro(Shared::new(Macro {
         params: vec!["X".to_string()],
         rest_param: None,
         body: Box::new(LispVal::Nil),
@@ -99,7 +99,7 @@ fn test_print_macro() {
 #[test]
 fn test_print_macro_with_rest_param() {
     let env = Environment::new_with_builtins();
-    let mac = LispVal::Macro(Box::new(Macro {
+    let mac = LispVal::Macro(Shared::new(Macro {
         params: vec![],
         rest_param: Some("ARGS".to_string()),
         body: Box::new(LispVal::Number(0)),
