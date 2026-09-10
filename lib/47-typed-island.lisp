@@ -497,15 +497,3 @@ agreed on, and every other entry verbatim."
           (if (assoc 'regressions island)
               (list (cons 'regressions (length (island-regressions island))))
               nil)))
-
-;;; Registered as a module for introspection (issue #56); the surface stays
-;;; FLAT like the checker's.
-(require 'modules)
-(defmodule typed-island
-  (:export typed-island island-members island-rejected island-regressions
-           island-member-names island-member island-signature
-           island-member-lambda island-rejection island-optimize
-           island-forms island-install! island-agreement island-summary
-           island-source island-annotated-source-p island-freeze
-           island-kernel-p))
-(provide 'typed-island)
