@@ -1,8 +1,10 @@
-# Handoff: #476 `Ty::Boxed` — state, decisions, and what's left
+# Handoff: #476 `Ty::Boxed` — state, decisions, and the LHT payoff
 
-Branch `claude/adoring-davinci-ag4p3a`, PR #480, 8 commits on top of `4e37e4c`.
-Written for whoever picks this up next. Facts here were verified in-session; where
-something is unverified it says so.
+Started on branch `claude/adoring-davinci-ag4p3a` (PR #480, 8 commits on top of
+`4e37e4c`); continued on `claude/epic-keller-pgzanf`, which merges `main` (LHT, #472,
+and the native `hash-code` swap, #477, had landed there) and adds the LHT payoff
+below. Written for whoever picks this up next. Facts here were verified in-session;
+where something is unverified it says so.
 
 ## What is done
 
@@ -64,9 +66,13 @@ Recorded because each would otherwise be rediscovered the hard way.
 `cargo build --no-default-features`, and `cargo clippy --workspace --all-targets` are all
 blind to it. Six commits went out green on those gates while that file did not compile.
 
-Worse: `scripts/gauntlet.sh` runs the fuzz leg as `cargo test … && echo FUZZ-GREEN`, so a
-failure **omits the marker and the script still exits 0**. Check the four verdict markers
-(`DEFAULT-GREEN`, `NDF-GREEN`, `FUZZ-GREEN`, `CLIPPY-GREEN`), never the exit code.
+Worse: `scripts/gauntlet.sh` ran the fuzz leg as `cargo test … && echo FUZZ-GREEN`, so a
+failure **omitted the marker while the script still exited 0**. The verdict markers
+(`DEFAULT-GREEN`, `NDF-GREEN`, `FUZZ-GREEN`, `CLIPPY-GREEN`) remain the record, and the
+script now also exits non-zero when any is missing. Clippy runs with `--features fuzz`
+in the gauntlet, in CI's lint job and in the documented pre-commit command, so the fuzz
+battery is linted; the first such run found three `cloned_ref_to_slice_refs` lints in
+the boxed battery, which no earlier gate could see.
 
 ## Testing, and what it does and does not prove
 
@@ -118,43 +124,47 @@ No `CAR`/`CDR` or any compiled introspection. No cons allocation. No boxed arith
 `Cmp` at boxed type. No narrowing to a known constructor set. No checked `boxed → int64`
 coercion. Wanting any of these means you have left v1 — open a follow-up issue.
 
-## What is left: the payoff, which is NOT in this branch
+## The payoff: done on `claude/epic-keller-pgzanf`
 
-#476 delivers the *type*. The motivating consumer is `lib/45-hashtable.lisp` (LHT, #458 /
-#472), which lives on the **unmerged** branch `origin/claude/issue-458-lamedh-hashtable`
-(4 commits, tip `e3fab3c`). Nothing here has been measured against it, and this PR claims
-no benchmark numbers.
+`main` already carried LHT (`lib/45-hashtable.lisp`, #472) with `LHT-HASH` swapped to
+`(hash-code v)` (#477), so step 2 of the original plan, including the `fork_world`
+symbol-hashing trade, was decided on `main` before this branch touched it. What the
+branch did:
 
-Once #458 lands, the follow-up work is:
+1. **`LHT-PROBE` returns a packed `int64`** and is `defun-typed` with the signature
+   `((array int64) boxed int64 boxed int64 int64 int64) -> int64`. Encoding, for
+   capacity `cap`: `r >= 0` is a HIT at bucket `r` (payload `(fetch buckets r)`);
+   `-cap <= r < 0` is a MISS with insertion bucket `(- -1 r)`; `r < -cap` is FULL.
+   `LHT-FIND`/`-GET`/`-PUT!`/`-HAS-KEY-P`/`-REMOVE!` decode once per operation.
+   `(see-type 'lht-probe)` reads `COMPILED`; a Lisp test pins it.
+2. **`LHT-INSERT-EMPTY!`, `LHT-MIX64` and `LHT-HASH` are typed too.** The mixer is pure
+   int64 arithmetic; its wrapping multiplies agree bit for bit with the interpreted body
+   (test `lht-mix64-matches-reference-mixer`, over negatives and both int64 extremes),
+   and the compiled edition sets the same `OVERFLOW` flag. `LHT-HASH` takes `boxed`, so
+   `hash-code` on it is the intrinsic. `LHT-INDEX` moved from `defun*` to `defun-typed`,
+   which also silences the `; defun* LHT-INDEX …` line every process printed at startup.
+3. **`LHT-FIND`/`-PUT!`/`-GET` stay interpreted**, as planned: they read mixed-type
+   slots out of the 8-slot table record, which needs the boxed-to-int64 coercion that is
+   a v1 non-goal.
+4. **Typed bodies cannot read globals**, so `-1`/`-2` (EMPTY/TOMBSTONE) and the mixer
+   constants are literals in the typed bodies. Tests pin the globals to the literals
+   (`lht-sentinels-match-typed-literals`, `lht-mix64-matches-reference-mixer`).
+5. **Measured.** `benchmarks/hashtable/bench.lisp`, release, 3000 interned-symbol keys,
+   three runs each, same machine and session:
 
-1. **Rewrite `LHT-PROBE` to return a packed `int64`** instead of `(list 'status idx
-   payload)`. This is the blocker #476 does not remove: a cons per probe step keeps the
-   function interpreted no matter what the type lattice says. Give it the signature
-   `((array int64) boxed int64 boxed int64 int64 int64) -> int64` and have
-   `LHT-FIND`/`-GET`/`-PUT!`/`-HAS-KEY-P`/`-REMOVE!` decode. **Without this step, #476 buys
-   LHT nothing.**
-2. **Replace `LHT-HASH`'s body with `(hash-code v)`** (#474, merged as `4e37e4c`).
-   Verified safe against LHT's stated contract: `lisp_float_hash_bits` (`src/lib.rs:2812`)
-   already collapses every NaN to one bit pattern and both signed zeros to `+0.0`, which is
-   exactly the `0.0`/`-0.0`-same-key and NaN-finds-NaN guarantee LHT hand-rolls via
-   `PRIN1-TO-STRING`. If the float/NaN assertions in `tests/lisp/72-lamedh-hashtable.lisp`
-   fail after the swap, **stop** — that is a real disagreement, not a test to edit.
-   The swap also closes the gap LHT's own header calls out as its honest cost: arrays,
-   hash tables and environments currently all collide in `$lht-tag-opaque`'s single bucket.
-   **One trade to decide explicitly:** `Hash for LispVal` hashes a `Symbol` by its interned
-   `Shared` pointer, while LHT hashes symbols by printed *name*. A name is stable across
-   `fork_world`'s deep copy; a pointer is not. Theoretical in practice (a `LispVal` does not
-   cross worlds without host code moving it), and the benchmark keys are 3000 interned
-   symbols, so it is exactly the path that would notice. Cheap mitigation if it ever bites:
-   keep the by-name arm for symbols only.
-3. **Leave `LHT-FIND`/`-PUT!`/`-GET` interpreted.** They read mixed-type slots out of the
-   8-slot general array `ht`, which needs a checked `boxed → int64` coercion (a v1
-   non-goal), and they run once per *operation* while the probe loop runs once per *step*.
-4. **Measure.** `benchmarks/hashtable/bench.lisp`, release build, before and after. The
-   honest claim after all this is "the probe loop compiles" — not the #472 headline
-   (~178x/60x), which is the whole `lht` vs native gap including per-operation interpreted
-   overhead this work does not touch. If the number does not move, that is a finding worth
-   reporting, not a reason to widen scope.
+   | | before | after |
+   |---|---|---|
+   | insert, us/op | 108-112 | 74-76 |
+   | lookup, us/op | 27-29 | 17 |
+   | insert, LHT / native | 50x-52x | 37x |
+   | lookup, LHT / native | 12x-14x | 8x |
+
+   The honest claim is the one the plan predicted: the probe loop compiles, and the
+   per-operation cost dropped by about a third. The remaining gap to the native table is
+   per-operation interpreted work (`LHT-FIND`'s frame, the record accessors, two
+   membrane crossings per operation), not the probe loop. Closing it means either a
+   checked `boxed -> int64` coercion so `LHT-FIND` can compile, or a typed record for
+   the table itself; both are follow-up issues, not this branch.
 
 ## Full plan
 

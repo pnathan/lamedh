@@ -31,6 +31,37 @@ deliberately out of scope for v1; `boxed` is never inferred, only written
 explicitly in a `defun-typed`/`declare-typed` signature. See
 `docs/typed-jit-design.md` §0.5.0 for the full design writeup.
 
+## stdlib: the LHT probe loop compiles (the #476 payoff for #458/#472)
+
+`lib/45-hashtable.lisp`'s per-step hot path, `LHT-PROBE`, is now a
+`defun-typed` function with the signature
+`((array int64) boxed int64 boxed int64 int64 int64) -> int64`: BUCKETS
+crosses as a zero-copy typed array, KEYS and KEY as `boxed` handles, and the
+result is one packed int64 (hit = the bucket, miss = `(- -1 bucket)`, full =
+below `-cap`) instead of a `(STATUS BUCKET PAYLOAD)` list consed per step.
+`LHT-INSERT-EMPTY!` (the rehash loop), `LHT-MIX64` and `LHT-HASH` (pure
+int64 once `HASH-CODE` has run; `HASH-CODE` on a `boxed` operand is the
+intrinsic) are typed the same way, and `LHT-INDEX` moved from `defun*` to
+`defun-typed`, which also removes the `; defun* LHT-INDEX ...` line every
+process printed to stderr at startup. `LHT-FIND`/`-GET`/`-PUT!`/`-REMOVE!`
+stay interpreted: they read mixed-type slots out of the table record, which
+needs the boxed-to-int64 coercion that is a v1 non-goal. They decode the
+packed result once per operation.
+
+Measured with `benchmarks/hashtable/bench.lisp` (release, 3000 interned-symbol
+keys, three runs each): insert 108-112 to 74-76 us/op, lookup 27-29 to 17
+us/op; against the native `HASH-TABLE`, 50x to 37x on insert and 13x to 8x on
+lookup. The remaining gap is per-operation interpreted work (`LHT-FIND`'s
+frame, the record accessors, two membrane crossings), not the probe loop.
+
+## tooling: the gauntlet's exit status, and clippy's blind spot
+
+`scripts/gauntlet.sh` exits non-zero when any of its four verdict markers is
+missing; the verdict file stays the record. Clippy, in the gauntlet, in CI's
+lint job and in the documented pre-commit command, now runs with
+`--features fuzz`, so `tests/brutal_correctness.rs` is linted. That file
+compiles under no other gate, and the first such run found three lints in it.
+
 # v0.4.0 — 2026-07-16
 
 The 0.4.0 arc: more of the typed JIT's surface compiles to native code,

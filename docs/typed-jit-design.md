@@ -391,7 +391,7 @@ closed set of intrinsics.
   The corollary the doc comments call out explicitly: the table is
   **append-only per call**. A compiled loop that boxes a fresh value every
   iteration grows the table linearly for the lifetime of that one call — fine
-  for a boundary box (once per call, as in the LHT probe loop below), a
+  for a boundary box (once per call, as in `lib/45-hashtable.lisp`'s `LHT-PROBE`), a
   latent cost for a hypothetical box-in-a-tight-loop pattern. A free list is a
   possible follow-up; v1 does not need one because nothing in the accepted
   scope boxes per-iteration.
