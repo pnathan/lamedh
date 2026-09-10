@@ -299,6 +299,30 @@ pub(super) fn apply(
             BuiltinFunc::Eq | BuiltinFunc::Not | BuiltinFunc::NumericEquals => {
                 apply_logical_op(builtin, args, env)
             }
+            BuiltinFunc::HashCode => {
+                if args.len() != 1 {
+                    return Err(LispError::Generic(
+                        "hash-code requires exactly one argument".to_string(),
+                    ));
+                }
+                // `Hash for LispVal` (src/lib.rs) is already required to
+                // agree with `PartialEq for LispVal` (the relation EQUAL and
+                // hash-table keys use) — it is the Hash impl backing the
+                // native `HashTable` variant's `HashMap<LispVal, LispVal>`.
+                // Reusing it here means hash-code inherits that invariant
+                // for free: EQUAL a b implies (hash-code a) = (hash-code b).
+                // For identity-compared types (arrays, hash tables, typed
+                // arrays, environments, ports, ...) it hashes the
+                // `Shared`/`Rc` allocation's address, giving each distinct
+                // allocation its own bucket instead of the one degenerate
+                // bucket a portable Lisp-level hash function is otherwise
+                // stuck with (issue #474).
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                args[0].hash(&mut hasher);
+                Ok(LispVal::Number(hasher.finish() as i64))
+            }
             BuiltinFunc::MakeHashTable
             | BuiltinFunc::Get
             | BuiltinFunc::Set

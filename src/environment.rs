@@ -634,6 +634,10 @@ impl Environment {
         env.set("CDR".to_string(), LispVal::Builtin(BuiltinFunc::Cdr));
         env.set("CONS".to_string(), LispVal::Builtin(BuiltinFunc::Cons));
         env.set("EQ".to_string(), LispVal::Builtin(BuiltinFunc::Eq));
+        env.set(
+            "HASH-CODE".to_string(),
+            LispVal::Builtin(BuiltinFunc::HashCode),
+        );
         env.set("ATOM".to_string(), LispVal::Builtin(BuiltinFunc::Atom));
         env.set("PRINT".to_string(), LispVal::Builtin(BuiltinFunc::Print));
 

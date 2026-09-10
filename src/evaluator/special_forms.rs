@@ -1252,6 +1252,32 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                                 sym.borrow_mut()
                                     .plist
                                     .insert("source-form".to_string(), form.clone());
+                                // Record call-graph-friendly `(params . body)`
+                                // directly: DEFUN-TYPED's paramlist entries are
+                                // typed pairs `(ARG TY)`, not bare symbols, so a
+                                // Lisp-layer consumer would otherwise need to
+                                // know that shape to strip the type annotations.
+                                if let Ok(items) = list_to_vec_ctx(rest, "DEFUN-TYPED")
+                                    && items.len() >= 2
+                                    && let Ok(param_forms) =
+                                        list_to_vec_ctx(&items[1], "DEFUN-TYPED params")
+                                {
+                                    let cg_param_names: Vec<LispVal> = param_forms
+                                        .iter()
+                                        .map(|p| match p {
+                                            LispVal::Cons { car, .. } => car.as_ref().clone(),
+                                            other => other.clone(),
+                                        })
+                                        .collect();
+                                    let body_forms: Vec<LispVal> = items[2..].to_vec();
+                                    let cg_info = LispVal::Cons {
+                                        car: Shared::new(vec_to_list(cg_param_names)),
+                                        cdr: Shared::new(vec_to_list(body_forms)),
+                                    };
+                                    sym.borrow_mut()
+                                        .plist
+                                        .insert("CALL-GRAPH-INFO".to_string(), cg_info);
+                                }
                                 // Invalidation hooks (#230)
                                 sym.borrow_mut().plist.remove("pure-checked");
                                 invalidate_call_graph(&name, env);
@@ -2019,6 +2045,24 @@ pub(super) fn eval_defun_star(
             sym.borrow_mut()
                 .plist
                 .insert("source-form".to_string(), source_form);
+            // DEFUN*'s source-form head (`DEFUN*`) has no fixed params/body
+            // position — classic arglist, flat bare, and flat typed styles
+            // all reconstruct differently, plus an optional docstring and
+            // return-type annotation shift things further. Rather than have
+            // every Lisp-layer form-shape consumer (e.g. the call graph)
+            // re-derive that parse, record the already-parsed plain param
+            // names and body forms directly as `(params . body)`.
+            let cg_param_names: Vec<LispVal> = params
+                .iter()
+                .map(|(n, _)| LispVal::Symbol(env.intern_symbol(n)))
+                .collect();
+            let cg_info = LispVal::Cons {
+                car: Shared::new(vec_to_list(cg_param_names)),
+                cdr: Shared::new(vec_to_list(body_forms.clone())),
+            };
+            sym.borrow_mut()
+                .plist
+                .insert("CALL-GRAPH-INFO".to_string(), cg_info);
             if let Some(doc) = docstring {
                 sym.borrow_mut()
                     .plist

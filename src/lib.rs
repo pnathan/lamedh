@@ -213,6 +213,7 @@
 //! | `35-json.lisp` | optional | `json` | `JSON:PARSE`/`STRINGIFY`: object<->hash table, array<->`Array`, `true`/`false`/`null`<->`T`/`NIL`/`:NULL`, `JSON:NULL-P` |
 //! | `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
 //! | `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
+//! | `45-hashtable.lisp` | optional | `hashtable` | A hash table built from scratch in pure Lamedh (issue #458): open addressing over `TYPED-ARRAY`/`ARRAY`, not the native `HASH-TABLE` builtin -- `MAKE-LHT`/`LHT-GET`/`LHT-PUT!`/`LHT-REMOVE!`/`LHT-KEYS`/`LHT-EACH` |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -501,6 +502,7 @@ pub enum BuiltinFunc {
     Index,
     Eval,
     Eq,
+    HashCode,
     Not,
     NumericEquals,
     MakeHashTable,
@@ -2918,12 +2920,31 @@ impl Hash for LispVal {
             LispVal::OsChild(c) => {
                 Shared::as_ptr(c).hash(state);
             }
-            LispVal::Builtin(_)
-            | LispVal::Lambda(_)
-            | LispVal::Fexpr(_)
-            | LispVal::Macro(_)
-            | LispVal::Vau(_) => {
-                // Functions are not hashable by value.
+            LispVal::Builtin(b) => {
+                // `PartialEq for BuiltinFunc` is derived (variant equality),
+                // so the discriminant alone is a sound, EQUAL-consistent
+                // hash: two `Builtin`s compare equal iff they are the same
+                // variant.
+                std::mem::discriminant(b).hash(state);
+            }
+            LispVal::Lambda(l) => {
+                // `PartialEq for Lambda` requires `Shared::ptr_eq(&self.env,
+                // &other.env)` alongside structural params/body equality, so
+                // hashing only the captured environment's pointer is
+                // EQUAL-consistent (equal closures share an env, hence a
+                // hash) without walking the body on every lookup (issue
+                // #474: closures were previously unhashable-by-value,
+                // degenerately colliding every lambda into one bucket).
+                Shared::as_ptr(&l.env).hash(state);
+            }
+            LispVal::Fexpr(f) => {
+                Shared::as_ptr(&f.env).hash(state);
+            }
+            LispVal::Macro(m) => {
+                Shared::as_ptr(&m.env).hash(state);
+            }
+            LispVal::Vau(v) => {
+                Shared::as_ptr(&v.env).hash(state);
             }
             #[cfg(feature = "concurrency")]
             LispVal::Channel(c) => std::sync::Arc::as_ptr(c).hash(state),
@@ -3255,6 +3276,10 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     ("43-tls.lisp", include_str!("../lib/43-tls.lisp")),
     ("44-regex.lisp", include_str!("../lib/44-regex.lisp")),
     (
+        "45-hashtable.lisp",
+        include_str!("../lib/45-hashtable.lisp"),
+    ),
+    (
         "97-doc-renderer.lisp",
         include_str!("../lib/97-doc-renderer.lisp"),
     ),
@@ -3432,6 +3457,11 @@ const OPTIONAL_MODULES: &[(&str, &str, &str)] = &[
         "REGEX",
         "44-regex.lisp",
         include_str!("../lib/44-regex.lisp"),
+    ),
+    (
+        "HASHTABLE",
+        "45-hashtable.lisp",
+        include_str!("../lib/45-hashtable.lisp"),
     ),
     (
         "DOC-RENDERER",
