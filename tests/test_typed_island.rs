@@ -401,7 +401,9 @@ fn the_kernel_agrees_on_every_member_and_results_are_preserved() {
         "(def isl (typed-island '(isl-ev isl-od isl-addp isl-usea isl-cnt)))",
     );
     assert_eq!(ev(&e, "(length (island-members isl))"), "5");
-    ev(&e, "(def rep (island-install! isl))");
+    // STRICT here: this test is about the kernel's read-back, so the names
+    // stay bound to the kernel's entries for SEE-TYPE to report.
+    ev(&e, "(def rep (island-install! isl 'strict))");
     // Every member: the kernel compiled it and reports the island's signature.
     assert_eq!(
         ev(&e, "(island-agreement rep)"),
@@ -420,6 +422,96 @@ fn the_kernel_agrees_on_every_member_and_results_are_preserved() {
         ),
         before
     );
+}
+
+#[test]
+fn a_guarded_install_never_turns_an_answer_into_a_membrane_error() {
+    let e = env();
+    ev(
+        &e,
+        "(defun isl-cnt (n) (let ((i 0) (acc 0)) \
+           (progn (while (< i n) (setq acc (+ acc i)) (setq i (+ i 1))) acc)))",
+    );
+    // The dynamic definition answers a float argument.
+    assert_eq!(ev(&e, "(isl-cnt 3.0)"), "3");
+    ev(&e, "(def rep (island-install! (typed-island '(isl-cnt))))");
+    assert_eq!(ev(&e, "(island-agreement rep)"), "((ISL-CNT))");
+    // Guarded (the default): a fitting argument takes the typed entry, a
+    // non-fitting one the original closure; the answer is unchanged.
+    assert_eq!(ev(&e, "(isl-cnt 10)"), "45");
+    assert_eq!(ev(&e, "(isl-cnt 3.0)"), "3");
+    // The member stays visible to a later island through the guard record.
+    assert_eq!(
+        ev(&e, "(island-signature (typed-island '(isl-cnt)) 'isl-cnt)"),
+        "(-> (INT64) INT64)"
+    );
+    // A rebinding by any path makes the record inert: nothing is guessed.
+    ev(&e, "(def isl-cnt (lambda (s) (concat s \"!\")))");
+    assert_eq!(
+        ev(&e, "(island-rejection (typed-island '(isl-cnt)) 'isl-cnt)"),
+        "\"call to unknown function `CONCAT`\""
+    );
+}
+
+#[test]
+fn a_strict_install_binds_the_kernels_entry_as_defun_typed_does() {
+    let e = env();
+    ev(
+        &e,
+        "(defun isl-cnt (n) (let ((i 0) (acc 0)) \
+           (progn (while (< i n) (setq acc (+ acc i)) (setq i (+ i 1))) acc)))",
+    );
+    ev(
+        &e,
+        "(def rep (island-install! (typed-island '(isl-cnt)) 'strict))",
+    );
+    assert_eq!(ev(&e, "(island-agreement rep)"), "((ISL-CNT))");
+    assert_eq!(ev(&e, "(car (see-type 'isl-cnt))"), "TYPED");
+    assert_eq!(ev(&e, "(isl-cnt 10)"), "45");
+    // Outside the signature the membrane refuses, as for any defun-typed.
+    assert_eq!(
+        ev(
+            &e,
+            "(handler-case (isl-cnt 3.0) (error (err) 'membrane-error))"
+        ),
+        "MEMBRANE-ERROR"
+    );
+    assert_eq!(
+        ev(
+            &e,
+            "(handler-case (island-install! (typed-island '(isl-cnt)) 'loose) (error (err) (error-message err)))"
+        ),
+        "\"island-install!: mode must be GUARDED or STRICT\""
+    );
+}
+
+#[test]
+fn an_authors_annotation_is_a_pin_the_island_keeps() {
+    // `boxed` is never inferred; a member the author typed with it is a
+    // member of the island under that signature, not re-derived and lost.
+    let e = env();
+    ev(&e, "(defun-typed (isl-bh int64) ((v boxed)) (hash-code v))");
+    ev(&e, "(defun* isl-half ((x float64)) (/ x 2.0))");
+    assert_eq!(
+        ev(&e, "(island-source-pin 'isl-bh)"),
+        "(ANNOTATED (BOXED) INT64)"
+    );
+    assert_eq!(
+        ev(&e, "(island-source-pin 'isl-half)"),
+        "(ANNOTATED (FLOAT64) ?)"
+    );
+    ev(&e, "(def isl (typed-island '(isl-bh isl-half)))");
+    assert_eq!(
+        ev(&e, "(island-signature isl 'isl-bh)"),
+        "(-> (BOXED) INT64)"
+    );
+    assert_eq!(
+        ev(&e, "(island-signature isl 'isl-half)"),
+        "(-> (FLOAT64) FLOAT64)"
+    );
+    // An unannotated defun* carries no pin.
+    ev(&e, "(defun* isl-dbl (x) (* x 2))");
+    assert_eq!(ev(&e, "(island-source-pin 'isl-dbl)"), "()");
 }
 
 // ---------------------------------------------------------------------------

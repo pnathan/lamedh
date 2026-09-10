@@ -83,7 +83,9 @@ a signature. `island-optimize` re-gates optimized bodies and reports a
 type-changing optimization rather than taking it. `island-forms` renders
 the manifest as `declare-typed` + `defun-typed` forms; `island-install!`
 hands it to the host kernel and reads the kernel's verdict back per
-member. On the Rust host the portable gate and `explain-compile` agree on
+member, guarded by default so a call outside a signature keeps the
+dynamic definition's answer (`'strict` binds the kernel's entry). Author
+annotations enter the group as pins. On the Rust host the portable gate and `explain-compile` agree on
 every standard-library function, and the stdlib island installs with the
 kernel agreeing on every member (`tests/test_typed_island.rs`). See
 `docs/typed-island-frontend.md`.

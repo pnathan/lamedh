@@ -2729,14 +2729,35 @@ DYNAMIC here; lib/47-typed-island.lisp's ISLAND-SOURCE covers that case."
         (list 'dynamic "variadic or not a plain lambda")
         (hm-compile-lambda name (car src) (cdr src)))))
 
+(defun hm-pin-arrow (state pin params)
+  "PIN as a registered arrow in STATE. A pin is either an internal arrow
+`(-> (T...) R)` (already resolved: reused as is) or a SURFACE pin
+`(annotated (A...) R)` in the annotation grammar `defun-typed`/`defun*` read,
+where any position may be the hole `?` -- an author's partial annotation --
+which becomes a fresh variable, exactly as `define_partial` leaves an
+unannotated `defun*` slot free. A surface pin of the wrong arity is an
+error: an annotation that does not fit its own parameter list is not a pin."
+  (cond
+    ((eq (car pin) '->) pin)
+    ((eq (car pin) 'annotated)
+     (if (not (= (length (cadr pin)) (length params)))
+         (error (concat "annotation lists " (princ-to-string (length (cadr pin)))
+                        " parameter type(s) for " (princ-to-string (length params))
+                        " parameter(s)"))
+         (list '->
+               (mapcar (lambda (a) (if (eq a '?) (hm-fresh state) (hm-parse-annotation state a)))
+                       (cadr pin))
+               (if (eq (caddr pin) '?) (hm-fresh state) (hm-parse-annotation state (caddr pin))))))
+    (t (error "malformed pin"))))
+
 (defun hm-compile-group (members pins)
   "Codegen-mode verdicts for a GROUP of functions in ONE state. MEMBERS is a
-list of (NAME PARAMS . BODY); PINS an alist NAME -> concrete arrow. Every
-member is registered before any body is elaborated -- a pinned member under
-its pin (the portable `declare-typed`), the rest under a provisional arrow --
-so mutual recursion resolves and a caller's argument types flow into a
-callee's still-free parameters. Returns an alist NAME -> verdict in MEMBERS
-order.
+list of (NAME PARAMS . BODY); PINS an alist NAME -> pin (see HM-PIN-ARROW:
+a concrete arrow, or a surface annotation with holes). Every member is
+registered before any body is elaborated -- a pinned member under its pin (the
+portable `declare-typed`), the rest under a provisional arrow -- so mutual
+recursion resolves and a caller's argument types flow into a callee's
+still-free parameters. Returns an alist NAME -> verdict in MEMBERS order.
 
 One shared state means one member's FAILURE can leave bindings behind that a
 later member then resolves under. HM-COMPILE-GROUP does not hide that; the
@@ -2747,9 +2768,15 @@ round in which every participant compiled."
     (mapc (lambda (m)
             (let ((pin (assoc (car m) pins)))
               (sethash reg (car m)
-                       (if pin (cdr pin) (hm-provisional-arrow state (cadr m))))))
+                       (if pin
+                           (handler-case (hm-pin-arrow state (cdr pin) (cadr m))
+                             (error (e) (list 'bad-pin (error-message e))))
+                           (hm-provisional-arrow state (cadr m))))))
           members)
     (mapcar (lambda (m)
-              (cons (car m)
-                    (hm-compile-one state (gethash reg (car m)) (cadr m) (cddr m))))
+              (let ((arrow (gethash reg (car m))))
+                (cons (car m)
+                      (if (eq (car arrow) 'bad-pin)
+                          (list 'blocked (cadr arrow))
+                          (hm-compile-one state arrow (cadr m) (cddr m))))))
             members)))

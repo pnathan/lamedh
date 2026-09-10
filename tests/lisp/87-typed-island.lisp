@@ -100,9 +100,13 @@
 ;; ISLAND-INSTALL! binds in the CALLER's environment, like every definition
 ;; form (DEF, DEFUN, DEFUN-TYPED, EDIT!), so the hand-off happens at top level
 ;; and the test reads the result.
+(defun isl87-cnt (n)
+  (let ((i 0) (acc 0))
+    (progn (while (< i n) (setq acc (+ acc i)) (setq i (+ i 1))) acc)))
+
 (def $isl87-report
   (if (island-kernel-p)
-      (island-install! (typed-island '(isl87-ev isl87-od isl87-addp isl87-usea)))
+      (island-install! (typed-island '(isl87-ev isl87-od isl87-addp isl87-usea isl87-cnt)))
       'no-kernel))
 
 (deftest island-install-agrees-with-the-kernel
@@ -110,8 +114,22 @@
       (progn
         (assert-equal (cdr (island-agreement $isl87-report)) nil)
         (assert-equal (car (island-agreement $isl87-report))
-                      '(isl87-ev isl87-od isl87-addp isl87-usea))
-        (assert-equal (cadr (see-type 'isl87-addp)) '(-> (float64 float64) float64))
+                      '(isl87-ev isl87-od isl87-addp isl87-usea isl87-cnt))
         (assert-equal (isl87-ev 10) t)
-        (assert-equal (isl87-usea 2.0) 3.5))
+        (assert-equal (isl87-usea 2.0) 3.5)
+        ;; GUARDED (the default): an argument outside the signature still gets
+        ;; the dynamic definition's answer, never a membrane error.
+        (assert-equal (isl87-cnt 10) 45)
+        (assert-equal (isl87-cnt 3.0) 3))
       (assert-true t)))
+
+(deftest island-annotations-are-pins
+  (assert-equal (island-annotation-p 'boxed) t)
+  (assert-equal (island-annotation-p '(array int64)) t)
+  (assert-equal (island-annotation-p 'string) nil)
+  (assert-equal (island-pin-of-defun-typed
+                 '(defun-typed (f int64) ((h boxed) (n int64)) (+ n 1)))
+                '(annotated (boxed int64) int64))
+  (assert-equal (island-pin-of-defun-star '(defun* f (x float64) y int64 (+ x y)))
+                '(annotated (float64 ?) int64))
+  (assert-equal (island-pin-of-defun-star '(defun* f (h cap) (logand h cap))) nil))

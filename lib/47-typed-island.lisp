@@ -133,11 +133,126 @@ monomorphic island)."
       (cons params body)
       nil))
 
+(def $island-guard-key "island.guard")
+
+(defun island-guard-record (name)
+  "The (GUARD PARAMS BODY PIN) record ISLAND-INSTALL! left on NAME when it
+installed a GUARDED member, provided NAME's live value still IS that guard;
+NIL otherwise. The identity test is what keeps this honest: a later rebinding
+by any path leaves a record the live value no longer matches, and the record
+is then ignored, never trusted."
+  (let ((rec (getp name $island-guard-key)))
+    (if (and rec
+             (eq (handler-case (eval name) (error (e) nil)) (car rec)))
+        rec
+        nil)))
+
 (defun island-source (name)
-  "(PARAMS . BODY) for NAME, or NIL: the live plain lambda first, then the
-source the kernel compiled (ISLAND-TYPED-PLIST-SOURCE)."
+  "(PARAMS . BODY) for NAME, or NIL: the live plain lambda first; then the
+source the kernel compiled (ISLAND-TYPED-PLIST-SOURCE); then, for a member a
+GUARDED install rebound to its guard, the source that install recorded
+(ISLAND-GUARD-RECORD)."
   (let ((live (hm-lambda-source name)))
-    (if live live (island-typed-plist-source name))))
+    (cond
+      (live live)
+      ((island-typed-plist-source name))
+      (t (let ((rec (island-guard-record name)))
+           (if rec (cons (cadr rec) (caddr rec)) nil))))))
+
+;;; ---- annotations are pins ------------------------------------------------
+;;;
+;;; An author who wrote `(defun-typed (f int64) ((h boxed)) ...)` or
+;;; `(defun* f ((h boxed)) int64 ...)` asserted a signature. Dropping it and
+;;; re-deriving would lose exactly the information that made the kernel accept
+;;; the definition (`boxed` is never inferred; a helper's parameter kind may
+;;; be pinned by nothing else), so the island carries every annotation into
+;;; the group as a PIN: a `declare-typed` the author already wrote. Unannotated
+;;; positions of a `defun*` are holes the gate fills, as `define_partial`
+;;; does.
+
+(defun island-annotation-p (form)
+  "Is FORM a type in the simple annotation grammar (try_parse_ty_simple)?"
+  (cond
+    ((symbolp form) (if (member form '(int64 float64 bool char u8 byte boxed)) t nil))
+    ((and (consp form) (eq (car form) 'array) (consp (cdr form)) (null (cddr form)))
+     (island-annotation-p (cadr form)))
+    (t nil)))
+
+(defun island-source-pin (name)
+  "The author's annotation on NAME as a surface pin `(annotated (T-or-? ...)
+R-or-?)`, or NIL when NAME's recorded source carries none. Read from the same
+plist source ISLAND-TYPED-PLIST-SOURCE trusts, under the same condition (the
+kernel reports NAME TYPED), or from a guard record."
+  (let ((rec (island-guard-record name)))
+    (cond
+      (rec (nth 3 rec))
+      ((not (and (boundp 'see-type)
+                 (eq (car (handler-case (see-type name) (error (e) nil))) 'typed)))
+       nil)
+      (t (let ((form (handler-case (see-source name) (error (e) nil))))
+           (cond
+             ((not (consp form)) nil)
+             ((eq (car form) 'defun-typed)
+              (island-pin-of-defun-typed form))
+             ((eq (car form) 'defun*)
+              (island-pin-of-defun-star form))
+             (t nil)))))))
+
+(defun island-pin-of-defun-typed (form)
+  "`(defun-typed (NAME RET) ((p T) ...) body...)` -> (annotated (T...) RET)."
+  (if (and (consp (cdr form)) (consp (cadr form)) (consp (cddr form)))
+      (list 'annotated
+            (mapcar (lambda (p) (if (and (consp p) (consp (cdr p))) (cadr p) '?))
+                    (caddr form))
+            (if (consp (cdr (cadr form))) (cadr (cadr form)) '?))
+      nil))
+
+(defun island-pin-of-defun-star (form)
+  "`(defun* NAME [doc] param... [RET] body...)` in its FLAT style -- `p`,
+`(p)` or `(p T)` per parameter, an optional bare type keyword for the return
+-- as a surface pin; NIL for the classic-arglist style (which carries no
+annotation) or when no position is annotated."
+  (let* ((items (cddr form))
+         (items (if (and items (stringp (car items))) (cdr items) items))
+         (split (island-star-split items))
+         (params (car split))
+         (rest (cdr split))
+         (ptys (mapcar (lambda (p) (if (and (consp p) (consp (cdr p))) (cadr p) '?))
+                       params))
+         (ret (if (and rest (island-annotation-p (car rest))) (car rest) '?)))
+    (if (and (every (lambda (x) (eq x '?)) ptys) (eq ret '?))
+        nil
+        (list 'annotated ptys ret))))
+
+(defun island-star-split (items)
+  "(PARAMS . REST) of a `defun*`'s items after the name and docstring. Mirrors
+parse_star_params: a leading list that is not itself one flat typed parameter
+is the whole parameter list in the classic style (`(a b)`, `((a int64) b)`);
+otherwise consecutive flat parameters -- `p`, `(p)`, `(p T)` -- are taken
+until the first item that is not one."
+  (cond
+    ((null items) (cons nil nil))
+    ((and (consp (car items))
+          (not (island-star-param-p (car items)))
+          (every #'island-star-param-p (car items)))
+     (cons (car items) (cdr items)))
+    ((and (consp (car items)) (null (car items)))
+     (cons nil (cdr items)))
+    (t (let ((params nil) (rest items))
+         (while (and rest (island-star-param-p (car rest)))
+           (setq params (cons (car rest) params))
+           (setq rest (cdr rest)))
+         (cons (reverse params) rest)))))
+
+(defun island-star-param-p (item)
+  "A flat-style `defun*` parameter: `p`, `(p)` or `(p T)` with T a simple type."
+  (cond
+    ((and (symbolp item) item (not (island-annotation-p item))) t)
+    ((and (consp item) (symbolp (car item)) (car item))
+     (or (null (cdr item))
+         (and (consp (cdr item)) (null (cddr item)) (island-annotation-p (cadr item)))))
+    (t nil)))
+
 
 ;;; ==========================================================================
 ;;; 2. Freeze: expand global macros to a fixpoint, once.
@@ -216,19 +331,24 @@ source the kernel compiled (ISLAND-TYPED-PLIST-SOURCE)."
 ;;; passes here is what the kernel accepts.
 
 (defun island-collect (names)
-  "(MEMBERS . REJECTED): MEMBERS are (NAME PARAMS . FROZEN-BODY) for every
-name with a visible source, REJECTED the (NAME . reason) pairs for the rest."
-  (let ((members nil) (rejected nil))
+  "(MEMBERS REJECTED PINS): MEMBERS are (NAME PARAMS . FROZEN-BODY) for every
+name with a visible source, REJECTED the (NAME . reason) pairs for the rest,
+PINS the (NAME . surface-pin) pairs for every member whose recorded source
+carries an author's annotation (ISLAND-SOURCE-PIN)."
+  (let ((members nil) (rejected nil) (pins nil))
     (mapc (lambda (n)
             (let ((src (island-source n)))
               (if (null src)
                   (setq rejected (cons (cons n "no visible plain-lambda source") rejected))
-                  (setq members
-                        (cons (cons n (cons (car src)
-                                            (mapcar #'island-freeze (cdr src))))
-                              members)))))
+                  (progn
+                    (setq members
+                          (cons (cons n (cons (car src)
+                                              (mapcar #'island-freeze (cdr src))))
+                                members))
+                    (let ((pin (island-source-pin n)))
+                      (if pin (setq pins (cons (cons n pin) pins)) nil))))))
           names)
-    (cons (reverse members) (reverse rejected))))
+    (list (reverse members) (reverse rejected) (reverse pins))))
 
 (defun island-verdict-ok-p (v)
   (eq (car (cdr v)) 'compileable))
@@ -249,22 +369,31 @@ name with a visible source, REJECTED the (NAME . reason) pairs for the rest."
   (mapcar (lambda (v) (cons (car v) (island-verdict-reason v)))
           (filter (lambda (v) (not (island-verdict-ok-p v))) verdicts)))
 
-(defun island-discover (members)
+(defun island-discover (members annotations)
   "(PINS . REASONS) after elaborating MEMBERS in one shared codegen state until
-the compiling set stops growing. PINS are the resolved arrows of the members
-that compiled; REASONS the last pass's blocker for each of the rest."
+the compiling set stops growing. An annotated member (ANNOTATIONS: NAME ->
+surface pin) is registered under its annotation, holes fresh; the rest under
+a provisional arrow. PINS are the resolved arrows of the members that
+compiled; REASONS the last pass's blocker for each of the rest."
   (let* ((state (hm-codegen-state))
          (reg (gethash state 'registry)))
     (mapc (lambda (m)
-            (sethash reg (car m) (hm-provisional-arrow state (cadr m))))
+            (let ((pin (assoc (car m) annotations)))
+              (sethash reg (car m)
+                       (if pin
+                           (handler-case (hm-pin-arrow state (cdr pin) (cadr m))
+                             (error (e) (list 'bad-pin (error-message e))))
+                           (hm-provisional-arrow state (cadr m))))))
           members)
     (island-discover-passes state reg members -1 (+ (length members) 1))))
 
 (defun island-discover-passes (state reg members previous fuel)
   (let* ((verdicts (mapcar (lambda (m)
-                             (cons (car m)
-                                   (hm-compile-one state (gethash reg (car m))
-                                                   (cadr m) (cddr m))))
+                             (let ((arrow (gethash reg (car m))))
+                               (cons (car m)
+                                     (if (eq (car arrow) 'bad-pin)
+                                         (list 'blocked (cadr arrow))
+                                         (hm-compile-one state arrow (cadr m) (cddr m))))))
                            members))
          (pins (island-pins-of verdicts)))
     (if (or (= (length pins) previous) (<= fuel 0))
@@ -302,8 +431,9 @@ representation (the pin ISLAND-OPTIMIZE and ISLAND-INSTALL! reuse). Members
 keep the order of NAMES."
   (let* ((collected (island-collect names))
          (members (car collected))
-         (unsourced (cdr collected))
-         (found (island-discover members))
+         (unsourced (cadr collected))
+         (annotations (caddr collected))
+         (found (island-discover members annotations))
          (pins (car found))
          (candidates (filter (lambda (m) (assoc (car m) pins)) members))
          (settled (island-settle candidates pins))
@@ -432,33 +562,89 @@ spelled out so a host with no `eval`-time kernel can consume it offline."
   "Does this host have a typed kernel to hand an island to?"
   (and (boundp 'see-type) (boundp 'signature) t))
 
-(defun island-install-one! (m e)
-  (handler-case
-      (progn
-        (eval (island-defun-typed-form m) e)
-        (if (boundp 'see-type)
-            (let ((native (see-type (car m))))
-              (cond
-                ((not (eq (car native) 'typed))
-                 (list (car m) 'kernel-silent native))
-                ((equal (cadr native) (cadr m))
-                 (list (car m) 'agree (cadr m)))
-                (t (list (car m) 'disagree (cadr m) (cadr native)))))
-            (list (car m) 'installed (cadr m))))
-    (error (err) (list (car m) 'kernel-rejected (error-message err)))))
+(defun island-arg-fits-p (ty x)
+  "Would the kernel's membrane accept X for a parameter of surface type TY?
+Mirrors `lispval_to_typed`: INT64 an integer; FLOAT64 a float or an integer;
+BOOL anything (truthiness); CHAR a char or an integer 0..255; BOXED anything;
+`(array char)` a string, a typed array, or an array of fitting elements; any
+other `(array T)` a typed array or an array of fitting elements; a struct
+name a record of that brand."
+  (cond
+    ((eq ty 'int64) (and (numberp x) (not (floatp x))))
+    ((eq ty 'float64) (numberp x))
+    ((eq ty 'bool) t)
+    ((eq ty 'boxed) t)
+    ((member ty '(char u8 byte))
+     (or (charp x) (and (numberp x) (not (floatp x)) (>= x 0) (<= x 255))))
+    ((and (consp ty) (eq (car ty) 'array))
+     (cond
+       ((and (stringp x) (member (cadr ty) '(char u8 byte))) t)
+       ((typed-array-p x) t)
+       ((arrayp x) (every (lambda (el) (island-arg-fits-p (cadr ty) el)) (array->list x)))
+       (t nil)))
+    ((symbolp ty) (eq (record-brand x) ty))
+    (t nil)))
 
-(defun island-install-in! (island e)
-  (let ((members (island-members island)))
-    (mapc (lambda (m)
-            (handler-case (eval (island-declare-typed-form m) e)
-              (error (err) nil)))
-          members)
-    (mapcar (lambda (m) (island-install-one! m e)) members)))
+(defun island-args-fit-p (types args)
+  (cond
+    ((and (null types) (null args)) t)
+    ((or (null types) (null args)) nil)
+    ((island-arg-fits-p (car types) (car args))
+     (island-args-fit-p (cdr types) (cdr args)))
+    (t nil)))
+
+(defun island-guard (types typed orig)
+  "The guarded entry for a member: arguments the membrane would accept go to
+the kernel's TYPED entry, anything else to ORIG, the dynamic closure the
+member had before installation. Never a membrane error where the dynamic
+definition had an answer."
+  (lambda (&rest args)
+    (if (island-args-fit-p types args)
+        (apply typed args)
+        (apply orig args))))
+
+(defun island-install-one! (m e mode)
+  (let ((orig (handler-case (eval (car m) e) (error (err) nil))))
+    (handler-case
+        (progn
+          (eval (island-defun-typed-form m) e)
+          (let ((verdict
+                 (if (boundp 'see-type)
+                     (let ((native (see-type (car m))))
+                       (cond
+                         ((not (eq (car native) 'typed))
+                          (list (car m) 'kernel-silent native))
+                         ((equal (cadr native) (cadr m))
+                          (list (car m) 'agree (cadr m)))
+                         (t (list (car m) 'disagree (cadr m) (cadr native)))))
+                     (list (car m) 'installed (cadr m)))))
+            (if (and (eq mode 'guarded) orig (eq (cadr verdict) 'agree))
+                (let* ((typed (eval (car m) e))
+                       (types (mapcar #'cadr (island-typed-params m)))
+                       (guard (island-guard types typed orig)))
+                  (eval (list 'def (car m) (list 'quote guard)) e)
+                  (putp (car m) $island-guard-key
+                        (list guard (cadr (caddr m)) (cddr (caddr m))
+                              (list 'annotated types (island-return-type m)))))
+                nil)
+            verdict))
+      (error (err) (list (car m) 'kernel-rejected (error-message err))))))
+
+(defun island-install-in! (island e mode)
+  (if (not (member mode '(guarded strict)))
+      (error "island-install!: mode must be GUARDED or STRICT")
+      (let ((members (island-members island)))
+        (mapc (lambda (m)
+                (handler-case (eval (island-declare-typed-form m) e)
+                  (error (err) nil)))
+              members)
+        (mapcar (lambda (m) (island-install-one! m e mode)) members))))
 
 (defvau island-install! (x e)
   "Hand ISLAND to the host kernel and read its verdict back, member by member.
 
-  (island-install! island)
+  (island-install! island)            ; guarded (the default)
+  (island-install! island 'strict)
 
 Every member is first forward-declared with its island signature
 (`declare-typed`, so mutual recursion and caller-pinned helpers resolve), then
@@ -475,10 +661,27 @@ environment, like `edit!`. Returns one entry per member:
   (NAME INSTALLED sig)                   a host with no SEE-TYPE to read back
 
 AGREE on every member is the two gates -- portable front end and native
-kernel -- validating each other on this island. Note the hand-off REBINDS
-each member to the kernel's typed entry: a call with arguments outside the
-signature is then a membrane error, not a fall-back to the dynamic closure."
-  (island-install-in! (eval (car x) e) e))
+kernel -- validating each other on this island.
+
+The MODE decides what the public name is bound to afterwards.
+
+GUARDED (default): the name is bound to a guard that sends arguments the
+membrane would accept to the kernel's typed entry and everything else to the
+dynamic closure the member had before -- the discipline `jit-optimize`'s own
+auto-typed membrane keeps for an unannotated `defun`. No call that had an
+answer before installation becomes a membrane error. The cost is a
+per-call argument check in Lisp, and introspection: SEE-TYPE sees the guard
+(a variadic lambda) and reports DYNAMIC; a later TYPED-ISLAND still finds the
+member through the guard record ISLAND-SOURCE reads, so re-islanding works.
+Internal member-to-member calls are compiled direct and pay nothing.
+
+STRICT: the name stays the kernel's typed entry, as `defun-typed` and
+`defun*` bind it: fastest, SEE-TYPE reports TYPED, and a call outside the
+signature is a membrane error where the dynamic definition may have had an
+answer. Choose it when the members were never meant to be called otherwise."
+  (island-install-in! (eval (car x) e)
+                      e
+                      (if (cdr x) (eval (cadr x) e) 'guarded)))
 
 (defun island-agreement (report)
   "(AGREED . DISPUTED) from an ISLAND-INSTALL! report: the names the kernel

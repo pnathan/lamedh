@@ -128,14 +128,35 @@ the optimizer signalled, keeps its original body and is listed under
 `regressions`. The member set and every signature are invariant by
 construction. The optimizer is validated on every run, not trusted.
 
+**Annotations are pins.** A member whose recorded source is a
+`defun-typed`, or a `defun*` with typed positions, carries its author's
+signature into the group as a pin (`(annotated (T-or-? ...) R-or-?)`,
+holes fresh). Dropping it would lose exactly what made the kernel accept
+the definition: `boxed` is never inferred, and a helper's parameter kind
+may be pinned by nothing else.
+
 **Hand-off.** `island-forms` is the manifest as data: every member's
 `declare-typed` form, then every member's `defun-typed` form, for a kernel
 consumed offline. `island-install!` evaluates them in the caller's
 environment and reads `see-type` back for each member. `AGREE` on every
 member is the portable front end and the native kernel agreeing on that
-island. Note that `defun-typed` rebinds a member to the kernel's typed
-entry with no dynamic fallback: a call outside the signature becomes a
-membrane error.
+island.
+
+The kernel has two membranes. `defun-typed` and `defun*` bind the name to
+a strict entry: a call outside the signature is a membrane error.
+`jit-optimize`, the path an unannotated `defun` takes, binds an auto-typed
+entry that falls back to the dynamic closure when an argument does not
+fit. Island members were unannotated `defun`s, so `island-install!` keeps
+the second discipline by default: **guarded** mode rebinds the name to a
+guard that sends fitting arguments to the kernel's entry and everything
+else to the closure the member had before. No call that had an answer
+becomes an error. The costs are a per-call argument check in Lisp and
+introspection: `see-type` sees a variadic lambda and reports `DYNAMIC`,
+and a later `typed-island` recovers the member through the guard record
+`island-source` reads, trusted only while the live value is that guard.
+Internal member-to-member calls are compiled direct and pay nothing.
+`(island-install! island 'strict)` keeps the kernel's entry bound, as
+`defun-typed` would.
 
 ## 4. Honesty
 
@@ -145,6 +166,8 @@ membrane error.
   (`jit-optimize`, `defun*`, `defun-typed`). Type annotations in that source
   are dropped; the gate re-derives them.
 - A blocked member carries the kernel's own blocker wording.
+- A guarded member's recorded source is trusted only while the live value
+  is the guard itself; a rebinding by any path makes the record inert.
 - `island-install!` reports what the kernel said. It never reports `AGREE`
   from the island's side alone.
 - The freeze walker does not know binding forms. A local variable named
