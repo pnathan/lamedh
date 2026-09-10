@@ -277,6 +277,27 @@ violation. Run the full suite once under it.
 
 ### 1.6 Incremental landing plan
 
+Status: steps 1-4 landed. Step 3 replaced both `scan_free_vars` calls in
+`compile_lambda` with one `lambda_capture_list` call made at entry, whose
+result is kept on `compile_lambda`'s own host stack across the body
+compile — strictly stronger than "read the memo at both points", since
+the two sites now read the identical list *object*, not two lookups that
+happen to agree. The two-phase (bottom-up then top-down) structure is
+fused into one walk; the equivalence argument is written out in the
+`fv_walk` header comment in `compiler.asm`. Q1 (operative operands
+opaque) landed with it and `stdlib_conformance` is byte-identical; Q2 is
+implemented as recommended (`DEFMACRO`/`DEFEXPR` bind their parameter
+lists like a lambda, `DEFINE`'s name is not a reference); Q3 needed no
+new work — `run_buffer`'s `mov qword [compile_nesting_depth], 0` before
+every top-level compile (landed in step 2) already makes both memos'
+generation counters unwind-proof, and `capture_memo` is cleared from the
+same `compile_thunk` 0->1 transition as `macroexpand_memo`. The full
+suite is green both normally and under
+`EXTRA_ASFLAGS=-DCAPTURE_CHECK bash tests/run.sh`. The D3 (compile-time)
+measurement is inconclusive at this corpus size: `stdlib_conformance`
+runs in ~110-200ms both before and after, dominated by noise — the
+2D+1-expansions cost that step 2 removed was the measurable part.
+
 1. README correction + `066_transitive_capture.asm` (probes only; no compiler
    change). One commit; makes the real baseline explicit.
 2. `macroexpand_once` + `macroexpand_memo` + `compile_nesting_depth`; switch

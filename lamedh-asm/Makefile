@@ -4,7 +4,12 @@
 # here at all, so cargo never sees this directory).
 
 AS      := nasm
-ASFLAGS := -f elf64 -g -F dwarf -w+all -Isrc/
+# EXTRA_ASFLAGS: extra nasm flags for the %ifdef-gated assertion builds
+# this project keeps (`make EXTRA_ASFLAGS=-DCAPTURE_CHECK`, the capture-
+# analysis oracle — docs/spec-tco-capture-gc.md section 1.4). Empty in a
+# normal build, so the shipped binary carries none of that code at all.
+EXTRA_ASFLAGS ?=
+ASFLAGS := -f elf64 -g -F dwarf -w+all -Isrc/ $(EXTRA_ASFLAGS)
 LD      := ld
 BUILD   := build
 

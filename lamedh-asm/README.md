@@ -233,6 +233,14 @@ specifically to test where the line falls:
   capability: no grow/shrink, no bounds check (v0 — see limits below;
   Part IV requires an out-of-range index to be a catchable error, not
   yet true here).
+- **`CLOSURE-NFREE`** is a debug/introspection primitive, not a
+  KERNEL.md form: `(CLOSURE-NFREE f)` reads a compiled closure's (or
+  `$VAU` operative's — same layout) own `nfree` header field and
+  answers a fixnum, or `()` for anything else. It exists so the
+  free-variable capture analysis can be tested for what it does *not*
+  capture: an over-captured slot is by construction never read, so
+  without a way to see `nfree` a shadowing bug and its fix print the
+  same right answer (`tests/cases/068_capture_shadowing.asm`).
 - **`HASH-CODE`/`MOD`/`REMAINDER`** round out the small extra kernel
   surface a *real* hash table needs beyond plain list processing:
   `HASH-CODE` returns a stable, always-non-negative fixnum for a
@@ -823,16 +831,31 @@ into conformance incrementally, tracked honestly rather than silently:
   (`(LAMBDA (A) (LAMBDA (B) (LAMBDA (C) (+ A (+ B C)))))`, a `LET`-
   bound name in a middle lambda, stack-passed outer params, a `&REST`
   middle lambda, a macro-produced inner lambda) is already captured
-  transitively with no manual re-threading. What genuinely is a
-  measured, real defect: a macro call at lambda-nesting depth D is
-  expanded **2D+1 times** at compile time (`compile_lambda` scans the
-  body twice per nesting level, once to size the frame and once to
-  re-derive it for the closure-construction copy loop, and each scan
-  re-runs the macro's own transformer), and the scan is
-  shadowing-blind (`(LAMBDA (X) (LAMBDA (X) X))` captures the outer
-  `X` into a slot the inner closure never reads) — both fixed by a
-  single memoized, shadow-aware analysis pass (`analyze_lambda_captures`/
-  `macroexpand_once`) landing per the spec's own incremental plan.
+  transitively with no manual re-threading. What genuinely was a
+  measured, real defect — and is now fixed: a macro call at
+  lambda-nesting depth D was expanded **2D+1 times** at compile time
+  (`compile_lambda` scanned the body twice per nesting level, once to
+  size the frame and once to re-derive it for the closure-construction
+  copy loop, and each scan re-ran the macro's own transformer), and the
+  scan was shadowing-blind (`(LAMBDA (X) (LAMBDA (X) X))` captured the
+  outer `X` into a slot the inner closure never reads). Both are gone:
+  `macroexpand_once`/`macroexpand_memo` memoize expansion by the call
+  form's own address (a transformer now runs once per call site — `CNT`
+  in `tests/cases/066_transitive_capture.asm` is 1 at every depth,
+  where it used to be 3/5/7/9), and `analyze_lambda_captures`/
+  `capture_memo` (`compiler.asm`) replace both `scan_free_vars` calls
+  with one shadowing-aware walk per outermost `LAMBDA`, memoized per
+  lambda form and read back at both sites — so a name re-bound inside a
+  nested lambda (its parameters, a `LET`/`LET*`/`PROG`/`HANDLER-CASE`
+  binding) is no longer captured into the enclosing closure. The debug
+  primitive **`(CLOSURE-NFREE f)`** reads a closure's own `nfree` field
+  so this is testable rather than merely invisible
+  (`tests/cases/068_capture_shadowing.asm`); `scan_free_vars` itself is
+  kept, off the hot path, as the `-DCAPTURE_CHECK` build's oracle
+  (`EXTRA_ASFLAGS=-DCAPTURE_CHECK bash tests/run.sh`), which asserts
+  that every new capture list is a subset of the old one and that every
+  name it drops really is bound (or never referenced) inside that
+  lambda.
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
@@ -2040,11 +2063,21 @@ bugs no existing test had exercised:
 - A reference-counting GC for the data heap — spec written
   (`docs/spec-tco-capture-gc.md` section 3, landing last), not yet
   implemented.
-- A single memoized, shadow-aware free-variable analysis pass to
-  replace `scan_free_vars`'s current double-scan-per-lambda-level —
-  general transitive capture *itself* already works (see "v0 limits"
-  above); this is a compile-time-cost and over-capture fix, not a
-  correctness one (spec section 1).
+- ~~A single memoized, shadow-aware free-variable analysis pass to
+  replace `scan_free_vars`'s current double-scan-per-lambda-level~~ —
+  landed (`analyze_lambda_captures`/`capture_memo`/`macroexpand_once`,
+  `compiler.asm`; spec section 1, `tests/cases/066_transitive_capture.asm`
+  and `tests/cases/068_capture_shadowing.asm`). General transitive
+  capture *itself* already worked (see "v0 limits" above); this was a
+  compile-time-cost and over-capture fix, not a correctness one — a
+  closure no longer captures a name that a nested lambda re-binds, and
+  `(CLOSURE-NFREE f)` exposes the resulting `nfree` so the difference is
+  observable. Still open from that section: spec step 4 is now folded in
+  (an operative call's operands are treated as opaque, matching the fact
+  that `compile_form` bakes them as `QUOTE`d data), and a lambda form
+  physically shared between two different enclosing scopes would get one
+  memo entry for both — `filter_resolvable` makes that safe rather than
+  correct, and `-DCAPTURE_CHECK` is where it would be caught.
 - Shared mutable closure cells (boxed captures) so `SETQ` on a captured
   variable is visible across closures over it.
 - XMM support in `codegen.asm`, so float arithmetic can be inlined as

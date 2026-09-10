@@ -167,6 +167,7 @@ kw_intern: db "INTERN"
 kw_record_new: db "RECORD-NEW"
 kw_record_brand: db "RECORD-BRAND"
 kw_record_fields: db "RECORD-FIELDS"
+kw_closure_nfree: db "CLOSURE-NFREE"
 kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
@@ -1106,6 +1107,1552 @@ macroexpand_once:
     pop r12
     pop rbx
     ret
+
+; ---------------------------------------------------------------------
+; Transitive free-variable capture analysis
+; (docs/spec-tco-capture-gc.md section 1.2)
+;
+; scan_free_vars above answers "which symbols mentioned anywhere in this
+; subtree resolve in the enclosing frame?" — shadowing-blind, so a name
+; re-bound *inside* a nested LAMBDA/LET/PROG is captured into the outer
+; closure anyway (spec D2: a wasted slot per closure creation, a larger
+; captured array for a future GC to walk, and a standing hygiene hazard).
+; The routines below answer the sharper question — "which symbols are
+; genuinely FREE in this lambda, and visible where it appears?" — with
+; one walk per outermost LAMBDA whose per-lambda results are memoized by
+; the lambda form's own cons address (capture_memo) and read back by
+; compile_lambda at BOTH the frame-sizing site and the closure-copy-loop
+; site, so the two can no longer disagree by construction.
+;
+; The spec describes the analysis as phase 1 (bottom-up raw free sets)
+; then phase 2 (top-down intersection with what is actually in scope).
+; This implementation fuses the two into a single walk, which is
+; provably the same answer: writing `boundstack(L)` for the binders of
+; every lambda/LET/PROG/HANDLER-CASE lexically enclosing L (but not L's
+; own), and `avail(L)` for the compile-time scope that will be
+; current_scope when L is compiled (params ++ rest ++ free_frame of the
+; enclosing lambda, plus any intervening LET/PROG/HANDLER-CASE frame),
+; spec phase 2 defines
+;
+;     capture(L) = raw_fv(L) INTERSECT avail(L)
+;
+; and avail(L) = boundstack(L) INTERSECT-COMPLEMENT-free ... concretely:
+; every name in boundstack(L) that L references reaches L through the
+; enclosing lambda's own capture list (the same recursion applied one
+; level out), and every other name L references is either resolvable in
+; the outermost enclosing scope (a captured global-frame local) or is a
+; true global. So
+;
+;     capture(L) = { s in raw_fv(L) : s in boundstack(L)
+;                                   or frame_lookup(s, outer scope) hits }
+;
+; which is exactly one predicate evaluated during the same walk that
+; computes raw_fv(L). `bound` below is boundstack(L) with L's own
+; binders consed on the front, and `cut` is the pointer *into* that same
+; list where L's own binders end and the enclosing ones begin — so
+; "shadowed by this lambda" is member-before-cut and "bound by an
+; enclosing lambda" is member-from-cut-on, with no set copying at all.
+; (append_lists shares its second argument's spine, so the cut pointer
+; stays valid as binders are pushed.)
+;
+; Under-capture is the dangerous direction (spec section 1.4 risk 1): a
+; name wrongly believed bound compiles to a *global* load instead of a
+; compile error. Everything here therefore fails toward over-capture —
+; only the small set of forms whose binding structure is known exactly
+; (LAMBDA/$VAU/DEFMACRO/DEFEXPR/LET/LET*/PROG/HANDLER-CASE) removes
+; anything; every other form falls through to a plain "walk the head and
+; every argument" that can only ever add. -DCAPTURE_CHECK (below) builds
+; an assertion mode that cross-checks every answer against
+; scan_free_vars itself.
+
+%define CAPTURE_MEMO_SIZE 65536
+section .bss
+align 8
+; capture_memo — same shape, same generation-counter invalidation, and
+; same "keyed by the form's own cons address" reasoning as
+; macroexpand_memo above (see its comment for why address identity is
+; sound here). Value = that lambda's capture list, in the exact order
+; free-slot indices are assigned to it.
+capture_memo: resq (CAPTURE_MEMO_SIZE*3)
+capture_generation: resq 1
+
+section .data
+align 8
+; capture_scope — the enclosing compile-time scope the current analysis
+; resolves its outermost free variables against ([current_scope] at the
+; moment compile_lambda started). Saved/restored around
+; analyze_lambda_captures AND around lambda_capture_list (which needs it
+; set even on a memo hit, where no analysis runs) like current_scope
+; itself, since a macro transformer invoked *during* the walk can
+; re-enter the compiler (EVAL -> compile_thunk -> compile_lambda ->
+; analyze_lambda_captures). Lives in .data, not .bss, for the same
+; reason current_scope does: its "empty" value is IMM_NIL, and a
+; zero-initialized cell would be read as a tagged fixnum 0 and walked
+; as a frame list (frame_lookup -> car -> fail_wrong_type).
+capture_scope: dq IMM_NIL
+
+section .text
+
+; car_safe/cdr_safe(rdi=value) -> rax. Like car/cdr but answer IMM_NIL
+; for a non-cons instead of signaling. The analysis walks raw source it
+; has not validated (a malformed (LET) with no binding list, a dotted
+; body) and must never turn "this form would not have compiled" into
+; "the compiler faulted while deciding what to capture". Leaf routines:
+; they clobber rax and flags only, which is what lets the walk below
+; keep intermediates in r10 across them.
+car_safe:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_CONS
+    jne .nil
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov rax, [rax]
+    ret
+.nil:
+    mov rax, IMM_NIL
+    ret
+
+cdr_safe:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_CONS
+    jne .nil
+    mov rax, rdi
+    UNTAG_PTR rax
+    mov rax, [rax+8]
+    ret
+.nil:
+    mov rax, IMM_NIL
+    ret
+
+; is_symbol_p(rdi=value) -> rax=1/0
+is_symbol_p:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .no
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .no
+    mov rax, 1
+    ret
+.no:
+    xor rax, rax
+    ret
+
+; macro_slot_of(rdi=value) -> rax = the macro closure bound to this
+; symbol, or IMM_NIL. Exactly the test compile_form's own macro dispatch
+; and scan_free_vars's macro branch already perform inline.
+macro_slot_of:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .none
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .none
+    mov rax, [rax+24]
+    ret
+.none:
+    mov rax, IMM_NIL
+    ret
+
+; member_sym_until(rdi=symbol, rsi=list, rdx=stop) -> rax=1/0. member_sym
+; over the prefix of `list` that ends at the cons cell `stop` (or at
+; IMM_NIL, whichever comes first) — "is this name bound by the lambda
+; being analyzed itself, as opposed to by one of its enclosing lambdas?"
+member_sym_until:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    mov r12, rsi
+    mov r13, rdx
+.loop:
+    cmp r12, r13
+    je .no
+    cmp r12, IMM_NIL
+    je .no
+    mov rdi, r12
+    call car_safe
+    cmp rax, rbx
+    je .yes
+    mov rdi, r12
+    call cdr_safe
+    mov r12, rax
+    jmp .loop
+.yes:
+    mov rax, 1
+    jmp .out
+.no:
+    xor rax, rax
+.out:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; param_names(rdi=parameter list) -> rax = the symbols it binds, with
+; the literal &REST marker dropped (the symbol after it is a real
+; binding and is kept — split_rest_params's own contract, restated as a
+; set rather than a split). Order is irrelevant: the result is only ever
+; used as a membership set.
+param_names:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, IMM_NIL
+.loop:
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .done
+    mov rdi, rbx
+    call car_safe
+    push rax
+    mov rdi, rax
+    mov rsi, kw_rest
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jnz .skip
+    pop rdi
+    mov rsi, r12
+    call cons
+    mov r12, rax
+    jmp .next
+.skip:
+    add rsp, 8
+.next:
+    mov rdi, rbx
+    call cdr_safe
+    mov rbx, rax
+    jmp .loop
+.done:
+    mov rax, r12
+    pop r12
+    pop rbx
+    ret
+
+; binding_names(rdi=a LET/LET* binding list) -> rax = the names it
+; binds. A binding is (name init); a bare symbol binds itself.
+binding_names:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, IMM_NIL
+.loop:
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .done
+    mov rdi, rbx
+    call car_safe
+    mov rdi, rax
+    call is_cons
+    test rax, rax
+    jz .bare
+    mov rdi, rbx
+    call car_safe
+    mov rdi, rax
+    call car_safe
+    jmp .have
+.bare:
+    mov rdi, rbx
+    call car_safe
+.have:
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    mov r12, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rbx, rax
+    jmp .loop
+.done:
+    mov rax, r12
+    pop r12
+    pop rbx
+    ret
+
+; clear_capture_memo() — O(1) invalidation, same generation-counter
+; technique (and same reason) as clear_macroexpand_memo. Called from
+; compile_thunk on the compile_nesting_depth 0->1 transition, right
+; beside it: the two memos are keyed the same way and must expire
+; together, since a capture list is only meaningful alongside the
+; macro expansions the walk that produced it saw.
+clear_capture_memo:
+    inc qword [capture_generation]
+    ret
+
+; capture_memo_find(rdi=key) -> rax = slot address (0 if the table is
+; full), rdx = 1 on a live hit / 0 if the slot is free. Linear probe,
+; wrapping, generation-checked — a transcription of macroexpand_once's
+; own probe loop over its own table.
+capture_memo_find:
+    push rbx
+    mov rbx, rdi
+    mov rax, rbx
+    shr rax, 4
+    and rax, (CAPTURE_MEMO_SIZE-1)
+    imul rax, rax, 24
+    lea rcx, [rel capture_memo]
+    add rcx, rax
+    xor r8, r8
+.probe:
+    cmp r8, CAPTURE_MEMO_SIZE
+    jae .full
+    mov rax, [rel capture_generation]
+    cmp [rcx+16], rax
+    jne .empty
+    mov rax, [rcx]
+    cmp rax, rbx
+    je .hit
+    add rcx, 24
+    inc r8
+    lea rax, [rel capture_memo]
+    lea rax, [rax + (CAPTURE_MEMO_SIZE*24)]
+    cmp rcx, rax
+    jb .probe
+    lea rcx, [rel capture_memo]
+    jmp .probe
+.hit:
+    mov rax, rcx
+    mov rdx, 1
+    jmp .out
+.empty:
+    mov rax, rcx
+    xor rdx, rdx
+    jmp .out
+.full:
+    xor rax, rax
+    xor rdx, rdx
+.out:
+    pop rbx
+    ret
+
+; capture_memo_store(rdi=key, rsi=capture list). A full table simply
+; drops the entry: correctness never depends on the memo hitting (a
+; miss re-derives the identical list from the identical inputs), only
+; on the two compile_lambda sites agreeing — and they agree because
+; compile_lambda computes the list once and keeps it on its own host
+; stack across the body compile, not because it looks it up twice.
+capture_memo_store:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, rsi
+    call capture_memo_find
+    test rax, rax
+    jz .out
+    mov [rax], rbx
+    mov [rax+8], r12
+    mov rcx, [rel capture_generation]
+    mov [rax+16], rcx
+.out:
+    pop r12
+    pop rbx
+    ret
+
+; capture_memo_lookup(rdi=key) -> rax = capture list, rdx = 1 on a hit
+capture_memo_lookup:
+    call capture_memo_find
+    test rax, rax
+    jz .miss
+    test rdx, rdx
+    jz .miss
+    mov rax, [rax+8]
+    mov rdx, 1
+    ret
+.miss:
+    mov rax, IMM_NIL
+    xor rdx, rdx
+    ret
+
+; operative_head_p(rdi=head symbol, rsi=bound) -> rax=1/0 — is this call
+; site's head a global currently bound to a $VAU operative? Mirrors
+; compile_form's own operative dispatch exactly, including its
+; "lexically bound names are never operatives" guard: here that guard is
+; "not bound by any enclosing binder, and not resolvable in the
+; enclosing scope", which is the same predicate one compile step early
+; (a name that IS resolvable gets captured by this very analysis, so it
+; is in current_scope by the time compile_form asks).
+operative_head_p:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, rsi
+    mov rdi, rbx
+    call is_symbol_p
+    test rax, rax
+    jz .no
+    mov rdi, rbx
+    mov rsi, r12
+    call member_sym
+    test rax, rax
+    jnz .no
+    mov rdi, rbx
+    mov rsi, [capture_scope]
+    call frame_lookup
+    cmp rax, FRAME_NOT_FOUND
+    jne .no
+    mov rax, rbx
+    UNTAG_PTR rax
+    mov rax, [rax+16]
+    cmp rax, IMM_UNBOUND
+    je .no
+    mov rdx, rax
+    and rdx, TAG_MASK
+    cmp rdx, TAG_HEAPOBJ
+    jne .no
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_OPERATIVE
+    jne .no
+    mov rax, 1
+    jmp .out
+.no:
+    xor rax, rax
+.out:
+    pop r12
+    pop rbx
+    ret
+
+; fv_walk_list(rdi=list of forms, rsi=bound, rdx=cut, rcx=acc)
+;   -> rax = acc'. Walks a *list of forms* (a lambda body, a PROG's
+; items) rather than a single form — unlike scan_free_vars, which is
+; handed a body list and falls into its own .list_case, treating the
+; body's first form as if it were the head of a call (so a body whose
+; first form is a bare symbol naming a macro would be macro-expanded).
+fv_walk_list:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi
+    mov r12, rsi
+    mov r13, rdx
+    mov r14, rcx
+.loop:
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .out
+    mov rdi, rbx
+    call car_safe
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rbx, rax
+    jmp .loop
+.out:
+    mov rax, r14
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; fv_lambda(rdi=params, rsi=body, rdx=bound, rcx=cut, r8=acc,
+;           r9=memo key or 0) -> rax = acc'
+;
+; The nested-lambda case of the walk, shared by LAMBDA/$VAU/DEFMACRO/
+; DEFEXPR (spec open question Q2: a transformer body binds its own
+; parameter list exactly like a lambda body does). Computes the inner
+; lambda's own capture list against `bound` extended with its
+; parameters and a cut placed at `bound` itself, memoizes it under the
+; inner form's address (LAMBDA only — the other three are compiled
+; through a *synthetic* (LAMBDA params . body) built with cons, whose
+; address this analysis never sees, so compile_lambda re-derives those
+; from current_scope through the miss path), then folds it into the
+; enclosing lambda's own accumulator: every name the inner closure
+; needs that this lambda does not itself bind, this lambda must capture
+; too — that is precisely what makes capture transitive.
+fv_lambda:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    push rbp
+    mov rbx, rdi                        ; params
+    mov r12, rsi                          ; body
+    mov r13, rdx                            ; bound
+    mov r14, rcx                              ; cut
+    mov r15, r8                                 ; acc
+    mov rbp, r9                                   ; memo key (0 = none)
+
+    mov rdi, rbx
+    call param_names
+    mov rdi, rax
+    mov rsi, r13
+    call append_lists                   ; inner_bound = params ++ bound
+    mov rdi, r12
+    mov rsi, rax
+    mov rdx, r13                          ; inner_cut = bound
+    mov rcx, IMM_NIL
+    call fv_walk_list
+    push rax                              ; [inner capture list]
+
+    cmp rbp, 0
+    je .no_memo
+    mov rdi, rbp
+    mov rsi, [rsp]
+    call capture_memo_store
+.no_memo:
+    pop rbx                               ; cursor over the inner list
+.merge:
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .out
+    mov rdi, rbx
+    call car_safe
+    mov rbp, rax                          ; symbol
+    mov rdi, rbp
+    mov rsi, r13
+    mov rdx, r14
+    call member_sym_until
+    test rax, rax
+    jnz .next                             ; this lambda binds it itself
+    mov rdi, rbp
+    mov rsi, r15
+    call member_sym
+    test rax, rax
+    jnz .next
+    mov rdi, rbp
+    mov rsi, r15
+    call cons
+    mov r15, rax
+.next:
+    mov rdi, rbx
+    call cdr_safe
+    mov rbx, rax
+    jmp .merge
+.out:
+    mov rax, r15
+    pop rbp
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; fv_walk(rdi=form, rsi=bound, rdx=cut, rcx=acc) -> rax = acc'
+global fv_walk
+fv_walk:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi                        ; form
+    mov r12, rsi                          ; bound
+    mov r13, rdx                            ; cut
+    mov r14, rcx                              ; acc
+
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jnz .list
+
+    ; --- atom: only a symbol can be a variable reference ---
+    mov rdi, rbx
+    call is_symbol_p
+    test rax, rax
+    jz .done
+
+    mov rdi, rbx
+    mov rsi, r12
+    mov rdx, r13
+    call member_sym_until
+    test rax, rax
+    jnz .done                           ; shadowed: bound by this lambda
+    mov rdi, rbx
+    mov rsi, r14
+    call member_sym
+    test rax, rax
+    jnz .done                           ; already captured
+    mov rdi, rbx
+    mov rsi, r13
+    call member_sym
+    test rax, rax
+    jnz .add                            ; bound by an enclosing lambda
+    mov rdi, rbx
+    mov rsi, [capture_scope]
+    call frame_lookup
+    cmp rax, FRAME_NOT_FOUND
+    je .done                            ; a global — never captured
+.add:
+    mov rdi, rbx
+    mov rsi, r14
+    call cons
+    mov r14, rax
+    jmp .done
+
+.list:
+    mov rdi, rbx
+    call car_safe
+    mov r15, rax                        ; head
+
+    mov rdi, r15
+    mov rsi, kw_quote
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jnz .done                           ; (QUOTE ...) — data, not code
+
+    ; --- (LAMBDA params . body) ---
+    mov rdi, r15
+    mov rsi, kw_lambda
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_lambda
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r10, rax                        ; params
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; body
+    mov rsi, rax
+    mov rdi, r10
+    mov rdx, r12
+    mov rcx, r13
+    mov r8, r14
+    mov r9, rbx                         ; memo key = this form
+    call fv_lambda
+    mov r14, rax
+    jmp .done
+
+.not_lambda:
+    ; --- ($VAU (operands-param env-param) . body) — identical binding
+    ; structure to LAMBDA (compile_vau literally rewrites it to one) ---
+    mov rdi, r15
+    mov rsi, kw_vau
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_vau
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r10, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rsi, rax
+    mov rdi, r10
+    mov rdx, r12
+    mov rcx, r13
+    mov r8, r14
+    xor r9, r9                          ; synthetic lambda at compile time
+    call fv_lambda
+    mov r14, rax
+    jmp .done
+
+.not_vau:
+    ; --- (DEFMACRO name params . body) / (DEFEXPR name params . body) —
+    ; spec Q2: a transformer body is a lambda body over its own params.
+    mov rdi, r15
+    mov rsi, kw_defmacro
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jnz .macro_def
+    mov rdi, r15
+    mov rsi, kw_defexpr
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_macro_def
+.macro_def:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r10, rax                        ; params
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; body
+    mov rsi, rax
+    mov rdi, r10
+    mov rdx, r12
+    mov rcx, r13
+    mov r8, r14
+    xor r9, r9
+    call fv_lambda
+    mov r14, rax
+    jmp .done
+
+.not_macro_def:
+    ; --- (DEFINE name value) — spec Q2: fv(value). `name` is stored
+    ; into the symbol's own global value cell (compile_define), never
+    ; compiled as a variable reference, so it is not a use of whatever
+    ; enclosing binding shares its spelling.
+    mov rdi, r15
+    mov rsi, kw_define
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jz .not_define
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+    jmp .done
+
+.not_define:
+    ; --- (LET ((name init)...) . body) — PARALLEL binding: every init
+    ; is evaluated in the OUTER scope before any name is visible
+    ; (compile_let's own contract). So `(LET ((X 1) (Y X)) ...)` inside
+    ; a nested lambda refers to the *outer* X in Y's init and must
+    ; capture it — spec section 1.4's named classic mistake.
+    mov rdi, r15
+    mov rsi, kw_let
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jz .not_let
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r15, rax                        ; bindings cursor
+    push qword IMM_NIL                        ; [names]
+.let_bind:
+    mov rdi, r15
+    call is_cons
+    test rax, rax
+    jz .let_body
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call is_cons
+    test rax, rax
+    jz .let_name
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe                       ; init
+    mov rdi, rax
+    mov rsi, r12                          ; the OUTER bound set
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+.let_name:
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call is_cons
+    test rax, rax
+    jz .let_name_bare
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call car_safe
+    jmp .let_have_name
+.let_name_bare:
+    mov rdi, r15
+    call car_safe
+.let_have_name:
+    mov rdi, rax
+    mov rsi, [rsp]
+    call cons
+    mov [rsp], rax
+    mov rdi, r15
+    call cdr_safe
+    mov r15, rax
+    jmp .let_bind
+.let_body:
+    pop rdi                             ; names
+    mov rsi, r12
+    call append_lists
+    push rax                            ; [new bound]
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; body
+    mov rdi, rax
+    pop rsi
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk_list
+    mov r14, rax
+    jmp .done
+
+.not_let:
+    ; --- (LET* ((name init)...) . body) — SEQUENTIAL: each init sees
+    ; every name bound before it, so `(LET* ((X 1) (Y X)))` must NOT
+    ; capture an outer X.
+    mov rdi, r15
+    mov rsi, kw_let_star
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_let_star
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r15, rax                        ; bindings cursor
+    push r12                            ; [running bound set]
+.ls_bind:
+    mov rdi, r15
+    call is_cons
+    test rax, rax
+    jz .ls_body
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call is_cons
+    test rax, rax
+    jz .ls_name
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe                       ; init
+    mov rdi, rax
+    mov rsi, [rsp]                        ; everything bound so far
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call car_safe
+    jmp .ls_have_name
+.ls_name:
+    mov rdi, r15
+    call car_safe
+.ls_have_name:
+    mov rdi, rax
+    mov rsi, [rsp]
+    call cons
+    mov [rsp], rax
+    mov rdi, r15
+    call cdr_safe
+    mov r15, rax
+    jmp .ls_bind
+.ls_body:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; body
+    mov rdi, rax
+    pop rsi                             ; running bound set
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk_list
+    mov r14, rax
+    jmp .done
+
+.not_let_star:
+    ; --- (PROG (var...) item...) — vars bind over every item; an item
+    ; that is a bare symbol is a LABEL (compile_prog), not a reference.
+    mov rdi, r15
+    mov rsi, kw_prog
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jz .not_prog
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call param_names
+    mov rdi, rax
+    mov rsi, r12
+    call append_lists
+    push rax                            ; [new bound]
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov r15, rax                        ; items cursor
+.prog_loop:
+    mov rdi, r15
+    call is_cons
+    test rax, rax
+    jz .prog_out
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    call is_symbol_p
+    test rax, rax
+    jnz .prog_next                      ; a label
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    mov rsi, [rsp]
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+.prog_next:
+    mov rdi, r15
+    call cdr_safe
+    mov r15, rax
+    jmp .prog_loop
+.prog_out:
+    add rsp, 8
+    jmp .done
+
+.not_prog:
+    ; --- (HANDLER-CASE protected (head (var) . handler-body)) — the
+    ; clause head is never compiled (compile_handler_case ignores it,
+    ; matching on one fixed tag); `var` binds over the handler body.
+    mov rdi, r15
+    mov rsi, kw_handler_case
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jz .not_handler_case
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe                       ; protected form
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r15, rax                        ; clause
+    mov rdi, r15
+    call cdr_safe
+    mov rdi, rax
+    call car_safe                       ; (var) or NIL
+    mov rdi, rax
+    call param_names
+    mov rdi, rax
+    mov rsi, r12
+    call append_lists
+    push rax                            ; [new bound]
+    mov rdi, r15
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; handler body
+    mov rdi, rax
+    pop rsi
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk_list
+    mov r14, rax
+    jmp .done
+
+.not_handler_case:
+    ; --- a macro call: the literal call syntax never mentions the free
+    ; variables the EXPANSION references, so expand (once — through
+    ; macroexpand_once, so scan and compile share one invocation) and
+    ; walk that instead. Checked after every special form above, in the
+    ; same order compile_form itself dispatches.
+    mov rdi, r15
+    call macro_slot_of
+    cmp rax, IMM_NIL
+    je .not_macro_call
+    mov rsi, rax                        ; macro closure
+    mov rdi, rbx
+    call cdr_safe
+    mov rdx, rax                          ; raw args
+    mov rdi, rbx                            ; call form (memo key)
+    call macroexpand_once
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+    jmp .done
+
+.not_macro_call:
+    ; --- an operative call: spec open question Q1, answered "opaque".
+    ; compile_form bakes an operative call's operands into a (QUOTE
+    ; ...) literal — no operand is ever compiled as an expression, and
+    ; the operative's own EVAL runs in the global environment
+    ; (compile_vau's global_environment_sentinel), so no operand can
+    ; ever name a captured local. Descending anyway (what
+    ; scan_free_vars does) only over-captures.
+    mov rdi, r15
+    mov rsi, r12
+    call operative_head_p
+    test rax, rax
+    jnz .done
+
+    ; --- an ordinary application: head plus every argument ---
+    mov rdi, r15
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk
+    mov r14, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r14
+    call fv_walk_list
+    mov r14, rax
+
+.done:
+    mov rax, r14
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; analyze_lambda_captures(rdi=lambda form, rsi=enclosing scope)
+;   -> rax = this lambda's capture list (also memoized, along with one
+;      entry for every nested LAMBDA form reachable from its body).
+global analyze_lambda_captures
+analyze_lambda_captures:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov rax, [capture_scope]
+    push rax                            ; [saved capture_scope]
+    mov [capture_scope], rsi
+
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call param_names
+    mov r12, rax                        ; bound = this lambda's params,
+                                         ; cut = IMM_NIL (nothing lexically
+                                         ; encloses the root of an analysis;
+                                         ; its free names are resolved
+                                         ; against capture_scope instead)
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; body
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, IMM_NIL
+    mov rcx, IMM_NIL
+    call fv_walk_list
+    push rax
+    mov rdi, rbx
+    mov rsi, rax
+    call capture_memo_store
+    pop rax
+
+    pop rcx
+    mov [capture_scope], rcx
+    pop r12
+    pop rbx
+    ret
+
+; filter_resolvable(rdi=symbol list, rsi=scope) -> rax = the same list,
+; order preserved, minus any symbol that does not resolve in `scope`.
+; Belt-and-braces: compile_lambda's closure-construction copy loop emits
+; one `mov rax,[rbp+disp]` per captured name and has no representation
+; for "no disp", so this restores by construction the invariant
+; scan_free_vars used to give for free (it only ever added names it had
+; just resolved). The analysis should never produce an unresolvable
+; name; if it somehow does — a lambda form physically shared between
+; two different scopes, so that one memo entry serves both — dropping
+; it here is the only representable answer, and CAPTURE_CHECK below
+; catches the case in an assertion build.
+filter_resolvable:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    mov r12, rsi
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .nil
+    mov rdi, rbx
+    call car_safe
+    mov r13, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    mov rsi, r12
+    call filter_resolvable
+    push rax
+    mov rdi, r13
+    mov rsi, r12
+    call frame_lookup
+    cmp rax, FRAME_NOT_FOUND
+    pop rax
+    je .out
+    mov rdi, r13
+    mov rsi, rax
+    call cons
+    jmp .out
+.nil:
+    mov rax, IMM_NIL
+.out:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; lambda_capture_list(rdi=lambda form, rsi=enclosing scope) -> rax =
+; the ordered capture list compile_lambda uses for BOTH its free-slot
+; frame layout and its closure-construction copy loop. Memo hit for any
+; lambda the enclosing analysis already saw; a fresh analysis rooted
+; here otherwise — which is the right answer for the synthetic lambda
+; forms this compiler builds with cons at compile time
+; (compile_vau/compile_defmacro/compile_defexpr, compile_let's dynamic
+; rewrite, compile_unwind_protect's cleanup thunk): rooting an analysis
+; at one of those resolves its free names directly against the scope
+; that is current right now, which is exactly avail() for it.
+global lambda_capture_list
+lambda_capture_list:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    mov r12, rsi
+    mov rax, [capture_scope]
+    push rax                            ; [saved capture_scope]
+    mov [capture_scope], r12
+    mov rdi, rbx
+    call capture_memo_lookup
+    test rdx, rdx
+    jnz .have
+    mov rdi, rbx
+    mov rsi, r12
+    call analyze_lambda_captures
+.have:
+    mov rdi, rax
+    mov rsi, r12
+    call filter_resolvable
+    mov r13, rax
+%ifdef CAPTURE_CHECK
+    mov rdi, rbx
+    mov rsi, r12
+    mov rdx, r13
+    call capture_check_assert
+%endif
+    mov rax, r13
+    pop rcx
+    mov [capture_scope], rcx
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+%ifdef CAPTURE_CHECK
+; ---------------------------------------------------------------------
+; -DCAPTURE_CHECK: the oracle build (spec section 1.4's last paragraph).
+; After every capture list is computed, re-run the OLD shadowing-blind
+; scan_free_vars over the same body and same scope and assert
+;
+;   (a) new is a subset of old  — the new analysis never captures
+;       anything the old one would not have, so it can never introduce
+;       a slot the copy loop cannot fill; and
+;   (b) every symbol in old \ new is one the new analysis is entitled
+;       to drop: a name bound somewhere *inside* the lambda (shadowed
+;       over-capture, the whole point of the change), a DEFINE'd name,
+;       a PROG label, a HANDLER-CASE clause head, or a name occurring
+;       only inside an operative call's opaque operands.
+;
+; A violation is a trap (int3), not a message: this is a build you run
+; the suite under, and the first violating compile is the one you want
+; to be looking at in a debugger.
+
+; dropped_ok_p(rdi=lambda form, rsi=symbol) -> rax=1/0 — an independent
+; second implementation of "the new analysis was allowed to drop this",
+; deliberately written as a flat occurrence scan rather than by reusing
+; any part of fv_walk, so that a bug in fv_walk's bound-set bookkeeping
+; cannot excuse itself.
+dropped_ok_p:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi                        ; form
+    mov r12, rsi                          ; symbol
+    mov rdi, rbx
+    call is_cons
+    test rax, rax
+    jz .no
+    mov rdi, rbx
+    call car_safe
+    mov r13, rax                        ; head
+
+    mov rdi, r13
+    mov rsi, kw_quote
+    mov rdx, 5
+    call sym_is
+    test rax, rax
+    jnz .no
+
+    ; binder positions
+    mov rdi, r13
+    mov rsi, kw_lambda
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jnz .params_cadr
+    mov rdi, r13
+    mov rsi, kw_vau
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jnz .params_cadr
+    mov rdi, r13
+    mov rsi, kw_defmacro
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jnz .params_caddr
+    mov rdi, r13
+    mov rsi, kw_defexpr
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jnz .params_caddr
+    mov rdi, r13
+    mov rsi, kw_define
+    mov rdx, 6
+    call sym_is
+    test rax, rax
+    jnz .define_name
+    mov rdi, r13
+    mov rsi, kw_let
+    mov rdx, 3
+    call sym_is
+    test rax, rax
+    jnz .let_names
+    mov rdi, r13
+    mov rsi, kw_let_star
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jnz .let_names
+    mov rdi, r13
+    mov rsi, kw_prog
+    mov rdx, 4
+    call sym_is
+    test rax, rax
+    jnz .prog_names
+    mov rdi, r13
+    mov rsi, kw_handler_case
+    mov rdx, 12
+    call sym_is
+    test rax, rax
+    jnz .handler_names
+    jmp .subforms
+
+.params_cadr:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call param_names
+    mov rdi, r12
+    mov rsi, rax
+    call member_sym
+    test rax, rax
+    jnz .yes
+    jmp .subforms
+.params_caddr:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call param_names
+    mov rdi, r12
+    mov rsi, rax
+    call member_sym
+    test rax, rax
+    jnz .yes
+    jmp .subforms
+.define_name:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    cmp rax, r12
+    je .yes
+    jmp .subforms
+.let_names:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call binding_names
+    mov rdi, r12
+    mov rsi, rax
+    call member_sym
+    test rax, rax
+    jnz .yes
+    jmp .subforms
+.prog_names:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call param_names
+    mov rdi, r12
+    mov rsi, rax
+    call member_sym
+    test rax, rax
+    jnz .yes
+    ; a bare-symbol item is a label
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov r14, rax
+.prog_items:
+    mov rdi, r14
+    call is_cons
+    test rax, rax
+    jz .subforms
+    mov rdi, r14
+    call car_safe
+    cmp rax, r12
+    je .yes
+    mov rdi, r14
+    call cdr_safe
+    mov r14, rax
+    jmp .prog_items
+.handler_names:
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov r14, rax                        ; clause
+    mov rdi, r14
+    call car_safe
+    cmp rax, r12
+    je .yes                             ; the clause head, never compiled
+    mov rdi, r14
+    call cdr_safe
+    mov rdi, rax
+    call car_safe
+    mov rdi, rax
+    call param_names
+    mov rdi, r12
+    mov rsi, rax
+    call member_sym
+    test rax, rax
+    jnz .yes
+    jmp .subforms
+
+.subforms:
+    ; a macro call: the analysis saw the expansion, so judge that
+    mov rdi, r13
+    call macro_slot_of
+    cmp rax, IMM_NIL
+    je .not_macro
+    mov rsi, rax
+    mov rdi, rbx
+    call cdr_safe
+    mov rdx, rax
+    mov rdi, rbx
+    call macroexpand_once
+    mov rdi, rax
+    mov rsi, r12
+    call dropped_ok_p
+    jmp .out
+.not_macro:
+    ; an operative call: every operand is baked as QUOTE'd data, so any
+    ; name occurring only under one is legitimately not captured
+    mov rdi, r13
+    mov rsi, IMM_NIL
+    call operative_head_p
+    test rax, rax
+    jnz .yes
+    mov r14, rbx
+.walk:
+    mov rdi, r14
+    call is_cons
+    test rax, rax
+    jz .no
+    mov rdi, r14
+    call car_safe
+    mov rdi, rax
+    mov rsi, r12
+    call dropped_ok_p
+    test rax, rax
+    jnz .yes
+    mov rdi, r14
+    call cdr_safe
+    mov r14, rax
+    jmp .walk
+.yes:
+    mov rax, 1
+    jmp .out
+.no:
+    xor rax, rax
+.out:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; capture_check_assert(rdi=lambda form, rsi=scope, rdx=new capture list)
+capture_check_assert:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi                        ; lambda form
+    mov r12, rsi                          ; scope
+    mov r13, rdx                            ; new list
+
+    mov rdi, rbx
+    call cdr_safe
+    mov rdi, rax
+    call cdr_safe                       ; body
+    mov rdi, rax
+    mov rsi, r12
+    mov rdx, IMM_NIL
+    call scan_free_vars
+    mov r14, rax                        ; old list
+
+    ; (a) new subset old
+    mov r15, r13
+.subset:
+    mov rdi, r15
+    call is_cons
+    test rax, rax
+    jz .subset_ok
+    mov rdi, r15
+    call car_safe
+    mov rdi, rax
+    mov rsi, r14
+    call member_sym
+    test rax, rax
+    jz .violation
+    mov rdi, r15
+    call cdr_safe
+    mov r15, rax
+    jmp .subset
+.subset_ok:
+
+    ; (b) every dropped name is one we are entitled to drop
+    mov r15, r14
+.dropped:
+    mov rdi, r15
+    call is_cons
+    test rax, rax
+    jz .out
+    mov rdi, r15
+    call car_safe
+    push rax
+    mov rdi, rax
+    mov rsi, r13
+    call member_sym
+    test rax, rax
+    jnz .dropped_next
+    mov rdi, rbx
+    mov rsi, [rsp]
+    call dropped_ok_p
+    test rax, rax
+    jz .violation_pop
+.dropped_next:
+    add rsp, 8
+    mov rdi, r15
+    call cdr_safe
+    mov r15, rax
+    jmp .dropped
+
+.violation_pop:
+    add rsp, 8
+.violation:
+    int3
+.out:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+%endif
+
+; closure_nfree_tagged(rdi=tagged value) -> rax = fixnum count of the
+; free variables a compiled closure (or $VAU operative — same layout)
+; actually captured, or IMM_NIL for anything else. (CLOSURE-NFREE f) is
+; a debug/introspection primitive in the same spirit as RECORD-BRAND
+; and HASH-CODE: it reads one representation field, [raw+24], that
+; nothing else in the language exposes. It exists to make the capture
+; analysis above *testable* — over-capture is invisible to results by
+; construction (an over-captured slot is simply never read), so without
+; this a shadowing fix could only be observed as "the same answer as
+; before", which is not a test.
+global closure_nfree_tagged
+closure_nfree_tagged:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .no
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_CLOSURE
+    je .yes
+    cmp qword [rax], HDR_OPERATIVE
+    jne .no
+.yes:
+    mov rax, [rax+24]
+    TO_FIXNUM rax
+    ret
+.no:
+    mov rax, IMM_NIL
+    ret
+
 
 ; --- primitive list/predicate ops: compiled calls into the kernel's own
 ; host routines (car/cdr/cons), reachable from Lamedh source for the
@@ -2467,6 +4014,26 @@ compile_lambda:
     push r14
     push r15
     mov rbx, rdi
+
+    ; --- capture analysis (docs/spec-tco-capture-gc.md section 1.2) ---
+    ; One shadowing-aware answer, computed (or memo-read) exactly once,
+    ; and kept on this function's own host stack across the whole body
+    ; compile — so the frame-sizing pass below and the closure-
+    ; construction copy loop at the very end read the identical list
+    ; object rather than each re-deriving one and trusting the two
+    ; derivations to agree (which is what the two scan_free_vars calls
+    ; this replaces did, and what made every macro in the body run its
+    ; transformer once per scan). Done before the jmp-over is emitted
+    ; because the walk can expand macros, and a transformer that
+    ; re-enters the compiler (EVAL) emits its own thunk into the code
+    ; heap — which must land before this lambda's own entry point, not
+    ; spliced into the middle of it.
+    mov rdi, rbx
+    mov rsi, [current_scope]
+    call lambda_capture_list
+    push rax                              ; [captures]
+
+    mov rdi, rbx
     call cadr
     mov rdi, rax
     call split_rest_params
@@ -2497,11 +4064,11 @@ compile_lambda:
     call list_length
     mov r14, rax                                ; nparams
 
-    mov rdi, r13
-    mov rsi, [current_scope]
-    mov rdx, IMM_NIL
-    call scan_free_vars
-    mov r12, rax                                  ; free_syms
+    mov r12, [rsp+16]                             ; free_syms (the capture
+                                                   ; list computed at entry:
+                                                   ; [param_frame,
+                                                   ;  jmp_over_site,
+                                                   ;  captures])
 
     mov rdi, r12
     call list_length
@@ -2898,14 +4465,12 @@ compile_lambda:
     mov sil, REG_RBX
     call emit_store_based
 
-    ; re-derive free_syms (same deterministic result) to copy each
-    ; free var's *current* value, from the enclosing scope, into the
-    ; closure's captured array.
-    mov rdi, r13
-    mov rsi, [current_scope]
-    mov rdx, IMM_NIL
-    call scan_free_vars
-    mov r12, rax                                        ; free_syms cursor
+    ; Copy each free var's *current* value, from the enclosing scope,
+    ; into the closure's captured array — walking the very same list
+    ; object the frame layout above was built from ([rsp] now, after
+    ; the new_scope/param_frame/jmp_over_site triple was discarded), so
+    ; slot i here is by construction the same name as slot i there.
+    mov r12, [rsp]                                      ; free_syms cursor
     xor r13, r13                                           ; i
 .copy_loop:
     cmp r12, IMM_NIL
@@ -2940,6 +4505,7 @@ compile_lambda:
     mov edi, TAG_HEAPOBJ
     call emit_or_rax_imm32                       ; target: rax = tagged closure — final result
 
+    add rsp, 8                                     ; discard captures
     pop r15
     pop r14
     pop r13
@@ -6630,6 +8196,28 @@ compile_form:
 
 .not_record_fields:
     mov rdi, r12
+    mov rsi, kw_closure_nfree
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_closure_nfree
+    ; (CLOSURE-NFREE f) — how many free variables the closure f actually
+    ; captured, straight out of its own HDR_CLOSURE [24] field
+    ; (closure_nfree_tagged); NIL for a non-closure. A debug/
+    ; introspection primitive, not a KERNEL.md form: it exists so the
+    ; capture analysis (analyze_lambda_captures, above) can be tested
+    ; for what it *doesn't* capture. An over-captured slot is never
+    ; read, so without this every shadowing bug and every shadowing fix
+    ; alike prints the same right answer.
+    mov rdi, r13
+    call car
+    lea rsi, [rel closure_nfree_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_closure_nfree:
+    mov rdi, r12
     mov rsi, kw_boundp
     mov rdx, 6
     call sym_is
@@ -7483,6 +9071,7 @@ compile_thunk:
     cmp qword [compile_nesting_depth], 0
     jne .no_memo_clear
     call clear_macroexpand_memo
+    call clear_capture_memo
 .no_memo_clear:
     inc qword [compile_nesting_depth]
 

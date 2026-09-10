@@ -11,7 +11,14 @@ BUILD=build
 mkdir -p "$BUILD"
 
 AS=nasm
-ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/"
+# EXTRA_ASFLAGS lets the whole suite be re-run under an %ifdef-gated
+# assertion build, e.g.
+#   EXTRA_ASFLAGS=-DCAPTURE_CHECK bash tests/run.sh
+# which cross-checks every capture list the new analysis produces
+# against the old scan_free_vars oracle and traps (int3, i.e. a case
+# exiting on SIGTRAP) on a violation — docs/spec-tco-capture-gc.md
+# section 1.4.
+ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/ ${EXTRA_ASFLAGS:-}"
 LD=ld
 
 CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/ports.asm src/codegen.asm src/compiler.asm"
