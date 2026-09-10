@@ -3591,41 +3591,52 @@ emit_check_callable:
     add rsp, 32                                                             ; discard [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
     ret
 
-; emit_ic_trampoline(rdi=cell_addr, rsi=mode) -> rax = trampoline_entry
-; (a target code address).
+; emit_ic_trampoline(rdi=cell_addr, rsi=mode, rdx=field_addr) -> rax =
+; trampoline_entry (a target code address). rdx is meaningful only when
+; mode=1; mode=0 callers may pass anything (compile_call's mode=0 call
+; site passes junk in rdx, matching its own "unused" status there).
 ;
-; Factored out of compile_call's named-global-call path (docs/spec-tco-
-; capture-gc.md section 2.6 step 2) with NO behavior change: this is
-; exactly the code that used to live inline there, just wrapped in its
-; own prologue/epilogue. Emits, at the current codegen position: a
-; forward jmp (so ordinary fallthrough control flow at runtime skips
-; the trampoline body — the same "jmp over co-located data/code" trick
-; compile_lambda's own thunk header uses), the trampoline body itself
-; (resolve cell_addr's current value, patch the ORIGINAL call site's
-; rel32 operand to target the resolved code directly, then transfer
-; control there), and patches the forward jmp to land just past the
-; body. The caller still owns emitting the call site itself and
-; patching it to target the returned trampoline_entry — this only
-; builds the trampoline, once, immediately after the jmp-over site.
+; Originally factored out of compile_call's named-global-call path
+; (docs/spec-tco-capture-gc.md section 2.6 step 2) with no behavior
+; change; step 4 then added the mode=1 variant below. Emits, at the
+; current codegen position: a forward jmp (so ordinary fallthrough
+; control flow at runtime skips the trampoline body — the same "jmp
+; over co-located data/code" trick compile_lambda's own thunk header
+; uses), the trampoline body itself (resolve cell_addr's current
+; value, patch the ORIGINAL call site's rel32 operand to target the
+; resolved code directly, then transfer control there), and patches
+; the forward jmp to land just past the body. The caller still owns
+; emitting the call site itself and patching it to target the returned
+; trampoline_entry — this only builds the trampoline, once,
+; immediately after the jmp-over site.
 ;
-; mode (rsi) is accepted but unused until a later step adds mode=1: the
-; trampoline body below discovers the call site's rel32 field address
-; at RUNTIME by reading the return address off the stack (this
-; trampoline is only ever reached via an ordinary `call`, so the
-; return address sitting on the stack at entry is always exactly four
-; bytes past that field) — correct for mode=0 (an ordinary, non-tail
-; call site), but wrong for a tail-call variant entered via `jmp`
-; instead of `call`: there the "return address" on the stack belongs
-; to the CALLER's own caller, not this call site, so patching relative
-; to it would silently corrupt an unrelated call site. mode=1 (added
-; when tail-call codegen itself lands) will instead bake the call
-; site's own field address as a compile-time-known immediate, the same
-; technique emit_install_catch_frame already uses for catch-frame
-; resume addresses.
+; mode=0: an ordinary, non-tail call site, always reached via `call` —
+; the trampoline body discovers the call site's own rel32 field
+; address at RUNTIME by reading the return address off the stack (the
+; return address sitting on the stack at trampoline entry is always
+; exactly four bytes past that field, since this trampoline is only
+; ever reached via a `call` at that exact site).
+;
+; mode=1: a tail call site, reached via `jmp` instead of `call` — the
+; "return address" sitting on the stack at entry belongs to some
+; unrelated, already-in-progress call higher up, not to this call
+; site, so deriving field_addr from it would silently corrupt that
+; unrelated call site's own patch target (a delayed, wrong-answer bug
+; surfacing only on that other call site's NEXT invocation — the
+; failure mode this whole mode split exists to avoid). mode=1 instead
+; bakes rdx (the call site's own field address, already known at
+; compile time — the caller emitted the jmp instruction and got this
+; back from emit_jmp32 before ever calling this routine) as an
+; immediate, the same technique emit_install_catch_frame already uses
+; for catch-frame resume addresses.
 emit_ic_trampoline:
     push r12
+    push r13
     push r14
+    push r15
     mov r14, rdi                              ; cell_addr
+    mov r13, rsi                              ; mode
+    mov r15, rdx                              ; field_addr (mode=1 only)
 
     call emit_jmp32
     mov r12, rax                              ; jmp_over_site
@@ -3640,12 +3651,28 @@ emit_ic_trampoline:
     mov dil, REG_RAX
     call emit_push_reg                              ; save nargs
 
+    ; mode 0 (an ordinary, non-tail call site, always reached via
+    ; `call`): the call site's own field_addr is discovered at RUNTIME
+    ; from the return address already sitting on the stack. mode 1 (a
+    ; tail call site, reached via `jmp` — the stack holds some
+    ; unrelated caller's return address instead) instead uses
+    ; field_addr as a compile-time-known immediate, baked in by
+    ; whoever built this trampoline (the same technique
+    ; emit_install_catch_frame already uses for resume addresses).
+    cmp r13, 1
+    je .baked_field_addr
     mov dil, REG_RAX
     mov esi, 8                                        ; return address is now
     call emit_load_rsp_disp8                            ; one slot deeper, under
                                                          ; the nargs we just saved
     mov edi, 4
     call emit_sub_rax_imm32                            ; rax = field_addr
+    jmp .have_field_addr
+.baked_field_addr:
+    mov dil, REG_RAX
+    mov rsi, r15
+    call emit_mov_reg_imm64                            ; rax = field_addr (baked)
+.have_field_addr:
 
     mov dil, REG_RAX
     call emit_push_reg                                    ; save field_addr
@@ -3715,7 +3742,9 @@ emit_ic_trampoline:
     call patch_rel32                                                          ; jmp-over -> here
 
     pop rax                                     ; trampoline_entry (return value)
+    pop r15
     pop r14
+    pop r13
     pop r12
     ret
 
@@ -3729,25 +3758,27 @@ emit_ic_trampoline:
 ; direct call, no indirection, no re-resolution. Anything else (a local
 ; variable holding a closure, a literal LAMBDA) goes through one indirect
 ; call via the closure's stored code pointer.
-; rdx=tail is landing-plan step 1 plumbing only (docs/spec-tco-capture-
-; gc.md section 2.6): accepted here but not yet acted on — every call
-; site below still emits an ordinary call/indirect-call, never a
-; tail jmp. Real tail-call codegen is a later step.
+; rdx=tail (docs/spec-tco-capture-gc.md section 2.6): when this call is
+; itself in tail position, current_lambda_depth is nonzero (never
+; tail-jump while compiling a top-level thunk), and nargs<=3 (v0
+; scope), BOTH paths below emit a genuine tail call — `leave` +
+; `emit_jmp_reg` for the indirect path, a `jmp`-based call site with a
+; mode=1 baked-address trampoline for the named-global path — reusing
+; this function's own frame instead of growing the native stack.
+; Anything not meeting all three conditions takes the unchanged
+; ordinary call/indirect-call path.
 global compile_call
 compile_call:
     push rbx
     push r12
     push r13
     push r14
+    push r15
     mov rbx, rdi                    ; operator form
     mov r12, rsi                      ; args
-    mov r14, rdx                      ; tail flag — live only through
-                                       ; .indirect_path (docs/spec-tco-
-                                       ; capture-gc.md section 2.6 step
-                                       ; 3); the named-global path below
-                                       ; overwrites r14 with cell_addr
-                                       ; before using it, since named-
-                                       ; path tail calls are a later step
+    mov r15, rdx                      ; tail flag, live through both paths
+                                       ; below (docs/spec-tco-capture-
+                                       ; gc.md section 2.6 steps 3-4)
 
     mov rax, rbx
     and rax, TAG_MASK
@@ -3801,11 +3832,65 @@ compile_call:
     mov dil, REG_RAX
     call emit_mov_reg_imm64
 
+    ; --- named tail call (docs/spec-tco-capture-gc.md section 2.6 step
+    ; 4): same three compile-time conditions as .indirect_path's own
+    ; tail check (this call is itself tail, current_lambda_depth is
+    ; nonzero, nargs<=3), but the call SITE itself must become a `jmp`
+    ; here rather than a `call` — a `call`'s own return address would
+    ; grow the native stack on every iteration exactly like the
+    ; un-fixed indirect path used to. That in turn means the
+    ; trampoline's usual trick of finding its own patch site by reading
+    ; the return address off the stack no longer works (a `jmp`-entered
+    ; trampoline finds some unrelated caller's return address there
+    ; instead — emit_ic_trampoline's own mode=1 comment has the full
+    ; danger), so this path uses mode=1: emit the `jmp` first (getting
+    ; its field_addr back, at compile time, from emit_jmp32 itself,
+    ; before the trampoline that needs to bake it even exists), then
+    ; build a mode=1 trampoline around that known field_addr.
+    cmp r15, 1
+    jne .n_ordinary_call
+    cmp qword [current_lambda_depth], 0
+    je .n_ordinary_call
+    cmp r13, 3
+    ja .n_ordinary_call
+
+    ; Tear down THIS function's own frame before transferring control —
+    ; exactly like .indirect_path's own emit_leave, and for the same
+    ; reason: args are already popped into their final registers above,
+    ; so nothing below this function's entry-time rbp is needed again.
+    ; Forgetting this (an earlier draft of this patch did) leaves the
+    ; callee building a new frame ON TOP of this one instead of reusing
+    ; it — the call stack still grows on every iteration exactly as
+    ; before this feature, and once the callee's own `leave`/`ret` runs
+    ; it returns through a return address this function's own `call`
+    ; site never actually set up as its caller expected, corrupting the
+    ; whole chain (the segfaults this exact mistake produced, caught by
+    ; tests/cases/016_rest_params.asm's F, whose body's only form is a
+    ; tail call to a different named function, before this comment was
+    ; written).
+    call emit_leave
+
+    call emit_jmp32
+    mov r13, rax                                ; field_addr (nargs, r13's
+                                                 ; old value, is never
+                                                 ; needed again on this
+                                                 ; path — no 4+ cleanup
+                                                 ; is possible when
+                                                 ; nargs<=3 is already
+                                                 ; required above)
+    mov rdi, r14                                  ; cell_addr
+    mov rsi, 1                                      ; mode 1
+    mov rdx, r13                                      ; field_addr
+    call emit_ic_trampoline
+    mov rdi, r13                                        ; field_addr
+    mov rsi, rax                                          ; trampoline_entry
+    call patch_rel32                                        ; jmp site -> trampoline
+    jmp .out
+
+.n_ordinary_call:
     mov rdi, r14                              ; cell_addr
-    mov rsi, 0                                  ; mode 0: today's only mode
-                                                   ; (docs/spec-tco-capture-gc.md
-                                                   ; section 2.6 step 2 — a
-                                                   ; later step adds mode=1)
+    mov rsi, 0                                  ; mode 0
+    mov rdx, 0                                    ; unused at mode 0
     call emit_ic_trampoline
     mov r12, rax                                    ; trampoline_entry
 
@@ -3898,7 +3983,7 @@ compile_call:
     ; --- indirect tail call (docs/spec-tco-capture-gc.md section 2.6
     ; step 3): reuse this function's own frame instead of growing the
     ; native stack, when it's actually safe to. Three compile-time
-    ; conditions, all required: (1) r14 (this call's own tail flag, the
+    ; conditions, all required: (1) r15 (this call's own tail flag, the
     ; rdx compile_call was given) is 1 — the call's VALUE must be the
     ; enclosing function's own return value with nothing left to do
     ; afterward; (2) [current_lambda_depth] is nonzero — the defensive
@@ -3914,7 +3999,7 @@ compile_call:
     ; survive `leave` untouched (it only touches rsp/rbp) — a bare
     ; `emit_jmp_reg` after it is the entire difference from the
     ; ordinary call path just below.
-    cmp r14, 1
+    cmp r15, 1
     jne .i_ordinary_call
     cmp qword [current_lambda_depth], 0
     je .i_ordinary_call
@@ -3945,6 +4030,7 @@ compile_call:
 .i_no_cleanup:
 
 .out:
+    pop r15
     pop r14
     pop r13
     pop r12
