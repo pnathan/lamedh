@@ -17,10 +17,163 @@
 ; take any number of body forms directly, the same way LAMBDA's own
 ; body already does.
 
+; --- &OPTIONAL / &KEY parameter lists ---------------------------------
+;
+; (DEFUN F (A &OPTIONAL B (C 10) &KEY (D 2) E &REST R) ...) expands to a
+; variadic LAMBDA (only &REST is a real kernel parameter-list feature —
+; see the file header above) plus a LET* prologue that peels optionals
+; positionally off the rest-list (a later default may reference an
+; earlier parameter, since LET* binds sequentially), binds &REST to
+; whatever remains after that peeling, and reads &KEY parameters from
+; that same remainder as a :KEYWORD plist. A bare LAMBDA still supports
+; only &REST; this sugar is DEFUN-level only, ported line-for-line in
+; spirit from the reference implementation's own lib/00-core.lisp
+; ($split-params/$opt-bindings/$key-bindings/$extended-lambda) minus
+; the JIT/purity machinery this project doesn't have. Every helper
+; below is plain-arg-or-&REST only (no &OPTIONAL/&KEY of its own), so
+; none of them depend on the very DEFMACRO they help implement, and
+; each is built from CONS/QUOTE templates rather than backquote, which
+; is itself only usable once QQ-EXPAND is defined much later in this
+; file (see that section's own header comment).
+
+; $PARAMS-EXTENDED-P(ps) -> T iff ps contains &OPTIONAL or &KEY.
+(DEFINE $PARAMS-EXTENDED-P
+  (LAMBDA (PS)
+    (IF (ATOM PS)
+        (QUOTE ())
+        (IF (EQ (CAR PS) (QUOTE &OPTIONAL))
+            T
+            (IF (EQ (CAR PS) (QUOTE &KEY))
+                T
+                ($PARAMS-EXTENDED-P (CDR PS)))))))
+
+; $KEY-LOOKUP(plist key default) — a plain :KEYWORD-plist lookup, EQ on
+; the keyword. Generated code (from $KEY-BINDINGS below) calls this at
+; runtime once per &KEY parameter; it is not itself part of any macro
+; expansion.
+(DEFINE $KEY-LOOKUP
+  (LAMBDA (PLIST KEY DEFAULT)
+    (IF (ATOM PLIST)
+        DEFAULT
+        (IF (EQ (CAR PLIST) KEY)
+            (CAR (CDR PLIST))
+            ($KEY-LOOKUP (CDR (CDR PLIST)) KEY DEFAULT)))))
+
+; $PARAM-KEYWORD(sym) -> the :SYM keyword symbol a caller passes this
+; &KEY parameter's value under. STRING-APPEND/PRINC-TO-STRING, not
+; CONCAT, since CONCAT is itself a DEFUN defined later in this file —
+; using it here would make $PARAM-KEYWORD depend on load order.
+(DEFINE $PARAM-KEYWORD
+  (LAMBDA (SYM) (INTERN (STRING-APPEND ":" (PRINC-TO-STRING SYM)))))
+
+; $SPLIT-PARAMS(ps mode fixed opts rest keys) -> (fixed opts rest keys),
+; each of opts/keys normalized to a (sym default) pair (an atom spec
+; like plain B becomes (B ())). mode starts as (QUOTE FIX) and switches
+; to OPT/KEY on seeing &OPTIONAL/&KEY; &REST is recognized in any mode
+; and consumes exactly the one symbol after it.
+(DEFINE $SPLIT-PARAMS
+  (LAMBDA (PS MODE FIXED OPTS REST KEYS)
+    (IF (ATOM PS)
+        (CONS FIXED (CONS OPTS (CONS REST (CONS KEYS (QUOTE ())))))
+        (IF (EQ (CAR PS) (QUOTE &OPTIONAL))
+            ($SPLIT-PARAMS (CDR PS) (QUOTE OPT) FIXED OPTS REST KEYS)
+            (IF (EQ (CAR PS) (QUOTE &KEY))
+                ($SPLIT-PARAMS (CDR PS) (QUOTE KEY) FIXED OPTS REST KEYS)
+                (IF (EQ (CAR PS) (QUOTE &REST))
+                    ($SPLIT-PARAMS (CDR (CDR PS)) MODE FIXED OPTS
+                                   (CAR (CDR PS)) KEYS)
+                    (IF (EQ MODE (QUOTE FIX))
+                        ($SPLIT-PARAMS (CDR PS) MODE
+                                       (APPEND FIXED (CONS (CAR PS) (QUOTE ())))
+                                       OPTS REST KEYS)
+                        (IF (EQ MODE (QUOTE OPT))
+                            ($SPLIT-PARAMS (CDR PS) MODE FIXED
+                                           (APPEND OPTS
+                                                   (CONS (IF (ATOM (CAR PS))
+                                                             (CONS (CAR PS) (CONS (QUOTE ()) (QUOTE ())))
+                                                             (CAR PS))
+                                                         (QUOTE ())))
+                                           REST KEYS)
+                            ($SPLIT-PARAMS (CDR PS) MODE FIXED OPTS REST
+                                           (APPEND KEYS
+                                                   (CONS (IF (ATOM (CAR PS))
+                                                             (CONS (CAR PS) (CONS (QUOTE ()) (QUOTE ())))
+                                                             (CAR PS))
+                                                         (QUOTE ()))))))))))))
+
+; $OPT-BINDINGS(opts g) -> a LET*-bindings list, two per optional: the
+; parameter itself (CAR g, if g is still a cons — i.e. an argument was
+; actually supplied there — else its default expression), then a
+; rebinding of g to (CDR g) or NIL. The rebinding is why this must run
+; inside a LET* (sequential), not a LET: each later optional's own
+; "was there an argument here" test reads the g this same list already
+; advanced. "g is still a cons" is tested as (NOT (ATOM g)), not
+; (CONSP g) — CONSP isn't a real primitive in this kernel's own small
+; prelude (ASSOC, above, makes exactly the same choice for the same
+; reason).
+(DEFINE $OPT-BINDINGS
+  (LAMBDA (OPTS G)
+    (IF (ATOM OPTS)
+        (QUOTE ())
+        (CONS (CONS (CAR (CAR OPTS))
+                    (CONS (CONS (QUOTE IF)
+                                (CONS (CONS (QUOTE NOT) (CONS (CONS (QUOTE ATOM) (CONS G (QUOTE ()))) (QUOTE ())))
+                                      (CONS (CONS (QUOTE CAR) (CONS G (QUOTE ())))
+                                            (CONS (CAR (CDR (CAR OPTS))) (QUOTE ())))))
+                          (QUOTE ())))
+              (CONS (CONS G
+                          (CONS (CONS (QUOTE IF)
+                                      (CONS (CONS (QUOTE NOT) (CONS (CONS (QUOTE ATOM) (CONS G (QUOTE ()))) (QUOTE ())))
+                                            (CONS (CONS (QUOTE CDR) (CONS G (QUOTE ())))
+                                                  (CONS (QUOTE ()) (QUOTE ())))))
+                                (QUOTE ())))
+                    ($OPT-BINDINGS (CDR OPTS) G))))))
+
+; $KEY-BINDINGS(keys g) -> a LET*-bindings list, one per &KEY parameter,
+; each reading g (by now the remainder after every optional has been
+; peeled off it, i.e. the true &REST tail) as a :KEYWORD plist via
+; $KEY-LOOKUP.
+(DEFINE $KEY-BINDINGS
+  (LAMBDA (KEYS G)
+    (IF (ATOM KEYS)
+        (QUOTE ())
+        (CONS (CONS (CAR (CAR KEYS))
+                    (CONS (CONS (QUOTE $KEY-LOOKUP)
+                                (CONS G
+                                      (CONS (CONS (QUOTE QUOTE)
+                                                  (CONS ($PARAM-KEYWORD (CAR (CAR KEYS))) (QUOTE ())))
+                                            (CONS (CAR (CDR (CAR KEYS))) (QUOTE ())))))
+                          (QUOTE ())))
+              ($KEY-BINDINGS (CDR KEYS) G)))))
+
+; $EXTENDED-LAMBDA(params body) -> (LAMBDA (fixed... &REST g) (LET*
+; (bindings...) . body)) — the whole point: only FIXED and a single
+; synthetic &REST parameter ever reach the real kernel LAMBDA; every
+; &OPTIONAL/&KEY parameter becomes an ordinary lexical LET* binding
+; computed from that &REST tail.
+(DEFINE $EXTENDED-LAMBDA
+  (LAMBDA (PARAMS BODY)
+    (LET* ((G (GENSYM))
+           (SPLIT ($SPLIT-PARAMS PARAMS (QUOTE FIX) (QUOTE ()) (QUOTE ()) (QUOTE ()) (QUOTE ())))
+           (FIXED (CAR SPLIT))
+           (OPTS (CAR (CDR SPLIT)))
+           (REST-SYM (CAR (CDR (CDR SPLIT))))
+           (KEYS (CAR (CDR (CDR (CDR SPLIT)))))
+           (BINDINGS (APPEND ($OPT-BINDINGS OPTS G)
+                             (APPEND (IF REST-SYM
+                                         (CONS (CONS REST-SYM (CONS G (QUOTE ()))) (QUOTE ()))
+                                         (QUOTE ()))
+                                     ($KEY-BINDINGS KEYS G)))))
+      (CONS (QUOTE LAMBDA)
+            (CONS (APPEND FIXED (CONS (QUOTE &REST) (CONS G (QUOTE ()))))
+                  (CONS (CONS (QUOTE LET*) (CONS BINDINGS BODY)) (QUOTE ())))))))
+
 (DEFMACRO DEFUN (NAME PARAMS &REST BODY)
   (CONS (QUOTE DEFINE)
         (CONS NAME
-              (CONS (CONS (QUOTE LAMBDA) (CONS PARAMS BODY))
+              (CONS (IF ($PARAMS-EXTENDED-P PARAMS)
+                        ($EXTENDED-LAMBDA PARAMS BODY)
+                        (CONS (QUOTE LAMBDA) (CONS PARAMS BODY)))
                     (QUOTE ())))))
 
 (DEFUN NOT (X) (IF X (QUOTE ()) T))

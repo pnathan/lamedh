@@ -251,6 +251,45 @@ uses to build CADR/CADDR/etc."
 (NEWLINE)
 (PRINT (CONCAT "A" "B" "C"))
 (NEWLINE)
+; &OPTIONAL/&KEY parameter lists (DEFUN-level sugar, lib/prelude.lisp's
+; $EXTENDED-LAMBDA) plus the keyword-self-evaluation compiler fix
+; (compile_form) they depend on -- a bare :FOO must reach a callee as
+; the tagged keyword symbol itself, not an evaluated (and previously
+; always-unbound) variable reference.
+(DEFUN OPT1 (A &OPTIONAL B) (LIST A B))
+(PRINT (OPT1 1))
+(NEWLINE)
+(PRINT (OPT1 1 2))
+(NEWLINE)
+; later defaults may reference earlier parameters (LET* is sequential)
+(DEFUN OPT2 (A &OPTIONAL (B 10) (C (+ B 1))) (LIST A B C))
+(PRINT (OPT2 1))
+(NEWLINE)
+(PRINT (OPT2 1 2))
+(NEWLINE)
+(PRINT (OPT2 1 2 99))
+(NEWLINE)
+(DEFUN KEY1 (&KEY (D 2) E) (LIST D E))
+(PRINT (KEY1))
+(NEWLINE)
+(PRINT (KEY1 :D 5))
+(NEWLINE)
+(PRINT (KEY1 :E 7))
+(NEWLINE)
+(PRINT (KEY1 :D 5 :E 7))
+(NEWLINE)
+; &OPTIONAL, &KEY and &REST together: &REST binds to the same raw
+; remainder &KEY parses from, matching Common Lisp's own convention.
+(DEFUN OPT-KEY-REST (A &OPTIONAL B &KEY (D 2) &REST R) (LIST A B D R))
+(PRINT (OPT-KEY-REST 1))
+(NEWLINE)
+(PRINT (OPT-KEY-REST 1 2 (QUOTE :D) 9 (QUOTE :EXTRA) 1))
+(NEWLINE)
+; a keyword self-evaluates identically quoted or bare, and two
+; references to the same keyword are EQ (one interned symbol, not a
+; fresh one per occurrence).
+(PRINT (LIST (EQ :FOO :FOO) (EQ :FOO (QUOTE :FOO))))
+(NEWLINE)
 (PRINT (GC-VERIFY))
 (NEWLINE)
 (GC-COLLECT)
@@ -322,6 +361,18 @@ a docstring
 (B . 2)
 ()
 ABC
+(1 ())
+(1 2)
+(1 10 11)
+(1 2 3)
+(1 2 99)
+(2 ())
+(5 ())
+(2 7)
+(5 7)
+(1 () 2 ())
+(1 2 9 (:D 9 :EXTRA 1))
+(T T)
 T
 T'
     got_out=$("$runner_bin" "$prelude_prog")

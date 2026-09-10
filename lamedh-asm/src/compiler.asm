@@ -6997,6 +6997,23 @@ compile_form:
     UNTAG_PTR rax
     cmp qword [rax], HDR_SYMBOL
     jne .literal
+    ; A keyword — a symbol whose own name starts with ":", e.g. :FOO —
+    ; self-evaluates, exactly like the reference implementation's own
+    ; evaluator (core.rs's check_bindable comment: "keywords are
+    ; self-evaluating"). Unconditional and unaffected by any lexical
+    ; binding: nothing in this kernel's own compiled code should ever
+    ; be able to shadow a keyword's identity, matching Common Lisp's
+    ; own keyword package semantics (every :FOO is interned once,
+    ; always bound to itself). This is the piece &KEY parameter lists
+    ; (lib/prelude.lisp's $EXTENDED-LAMBDA) actually depend on: a call
+    ; site writing (F :D 5) needs :D to reach the callee as the tagged
+    ; keyword symbol itself, not as an evaluated (and, before this,
+    ; always-unbound) variable reference.
+    cmp qword [rax+8], 0                    ; name_len
+    je .not_keyword
+    cmp byte [rax+48], ':'                    ; first name byte
+    je .literal
+.not_keyword:
     ; local or captured-free reference?
     mov rdi, rbx
     mov rsi, [current_scope]

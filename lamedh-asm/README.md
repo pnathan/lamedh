@@ -1048,8 +1048,9 @@ concrete reason it landed last of the three features in its spec:
   trampoline variant so the self-patching mechanism stays correct once
   the call is no longer reached via `call`) get real frame reuse; a
   1,000,000-deep tail-recursive loop through either path no longer
-  grows the native stack. `&OPTIONAL`/`&KEY` parameters and the GC
-  described in the same spec are still not implemented.
+  grows the native stack. (`&OPTIONAL`/`&KEY` parameters are a separate,
+  since-landed feature — see "Known gaps" below — not part of this
+  spec.)
 - `&REST` parameters are supported for any fixed-parameter count,
   including 0, 1, or 2 (`(LAMBDA (&REST ALL) ...)` and
   `(LAMBDA (A &REST MORE) ...)` now work, not only nfixed>=3) —
@@ -2001,14 +2002,15 @@ bugs no existing test had exercised:
   and `PORT-STDOUT*`, at the kernel-primitive level (no prelude);
   `tests/run.sh`'s `stdlib_conformance` check now also opens a memory
   port and reads two lines back through the qualified `PORTS:`/`TEXT:`
-  API. **Known gap, found but not yet closed**: `32-base64.lisp`
-  through `36-mime.lisp` load (compile without trapping) but their own
-  `ENCODE`/`DECODE`-style functions take `&KEY`/`&OPTIONAL` parameters
-  — a parameter-list feature this kernel's `LAMBDA`/`DEFUN` do not
-  implement at all (confirmed: calling `(base64:encode ...)` traps) —
-  so these five files are loadable but not yet actually usable; adding
-  `&KEY`/`&OPTIONAL` is real, separate, not-yet-attempted work (see
-  "Known gaps" below).
+  API. **Update**: `&OPTIONAL`/`&KEY` parameter lists themselves are now
+  implemented (see "Known gaps" below) — but `32-base64.lisp` through
+  `36-mime.lisp`'s own `ENCODE`/`DECODE`-style functions are still not
+  callable through `stdlib_conformance`, for an unrelated reason: loading
+  the reference's own `lib/00-core.lisp` overwrites this kernel's `DEFUN`
+  with a version that depends on other not-yet-implemented primitives
+  (`JIT-OPTIMIZE`, a real `CONSP`, `PRIN1-TO-STRING`, catchable `ERROR`).
+  Confirmed by direct reproduction that this is unrelated to parameter
+  lists — see "Known gaps" for the full account.
 
   **The confirmed-loadable set is now the entire Prelude tier plus
   every Optional-tier file with no networking/TLS/regex dependency**
@@ -2157,16 +2159,53 @@ bugs no existing test had exercised:
   library," and it is exactly what "run 100% of the examples" now
   honestly requires, tracked here so the next pass has a measured
   starting point instead of a guess.
-- `&OPTIONAL`/`&KEY` parameter-list support in `LAMBDA`/`DEFUN` — found
-  missing while chasing `32-base64.lisp` through `36-mime.lisp`: each
-  loads (compiles without trapping — `&KEY`/`&OPTIONAL` in a parameter
-  list are just ordinary symbols to `split_rest_params` today, no
-  special handling at all), but their own `ENCODE`/`DECODE`-shaped
-  functions declare `&KEY` defaults and actually calling one traps.
-  Real, separate work: parameter-list parsing needs a new dispatch for
-  `&OPTIONAL name`/`&OPTIONAL (name default)` and `&KEY name`/
-  `&KEY (name default)` forms, alongside the `&REST` case
-  `split_rest_params` already handles.
+- ~~`&OPTIONAL`/`&KEY` parameter-list support in `LAMBDA`/`DEFUN`~~ —
+  landed. `LAMBDA` itself still parses only `&REST` (`split_rest_params`,
+  `compiler.asm` — unchanged); `&OPTIONAL`/`&KEY` are `DEFUN`-level sugar
+  in `lib/prelude.lisp`, ported line-for-line in spirit from the
+  reference's own `lib/00-core.lisp` (`$split-params`/`$opt-bindings`/
+  `$key-bindings`/`$extended-lambda`, minus the JIT/purity machinery this
+  project doesn't have): `(DEFUN F (A &OPTIONAL B (C 10) &KEY (D 2) E
+  &REST R) ...)` expands to a variadic `LAMBDA` (only `&REST`) plus a
+  `LET*` prologue that peels optionals positionally off the rest list — a
+  later default may reference an earlier parameter, since `LET*` binds
+  sequentially — binds `&REST` to whatever remains, and reads `&KEY`
+  parameters from that same remainder as a `:KEYWORD` plist, exactly
+  matching Common Lisp's own convention that `&REST` and `&KEY` share one
+  underlying list. This needed one real kernel change alongside the
+  prelude one: **keywords now self-evaluate** (`compile_form`'s own
+  symbol-reference dispatch, `compiler.asm`) — a bare `:FOO` (a symbol
+  whose own name starts with `:`) compiles to the literal tagged symbol
+  itself, unconditionally, rather than an ordinary (and previously always
+  UNBOUND) global-variable reference; without this, `(F :D 5)` could
+  never work at all, `:D` having nothing to read as a value. Matches the
+  reference's own `check_bindable` behavior ("keywords are
+  self-evaluating," `evaluator/core.rs`). Also fixed along the way: the
+  generated optional-parameter test used `CONSP`, which turned out not to
+  be a real primitive in this kernel's own small prelude at all (only a
+  stale comment claimed otherwise) — switched to `(NOT (ATOM ...))`,
+  matching the precedent `ASSOC` (above) already set for the identical
+  reason. `tests/run.sh`'s `file_runner_prelude` block covers `&OPTIONAL`
+  alone, `&OPTIONAL` with cross-referencing defaults, `&KEY` alone, and
+  all three plus `&REST` together, plus keyword self-evaluation and
+  identity directly.
+
+  **What this does NOT fix**: `32-base64.lisp` through `36-mime.lisp`'s
+  own `ENCODE`/`DECODE`-shaped functions, the original motivation, are
+  still not callable end-to-end through `stdlib_conformance` — not
+  because of `&OPTIONAL`/`&KEY` (verified working in isolation above),
+  but because loading the reference's own unmodified `lib/00-core.lisp`
+  (first in `stdlib_conformance`'s own load order) overwrites `DEFUN`
+  with *its* far larger definition — auto-JIT-compilation, docstrings,
+  call-graph bookkeeping — which in turn depends on primitives this
+  kernel does not implement at all (`JIT-OPTIMIZE`, `CONSP` as a real
+  builtin, `PRIN1-TO-STRING`, `ERROR` as anything other than an `int3`
+  trap). Confirmed by direct reproduction: `($BASE64-ALPHABET-KEYWORD
+  :STANDARD)` — a plain one-argument function with no `&OPTIONAL`/`&KEY`
+  of its own — already traps identically on this branch's immediate
+  parent commit, before any of this work. Closing that gap is "implement
+  a much larger slice of the reference's own runtime surface," a
+  materially different and larger task than parameter-list parsing.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
