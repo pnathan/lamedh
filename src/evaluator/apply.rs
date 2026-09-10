@@ -317,11 +317,7 @@ pub(super) fn apply(
                 // allocation its own bucket instead of the one degenerate
                 // bucket a portable Lisp-level hash function is otherwise
                 // stuck with (issue #474).
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                args[0].hash(&mut hasher);
-                Ok(LispVal::Number(hasher.finish() as i64))
+                Ok(LispVal::Number(crate::hash_code(&args[0])))
             }
             BuiltinFunc::MakeHashTable
             | BuiltinFunc::Get

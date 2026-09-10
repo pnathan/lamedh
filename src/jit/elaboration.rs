@@ -61,10 +61,34 @@ pub(super) struct Cx<'a> {
     pub(super) avoid_gen: RefCell<Vec<u32>>,
 }
 
+/// Issue #476: a `boxed` handle is inert cargo — the only operations that
+/// may look inside one are the boxed intrinsics (`equal`, `hash-code`,
+/// `fetch`/`store`/`array-length*`). Arithmetic and ordering comparison are
+/// meaningless on a handle word (it is a root-table index, not a number),
+/// and critically: two DISTINCT handles can denote the SAME underlying
+/// object (aliasing, `Ty::Boxed`'s own doc comment), so comparing handle
+/// words with `Core::Cmp` would be outright wrong, not merely disallowed —
+/// no `Core::Cmp` node may ever be elaborated at boxed type. This message is
+/// shared by every arithmetic/comparison elaborator so the guard reads
+/// identically everywhere it fires.
+pub(super) const BOXED_ARITH_CMP_MSG: &str =
+    "boxed values support only movement, equal, hash-code, and general-array access";
+
 impl Cx<'_> {
     /// A fresh type variable from this definition's inference state.
     fn fresh(&self) -> Ty {
         self.infer.borrow_mut().fresh()
+    }
+
+    /// Reject an operand whose WALKED type is already known to be `boxed`
+    /// (issue #476). Used by every arithmetic/comparison elaborator, in both
+    /// checker and codegen mode, so a boxed operand is refused uniformly —
+    /// and, for comparison, so no `Core::Cmp` node is ever built over it.
+    fn reject_boxed_arith_cmp(&self, t: &Ty) -> Result<(), String> {
+        if matches!(self.walk(t), Ty::Boxed) {
+            return Err(BOXED_ARITH_CMP_MSG.to_string());
+        }
+        Ok(())
     }
 
     /// A resolved operand type the EVALUATOR would reject for arithmetic /
@@ -180,6 +204,13 @@ impl Cx<'_> {
                     "FETCH" | "AREF" => self.elab_fetch(args, scope, max),
                     "STORE" | "ASET" => self.elab_store(args, scope, max),
                     "ARRAY-LENGTH*" => self.elab_array_len(args, scope, max),
+                    // Boxed-handle intrinsics (issue #476 phase 3b/3c):
+                    // `equal`/`hash-code` dispatch to `Core::BoxedOp` only
+                    // when an operand is boxed; otherwise they fall through
+                    // to the same call path they'd have reached with no
+                    // dispatch entry at all (see each `elab_*`'s doc comment).
+                    "EQUAL" => self.elab_equal(args, scope, max),
+                    "HASH-CODE" => self.elab_hash_code(args, scope, max),
                     // Unary float intrinsics ("fix the language"): compile to
                     // native. Codegen-only (`!checking`) so checking keeps the
                     // permissive declared schemes from lib/28-types.lisp (arg
@@ -358,6 +389,7 @@ impl Cx<'_> {
         // (`/`/`MOD` can never reach here: pinned to exactly 2 args above.)
         if args.len() == 1 {
             let (a, ta) = self.elab(&args[0], scope, max)?;
+            self.reject_boxed_arith_cmp(&ta)?;
             if self.checking {
                 return Ok((Core::LitI(0), self.walk(&ta)));
             }
@@ -382,8 +414,10 @@ impl Cx<'_> {
         // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
         // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&ty)?;
         for arg in &args[1..] {
             let (b, tb) = self.elab(arg, scope, max)?;
+            self.reject_boxed_arith_cmp(&tb)?;
             if self.unify(&ty, &tb).is_err() {
                 return Err(format!(
                     "`{op}` operands disagree: {:?} vs {:?}",
@@ -436,6 +470,12 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
+        // #476: reject before unify/resolve so no `Core::Cmp` is ever built
+        // over a boxed operand — two distinct handles can alias the same
+        // object, so comparing handle words would be silently wrong, not
+        // merely disallowed.
+        self.reject_boxed_arith_cmp(&ta)?;
+        self.reject_boxed_arith_cmp(&tb)?;
         if self.unify(&ta, &tb).is_err() {
             return Err(format!(
                 "`{op}` operands disagree: {:?} vs {:?}",
@@ -993,8 +1033,10 @@ impl Cx<'_> {
             return Err("`min`/`max` require at least one argument".to_string());
         }
         let (_, mut ty) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&ty)?;
         for a in &args[1..] {
             let (_, tb) = self.elab(a, scope, max)?;
+            self.reject_boxed_arith_cmp(&tb)?;
             self.unify(&ty, &tb)
                 .map_err(|e| format!("`min`/`max`: {e}"))?;
             ty = self.walk(&ty);
@@ -1432,6 +1474,13 @@ impl Cx<'_> {
     }
 
     /// `(fetch a i)` : (array α) int64 -> α. Bounds-checked at runtime.
+    ///
+    /// Issue #476: at a BOXED receiver, `a` is a handle to a general
+    /// `LispVal::Array` (not the flat arena buffer this function otherwise
+    /// indexes) — dispatches to [`Core::BoxedOp`]`(`[`BoxedOp::Aref`]`)`
+    /// instead, per §1(a): the array crosses the boundary as one handle
+    /// word, so indexing it is itself an intrinsic, never a
+    /// materialize-then-`Core::ArrayGet` desugaring.
     fn elab_fetch(
         &self,
         args: &[LispVal],
@@ -1443,6 +1492,15 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (i, ti) = self.elab(&args[1], scope, max)?;
+        if matches!(self.walk(&ta), Ty::Boxed) {
+            if self.unify(&ti, &Ty::Int64).is_err() {
+                return Err(format!(
+                    "`fetch` index must be int64, got {:?}",
+                    self.walk(&ti)
+                ));
+            }
+            return Ok((Core::BoxedOp(BoxedOp::Aref, vec![a, i]), Ty::Boxed));
+        }
         let elem = self.fresh();
         if self.unify(&ta, &Ty::Array(Box::new(elem.clone()))).is_err() {
             return Err(format!(
@@ -1461,6 +1519,12 @@ impl Cx<'_> {
     }
 
     /// `(store a i v)` : (array α) int64 α -> α. Evaluates to the stored value.
+    ///
+    /// Issue #476: at a BOXED receiver, dispatches to
+    /// [`Core::BoxedOp`]`(`[`BoxedOp::Aset`]`)` — see [`Self::elab_fetch`]'s
+    /// doc comment for why. `v` must itself be boxed (no silent int/float
+    /// auto-boxing: `boxed` is never inferred, only where a signature writes
+    /// it).
     fn elab_store(
         &self,
         args: &[LispVal],
@@ -1473,6 +1537,21 @@ impl Cx<'_> {
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (i, ti) = self.elab(&args[1], scope, max)?;
         let (v, tv) = self.elab(&args[2], scope, max)?;
+        if matches!(self.walk(&ta), Ty::Boxed) {
+            if self.unify(&ti, &Ty::Int64).is_err() {
+                return Err(format!(
+                    "`store` index must be int64, got {:?}",
+                    self.walk(&ti)
+                ));
+            }
+            if self.unify(&tv, &Ty::Boxed).is_err() {
+                return Err(format!(
+                    "`store` value type {:?} does not match element type boxed",
+                    self.walk(&tv)
+                ));
+            }
+            return Ok((Core::BoxedOp(BoxedOp::Aset, vec![a, i, v]), Ty::Boxed));
+        }
         let elem = self.fresh();
         if self.unify(&ta, &Ty::Array(Box::new(elem.clone()))).is_err() {
             return Err(format!(
@@ -1498,6 +1577,10 @@ impl Cx<'_> {
     }
 
     /// `(array-length* a)` : (array α) -> int64.
+    ///
+    /// Issue #476: at a BOXED receiver, dispatches to
+    /// [`Core::BoxedOp`]`(`[`BoxedOp::Len`]`)` — see [`Self::elab_fetch`]'s
+    /// doc comment for why.
     fn elab_array_len(
         &self,
         args: &[LispVal],
@@ -1508,6 +1591,9 @@ impl Cx<'_> {
             return Err(format!("`array-length*` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
+        if matches!(self.walk(&ta), Ty::Boxed) {
+            return Ok((Core::BoxedOp(BoxedOp::Len, vec![a]), Ty::Int64));
+        }
         let elem = self.fresh();
         if self.unify(&ta, &Ty::Array(Box::new(elem))).is_err() {
             return Err(format!(
@@ -1516,6 +1602,57 @@ impl Cx<'_> {
             ));
         }
         Ok((Core::ArrayLen(Box::new(a)), Ty::Int64))
+    }
+
+    /// `(equal a b)` at boxed operands (issue #476): `PartialEq for LispVal`
+    /// (`src/lib.rs`) is the exact relation, so dispatches to
+    /// [`Core::BoxedOp`]`(`[`BoxedOp::Equal`]`)`. Any other operand type
+    /// combination is unchanged from before this dispatch existed — falls
+    /// through to the ordinary call path (`EQUAL` has no declared/registered
+    /// scheme, so codegen still rejects it and checking still degrades to
+    /// `Any`, exactly as if this arm were absent).
+    fn elab_equal(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() == 2 {
+            let (a, ta) = self.elab(&args[0], scope, max)?;
+            let (b, tb) = self.elab(&args[1], scope, max)?;
+            if matches!(self.walk(&ta), Ty::Boxed) || matches!(self.walk(&tb), Ty::Boxed) {
+                if self.unify(&ta, &Ty::Boxed).is_err() || self.unify(&tb, &Ty::Boxed).is_err() {
+                    return Err(format!(
+                        "`equal` operands disagree: {:?} vs {:?}",
+                        self.walk(&ta),
+                        self.walk(&tb)
+                    ));
+                }
+                return Ok((Core::BoxedOp(BoxedOp::Equal, vec![a, b]), Ty::Bool));
+            }
+        }
+        self.elab_call("EQUAL", args, scope, max)
+    }
+
+    /// `(hash-code x)` at a boxed operand (issue #476): calls
+    /// `crate::hash_code` (the #474 implementation, extracted so the
+    /// interpreter builtin and every typed tier agree bit-for-bit) via
+    /// [`Core::BoxedOp`]`(`[`BoxedOp::Hash`]`)`. Any other operand type falls
+    /// through to the ordinary call path, unchanged from before this
+    /// dispatch existed.
+    fn elab_hash_code(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() == 1 {
+            let (a, ta) = self.elab(&args[0], scope, max)?;
+            if matches!(self.walk(&ta), Ty::Boxed) {
+                return Ok((Core::BoxedOp(BoxedOp::Hash, vec![a]), Ty::Int64));
+            }
+        }
+        self.elab_call("HASH-CODE", args, scope, max)
     }
 
     /// `(array-add!/-sub!/-mul! out a b)` : (array α) (array α) (array α) ->
@@ -2236,6 +2373,7 @@ impl Cx<'_> {
             return Err(format!("`abs` expects 1 argument, got {}", args.len()));
         }
         let (xc, tx) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&tx)?;
         let rt = self
             .resolve(&tx)
             .map_err(|_| "`abs`: cannot infer operand type".to_string())?;
@@ -2269,6 +2407,8 @@ impl Cx<'_> {
         }
         let (ac, ta) = self.elab(&args[0], scope, max)?;
         let (bc, tb) = self.elab(&args[1], scope, max)?;
+        self.reject_boxed_arith_cmp(&ta)?;
+        self.reject_boxed_arith_cmp(&tb)?;
         self.unify(&ta, &tb)
             .map_err(|e| format!("min/max operands disagree: {e}"))?;
         let rt = self

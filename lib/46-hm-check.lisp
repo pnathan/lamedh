@@ -109,6 +109,8 @@
 ;;; ---- type representation --------------------------------------------------
 ;;;
 ;;;   int64 float64 bool char symbol string any     scalars (bare symbols)
+;;;   boxed                                         an opaque, compileable
+;;;                                                  handle to any value (#476)
 ;;;   (tvar N)                                      type variable
 ;;;   (-> (T ...) R)                                arrow
 ;;;   (list T) / (array T)                          homogeneous containers
@@ -309,7 +311,21 @@ HM-CHECK-CALLEE, where V is a fresh, definition-scoped variable."
 ;;; ==========================================================================
 
 (defun hm-scalar-p (ty)
-  (member ty '(int64 float64 bool char symbol string any)))
+  (member ty '(int64 float64 bool char symbol string any boxed)))
+
+;;; Issue #476: a BOXED handle is inert cargo. Arithmetic and ordering
+;;; comparison are meaningless on a handle word (it is a root-table index, and
+;;; two distinct handles may denote one object), so both modes refuse a boxed
+;;; operand with one shared message. Mirrors Cx::reject_boxed_arith_cmp and
+;;; BOXED_ARITH_CMP_MSG.
+(def $hm-boxed-arith-cmp-msg
+  "boxed values support only movement, equal, hash-code, and general-array access")
+
+(defun hm-reject-boxed! (state ty)
+  (if (eq (hm-walk state ty) 'boxed) (error $hm-boxed-arith-cmp-msg) nil))
+
+(defun hm-boxed-p (state ty)
+  (eq (hm-walk state ty) 'boxed))
 
 (defun hm-nominal-name (ty)
   "The nominal NAME of a (struct N) / (variant N) / (app N args) type."
@@ -880,6 +896,8 @@ type error nested inside one surfaces), discarding the types."
     ((member head '(fetch aref)) (hm-elab-fetch state tyenv args))
     ((member head '(store aset)) (hm-elab-store state tyenv args))
     ((eq head 'array-length*) (hm-elab-array-len state tyenv args))
+    ((eq head 'equal) (hm-elab-equal state tyenv args))
+    ((eq head 'hash-code) (hm-elab-hash-code state tyenv args))
     ((eq head 'cons) (hm-elab-cons state tyenv args))
     ((member head '(car first)) (hm-elab-car state tyenv args))
     ((member head '(cdr rest)) (hm-elab-cdr state tyenv args))
@@ -924,6 +942,7 @@ Mirrors Cx::elab_bin's checking path."
     ((null args) 'int64)
     ((null (cdr args))
      (let ((ta (hm-elab state tyenv (car args))))
+       (hm-reject-boxed! state ta)
        (cond
          ((not (hm-codegen-p state)) (hm-walk state ta))
          ;; Codegen: (- x) is (0 - x), so the operand's KIND must resolve now.
@@ -935,8 +954,10 @@ Mirrors Cx::elab_bin's checking path."
                                (hm-type-name rt))))))
          (t ta))))
     (t (let ((ty (hm-elab state tyenv (car args))))
+         (hm-reject-boxed! state ty)
          (mapc (lambda (a)
                  (let ((tb (hm-elab state tyenv a)))
+                   (hm-reject-boxed! state tb)
                    (if (hm-unifies-p state ty tb)
                        (progn
                          (setq ty (hm-walk state ty))
@@ -986,6 +1007,10 @@ non-comparable operand kinds are rejected as the evaluator would at runtime."
                      (princ-to-string (length args))))
       (let ((ta (hm-elab state tyenv (car args)))
             (tb (hm-elab state tyenv (cadr args))))
+        ;; #476: refused BEFORE unify, so no comparison is ever typed over a
+        ;; handle whose aliasing makes word equality wrong.
+        (hm-reject-boxed! state ta)
+        (hm-reject-boxed! state tb)
         (cond
           ((not (hm-unifies-p state ta tb))
            (error (concat "`" (princ-to-string op) "` operands disagree")))
@@ -1142,6 +1167,7 @@ native annotation parser accepts."
        ((eq form 'float64) 'float64)
        ((eq form 'bool) 'bool)
        ((member form '(char u8 byte)) 'char)
+       ((eq form 'boxed) 'boxed)
        (t (error (concat "unknown type `" (princ-to-string form) "'")))))
     ((consp form)
      (if (and (eq (car form) 'array) (= (length form) 2))
@@ -1264,8 +1290,10 @@ recursion."
   (if (null args)
       (error "`min`/`max` require at least one argument")
       (let ((ty (hm-elab state tyenv (car args))))
+        (hm-reject-boxed! state ty)
         (mapc (lambda (a)
                 (let ((tb (hm-elab state tyenv a)))
+                  (hm-reject-boxed! state tb)
                   (if (hm-unifies-p state ty tb)
                       (setq ty (hm-walk state ty))
                       (error "`min`/`max`: operands disagree"))))
@@ -1295,11 +1323,18 @@ recursion."
       (let ((ta (hm-elab state tyenv (car args)))
             (ti (hm-elab state tyenv (cadr args)))
             (elem (hm-fresh state)))
-        (if (not (hm-unifies-p state ta (list 'array elem)))
-            (error "`fetch` expects an array")
-            (if (not (hm-unifies-p state ti 'int64))
-                (error "`fetch` index must be int64")
-                (hm-walk state elem))))))
+        (cond
+          ;; #476: a BOXED receiver is a handle to a general array; the
+          ;; element is itself a handle (BoxedOp::Aref).
+          ((hm-boxed-p state ta)
+           (if (hm-unifies-p state ti 'int64)
+               'boxed
+               (error "`fetch` index must be int64")))
+          ((not (hm-unifies-p state ta (list 'array elem)))
+           (error "`fetch` expects an array"))
+          ((not (hm-unifies-p state ti 'int64))
+           (error "`fetch` index must be int64"))
+          (t (hm-walk state elem))))))
 
 (defun hm-elab-store (state tyenv args)
   "`(store a i v)` : (array a) int64 a -> a."
@@ -1310,6 +1345,15 @@ recursion."
             (tv (hm-elab state tyenv (caddr args)))
             (elem (hm-fresh state)))
         (cond
+          ;; #476: a BOXED receiver stores a handle (BoxedOp::Aset); no
+          ;; silent boxing of the value.
+          ((hm-boxed-p state ta)
+           (cond
+             ((not (hm-unifies-p state ti 'int64))
+              (error "`store` index must be int64"))
+             ((not (hm-unifies-p state tv 'boxed))
+              (error "`store` value type does not match element type boxed"))
+             (t 'boxed)))
           ((not (hm-unifies-p state ta (list 'array elem)))
            (error "`store` expects an array"))
           ((not (hm-unifies-p state ti 'int64))
@@ -1324,9 +1368,43 @@ recursion."
       (error (concat "`array-length*` expects 1 arg, got "
                      (princ-to-string (length args))))
       (let ((ta (hm-elab state tyenv (car args))))
-        (if (hm-unifies-p state ta (list 'array (hm-fresh state)))
+        (cond
+          ;; #476: BoxedOp::Len on a handle to a general array.
+          ((hm-boxed-p state ta) 'int64)
+          ((hm-unifies-p state ta (list 'array (hm-fresh state))) 'int64)
+          (t (error "`array-length*` expects an array"))))))
+
+;;; ---- the boxed intrinsics (#476) ------------------------------------------
+
+(defun hm-elab-equal (state tyenv args)
+  "`(equal a b)` at a BOXED operand: both operands boxed, result BOOL
+(BoxedOp::Equal). Any other operand combination falls through to the
+ordinary call path, unchanged from before the arm existed. Mirrors
+Cx::elab_equal."
+  (if (= (length args) 2)
+      (let ((ta (hm-elab state tyenv (car args)))
+            (tb (hm-elab state tyenv (cadr args))))
+        (if (or (hm-boxed-p state ta) (hm-boxed-p state tb))
+            (if (and (hm-unifies-p state ta 'boxed) (hm-unifies-p state tb 'boxed))
+                'bool
+                (error "`equal` operands disagree"))
+            ;; Fall through to the call rule, which re-elaborates the
+            ;; arguments exactly as the native `elab_call` does after
+            ;; `elab_equal`; re-elaborating a pure argument yields the same
+            ;; type, so the verdict is unchanged from an arm-less dispatch.
+            (hm-elab-call state tyenv 'equal args)))
+      (hm-elab-call state tyenv 'equal args)))
+
+(defun hm-elab-hash-code (state tyenv args)
+  "`(hash-code x)` at a BOXED operand: INT64 (BoxedOp::Hash). Any other
+operand falls through to the ordinary call path. Mirrors Cx::elab_hash_code."
+  (if (= (length args) 1)
+      (let ((ta (hm-elab state tyenv (car args))))
+        (if (hm-boxed-p state ta)
             'int64
-            (error "`array-length*` expects an array")))))
+            (hm-elab-call state tyenv 'hash-code args)))
+      (hm-elab-call state tyenv 'hash-code args)))
+
 
 (defun hm-elab-char-code (state tyenv args)
   "`(char-code c)` : char -> int64. The evaluator also accepts a non-empty
@@ -1565,13 +1643,19 @@ only on the kernel and the core list vocabulary."
     ((eq (car sig) '->) sig)
     (t (hm-after-arrow (cdr sig)))))
 
+(defun hm-parse-signature-ty (form)
+  "A type as the host's `signature`/`see-type` render it (ty_name): the
+DECLARE-TYPE! grammar plus `boxed`, which only the annotation grammar and a
+rendered signature can spell (#476: never inferred, never declared)."
+  (if (eq form 'boxed) 'boxed (hm-parse-ty form nil)))
+
 (defun hm-parse-signature (sig)
   "The surface signature `(t1 t2 -> r)` / `(-> r)` as an internal arrow."
   (let ((tail (hm-after-arrow sig)))
     (if (or (null tail) (null (cdr tail)))
         (error "not a signature")
-        (list '-> (mapcar (lambda (a) (hm-parse-ty a nil)) (hm-before-arrow sig))
-              (hm-parse-ty (cadr tail) nil)))))
+        (list '-> (mapcar #'hm-parse-signature-ty (hm-before-arrow sig))
+              (hm-parse-signature-ty (cadr tail))))))
 
 (defun hm-host-arrow (name)
   "NAME's host-registered MONOMORPHIC arrow, or NIL when the host has no
@@ -1881,9 +1965,12 @@ passes as-is, exactly as the native arm has it."
       ((hm-tvar-p w)
        (error (concat "cannot infer type (ambiguous: type variable ?"
                       (princ-to-string (cadr w)) " is unconstrained)")))
-      ((member w '(int64 float64 bool char)) w)
+      ((member w '(int64 float64 bool char boxed)) w)
       ((eq (hm-tag w) 'struct) w)
       ((eq (hm-tag w) 'array) (list 'array (hm-resolve state (cadr w))))
+      ((eq w 'any)
+       (error (concat "type " (hm-type-name w)
+                      " is not compileable (write an explicit `boxed` annotation in a defun-typed/declare-typed signature to carry it through typed code opaquely)")))
       (t (error (concat "type " (hm-type-name w) " is not compileable"))))))
 
 (defun hm-resolve-operand (state ty op)
@@ -1898,7 +1985,7 @@ symbol, or a string where the native wording is not a symbol: \"min/max\")."
 is_compileable, including its recursion into a struct's fields (read through
 the portable registry)."
   (cond
-    ((member ty '(int64 float64 bool char)) t)
+    ((member ty '(int64 float64 bool char boxed)) t)
     ((eq (hm-tag ty) 'array) (hm-compileable-ty-p (cadr ty)))
     ((eq (hm-tag ty) 'struct)
      (if (every (lambda (f) (hm-compileable-ty-p (cdr f)))
@@ -1925,6 +2012,8 @@ the portable registry)."
     ((member head '(fetch aref)) (hm-elab-fetch state tyenv args))
     ((member head '(store aset)) (hm-elab-store state tyenv args))
     ((eq head 'array-length*) (hm-elab-array-len state tyenv args))
+    ((eq head 'equal) (hm-elab-equal state tyenv args))
+    ((eq head 'hash-code) (hm-elab-hash-code state tyenv args))
     ((member head '(sqrt sin cos tan exp))
      (hm-elab-funary state tyenv head 'float64 args))
     ((member head '(floor ceiling truncate round))
@@ -2059,7 +2148,9 @@ any other shift stays interpreted. Mirrors Cx::elab_ash."
   (if (not (= (length args) 1))
       (error (concat "`abs` expects 1 argument, got "
                      (princ-to-string (length args))))
-      (let ((rt (hm-resolve-operand state (hm-elab state tyenv (car args)) 'abs)))
+      (let ((rt (let ((tx (hm-elab state tyenv (car args))))
+                  (hm-reject-boxed! state tx)
+                  (hm-resolve-operand state tx 'abs))))
         (if (hm-arith-kind-p rt)
             rt
             (error (concat "`abs` expects a numeric operand, got "
@@ -2074,6 +2165,8 @@ arity stays interpreted. Mirrors Cx::elab_min_max_compiled."
                      "); other arities stay interpreted"))
       (let ((ta (hm-elab state tyenv (car args)))
             (tb (hm-elab state tyenv (cadr args))))
+        (hm-reject-boxed! state ta)
+        (hm-reject-boxed! state tb)
         (if (not (hm-unifies-p state ta tb))
             (error "min/max operands disagree")
             (let ((rt (hm-resolve-operand state ta "min/max")))

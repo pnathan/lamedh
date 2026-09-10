@@ -167,6 +167,62 @@ fn codegen_only_rules_admit_loops_and_intrinsics() {
     );
 }
 
+#[test]
+fn boxed_handles_are_inert_cargo_in_both_modes() {
+    // Issue #476: `boxed` is never inferred, only pinned. Under a pin it
+    // moves, compares with `equal`, hashes, and indexes a general array; it
+    // never enters arithmetic or ordering.
+    let e = env();
+    assert_eq!(
+        ev(
+            &e,
+            "(cdr (assoc 'bx (hm-compile-group '((bx (h) (hash-code h))) \
+                                               (list (cons 'bx '(-> (boxed) int64))))))"
+        ),
+        "(COMPILEABLE (-> (BOXED) INT64))"
+    );
+    assert_eq!(
+        ev(
+            &e,
+            "(cdr (assoc 'bx (hm-compile-group '((bx (h i) (fetch h i))) \
+                                               (list (cons 'bx '(-> (boxed int64) boxed))))))"
+        ),
+        "(COMPILEABLE (-> (BOXED INT64) BOXED))"
+    );
+    assert_eq!(
+        ev(
+            &e,
+            "(cdr (assoc 'bx (hm-compile-group '((bx (a b) (equal a b))) \
+                                               (list (cons 'bx '(-> (boxed boxed) bool))))))"
+        ),
+        "(COMPILEABLE (-> (BOXED BOXED) BOOL))"
+    );
+    assert_eq!(
+        ev(
+            &e,
+            "(cdr (assoc 'bx (hm-compile-group '((bx (h) (+ h 1))) \
+                                               (list (cons 'bx '(-> (boxed) int64))))))"
+        ),
+        "(BLOCKED \"boxed values support only movement, equal, hash-code, and general-array access\")"
+    );
+    // The checker refuses the same operand, in the same words.
+    assert_eq!(
+        ev(
+            &e,
+            "(let ((st (hm-new-state))) \
+               (handler-case (hm-elab st '((h . boxed)) '(< h 1)) \
+                 (error (err) (error-message err))))"
+        ),
+        "\"boxed values support only movement, equal, hash-code, and general-array access\""
+    );
+    // `equal`/`hash-code` at a non-boxed operand keep their old call-path
+    // meaning: unknown to codegen, and declared or gradual to the checker.
+    assert_eq!(
+        ev(&e, "(car (hm-compile-lambda 'f '(a b) '((equal a b))))"),
+        "BLOCKED"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Freezing.
 // ---------------------------------------------------------------------------

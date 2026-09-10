@@ -6,41 +6,41 @@
 ;;; KERNEL.md Part XI already requires a host to provide natively: CONS/CAR/CDR,
 ;;; symbols, fixnum arithmetic and bitwise ops, `ARRAY`/`FETCH`/`STORE`/
 ;;; `ARRAY-LENGTH*`, `TYPED-ARRAY` (Part IV's `'INT64` element type), the
-;;; reader/printer (`PRIN1-TO-STRING`), and `DEFUN`/`DEFUN*`. No `HASH-TABLE`,
+;;; reader/printer (`PRIN1-TO-STRING`), and `DEFUN`/`DEFUN-TYPED`. No `HASH-TABLE`,
 ;;; `GETHASH`, `SETHASH`, `MAKE-HASH-TABLE`, `KEYS`, or `REMHASH` call appears
 ;;; anywhere below.
 ;;;
-;;; ---- Why not the portable HM checker (#451)? -------------------------------
+;;; ---- Typing: five DEFUN-TYPED functions, DECLARE-TYPE! for the rest -------
 ;;;
 ;;; Issue #458 says to type-check this through the portable HM checker (#451)
-;;; and/or `lib/29-protocols.lisp`'s typed protocols. As of this writing #451
-;;; is still OPEN: it is about porting `src/check.rs`'s inference engine to a
-;;; portable `lib/*.lisp` file so it also runs, unmodified, on hosts (like the
-;;; SBCL port, #449) that don't have `src/check.rs` natively. It has not
-;;; landed. But on *this* host -- the Rust reference `lamedh` binary this file
-;;; is loaded into -- `src/check.rs`'s HM checker already exists and already
-;;; runs natively via `defun*` (see `CLAUDE.md`/`AGENTS.md`: "`defun*` is the
-;;; recommended default function definition form when HM-style type inference
-;;; should be attempted automatically"). `LHT-INDEX`, the one leaf function
-;;; simple enough for the inferencer to see through cleanly, uses `defun*` and
-;;; is confirmed (via `(see-type 'lht-index)`) to come back `TYPED (-> (INT64
-;;; INT64) INT64) [COMPILED]` -- checked *and* JIT-compiled, a real win from
-;;; the native checker, not a nominal one. Every other function here is
-;;; deliberately plain `defun` plus an explicit `declare-type!` axiom (the
-;;; same pattern `lib/28-types.lisp` uses for the rest of the stdlib) rather
-;;; than `defun*`: probed by hand, `defun*` on e.g. the `AND`/`EQ`-composed
-;;; predicate `LHT-P` comes back `CHECKED (FORALL (A B) (-> ((ARRAY A)) B))`
-;;; -- a checker artifact around `AND`/`EQ`'s short-circuit value that claims
-;;; a fully generic result type for a function that always returns a boolean.
-;;; That is exactly the kind of unsound-looking automatic inference this
-;;; module would rather not surface silently in library code real programs
-;;; depend on; a hand-written, verified-against-behavior axiom is the honest
-;;; choice there, matching `lib/28-types.lisp`'s own stated rule of only
-;;; declaring what has actually been checked against evaluator behavior. It
-;;; does not use `lib/29-protocols.lisp`'s dispatch machinery: there is exactly one
+;;; and/or `lib/29-protocols.lisp`'s typed protocols. #451 -- porting
+;;; `src/check.rs`'s inference engine to a portable `lib/*.lisp` file so it
+;;; also runs, unmodified, on hosts (like the SBCL port, #449) that don't have
+;;; `src/check.rs` natively -- is still OPEN. On *this* host the typed compiler
+;;; exists natively, and this file uses it exactly where it pays. Five functions
+;;; carry explicit DEFUN-TYPED signatures and compile: the per-step loops
+;;; LHT-INDEX, LHT-PROBE and LHT-INSERT-EMPTY!, and the per-operation LHT-HASH
+;;; and LHT-MIX64, which are pure INT64 arithmetic once HASH-CODE has run
+;;; (`(see-type 'lht-probe)` reads `COMPILED`; the tests pin all five).
+;;; LHT-PROBE is what issue #476's `boxed` type exists for: its KEYS and KEY
+;;; arguments are arbitrary LispVals, carried through compiled code as opaque
+;;; handles (see the probing section below). Every other function here is
+;;; plain `defun` plus an
+;;; explicit `declare-type!` axiom (the same pattern `lib/28-types.lisp` uses
+;;; for the rest of the stdlib) rather than `defun*`: probed by hand, `defun*`
+;;; on e.g. the `AND`/`EQ`-composed predicate `LHT-P` comes back `CHECKED
+;;; (FORALL (A B) (-> ((ARRAY A)) B))` -- a checker artifact around `AND`/`EQ`'s
+;;; short-circuit value that claims a fully generic result type for a function
+;;; that always returns a boolean. That is exactly the kind of unsound-looking
+;;; automatic inference this module would rather not surface silently in
+;;; library code real programs depend on; a hand-written,
+;;; verified-against-behavior axiom is the honest choice there, matching
+;;; `lib/28-types.lisp`'s own stated rule of only declaring what has actually
+;;; been checked against evaluator behavior. It does not use
+;;; `lib/29-protocols.lisp`'s dispatch machinery: there is exactly one
 ;;; concrete representation here (no multiple types implementing one
 ;;; interface), so protocol dispatch would add indirection without adding
-;;; type confidence over what `defun*`/`declare-type!` already gives.
+;;; type confidence over what DEFUN-TYPED/`declare-type!` already gives.
 ;;;
 ;;; ---- Representation ---------------------------------------------------------
 ;;;
@@ -121,6 +121,9 @@
 
 ;;; ---- tunable constants ------------------------------------------------------
 
+;; LHT-MIX64 is DEFUN-TYPED and a typed body cannot read a global, so it
+;; repeats these three as literals; the test LHT-MIX64-MATCHES-REFERENCE-MIXER
+;; recomputes the mixer from the globals and pins the two spellings together.
 (def $lht-mask63 #x7FFFFFFFFFFFFFFF)  ; 2^63 - 1: keeps the mixer non-negative
 (def $lht-c1 #x1E3779B97F4A7C15)      ; SplitMix64's gamma, masked to 63 bits
 (def $lht-c2 #x3F58476D1CE4E5B9)      ; SplitMix64 mix constant 1, masked
@@ -133,23 +136,29 @@
 
 ;;; ---- the integer mixer --------------------------------------------------
 
-(defun lht-mix64 (x0)
-  "SplitMix64-style avalanche finalizer over a 63-bit non-negative fixnum."
-  (let* ((x (logand x0 $lht-mask63))
-         (x (logand (* (logxor x (ash x -30)) $lht-c1) $lht-mask63))
-         (x (logand (* (logxor x (ash x -27)) $lht-c2) $lht-mask63))
-         (x (logxor x (ash x -31))))
-    (logand x $lht-mask63)))
+;; SplitMix64-style avalanche finalizer over a 63-bit non-negative fixnum.
+;; Typed: the multiplies wrap mod 2^64 on every tier (Part V's fixed-width
+;; model), and the compiled edition sets the same OVERFLOW flag the
+;; tree-walker does, so the result is bit-identical to the interpreted body
+;; (pinned by LHT-MIX64-MATCHES-REFERENCE-MIXER).
+(defun-typed (lht-mix64 int64) ((x0 int64))
+  (let ((x (logand x0 #x7FFFFFFFFFFFFFFF)))
+    (let ((x (logand (* (logxor x (ash x -30)) #x1E3779B97F4A7C15)
+                     #x7FFFFFFFFFFFFFFF)))
+      (let ((x (logand (* (logxor x (ash x -27)) #x3F58476D1CE4E5B9)
+                       #x7FFFFFFFFFFFFFFF)))
+        (logand (logxor x (ash x -31)) #x7FFFFFFFFFFFFFFF)))))
 
 ;;; ---- the LispVal hash function -----------------------------------------------
 
-(defun lht-hash (v)
-  "Hash any LispVal so that (EQUAL A B) implies (= (lht-hash A) (lht-hash B)).
-HASH-CODE (issue #474) already guarantees that agreement natively -- this
-just re-mixes its output through LHT-MIX64 for this table's own avalanche."
+;; Hash any LispVal so that (EQUAL A B) implies (= (lht-hash A) (lht-hash B)).
+;; HASH-CODE (issue #474) already guarantees that agreement natively -- this
+;; just re-mixes its output through LHT-MIX64 for this table's own avalanche.
+;; V is `boxed` (issue #476): any LispVal crosses into the compiled body as an
+;; opaque handle, and HASH-CODE on a handle is an intrinsic that runs the same
+;; Rust hasher the builtin does.
+(defun-typed (lht-hash int64) ((v boxed))
   (lht-mix64 (hash-code v)))
-
-(declare-type! 'lht-hash '(-> (any) int64))
 
 ;;; ---- the table record -------------------------------------------------------
 
@@ -185,27 +194,52 @@ just re-mixes its output through LHT-MIX64 for this table's own avalanche."
 (declare-type! 'lht-count '(-> (any) int64))
 
 ;;; ---- probing ------------------------------------------------------------
+;;;
+;;; The probe loop is the per-STEP hot path -- everything else in this file
+;;; runs once per operation -- so it is the part that must compile. Three
+;;; things make that possible:
+;;;
+;;;   * BUCKETS is a TYPED-ARRAY of INT64 and crosses the typed boundary as a
+;;;     zero-copy `(array int64)`.
+;;;   * KEYS (a general ARRAY of arbitrary LispVals) and KEY (an arbitrary
+;;;     LispVal) cross as `boxed` handles (issue #476): opaque words the
+;;;     compiled code only moves, and looks inside solely through the
+;;;     `fetch`-on-a-handle and `equal` intrinsics.
+;;;   * The result is one packed INT64, not a `(STATUS BUCKET PAYLOAD)` list.
+;;;     A cons per probe step keeps a function interpreted regardless of its
+;;;     types; the decoders below run once per operation, not once per step.
+;;;
+;;; Result encoding, for a table of capacity CAP:
+;;;
+;;;   r >= 0          HIT at bucket r; the payload index is (fetch buckets r).
+;;;   -cap <= r < 0   MISS; insert at bucket (- -1 r), the first empty or
+;;;                   tombstone slot on the chain.
+;;;   r < -cap        FULL: every bucket probed without an empty slot. Only
+;;;                   possible if the grow policy is violated; an
+;;;                   internal-error safety net.
+;;;
+;;; The literals -1 and -2 in the typed bodies below ARE $LHT-EMPTY and
+;;; $LHT-TOMBSTONE. A typed body cannot read a global, so the values are
+;;; repeated here and pinned by the test LHT-SENTINELS-MATCH-TYPED-LITERALS.
 
-(defun* lht-index (h cap) (logand h (- cap 1)))
+(defun-typed (lht-index int64) ((h int64) (cap int64))
+  (logand h (- cap 1)))
 
-(defun lht-probe (buckets keys cap key start i tomb)
-  "Walk the probe sequence from START. Returns (STATUS BUCKET-IDX PAYLOAD-IDX):
-STATUS is 'HIT (KEY found; PAYLOAD-IDX valid), 'MISS (KEY absent; BUCKET-IDX
-is the first empty-or-tombstone slot on the chain, for insertion), or 'FULL
-(every bucket probed without an empty slot -- can only happen if the grow
-policy below is violated; treated as an internal-error safety net)."
+(defun-typed (lht-probe int64)
+    ((buckets (array int64)) (keys boxed) (cap int64) (key boxed)
+     (start int64) (i int64) (tomb int64))
   (if (>= i cap)
-      (list 'full -1 nil)
-      (let* ((idx (lht-index (+ start i) cap))
-             (b (fetch buckets idx)))
-        (cond
-          ((= b $lht-empty)
-           (list 'miss (if (>= tomb 0) tomb idx) nil))
-          ((= b $lht-tombstone)
-           (lht-probe buckets keys cap key start (+ i 1)
-                      (if (>= tomb 0) tomb idx)))
-          ((equal (fetch keys b) key) (list 'hit idx b))
-          (t (lht-probe buckets keys cap key start (+ i 1) tomb))))))
+      (- -1 cap)
+      (let ((idx (lht-index (+ start i) cap)))
+        (let ((b (fetch buckets idx)))
+          (if (= b -1)
+              (if (>= tomb 0) (- -1 tomb) (- -1 idx))
+              (if (= b -2)
+                  (lht-probe buckets keys cap key start (+ i 1)
+                             (if (>= tomb 0) tomb idx))
+                  (if (equal (fetch keys b) key)
+                      idx
+                      (lht-probe buckets keys cap key start (+ i 1) tomb))))))))
 
 (defun lht-find (ht key)
   (let* ((cap (lht--capacity ht))
@@ -235,11 +269,15 @@ entries headroom under the 0.7 load factor with zero tombstones."
       cap
       (lht-next-capacity (* cap 2) count)))
 
-(defun lht-insert-empty! (buckets cap start i payload-idx)
-  "Linear-probe from START for an EMPTY slot in a table known to hold no
-duplicate keys yet (used only during rehash), and claim it for PAYLOAD-IDX."
+;; Linear-probe from START for an EMPTY (-1, see the probing section) slot in
+;; a table known to hold no duplicate keys yet -- used only during rehash --
+;; and claim it for PAYLOAD-IDX. Typed and compiled for the same reason as
+;; LHT-PROBE: it runs once per live entry per rehash.
+(defun-typed (lht-insert-empty! int64)
+    ((buckets (array int64)) (cap int64) (start int64) (i int64)
+     (payload-idx int64))
   (let ((idx (lht-index (+ start i) cap)))
-    (if (= (fetch buckets idx) $lht-empty)
+    (if (= (fetch buckets idx) -1)
         (store buckets idx payload-idx)
         (lht-insert-empty! buckets cap start (+ i 1) payload-idx))))
 
@@ -295,21 +333,22 @@ recompacts at its existing size instead of growing unboundedly."
 no-second-value contract as the native GETHASH: a stored NIL is
 indistinguishable from absence)."
   (let ((r (lht-find ht key)))
-    (if (eq (car r) 'hit) (fetch (lht--vals ht) (caddr r)) nil)))
+    (if (>= r 0) (fetch (lht--vals ht) (fetch (lht--buckets ht) r)) nil)))
 
 (defun lht-has-key-p (ht key)
-  (eq (car (lht-find ht key)) 'hit))
+  (>= (lht-find ht key) 0))
 
 (defun lht-put! (ht key val)
   "Insert or replace KEY -> VAL in HT; returns T (mirrors native SETHASH)."
   (if (lht-should-grow-p ht) (lht-grow! ht) nil)
-  (let ((r (lht-find ht key)))
+  (let* ((cap (lht--capacity ht))
+         (r (lht-find ht key)))
     (cond
-      ((eq (car r) 'hit)
-       (store (lht--vals ht) (caddr r) val)
+      ((>= r 0)
+       (store (lht--vals ht) (fetch (lht--buckets ht) r) val)
        t)
-      ((eq (car r) 'miss)
-       (let* ((bidx (cadr r))
+      ((>= r (- cap))
+       (let* ((bidx (- -1 r))
               (was-tomb (= (fetch (lht--buckets ht) bidx) $lht-tombstone))
               (pidx (lht--next-slot ht)))
          (store (lht--keys ht) pidx key)
@@ -324,9 +363,9 @@ indistinguishable from absence)."
 (defun lht-remove! (ht key)
   "Remove KEY from HT if present; always returns T (mirrors native REMHASH)."
   (let ((r (lht-find ht key)))
-    (if (eq (car r) 'hit)
+    (if (>= r 0)
         (progn
-          (store (lht--buckets ht) (cadr r) $lht-tombstone)
+          (store (lht--buckets ht) r $lht-tombstone)
           (store ht 5 (- (lht-count ht) 1))
           (store ht 6 (+ (lht--tombstones ht) 1))
           t)

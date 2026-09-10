@@ -52,6 +52,7 @@ where `elaboration.rs` tests `self.checking`:
 | `array-add! array-sub! array-mul! array-sum array-dot` | ordinary call path | native rules over resolved element types |
 | `cons car cdr list null record-* append concat quote cond variant-case when unless` | native rules | ordinary call path: `call to unknown function` |
 | a call | host registry, protocol, declared scheme, derived scheme, `any` | run registry, host registry, `funcall`/`apply` as `any`, else `call to unknown function` |
+| `equal`, `hash-code`, `fetch`/`store`/`array-length*` at a `boxed` operand (#476) | the boxed intrinsics, both modes | the boxed intrinsics, both modes; `boxed` is never inferred, only pinned by a signature |
 
 Two of those rows carry the whole fidelity argument. Eager resolution:
 `(defun sq (x) (* x x))` is blocked with `` `*`: cannot infer operand type``

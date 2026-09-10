@@ -227,7 +227,9 @@
   (let* ((cap (lht--capacity h))
          (start (lht-index (lht-hash key) cap))
          (r (lht-find h key))
-         (idx (cadr r)))
+         ;; Packed probe result (see lib/45-hashtable.lisp, probing section):
+         ;; a hit is the bucket itself, a miss is (- -1 bucket).
+         (idx (if (>= r 0) r (- -1 r))))
     (mod (- idx start) cap)))
 
 (defun lht-max-probe-chain (h keys)
@@ -352,9 +354,85 @@
       (assert-equal (lht-count h) 2))))
 
 (deftest lht-index-is-typed-and-compiled
-  ;; The one function in the module simple enough for the native HM checker
-  ;; (src/check.rs, run automatically by DEFUN*) to fully infer.
   (assert-equal (see-type 'lht-index) '(TYPED (-> (INT64 INT64) INT64) COMPILED)))
+
+(deftest lht-probe-is-typed-and-compiled
+  ;; The per-step hot path (issue #476): BUCKETS crosses as a zero-copy
+  ;; (array int64), KEYS and KEY as opaque boxed handles, and the result is one
+  ;; packed int64 -- so the whole probe loop compiles.
+  (assert-equal (see-type 'lht-probe)
+                '(TYPED (-> ((ARRAY INT64) BOXED INT64 BOXED INT64 INT64 INT64) INT64)
+                        COMPILED)))
+
+(deftest lht-insert-empty-is-typed-and-compiled
+  (assert-equal (see-type 'lht-insert-empty!)
+                '(TYPED (-> ((ARRAY INT64) INT64 INT64 INT64 INT64) INT64) COMPILED)))
+
+(deftest lht-hash-and-mixer-are-typed-and-compiled
+  (progn
+    (assert-equal (see-type 'lht-mix64) '(TYPED (-> (INT64) INT64) COMPILED))
+    (assert-equal (see-type 'lht-hash) '(TYPED (-> (BOXED) INT64) COMPILED))))
+
+(defun lht-reference-mix64 (x0)
+  ;; The mixer as an interpreted body over the module's own constants: the
+  ;; typed LHT-MIX64 spells them as literals and must agree bit for bit,
+  ;; including the wrapping multiplies.
+  (let* ((x (logand x0 $lht-mask63))
+         (x (logand (* (logxor x (ash x -30)) $lht-c1) $lht-mask63))
+         (x (logand (* (logxor x (ash x -27)) $lht-c2) $lht-mask63))
+         (x (logxor x (ash x -31))))
+    (logand x $lht-mask63)))
+
+(deftest lht-mix64-matches-reference-mixer
+  (let ((samples (list 0 1 -1 2 -2 42 123456789012345 -987654321098765
+                       #x7FFFFFFFFFFFFFFF (- 0 #x7FFFFFFFFFFFFFFF)
+                       (- -1 #x7FFFFFFFFFFFFFFF)
+                       (hash-code 'lht-mix-sym) (hash-code "lht-mix-str")
+                       (hash-code 3.5) (hash-code nil) (hash-code (cons 1 2)))))
+    (progn
+      (mapc (lambda (x) (assert-equal (lht-mix64 x) (lht-reference-mix64 x)))
+            samples)
+      (clear-flag 'overflow))))
+
+(deftest lht-sentinels-match-typed-literals
+  ;; The typed bodies of LHT-PROBE and LHT-INSERT-EMPTY! cannot read a global,
+  ;; so they spell the EMPTY/TOMBSTONE sentinels as literals. Pin the globals
+  ;; to those literals so the two cannot drift apart silently.
+  (progn
+    (assert-equal $lht-empty -1)
+    (assert-equal $lht-tombstone -2)))
+
+(deftest lht-probe-packed-result-encoding
+  ;; Direct exercise of the three result classes on hand-built inputs.
+  ;; Capacity 4; buckets[2] -> payload 0 holds the key.
+  (let ((buckets (typed-array 4 'int64))
+        (keys (array 4)))
+    (progn
+      (array-fill buckets $lht-empty)
+      (store buckets 2 0)
+      (store keys 0 'lht-enc-key)
+      ;; HIT: start at the key's own bucket -> that bucket.
+      (assert-equal (lht-probe buckets keys 4 'lht-enc-key 2 0 -1) 2)
+      ;; HIT after one collision step: start one before, bucket 1 is EMPTY so
+      ;; a different key MISSES there, encoded (- -1 1).
+      (assert-equal (lht-probe buckets keys 4 'lht-enc-other 1 0 -1) -2)
+      ;; MISS through a tombstone: the first tombstone on the chain is the
+      ;; insertion slot even though a later slot is EMPTY.
+      (store buckets 0 $lht-tombstone)
+      (assert-equal (lht-probe buckets keys 4 'lht-enc-other 0 0 -1) -1)
+      ;; FULL: every bucket a tombstone or a non-matching key, no EMPTY slot.
+      (array-fill buckets $lht-tombstone)
+      (assert-equal (lht-probe buckets keys 4 'lht-enc-other 0 0 -1) (- -1 4))
+      ;; The public decoders agree with the encoding end to end.
+      (let ((h (make-lht)))
+        (progn
+          (lht-put! h 'lht-enc-a 1)
+          (assert-true (>= (lht-find h 'lht-enc-a) 0))
+          (assert-equal (fetch (lht--keys h)
+                               (fetch (lht--buckets h) (lht-find h 'lht-enc-a)))
+                        'lht-enc-a)
+          (assert-true (< (lht-find h 'lht-enc-absent) 0))
+          (assert-true (>= (lht-find h 'lht-enc-absent) (- (lht--capacity h)))))))))
 
 (deftest lht-hash-agrees-across-primitive-types
   ;; Sanity check on LHT-HASH directly: EQUAL keys must hash EQUAL, over a
