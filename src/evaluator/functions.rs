@@ -504,10 +504,13 @@ fn apply_array_writeback(
                     }
                     crate::jit::Value::Char(b) => LispVal::Char(b),
                     // Excluded by `is_flat_scalar_array`: only scalar
-                    // elements reach a flat array's write-back.
+                    // elements reach a flat array's write-back. `Boxed` is
+                    // excluded by the same guard — a handle is never a flat
+                    // scalar array element (issue #476 refusal).
                     crate::jit::Value::Array(_)
                     | crate::jit::Value::Struct(_)
-                    | crate::jit::Value::TypedArray(_) => {
+                    | crate::jit::Value::TypedArray(_)
+                    | crate::jit::Value::Boxed(_) => {
                         unreachable!("flat scalar array write-back produced a compound element")
                     }
                 })
@@ -771,6 +774,12 @@ pub(super) fn lispval_to_typed(
             other => Err(format!("expected float64 argument, got {}", err_val(other))),
         },
         Ty::Bool => Ok(Value::Bool(!matches!(lv, LispVal::Nil))),
+        // `boxed` (issue #476) is inert cargo: every `LispVal`, without
+        // exception, is a valid `boxed` argument — that is the entire point
+        // of the type. `Value::to_word` does the actual boxing (a clone into
+        // `Ctx.boxed`); this is just the membrane's "does this value match
+        // this declared type" gate, and boxed's answer is always yes.
+        Ty::Boxed => Ok(Value::Boxed(lv.clone())),
         Ty::Char => match lv {
             LispVal::Char(b) => Ok(Value::Char(*b)),
             LispVal::Number(n) => Ok(Value::Char(char_byte_from_number(*n, "char argument")?)),
@@ -860,6 +869,10 @@ pub(super) fn typed_to_lispval(
             }
         }
         Value::Char(b) => LispVal::Char(b),
+        // `Value::from_word`'s `Ty::Boxed` arm already resolved the handle
+        // word against `Ctx.boxed` (`ctx.unbox`), so the table entry itself
+        // *is* the `LispVal` — nothing left to do but unwrap it.
+        Value::Boxed(lv) => lv,
         Value::Array(items) => match ty {
             Ty::Array(elem) if matches!(**elem, Ty::Char) => {
                 let bytes: Vec<u8> = items

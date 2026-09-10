@@ -24,13 +24,39 @@
 
 ;; The quiet compile attempt behind one-door `defun`. Defined before `defun`
 ;; itself because every subsequent stdlib definition routes through it.
+;;
+;; Two things happen here, and they are independent:
+;;
+;;   1. the host's native compile attempt (`jit-optimize`), when the host has
+;;      one -- unchanged;
+;;   2. `$HM-ON-DEFUN`, the PORTABLE type checker's definition hook
+;;      (lib/46-hm-check.lisp, issue #451). Every `defun` in the language
+;;      routes through here, so this is the one door the portable checker
+;;      needs: under `(hm-check-policy! 'eager)` it checks the new definition
+;;      on the spot and records the verdict, which is what a host with no
+;;      native checker wants. Lazy is the default for exactly the reason the
+;;      purity and call-graph analyses below are lazy: a tree-walked HM check
+;;      is a per-query cost, not a per-definition one, and paying it eagerly
+;;      for every stdlib definition would add seconds to startup.
+;;
+;;      Note the checker deliberately keeps NO cache keyed on this hook. Not
+;;      every definition path can reach it -- `defun*`, `defun-typed`, `def`,
+;;      `setq` and `set` are host special forms and builtins that never do --
+;;      so a cache invalidated here would be stale by construction. Verdicts
+;;      are recomputed instead; see that file's "why there is no verdict
+;;      cache" note.
+;;
+;; Guarded by BOUNDP because 46-hm-check.lisp loads long after this file --
+;; the same pattern `$CG-PENDING`/`$CALL-GRAPH` already use below.
 (def $defun-auto-compile
   (lambda (name)
-    (if (getp name "no-compile")
-        name
-        ;; JIT-OPTIMIZE is a special form taking its symbol UNevaluated, so
-        ;; build the call with the target name spliced in and eval it.
-        (progn (eval (list 'jit-optimize name)) name))))
+    (progn
+      (if (boundp '$hm-on-defun) ($hm-on-defun name) nil)
+      (if (getp name "no-compile")
+          name
+          ;; JIT-OPTIMIZE is a special form taking its symbol UNevaluated, so
+          ;; build the call with the target name spliced in and eval it.
+          (progn (eval (list 'jit-optimize name)) name)))))
 
 
 ;; --- &OPTIONAL / &KEY parameter lists (0.3 regularity) ----------------------
@@ -153,8 +179,15 @@
                                   (eq (car (car (cdr first-form))) 'no-compile))
                               nil)))
          (body-forms  (if has-nc (cdr body-1) body-1))
+         ;; A `(declare (no-compile))` definition is pinned away from the
+         ;; COMPILER, not from the CHECKER: it still routes through the
+         ;; portable checker's hook, so `(hm-check-policy! 'eager)` sees every
+         ;; definition the language makes and not merely the compilable ones.
          (auto        (if has-nc
-                          `(putp ',name "no-compile" t)
+                          `(progn (putp ',name "no-compile" t)
+                                  (if (boundp '$hm-on-defun)
+                                      ($hm-on-defun ',name)
+                                      nil))
                           `($defun-auto-compile ',name)))
          (lambda-expr (if ($params-extended-p params)
                           ($extended-lambda params body-forms)

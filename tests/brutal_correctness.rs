@@ -689,7 +689,7 @@ fn args_to_ovals(args: &[Value]) -> Vec<OVal> {
             // ever does, keeping this mapping total.
             Value::Char(b) => OVal::I(*b as i64),
             // The generator emits only scalar argument types.
-            Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) => {
+            Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) | Value::Boxed(_) => {
                 unreachable!("generator emits only scalar arguments")
             }
         })
@@ -1496,5 +1496,367 @@ fn strings_differential_and_metamorphic() {
             checked += 1;
         }
         eprintln!("strings: {checked} concat/index expressions agreed with the oracle + laws");
+    });
+}
+
+// ===========================================================================
+// Boxed handles (issue #476): the opaque `boxed` tier.
+//
+// The arithmetic battery above cannot reach this code at all — its generator
+// emits only `int64`/`float64`/`bool` (`GTy`), so a `Value::Boxed` never
+// appears and `args_to_ovals` routes it to `unreachable!`. Everything below
+// exists to close that hole: randomized, adversarial coverage of boxed
+// handles across every tier.
+//
+// ## Why there is no Rust oracle here
+//
+// The arithmetic suite compares the tiers against an independent Rust
+// interpreter of the generator's own AST. That trick is unavailable for
+// boxed: a "reference" implementation of boxed `equal`/`hash-code` would be
+// `PartialEq for LispVal` and `crate::hash_code` — the *same* functions the
+// intrinsics call (deliberately shared, so the builtin and the intrinsic
+// cannot drift). Comparing them to themselves would pass while proving
+// nothing.
+//
+// So the checks here are **metamorphic and differential** instead:
+//
+//   1. `EQUAL a b` ⇒ `hash-code a == hash-code b`. This is the actual
+//      contract, it needs no oracle, and it is genuinely falsifiable — a
+//      membrane that boxed the wrong cell, or an intrinsic that hashed a
+//      handle word instead of its referent, breaks it immediately.
+//   2. Tier agreement over three independent code paths (see below).
+//   3. Typed-tier `equal` vs the tree-walker's `EQUAL` on the same pair.
+//      The relation is shared, so this does not test the relation — it tests
+//      the *membrane*: boxing in, handle movement, and unboxing out.
+//   4. Round-trip identity: a boxed value through a typed function comes back
+//      `EQUAL` to what went in, whatever it was.
+//   5. Panic-freedom on adversarial array indices (the documented contract is
+//      "record an error, substitute a safe value", never unwind).
+//
+// ## The three code paths
+//
+// `agree3` runs each call through the compiled edition (native Cranelift
+// under `--features jit`, the closure tree otherwise), the typed-core
+// reference interpreter (`deoptimize_all`), and the tracing interpreter
+// (`trace_call`) — three separate implementations of boxed movement and the
+// `BoxedOp` intrinsics. Note the honest limit: with `jit` on, the *closure*
+// edition is shadowed by native (`TypedFn::invoke_once` prefers it), so the
+// closure tier is exercised by the `--no-default-features` leg of the
+// gauntlet rather than within this run.
+// ===========================================================================
+
+use lamedh::{LispVal, Shared, SharedCell};
+
+/// A pool of already-generated values, so the generator can hand back an
+/// *aliased* value (the same `Shared` allocation) rather than only ever fresh
+/// ones. This matters: `LispVal`'s equality for arrays/hash-tables is identity
+/// (`Shared::ptr_eq`), so two structurally identical but distinct arrays are
+/// NOT equal and constrain nothing — while the same array handed over twice
+/// IS equal and therefore MUST hash equally. Without aliasing, the
+/// equal-implies-same-hash law would be vacuous for every identity type.
+fn rand_lispval(
+    rng: &mut Rng,
+    env: &Shared<Environment>,
+    pool: &mut Vec<LispVal>,
+    depth: u32,
+) -> LispVal {
+    // 1-in-4, reuse something already built (aliasing / structure sharing).
+    if !pool.is_empty() && rng.below(4) == 0 {
+        let i = rng.below(pool.len());
+        return pool[i].clone();
+    }
+    let leaf = depth == 0;
+    let pick = if leaf { rng.below(6) } else { rng.below(8) };
+    let v = match pick {
+        0 => LispVal::Nil,
+        1 => LispVal::Number(rng.nasty_i64()),
+        2 => LispVal::Float(rng.nasty_f64()),
+        3 => LispVal::Char(rng.below(256) as u8),
+        // A deliberately tiny symbol pool, so distinct draws collide often and
+        // the interned-pointer equality path is actually exercised.
+        4 => LispVal::Symbol(env.intern_symbol(["A", "B", "C", "NIL-ISH"][rng.below(4)])),
+        5 => LispVal::String(["", "a", "aa", "\u{00e9}"][rng.below(4)].to_string()),
+        6 => {
+            let car = rand_lispval(rng, env, pool, depth - 1);
+            let cdr = rand_lispval(rng, env, pool, depth - 1);
+            LispVal::Cons {
+                car: Shared::new(car),
+                cdr: Shared::new(cdr),
+            }
+        }
+        _ => {
+            let n = rng.below(3);
+            let items: Vec<LispVal> = (0..n)
+                .map(|_| rand_lispval(rng, env, pool, depth - 1))
+                .collect();
+            LispVal::Array(Shared::new(SharedCell::new(items)))
+        }
+    };
+    pool.push(v.clone());
+    v
+}
+
+/// Call `name` through three independent code paths and assert they agree.
+fn agree3(j: &Jit, name: &str, args: &[Value]) -> Value {
+    j.compile_all();
+    let compiled = j.call(name, args).unwrap();
+    let (traced, _log) = j.trace_call(name, args).unwrap();
+    j.deoptimize_all();
+    let interpreted = j.call(name, args).unwrap();
+    j.compile_all();
+    assert!(
+        val_eq_boxed(&compiled, &interpreted),
+        "{name}: compiled vs typed-core interpreter disagree ({compiled:?} vs {interpreted:?})"
+    );
+    assert!(
+        val_eq_boxed(&compiled, &traced),
+        "{name}: compiled vs tracing interpreter disagree ({compiled:?} vs {traced:?})"
+    );
+    compiled
+}
+
+/// `val_eq` extended to boxed results (which compare by `LispVal` equality —
+/// the same relation the intrinsic uses, which is the point: a tier that
+/// unboxed the wrong cell yields a value that is not `EQUAL` to the others').
+fn val_eq_boxed(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Boxed(x), Value::Boxed(y)) => x == y,
+        _ => val_eq(a, b),
+    }
+}
+
+#[test]
+fn brutal_boxed_equal_hash_contract_across_tiers() {
+    lamedh::with_large_stack(|| {
+        let brutal = std::env::var("BRUTAL").is_ok();
+        let n = env_usize("BRUTAL_BOXED", if brutal { 20_000 } else { 2_000 });
+        let env = Environment::new_with_builtins();
+
+        let mut j = Jit::new();
+        for src in [
+            "(defun-typed (b-eq bool) ((a boxed) (b boxed)) (equal a b))",
+            "(defun-typed (b-hash int64) ((a boxed)) (hash-code a))",
+            "(defun-typed (b-id boxed) ((a boxed)) a)",
+            // Movement through control flow and a local binding: the handle
+            // must survive an `if` and a `let-typed` unchanged.
+            "(defun-typed (b-pick boxed) ((p bool) (a boxed) (b boxed)) (if p a b))",
+        ] {
+            let form = read(src, &env).unwrap_or_else(|e| panic!("read failed for `{src}`: {e}"));
+            j.define(&form)
+                .unwrap_or_else(|e| panic!("define failed for `{src}`: {e}"));
+        }
+
+        let mut equal_pairs = 0u64;
+        let mut checked = 0u64;
+        for s in 0..n {
+            let mut rng = Rng::new(0xB0DED ^ s as u64);
+            let mut pool: Vec<LispVal> = Vec::new();
+            let a = rand_lispval(&mut rng, &env, &mut pool, 3);
+            let b = rand_lispval(&mut rng, &env, &mut pool, 3);
+
+            let va = Value::Boxed(a.clone());
+            let vb = Value::Boxed(b.clone());
+
+            // (2) three-way tier agreement on each observation.
+            let eq = match agree3(&j, "b-eq", &[va.clone(), vb.clone()]) {
+                Value::Bool(x) => x,
+                other => panic!("b-eq returned {other:?}"),
+            };
+            let ha = match agree3(&j, "b-hash", std::slice::from_ref(&va)) {
+                Value::Int(x) => x,
+                other => panic!("b-hash returned {other:?}"),
+            };
+            let hb = match agree3(&j, "b-hash", std::slice::from_ref(&vb)) {
+                Value::Int(x) => x,
+                other => panic!("b-hash returned {other:?}"),
+            };
+
+            // (1) THE contract, oracle-free: EQUAL implies equal hashes.
+            if eq {
+                equal_pairs += 1;
+                assert_eq!(
+                    ha, hb,
+                    "EQUAL values hashed differently: {a:?} vs {b:?} ({ha} vs {hb})"
+                );
+            }
+
+            // (3) membrane check against the tree-walker's own EQUAL.
+            // NOTE: this membrane (`jit::parse::value_to_lispval`) encodes a
+            // `bool` result as `Number(0|1)`, NOT as `NIL`/`T` — unlike
+            // `evaluator::functions::typed_to_lispval`, which does use
+            // NIL/T. Both predate #476; the discrepancy is real but out of
+            // scope here, so this test asserts the behavior that exists
+            // rather than the one Lisp truthiness would suggest. Reading
+            // `Number(0)` as "true" (only NIL is false in Lisp) would make
+            // this assertion vacuous in the false direction.
+            let tw = j.call_lisp("b-eq", &[a.clone(), b.clone()]).unwrap();
+            let tw_true = match tw {
+                LispVal::Number(n) => n != 0,
+                LispVal::Nil => false,
+                other => panic!("b-eq via call_lisp returned unexpected {other:?}"),
+            };
+            assert_eq!(
+                eq, tw_true,
+                "typed vs call_lisp EQUAL disagree on {a:?} / {b:?}"
+            );
+
+            // Cross-check the shared hasher is reached identically from the
+            // typed tier and from ordinary Rust.
+            assert_eq!(
+                ha,
+                lamedh::hash_code(&a),
+                "typed hash-code != crate::hash_code on {a:?}"
+            );
+
+            // (4) round-trip identity, and movement through if/let.
+            match agree3(&j, "b-id", std::slice::from_ref(&va)) {
+                Value::Boxed(out) => assert!(out == a, "round-trip changed {a:?} into {out:?}"),
+                other => panic!("b-id returned {other:?}"),
+            }
+            match agree3(&j, "b-pick", &[Value::Bool(true), va.clone(), vb.clone()]) {
+                Value::Boxed(out) => {
+                    assert!(out == a, "if-true branch returned {out:?}, want {a:?}")
+                }
+                other => panic!("b-pick returned {other:?}"),
+            }
+            checked += 1;
+        }
+        eprintln!(
+            "brutal_boxed: {checked} value pairs agreed across 3 tiers; \
+             {equal_pairs} were EQUAL and hashed identically"
+        );
+        assert!(
+            equal_pairs > 0,
+            "generator never produced an EQUAL pair — the hash law was never actually exercised"
+        );
+    });
+}
+
+#[test]
+fn brutal_boxed_array_ops_are_panic_free_and_alias() {
+    lamedh::with_large_stack(|| {
+        let brutal = std::env::var("BRUTAL").is_ok();
+        let n = env_usize("BRUTAL_BOXED_ARR", if brutal { 20_000 } else { 2_000 });
+        let env = Environment::new_with_builtins();
+
+        let mut j = Jit::new();
+        for src in [
+            "(defun-typed (b-len int64) ((a boxed)) (array-length* a))",
+            "(defun-typed (b-get boxed) ((a boxed) (i int64)) (fetch a i))",
+            "(defun-typed (b-put boxed) ((a boxed) (i int64) (v boxed)) (store a i v))",
+        ] {
+            let form = read(src, &env).unwrap_or_else(|e| panic!("read failed for `{src}`: {e}"));
+            j.define(&form)
+                .unwrap_or_else(|e| panic!("define failed for `{src}`: {e}"));
+        }
+        j.compile_all();
+
+        let mut ok_reads = 0u64;
+        let mut errors = 0u64;
+        for s in 0..n {
+            let mut rng = Rng::new(0xA88A_BEEF ^ s as u64);
+            let mut pool: Vec<LispVal> = Vec::new();
+            let len = rng.below(4);
+            let items: Vec<LispVal> = (0..len)
+                .map(|_| rand_lispval(&mut rng, &env, &mut pool, 2))
+                .collect();
+            let arr = LispVal::Array(Shared::new(SharedCell::new(items.clone())));
+            // Index mix. A purely adversarial draw almost never lands in range
+            // (lengths here are 0..3), which would leave the SUCCESS path of
+            // `fetch` barely covered while the error path got hammered — so
+            // half the draws are deliberately in range when one exists. The
+            // rest stay hostile, split between the near misses (just past the
+            // end, small negatives) and full-range `nasty_i64` draws
+            // (`i64::MIN`/`i64::MAX`-ish), which would wrap if an index were
+            // ever cast to `usize` unchecked. `% 8 - 3` alone never produces
+            // the latter: `i64::MIN % 8 == 0`.
+            let idx = if len > 0 && rng.below(2) == 0 {
+                rng.below(len) as i64
+            } else if rng.below(2) == 0 {
+                rng.nasty_i64() % 8 - 3
+            } else {
+                rng.nasty_i64()
+            };
+
+            // A non-array receiver must ALSO be handled without unwinding.
+            let receiver = if rng.below(8) == 0 {
+                rand_lispval(&mut rng, &env, &mut pool, 1)
+            } else {
+                arr.clone()
+            };
+            // The receiver may be an ALIASED array drawn from the pool rather
+            // than `arr`, so every expectation below is derived from the
+            // receiver itself — never from `arr`/`items`.
+            let recv_items: Option<Vec<LispVal>> = match &receiver {
+                LispVal::Array(c) => Some(c.borrow().clone()),
+                _ => None,
+            };
+
+            // Every call below is contractually panic-free: out of range or a
+            // non-array receiver records an error and substitutes, never unwinds.
+            match j.call("b-len", &[Value::Boxed(receiver.clone())]) {
+                Ok(Value::Int(got)) => {
+                    let want = recv_items.as_ref().unwrap_or_else(|| {
+                        panic!("array-length* succeeded on a non-array {receiver:?}")
+                    });
+                    assert_eq!(got, want.len() as i64, "array-length* on {receiver:?}");
+                }
+                Ok(other) => panic!("b-len returned {other:?}"),
+                Err(_) => errors += 1,
+            }
+            match j.call("b-get", &[Value::Boxed(receiver.clone()), Value::Int(idx)]) {
+                Ok(Value::Boxed(got)) => {
+                    let want = match &recv_items {
+                        Some(its) if idx >= 0 && (idx as usize) < its.len() => {
+                            Some(its[idx as usize].clone())
+                        }
+                        _ => None,
+                    };
+                    match want {
+                        Some(w) => {
+                            assert!(got == w, "fetch {idx} gave {got:?}, want {w:?}");
+                            ok_reads += 1;
+                        }
+                        // A non-array receiver or an out-of-range index must
+                        // surface as `Err` (a recorded error), never as a
+                        // successful read of something.
+                        None => panic!("fetch {idx} succeeded on {receiver:?} (got {got:?})"),
+                    }
+                }
+                Ok(other) => panic!("b-get returned {other:?}"),
+                Err(_) => errors += 1,
+            }
+
+            // The aliasing property: a store through a handle mutates the
+            // CALLER's own LispVal::Array, with no write-back step, because the
+            // root table holds a clone that shares the same `Shared`.
+            if len > 0 {
+                let i = rng.below(len) as i64;
+                let fresh = LispVal::Number(rng.nasty_i64());
+                // An in-range store on a real array has no failure mode: a
+                // skipped `Err` here would hide a broken `store`, so unwrap.
+                j.call(
+                    "b-put",
+                    &[
+                        Value::Boxed(arr.clone()),
+                        Value::Int(i),
+                        Value::Boxed(fresh.clone()),
+                    ],
+                )
+                .unwrap_or_else(|e| panic!("in-range store at {i} failed: {e}"));
+                let LispVal::Array(cell) = &arr else {
+                    unreachable!("arr is constructed as an array above")
+                };
+                let seen = cell.borrow()[i as usize].clone();
+                assert!(
+                    seen == fresh,
+                    "store through a handle did not alias the caller's array \
+                     (slot {i} is {seen:?}, want {fresh:?})"
+                );
+            }
+        }
+        eprintln!(
+            "brutal_boxed_array: {ok_reads} in-range reads verified, {errors} recorded errors"
+        );
     });
 }

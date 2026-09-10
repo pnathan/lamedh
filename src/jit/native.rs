@@ -223,6 +223,7 @@ pub fn compile_native(
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
     jb.symbol("jit_bad_char", super::jit_bad_char as *const u8);
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
+    jb.symbol("jit_boxed_op", super::jit_boxed_op as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     jb.symbol("jit_for_step_zero", super::jit_for_step_zero as *const u8);
@@ -320,6 +321,23 @@ pub fn compile_native(
         .declare_function("jit_ftrans", Linkage::Import, &ftsig)
         .map_err(|e| format!("{e:?}"))?;
 
+    // Imported boxed-handle intrinsic trampoline (issue #476 phase 3b/3c):
+    // (ctx, opcode, a, b, c) -> result word — follows `jit_ftrans`'s
+    // single-opcode-dispatch shape (`BoxedOp::opcode`/`from_opcode`, mirroring
+    // `FUnOp`), but needs `Ctx` (to resolve handles via `Ctx::unbox` and to
+    // record a pending error on the array ops), so it takes the `ctx` pointer
+    // `jit_ftrans` doesn't.
+    let mut bosig = module.make_signature();
+    bosig.params.push(AbiParam::new(ptr));
+    bosig.params.push(AbiParam::new(types::I64));
+    bosig.params.push(AbiParam::new(types::I64));
+    bosig.params.push(AbiParam::new(types::I64));
+    bosig.params.push(AbiParam::new(types::I64));
+    bosig.returns.push(AbiParam::new(types::I64));
+    let boxed_op_id = module
+        .declare_function("jit_boxed_op", Linkage::Import, &bosig)
+        .map_err(|e| format!("{e:?}"))?;
+
     // Imported non-tail-call depth guard (issue #271): `jit_enter_call`
     // (ctx) -> bool-as-i64 (nonzero = ok, depth bumped; zero = at the cap, a
     // recursion-limit error is now pending) and `jit_exit_call` (ctx) -> (),
@@ -371,6 +389,7 @@ pub fn compile_native(
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
         let bad_char_ref = module.declare_func_in_func(bad_char_id, b.func);
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
+        let boxed_op_ref = module.declare_func_in_func(boxed_op_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let for_step_zero_ref = module.declare_func_in_func(for_step_zero_id, b.func);
@@ -425,6 +444,7 @@ pub fn compile_native(
             array_oob_ref,
             bad_char_ref,
             ftrans_ref,
+            boxed_op_ref,
             enter_call_ref,
             exit_call_ref,
             for_step_zero_ref,
@@ -501,6 +521,10 @@ struct Emitter<'a, 'b, 'c> {
     /// Imported [`super::jit_ftrans`]: the libm float-intrinsic trampoline
     /// (`sin`/`cos`/`tan`/`exp`/`round`), called from the `FUnary` arm.
     ftrans_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_boxed_op`] (issue #476 phase 3b/3c): the boxed-
+    /// handle intrinsic trampoline (`equal`/`hash-code`/general-array
+    /// access), called from the `Core::BoxedOp` arm.
+    boxed_op_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
@@ -883,6 +907,26 @@ impl Emitter<'_, '_, '_> {
                 step,
                 body,
             } => Emitted::Value(self.emit_for(*slot, start, end, step, body)),
+            Core::BoxedOp(op, args) => {
+                // Boxed-handle intrinsic (issue #476 phase 3b/3c): evaluate
+                // every arg (unused positions are simply not present), pad to
+                // three with a zero placeholder (ignored by `jit_boxed_op`'s
+                // callee per `BoxedOp`'s own doc comment on which args each
+                // op reads), and dispatch through the single opcode-tagged
+                // trampoline — mirrors `FUnary`'s libm-call shape but threads
+                // `ctx_ptr` too, since resolving a handle needs `Ctx`.
+                let mut vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
+                let zero = self.iconst(0);
+                while vals.len() < 3 {
+                    vals.push(zero);
+                }
+                let opc = self.iconst(op.opcode() as i64);
+                let call = self.b.ins().call(
+                    self.boxed_op_ref,
+                    &[self.ctx_ptr, opc, vals[0], vals[1], vals[2]],
+                );
+                Emitted::Value(self.b.inst_results(call)[0])
+            }
         }
     }
 

@@ -71,3 +71,4 @@
 - [Typed Checker Design](typed-checker-design.md)
 - [Typed JIT Design](typed-jit-design.md)
 - [Typed Region Design](typed-region-design.md)
+- [Typed Island Front End](typed-island-frontend.md)

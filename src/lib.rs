@@ -214,6 +214,8 @@
 //! | `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
 //! | `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
 //! | `45-hashtable.lisp` | optional | `hashtable` | A hash table built from scratch in pure Lamedh (issue #458): open addressing over `TYPED-ARRAY`/`ARRAY`, not the native `HASH-TABLE` builtin -- `MAKE-LHT`/`LHT-GET`/`LHT-PUT!`/`LHT-REMOVE!`/`LHT-KEYS`/`LHT-EACH` |
+//! | `46-hm-check.lisp` | core | — | The portable Hindley-Milner checker (issue #451): the type vocabulary, unification with row polymorphism and nominal subsumption, the declaration registry, and the bidirectional elaborator over real Lamedh surface syntax — `HM-SEE-TYPE`, `HM-CHECK-LAMBDA`, `HM-CHECK-EXPR`, `HM-VERDICT`, `HM-AUDIT`. Loads before `20-condensation.lisp` so its declaration-plane wrappers see every `declare-type!`/`record-declare`/`variant-declare`/`declare-instance!` the stdlib makes |
+//! | `47-typed-island.lisp` | core | — | The typed-island front end: freeze (global macros expanded to a fixpoint), the portable compileable-type gate run over a GROUP, and the hand-off to the host kernel with read-back — `TYPED-ISLAND`, `ISLAND-OPTIMIZE`, `ISLAND-FORMS`, `ISLAND-INSTALL!`, `ISLAND-AGREEMENT` |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -2952,6 +2954,21 @@ impl Hash for LispVal {
     }
 }
 
+/// The `HASH-CODE` primitive (issue #474): a hash of `v` that is required to
+/// agree with `PartialEq for LispVal` (the relation `EQUAL` and hash-table
+/// keys use) — `EQUAL a b` implies `hash_code(a) == hash_code(b)`, since this
+/// is exactly `Hash for LispVal` above run through a `DefaultHasher`. Shared
+/// by the interpreter builtin (`BuiltinFunc::HashCode`, `evaluator/apply.rs`)
+/// and the `BoxedHash` JIT intrinsic (`src/jit`) so all three tiers agree
+/// bit-for-bit.
+pub fn hash_code(v: &LispVal) -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    v.hash(&mut hasher);
+    hasher.finish() as i64
+}
+
 // ---------------------------------------------------------------------------
 // From<T> for LispVal — infallible conversions from Rust primitives
 // ---------------------------------------------------------------------------
@@ -3222,6 +3239,22 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
         "21-cl-compat.lisp",
         include_str!("../lib/21-cl-compat.lisp"),
     ),
+    // ---- The portable type checker ----
+    // Loads HERE, ahead of the condensation/variant/protocol layers, even
+    // though its filename number is 45 (numbers are historical; only this
+    // list's ORDER matters -- the same reason 20-condensation.lisp already
+    // loads out of numeric order below).
+    //
+    // Why so early: `46-hm-check.lisp` mirrors the checker's DECLARATION
+    // PLANE (`declare-type!`, `record-declare`, `variant-declare`,
+    // `declare-instance!`, `declare-protocol-dispatch!`) by wrapping those
+    // entry points, so every registration made by `defrecord`, `defvariant`,
+    // `definstance` and `lib/28-types.lisp`'s axiom table feeds the portable
+    // registry in lockstep with the native one. Wrapping has to be installed
+    // *before* the first such call, which means before 20-condensation.lisp.
+    // It needs nothing beyond the Prelude above (conditions, lists,
+    // functional, sets/hash, strings), so this is the earliest sound slot.
+    ("46-hm-check.lisp", include_str!("../lib/46-hm-check.lisp")),
     // ---- Module system ----
     // condensation + modules must load ahead of every optional so those
     // optionals can be wrapped in DEFMODULE/WITH-MODULE (issue #56). The
@@ -3278,6 +3311,13 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     (
         "45-hashtable.lisp",
         include_str!("../lib/45-hashtable.lisp"),
+    ),
+    // ---- The typed-island front end ----
+    // Built on 46-hm-check.lisp's codegen-mode gate; needs OPTIMIZE-FORM
+    // (11/24) and the module system, so it loads after every optional.
+    (
+        "47-typed-island.lisp",
+        include_str!("../lib/47-typed-island.lisp"),
     ),
     (
         "97-doc-renderer.lisp",

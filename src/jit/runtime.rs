@@ -59,6 +59,13 @@ pub struct Ctx<'a> {
     /// result, exactly as `div_by_zero` already does for its one fixed
     /// message.
     pub(super) pending_error: RefCell<Option<String>>,
+    /// The root table backing [`Ty::Boxed`] handles (issue #476): a
+    /// call-scoped, append-only table of cloned `LispVal`s. A handle word is
+    /// a 1-based index into this table (word `0` means `NIL` without a table
+    /// slot); see the doc comment on `Ty::Boxed` for the full representation
+    /// and aliasing contract. Dropped with the rest of `Ctx` when the
+    /// top-level membrane call returns.
+    pub(super) boxed: RefCell<Vec<LispVal>>,
 }
 
 impl Ctx<'_> {
@@ -298,6 +305,71 @@ impl Ctx<'_> {
         self.pending_tail.borrow_mut().take()
     }
 
+    /// Box `lv` into this call's root table (issue #476), returning its
+    /// 1-based handle word. `NIL` shortcuts to `0` and takes no table slot —
+    /// see [`Ty::Boxed`]'s doc comment for why. O(1): the value is cloned
+    /// (cheap for every `LispVal` variant — `Shared`-backed ones bump a
+    /// refcount) and pushed, never inspected or copied element-wise.
+    pub(super) fn box_value(&self, lv: LispVal) -> u64 {
+        if matches!(lv, LispVal::Nil) {
+            return 0;
+        }
+        let mut table = self.boxed.borrow_mut();
+        table.push(lv);
+        table.len() as u64
+    }
+
+    /// Resolve a boxed handle word back to its `LispVal` (issue #476). Word
+    /// `0` is `NIL`. An out-of-range index — which should never happen from
+    /// well-typed code, but a malformed/adversarial word must not panic —
+    /// records a [`pending_error`](Ctx::pending_error) and returns `NIL` as
+    /// the memory-safe substitute, matching every other fallible `Ctx`
+    /// operation's discipline.
+    pub(super) fn unbox(&self, w: u64) -> LispVal {
+        if w == 0 {
+            return LispVal::Nil;
+        }
+        let table = self.boxed.borrow();
+        match table.get((w - 1) as usize) {
+            Some(lv) => lv.clone(),
+            None => {
+                drop(table);
+                self.set_pending_error(format!(
+                    "boxed: handle {w} out of range (table has {} entr{})",
+                    self.boxed.borrow().len(),
+                    if self.boxed.borrow().len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
+                ));
+                LispVal::Nil
+            }
+        }
+    }
+
+    /// Record the evaluator's own "expects an array" type error for a boxed
+    /// receiver that turned out not to be a `LispVal::Array` when a
+    /// [`BoxedOp::Aref`]/[`BoxedOp::Aset`]/[`BoxedOp::Len`] tried to look
+    /// inside it (issue #476). `who` is the operation's own spelling
+    /// (`"FETCH"`/`"STORE"`/`"ARRAY-LENGTH*"`), and the message must match the
+    /// tree-walker's own wording for the same misuse verbatim: `FETCH`/`STORE`
+    /// (`apply.rs:1713,1761`) say "first argument", but `ARRAY-LENGTH*`
+    /// (`apply.rs:1776`) says just "argument" — no "first", since it takes
+    /// only one. Hard-coding "first" for all three would make the boxed path
+    /// diverge from the plain `(array-length* 5)` misuse text.
+    fn record_boxed_not_array(&self, who: &str, got: &LispVal) {
+        let article = if who == "ARRAY-LENGTH*" {
+            "argument"
+        } else {
+            "first argument"
+        };
+        self.set_pending_error(format!(
+            "{who}: {article} must be an array, got {}",
+            crate::printer::print(got)
+        ));
+    }
+
     /// A `Ctx` for a *leaf* native call from a raw entry point (issue #424).
     /// The function table is empty: a leaf's native code never performs a
     /// cross-function call, so it never indexes `funcs` — the only `Ctx` state
@@ -316,6 +388,7 @@ impl Ctx<'_> {
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
+            boxed: RefCell::new(Vec::new()),
         }
     }
 
@@ -417,6 +490,28 @@ pub(crate) unsafe extern "C" fn jit_bad_char(ctx: *const core::ffi::c_void, n: i
 #[cfg(feature = "jit")]
 pub(crate) extern "C" fn jit_ftrans(op: u64, x: f64) -> u64 {
     super::types::FUnOp::from_opcode(op).apply_word(x)
+}
+
+/// Host trampoline for the boxed-handle intrinsics (issue #476 phase 3b/3c):
+/// `op` is the [`BoxedOp`] discriminant, `a`/`b`/`c` the raw argument words
+/// (unused positions are ignored — see [`BoxedOp`]'s doc comment for which
+/// apply to which op). Calls [`boxed_op`] directly, the single evaluator the
+/// Core interpreter and closure edition also call, so native code can never
+/// diverge from the other two tiers.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with the `ctx` pointer threaded
+/// from the native entry.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_boxed_op(
+    ctx: *const core::ffi::c_void,
+    op: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+) -> u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    boxed_op(super::types::BoxedOp::from_opcode(op), a, b, c, ctx)
 }
 
 /// Host trampoline a native edition calls immediately before making a
@@ -601,6 +696,79 @@ unsafe fn field_get(base: u64, idx: usize) -> u64 {
 #[inline]
 unsafe fn field_set(base: u64, idx: usize, val: u64) {
     unsafe { *(base as *mut u64).add(idx + 1) = val }
+}
+
+// --- boxed-handle intrinsics shared by all three tiers (issue #476) --------
+
+/// The single source of truth for [`BoxedOp`] (issue #476 phase 3b/3c): the
+/// Core interpreter ([`eval_core_nontail`]/[`eval_core_traced`]), the closure
+/// edition ([`compile`]), and native code (via the `jit_boxed_op` trampoline,
+/// `native.rs`) all call this directly, so the three tiers can never diverge
+/// on `equal`/`hash-code`/general-array access over a handle — exactly the
+/// role [`FUnOp::apply_word`] plays for the float intrinsics.
+///
+/// `a`/`b`/`c` are raw handle/int64 words; which ones a given `op` reads is
+/// documented on [`BoxedOp`]'s variants (unused positions are ignored, so
+/// callers may pass `0`).
+pub(super) fn boxed_op(op: BoxedOp, a: u64, b: u64, c: u64, ctx: &Ctx) -> u64 {
+    match op {
+        BoxedOp::Equal => {
+            let (la, lb) = (ctx.unbox(a), ctx.unbox(b));
+            (la == lb) as u64
+        }
+        BoxedOp::Hash => {
+            let la = ctx.unbox(a);
+            from_i(crate::hash_code(&la))
+        }
+        BoxedOp::Aref => {
+            let base = ctx.unbox(a);
+            let idx = as_i(b);
+            match &base {
+                LispVal::Array(arr) => {
+                    let v = arr.borrow();
+                    if idx < 0 || idx as usize >= v.len() {
+                        ctx.record_index_error(idx, v.len() as i64, false);
+                        return 0;
+                    }
+                    ctx.box_value(v[idx as usize].clone())
+                }
+                other => {
+                    ctx.record_boxed_not_array("FETCH", other);
+                    0
+                }
+            }
+        }
+        BoxedOp::Aset => {
+            let base = ctx.unbox(a);
+            let idx = as_i(b);
+            match &base {
+                LispVal::Array(arr) => {
+                    let len = arr.borrow().len();
+                    if idx < 0 || idx as usize >= len {
+                        ctx.record_index_error(idx, len as i64, true);
+                        return c;
+                    }
+                    let val = ctx.unbox(c);
+                    arr.borrow_mut()[idx as usize] = val;
+                    c
+                }
+                other => {
+                    ctx.record_boxed_not_array("STORE", other);
+                    c
+                }
+            }
+        }
+        BoxedOp::Len => {
+            let base = ctx.unbox(a);
+            match &base {
+                LispVal::Array(arr) => from_i(arr.borrow().len() as i64),
+                other => {
+                    ctx.record_boxed_not_array("ARRAY-LENGTH*", other);
+                    0
+                }
+            }
+        }
+    }
 }
 
 /// Bounds-checked load of `field` of inline element `elem_idx` of an
@@ -1062,6 +1230,19 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             }
             0
         }
+        Core::BoxedOp(op, args) => {
+            let vals: Vec<u64> = args
+                .iter()
+                .map(|a| eval_core_nontail(a, env, ctx))
+                .collect();
+            boxed_op(
+                *op,
+                vals.first().copied().unwrap_or(0),
+                vals.get(1).copied().unwrap_or(0),
+                vals.get(2).copied().unwrap_or(0),
+                ctx,
+            )
+        }
     }
 }
 
@@ -1362,6 +1543,20 @@ pub(super) fn eval_core_traced(
             }
             step!("for", 0, *slot, NO_CALLEE)
         }
+        Core::BoxedOp(op, args) => {
+            let vals: Vec<u64> = args
+                .iter()
+                .map(|a| eval_core_traced(a, env, ctx, depth + 1, log))
+                .collect();
+            let r = boxed_op(
+                *op,
+                vals.first().copied().unwrap_or(0),
+                vals.get(1).copied().unwrap_or(0),
+                vals.get(2).copied().unwrap_or(0),
+                ctx,
+            );
+            step!("boxedop", r, NO_SLOT, NO_CALLEE)
+        }
     }
 }
 
@@ -1414,6 +1609,7 @@ pub fn core_node_count(core: &Core) -> usize {
                 + core_node_count(i)
                 + fields.iter().map(core_node_count).sum::<usize>()
         }
+        Core::BoxedOp(_, args) => args.iter().map(core_node_count).sum(),
     }
 }
 
@@ -1422,6 +1618,23 @@ pub fn core_node_count(core: &Core) -> usize {
 /// `0..n_funcs`. This is a cheap subject-reduction-style structural check the
 /// suite runs on every defined function to catch lowering bugs that would
 /// otherwise corrupt memory or panic only on a lucky input.
+///
+/// Issue #476 (boxed handles), phase 3a: the "no `Core::Cmp` may ever be
+/// elaborated at boxed type" invariant — two distinct handles can alias the
+/// same underlying object, so comparing handle words would silently be
+/// wrong — has no separate check to add *here*. `Core::Cmp`/`Core::Bin`
+/// carry a [`NumKind`], not a [`Ty`](super::types::Ty), and `NumKind` is
+/// exhaustively `{I, F}`; there is no `NumKind::Boxed` and no way to
+/// construct one, so a boxed operand cannot reach a `Cmp`/`Bin` node in the
+/// first place — the type system enforces it at construction, one layer up
+/// in `elaboration.rs` (`Cx::reject_boxed_arith_cmp`), which is also the
+/// only place `Ty` information still exists (this function's `Core` carries
+/// none). Verified in `tests.rs`: `elaboration_rejects_*_on_boxed_operands`
+/// exercise the elaborator's refusal directly, and `num_kind_has_no_boxed_variant`
+/// pins the `NumKind` shape this comment relies on — if a future change ever
+/// added a boxed-flavored `NumKind`, that match stops being exhaustive and
+/// fails to *compile*, catching the regression before it could reach this
+/// function at all.
 pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), String> {
     match core {
         Core::LitI(_) | Core::LitF(_) => Ok(()),
@@ -1526,6 +1739,12 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
             verify_core(i, n_slots, n_funcs)?;
             for f in fields {
                 verify_core(f, n_slots, n_funcs)?;
+            }
+            Ok(())
+        }
+        Core::BoxedOp(_, args) => {
+            for a in args {
+                verify_core(a, n_slots, n_funcs)?;
             }
             Ok(())
         }
@@ -1817,6 +2036,20 @@ pub fn compile(core: &Core) -> Compiled {
                     }
                 }
                 0
+            })
+        }
+        Core::BoxedOp(op, args) => {
+            let op = *op;
+            let cargs: Vec<Compiled> = args.iter().map(compile).collect();
+            Rc::new(move |e, c| {
+                let vals: Vec<u64> = cargs.iter().map(|ca| ca(e, c)).collect();
+                boxed_op(
+                    op,
+                    vals.first().copied().unwrap_or(0),
+                    vals.get(1).copied().unwrap_or(0),
+                    vals.get(2).copied().unwrap_or(0),
+                    c,
+                )
             })
         }
     }
