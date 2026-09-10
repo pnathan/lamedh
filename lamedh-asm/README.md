@@ -567,7 +567,7 @@ into conformance incrementally, tracked honestly rather than silently:
   `WITH-CAPABILITIES` list is silently skipped rather than signaling
   the spec's own "a non-symbol is an error"; fuel (Part X) doesn't
   exist yet; proper tail calls
-  (Part VI) aren't implemented (see v0 limits below); the array
+  (Part VI) are implemented within v0 scope (see v0 limits below); the array
   primitive names now match Part XI/IV exactly (`ARRAY`/`FETCH`/
   `STORE`/`ARRAY-LENGTH*`, no longer `MAKE-ARRAY`/`ARRAY-REF`/
   `ARRAY-SET`/`ARRAY-LENGTH`); **the hash table now also uses Part XI's
@@ -885,10 +885,25 @@ into conformance incrementally, tracked honestly rather than silently:
 - `THROW` with no matching `CATCH` traps (`int3`) rather than raising a
   catchable condition — there being no conditions yet to raise.
 - Proper tail-call frame reuse (`jmp` instead of `call`+`ret`, reusing
-  the caller's stack frame) is not yet implemented for ordinary Lisp
-  calls; the inline-cache trampoline's *own* internal dispatch already
-  ends in a tail-jump, but the enclosing function's call site itself
-  still uses `call`.
+  the caller's stack frame) **is** implemented (see
+  `docs/spec-tco-capture-gc.md` section 2 and `tests/cases/067_tail_calls.asm`),
+  but only for a call that is (a) in genuine tail position (the
+  tail-position table in the spec's own section 2 — `IF`'s both
+  branches, `PROGN`/`LET`/`LET*`'s last body form, `AND`/`OR`'s last
+  operand, `COND`'s matched clause body; never a `CATCH`/
+  `HANDLER-CASE`/`BLOCK`/`UNWIND-PROTECT` body, a `WHILE` body, or any
+  value/argument position), (b) has 3 or fewer arguments (v0 scope — a
+  call needing stack-passed arguments past the register-passed first
+  three still uses an ordinary call), and (c) is nested inside some
+  `LAMBDA` body (never at the top level). Both a locally-bound operator
+  (a closure held in a variable — `leave`+`jmp` through its code
+  pointer) and a bare global symbol (the inline-cache call site itself
+  becomes a `jmp`, patched via a second, baked-call-site-address
+  trampoline variant so the self-patching mechanism stays correct once
+  the call is no longer reached via `call`) get real frame reuse; a
+  1,000,000-deep tail-recursive loop through either path no longer
+  grows the native stack. `&OPTIONAL`/`&KEY` parameters and the GC
+  described in the same spec are still not implemented.
 - `&REST` parameters are supported for any fixed-parameter count,
   including 0, 1, or 2 (`(LAMBDA (&REST ALL) ...)` and
   `(LAMBDA (A &REST MORE) ...)` now work, not only nfixed>=3) —
@@ -2014,9 +2029,14 @@ bugs no existing test had exercised:
   building a new one.)
 - A real register allocator (linear-scan to start) instead of spilling
   every local to a fixed stack slot.
-- Proper tail calls: frame-reuse `jmp` for calls in tail position —
-  spec written (`docs/spec-tco-capture-gc.md` section 2), not yet
-  implemented.
+- Proper tail calls (`docs/spec-tco-capture-gc.md` section 2): landed
+  for both a locally-bound operator and a bare global symbol, at a
+  call site that is genuinely in tail position, nested inside some
+  `LAMBDA` body, with <=3 arguments (v0 scope) — see "v0 limits" above
+  and `tests/cases/067_tail_calls.asm`. Not yet done: stage-2
+  stack-arg copy-up (a tail call needing 4+ arguments still falls back
+  to an ordinary call rather than copying the extra args up into the
+  caller's own incoming-arg area).
 - A reference-counting GC for the data heap — spec written
   (`docs/spec-tco-capture-gc.md` section 3, landing last), not yet
   implemented.

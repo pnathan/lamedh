@@ -576,6 +576,12 @@ one fewer frame, which is the point.
 
 ### 2.6 Incremental landing plan
 
+Status: steps 1-4 landed (`tests/cases/067_tail_calls.asm`, full suite green
+after each). Step 5 (stage 2, stack-arg copy-up) is not required for v0 — a
+tail call needing 4+ arguments simply falls back to an ordinary call, which is
+correct, just not frame-reusing. Step 6 (this README pass) is this note plus
+the corresponding `README.md` updates.
+
 1. Add `tail_ctx` + `current_lambda_depth`, the consume-on-entry rule in
    `compile_form`, the `rsi` parameter on the eight helpers, and the audit of
    every `compile_progn`/helper call site — **with `compile_call` ignoring the
