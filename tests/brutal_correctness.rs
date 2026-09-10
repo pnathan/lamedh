@@ -1662,11 +1662,11 @@ fn brutal_boxed_equal_hash_contract_across_tiers() {
                 Value::Bool(x) => x,
                 other => panic!("b-eq returned {other:?}"),
             };
-            let ha = match agree3(&j, "b-hash", &[va.clone()]) {
+            let ha = match agree3(&j, "b-hash", std::slice::from_ref(&va)) {
                 Value::Int(x) => x,
                 other => panic!("b-hash returned {other:?}"),
             };
-            let hb = match agree3(&j, "b-hash", &[vb.clone()]) {
+            let hb = match agree3(&j, "b-hash", std::slice::from_ref(&vb)) {
                 Value::Int(x) => x,
                 other => panic!("b-hash returned {other:?}"),
             };
@@ -1709,7 +1709,7 @@ fn brutal_boxed_equal_hash_contract_across_tiers() {
             );
 
             // (4) round-trip identity, and movement through if/let.
-            match agree3(&j, "b-id", &[va.clone()]) {
+            match agree3(&j, "b-id", std::slice::from_ref(&va)) {
                 Value::Boxed(out) => assert!(out == a, "round-trip changed {a:?} into {out:?}"),
                 other => panic!("b-id returned {other:?}"),
             }
@@ -1764,13 +1764,18 @@ fn brutal_boxed_array_ops_are_panic_free_and_alias() {
             // Index mix. A purely adversarial draw almost never lands in range
             // (lengths here are 0..3), which would leave the SUCCESS path of
             // `fetch` barely covered while the error path got hammered — so
-            // half the draws are deliberately in range when one exists, and
-            // half stay hostile: past the end, negative, and `i64::MIN`-ish
-            // values that would wrap if an index were ever cast unchecked.
+            // half the draws are deliberately in range when one exists. The
+            // rest stay hostile, split between the near misses (just past the
+            // end, small negatives) and full-range `nasty_i64` draws
+            // (`i64::MIN`/`i64::MAX`-ish), which would wrap if an index were
+            // ever cast to `usize` unchecked. `% 8 - 3` alone never produces
+            // the latter: `i64::MIN % 8 == 0`.
             let idx = if len > 0 && rng.below(2) == 0 {
                 rng.below(len) as i64
-            } else {
+            } else if rng.below(2) == 0 {
                 rng.nasty_i64() % 8 - 3
+            } else {
+                rng.nasty_i64()
             };
 
             // A non-array receiver must ALSO be handled without unwinding.
@@ -1807,9 +1812,15 @@ fn brutal_boxed_array_ops_are_panic_free_and_alias() {
                         }
                         _ => None,
                     };
-                    if let Some(w) = want {
-                        assert!(got == w, "fetch {idx} gave {got:?}, want {w:?}");
-                        ok_reads += 1;
+                    match want {
+                        Some(w) => {
+                            assert!(got == w, "fetch {idx} gave {got:?}, want {w:?}");
+                            ok_reads += 1;
+                        }
+                        // A non-array receiver or an out-of-range index must
+                        // surface as `Err` (a recorded error), never as a
+                        // successful read of something.
+                        None => panic!("fetch {idx} succeeded on {receiver:?} (got {got:?})"),
                     }
                 }
                 Ok(other) => panic!("b-get returned {other:?}"),
@@ -1822,24 +1833,26 @@ fn brutal_boxed_array_ops_are_panic_free_and_alias() {
             if len > 0 {
                 let i = rng.below(len) as i64;
                 let fresh = LispVal::Number(rng.nasty_i64());
-                let r = j.call(
+                // An in-range store on a real array has no failure mode: a
+                // skipped `Err` here would hide a broken `store`, so unwrap.
+                j.call(
                     "b-put",
                     &[
                         Value::Boxed(arr.clone()),
                         Value::Int(i),
                         Value::Boxed(fresh.clone()),
                     ],
+                )
+                .unwrap_or_else(|e| panic!("in-range store at {i} failed: {e}"));
+                let LispVal::Array(cell) = &arr else {
+                    unreachable!("arr is constructed as an array above")
+                };
+                let seen = cell.borrow()[i as usize].clone();
+                assert!(
+                    seen == fresh,
+                    "store through a handle did not alias the caller's array \
+                     (slot {i} is {seen:?}, want {fresh:?})"
                 );
-                if r.is_ok()
-                    && let LispVal::Array(cell) = &arr
-                {
-                    let seen = cell.borrow()[i as usize].clone();
-                    assert!(
-                        seen == fresh,
-                        "store through a handle did not alias the caller's array \
-                         (slot {i} is {seen:?}, want {fresh:?})"
-                    );
-                }
             }
         }
         eprintln!(
