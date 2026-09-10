@@ -603,8 +603,12 @@ definition had an answer."
         (apply typed args)
         (apply orig args))))
 
-(defun island-install-one! (m e mode)
-  (let ((orig (handler-case (eval (car m) e) (error (err) nil))))
+(defun island-install-one! (m e mode orig)
+  "Install member M in E under MODE. ORIG is the member's binding as it was
+BEFORE the hand-off began -- captured by ISLAND-INSTALL-IN! ahead of the
+declare phase, because `declare-typed` already rebinds a name to the kernel's
+strict membrane, and a guard built over that would fall back to an error."
+  (progn
     (handler-case
         (progn
           (eval (island-defun-typed-form m) e)
@@ -633,12 +637,18 @@ definition had an answer."
 (defun island-install-in! (island e mode)
   (if (not (member mode '(guarded strict)))
       (error "island-install!: mode must be GUARDED or STRICT")
-      (let ((members (island-members island)))
+      (let* ((members (island-members island))
+             ;; The dynamic bindings, before any declaration touches them.
+             (origs (mapcar (lambda (m)
+                              (cons (car m) (handler-case (eval (car m) e)
+                                              (error (err) nil))))
+                            members)))
         (mapc (lambda (m)
                 (handler-case (eval (island-declare-typed-form m) e)
                   (error (err) nil)))
               members)
-        (mapcar (lambda (m) (island-install-one! m e mode)) members))))
+        (mapcar (lambda (m) (island-install-one! m e mode (cdr (assoc (car m) origs))))
+                members))))
 
 (defvau island-install! (x e)
   "Hand ISLAND to the host kernel and read its verdict back, member by member.
