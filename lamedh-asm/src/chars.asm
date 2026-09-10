@@ -25,6 +25,12 @@
 extern write_buf
 extern fail_wrong_type
 
+extern is_string
+extern string_len
+extern string_bytes
+section .rodata
+char_code_type_msg: db "CHAR-CODE: expected a character or a one-character string"
+char_code_type_msg_len: equ $ - char_code_type_msg
 section .text
 
 ; is_char_tagged(rdi=tagged value) -> rax = 1/0
@@ -61,13 +67,47 @@ tag_char:
 ; char_code_tagged(rdi=tagged Char) -> rax = tagged fixnum code. The
 ; CHAR-CODE builtin's host half; caller (compiler.asm) guarantees rdi
 ; is actually a Char via is_char_tagged first, so no check here.
+; char_code_tagged(rdi=a Char, or a one-character string) -> rax =
+; tagged fixnum code. The reference's CHAR-CODE accepts a one-character
+; string as well as a Char (lib/14-strings.lisp's char->code relies on
+; it, and this kernel's own CODE-CHAR returns a one-character STRING —
+; README "v0 limits"), so a string's first byte is its code here. It
+; used to shift whatever it was given: a string argument came back as
+; a pointer-sized garbage number, and base64's "hi" encoded as "//A=".
+; Anything else is a real condition.
 global char_code_tagged
 char_code_tagged:
-    mov rax, rdi
+    push rbx
+    mov rbx, rdi
+    call is_char_tagged
+    test rax, rax
+    jz .not_char
+    mov rax, rbx
     shr rax, 2
     sub rax, IMM_CHAR_BASE
     TO_FIXNUM rax
+    pop rbx
     ret
+.not_char:
+    mov rdi, rbx
+    call is_string
+    test rax, rax
+    jz .bad
+    mov rdi, rbx
+    call string_len
+    test rax, rax
+    jz .bad
+    mov rdi, rbx
+    call string_bytes
+    movzx eax, byte [rax]
+    TO_FIXNUM rax
+    pop rbx
+    ret
+.bad:
+    mov rdi, rbx
+    mov rsi, char_code_type_msg
+    mov rdx, char_code_type_msg_len
+    call fail_wrong_type                  ; never returns
 
 ; make_char_from_fixnum(rdi=tagged fixnum) -> rax = tagged Char, or a
 ; wrong-type condition (fail_wrong_type, native_errors.asm — the same

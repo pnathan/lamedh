@@ -95,15 +95,25 @@ instead.
     immediately-invoked `LAMBDA` literal): one indirect call through the
     closure's stored code pointer.
   - **A global name** (`(SQUARE 7)` where `SQUARE` was `DEFINE`'d): a
-    **self-patching inline cache**. The call site starts pointing at a
-    small per-call-site trampoline that resolves the symbol's *current*
-    value, rewrites the original call site's `rel32` displacement in
-    place to jump straight to the resolved code, and only then transfers
-    control — every subsequent call from that exact site is a plain
-    direct call, no indirection, no re-resolution. This is the same
+    **monomorphic inline cache**. The call site loads the symbol's
+    *current* value into `rdi` (the closure self-pointer the callee
+    reads its captured variables through), checks it is a heap object,
+    loads its code pointer, and compares that with a code pointer
+    cached in the site itself (an `imm64` operand); on a hit it makes a
+    plain direct `call` to the cached code. On a miss — the first call
+    from that site, or any call after the global was redefined — it
+    branches to a small per-site trampoline that checks the value is
+    callable (a real condition naming the symbol if not), patches the
+    cached code pointer and the `call`'s `rel32` displacement in place,
+    and jumps back to the site so its own `call` runs. This is the same
     `patch_rel32` primitive `compile_if`'s compile-time branch
     backpatching uses; compile-time and runtime self-modification are
-    literally the same mechanism.
+    literally the same mechanism. (An earlier version patched the site
+    straight to the resolved code and never reloaded `rdi` or
+    re-validated: any global closure with captured variables — every
+    protocol dispatcher in the reference stdlib — read its captures
+    through garbage from the second call at a site on, and a redefined
+    function kept being called at its old definition. Both silent.)
 
 Local/free variable references compile to a fixed `[rbp+disp]` load
 decided entirely at compile time (`current_scope`, a compile-time-only
@@ -451,10 +461,11 @@ into conformance incrementally, tracked honestly rather than silently:
   parameter count and signals `wrong number of arguments (got .
   expected)` / `too few arguments (got . minimum)` through this same
   machinery, so `(F 1)` against a two-parameter `F` no longer silently
-  returns `(1 0)`; an unbound-variable *read* still returns
-  the `IMM_UNBOUND` immediate rather than erroring) — only explicit
-  `ERROR` calls and now `CAR`/`CDR`'s own type check go through this
-  system so far.
+  returns `(1 0)`; an unbound-variable *read* is **now an error too**
+  — `unbound variable: NAME`, one compare and one taken branch per
+  global read, where it used to yield the raw `IMM_UNBOUND` immediate,
+  truthy and printing as `3`) — only explicit `ERROR` calls and now
+  `CAR`/`CDR`'s own type check go through this system so far.
 - **`BLOCK`/`RETURN-FROM`** are the same CATCH/THROW derivation
   trick again, one call site simpler than `HANDLER-CASE`: `name` is
   *unevaluated*, so it's used directly as the catch frame's tag (no
@@ -663,9 +674,12 @@ into conformance incrementally, tracked honestly rather than silently:
   results to `0`/negative garbage), not shipped; fixed by giving the
   three failure sites their own explicit `rax = rcx` (the saved
   original) restore stub, with the success path jumping clean over it.
-  `CHAR-CODE` only accepts a `Char`
-  argument, not the reference's own "or a non-empty string's first
-  code point" overload; `CODE-CHAR`/`MAKE-CHAR` are restricted to
+  `CHAR-CODE` accepts a `Char` or, like the reference, a non-empty
+  string (its first byte's code) — anything else is a real condition,
+  where it used to shift whatever it was given into a garbage number
+  (`lib/14-strings.lisp`'s `char->code` relies on the string overload,
+  and this kernel's own `CODE-CHAR` returns a one-character string, so
+  the whole codec tier runs on strings); `CODE-CHAR`/`MAKE-CHAR` are restricted to
   `0..255` (one byte) rather than the reference's full Unicode code
   point range, since this kernel's strings are plain byte buffers with
   no UTF-8 encoder yet — there is still no Unicode-codepoint string
@@ -1074,10 +1088,9 @@ concrete reason it landed last of the three features in its spec:
   calls: `APPLY` spreads its list through a host routine
   (`invoke_macro`) and returns through it. Both a locally-bound operator
   (a closure held in a variable — `leave`+`jmp` through its code
-  pointer) and a bare global symbol (the inline-cache call site itself
-  becomes a `jmp`, patched via a second, baked-call-site-address
-  trampoline variant so the self-patching mechanism stays correct once
-  the call is no longer reached via `call`) get real frame reuse; a
+  pointer) and a bare global symbol (the inline-cache call site's own
+  `call` becomes a `jmp`; the same trampoline serves both, since every
+  patch address is baked at compile time) get real frame reuse; a
   1,000,000-deep tail-recursive loop through either path no longer
   grows the native stack. (`&OPTIONAL`/`&KEY` parameters are a separate,
   since-landed feature — see "Known gaps" below — not part of this
@@ -1149,10 +1162,48 @@ concrete reason it landed last of the three features in its spec:
     collection could not free (`zct_trigger`, `gc.asm`).
   - Still true, and documented rather than hidden: deep *non-tail*
     recursion is bounded by the native stack (roughly a few hundred
-    thousand frames); `APPLY`/`FUNCALL` in tail position are not tail
-    calls; `/` is not a kernel operator at all (`not a function: /`);
-    and the stdlib-conformance gap around `JIT-OPTIMIZE`/`CONSP`/
-    `PRIN1-TO-STRING`/`ERROR` in "Known gaps" is unchanged.
+    thousand frames), and `APPLY`/`FUNCALL` in tail position are not
+    tail calls.
+- **Second review pass — the stdlib codec tier, end to end.** Making
+  `BASE64:ENCODE`/`DECODE`, `HEX:`, `URL:`, `MIME:` and `JSON:` callable
+  through the reference's own `lib/00-core.lisp` `DEFUN` (the gap the
+  previous pass documented) turned out to need mostly *kernel* fixes,
+  each a silent wrong answer on its own:
+  - **The named-call inline cache dropped the closure self-pointer and
+    never re-validated** (see "What's compiled"): a global closure with
+    captured variables read garbage from the second call at a site on
+    — `(DEFINE ADD5 (MK 5))` then `(CALLER 1)` three times gave
+    `(2 2 6)` — and a redefined function kept running its old body. The
+    reference's protocol dispatchers are exactly such closures, which
+    is why `BASE64:DECODE` failed with "no <garbage> instance for
+    LIST". Now a proper monomorphic cache keyed on the code pointer.
+  - **An unbound global read as a truthy sentinel** (`IMM_UNBOUND`,
+    printing as `3`) instead of erroring, so `#'CODE-CHAR` — a compiler
+    keyword with no value binding — was silently handed to `MAPCAR`.
+    Now `unbound variable: NAME`; and the function-like keywords
+    (`CODE-CHAR`, `CHAR-CODE`, `STRING-LENGTH`, `FIXP`, `MOD`, ...)
+    have bare-symbol bindings in the prelude so `#'` works on them.
+  - **`CHAR-CODE` of a one-character string returned a garbage number**
+    (base64 of "hi" encoded as `//A=`); now the byte's code, as in the
+    reference, and a real condition for anything else.
+  - **`PRINC-TO-STRING` of a float was wrong** (`2.5` → `2.775808`):
+    `float_print` expected `rax` to survive the `write_buf` call for
+    the decimal point; on stdout the syscall leaves 1 there and the
+    arithmetic happens to give the right last six digits, on the
+    capture path it leaves a buffer address.
+  - New kernel keywords `PRIN1-TO-STRING` (readable: strings quoted and
+    escaped), `FIXP`, `FLOATP`, `ARRAYP`, `CHARP`; new prelude
+    definitions of the reference builtins the stdlib calls at runtime
+    (`/`, `NUMBERP`, `STRING->NUMBER`, `HASH-TABLE-P`, `ADD1`/`SUB1`,
+    `ZEROP`/`PLUSP`/`EVENP`/`ODDP`, `LAST`, `NTHCDR`, `SORT`, `EXPT`,
+    `GCD`/`LCM`, `ISQRT`, `SUBST`, `DELETE`/`EFFACE`, `PLIST`, `EVLIS`/
+    `EVCON`, `TERPRI`/`PRIN1`/`PRINC`/`SPACES`, ...); a hash table is
+    now a 62-slot array with a marker so `HASH-TABLE-P` can tell it from
+    an array. `JIT-OPTIMIZE` was already a no-op special form here (the
+    code is native already) and `CONSP` comes from `lib/01-list.lisp`.
+  - Not done: float math beyond `+ - * / <` (`SQRT`, `SIN`, `EXP`,
+    `FLOOR`/`ROUND` on floats), `READ` from stdin, `SHELL`/`CHMOD`/
+    `FILE-P`, and `ROT`. Each is a clear `not a function` now.
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers
@@ -2092,13 +2143,10 @@ bugs no existing test had exercised:
   port and reads two lines back through the qualified `PORTS:`/`TEXT:`
   API. **Update**: `&OPTIONAL`/`&KEY` parameter lists themselves are now
   implemented (see "Known gaps" below) — but `32-base64.lisp` through
-  `36-mime.lisp`'s own `ENCODE`/`DECODE`-style functions are still not
-  callable through `stdlib_conformance`, for an unrelated reason: loading
-  the reference's own `lib/00-core.lisp` overwrites this kernel's `DEFUN`
-  with a version that depends on other not-yet-implemented primitives
-  (`JIT-OPTIMIZE`, a real `CONSP`, `PRIN1-TO-STRING`, catchable `ERROR`).
-  Confirmed by direct reproduction that this is unrelated to parameter
-  lists — see "Known gaps" for the full account.
+  `36-mime.lisp`'s own `ENCODE`/`DECODE`-style functions **are now
+  callable through `stdlib_conformance`** (`tests/run.sh` round-trips
+  base64, hex, url, mime and json through the reference's own `DEFUN`)
+  — see "Known gaps" for what that took.
 
   **The confirmed-loadable set is now the entire Prelude tier plus
   every Optional-tier file with no networking/TLS/regex dependency**
@@ -2299,14 +2347,12 @@ bugs no existing test had exercised:
   (first in `stdlib_conformance`'s own load order) overwrites `DEFUN`
   with *its* far larger definition — auto-JIT-compilation, docstrings,
   call-graph bookkeeping — which in turn depends on primitives this
-  kernel does not implement at all (`JIT-OPTIMIZE`, `CONSP` as a real
-  builtin, `PRIN1-TO-STRING`, `ERROR` as anything other than an `int3`
-  trap). Confirmed by direct reproduction: `($BASE64-ALPHABET-KEYWORD
-  :STANDARD)` — a plain one-argument function with no `&OPTIONAL`/`&KEY`
-  of its own — already traps identically on this branch's immediate
-  parent commit, before any of this work. Closing that gap is "implement
-  a much larger slice of the reference's own runtime surface," a
-  materially different and larger task than parameter-list parsing.
+  kernel did not implement at the time. **Since closed** — see the
+  "Second review pass" entry under "v0 limits": the real blockers were
+  the inline cache, unbound-variable reads, `CHAR-CODE` on strings, and
+  a float-printing register clobber, plus the reference builtins the
+  codec tier calls at runtime; `tests/run.sh` now round-trips all five
+  codecs through the reference's own `DEFUN`.
 - Benchmark corpus + gate: a fixed set of numeric/looping Lamedh
   programs with hand-written C equivalents, checked into this tree, run
   under both `gcc -O3`/`clang -O3` and this compiler, wall-clock/cycle
@@ -2318,11 +2364,11 @@ bugs no existing test had exercised:
 - Proper tail calls (`docs/spec-tco-capture-gc.md` section 2): landed
   for both a locally-bound operator and a bare global symbol, at a
   call site that is genuinely in tail position, nested inside some
-  `LAMBDA` body, with <=3 arguments (v0 scope) — see "v0 limits" above
-  and `tests/cases/067_tail_calls.asm`. Not yet done: stage-2
-  stack-arg copy-up (a tail call needing 4+ arguments still falls back
-  to an ordinary call rather than copying the extra args up into the
-  caller's own incoming-arg area).
+  `LAMBDA` body — see "v0 limits" above and
+  `tests/cases/067_tail_calls.asm`. Stage-2 stack-arg copy-up has since
+  landed for the case where the 4+ arguments fit the current
+  function's own incoming-arg area (`nargs <= nfixed`, no `&REST`); a
+  larger call still falls back to an ordinary call.
 - A reference-counting GC for the data heap — spec written
   (`docs/spec-tco-capture-gc.md` section 3, landing last), not yet
   implemented.
@@ -2365,11 +2411,10 @@ bugs no existing test had exercised:
   cruder `fail_not_callable` a hard `exit(1)` version of the callable
   check used is gone, folded into the same real signaling path), and
   the same `native_throw` routine is reusable for the rest of this
-  list: wrong arity now signals through it too (see "v0 limits");
-  division by zero, index out of range, and an unbound-variable *read*
-  still misbehave exactly as before (segfault, garbage, or the raw
-  `IMM_UNBOUND` immediate, respectively) rather than signaling — the
-  natural next candidates for the same treatment.
+  list: wrong arity and an unbound-variable *read* now signal through
+  it too (see "v0 limits"); division by zero and index out of range
+  still misbehave exactly as before (segfault or garbage) rather than
+  signaling — the natural next candidates for the same treatment.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); the hash table still
   hashes/compares keys with `EQ`

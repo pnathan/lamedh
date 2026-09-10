@@ -231,6 +231,13 @@ float_print:
     call write_buf
 
     ; fractional part: (|value| - int_part) * 10^6, truncated, zero-padded
+    ; int_part is reloaded from rbx HERE, after the write: write_buf
+    ; clobbers rax (the stdout path leaves the syscall's byte count, 1,
+    ; in it — which made the fraction come out right by arithmetic
+    ; accident, since (v-1)*10^6 and (v-int)*10^6 share their last six
+    ; digits; the capture path used by PRINC-TO-STRING leaves a buffer
+    ; address there, which printed 2.5 as "2.775808").
+    mov rax, rbx
     cvtsi2sd xmm1, rax
     subsd xmm0, xmm1
     mov rax, 1000000

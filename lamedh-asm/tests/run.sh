@@ -523,6 +523,31 @@ b")))
 (NEWLINE)
 (GC-COLLECT)
 (PRINT (GC-VERIFY))
+(NEWLINE)
+; The codec/text tier of the reference stdlib, end to end through the
+; reference's own DEFUN (00-core's, with its &KEY parameter lists,
+; JIT-OPTIMIZE hook and docstrings), the protocol dispatchers
+; (LENGTH twice from one site: a named call to a global closure WITH
+; captured variables, which the old inline cache broke on the second
+; call), PRIN1-TO-STRING, and a float through PRINC-TO-STRING's
+; capture buffer.
+(PRINT (BASE64:ENCODE (TEXT:STRING->UTF8 "hi")))
+(NEWLINE)
+(PRINT (TEXT:UTF8->STRING (BASE64:DECODE "aGk=")))
+(NEWLINE)
+(PRINT (HEX:ENCODE (TEXT:STRING->UTF8 "hi")))
+(NEWLINE)
+(PRINT (TEXT:UTF8->STRING (HEX:DECODE "6869")))
+(NEWLINE)
+(PRINT (URL:ENCODE-QUERY-COMPONENT "a b&c"))
+(NEWLINE)
+(PRINT (URL:DECODE "a%20b%26c"))
+(NEWLINE)
+(PRINT (MIME:PARSE-CONTENT-TYPE "text/html; charset=utf-8"))
+(NEWLINE)
+(PRINT (JSON:STRINGIFY (JSON:PARSE "{\"k\": [1, 2.5, \"s\", true, null]}")))
+(NEWLINE)
+(PRINT (LIST (LENGTH (LIST 1 2)) (LENGTH (LIST 1 2 3)) (PRIN1-TO-STRING "a\"b") (SORT (LIST 3 1 2) <) (PRINC-TO-STRING 2.5)))
 LISP
     stdlib_want='3
 (1 4 9)
@@ -530,7 +555,16 @@ LISP
 ((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.500000 2.500000) 4.000000) ((+) 0)) (SEE-ALSO - * /))
 ab
 T
-T'
+T
+aGk=
+hi
+6869
+hi
+a%20b%26c
+a b&c
+((TYPE . text) (SUBTYPE . html) (PARAMETERS (charset . utf-8)))
+{"k":[1,2.500000,"s",true,null]}
+(2 3 "a\"b" (1 2 3) 2.500000)'
     stdlib_got=$("$runner_bin" "$stdlib_prog")
     stdlib_exit=$?
     if [ "$stdlib_got" = "$stdlib_want" ] && [ "$stdlib_exit" = "0" ]; then

@@ -313,10 +313,26 @@ substring:
     ret
 
 ; print_string(rdi=tagged string) -> writes its raw bytes to stdout, no
-; trailing newline (matches print_fixnum's own convention).
+; trailing newline (matches print_fixnum's own convention) — unless
+; print_readably is set (prin1_to_string, print.asm), in which case the
+; bytes are double-quoted with the reader's own escapes for `"`, `\`,
+; newline and tab, so the result reads back as the same string: the
+; reference's PRIN1 / PRIN1-TO-STRING contract (printer.rs).
+section .bss
+global print_readably
+print_readably: resq 1
+section .rodata
+dquote_buf: db '"'
+esc_dquote: db '\"'
+esc_backslash: db '\\'
+esc_newline: db '\n'
+esc_tab: db '\t'
+section .text
 global print_string
 print_string:
     push rbx
+    cmp qword [print_readably], 0
+    jne .readably
     mov rbx, rdi
     call string_len
     mov rdx, rax
@@ -325,6 +341,97 @@ print_string:
     mov rsi, rax
     call write_buf
     pop rbx
+    ret
+.readably:
+    push r12
+    push r13
+    mov rbx, rdi
+    call string_len
+    mov r12, rax                        ; len
+    mov rdi, rbx
+    call string_bytes
+    mov r13, rax                        ; bytes
+    mov rsi, dquote_buf
+    mov rdx, 1
+    call write_buf
+    xor ebx, ebx                        ; i
+.rd_loop:
+    cmp rbx, r12
+    jae .rd_done
+    movzx eax, byte [r13+rbx]
+    cmp al, '"'
+    je .rd_dq
+    cmp al, '\'
+    je .rd_bs
+    cmp al, 10
+    je .rd_nl
+    cmp al, 9
+    je .rd_tab
+    lea rsi, [r13+rbx]
+    mov rdx, 1
+    call write_buf
+    jmp .rd_next
+.rd_dq:
+    mov rsi, esc_dquote
+    jmp .rd_esc
+.rd_bs:
+    mov rsi, esc_backslash
+    jmp .rd_esc
+.rd_nl:
+    mov rsi, esc_newline
+    jmp .rd_esc
+.rd_tab:
+    mov rsi, esc_tab
+.rd_esc:
+    mov rdx, 2
+    call write_buf
+.rd_next:
+    inc rbx
+    jmp .rd_loop
+.rd_done:
+    mov rsi, dquote_buf
+    mov rdx, 1
+    call write_buf
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; --- T/NIL type predicates for the compiler's FIXP/FLOATP/ARRAYP/CHARP
+; keywords (compile_unary_hostcall), each a thin wrapper around the
+; internal 1/0 check print_value already dispatches on. The reference
+; has all four as builtins (environment.rs) and lib/32-base64.lisp's
+; ENCODE, among others, calls FIXP at runtime.
+global fixp_tagged
+fixp_tagged:
+    mov rax, rdi
+    and rax, TAG_MASK
+    cmp rax, TAG_FIXNUM
+    je .yes
+    mov rax, IMM_NIL
+    ret
+.yes:
+    mov rax, IMM_TRUE
+    ret
+global floatp_tagged
+floatp_tagged:
+    call is_float
+    jmp bool_to_lisp
+global arrayp_tagged
+arrayp_tagged:
+    call is_array
+    jmp bool_to_lisp
+global charp_tagged
+charp_tagged:
+    call is_char_tagged
+    jmp bool_to_lisp
+bool_to_lisp:                           ; rax = 1/0 -> T/NIL
+    test rax, rax
+    jz .no
+    mov rax, IMM_TRUE
+    ret
+.no:
+    mov rax, IMM_NIL
     ret
 
 ; print_symbol(rdi=tagged symbol) -> writes its interned name bytes

@@ -42,7 +42,13 @@ write_buf:
     syscall
     ret
 .capture:
+    ; The capture path must clobber no more than the stdout path does:
+    ; float_print keeps its own digit state in r8/r9 across its several
+    ; write_buf calls, so clobbering them here made PRINC-TO-STRING of
+    ; 2.5 read "2.775808" while PRINT of the same float was correct.
     push rbx
+    push r8
+    push r9
     mov rbx, rsi                      ; src buf
     mov r8, [capture_len]
     mov r9, [capture_cap]
@@ -63,6 +69,8 @@ write_buf:
     jmp .copy
 .done:
     add [capture_len], rdx
+    pop r9
+    pop r8
     pop rbx
     ret
 
@@ -118,6 +126,21 @@ princ_to_string:
 
     mov rax, rbx
     pop rbx
+    ret
+
+; prin1_to_string(rdi=tagged value) -> rax = a fresh string holding the
+; value's READABLE representation: princ_to_string with print_readably
+; set, so strings come out double-quoted and escaped (print_string,
+; strings.asm) and everything else prints as PRINT already does — the
+; reference's PRIN1-TO-STRING (lib/35-json.lisp's encoder and
+; lib/16-conditions.lisp's messages call it).
+extern print_readably
+global prin1_to_string
+prin1_to_string:
+    push qword [print_readably]
+    mov qword [print_readably], 1
+    call princ_to_string
+    pop qword [print_readably]
     ret
 
 ; print_newline() -> writes a single '\n'

@@ -347,7 +347,8 @@
 ; produces those, not a genuine Char immediate — see byte_value_of's
 ; own comment, ports.asm) OR a bare fixnum 0-255, never a Char
 ; immediate in any real call path this kernel's own Lisp code takes.
-(DEFUN $CHAR-ARRAY-ELEM-BYTE (X) (IF (STRINGP X) (STRING-REF X 0) X))
+(DEFUN $CHAR-ARRAY-ELEM-BYTE (X)
+  (IF (STRINGP X) (STRING-REF X 0) (IF (CHARP X) (CHAR-CODE X) X)))
 (DEFUN $STRING->UTF8-LOOP (S I N)
   (IF (NOT (< I N))
       (QUOTE ())
@@ -778,11 +779,24 @@
       (CONS (CAR (CAR BUCKET)) (HT-BUCKET-KEYS (CDR BUCKET)))))
 
 (DEFUN HT-KEYS-LOOP (TABLE I ACC)
-  (IF (= I (ARRAY-LENGTH* TABLE))
+  (IF (= I 61)
       ACC
       (HT-KEYS-LOOP TABLE (+ I 1) (APPEND (HT-BUCKET-KEYS (FETCH TABLE I)) ACC))))
 
-(DEFUN MAKE-HASH-TABLE () (ARRAY 61))
+; A hash table is a 62-slot ARRAY: 61 buckets plus a marker symbol in
+; slot 61, which is what lets HASH-TABLE-P (a reference builtin the
+; reference's own lib/35-json.lisp stringifier dispatches on) tell one
+; apart from an ordinary array. HT-KEYS-LOOP walks the 61 buckets only.
+(DEFUN MAKE-HASH-TABLE ()
+  (LET ((TABLE (ARRAY 62)))
+    (STORE TABLE 61 (QUOTE $HASH-TABLE-MARKER))
+    TABLE))
+(DEFUN HASH-TABLE-P (X)
+  (IF (ARRAYP X)
+      (IF (EQ (ARRAY-LENGTH* X) 62)
+          (EQ (FETCH X 61) (QUOTE $HASH-TABLE-MARKER))
+          (QUOTE ()))
+      (QUOTE ())))
 
 (DEFUN SETHASH (TABLE KEY VALUE)
   (STORE TABLE (HT-INDEX KEY)
@@ -916,3 +930,186 @@
         (LIST (QUOTE UNWIND-PROTECT)
               (CONS (QUOTE PROGN) BODY)
               (LIST (QUOTE POP-CAPABILITY-MASK!)))))
+
+; --- Reference builtins the stdlib calls at runtime -------------------
+; Each of these is a Rust builtin in the reference (environment.rs) that
+; some file of the reference's own stdlib calls, so a program loading
+; that stdlib through lamedhc (tests/run.sh's stdlib_conformance) needs
+; it bound here first. Plain Lisp over the kernel's own primitives,
+; each matching the reference's own argument order and result; the
+; reference stdlib may later redefine some (that is fine).
+(DEFUN ADD1 (X) (+ X 1))
+(DEFUN SUB1 (X) (- X 1))
+(DEFUN PLUS (A B) (+ A B))
+(DEFUN TIMES (A B) (* A B))
+(DEFUN LESSP (A B) (< A B))
+(DEFUN ZEROP (X) (EQ X 0))
+(DEFUN PLUSP (X) (< 0 X))
+(DEFUN EVENP (X) (EQ (REMAINDER X 2) 0))
+(DEFUN ODDP (X) (NOT (EQ (REMAINDER X 2) 0)))
+(DEFUN SIGNUM (X) (IF (< X 0) -1 (IF (< 0 X) 1 0)))
+(DEFUN LAST (L) (IF (NULL L) (QUOTE ()) (IF (NULL (CDR L)) L (LAST (CDR L)))))
+(DEFUN NTHCDR (N L) (IF (EQ N 0) L (NTHCDR (- N 1) (CDR L))))
+(DEFUN EXPT (B E)
+  (IF (< E 0)
+      (ERROR "EXPT: negative exponent is not supported for fixnums" E)
+      (IF (EQ E 0) 1 (* B (EXPT B (- E 1))))))
+(DEFUN GCD (A B)
+  (LET ((A (IF (< A 0) (- 0 A) A)) (B (IF (< B 0) (- 0 B) B)))
+    (IF (EQ B 0) A (GCD B (REMAINDER A B)))))
+(DEFUN LCM (A B) (IF (EQ (* A B) 0) 0 (LET ((P (* A B))) (QUOTIENT-ABS P (GCD A B)))))
+(DEFUN QUOTIENT-ABS (P D) ($QUOTIENT (IF (< P 0) (- 0 P) P) D))
+; $QUOTIENT — integer division by repeated subtraction is far too slow;
+; binary long division over the kernel's ASH instead.
+(DEFUN $QUOTIENT (N D)
+  (IF (EQ D 0)
+      (ERROR "division by zero" N)
+      (LET ((NEG (IF (< N 0) (NOT (< D 0)) (< D 0)))
+            (N (IF (< N 0) (- 0 N) N))
+            (D (IF (< D 0) (- 0 D) D)))
+        (LET ((Q ($QUOTIENT-LOOP N D 0)))
+          (IF NEG (- 0 Q) Q)))))
+(DEFUN $QUOTIENT-LOOP (N D Q)
+  (IF (< N D)
+      Q
+      (LET ((SHIFT ($QUOTIENT-SHIFT N D 0)))
+        ($QUOTIENT-LOOP (- N (ASH D SHIFT)) D (+ Q (ASH 1 SHIFT))))))
+(DEFUN $QUOTIENT-SHIFT (N D S)
+  (IF (< N (ASH D (+ S 1))) S ($QUOTIENT-SHIFT N D (+ S 1))))
+(DEFUN ISQRT (N)
+  (IF (< N 0)
+      (ERROR "ISQRT: expected a non-negative integer" N)
+      (IF (< N 2) N ($ISQRT-NEWTON N (ASH 1 (+ 1 ($ISQRT-BITS N 0)))))))
+(DEFUN $ISQRT-BITS (N B) (IF (EQ N 0) (ASH B -1) ($ISQRT-BITS (ASH N -1) (+ B 1))))
+(DEFUN $ISQRT-NEWTON (N X)
+  (LET ((Y (ASH (+ X ($QUOTIENT N X)) -1)))
+    (IF (< Y X) ($ISQRT-NEWTON N Y) X)))
+(DEFUN TERPRI () (NEWLINE))
+(DEFUN PRINC (X) (PRINT X))
+(DEFUN PRIN1 (X) (PRINT (PRIN1-TO-STRING X)))
+(DEFUN SPACES (N) (IF (< 0 N) (PROGN (PRINT " ") (SPACES (- N 1))) (QUOTE ())))
+(DEFUN DELETE (ITEM L)
+  (IF (NULL L)
+      (QUOTE ())
+      (IF (EQUAL ITEM (CAR L))
+          (DELETE ITEM (CDR L))
+          (CONS (CAR L) (DELETE ITEM (CDR L))))))
+(DEFUN EFFACE (ITEM L)
+  (IF (NULL L)
+      (QUOTE ())
+      (IF (EQUAL ITEM (CAR L))
+          (CDR L)
+          (CONS (CAR L) (EFFACE ITEM (CDR L))))))
+(DEFUN SUBST (NEW OLD TREE)
+  (IF (EQUAL OLD TREE)
+      NEW
+      (IF (ATOM TREE)
+          TREE
+          (CONS (SUBST NEW OLD (CAR TREE)) (SUBST NEW OLD (CDR TREE))))))
+; SORT — (sort list pred), collection first like the reference: a stable
+; merge sort, PRED called as (pred a b).
+(DEFUN SORT (L PRED)
+  (IF (NULL L)
+      (QUOTE ())
+      (IF (NULL (CDR L))
+          L
+          (LET ((HALVES ($SORT-SPLIT L (QUOTE ()) (QUOTE ()))))
+            ($SORT-MERGE (SORT (CAR HALVES) PRED) (SORT (CDR HALVES) PRED) PRED)))))
+(DEFUN $SORT-SPLIT (L A B)
+  (IF (NULL L)
+      (CONS (REVERSE A) (REVERSE B))
+      ($SORT-SPLIT (CDR L) B (CONS (CAR L) A))))
+(DEFUN $SORT-MERGE (A B PRED)
+  (IF (NULL A)
+      B
+      (IF (NULL B)
+          A
+          (IF (PRED (CAR B) (CAR A))
+              (CONS (CAR B) ($SORT-MERGE A (CDR B) PRED))
+              (CONS (CAR A) ($SORT-MERGE (CDR A) B PRED))))))
+; INDEX — (index string i): the one-character string at byte index i
+; (the reference indexes by character; this kernel's strings are byte
+; buffers — README "v0 limits").
+(DEFUN INDEX (S I)
+  (IF (< I (STRING-LENGTH S))
+      (SUBSTRING S I (+ I 1))
+      (ERROR "INDEX: index out of bounds" I)))
+(DEFUN MAKNAM (L) (INTERN ($MAKNAM-CONCAT L "")))
+(DEFUN $MAKNAM-CONCAT (L ACC)
+  (IF (NULL L) ACC ($MAKNAM-CONCAT (CDR L) (STRING-APPEND ACC (PRINC-TO-STRING (CAR L))))))
+; PLIST — the reference returns a flat (key value ...) list; this
+; kernel's own plist (GETP/PUTP above) is an alist, flattened here.
+(DEFUN PLIST (SYM) ($PLIST-FLATTEN (SYMBOL-PLIST SYM)))
+(DEFUN $PLIST-FLATTEN (AL)
+  (IF (NULL AL) (QUOTE ()) (CONS (CAR (CAR AL)) (CONS (CDR (CAR AL)) ($PLIST-FLATTEN (CDR AL))))))
+(DEFUN EVLIS (L) (IF (NULL L) (QUOTE ()) (CONS (EVAL (CAR L)) (EVLIS (CDR L)))))
+(DEFUN EVCON (CLAUSES)
+  (IF (NULL CLAUSES)
+      (QUOTE ())
+      (IF (EVAL (CAR (CAR CLAUSES)))
+          (EVAL (CAR (CDR (CAR CLAUSES))))
+          (EVCON (CDR CLAUSES)))))
+; / — the reference's division: truncating integer division on fixnums
+; (Rust's `/`), float division when either operand is a float, variadic
+; as a left fold like the reference's own.
+(DEFUN / (A &REST MORE)
+  (IF (NULL MORE)
+      ($DIVIDE2 1 A)
+      ($DIVIDE-FOLD A MORE)))
+(DEFUN $DIVIDE-FOLD (ACC L)
+  (IF (NULL L) ACC ($DIVIDE-FOLD ($DIVIDE2 ACC (CAR L)) (CDR L))))
+(DEFUN $DIVIDE2 (A B)
+  (IF (FLOATP A)
+      (F/ A (IF (FLOATP B) B (FLOAT B)))
+      (IF (FLOATP B)
+          (F/ (FLOAT A) B)
+          ($QUOTIENT A B))))
+(DEFUN GET (TABLE KEY) (GETHASH TABLE KEY))
+; --- bare-symbol bindings for the kernel's function-like keywords -----
+; Every one of these is compiled inline when it appears in operator
+; position (compile_form dispatches on the keyword before an ordinary
+; call is ever considered), but nothing bound the *symbol* to a callable
+; value, so passing one as a value — `(mapcar #'code-char codes)`, as
+; the reference's lib/32-base64.lisp does — handed MAPCAR an unbound
+; cell. Same idiom as the +/-/*/</= bindings above.
+(DEFUN CODE-CHAR (X) (CODE-CHAR X))
+(DEFUN CHAR-CODE (X) (CHAR-CODE X))
+(DEFUN MAKE-CHAR (X) (MAKE-CHAR X))
+(DEFUN STRING-LENGTH (X) (STRING-LENGTH X))
+(DEFUN STRING-REF (S I) (STRING-REF S I))
+(DEFUN STRING-APPEND (A B) (STRING-APPEND A B))
+(DEFUN SUBSTRING (S A B) (SUBSTRING S A B))
+(DEFUN STRINGP (X) (STRINGP X))
+(DEFUN SYMBOLP (X) (SYMBOLP X))
+(DEFUN FIXP (X) (FIXP X))
+(DEFUN FLOATP (X) (FLOATP X))
+(DEFUN ARRAYP (X) (ARRAYP X))
+(DEFUN CHARP (X) (CHARP X))
+(DEFUN PRINC-TO-STRING (X) (PRINC-TO-STRING X))
+(DEFUN PRIN1-TO-STRING (X) (PRIN1-TO-STRING X))
+(DEFUN FLOAT (X) (FLOAT X))
+(DEFUN F+ (A B) (F+ A B))
+(DEFUN F- (A B) (F- A B))
+(DEFUN F* (A B) (F* A B))
+(DEFUN F/ (A B) (F/ A B))
+(DEFUN F< (A B) (F< A B))
+(DEFUN MOD (A B) (MOD A B))
+(DEFUN REMAINDER (A B) (REMAINDER A B))
+(DEFUN ASH (A B) (ASH A B))
+(DEFUN LOGNOT (X) (LOGNOT X))
+(DEFUN HASH-CODE (X) (HASH-CODE X))
+(DEFUN INTERN (X) (INTERN X))
+(DEFUN PRINT (X) (PRINT X))
+(DEFUN ERROR-MESSAGE (X) (ERROR-MESSAGE X))
+(DEFUN ERROR-DATA (X) (ERROR-DATA X))
+(DEFUN ERROR-P (X) (ERROR-P X))
+(DEFUN FETCH (A I) (FETCH A I))
+(DEFUN STORE (A I V) (STORE A I V))
+(DEFUN SYMBOL-PLIST (X) (SYMBOL-PLIST X))
+(DEFUN NUMBERP (X) (IF (FIXP X) T (FLOATP X)))
+; STRING->NUMBER — the reference's builtin: the number a string spells,
+; or NIL when it spells anything else (lib/35-json.lisp's parser).
+(DEFUN STRING->NUMBER (S)
+  (HANDLER-CASE
+      (LET ((V (READ-FROM-STRING S))) (IF (NUMBERP V) V (QUOTE ())))
+    (ERROR (E) (QUOTE ()))))
