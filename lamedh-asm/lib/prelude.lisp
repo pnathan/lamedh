@@ -1174,3 +1174,90 @@
 ; PRINT-TO — PRINT's text (PRINC-TO-STRING) to any fd: (PRINT-TO
 ; *STDERR* x) is the error-stream PRINT.
 (DEFUN PRINT-TO (FD X) (FD-WRITE FD (PRINC-TO-STRING X)) X)
+
+; --- The OS layer, over SYSCALL --------------------------------------
+; (SYSCALL nr arg...) is the kernel's one OS primitive (syscall.asm):
+; every OS-facing function below is Lisp over it, so adding one needs
+; no assembly. Argument conversion: fixnums as-is, a string as the
+; address of its (NUL-terminated) bytes — a path, or a buffer the
+; kernel writes into — NIL as NULL, a list of strings as a
+; NULL-terminated char*[] (execve). Result: the raw return, negative =
+; -errno. SYSCALL itself requires the SHELL capability, so everything
+; here does too.
+(DEFINE SYS-READ 0) (DEFINE SYS-WRITE 1) (DEFINE SYS-OPEN 2) (DEFINE SYS-CLOSE 3)
+(DEFINE SYS-STAT 4) (DEFINE SYS-PIPE 22) (DEFINE SYS-DUP2 33) (DEFINE SYS-FORK 57)
+(DEFINE SYS-EXECVE 59) (DEFINE SYS-EXIT 60) (DEFINE SYS-WAIT4 61) (DEFINE SYS-CHMOD 90)
+(DEFINE SYS-UNLINK 87) (DEFINE SYS-GETPID 39)
+
+; MAKE-STRING — N zero bytes: a buffer for a system call to fill.
+(DEFUN MAKE-STRING (N) ($MAKE-STRING-LOOP N ""))
+(DEFUN $MAKE-STRING-LOOP (N ACC)
+  (IF (< N 1) ACC ($MAKE-STRING-LOOP (- N 1) (STRING-APPEND ACC (CODE-CHAR 0)))))
+; $LE32 — the little-endian 32-bit integer at byte offset I of buffer S
+; (the int[2] pipe(2) fills, wait4's status word, stat's st_mode).
+(DEFUN $LE32 (S I)
+  (+ (STRING-REF S I)
+     (+ (* 256 (STRING-REF S (+ I 1)))
+        (+ (* 65536 (STRING-REF S (+ I 2)))
+           (* 16777216 (STRING-REF S (+ I 3)))))))
+
+; FILE-P — T iff PATH names a regular file: stat(2) into a 144-byte
+; struct stat, st_mode at offset 24, S_IFMT/S_IFREG = 0xF000/0x8000.
+(DEFUN FILE-P (PATH)
+  (LET ((BUF (MAKE-STRING 144)))
+    (IF (< (SYSCALL SYS-STAT PATH BUF) 0)
+        (QUOTE ())
+        (EQ (LOGAND ($LE32 BUF 24) 61440) 32768))))
+
+; CHMOD — (chmod path mode), mode a fixnum (e.g. 493 = #o755) or an
+; octal-digit string like "755", as in the reference. T on success,
+; else a condition carrying -errno.
+(DEFUN CHMOD (PATH MODE)
+  (LET ((R (SYSCALL SYS-CHMOD PATH (IF (STRINGP MODE) ($PARSE-OCTAL MODE 0 0) MODE))))
+    (IF (< R 0) (ERROR "CHMOD failed (data: -errno)" R) T)))
+(DEFUN $PARSE-OCTAL (S I ACC)
+  (IF (< I (STRING-LENGTH S))
+      ($PARSE-OCTAL S (+ I 1) (+ (* ACC 8) (- (STRING-REF S I) 48)))
+      ACC))
+
+; $FD-READ-ALL — everything an fd yields until end of input, as one
+; string (4 KiB per read(2)).
+(DEFUN $FD-READ-ALL (FD ACC)
+  (LET ((CHUNK (FD-READ FD 4096)))
+    (IF (EQ (STRING-LENGTH CHUNK) 0) ACC ($FD-READ-ALL FD (STRING-APPEND ACC CHUNK)))))
+
+; SHELL — (shell "cmd") runs it through /bin/sh -c; (shell "prog" "a"
+; "b") runs prog directly with those arguments. Returns (code stdout
+; stderr) exactly like the reference: pipe(2) twice, fork(2), the child
+; dup2(2)s the write ends onto 1 and 2 and execve(2)s (exiting 127 if
+; that fails), the parent reads both pipes to end of input then
+; wait4(2)s. v0: stdout is drained before stderr, so a child that
+; writes more than a pipe buffer (64 KiB) to stderr before finishing
+; its stdout can stall; nothing this project runs does.
+(DEFUN SHELL (CMD &REST ARGS)
+  (LET* ((ARGV (IF (NULL ARGS) (LIST "/bin/sh" "-c" CMD) (CONS CMD ARGS)))
+         (OUTP (MAKE-STRING 8))
+         (ERRP (MAKE-STRING 8)))
+    (SYSCALL SYS-PIPE OUTP)
+    (SYSCALL SYS-PIPE ERRP)
+    (LET ((OUT-R ($LE32 OUTP 0)) (OUT-W ($LE32 OUTP 4))
+          (ERR-R ($LE32 ERRP 0)) (ERR-W ($LE32 ERRP 4)))
+      (LET ((PID (SYSCALL SYS-FORK)))
+        (IF (EQ PID 0)
+            (PROGN
+              (SYSCALL SYS-DUP2 OUT-W 1)
+              (SYSCALL SYS-DUP2 ERR-W 2)
+              (SYSCALL SYS-CLOSE OUT-R) (SYSCALL SYS-CLOSE ERR-R)
+              (SYSCALL SYS-CLOSE OUT-W) (SYSCALL SYS-CLOSE ERR-W)
+              (SYSCALL SYS-EXECVE (CAR ARGV) ARGV NIL)
+              (SYSCALL SYS-EXIT 127))
+            (PROGN
+              (SYSCALL SYS-CLOSE OUT-W)
+              (SYSCALL SYS-CLOSE ERR-W)
+              (LET* ((OUT ($FD-READ-ALL OUT-R ""))
+                     (ERR ($FD-READ-ALL ERR-R ""))
+                     (STATUS (MAKE-STRING 4)))
+                (SYSCALL SYS-CLOSE OUT-R)
+                (SYSCALL SYS-CLOSE ERR-R)
+                (SYSCALL SYS-WAIT4 PID STATUS 0 NIL)
+                (LIST (LOGAND (ASH ($LE32 STATUS 0) -8) 255) OUT ERR))))))))

@@ -21,7 +21,7 @@ AS=nasm
 ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/ ${EXTRA_ASFLAGS:-}"
 LD=ld
 
-CORE_SRCS="src/heap.asm src/gc.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/ports.asm src/codegen.asm src/compiler.asm"
+CORE_SRCS="src/heap.asm src/gc.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/ports.asm src/syscall.asm src/codegen.asm src/compiler.asm"
 
 pass=0
 fail=0
@@ -486,6 +486,19 @@ T'
         '(PRINT (FD-READ-LINE *STDIN*))'
     err_case fd_write_bad_fd 1 "" "FD-WRITE: write failed (data: -errno): -9" \
         '(FD-WRITE 999 "x")'
+    err_case syscall_raw 0 "(T 3 -2 T)" "" \
+        '(PRINT (LIST (< 0 (SYSCALL SYS-GETPID)) (SYSCALL SYS-WRITE 1 "abc" 3) (SYSCALL SYS-OPEN "/nonexistent/x" 0 0) (EQ (SYSCALL 1 1 "hello" 5) 5)))'
+    err_case syscall_bad_arg 1 "" "SYSCALL: argument must be a fixnum, string, NIL, or list of strings: 1.500000" \
+        '(SYSCALL 39 1.5)'
+    err_case file_p 0 "(T () ())" "" \
+        '(PRINT (LIST (FILE-P "/etc/passwd") (FILE-P "/etc") (FILE-P "/nonexistent")))'
+    # SHELL returns (code stdout stderr) like the reference; printed
+    # readably so the strings show their quotes and newlines. A
+    # one-argument SHELL goes through sh -c (so a missing program is
+    # sh's own complaint on stderr, code 127); the direct form execs
+    # the program itself (a missing one: exit 127, nothing written).
+    err_case chmod_and_shell 0 '((0 "hello\n" "") (0 "a b\n" "") (3 "" "to err\n") 127 "" T)' "" \
+        '(PRINT (PRIN1-TO-STRING (LIST (SHELL "echo hello") (SHELL "/bin/echo" "a" "b") (SHELL "echo to err >&2; exit 3") (CAR (SHELL "/nonexistent/prog" "x")) (CAR (CDR (SHELL "/nonexistent/prog" "x"))) (PROGN (FD-CLOSE (FD-OPEN "/tmp/lamedh-chmod-test" 1)) (CHMOD "/tmp/lamedh-chmod-test" "600") (CHMOD "/tmp/lamedh-chmod-test" 420)))))'
     # The stream layer against a real stdin: READ twice, then READ-LINE
     # for the rest (a final unterminated line comes back once), then
     # NIL at end of input.

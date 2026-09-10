@@ -1226,8 +1226,22 @@ concrete reason it landed last of the three features in its spec:
     `ROT` rotates within this kernel's 62-bit fixnum width (the
     reference rotates a 64-bit word; wider values do not exist here),
     so `(ROT (ROT x n) (- n))` is `x` for every fixnum. All have value
-    bindings too (`#'SQRT` works). Still not implemented: `SHELL`/
-    `CHMOD`/`FILE-P` (each a clear `not a function`).
+    bindings too (`#'SQRT` works).
+  - **`SYSCALL` — the OS escape hatch, so OS surface never needs
+    assembly again.** `(SYSCALL nr arg...)` (`syscall.asm`) performs
+    Linux system call `nr` with up to six arguments and returns the raw
+    result as a fixnum (negative = `-errno`). Conversion: a fixnum is
+    the machine word; a string is the address of its bytes (every
+    string this kernel builds is NUL-terminated past its length, so it
+    is a C path as-is, and read-style calls write straight into it —
+    `(MAKE-STRING n)` makes a zeroed buffer, `STRING-REF` reads it
+    back); `NIL` is NULL; a list of strings is a NULL-terminated
+    `char*[]` (execve's argv/envp). Gated on the `SHELL` capability at
+    every call. `SHELL` (`(code stdout stderr)` like the reference, via
+    `pipe`/`fork`/`dup2`/`execve`/`wait4`), `CHMOD` and `FILE-P`
+    (`stat`, `st_mode`) are now plain prelude Lisp over it — which
+    means they need `SHELL` rather than the reference's `READ-FS`/
+    `CREATE-FS`, the one deliberate coarsening of this design.
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers

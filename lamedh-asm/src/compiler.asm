@@ -93,6 +93,7 @@ extern float_ceiling
 extern float_round
 extern float_truncate
 extern rot_tagged
+extern syscall_tagged
 extern file_open
 extern file_close
 extern file_write
@@ -313,6 +314,9 @@ kw_ceiling: db "CEILING"
 kw_round:  db "ROUND"
 kw_truncate: db "TRUNCATE"
 kw_rot:    db "ROT"
+kw_syscall: db "SYSCALL"
+kw_syscall_list: db "$SYSCALL-LIST"
+kw_list_name: db "LIST"
 kw_eval:             db "EVAL"
 kw_fd_open:  db "FD-OPEN"
 kw_fd_close: db "FD-CLOSE"
@@ -8800,6 +8804,51 @@ compile_form:
     jmp .out
 
 .not_rot:
+    ; (SYSCALL nr arg...) — variadic: rewritten to ($SYSCALL-LIST (LIST
+    ; nr arg...)) so one unary host call (syscall.asm) receives every
+    ; operand evaluated, in order, as a list. LIST is the prelude's
+    ; own &REST function.
+    mov rdi, r12
+    mov rsi, kw_syscall
+    mov rdx, 7
+    call sym_is
+    test rax, rax
+    jz .not_syscall
+    mov rdi, kw_list_name
+    mov rsi, 4
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r13
+    call cons                                ; (LIST nr arg...)
+    mov rsi, IMM_NIL
+    mov rdi, rax
+    call cons                                ; ((LIST ...))
+    push rax
+    mov rdi, kw_syscall_list
+    mov rsi, 13
+    call intern_symbol
+    mov rdi, rax
+    pop rsi
+    call cons                                ; ($SYSCALL-LIST (LIST ...))
+    mov rdi, rax
+    call compile_form
+    jmp .out
+
+.not_syscall:
+    mov rdi, r12
+    mov rsi, kw_syscall_list
+    mov rdx, 13
+    call sym_is
+    test rax, rax
+    jz .not_syscall_list
+    mov rdi, r13
+    call car
+    lea rsi, [rel syscall_tagged]
+    mov rdi, rax
+    call compile_unary_hostcall
+    jmp .out
+
+.not_syscall_list:
     mov rdi, r12
     mov rsi, kw_eval
     mov rdx, 4
