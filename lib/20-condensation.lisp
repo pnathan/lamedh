@@ -217,8 +217,46 @@ its implementation, but not derived from the body."
 generator-backed axiom (DECLARED)."
   (if (member status '(typed checked declared)) t nil))
 
+;; The condensation layer's honesty machinery -- CONDENSE-CHECK-TYPE, the
+;; dynamic frontier, EDIT!'s type barrier -- is defined against
+;; CONDENSE-VERDICT rather than against SEE-TYPE directly, and CONDENSE-VERDICT
+;; runs the PORTABLE checker (lib/46-hm-check.lisp, issue #451). That is the
+;; whole point of the port: one implementation of the checking logic, shared by
+;; every host, driving the same classification everywhere.
+;;
+;; The host's native SEE-TYPE is still consulted, for exactly one thing it can
+;; say that a checker structurally cannot: TYPED. That verdict does not report
+;; a checking result at all -- it reports a CODEGEN artifact (a natively
+;; compiled function's monomorphic signature and its execution TIER), which no
+;; portable library can observe. Deferring to the host for precisely that
+;; verdict, and for nothing else, keeps `condense-verified-p`'s TYPED
+;; guarantee and the trace's tier information intact on a host that compiles,
+;; and costs nothing on one that does not.
+;;
+;; This is also what covers a natively compiled function: its live binding is
+;; an opaque membrane, so the portable checker cannot see a body and honestly
+;; says DYNAMIC, and the host answers TYPED for exactly those names.
+(def $condense-native-see-type (if (boundp 'see-type) (eval 'see-type) nil))
+
+(defun condense-verdict (sym)
+  "SYM's checker verdict, in SEE-TYPE's shape: (TYPED sig tier) |
+(DECLARED s) | (CHECKED s) | (TYPE-ERROR msg) | (DYNAMIC reason).
+
+The portable checker answers, recomputed on every call: a verdict is derived
+from the whole world (the callee bodies it reads, the declared axioms, the
+type registries), and not every path that changes any of those can be hooked,
+so anything cached here would eventually be a confident wrong answer. The
+host's native checker answers only when it reports TYPED, the one verdict that
+states a codegen fact rather than a checking result."
+  (let ((native (if $condense-native-see-type
+                    (funcall $condense-native-see-type sym)
+                    nil)))
+    (if (and native (eq (car native) 'typed))
+        native
+        (hm-verdict sym))))
+
 (defun condense-check-type-one (sym)
-  (let ((verdict (see-type sym)))
+  (let ((verdict (condense-verdict sym)))
     (list sym (condense-classify verdict) verdict)))
 
 (defun condense-check-type (sym)
@@ -310,9 +348,9 @@ Anything not TYPED or informative CHECKED joins the unproven frontier."
         (error (concat "edit!: no editable source for "
                        (princ-to-string sym)))
         (let* ((patched (sexpr-patch lam edits))
-               (before (condense-classify (see-type sym))))
+               (before (condense-classify (condense-verdict sym))))
           (eval (cons 'defun (cons sym (cdr patched))) e)
-          (let ((verdict (see-type sym)))
+          (let ((verdict (condense-verdict sym)))
             (if (and (eq (condense-classify verdict) 'type-error)
                      (not (eq before 'type-error)))
                 (progn
@@ -611,7 +649,15 @@ condensation change plane. PARAMS non-nil = a parametric record."
            (params (record-generic-tier-forms name params field-specs))
            ((record-fields-native-p field-specs)
             ;; Compiled tier: native branded type, constructor, accessors.
-            (list (cons 'defstruct-typed (cons name field-specs))))
+            ;; DEFSTRUCT-TYPED is a host special form that registers the brand
+            ;; in the *native* checker's registry directly, bypassing
+            ;; RECORD-DECLARE -- so the portable checker (lib/46-hm-check.lisp,
+            ;; issue #451) is told about this tier explicitly, right here, and
+            ;; the two registries stay in lockstep across BOTH tiers. On a host
+            ;; with no native checker HM-DECLARE-RECORD! is the only
+            ;; registration this tier gets, which is exactly right.
+            (list `(hm-declare-record! ',name ',field-specs)
+                  (cons 'defstruct-typed (cons name field-specs))))
            ;; Dynamic tier: branded type + StructObj values.
            (t (record-dynamic-tier-forms name field-specs)))
        ;; record-brand is a dynamic primitive (works on anything), so the
