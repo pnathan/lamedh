@@ -23,6 +23,10 @@
 #   FUZZ-GREEN
 #   CLIPPY-GREEN
 #
+# The exit status agrees with the verdict: 0 iff all four markers are present.
+# The verdict file stays the record; the exit status exists so a failure can
+# no longer scroll past as a missing line in an otherwise quiet run.
+#
 # Extra feature suites (e.g. `--features net-tls`) are the caller's job to
 # add on top when a branch touches feature-gated code.
 set -u
@@ -45,7 +49,10 @@ echo "gauntlet: fuzz battery (release)..."
 cargo test --release --features fuzz --test brutal_correctness > "$LOGDIR/gauntlet-fuzz.log" 2>&1 && echo FUZZ-GREEN >> "$VERDICT"
 
 echo "gauntlet: clippy (warnings are errors)..."
-cargo clippy --workspace --all-targets -- -D warnings > "$LOGDIR/gauntlet-clippy.log" 2>&1 && echo CLIPPY-GREEN >> "$VERDICT"
+# `--features fuzz` so the fuzz battery is linted too: `fuzz` gates nothing
+# but that test target, and without it clippy (like plain `cargo test`) never
+# compiles the file at all.
+cargo clippy --workspace --all-targets --features fuzz -- -D warnings > "$LOGDIR/gauntlet-clippy.log" 2>&1 && echo CLIPPY-GREEN >> "$VERDICT"
 
 echo "gauntlet: fmt..."
 cargo fmt --all
@@ -53,4 +60,12 @@ cargo fmt --all
 echo "=== verdict ($VERDICT) ==="
 cat "$VERDICT" 2>/dev/null
 echo "==="
-echo "logs: $LOGDIR/gauntlet-{default,ndf,clippy}.log"
+echo "logs: $LOGDIR/gauntlet-{default,ndf,fuzz,clippy}.log"
+
+for marker in DEFAULT-GREEN NDF-GREEN FUZZ-GREEN CLIPPY-GREEN; do
+  if ! grep -qx "$marker" "$VERDICT" 2>/dev/null; then
+    echo "gauntlet: $marker missing -- NOT authorized to ship"
+    exit 1
+  fi
+done
+echo "gauntlet: all four markers present"
