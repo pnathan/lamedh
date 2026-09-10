@@ -15,7 +15,8 @@
 %include "src/tags.inc"
 %include "src/syscalls.inc"
 
-extern data_alloc
+extern data_alloc_raw
+extern data_free
 extern make_string
 extern string_len
 extern string_bytes
@@ -130,7 +131,7 @@ file_read:
     mov r12, rax                        ; raw maxlen
 
     mov rdi, r12
-    call data_alloc                        ; scratch buffer
+    call data_alloc_raw                    ; scratch buffer, explicitly freed
     mov r13, rax
 
     mov rax, rbx
@@ -147,6 +148,10 @@ file_read:
     mov rdi, r13
     mov rsi, rax
     call make_string
+    push rax
+    mov rdi, r13
+    call data_free
+    pop rax
     pop r13
     pop r12
     pop rbx

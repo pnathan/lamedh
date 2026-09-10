@@ -11,8 +11,9 @@
 
 ; 256 MiB data heap (up from 16 MiB): loading the full accumulated
 ; reference stdlib (33+ files) plus PRINC-TO-STRING's own per-call
-; CAPTURE_BUF_BYTES allocation (print.asm, 64KB, never freed — no GC
-; yet, see README roadmap) inside a heavy WITH-MODULE body (e.g.
+; CAPTURE_BUF_BYTES allocation (print.asm, 64KB, which at the time was
+; never freed — that buffer is now data_alloc_raw'd and explicitly
+; freed, gc.asm) inside a heavy WITH-MODULE body (e.g.
 ; lib/31-ports.lisp's 24 exported functions, each renamed via
 ; SEXPR-RENAME calling PRINC-TO-STRING per reference) genuinely
 ; exhausted the old 16 MiB arena, corrupting subsequent data_alloc
@@ -26,6 +27,7 @@
 %define CODE_HEAP_BYTES  (64 * 1024 * 1024)
 
 extern heap_init_all
+extern stack_base
 extern lamedh_main
 extern bootstrap_globals
 
@@ -51,6 +53,13 @@ _start:
     mov [program_argc], rax
     lea rax, [rsp+8]                  ; &argv[0]
     mov [program_argv], rax
+
+    ; The collector's conservative root scan runs from the current rsp
+    ; up to here: the process's original stack pointer, the one word
+    ; above every frame this program will ever push. Captured here for
+    ; the same reason argc/argv are — after any `call`, the original
+    ; value is no longer recoverable (gc.asm).
+    mov [stack_base], rsp
 
     mov rdi, DATA_HEAP_BYTES
     mov rsi, CODE_HEAP_BYTES

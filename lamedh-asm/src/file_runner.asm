@@ -20,6 +20,7 @@ extern program_argv
 extern reader_init
 extern read_form
 extern compile_thunk
+extern rc_pin_depth
 extern compile_nesting_depth
 extern current_lambda_depth
 
@@ -62,6 +63,13 @@ run_buffer:
     ; across an unwind path that cannot run them (macroexpand_once's
     ; own comment, compiler.asm).
     mov qword [compile_nesting_depth], 0
+    ; Same reasoning again for rc_pin_depth (gc.asm): a macro
+    ; transformer that errors mid-expansion longjmps past
+    ; compile_thunk's own rc_pin_leave, and a pin depth that never
+    ; came back down would make every subsequent runtime allocation
+    ; immortal — a silent, total defeat of the collector rather than a
+    ; crash.
+    mov qword [rc_pin_depth], 0
     ; Same reasoning, same fix, for current_lambda_depth
     ; (compiler.asm, docs/spec-tco-capture-gc.md section 2): a macro
     ; transformer error caught mid-LAMBDA-body-compile longjmps past

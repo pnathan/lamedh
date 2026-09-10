@@ -21,7 +21,7 @@ AS=nasm
 ASFLAGS="-f elf64 -g -F dwarf -w+all -Isrc/ ${EXTRA_ASFLAGS:-}"
 LD=ld
 
-CORE_SRCS="src/heap.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/ports.asm src/codegen.asm src/compiler.asm"
+CORE_SRCS="src/heap.asm src/gc.asm src/print.asm src/reader.asm src/symtab.asm src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm src/conditions.asm src/overflow.asm src/native_errors.asm src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm src/modules.asm src/ports.asm src/codegen.asm src/compiler.asm"
 
 pass=0
 fail=0
@@ -250,6 +250,11 @@ uses to build CADR/CADDR/etc."
 (PRINT (ASSOC (QUOTE Z) (LIST (CONS (QUOTE A) 1))))
 (NEWLINE)
 (PRINT (CONCAT "A" "B" "C"))
+(NEWLINE)
+(PRINT (GC-VERIFY))
+(NEWLINE)
+(GC-COLLECT)
+(PRINT (GC-VERIFY))
 LISP
     want_out='T
 T
@@ -316,7 +321,9 @@ a docstring
 (EXPANDED 5)
 (B . 2)
 ()
-ABC'
+ABC
+T
+T'
     got_out=$("$runner_bin" "$prelude_prog")
     got_exit=$?
     if [ "$got_out" = "$want_out" ] && [ "$got_exit" = "0" ]; then
@@ -366,12 +373,27 @@ ABC'
 b")))
 (PRINT (PORTS:READ-LINE! MP))
 (PRINT (PORTS:READ-LINE! MP))
+(NEWLINE)
+; GC-VERIFY recomputes every unpinned object's reference count from a
+; full linear heap walk and compares it with the side table. Running it
+; here, after loading 40 reference stdlib files — which exercise every
+; creation and mutation site the reference library actually uses — is
+; what turns "did I instrument every site?" into a test: a missed
+; rc_inc anywhere shows up as a count mismatch right here instead of
+; as a corrupted list three programs later. Once before any collection
+; (pure bookkeeping) and once after a real one.
+(PRINT (GC-VERIFY))
+(NEWLINE)
+(GC-COLLECT)
+(PRINT (GC-VERIFY))
 LISP
     stdlib_want='3
 (1 4 9)
 #S(SOME 42)
 ((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.500000 2.500000) 4.000000) ((+) 0)) (SEE-ALSO - * /))
-ab'
+ab
+T
+T'
     stdlib_got=$("$runner_bin" "$stdlib_prog")
     stdlib_exit=$?
     if [ "$stdlib_got" = "$stdlib_want" ] && [ "$stdlib_exit" = "0" ]; then

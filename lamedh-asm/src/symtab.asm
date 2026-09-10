@@ -27,6 +27,8 @@
 %include "src/tags.inc"
 
 extern data_alloc
+extern rc_pin
+extern rc_store_slot
 extern string_bytes
 extern string_len
 
@@ -200,6 +202,13 @@ intern_symbol:
     add rdi, 48
     call data_alloc                ; rax = raw new symbol address
     mov rbx, rax
+    ; Symbols are never reclaimed: they are interned, their addresses
+    ; are baked into emitted code as immediates, and they hold the
+    ; global value cells. Pinned at birth (spec 3.4) — which also makes
+    ; every rc_inc/rc_dec of a symbol a three-instruction no-op, and
+    ; leaves a symbol's *value* very much collectable.
+    mov rdi, rbx
+    call rc_pin
 
     mov qword [rbx], HDR_SYMBOL
     mov [rbx+8], r13
@@ -311,6 +320,8 @@ gensym:
                                     ; digit run), the original counter
                                     ; value in r12 is already dead here
     mov r12, rax
+    mov rdi, r12
+    call rc_pin
 
     mov qword [r12], HDR_SYMBOL
     mov [r12+8], rbx
@@ -382,10 +393,12 @@ symbol_plist:
 ; axis 2).
 global set_symbol_plist
 set_symbol_plist:
+    push rsi
     mov rax, rdi
     UNTAG_PTR rax
-    mov [rax+40], rsi
-    mov rax, rsi
+    lea rdi, [rax+40]
+    call rc_store_slot
+    pop rax
     ret
 
 ; set_symbol_value(rdi=tagged symbol, rsi=new value) -> rax = rsi.
@@ -401,10 +414,12 @@ set_symbol_plist:
 ; store address. Same shape as set_symbol_plist just below.
 global set_symbol_value
 set_symbol_value:
+    push rsi
     mov rax, rdi
     UNTAG_PTR rax
-    mov [rax+16], rsi
-    mov rax, rsi
+    lea rdi, [rax+16]
+    call rc_store_slot
+    pop rax
     ret
 
 ; boundp_tagged(rdi=tagged symbol) -> rax = IMM_TRUE/IMM_NIL. Reads the

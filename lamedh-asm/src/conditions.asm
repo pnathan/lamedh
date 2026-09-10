@@ -10,6 +10,7 @@
 %include "src/tags.inc"
 
 extern data_alloc
+extern rc_inc
 extern intern_symbol
 
 section .text
@@ -22,12 +23,24 @@ make_error:
     push r12
     mov rbx, rdi
     mov r12, rsi
-    mov rdi, 16
+    ; 24, not 16: a condition is [header][message][data] — three words.
+    ; The old request was one word short, so the *next* allocation
+    ; overlapped this object's data slot and clobbered it. Pre-existing
+    ; and invisible under pure bump allocation only because the two
+    ; writes raced in the caller's favour often enough; a collector
+    ; that enumerates [raw+16] as a child cannot tolerate it at all.
+    mov rdi, 24
     call data_alloc
     mov qword [rax], HDR_CONDITION
     mov [rax+8], rbx
     mov [rax+16], r12
     or rax, TAG_HEAPOBJ
+    push rax
+    mov rdi, rbx
+    call rc_inc
+    mov rdi, r12
+    call rc_inc
+    pop rax
     pop r12
     pop rbx
     ret

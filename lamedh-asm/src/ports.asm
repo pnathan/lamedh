@@ -35,6 +35,10 @@
 %include "src/syscalls.inc"
 
 extern data_alloc
+extern rc_register
+extern rc_store_slot
+extern data_alloc_raw
+extern data_free
 extern make_array
 extern array_length_tagged
 extern array_ref
@@ -205,6 +209,11 @@ finish_file_port:
 .tag:
     mov rax, r14
     or rax, TAG_HEAPOBJ
+    ; A port's kind symbol, name string and mem_buf array are counted
+    ; heap slots; register the finished object once, here, rather than
+    ; incrementing each slot at each of the four construction sites.
+    mov rdi, rax
+    call rc_register
     pop r14
     pop r13
     pop r12
@@ -311,6 +320,11 @@ std_port:
     or rcx, PORT_OPEN
     mov [rax+32], rcx
     or rax, TAG_HEAPOBJ
+    ; A port's kind symbol, name string and mem_buf array are counted
+    ; heap slots; register the finished object once, here, rather than
+    ; incrementing each slot at each of the four construction sites.
+    mov rdi, rax
+    call rc_register
     pop r14
     pop r13
     pop r12
@@ -416,6 +430,11 @@ port_open_input_bytes_tagged:
     mov qword [rbx+48], 0
     mov rax, rbx
     or rax, TAG_HEAPOBJ
+    ; A port's kind symbol, name string and mem_buf array are counted
+    ; heap slots; register the finished object once, here, rather than
+    ; incrementing each slot at each of the four construction sites.
+    mov rdi, rax
+    call rc_register
     pop r14
     pop r13
     pop r12
@@ -449,6 +468,11 @@ port_open_output_bytes_tagged:
     mov qword [r12+48], 0
     mov rax, r12
     or rax, TAG_HEAPOBJ
+    ; A port's kind symbol, name string and mem_buf array are counted
+    ; heap slots; register the finished object once, here, rather than
+    ; incrementing each slot at each of the four construction sites.
+    mov rdi, rax
+    call rc_register
     pop r12
     pop rbx
     ret
@@ -556,7 +580,11 @@ mem_grow:
     inc r14
     jmp .copy_loop
 .copy_done:
-    mov [rbx+40], r12
+    ; The port's mem_buf slot now points at the grown array and no
+    ; longer at the old one: a mutation, not a creation.
+    lea rdi, [rbx+40]
+    mov rsi, r12
+    call rc_store_slot
 .done:
     pop r14
     pop r13
@@ -585,7 +613,7 @@ port_read_byte_tagged:
     ; file port: one-byte scratch via data_alloc (matches file_read's
     ; own style, fileio.asm — avoids any stack-alignment question).
     mov rdi, 1
-    call data_alloc
+    call data_alloc_raw
     mov r12, rax                      ; raw scratch ptr
     mov rdi, [rbx+8]
     mov rsi, r12
@@ -593,10 +621,16 @@ port_read_byte_tagged:
     mov eax, SYS_read
     syscall
     cmp rax, 1
-    jne .nil
+    jne .short_read
     movzx eax, byte [r12]
     TO_FIXNUM rax
+    mov rdi, r12
+    call data_free                      ; clobbers nothing, rax preserved
     jmp .out
+.short_read:
+    mov rdi, r12
+    call data_free
+    jmp .nil
 .mem:
     mov r12, rax                        ; tagged mem_buf
     mov rdi, r12
@@ -657,7 +691,7 @@ port_read_bytes_tagged:
     jne .mem
     ; ---- file port ----
     mov rdi, r14
-    call data_alloc
+    call data_alloc_raw
     mov r12, rax                        ; raw scratch buffer
     mov rdi, [rbx+8]
     mov rsi, r12
@@ -689,6 +723,8 @@ port_read_bytes_tagged:
     inc r14
     jmp .file_loop
 .file_done:
+    mov rdi, r12
+    call data_free
     mov rax, r15
     jmp .out
     ; ---- memory port ----
@@ -774,14 +810,17 @@ port_write_byte_tagged:
     ; port_read_byte_tagged's own style.
     push r12
     mov rdi, 1
-    call data_alloc
+    call data_alloc_raw
     pop r12
+    push rax                            ; keep the scratch address to free
     mov byte [rax], r12b
     mov rsi, rax
     mov rdi, [rbx+8]
     mov rdx, 1
     mov eax, SYS_write
     syscall
+    pop rdi
+    call data_free
     jmp .out
 .mem:
     mov rdi, rbx
@@ -854,7 +893,7 @@ port_write_bytes_tagged:
     jne .mem
     ; ---- file port ----
     mov rdi, r13
-    call data_alloc
+    call data_alloc_raw
     mov r14, rax                          ; raw scratch buf
     xor r15, r15                            ; raw loop index
 .file_fill:
@@ -880,6 +919,8 @@ port_write_bytes_tagged:
     xor rax, rax
 .file_count_ok:
     TO_FIXNUM rax
+    mov rdi, r14
+    call data_free
     jmp .out
     ; ---- memory port ----
 .mem:

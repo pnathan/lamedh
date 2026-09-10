@@ -5,7 +5,8 @@
 %include "src/tags.inc"
 %include "src/syscalls.inc"
 
-extern data_alloc
+extern data_alloc_raw
+extern data_free
 extern print_value
 extern make_string
 
@@ -87,8 +88,13 @@ princ_to_string:
     push qword [capture_len]
     push qword [capture_cap]
 
+    ; A raw scratch buffer, not a Lisp object: nothing ever holds a
+    ; reference to it past make_string's copy below, so it is
+    ; data_alloc_raw'd and explicitly freed rather than left for the
+    ; collector — this is the 64 KB-per-call leak the README names
+    ; (docs/spec-tco-capture-gc.md 3.4, the **R** rows).
     mov rdi, CAPTURE_BUF_BYTES
-    call data_alloc
+    call data_alloc_raw
     mov [capture_buf], rax
     mov qword [capture_len], 0
     mov qword [capture_cap], CAPTURE_BUF_BYTES
@@ -101,6 +107,9 @@ princ_to_string:
     mov rsi, [capture_len]
     call make_string
     mov rbx, rax                          ; result string
+
+    mov rdi, [capture_buf]
+    call data_free                          ; clobbers nothing
 
     pop qword [capture_cap]
     pop qword [capture_len]

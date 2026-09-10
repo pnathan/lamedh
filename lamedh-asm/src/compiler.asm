@@ -102,6 +102,17 @@ extern clear_flag
 extern clear_all_flags
 extern fail_wrong_type
 extern gensym
+extern heap_bytes_used
+extern gc_verify
+extern rc_collect
+extern rc_safepoint
+extern rc_register
+extern rc_store_cell
+extern rc_pin_deep
+extern rc_pin_enter
+extern rc_pin_leave
+extern rc_refcount
+extern heap_bytes_live
 extern make_char_from_fixnum
 extern char_code_tagged
 extern stringp_tagged
@@ -158,6 +169,11 @@ section .rodata
 kw_quote:  db "QUOTE"
 kw_function: db "FUNCTION"
 kw_gensym: db "GENSYM"
+kw_heap_bytes_used: db "HEAP-BYTES-USED"
+kw_gc_verify: db "GC-VERIFY"
+kw_gc_collect: db "GC-COLLECT"
+kw_refcount: db "REFCOUNT"
+kw_heap_bytes_live: db "HEAP-BYTES-LIVE"
 kw_jit_optimize: db "JIT-OPTIMIZE"
 kw_stringp: db "STRINGP"
 kw_symbolp: db "SYMBOLP"
@@ -289,6 +305,7 @@ kw_rest:   db "&REST"
 section .data
 align 8
 global current_scope
+global current_scope
 current_scope: dq IMM_NIL     ; compile-time lexical scope: a list of
                               ; (symbol . rbp-disp) pairs for whichever
                               ; function is currently being compiled;
@@ -314,6 +331,7 @@ catch_stack_top: resq 1
 ; loop is emitted. Safe as a single global cell (not a stack/recursion
 ; slot) because nothing in that span recurses into compile_lambda —
 ; recursive compilation only happens later, while compiling the body.
+global rest_sym_scratch
 rest_sym_scratch: resq 1
 
 ; compile_nesting_depth/macroexpand_memo: memoizes macro expansion so
@@ -346,7 +364,10 @@ compile_nesting_depth: resq 1
 ; instead: a slot is live only while its own stored generation matches
 ; [macroexpand_generation], so bumping the counter invalidates every
 ; slot in O(1) with no memory traffic at all.
+global macroexpand_memo
+global macroexpand_memo_end
 macroexpand_memo: resq (MACROEXPAND_MEMO_SIZE*3)
+macroexpand_memo_end:
 macroexpand_generation: resq 1
 
 ; current_frame_depth: how many rbp-relative local slots are already
@@ -1173,7 +1194,10 @@ align 8
 ; macroexpand_memo above (see its comment for why address identity is
 ; sound here). Value = that lambda's capture list, in the exact order
 ; free-slot indices are assigned to it.
+global capture_memo
+global capture_memo_end
 capture_memo: resq (CAPTURE_MEMO_SIZE*3)
+capture_memo_end:
 capture_generation: resq 1
 
 section .data
@@ -2672,6 +2696,54 @@ compile_nullary_hostcall:
     call emit_call_reg
     ret
 
+; emit_rc_store_cell(rsi = absolute address of a symbol's value/macro
+; cell) — emits, in place of a bare `mov [cell], rax`, a call to
+; rc_store_cell(rdi=cell, rsi=rax): decrement whatever the cell held,
+; increment what replaces it, store, and hand the value back in rax so
+; the form still evaluates to what it assigned.
+;
+; This is the M half of the counting discipline for global bindings:
+; a symbol is a pinned heap object, so its value/macro/plist cells are
+; heap slots, and rebinding a global is a genuine heap->heap reference
+; replacement — the one that releases the previous value.
+emit_rc_store_cell:
+    push rbx
+    mov rbx, rsi
+    mov dil, REG_RSI
+    mov sil, REG_RAX
+    call emit_mov_rr                        ; target: rsi = value
+    mov rsi, rbx
+    mov dil, REG_RDI
+    call emit_mov_reg_imm64                   ; target: rdi = &cell
+    lea rsi, [rel rc_store_cell]
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                          ; target: rax = value
+    pop rbx
+    ret
+
+; emit_safepoint() — emits `push rax; mov rax, imm64(rc_safepoint);
+; call rax; pop rax` at a compiled function's entry.
+;
+; The push/pop around it is what lets this be spliced in without
+; knowing whether rax is still live from the calling convention (it
+; carries nargs in); rc_safepoint itself preserves every other
+; register, so the stub is invisible to the code on either side of it.
+; A direct rel32 call is impossible here for the usual reason: the code
+; heap and the host binary's .text are farther apart than rel32 reaches.
+emit_safepoint:
+    mov dil, REG_RAX
+    call emit_push_reg
+    lea rsi, [rel rc_safepoint]
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg
+    mov dil, REG_RAX
+    call emit_pop_reg
+    ret
+
 ; compile_unary_hostcall(rdi=arg form, rsi=host fn address)
 compile_unary_hostcall:
     push rbx
@@ -3926,8 +3998,7 @@ compile_setq:
     UNTAG_PTR rdi
     add rdi, 16
     mov rsi, rdi
-    mov dil, REG_RAX
-    call emit_store_mem64
+    call emit_rc_store_cell
 .next:
     mov rdi, rbx
     call cdr
@@ -3957,8 +4028,7 @@ compile_define:
     UNTAG_PTR rdi
     add rdi, 16                              ; &value cell
     mov rsi, rdi
-    mov dil, REG_RAX
-    call emit_store_mem64
+    call emit_rc_store_cell
     pop rbx
     ret
 
@@ -3991,8 +4061,7 @@ compile_defdynamic:
     UNTAG_PTR rdi
     add rdi, 16                              ; &value cell
     mov rsi, rdi
-    mov dil, REG_RAX
-    call emit_store_mem64
+    call emit_rc_store_cell
     pop rbx
     ret
 
@@ -4350,6 +4419,12 @@ compile_lambda:
     call emit_store_local                                                                   ; target: REST slot = acc
 .no_rest_loop:
 
+    ; The prologue is complete: every incoming value is now a tagged
+    ; word in a frame slot or an argument register, which is exactly
+    ; the condition the conservative root scan needs. This is the
+    ; collector's safe point (gc.asm).
+    call emit_safepoint
+
     ; compile the body with the new scope AND a fresh current_frame_depth
     ; installed (this lambda's own base_index, stashed above — a LET/
     ; LET* inside the body allocates its own slots starting right after
@@ -4504,6 +4579,20 @@ compile_lambda:
     call emit_mov_rr
     mov edi, TAG_HEAPOBJ
     call emit_or_rax_imm32                       ; target: rax = tagged closure — final result
+
+    ; The closure's captured slots now hold heap->heap references —
+    ; count them. One emitted hostcall per closure *creation* (not per
+    ; call), and rc_register returns its argument, so the tagged
+    ; closure is still in rax afterwards and this splices in without
+    ; disturbing the sequence around it.
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr
+    lea rsi, [rel rc_register]
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg
 
     add rsp, 8                                     ; discard captures
     pop r15
@@ -4797,8 +4886,7 @@ compile_defexpr:
     UNTAG_PTR rdi
     add rdi, 16
     mov rsi, rdi
-    mov dil, REG_RAX
-    call emit_store_mem64                             ; symbol.value =
+    call emit_rc_store_cell                           ; symbol.value =
                                                        ; operative (same
                                                        ; store idiom
                                                        ; compile_define
@@ -4863,8 +4951,7 @@ compile_defmacro:
     UNTAG_PTR rax
     add rax, 24                                              ; macro slot address
     mov rsi, rax
-    mov dil, REG_RAX
-    call emit_store_mem64                                      ; target: symbol.macro = closure
+    call emit_rc_store_cell                                    ; target: symbol.macro = closure
 
     pop r12
     pop rbx
@@ -5024,6 +5111,20 @@ compile_record_new:
     mov edi, TAG_HEAPOBJ
     call emit_or_rax_imm32              ; target: rax = tagged record —
                                          ; final result
+
+    ; The closure's captured slots now hold heap->heap references —
+    ; count them. One emitted hostcall per closure *creation* (not per
+    ; call), and rc_register returns its argument, so the tagged
+    ; closure is still in rax afterwards and this splices in without
+    ; disturbing the sequence around it.
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr
+    lea rsi, [rel rc_register]
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg
 
     pop r13
     pop r12
@@ -6718,6 +6819,13 @@ compile_go:
     call cadr
     mov rbx, rax                  ; label symbol
 
+    ; Same reasoning as WHILE's back edge: a PROG/GO loop is this
+    ; kernel's other unbounded, call-free allocation site. The label a
+    ; GO targets is resolved after the fact (it may be forward or
+    ; backward), so the safe point is emitted for both — a forward GO
+    ; pays three compares once.
+    call emit_safepoint
+
     call emit_jmp32
     mov rcx, rax                    ; site
 
@@ -6824,6 +6932,11 @@ compile_while:
     mov rdi, rbx
     xor esi, esi                                  ; never tail (spec sec. 2)
     call compile_progn                            ; body -> rax (discarded)
+
+    ; Loop back-edge safe point: a WHILE body that allocates but calls
+    ; no function would otherwise never reach one, and would grow the
+    ; heap without bound exactly as it does today (gc.asm).
+    call emit_safepoint
 
     call emit_jmp32
     mov rdi, rax
@@ -6999,6 +7112,63 @@ compile_form:
     jmp .out
 
 .not_gensym:
+    ; --- heap/collector observability (docs/spec-tco-capture-gc.md 3.5)
+    ; Nullary hostcalls, GENSYM's exact shape. These are the only
+    ; program-visible surface the collector has: everything else about
+    ; it must be invisible to a running program.
+    mov rdi, r12
+    mov rsi, kw_heap_bytes_used
+    mov rdx, 15
+    call sym_is
+    test rax, rax
+    jz .not_heap_bytes_used
+    lea rsi, [rel heap_bytes_used]
+    call compile_nullary_hostcall
+    jmp .out
+.not_heap_bytes_used:
+    mov rdi, r12
+    mov rsi, kw_heap_bytes_live
+    mov rdx, 15
+    call sym_is
+    test rax, rax
+    jz .not_heap_bytes_live
+    lea rsi, [rel heap_bytes_live]
+    call compile_nullary_hostcall
+    jmp .out
+.not_heap_bytes_live:
+    mov rdi, r12
+    mov rsi, kw_gc_verify
+    mov rdx, 9
+    call sym_is
+    test rax, rax
+    jz .not_gc_verify
+    lea rsi, [rel gc_verify]
+    call compile_nullary_hostcall
+    jmp .out
+.not_gc_verify:
+    mov rdi, r12
+    mov rsi, kw_gc_collect
+    mov rdx, 10
+    call sym_is
+    test rax, rax
+    jz .not_gc_collect
+    lea rsi, [rel rc_collect]
+    call compile_nullary_hostcall
+    jmp .out
+.not_gc_collect:
+    mov rdi, r12
+    mov rsi, kw_refcount
+    mov rdx, 8
+    call sym_is
+    test rax, rax
+    jz .not_refcount
+    mov rdi, r13
+    call car
+    mov rdi, rax
+    lea rsi, [rel rc_refcount]
+    call compile_unary_hostcall
+    jmp .out
+.not_refcount:
     mov rdi, r12
     mov rsi, kw_symbol_plist
     mov rdx, 12
@@ -9068,6 +9238,16 @@ compile_thunk:
     push rbx
     mov rbx, rdi
 
+    ; Everything the compiler allocates while compiling — macro
+    ; expansions, scope lists, synthetic forms, the &REST param split —
+    ; is born pinned: a form under construction is referenced only from
+    ; host registers and host stack frames, and v0 accepts leaking that
+    ; compile-time garbage exactly as today rather than making the
+    ; compiler itself collector-safe (docs/spec-tco-capture-gc.md 3.4,
+    ; 3.7 item 7). eval_form therefore compiles pinned and runs
+    ; unpinned.
+    call rc_pin_enter
+
     cmp qword [compile_nesting_depth], 0
     jne .no_memo_clear
     call clear_macroexpand_memo
@@ -9114,6 +9294,7 @@ compile_thunk:
     mov [current_scope], rcx
 
     dec qword [compile_nesting_depth]
+    call rc_pin_leave
 
     pop rbx
     ret

@@ -10,6 +10,7 @@
 %define SEEK_SET          0
 %define SEEK_CUR          1
 %define SYS_mmap          9
+%define SYS_munmap       11
 %define SYS_mprotect     10
 %define SYS_exit         60
 

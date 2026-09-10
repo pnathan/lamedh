@@ -10,6 +10,7 @@
 ; second-guess register allocation or encoding choice.
 
 extern code_alloc
+extern rc_pin_deep
 extern code_heap_cur
 
 section .text
@@ -55,8 +56,34 @@ emit64:
 ; anything about Lisp forms.
 
 ; emit_mov_reg_imm64(dil = dst reg code, rsi = imm64)
+;
+; Every heap value that reaches emitted code as an immediate is pinned
+; here, at the single choke point, rather than at each of the half-dozen
+; sites that bake one (a literal, QUOTE's datum, an operative call's two
+; baked operands, compile_error's default condition, the global
+; environment sentinel, JIT-OPTIMIZE): a baked value's only live
+; reference is an operand field inside the code heap, which no stack
+; scan and no reference count will ever see, so it must become
+; immortal at the moment it is baked. Missing one site would mean
+; (QUOTE (1 2)) returning garbage the second time it is evaluated
+; (docs/spec-tco-capture-gc.md 3.7 item 3) — so the rule is enforced
+; structurally instead of by enumeration.
+;
+; Non-values pass through untouched by construction: every other imm64
+; this emitter bakes is a host routine address, a code-heap address, a
+; frame size, an argument count or a raw data-heap address, and all of
+; those are at least 4-byte aligned, i.e. tag bits 00 — which rc_pin_deep
+; ignores exactly as it ignores a fixnum.
 global emit_mov_reg_imm64
 emit_mov_reg_imm64:
+    push rdi
+    push rsi
+    push rdx
+    mov rdi, rsi
+    call rc_pin_deep
+    pop rdx
+    pop rsi
+    pop rdi
     push rbx
     mov bl, dil
     mov rdi, 0x48

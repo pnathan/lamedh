@@ -13,7 +13,7 @@ ASFLAGS := -f elf64 -g -F dwarf -w+all -Isrc/ $(EXTRA_ASFLAGS)
 LD      := ld
 BUILD   := build
 
-CORE := src/heap.asm src/print.asm src/reader.asm src/symtab.asm \
+CORE := src/heap.asm src/gc.asm src/print.asm src/reader.asm src/symtab.asm \
         src/strings.asm src/floats.asm src/fileio.asm src/arrays.asm \
         src/conditions.asm src/overflow.asm src/native_errors.asm \
         src/chars.asm src/rng.asm src/bitwise.asm src/capabilities.asm \

@@ -53,9 +53,12 @@ One 64-bit word per value; the low 2 bits are a tag (`src/tags.inc`):
 Fixnum arithmetic runs directly on the tagged (shifted-left-by-2)
 representation: `ADD`/`SUB` need no untag/retag at all, since the tag
 bits cancel; only `IMUL` needs a post-shift correction. Cons cells,
-symbols, and closures are bump-allocated on a single `mmap`'d data heap
-with **no garbage collector** (see Roadmap) — sized generously for the
-programs this stage targets.
+symbols, and closures are allocated on a single `mmap`'d data heap,
+reclaimed by a **deferred reference-counting collector** (`gc.asm` —
+see "Garbage collection" below): a per-16-byte-granule side table holds
+the count, only heap->heap references are counted, and stack and
+register references are found by a conservative scan at a safe point
+instead.
 
 ## What's compiled (this stage)
 
@@ -816,6 +819,106 @@ into conformance incrementally, tracked honestly rather than silently:
   than being replaced by a vaguer
   "in progress" note.
 
+## Garbage collection
+
+The data heap is collected by **deferred reference counting**
+(Deutsch & Bobrow 1976), implemented in `src/gc.asm`. The design, its
+site inventory and its landing plan are in
+`docs/spec-tco-capture-gc.md` section 3.
+
+**Where the count lives.** Not in the object. A cons is a bare 16-byte
+`[car|cdr]` cell with no header word to spare (`tags.inc`), and
+widening it to 32 bytes would double the cost of every list. Instead,
+because the data heap is one contiguous `mmap` with 16-byte allocation
+granularity, `granule = (raw_addr - data_heap_base) >> 4` is a dense
+index into a flat side table of 8-byte entries — `u32 count`,
+`u8 flags` (`HEAD`/`PINNED`/`IN_ZCT`/`MARK`/`RAW`/`CONS`),
+`u24 ngranules`. The table is 128 MiB of *virtual* space for the
+256 MiB heap, mapped once and committed lazily, exactly like the arenas
+it shadows. No object's layout, tag, address or `EQ` identity changes.
+
+**What is counted.** Heap->heap references only: a tagged pointer
+stored in a cons cell, a closure's captured slot, an array/record/
+condition/port slot, or a symbol's value/macro/plist cell. References
+from the stack, from registers, from catch frames and from
+compile-time scratch are **not** counted. That asymmetry is the whole
+point of "deferred": this compiler spills every local to a `[rbp+disp]`
+slot and pushes every intermediate, so counting stack references would
+mean an inc/dec pair around nearly every store it emits, plus
+decrementing every slot of every frame on exit — including on
+`native_throw`'s longjmp, which cannot visit the frames it skips. As a
+direct consequence `THROW` needs no collector hook at all.
+
+**So a count of zero does not mean garbage** — it means *candidate*.
+Zero-count objects go on the zero-count table (ZCT), and reclamation
+happens only at a **safe point**: push all 16 GPRs, conservatively scan
+the stack from `rsp` to the process's original `rsp` (`stack_base`,
+captured in `boot.asm`) plus the catch stack and the compiler's scratch
+cells, marking every allocation head those words appear to point at,
+then free every ZCT member that is unmarked, unpinned and still at
+zero. Freeing decrements children iteratively through the same ZCT
+loop, never by host recursion — freeing a million-cell list must not
+reintroduce on the host side the unbounded stack growth proper tail
+calls just removed on the target side.
+
+**Safe points** are emitted at every compiled function's entry (after
+the prologue has extracted free variables and built any `&REST` list,
+so every value in play is a tagged word in a slot or an argument
+register) and at the back edge of `WHILE` and of `GO` (so an
+allocating loop that calls nothing still collects). They are *not*
+emitted anywhere else, and `data_alloc` never collects: an emitted
+construction sequence holds a raw untagged address in `rbx` between
+`data_alloc` and the tagging `or`, and a host routine can hold an
+interior pointer, neither of which a conservative scan can recognize.
+**Reviewer rule: an emitted sequence holding a raw address must not
+contain a call into compiled code before the tagging `or`.**
+
+**Pinning.** Anything baked into emitted code as an immediate becomes
+immortal at the moment it is baked — its only live reference is an
+operand field inside the code heap, which no scan and no count will
+ever see. That rule is enforced structurally, in
+`emit_mov_reg_imm64` itself, rather than by enumerating the half-dozen
+sites that bake a value (a literal, `QUOTE`'s datum, an operative
+call's baked operands, `compile_error`'s default condition): every
+other immediate this emitter bakes is at least 4-byte aligned, i.e.
+tag bits `00`, which the pinning walk ignores exactly as it ignores a
+fixnum. Symbols are pinned at intern time. Everything allocated while
+`rc_pin_depth > 0` (i.e. inside `compile_thunk`) is pinned too.
+
+**Raw scratch buffers** — `PRINC-TO-STRING`'s 64 KB capture buffer,
+`file_read`'s and the port layer's read/write scratch — are not Lisp
+objects and are not counted at all: `data_alloc_raw` + an explicit
+`data_free`, their lifetimes being exactly stack-shaped. This alone
+removed a documented 64 KB-per-call leak that could exhaust the whole
+arena inside one heavy `WITH-MODULE` body.
+
+**Observability, and how this is tested.** `(HEAP-BYTES-USED)`,
+`(HEAP-BYTES-LIVE)`, `(GC-COLLECT)`, `(REFCOUNT x)` and — the
+important one — **`(GC-VERIFY)`**, which walks the whole heap
+linearly, recomputes every unpinned object's count from scratch by
+enumerating every heap slot of every live object, and compares it with
+the side table, printing the first mismatch and returning `NIL`. A
+missed `rc_inc` at any creation or mutation site is otherwise the
+worst class of bug this project can have: not a crash, but an object
+freed while still referenced, its granules handed to the next `CONS`,
+and `(CAR x)` silently returning another list's car. `GC-VERIFY` turns
+"did I instrument every site?" from a code-reading exercise into a
+test, and `tests/run.sh` runs it — before and after a real collection
+— at the end of both `file_runner_prelude` and `stdlib_conformance`,
+the latter after loading all 40 reference stdlib files.
+`tests/cases/069_rc_reclaim.asm` covers reclamation itself.
+
+**Anything added later owes this collector something**, which is the
+concrete reason it landed last of the three features in its spec:
+
+- a new heapobj kind owes `rc_walk_children` a case (which is the
+  single authority `rc_register`, `rc_free` and `GC-VERIFY` all share,
+  so one case teaches all three);
+- a new heap store owes an `rc_store_slot`;
+- a new host `.bss` cell that can hold a tagged runtime value owes the
+  root scanner an entry;
+- a new emitted construction sequence owes the reviewer rule above.
+
 ## v0 limits (known, not silent)
 
 - A lambda body may have multiple forms, implicitly `PROGN`-wrapped
@@ -859,7 +962,27 @@ into conformance incrementally, tracked honestly rather than silently:
 - Captured variables are captured **by value** at closure-creation time,
   not as shared mutable cells — there is no `SETQ` on a captured
   variable visible to the closure that captured it (or vice versa).
-- No garbage collector. No bignums or first-class conditions yet.
+- **Cycles are never reclaimed** — the deliberate v0 stance of the
+  reference-counting collector (see "Garbage collection" below), and
+  the same one every early reference-counting Lisp took. In this
+  kernel a cycle can only be built through `STORE` into an array or
+  record slot, or through `SET-SYMBOL-PLIST!`: `RPLACA`/`RPLACD` are
+  non-destructive `CONS`es here, so a cons cycle cannot be formed at
+  all, and closures capture by value. `tests/cases/069_rc_reclaim.asm`
+  pins this down as retained-not-crashed rather than leaving it
+  untested.
+- **Compile-time allocations are pinned, and therefore still leak.**
+  Everything the compiler allocates while compiling — macro
+  expansions, scope lists, synthetic forms — is born pinned so that a
+  form still under compilation cannot be reclaimed out from under an
+  in-progress compile. A long session that `EVAL`s in a loop grows the
+  heap by its expansions. Freeing that (everything except what got
+  baked into emitted code) is a separate feature.
+- The code heap is never reclaimed at all, by design: compiled
+  functions, trampolines and patched call sites are permanent. Symbols
+  are never reclaimed either — they are interned, address-baked into
+  emitted code, and hold the global value cells.
+- No bignums or first-class conditions yet.
   Dynamic variables now exist (`DEFDYNAMIC`/dynamic-extent `LET` — see
   "KERNEL.md conformance" above) but only via plain `LET`, not `LET*`,
   and only when every binding in the `LET` is dynamic. `$VAU`

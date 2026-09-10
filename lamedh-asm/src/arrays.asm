@@ -19,6 +19,7 @@
 %include "src/tags.inc"
 
 extern data_alloc
+extern rc_store_slot
 extern intern_symbol
 extern make_float
 extern float_val
@@ -287,10 +288,17 @@ array_set:
     UNTAG_PTR rbx
     cmp qword [rbx], HDR_TYPED_ARRAY
     je .typed
-    mov rax, rbx
     mov rcx, rsi
     UNTAG_FIXNUM rcx
-    mov [rax+16+rcx*8], rdx
+    ; A plain array slot is a counted heap slot: releasing the value it
+    ; held is what makes (STORE a i NIL) actually drop that value's
+    ; last heap reference. (The typed-array branches below store raw
+    ; untagged int64/double words, which are not references at all.)
+    lea rdi, [rbx+16+rcx*8]
+    mov rsi, rdx
+    push rdx
+    call rc_store_slot
+    pop rdx
     mov rax, rdx
     pop rbx
     ret

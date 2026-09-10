@@ -1,4 +1,6 @@
-; heap.asm — two bump-allocated arenas, no GC (v0 scope; see README roadmap).
+; heap.asm — the two arenas themselves: one mmap each, plus the code
+; heap's bump allocator. The data heap's allocator lives in gc.asm,
+; where the granule side table that shadows it does.
 ;
 ;   data heap: PROT_READ|PROT_WRITE   — cons cells, symbols, strings.
 ;   code heap: PROT_READ|WRITE|EXEC   — compiled native functions.
@@ -14,6 +16,8 @@
 ; cache-flush instruction is required on this architecture.
 
 %include "src/syscalls.inc"
+
+extern rc_init
 
 section .bss
 align 8
@@ -58,6 +62,10 @@ heap_init_all:
     add rax, r12
     mov [data_heap_end], rax
 
+    ; --- the data heap's granule side table (gc.asm) ---
+    mov rdi, r12
+    call rc_init
+
     ; --- code heap: RWX, private anonymous mmap ---
     xor edi, edi
     mov rsi, rbx
@@ -76,18 +84,10 @@ heap_init_all:
     pop rbx
     ret
 
-; data_alloc(rdi = size in bytes) -> rax = raw pointer, 16-byte aligned bump
-global data_alloc
-data_alloc:
-    add rdi, 15
-    and rdi, ~15
-    mov rax, [data_heap_cur]
-    add rax, rdi
-    ; (no bounds check in v0 — a fixed arena is pre-sized generously;
-    ;  see README roadmap for growth/GC.)
-    mov [data_heap_cur], rax
-    sub rax, rdi
-    ret
+; data_alloc now lives in gc.asm: allocation and the granule side table
+; that shadows it are one mechanism (an allocation must record its own
+; length and flags in the table at the moment it is made), and the
+; free-list-before-bump path is the collector's, not this file's.
 
 ; code_alloc(rdi = size in bytes) -> rax = raw pointer, 16-byte aligned bump
 global code_alloc

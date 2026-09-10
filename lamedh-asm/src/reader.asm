@@ -9,7 +9,8 @@
 
 %include "src/tags.inc"
 
-extern data_alloc
+extern data_alloc_cons
+extern rc_inc
 extern intern_symbol
 extern make_string
 extern make_float
@@ -35,12 +36,25 @@ section .text
 global cons
 cons:
     push r8
+    push r9
     mov r8, rdi
-    mov rdi, 16
-    call data_alloc
+    mov r9, rsi
+    ; data_alloc_cons, not data_alloc: a cons has no header word, so its
+    ; granule entry carries the flag that tells the collector's walker
+    ; "two tagged slots, don't read [raw+0] as a header" (gc.asm).
+    call data_alloc_cons
     mov [rax], r8
-    mov [rax+8], rsi
+    mov [rax+8], r9
     or rax, TAG_CONS
+    ; The cell now holds two heap->heap references; count them. This is
+    ; the hottest counted site in the system, which is why rc_inc's
+    ; fast path bails out on an immediate/fixnum tag in three
+    ; instructions (gc.asm).
+    mov rdi, r8
+    call rc_inc
+    mov rdi, r9
+    call rc_inc
+    pop r9
     pop r8
     ret
 
