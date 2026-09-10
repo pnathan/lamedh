@@ -92,6 +92,13 @@ array/hash-table equality is identity (`Shared::ptr_eq`), so two structurally id
 distinct arrays are not `EQUAL` and constrain nothing. Without aliasing the hash law would
 be vacuous for every identity type.
 
+## Gate status at hand-off
+
+`scripts/gauntlet.sh` green on `47634be`'s code: **all four markers** —
+`DEFAULT-GREEN`, `NDF-GREEN`, `FUZZ-GREEN`, `CLIPPY-GREEN`. The fuzz leg ran 11 tests
+(up from 9), i.e. both new boxed batteries executed inside the gauntlet rather than only
+standalone. `7401de2` is docs-only, so that verdict covers the current tip's code.
+
 ## Known limitations, stated rather than buried
 
 - **Tier agreement is three code paths, not all four.** `TypedFn::invoke_once` prefers the
