@@ -17,9 +17,10 @@
 ; fail_not_callable() (a fixed message to stderr, then a hard exit(1))
 ; predating native_throw; emit_check_callable now goes through
 ; fail_wrong_type/native_throw instead, so a HANDLER-CASE/ERRORSET
-; genuinely catches it (e2 below), and an *uncaught* one traps (int3,
-; exit code 128+SIGTRAP=133 — tests/run.sh's `.exitcode` file) the same
-; way any other unmatched THROW does, rather than a controlled exit(1).
+; genuinely catches it (e2 below), and an *uncaught* one is reported —
+; one line on stderr, `lamedhc: unhandled error: not a function: ...`,
+; then exit(1) (report_unhandled_throw, native_errors.asm; tests/run.sh's
+; `.exitcode` file) — the same way any other unmatched THROW is.
 
 %include "src/tags.inc"
 

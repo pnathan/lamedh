@@ -71,6 +71,17 @@
 ; like plain B becomes (B ())). mode starts as (QUOTE FIX) and switches
 ; to OPT/KEY on seeing &OPTIONAL/&KEY; &REST is recognized in any mode
 ; and consumes exactly the one symbol after it.
+; $CHECK-PARAM-SPEC — an &OPTIONAL/&KEY spec is (name default) or a
+; bare name, exactly as in the reference. A third element (Common
+; Lisp's supplied-p variable, `(B 10 B-P)`) is NOT supported by the
+; reference either, and used to be silently ignored here — B-P then
+; read as an unbound global. Now it is a compile-time error.
+(DEFINE $CHECK-PARAM-SPEC
+  (LAMBDA (SPEC)
+    (IF (ATOM (CDR (CDR SPEC)))
+        SPEC
+        (ERROR "DEFUN: parameter spec must be (name default); supplied-p variables are not supported" SPEC))))
+
 (DEFINE $SPLIT-PARAMS
   (LAMBDA (PS MODE FIXED OPTS REST KEYS)
     (IF (ATOM PS)
@@ -90,15 +101,15 @@
                             ($SPLIT-PARAMS (CDR PS) MODE FIXED
                                            (APPEND OPTS
                                                    (CONS (IF (ATOM (CAR PS))
-                                                             (CONS (CAR PS) (CONS (QUOTE ()) (QUOTE ())))
-                                                             (CAR PS))
+                                                                  (CONS (CAR PS) (CONS (QUOTE ()) (QUOTE ())))
+                                                                  ($CHECK-PARAM-SPEC (CAR PS)))
                                                          (QUOTE ())))
                                            REST KEYS)
                             ($SPLIT-PARAMS (CDR PS) MODE FIXED OPTS REST
                                            (APPEND KEYS
                                                    (CONS (IF (ATOM (CAR PS))
-                                                             (CONS (CAR PS) (CONS (QUOTE ()) (QUOTE ())))
-                                                             (CAR PS))
+                                                                  (CONS (CAR PS) (CONS (QUOTE ()) (QUOTE ())))
+                                                                  ($CHECK-PARAM-SPEC (CAR PS)))
                                                          (QUOTE ()))))))))))))
 
 ; $OPT-BINDINGS(opts g) -> a LET*-bindings list, two per optional: the

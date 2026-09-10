@@ -55,7 +55,7 @@ lamedh_main:
 
     mov rdi, e1
     mov rsi, e1_len
-    call run_thunk_discard        ; never returns: uncaught, traps (int3)
+    call run_thunk_discard        ; never returns: uncaught, reported on stderr and exit(1)
 
     ; unreachable
     mov rax, 99

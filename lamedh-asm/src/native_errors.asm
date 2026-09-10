@@ -11,6 +11,7 @@
 ; before being switched over to the real thing too.
 
 %include "src/tags.inc"
+%include "src/syscalls.inc"
 
 extern catch_stack
 extern catch_stack_top
@@ -18,6 +19,7 @@ extern handler_case_tag
 extern make_error
 extern make_string
 extern intern_symbol
+extern princ_to_string
 
 section .text
 
@@ -141,7 +143,110 @@ native_throw:
     mov rax, r12                                    ; thrown value
     jmp rdi
 .unmatched:
-    int3
+    ; No CATCH/HANDLER-CASE/ERRORSET frame matched. This used to be a
+    ; bare int3 — a SIGTRAP with no text at all, indistinguishable from
+    ; any other trap in the binary, so a user whose program called an
+    ; undefined function, or hit a CAR on a fixnum, or signalled an
+    ; ERROR nothing caught, got exit status 133 and nothing else to go
+    ; on. Now: one line on stderr naming what was thrown, then a plain
+    ; exit(1) — the same "uncaught error prints and exits non-zero"
+    ; contract every scripting runtime has, and the reference's own
+    ; batch-mode behaviour.
+    mov rdi, rbx
+    mov rsi, r12
+    call report_unhandled_throw          ; never returns
+    int3                                 ; unreachable
+
+; report_unhandled_throw(rdi=tag, rsi=value) — never returns. Writes
+; one diagnostic line to STDERR and exit(1)s. A value thrown to the
+; shared handler_case_tag is a condition (make_error's [header]
+; [message][data]) and is rendered as its message plus, when non-NIL,
+; its data; anything else is a bare THROW rendered as tag and value.
+; Every piece of text goes through princ_to_string (the same bytes
+; PRINT would produce) so the culprit reads exactly as the user would
+; see it at the REPL.
+global report_unhandled_throw
+report_unhandled_throw:
+    push rbx
+    push r12
+    mov rbx, rdi                          ; tag
+    mov r12, rsi                          ; value
+    call handler_case_tag
+    cmp rax, rbx
+    jne .plain_throw
+
+    ; --- a condition: "lamedhc: unhandled error: <message>[: <data>]" ---
+    mov rsi, msg_unhandled_error
+    mov rdx, msg_unhandled_error_len
+    call stderr_write
+    mov rax, r12
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .cond_not_object                  ; not even a heap object: princ it whole
+    mov rax, r12
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_CONDITION
+    jne .cond_not_object
+    mov rdi, [rax+8]                      ; message
+    call stderr_princ
+    mov rax, r12
+    UNTAG_PTR rax
+    mov rdi, [rax+16]                     ; data
+    cmp rdi, IMM_NIL
+    je .newline
+    push rdi
+    mov rsi, msg_sep
+    mov rdx, msg_sep_len
+    call stderr_write
+    pop rdi
+    call stderr_princ
+    jmp .newline
+.cond_not_object:
+    mov rdi, r12
+    call stderr_princ
+    jmp .newline
+
+.plain_throw:
+    ; --- "lamedhc: unhandled THROW to <tag>: <value>" ---
+    mov rsi, msg_unhandled_throw
+    mov rdx, msg_unhandled_throw_len
+    call stderr_write
+    mov rdi, rbx
+    call stderr_princ
+    mov rsi, msg_sep
+    mov rdx, msg_sep_len
+    call stderr_write
+    mov rdi, r12
+    call stderr_princ
+
+.newline:
+    mov rsi, msg_nl
+    mov rdx, 1
+    call stderr_write
+    mov edi, 1
+    mov eax, SYS_exit
+    syscall
+    int3                                  ; unreachable
+
+; stderr_princ(rdi=tagged value) — writes PRINT's bytes for the value
+; to STDERR (via princ_to_string, so the capture-buffer machinery
+; print.asm uses for PRINC-TO-STRING is what renders it, not a second
+; printer). Clobbers caller-saved registers.
+global stderr_princ
+stderr_princ:
+    call princ_to_string                  ; rax = tagged HDR_STRING
+    UNTAG_PTR rax
+    mov rdx, [rax+8]                      ; len
+    lea rsi, [rax+16]                     ; bytes
+    ; fall through
+; stderr_write(rsi=buf, rdx=len) — raw write(2) to STDERR, no capture
+; redirection (this is diagnostic output, never PRINC-TO-STRING data).
+global stderr_write
+stderr_write:
+    mov edi, STDERR
+    mov eax, SYS_write
+    syscall
+    ret
 
 ; fail_wrong_type(rdi=culprit value, rsi=msg ptr, rdx=msg len) — never
 ; returns. Builds an ordinary two-field condition (conditions.asm's
@@ -176,3 +281,10 @@ fail_wrong_type:
 
 section .rodata
 unwind_marker_tag_name: db "%UNWIND-PROTECT-MARKER%"
+msg_unhandled_error: db "lamedhc: unhandled error: "
+msg_unhandled_error_len: equ $ - msg_unhandled_error
+msg_unhandled_throw: db "lamedhc: unhandled THROW to "
+msg_unhandled_throw_len: equ $ - msg_unhandled_throw
+msg_sep: db ": "
+msg_sep_len: equ $ - msg_sep
+msg_nl: db 10

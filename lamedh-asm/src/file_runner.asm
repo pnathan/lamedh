@@ -39,6 +39,10 @@ prelude_start:
 prelude_end:
 prelude_len: equ prelude_end - prelude_start
 
+section .rodata
+open_failed_msg: db "lamedhc: cannot open input file", 10
+open_failed_len: equ $ - open_failed_msg
+
 section .text
 
 ; run_buffer(rdi=buf, rsi=len) — the read+compile+run loop every
@@ -172,6 +176,14 @@ lamedh_main:
     jmp .out
 
 .open_failed:
+    ; Say so. A silent exit(1) for a mistyped path is indistinguishable
+    ; from a program that ran and failed — and the shell's own message
+    ; never appears, since there is no shell redirect involved.
+    mov edi, STDERR
+    lea rsi, [rel open_failed_msg]
+    mov edx, open_failed_len
+    mov eax, SYS_write
+    syscall
     mov rax, 1
 .out:
     pop r13

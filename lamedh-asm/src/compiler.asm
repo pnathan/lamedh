@@ -187,6 +187,19 @@ kw_closure_nfree: db "CLOSURE-NFREE"
 kw_boundp: db "BOUNDP"
 not_callable_err_msg: db "not a function"
 not_callable_err_msg_len: equ $ - not_callable_err_msg
+arity_err_msg: db "wrong number of arguments (got . expected)"
+arity_err_msg_len: equ $ - arity_err_msg
+arity_rest_err_msg: db "too few arguments (got . minimum)"
+arity_rest_err_msg_len: equ $ - arity_rest_err_msg
+bad_param_err_msg: db "LAMBDA: parameter is not a symbol"
+bad_param_err_msg_len: equ $ - bad_param_err_msg
+bad_keyword_err_msg: db "LAMBDA: unsupported lambda-list keyword (only &REST is LAMBDA-level; &OPTIONAL/&KEY are DEFUN-level)"
+bad_keyword_err_msg_len: equ $ - bad_keyword_err_msg
+bad_rest_err_msg: db "LAMBDA: &REST must be followed by exactly one parameter name"
+bad_rest_err_msg_len: equ $ - bad_rest_err_msg
+nary_arity_err_msg: db "requires at least one operand"
+nary_arity_err_msg_len: equ $ - nary_arity_err_msg
+nary_t_name: db "T"
 kw_symbol_plist: db "SYMBOL-PLIST"
 kw_set_symbol_plist: db "SET-SYMBOL-PLIST!"
 kw_set: db "SET"
@@ -424,6 +437,37 @@ global current_lambda_depth
 ; never increments this), regardless of any bug in the tail_ctx
 ; plumbing above.
 current_lambda_depth: resq 1
+; current_lambda_nfixed / current_lambda_has_rest: the innermost LAMBDA
+; body being compiled — its fixed parameter count and whether it takes
+; &REST. Saved/restored around every nested body compile by
+; compile_lambda. Read by compile_call's tail-call check: a tail call
+; with 4+ arguments can reuse this frame only if its stack-passed
+; arguments fit in the incoming stack-argument area the caller of THIS
+; function already pushed (nargs <= nfixed, no &REST — with &REST the
+; incoming count is a runtime value, not a compile-time one).
+global current_lambda_nfixed
+current_lambda_nfixed: resq 1
+; max_frame_depth: the deepest current_frame_depth reached anywhere in
+; the LAMBDA/thunk body being compiled. Every binding form (LET, LET*,
+; PROG, HANDLER-CASE's condition variable) addresses its slots
+; rbp-relative at [rbp-8*(depth+i)], and the enclosing function's
+; prologue `sub rsp, imm32` is patched, once the body is compiled, to
+; reserve 8*max_frame_depth bytes for ALL of them. Binding forms
+; therefore no longer sub/add rsp at runtime. They used to — and a
+; runtime `sub rsp` lands BELOW whatever the enclosing expression has
+; already pushed (a call's evaluated arguments, compile_binop's lhs),
+; while the slot stores were still rbp-relative: a LET/LET*/PROG in
+; argument position of a 4+-argument call, or as the lhs of `+`,
+; overwrote the arguments already pushed for that call —
+; `(LIST (LET ((A 1) (B 2)) (+ A B)) 10 20 30 40 50)` printed (3 10 20 30 2 1) —
+; and a LET nested in another LET's init overwrote the outer LET's
+; earlier bindings, `(LET ((A 1) (B (LET ((C 2)) C))) (LIST A B))`
+; printing (2 2). With the whole frame reserved up front, every push
+; anywhere in the body is below every slot, by construction.
+global max_frame_depth
+max_frame_depth: resq 1
+global current_lambda_has_rest
+current_lambda_has_rest: resq 1
 
 ; lambda_frame_depth_scratch: holds a LAMBDA's own computed base_index
 ; (params+frees+REST slot count) from where it's computed (prologue
@@ -431,6 +475,7 @@ current_lambda_depth: resq 1
 ; right before the body compiles) — same one-cell-is-safe reasoning as
 ; rest_sym_scratch: nothing recurses into compile_lambda in between.
 lambda_frame_depth_scratch: resq 1
+lambda_frame_sub_field_scratch: resq 1
 
 ; nregslots_scratch: how many of this LAMBDA's local slots are consumed
 ; by "register-convention" positions before free vars start — 4 (3
@@ -744,17 +789,75 @@ split_rest_params:
     mov rdi, rbx
     call car
     mov r12, rax                      ; head symbol
+    ; --- lambda-list validation (compile-time, a real condition) ---
+    ; A bare LAMBDA understands exactly one lambda-list keyword, &REST,
+    ; the same as the reference (lib/00-core.lisp: "a bare LAMBDA keeps
+    ; only &REST"; evaluator/core.rs's check_param_name rejects every
+    ; other &-name). Before this check `(LAMBDA (A &OPTIONAL B) ...)`
+    ; silently bound a parameter literally named &OPTIONAL and left B
+    ; unbound — a wrong answer with no diagnostic. &OPTIONAL/&KEY are
+    ; DEFUN-level sugar (lib/prelude.lisp's $EXTENDED-LAMBDA), and the
+    ; message says so.
+    mov rdi, r12
+    call is_symbol_p
+    test rax, rax
+    jz .bad_param
     mov rdi, r12
     mov rsi, kw_rest
     mov rdx, 5
     call sym_is
     test rax, rax
-    jz .not_rest
+    jnz .is_rest
+    mov rdi, r12
+    call sym_starts_with_amp
+    test rax, rax
+    jnz .bad_keyword
+    jmp .not_rest
+.is_rest:
+    ; &REST must be followed by exactly one plain parameter name:
+    ; `(A &REST)` used to bind NIL as the rest symbol and `(&REST A B)`
+    ; silently dropped B.
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call is_cons
+    test rax, rax
+    jz .bad_rest
+    mov rdi, rbx
+    call cdr
+    mov rdi, rax
+    call cdr
+    cmp rax, IMM_NIL
+    jne .bad_rest
     mov rdi, rbx
     call cadr
-    mov rdx, rax                        ; rest_sym
+    mov r12, rax                        ; rest_sym
+    mov rdi, r12
+    call is_symbol_p
+    test rax, rax
+    jz .bad_rest
+    mov rdi, r12
+    call sym_starts_with_amp
+    test rax, rax
+    jnz .bad_rest
+    mov rdx, r12                        ; rest_sym
     mov rax, IMM_NIL                      ; fixed_list = NIL (nothing after &REST)
     jmp .out
+.bad_param:
+    mov rdi, r12
+    mov rsi, bad_param_err_msg
+    mov rdx, bad_param_err_msg_len
+    call fail_wrong_type                ; never returns
+.bad_keyword:
+    mov rdi, r12
+    mov rsi, bad_keyword_err_msg
+    mov rdx, bad_keyword_err_msg_len
+    call fail_wrong_type                ; never returns
+.bad_rest:
+    mov rdi, rbx
+    mov rsi, bad_rest_err_msg
+    mov rdx, bad_rest_err_msg_len
+    call fail_wrong_type                ; never returns
 .not_rest:
     mov rdi, rbx
     call cdr
@@ -770,6 +873,248 @@ split_rest_params:
 .out:
     pop r12
     pop rbx
+    ret
+
+; binop_nary_rewrite(rdi=op symbol, rsi=operand list, dl=op char) ->
+; rax = a form using only two-operand `op`s, equal in value to
+; (op . operands), for every operand count other than exactly 2:
+;   (+)          -> 0            (*)          -> 1
+;   (+ x)        -> (+ 0 x)      (* x)        -> (* 1 x)
+;   (- x)        -> (- 0 x)      (< x)/(= x)  -> (PROGN x T)
+;   (op a b c..) -> (op (op a b) c ..)         [+ - *: a left fold]
+;   (< a b c..)  -> (LET ((g1 a) (g2 b) (g3 c)..) (AND (< g1 g2) (< g2 g3)..))
+;   (-) (<) (=)  -> a compile-time condition (at least one operand)
+; The LET form for chained comparisons keeps every operand evaluated
+; exactly once, the same as the reference's own variadic `<`/`=`.
+binop_nary_rewrite:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi                        ; op symbol
+    mov r12, rsi                        ; operands
+    movzx r13, dl                       ; op char
+    mov rdi, r12
+    call list_length
+    mov r14, rax                        ; n
+    cmp r14, 0
+    je .zero
+    cmp r14, 1
+    je .one
+    ; --- n >= 3 ---
+    cmp r13b, '<'
+    je .chain
+    cmp r13b, '='
+    je .chain
+    ; left fold: (op (op a b) c ...)
+    mov rdi, r12
+    call car
+    mov r15, rax                        ; a
+    mov rdi, r12
+    call cdr
+    mov r12, rax                        ; (b c ...)
+    mov rdi, r12
+    call car                            ; b
+    mov rdx, rax
+    mov rdi, rbx
+    mov rsi, r15
+    call build_list3                    ; (op a b)
+    mov r15, rax
+    mov rdi, r12
+    call cdr                            ; (c ...)
+    mov rdi, r15
+    mov rsi, rax
+    call cons                           ; ((op a b) c ...)
+    mov rdi, rbx
+    mov rsi, rax
+    call cons                           ; (op (op a b) c ...)
+    jmp .out
+.chain:
+    sub rsp, 16                         ; [rsp]=bindings acc, [rsp+8]=gensyms acc (both reversed)
+    mov qword [rsp], IMM_NIL
+    mov qword [rsp+8], IMM_NIL
+    mov r15, r12
+.chain_loop:
+    cmp r15, IMM_NIL
+    je .chain_built
+    call gensym
+    mov r14, rax                        ; g
+    mov rdi, r15
+    call car                            ; operand
+    mov rdi, r14
+    mov rsi, rax
+    call build_list2                    ; (g operand)
+    mov rdi, rax
+    mov rsi, [rsp]
+    call cons
+    mov [rsp], rax
+    mov rdi, r14
+    mov rsi, [rsp+8]
+    call cons
+    mov [rsp+8], rax
+    mov rdi, r15
+    call cdr
+    mov r15, rax
+    jmp .chain_loop
+.chain_built:
+    ; Walking the REVERSED gensym list (gN ... g2 g1) and consing each
+    ; (op g_k g_k+1) onto the front yields the clauses in forward order.
+    mov r15, [rsp+8]
+    mov r14, IMM_NIL                    ; clauses
+.clause_loop:
+    mov rdi, r15
+    call cdr
+    cmp rax, IMM_NIL
+    je .clauses_done
+    push rax                            ; [rest = (g_k ...)]
+    mov rdi, rax
+    call car                            ; g_k
+    push rax                            ; [g_k, rest]
+    mov rdi, r15
+    call car                            ; g_k+1
+    mov rdx, rax
+    pop rsi                             ; g_k
+    mov rdi, rbx
+    call build_list3                    ; (op g_k g_k+1)
+    mov rdi, rax
+    mov rsi, r14
+    call cons
+    mov r14, rax
+    pop r15                             ; rest
+    jmp .clause_loop
+.clauses_done:
+    mov rdi, kw_and
+    mov rsi, 3
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r14
+    call cons                           ; (AND clause...)
+    mov r14, rax
+    ; The bindings accumulated in reverse. compile_let evaluates a
+    ; LET's inits in list order, so they must be put back in operand
+    ; order — `(< (F) (G) (H))` has to run F, G, H in that order, and
+    ; exactly once each.
+    mov rdi, [rsp]
+    call nary_reverse_list
+    mov [rsp], rax
+    mov rdi, kw_let
+    mov rsi, 3
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, [rsp]                      ; bindings, in operand order
+    mov rdx, r14
+    call build_list3                    ; (LET bindings (AND ...))
+    add rsp, 16
+    jmp .out
+.one:
+    mov rdi, r12
+    call car
+    mov r15, rax                        ; x
+    cmp r13b, '+'
+    je .one_zero_identity
+    cmp r13b, '-'
+    je .one_zero_identity
+    cmp r13b, '*'
+    je .one_star
+    ; (< x) / (= x): evaluate x, yield T
+    mov rdi, nary_t_name
+    mov rsi, 1
+    call intern_symbol
+    mov r14, rax                        ; T (kept in a callee-saved
+                                         ; register: the next
+                                         ; intern_symbol clobbers rdx)
+    mov rdi, kw_progn
+    mov rsi, 5
+    call intern_symbol
+    mov rdi, rax
+    mov rsi, r15
+    mov rdx, r14
+    call build_list3                    ; (PROGN x T)
+    jmp .out
+.one_zero_identity:                     ; (+ x) -> (+ 0 x), (- x) -> (- 0 x)
+    mov rdi, rbx
+    xor esi, esi                        ; tagged fixnum 0
+    mov rdx, r15
+    call build_list3
+    jmp .out
+.one_star:                              ; (* x) -> (* 1 x)
+    mov rdi, rbx
+    mov esi, 4                          ; tagged fixnum 1
+    mov rdx, r15
+    call build_list3
+    jmp .out
+.zero:
+    cmp r13b, '+'
+    je .zero_plus
+    cmp r13b, '*'
+    je .zero_star
+    mov rdi, rbx
+    mov rsi, nary_arity_err_msg
+    mov rdx, nary_arity_err_msg_len
+    call fail_wrong_type                ; never returns
+.zero_plus:
+    xor eax, eax                        ; (+) -> 0
+    jmp .out
+.zero_star:
+    mov eax, 4                          ; (*) -> 1
+.out:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; nary_reverse_list(rdi=proper list) -> rax = a fresh reversed copy.
+nary_reverse_list:
+    push rbx
+    push r12
+    mov rbx, rdi
+    mov r12, IMM_NIL
+.loop:
+    cmp rbx, IMM_NIL
+    je .done
+    mov rdi, rbx
+    call car
+    mov rdi, rax
+    mov rsi, r12
+    call cons
+    mov r12, rax
+    mov rdi, rbx
+    call cdr
+    mov rbx, rax
+    jmp .loop
+.done:
+    mov rax, r12
+    pop r12
+    pop rbx
+    ret
+
+; frame_depth_set(rdi=new depth) — installs it as current_frame_depth
+; and folds it into max_frame_depth (see the latter's own comment).
+; Every site that raises the current depth goes through here.
+frame_depth_set:
+    mov [current_frame_depth], rdi
+    cmp rdi, [max_frame_depth]
+    jbe .ok
+    mov [max_frame_depth], rdi
+.ok:
+    ret
+
+; sym_starts_with_amp(rdi=tagged symbol) -> rax = 1 iff its name's
+; first byte is '&' (a lambda-list keyword by spelling).
+sym_starts_with_amp:
+    mov rax, rdi
+    UNTAG_PTR rax
+    cmp qword [rax+8], 0                ; name_len
+    je .no
+    cmp byte [rax+48], '&'              ; first name byte (symtab.asm layout)
+    jne .no
+    mov rax, 1
+    ret
+.no:
+    xor rax, rax
     ret
 
 ; append_lists(rdi=list1, rsi=list2) -> rax = list1 with list2 as its tail
@@ -3517,17 +3862,23 @@ compile_let:
     call list_length
     mov r14, rax                              ; k = number of bindings
 
-    mov eax, r14d
-    imul eax, eax, 8
-    mov edi, eax
-    call emit_sub_rsp_imm32
-
     mov rdi, r12
     call let_binding_names
     mov rdi, rax
     mov rsi, [current_frame_depth]
     call build_frame_from_list
-    push rax                                    ; [new_frame]
+    mov rdx, rax                                ; new_frame
+    mov rax, [current_frame_depth]
+    push rax                                    ; [old_frame_depth]
+    push rdx                                    ; [new_frame, old_frame_depth]
+    ; This LET's k slots are reserved from HERE — before its inits are
+    ; compiled — so a LET nested inside one of those inits allocates
+    ; beyond them instead of on top of the bindings already stored
+    ; (max_frame_depth's own comment). The names, per LET's parallel
+    ; semantics, still become visible only after every init has run.
+    add rax, r14
+    mov rdi, rax
+    call frame_depth_set
 
     mov rbx, r12                                  ; cursor over original bindings
 .init_loop:
@@ -3564,25 +3915,14 @@ compile_let:
     push rax                                                ; [old_scope]
     mov [current_scope], r15
 
-    mov rax, [current_frame_depth]
-    push rax                                                  ; [old_frame_depth, old_scope]
-    add rax, r14
-    mov [current_frame_depth], rax
-
     mov rdi, r13
     mov rsi, rbp                                                ; tail flag
     call compile_progn                                          ; body -> target rax
 
     pop rax
-    mov [current_frame_depth], rax
-    pop rax
     mov [current_scope], rax
-
-    mov dil, REG_RSP
-    mov eax, r14d
-    imul eax, eax, 8
-    mov esi, eax
-    call emit_add_reg_imm32
+    pop rax
+    mov [current_frame_depth], rax                              ; saved before the inits
 
     pop rbp
     pop r15
@@ -3811,11 +4151,6 @@ compile_let_star:
     call list_length
     mov r14, rax                              ; k
 
-    mov eax, r14d
-    imul eax, eax, 8
-    mov edi, eax
-    call emit_sub_rsp_imm32
-
     mov rax, [current_frame_depth]
     push rax                                    ; [old_frame_depth]
     mov rax, [current_scope]
@@ -3857,9 +4192,9 @@ compile_let_star:
     call cons                                                          ; (pair . scope)
     mov [current_scope], rax
 
-    mov rax, [current_frame_depth]
-    inc rax
-    mov [current_frame_depth], rax
+    mov rdi, [current_frame_depth]
+    inc rdi
+    call frame_depth_set                                              ; slot i is now live
 
     mov rdi, rbx
     call cdr
@@ -3874,12 +4209,6 @@ compile_let_star:
     mov [current_scope], rax                                          ; [old_frame_depth]
     pop rax
     mov [current_frame_depth], rax
-
-    mov dil, REG_RSP
-    mov eax, r14d
-    imul eax, eax, 8
-    mov esi, eax
-    call emit_add_reg_imm32
 
     pop rbp
     pop r15
@@ -4076,6 +4405,85 @@ compile_defdynamic:
 ; expression; free variables may only be captured from the *immediately*
 ; enclosing lambda's own frame, not further out.
 global compile_lambda
+; emit_tail_copy_stack_args(rdi=nargs, > 3) — emits, for a tail call
+; whose stack-passed arguments are on top of the target stack (arg3
+; topmost, ascending), the copy of each into this function's own
+; incoming stack-argument slot of the same index: pop rax; mov
+; [rbp+16+8*(i-3)], rax for i = 3..nargs-1. Clobbers target rax only.
+; Sound because the caller of this function pushed at least that many
+; slots (nargs <= nfixed, checked by both callers) and will pop exactly
+; its own count after the tail callee eventually returns to it.
+emit_tail_copy_stack_args:
+    push rbx
+    push r12
+    mov r12, rdi
+    mov rbx, 3
+.copy:
+    cmp rbx, r12
+    jae .done
+    mov dil, REG_RAX
+    call emit_pop_reg                         ; target: rax = arg_i
+    mov eax, ebx
+    sub eax, 3
+    imul eax, eax, 8
+    add eax, 16
+    mov esi, eax
+    mov dil, REG_RAX
+    call emit_store_local                     ; target: [rbp+16+8*(i-3)] = rax
+    inc rbx
+    jmp .copy
+.done:
+    pop r12
+    pop rbx
+    ret
+
+; emit_arity_fail_stub(rsi=msg, rdx=len; r14=nparams) — emits the
+; never-returning failure tail of compile_lambda's arity check. On
+; entry to the emitted stub, target rax = nargs - nparams and target
+; rdi is still the closure; it rebuilds the actual count, tags it,
+; conses (got . expected) and hands that to fail_wrong_type as the
+; condition's data.
+emit_arity_fail_stub:
+    push rbx
+    push r12
+    mov rbx, rsi
+    mov r12, rdx
+    mov edi, r14d
+    call emit_add_rax_imm32                   ; target: rax = nargs
+    mov edi, 4
+    call emit_imul_rax_imm32                  ; target: rax = tagged fixnum(nargs)
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr                          ; target: rdi = got
+    mov rsi, r14
+    shl rsi, 2                                ; tagged fixnum(nparams)
+    mov dil, REG_RSI
+    call emit_mov_reg_imm64                   ; target: rsi = expected
+    lea rax, [rel cons]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                        ; target: rax = (got . expected)
+    mov dil, REG_RDI
+    mov sil, REG_RAX
+    call emit_mov_rr                          ; target: rdi = data
+    mov rsi, rbx
+    mov dil, REG_RSI
+    call emit_mov_reg_imm64                   ; target: rsi = msg
+    mov rsi, r12
+    mov dil, REG_RDX
+    call emit_mov_reg_imm64                   ; target: rdx = len
+    lea rax, [rel fail_wrong_type]
+    mov rsi, rax
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64
+    mov dil, REG_RAX
+    call emit_call_reg                        ; target: never returns
+    pop r12
+    pop rbx
+    ret
+
 compile_lambda:
     push rbx
     push r12
@@ -4195,6 +4603,54 @@ compile_lambda:
     call append_lists
     push rax                                                ; [new_scope, param_frame, jmp_over_site]
 
+    ; --- arity check, emitted before the frame is even built ---
+    ; Every call site passes nargs in rax (README "Calling convention")
+    ; and rdi is this closure. A fixed-arity lambda requires nargs ==
+    ; nparams exactly; a &REST lambda requires nargs >= nparams. Before
+    ; this check existed a missing argument silently read whatever the
+    ; caller had left in that register or stack slot and an extra one
+    ; was silently dropped — `(F 1)` against a two-parameter F returned
+    ; (1 0), a wrong answer with no diagnostic at all. The failure is a
+    ; real condition (fail_wrong_type -> native_throw, data = the
+    ; (got . expected) pair), so HANDLER-CASE/ERRORSET catch it and an
+    ; uncaught one prints one line and exits 1 (native_errors.asm).
+    ; Fast-path cost: one `sub` and one taken branch per call. rax is
+    ; not needed afterwards except by the &REST prologue, which is why
+    ; the &REST arm restores it and the fixed arm doesn't bother.
+    mov edi, r14d
+    call emit_sub_rax_imm32                   ; target: rax = nargs - nparams
+    cmp qword [rest_sym_scratch], IMM_NIL
+    jne .arity_rest
+    call emit_je                              ; target: je OK
+    mov r12, rax                              ; je site
+    mov rsi, arity_err_msg
+    mov rdx, arity_err_msg_len
+    call emit_arity_fail_stub                 ; target: (got . expected) -> fail_wrong_type
+    call codegen_here
+    mov rdi, r12
+    mov rsi, rax
+    call patch_rel32                          ; je -> OK (here)
+    jmp .arity_done
+.arity_rest:
+    call emit_jl                              ; target: jl FAIL
+    mov r12, rax                              ; jl site
+    mov edi, r14d
+    call emit_add_rax_imm32                   ; target: rax = nargs again
+    call emit_jmp32                           ; target: jmp OK
+    push rax                                  ; [jmp site]
+    call codegen_here
+    mov rdi, r12
+    mov rsi, rax
+    call patch_rel32                          ; jl -> FAIL (here)
+    mov rsi, arity_rest_err_msg
+    mov rdx, arity_rest_err_msg_len
+    call emit_arity_fail_stub
+    call codegen_here
+    pop rdi                                   ; jmp site
+    mov rsi, rax
+    call patch_rel32                          ; jmp -> OK (here)
+.arity_done:
+
     ; --- prologue ---
     call emit_push_rbp_frame
     mov rax, [nregslots_scratch]
@@ -4205,7 +4661,17 @@ compile_lambda:
                                                ; the body compiles below
     imul eax, eax, 8
     mov edi, eax
-    call emit_sub_rsp_imm32
+    call emit_sub_rsp_imm32                   ; frame size: patched below
+                                               ; to 8*max_frame_depth
+                                               ; once the body is compiled
+    call codegen_here
+    sub rax, 4
+    mov [lambda_frame_sub_field_scratch], rax  ; the imm32 field (pushed
+                                               ; onto this invocation's
+                                               ; own host stack right
+                                               ; before the body compile,
+                                               ; where nested lambdas
+                                               ; can't clobber it)
 
     ; Spill up to 3 incoming params (rsi,rdx,rcx) into their slots.
     ; Whenever this lambda has a &REST param, all 3 are spilled
@@ -4439,8 +4905,11 @@ compile_lambda:
 
     mov rax, [current_frame_depth]
     push rax                                      ; [old_frame_depth, old_scope, new_scope, param_frame, jmp_over_site]
+    push qword [max_frame_depth]                  ; [old_max, old_frame_depth, ...]
+    push qword [lambda_frame_sub_field_scratch]   ; [sub_field, old_max, old_frame_depth, ...]
     mov rax, [lambda_frame_depth_scratch]
     mov [current_frame_depth], rax
+    mov [max_frame_depth], rax                    ; this body starts at its base depth
 
     mov rax, [current_prog_ctx]
     push rax                                        ; [old_prog_ctx, old_frame_depth, ...]
@@ -4461,14 +4930,28 @@ compile_lambda:
     ; while compiling something that isn't actually inside some
     ; function body — compile_thunk's own top-level forms, notably,
     ; leave this at 0.
+    push qword [current_lambda_nfixed]
+    push qword [current_lambda_has_rest]
+    mov [current_lambda_nfixed], r14
+    xor eax, eax
+    cmp qword [rest_sym_scratch], IMM_NIL
+    setne al
+    mov [current_lambda_has_rest], rax
     inc qword [current_lambda_depth]
     mov rdi, r13
     mov rsi, 1
     call compile_progn
     dec qword [current_lambda_depth]
+    pop qword [current_lambda_has_rest]
+    pop qword [current_lambda_nfixed]
 
     pop rax
     mov [current_prog_ctx], rax
+    pop rdi                                        ; sub_field
+    mov rax, [max_frame_depth]
+    shl rax, 3
+    mov [rdi], eax                                 ; frame = 8*max_frame_depth
+    pop qword [max_frame_depth]                    ; the enclosing body's own max
     pop rax
     mov [current_frame_depth], rax
     pop rax
@@ -5158,6 +5641,13 @@ compile_record_new:
 ; Does not touch rsi/rdx/rcx, which both call sites that use this have
 ; live forwarded-argument values in.
 emit_check_callable:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi                           ; message text
+    mov r12, rsi                           ; message length
+    mov r13, rdx                           ; culprit override (tagged), or 0
+                                            ; to report the value itself
     mov dil, REG_RDI
     mov sil, REG_RAX
     call emit_mov_rr                       ; rdi = rax (save tagged value)
@@ -5237,10 +5727,20 @@ emit_check_callable:
     ; the call: target rsi/rdx = the fixed message text this v0 uses,
     ; matching car_err_msg/cdr_err_msg's own fixed-message scope
     ; (reader.asm) rather than the reference's interpolated text.
-    mov rsi, not_callable_err_msg
+    test r13, r13
+    jz .no_culprit_override
+    ; The caller knows something more useful to report than the value
+    ; itself — the named-global path passes the *symbol* being called,
+    ; so an undefined function reads "not a function: LENGTH" rather
+    ; than the printed form of the unbound cell's contents.
+    mov rsi, r13
+    mov dil, REG_RDI
+    call emit_mov_reg_imm64
+.no_culprit_override:
+    mov rsi, rbx
     mov dil, REG_RSI
     call emit_mov_reg_imm64
-    mov rsi, not_callable_err_msg_len
+    mov rsi, r12
     mov dil, REG_RDX
     call emit_mov_reg_imm64
 
@@ -5256,6 +5756,9 @@ emit_check_callable:
     mov rsi, rax
     call patch_rel32                                                      ; ok_site -> success
     add rsp, 32                                                             ; discard [ok_site, hdr_fail_site, hdr_ok1_site, tag_fail_site]
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ; emit_ic_trampoline(rdi=cell_addr, rsi=mode, rdx=field_addr) -> rax =
@@ -5351,6 +5854,10 @@ emit_ic_trampoline:
     mov sil, REG_RAX
     call emit_load_local_zero_disp                            ; rax = tagged closure (global's value)
 
+    mov rdi, not_callable_err_msg
+    mov rsi, not_callable_err_msg_len
+    lea rdx, [r14-16]                                          ; cell_addr-16 = the symbol
+    or rdx, TAG_HEAPOBJ                                        ; ... tagged, as the culprit
     call emit_check_callable                                   ; die cleanly if it isn't one
 
     mov dil, REG_RAX
@@ -5519,7 +6026,27 @@ compile_call:
     cmp qword [current_lambda_depth], 0
     je .n_ordinary_call
     cmp r13, 3
+    jbe .n_tail_ok
+    ; 4+ arguments: the stack-passed ones (arg3..) are sitting on top
+    ; of the stack, but after `leave` they would be gone. They can be
+    ; copied up into THIS function's own incoming stack-argument slots
+    ; ([rbp+16], [rbp+24], ...) — which the caller of this function
+    ; pushed and will pop, and which nothing here reads again — exactly
+    ; when there are enough of them: nargs <= this function's own fixed
+    ; parameter count, and no &REST (see current_lambda_nfixed).
+    ; Otherwise this stays an ordinary call, and the recursion is
+    ; native-stack-bounded (README "v0 limits").
+    cmp qword [current_lambda_has_rest], 0
+    jne .n_ordinary_call
+    cmp r13, [current_lambda_nfixed]
     ja .n_ordinary_call
+    mov rdi, r13
+    call emit_tail_copy_stack_args
+    mov rsi, r13
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                     ; rax = nargs again (the
+                                                 ; copy used rax as scratch)
+.n_tail_ok:
 
     ; Tear down THIS function's own frame before transferring control —
     ; exactly like .indirect_path's own emit_leave, and for the same
@@ -5608,6 +6135,9 @@ compile_call:
 
     mov rdi, rbx
     call compile_form                             ; operator -> target rax
+    mov rdi, not_callable_err_msg
+    mov rsi, not_callable_err_msg_len
+    xor edx, edx                                    ; report the value itself
     call emit_check_callable                        ; die cleanly if it isn't one
     mov dil, REG_RAX
     call emit_push_reg                               ; push closure (now on
@@ -5671,7 +6201,18 @@ compile_call:
     cmp qword [current_lambda_depth], 0
     je .i_ordinary_call
     cmp r12, 3
+    jbe .i_tail_ok
+    ; 4+ arguments: same copy-up as the named path (see there).
+    cmp qword [current_lambda_has_rest], 0
+    jne .i_ordinary_call
+    cmp r12, [current_lambda_nfixed]
     ja .i_ordinary_call
+    mov rdi, r12
+    call emit_tail_copy_stack_args
+    mov rsi, r12
+    mov dil, REG_RAX
+    call emit_mov_reg_imm64                     ; rax = nargs again
+.i_tail_ok:
     call emit_leave
     mov dil, REG_RBX
     call emit_jmp_reg
@@ -6139,9 +6680,6 @@ compile_handler_case:
     call car
     mov rbx, rax                                         ; var symbol
 
-    mov edi, 8
-    call emit_sub_rsp_imm32
-
     mov rax, [current_frame_depth]
     inc rax
     imul rax, rax, -8
@@ -6165,7 +6703,9 @@ compile_handler_case:
     mov [current_scope], rbx
     mov rax, [current_frame_depth]
     push rax                                                            ; [old_frame_depth, old_scope, done_site]
-    inc qword [current_frame_depth]
+    mov rdi, [current_frame_depth]
+    inc rdi
+    call frame_depth_set
 
     mov rdi, r13
     call cdr
@@ -6182,9 +6722,6 @@ compile_handler_case:
     pop rax
     mov [current_scope], rax
 
-    mov dil, REG_RSP
-    mov esi, 8
-    call emit_add_reg_imm32
     jmp .handler_done
 
 .bind_none:
@@ -6614,13 +7151,9 @@ compile_prog:
     call list_length
     push rax                              ; [k]
 
-    mov eax, [rsp]
-    imul eax, eax, 8
-    mov edi, eax
-    call emit_sub_rsp_imm32                  ; reserve var slots (rbp-
-                                              ; relative — independent
-                                              ; of this bookkeeping's
-                                              ; own rsp-relative stack)
+    ; var slots are rbp-relative, inside the frame the enclosing
+    ; function's prologue reserves (max_frame_depth) — no runtime
+    ; sub/add rsp here.
 
     mov rdi, r12
     mov rsi, [current_frame_depth]
@@ -6660,7 +7193,8 @@ compile_prog:
     push rax                                         ; [old_frame_depth, old_scope, k]
     mov rcx, [rsp+16]                                  ; k
     add rax, rcx
-    mov [current_frame_depth], rax
+    mov rdi, rax
+    call frame_depth_set
 
     sub rsp, PROG_CTX_SIZE                               ; [buffer, old_frame_depth, old_scope, k]
     mov rax, rsp                                           ; buffer address
@@ -6789,11 +7323,8 @@ compile_prog:
     mov [current_frame_depth], rax
     pop rax
     mov [current_scope], rax
-    pop rax                                ; k
-    imul eax, eax, 8
-    mov esi, eax
-    mov dil, REG_RSP
-    call emit_add_reg_imm32                   ; release var slots
+    pop rax                                ; k (slots are frame-reserved:
+                                            ; nothing to release)
 
     pop r15
     pop r14
@@ -9074,6 +9605,24 @@ compile_form:
     jmp .do_binop
 
 .do_binop:
+    ; compile_binop is strictly two-operand. Anything else — `(+ 1 2 3)`,
+    ; `(- 5)`, `(+)`, `(< A B C)` — used to be compiled as if only the
+    ; first two operands existed: `(+ 1 2 3)` returned 3, silently. Now
+    ; every other operand count is rewritten into an equivalent form
+    ; made only of two-operand ops (binop_nary_rewrite) and compiled
+    ; through compile_form again.
+    mov rdi, r13
+    call list_length
+    cmp rax, 2
+    je .binop_exact2
+    mov rdi, r12                             ; the operator symbol
+    mov rsi, r13                             ; its operands
+    mov dl, r14b
+    call binop_nary_rewrite                  ; rax = equivalent 2-operand form
+    mov rdi, rax
+    call compile_form
+    jmp .out
+.binop_exact2:
     mov rdi, r13
     call car                                 ; lhs form
     mov r12, rax
@@ -9278,21 +9827,35 @@ compile_thunk:
     push rax                            ; [old_frame_depth, old_scope]
     mov rax, [current_prog_ctx]
     push rax                              ; [old_prog_ctx, old_frame_depth, old_scope]
+    push qword [max_frame_depth]          ; [old_max, old_prog_ctx, old_frame_depth, old_scope]
     mov qword [current_scope], IMM_NIL
     mov qword [current_frame_depth], 0
     mov qword [current_prog_ctx], 0
+    mov qword [max_frame_depth], 0
 
     call emit_jmp32
-    push rax                     ; [jmp_over_site, old_prog_ctx, old_frame_depth, old_scope]
+    push rax                     ; [jmp_over_site, old_max, old_prog_ctx, old_frame_depth, old_scope]
 
     call codegen_here
-    push rax                     ; [entry_addr, jmp_over_site, old_prog_ctx, old_frame_depth, old_scope]
+    push rax                     ; [entry_addr, jmp_over_site, old_max, ...]
                                   ; — entry address, returned below
     call emit_push_rbp_frame
+    xor edi, edi
+    call emit_sub_rsp_imm32      ; frame size: patched below to
+                                  ; 8*max_frame_depth (a top-level
+                                  ; thunk's LET/PROG slots live here too)
+    call codegen_here
+    sub rax, 4
+    push rax                     ; [sub_field, entry_addr, jmp_over_site, old_max, ...]
     mov rdi, rbx
     call compile_form
     call emit_leave
     call emit_ret
+
+    pop rdi                          ; sub_field
+    mov rax, [max_frame_depth]
+    shl rax, 3
+    mov [rdi], eax                   ; frame = 8*max_frame_depth
 
     call codegen_here
     mov rsi, rax
@@ -9301,8 +9864,10 @@ compile_thunk:
 
     pop rax                          ; entry_addr
     add rsp, 8                         ; discard jmp_over_site
-                                        ; [old_prog_ctx, old_frame_depth, old_scope]
+                                        ; [old_max, old_prog_ctx, old_frame_depth, old_scope]
 
+    pop rcx
+    mov [max_frame_depth], rcx
     pop rcx
     mov [current_prog_ctx], rcx
     pop rcx

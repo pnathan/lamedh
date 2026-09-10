@@ -29,6 +29,7 @@
 
 %include "src/syscalls.inc"
 %include "src/tags.inc"
+%define ZCT_TRIGGER      65536            ; used by rc_collect above the safe-point section, so defined up here
 
 ; --- granule entry flag bits (byte 4 of an entry) ---
 %define GF_HEAD    1      ; this granule begins a live allocation
@@ -1214,7 +1215,15 @@ rc_collect:
     mov rdi, rbx
     xor rsi, rsi
     call scan_all_roots
-
+    ; Adapt the ZCT trigger to what this collection could not free (see
+    ; zct_trigger's own comment): max(ZCT_TRIGGER, 2 * retained).
+    mov rax, [zct_count]
+    shl rax, 1
+    cmp rax, ZCT_TRIGGER
+    jae .trigger_ok
+    mov rax, ZCT_TRIGGER
+.trigger_ok:
+    mov [zct_trigger], rax
     mov qword [rc_bytes_since_collect], 0
 
     pop r11
@@ -1248,12 +1257,26 @@ rc_collect:
 ; it is also why data_alloc must never collect.
 ; ====================================================================
 
-%define ZCT_TRIGGER      65536
 %define BYTES_TRIGGER    (16 * 1024 * 1024)
 
 section .bss
 global gc_force
 gc_force: resq 1
+section .data
+; zct_trigger — the ZCT-size trigger, adaptive rather than the fixed
+; ZCT_TRIGGER it started as. An entry the drain KEEPS (a zero-count
+; object some root still points at — every cons a deep non-tail
+; recursion is holding in a frame slot, say) stays in the ZCT after the
+; collection. With a fixed trigger, once more than ZCT_TRIGGER such
+; entries were retained every safe point — every function call — ran a
+; full collection, each one a conservative scan of the whole native
+; stack: 100,000 frames deep, that was ~60 s for a program that runs in
+; 20 ms at 50,000 (the cliff was the retained count crossing 65,536).
+; rc_collect now raises the trigger to twice whatever the drain kept,
+; so the next collection is earned by real new garbage, not by the
+; same live set being re-scanned.
+zct_trigger: dq ZCT_TRIGGER
+section .text
 
 section .text
 
@@ -1262,7 +1285,10 @@ global rc_safepoint
 rc_safepoint:
     cmp qword [gc_force], 0
     jne .go
-    cmp qword [zct_count], ZCT_TRIGGER
+    push rax
+    mov rax, [zct_count]
+    cmp rax, [zct_trigger]
+    pop rax                               ; flags survive the pop
     jae .go
     cmp qword [rc_bytes_since_collect], BYTES_TRIGGER
     jae .go

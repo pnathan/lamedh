@@ -74,8 +74,8 @@ else
     fi
 
     got_exit=0
-    "$runner_bin" "$BUILD/file_runner_does_not_exist.lisp" >/dev/null 2>&1 || got_exit=$?
-    if [ "$got_exit" = "1" ]; then
+    got_err=$("$runner_bin" "$BUILD/file_runner_does_not_exist.lisp" 2>&1 >/dev/null) || got_exit=$?
+    if [ "$got_exit" = "1" ] && [[ "$got_err" == *"cannot open input file"* ]]; then
         echo "ok    file_runner_missing_file"
         pass=$((pass+1))
     else
@@ -384,6 +384,92 @@ T'
         echo "FAIL  file_runner_prelude  stdout: got [$got_out] want [$want_out] exit: got $got_exit"
         fail=$((fail+1))
     fi
+
+    # file_runner_errors — the user-facing failure contract. Each case
+    # is one small program, checked for exit status, a stdout
+    # substring and a stderr substring. Every one of these was a
+    # silent wrong answer or a bare, message-less SIGTRAP/SIGSEGV
+    # before the fix it pins: no arity checking at all (`(F 1)` against
+    # a 2-parameter F returned (1 0)), `&OPTIONAL` in a bare LAMBDA
+    # binding a parameter literally named &OPTIONAL, `(+ 1 2 3)` = 3,
+    # an uncaught ERROR/THROW/undefined function exiting 133 with no
+    # text, a 4+-argument tail loop or deep non-tail recursion dying
+    # as "Segmentation fault", and a deep &REST recursion taking a
+    # minute because the collector re-scanned the whole stack at every
+    # call once its zero-count table filled with live entries.
+    err_case() {
+        local name=$1 want_exit=$2 want_out=$3 want_err=$4 prog=$5
+        local f="$BUILD/err_$name.lisp" got_out got_err got_exit
+        printf '%s\n' "$prog" > "$f"
+        got_exit=0
+        got_out=$("$runner_bin" "$f" 2>"$f.stderr") || got_exit=$?
+        got_err=$(cat "$f.stderr")
+        if [ "$got_exit" = "$want_exit" ] && [[ "$got_out" == *"$want_out"* ]] && [[ "$got_err" == *"$want_err"* ]]; then
+            echo "ok    file_runner_errors/$name"
+            pass=$((pass+1))
+        else
+            echo "FAIL  file_runner_errors/$name  exit: got $got_exit want $want_exit stdout: [$got_out] want *[$want_out]* stderr: [$got_err] want *[$want_err]*"
+            fail=$((fail+1))
+        fi
+    }
+    err_case undefined_function 1 "1" "lamedhc: unhandled error: not a function: LENGTH" \
+        '(PRINT 1) (LENGTH (LIST 1 2))'
+    err_case arity_too_few 1 "" "wrong number of arguments (got . expected): (1 . 2)" \
+        '(DEFUN F2 (A B) (LIST A B)) (PRINT (F2 1))'
+    err_case arity_too_many 1 "" "wrong number of arguments (got . expected): (3 . 1)" \
+        '(DEFUN F1 (A) A) (PRINT (F1 1 2 3))'
+    err_case arity_rest_too_few 1 "" "too few arguments (got . minimum): (0 . 1)" \
+        '(DEFUN R (A &REST XS) XS) (PRINT (R))'
+    err_case arity_indirect 1 "" "wrong number of arguments (got . expected): (1 . 2)" \
+        '(DEFINE F (LAMBDA (A B) A)) (PRINT ((LAMBDA (G) (G 1)) F))'
+    err_case arity_macro 1 "" "wrong number of arguments (got . expected): (1 . 2)" \
+        '(DEFMACRO TWO (A B) (LIST (QUOTE LIST) A B)) (PRINT (TWO 1))'
+    err_case arity_caught 0 "(CAUGHT wrong number of arguments (got . expected) (1 . 2))" "" \
+        '(DEFUN F2 (A B) A) (PRINT (HANDLER-CASE (F2 1) (ERROR (E) (LIST (QUOTE CAUGHT) (ERROR-MESSAGE E) (ERROR-DATA E)))))'
+    err_case lambda_optional 1 "" "unsupported lambda-list keyword" \
+        '(DEFINE F (LAMBDA (A &OPTIONAL B) (LIST A B))) (PRINT (F 1 2))'
+    err_case defmacro_optional 1 "" "unsupported lambda-list keyword" \
+        '(DEFMACRO M (A &OPTIONAL B) (LIST (QUOTE LIST) A B)) (PRINT (M 1 2))'
+    err_case rest_malformed 1 "" "&REST must be followed by exactly one parameter name" \
+        '(DEFINE F (LAMBDA (A &REST) A)) (PRINT (F 1))'
+    err_case param_not_symbol 1 "" "LAMBDA: parameter is not a symbol" \
+        '(DEFINE F (LAMBDA ((A 1)) A)) (PRINT (F 1))'
+    err_case supplied_p 1 "" "supplied-p variables are not supported" \
+        '(DEFUN F (A &OPTIONAL (B 10 B-P)) (LIST A B B-P)) (PRINT (F 1))'
+    err_case uncaught_error 1 "" "lamedhc: unhandled error: boom: (1 2)" \
+        '(ERROR "boom" (LIST 1 2))'
+    err_case uncaught_throw 1 "" "lamedhc: unhandled THROW to MYTAG: 42" \
+        '(THROW (QUOTE MYTAG) 42)'
+    err_case car_of_fixnum 1 "" "CAR: expected a cons or NIL: 5" \
+        '(PRINT (CAR 5))'
+    err_case variadic_arith 0 "(6 7 24 T () T 0 1 5 -5 T)" "" \
+        '(PRINT (LIST (+ 1 2 3) (- 10 1 2) (* 2 3 4) (< 1 2 3) (< 1 3 2) (= 1 1 1) (+) (*) (+ 5) (- 5) (< 7)))'
+    err_case variadic_once 0 "(T 3)" "" \
+        '(DEFINE N 0) (DEFUN BUMP () (SETQ N (+ N 1)) N) (DEFINE R (< (BUMP) (BUMP) (BUMP))) (PRINT (LIST R N))'
+    err_case let_in_argument_position 0 "(3 10 20 30 40 50)" "" \
+        '(PRINT (LIST (LET ((A 1) (B 2)) (+ A B)) 10 20 30 40 50))'
+    err_case let_star_prog_in_argument_position 0 "(7 10 20 30 40 50 7)" "" \
+        '(DEFUN F7 (A B C D E F G) (LIST A B C D E F G)) (PRINT (F7 (LET* ((X 7) (Y X)) Y) 10 20 30 40 50 (PROG (A) (SETQ A 7) (RETURN A))))'
+    err_case let_as_binop_lhs 0 "6" "" \
+        '(PRINT (+ (LET ((A 1)) A) 5))'
+    err_case nested_let_in_init 0 "(1 2)" "" \
+        '(PRINT (LET ((A 1) (B (LET ((C 2)) C))) (LIST A B)))'
+    err_case handler_var_in_argument_position 0 "(boom 10 20 30 40 50)" "" \
+        '(DEFUN F6 (A B C D E F) (LIST A B C D E F)) (PRINT (F6 (HANDLER-CASE (ERROR "boom" 1) (ERROR (E) (ERROR-MESSAGE E))) 10 20 30 40 50))'
+    err_case variadic_minus_none 1 "" "requires at least one operand: -" \
+        '(PRINT (-))'
+    err_case tail_4args_named 0 "(1 2 3)" "" \
+        '(DEFUN L4 (A B C N) (IF (EQ N 0) (LIST A B C) (L4 A B C (- N 1)))) (PRINT (L4 1 2 3 1000000))'
+    err_case tail_5args_indirect 0 "(1 2 3 4)" "" \
+        '(DEFUN L5 (F A B C D N) (IF (EQ N 0) (LIST A B C D) (F F A B C D (- N 1)))) (PRINT (L5 L5 1 2 3 4 1000000))'
+    err_case tail_4args_in_let 0 "6" "" \
+        '(DEFUN L4 (A B C N) (LET ((M (- N 1))) (IF (EQ N 0) (+ A B C) (L4 A B C M)))) (PRINT (L4 1 2 3 1000000))'
+    err_case tail_5_to_4_args 0 "(1 2 3)" "" \
+        '(DEFUN G4 (A B C N) (IF (EQ N 0) (LIST A B C) (G4 A B C (- N 1)))) (DEFUN H5 (A B C D N) (G4 A B C N)) (PRINT (H5 1 2 3 4 1000000))'
+    err_case stack_overflow_reported 139 "" "lamedhc: fatal: SIGSEGV" \
+        '(DEFUN S (N) (IF (EQ N 0) 0 (+ 1 (S (- N 1))))) (PRINT (S 50000000))'
+    err_case deep_rest_recursion_fast 0 "(1 2 3 4)" "" \
+        '(DEFUN R (N &REST XS) (IF (EQ N 0) XS (R (- N 1) 1 2 3 4))) (PRINT (R 100000))'
 
     # stdlib_conformance — the actual conformance target this project
     # tracks in README's "KERNEL.md conformance" section: every one of

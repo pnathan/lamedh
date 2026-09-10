@@ -64,6 +64,7 @@ _start:
     mov rdi, DATA_HEAP_BYTES
     mov rsi, CODE_HEAP_BYTES
     call heap_init_all
+    call install_segv_handler
 
     call bootstrap_globals            ; binds the symbol T to itself
 
@@ -73,3 +74,72 @@ _start:
     mov eax, SYS_exit
     syscall
     ; unreachable
+
+; ---------------------------------------------------------------------
+; SIGSEGV reporting. Compiled code runs on the process's own native
+; stack with no guard of its own, so a deep enough non-tail recursion
+; ends in SIGSEGV — which, uncaught, is a bare "Segmentation fault"
+; from the shell (exit 139) with nothing to say what happened. A
+; handler on its own alternate stack (the main one is exactly what has
+; just run out) writes one line to STDERR naming the most likely cause
+; and then exits with the same 139 the shell would have reported, so
+; nothing that was checking that status sees a difference.
+%define SIGSEGV          11
+%define SYS_rt_sigaction 13
+%define SYS_rt_sigreturn 15
+%define SYS_sigaltstack  131
+%define SA_ONSTACK       0x08000000
+%define SA_RESTORER      0x04000000
+%define SEGV_STACK_BYTES 65536
+
+section .bss
+segv_stack: resb SEGV_STACK_BYTES
+
+section .rodata
+segv_msg: db "lamedhc: fatal: SIGSEGV - most likely the native stack is exhausted (deep non-tail recursion; see README v0 limits)", 10
+segv_msg_len: equ $ - segv_msg
+
+section .text
+install_segv_handler:
+    ; sigaltstack({ss_sp, ss_flags=0, ss_size}, NULL)
+    sub rsp, 24
+    lea rax, [rel segv_stack]
+    mov [rsp], rax
+    mov qword [rsp+8], 0
+    mov qword [rsp+16], SEGV_STACK_BYTES
+    mov rdi, rsp
+    xor esi, esi
+    mov eax, SYS_sigaltstack
+    syscall
+    add rsp, 24
+    ; rt_sigaction(SIGSEGV, {handler, flags, restorer, mask=0}, NULL, 8)
+    sub rsp, 32
+    lea rax, [rel segv_handler]
+    mov [rsp], rax
+    mov qword [rsp+8], SA_ONSTACK | SA_RESTORER
+    lea rax, [rel segv_restorer]
+    mov [rsp+16], rax
+    mov qword [rsp+24], 0
+    mov edi, SIGSEGV
+    mov rsi, rsp
+    xor edx, edx
+    mov r10d, 8
+    mov eax, SYS_rt_sigaction
+    syscall
+    add rsp, 32
+    ret
+
+segv_handler:
+    mov edi, STDERR
+    lea rsi, [rel segv_msg]
+    mov edx, segv_msg_len
+    mov eax, SYS_write
+    syscall
+    mov edi, 139
+    mov eax, SYS_exit
+    syscall
+    ; unreachable
+
+segv_restorer:                        ; never actually returned into
+    mov eax, SYS_rt_sigreturn
+    syscall

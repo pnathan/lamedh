@@ -446,7 +446,12 @@ into conformance incrementally, tracked honestly rather than silently:
   arity, and unbound-variable reads are still unchanged — those still
   misbehave exactly as before (division by zero and out-of-range array
   access still segfault or produce garbage; calling with the wrong
-  arity is still unchecked; an unbound-variable *read* still returns
+  arity is **now checked** — every compiled function's prologue
+  compares the call site's `rax` argument count against its own
+  parameter count and signals `wrong number of arguments (got .
+  expected)` / `too few arguments (got . minimum)` through this same
+  machinery, so `(F 1)` against a two-parameter `F` no longer silently
+  returns `(1 0)`; an unbound-variable *read* still returns
   the `IMM_UNBOUND` immediate rather than erroring) — only explicit
   `ERROR` calls and now `CAR`/`CDR`'s own type check go through this
   system so far.
@@ -851,7 +856,12 @@ direct consequence `THROW` needs no collector hook at all.
 
 **So a count of zero does not mean garbage** — it means *candidate*.
 Zero-count objects go on the zero-count table (ZCT), and reclamation
-happens only at a **safe point**: push all 16 GPRs, conservatively scan
+happens only at a **safe point** (reached when the ZCT holds more than
+its trigger — 65,536 entries to start with, raised after each
+collection to twice whatever that collection could not free, so a deep
+recursion holding many live zero-count objects does not turn every
+subsequent call into a full stack scan — or when 16 MiB has been
+allocated since the last collection): push all 16 GPRs, conservatively scan
 the stack from `rsp` to the process's original `rsp` (`stack_base`,
 captured in `boot.asm`) plus the catch stack and the compiler's scratch
 cells, marking every allocation head those words appear to point at,
@@ -1028,8 +1038,18 @@ concrete reason it landed last of the three features in its spec:
 - File I/O does not loop on a short `read`/`write`, and folds a
   negative syscall result (an error) to an empty string rather than
   signaling anything — there being no conditions yet to raise.
-- `THROW` with no matching `CATCH` traps (`int3`) rather than raising a
-  catchable condition — there being no conditions yet to raise.
+- `THROW` with no matching `CATCH`, and an `ERROR` (or any native
+  condition — undefined function, `CAR` of a fixnum, wrong arity) that
+  no `HANDLER-CASE`/`ERRORSET` catches, prints one line to stderr —
+  `lamedhc: unhandled error: <message>: <data>` or `lamedhc: unhandled
+  THROW to <tag>: <value>` — and exits 1 (`report_unhandled_throw`,
+  `native_errors.asm`). It used to be a bare `int3` (exit 133) with no
+  text at all. A `SIGSEGV` — in practice the native stack running out
+  under deep *non-tail* recursion, since compiled code has no stack
+  guard of its own — is likewise reported on stderr from an alternate
+  signal stack before exiting 139 (`install_segv_handler`, `boot.asm`),
+  and a missing input file says `cannot open input file` rather than
+  exiting 1 silently.
 - Proper tail-call frame reuse (`jmp` instead of `call`+`ret`, reusing
   the caller's stack frame) **is** implemented (see
   `docs/spec-tco-capture-gc.md` section 2 and `tests/cases/067_tail_calls.asm`),
@@ -1038,10 +1058,21 @@ concrete reason it landed last of the three features in its spec:
   branches, `PROGN`/`LET`/`LET*`'s last body form, `AND`/`OR`'s last
   operand, `COND`'s matched clause body; never a `CATCH`/
   `HANDLER-CASE`/`BLOCK`/`UNWIND-PROTECT` body, a `WHILE` body, or any
-  value/argument position), (b) has 3 or fewer arguments (v0 scope — a
-  call needing stack-passed arguments past the register-passed first
-  three still uses an ordinary call), and (c) is nested inside some
-  `LAMBDA` body (never at the top level). Both a locally-bound operator
+  value/argument position), (b) either has 3 or fewer arguments, or has
+  more but no more than the *current* function's own fixed parameter
+  count while the current function takes no `&REST` — the stack-passed
+  arguments past the register-passed first three are then copied up
+  into the current function's own incoming stack-argument slots
+  (`emit_tail_copy_stack_args`, `compile_call`), which its caller
+  pushed and will pop; a 4-argument `(LOOP A B C (- N 1))` from a
+  4-parameter `LOOP` is the common case and no longer overflows the
+  native stack at a million iterations, while a call that would need
+  *more* stack slots than the current frame received, or one made from
+  a `&REST` function (whose incoming count is a runtime value), stays an
+  ordinary call — and (c) is nested inside some `LAMBDA` body (never at
+  the top level). `APPLY`/`FUNCALL` in tail position are never tail
+  calls: `APPLY` spreads its list through a host routine
+  (`invoke_macro`) and returns through it. Both a locally-bound operator
   (a closure held in a variable — `leave`+`jmp` through its code
   pointer) and a bare global symbol (the inline-cache call site itself
   becomes a `jmp`, patched via a second, baked-call-site-address
@@ -1065,6 +1096,63 @@ concrete reason it landed last of the three features in its spec:
   the real argument count at runtime independently, since those three
   slots don't form one contiguous runtime-counted range the way stack
   arguments do.
+- **Review pass (silent wrong answers users would actually hit),
+  all fixed and pinned in `tests/run.sh`'s `file_runner_errors`
+  block** — each was found by using the compiler the way a newcomer
+  would, not by any existing test:
+  - **No arity checking.** `(F 1)` against `(DEFUN F (A B) ...)`
+    returned `(1 0)` — the missing argument read whatever the caller
+    left in `rdx` — and extra arguments were dropped. Every compiled
+    function's prologue now checks `rax` (the call site's argument
+    count) against its parameter count: one `sub` and one taken branch
+    per call; a mismatch is a real, catchable condition with data
+    `(got . expected)`. Macros get the same check at expansion time.
+  - **`(+ 1 2 3)` was 3.** The arithmetic/comparison special forms
+    (`+ - * < =`) compiled exactly two operands and ignored the rest.
+    Every other operand count is now rewritten into two-operand forms
+    (`binop_nary_rewrite`, `compiler.asm`): `(+ a b c)` is a left fold,
+    `(- x)` negates, `(+)`/`(*)` are 0/1, `(< a b c)` becomes a `LET`
+    over gensyms plus `AND` so each operand is evaluated exactly once,
+    and `(-)`/`(<)`/`(=)` are compile-time errors. (`>`, `<=`, `>=` are
+    ordinary two-parameter prelude `DEFUN`s and now *error* on three
+    arguments rather than silently comparing the first two.)
+  - **A `LET`/`LET*`/`PROG` in argument position of a 4+-argument call,
+    or as the left operand of `+`, corrupted the arguments already
+    pushed** (`(LIST (LET ((A 1) (B 2)) (+ A B)) 10 20 30 40 50)` printed
+    `(3 10 20 30 2 1)`), and **a `LET` nested inside another `LET`'s
+    init overwrote the outer `LET`'s earlier bindings**
+    (`(LET ((A 1) (B (LET ((C 2)) C))) (LIST A B))` printed `(2 2)`).
+    Binding forms allocated their slots with a runtime `sub rsp` —
+    which lands *below* whatever the enclosing expression had already
+    pushed — while addressing them `rbp`-relative from a compile-time
+    depth that never counted those pushes. Every `LAMBDA`/thunk
+    prologue now reserves the whole frame at its maximum depth
+    (`max_frame_depth`, patched into the prologue's `sub rsp, imm32`
+    once the body is compiled), a `LET` reserves its slots *before*
+    its inits are compiled, and no binding form touches `rsp` at
+    runtime — so every push in a body is below every slot by
+    construction.
+  - **`&OPTIONAL` in a bare `LAMBDA`/`DEFMACRO` bound a parameter
+    literally named `&OPTIONAL`**, and a supplied-p variable in a
+    `DEFUN` spec read as an unbound global — now compile-time errors
+    (see "Known gaps" below).
+  - **Every uncaught failure was a bare `int3`** (exit 133, no text):
+    an undefined function, `(CAR 5)`, an uncaught `ERROR`/`THROW`.
+    Each now prints one line naming what was thrown and exits 1; a
+    stack overflow prints a line and exits 139; a missing input file
+    says so.
+  - **A deep `&REST` recursion took a minute** (60 s at 100,000 frames
+    versus 20 ms at 50,000): once more than `ZCT_TRIGGER` zero-count
+    objects were retained by the conservative stack scan, every safe
+    point — every call — re-collected, each a full scan of the whole
+    native stack. The trigger now adapts to twice whatever the last
+    collection could not free (`zct_trigger`, `gc.asm`).
+  - Still true, and documented rather than hidden: deep *non-tail*
+    recursion is bounded by the native stack (roughly a few hundred
+    thousand frames); `APPLY`/`FUNCALL` in tail position are not tail
+    calls; `/` is not a kernel operator at all (`not a function: /`);
+    and the stdlib-conformance gap around `JIT-OPTIMIZE`/`CONSP`/
+    `PRIN1-TO-STRING`/`ERROR` in "Known gaps" is unchanged.
 - No benchmark corpus gate yet (see below).
 
 None of these are silent traps in the sense of producing wrong answers
@@ -2034,8 +2122,9 @@ bugs no existing test had exercised:
 - **`MAX`/`MIN` fixed: silently wrong (not just narrow), now genuinely
   variadic.** Found in direct response to "match the Rust level of arg
   call paths" — `MAX`/`MIN` (`lib/prelude.lisp`) were ordinary
-  2-parameter `DEFUN`s, and this kernel does no arity checking at a
-  call site at all, so `(max 1 3 9)` silently returned `3`: the third
+  2-parameter `DEFUN`s, and this kernel did no arity checking at a
+  call site at all at the time (it does now — see "v0 limits"), so
+  `(max 1 3 9)` silently returned `3`: the third
   argument was simply never read, not an error. Ordinary user-defined
   `LAMBDA`/`DEFUN` calls, `APPLY`, and `FUNCALL` already support up to
   32 arguments correctly (`tests/cases/015_32args.asm`, register-passed
@@ -2069,7 +2158,10 @@ bugs no existing test had exercised:
   signaling machinery `CAR`/`CDR`'s own wrong-type check already uses,
   not the separate hard `exit(1)` an earlier version of this check had)
   rather than segfaulting undefined-behavior-style; an *uncaught* one
-  traps (`int3`) the same way any other unmatched `THROW` does
+  now prints `lamedhc: unhandled error: not a function: <name>` and
+  exits 1, the same way any other unmatched `THROW` does — the
+  named-global path reports the *symbol* being called, so an undefined
+  function is named rather than rendered as its unbound cell's contents
   (`tests/cases/034_not_callable.asm`/`035_not_callable_indirect.asm`).
   **`examples/factorial/main.lisp`'s main loop now runs
   correctly, unmodified** (see "The prelude" above for the exact scope
@@ -2078,8 +2170,10 @@ bugs no existing test had exercised:
   Since the bareword-`NIL`-reader fix (see "KERNEL.md conformance"
   above), the self-check now genuinely detects that overflow and calls
   `(error "factorial self-check failed")` as its own source says to —
-  an uncaught `error`, correctly, `int3`-traps (exit 133) rather than
-  exiting 0 the way it silently did before that fix (the self-check's
+  an uncaught `error`, correctly, prints its message and exits 1 (it
+  `int3`-trapped with exit 133 before uncaught conditions were
+  reported) rather than exiting 0 the way it silently did before that
+  fix (the self-check's
   own `AND`/`IF` logic never actually completed either branch
   observably), which was never truly "passing" either.
   `DEFUN`, `FORMAT`, `1+`/`1-`, `FUNCTION`/`#'`, `IOTA`, `REDUCE`, and
@@ -2161,7 +2255,14 @@ bugs no existing test had exercised:
   starting point instead of a guess.
 - ~~`&OPTIONAL`/`&KEY` parameter-list support in `LAMBDA`/`DEFUN`~~ —
   landed. `LAMBDA` itself still parses only `&REST` (`split_rest_params`,
-  `compiler.asm` — unchanged); `&OPTIONAL`/`&KEY` are `DEFUN`-level sugar
+  `compiler.asm`), exactly like the reference ("a bare LAMBDA keeps only
+  `&REST`", `lib/00-core.lisp`; its `check_param_name` rejects every
+  other `&`-name) — and, since the review pass described under "v0
+  limits", any other `&`-keyword in a bare `LAMBDA`/`DEFMACRO`
+  parameter list, a non-symbol parameter, a `&REST` not followed by
+  exactly one name, or a `(name default supplied-p)` spec in a `DEFUN`
+  is a compile-time error with a message saying so, where each used to
+  bind something silently wrong; `&OPTIONAL`/`&KEY` are `DEFUN`-level sugar
   in `lib/prelude.lisp`, ported line-for-line in spirit from the
   reference's own `lib/00-core.lisp` (`$split-params`/`$opt-bindings`/
   `$key-bindings`/`$extended-lambda`, minus the JIT/purity machinery this
@@ -2264,10 +2365,11 @@ bugs no existing test had exercised:
   cruder `fail_not_callable` a hard `exit(1)` version of the callable
   check used is gone, folded into the same real signaling path), and
   the same `native_throw` routine is reusable for the rest of this
-  list: division by zero, index out of range, wrong arity, and an
-  unbound-variable *read* still misbehave exactly as before (segfault,
-  garbage, or the raw `IMM_UNBOUND` immediate, respectively) rather
-  than signaling — the natural next candidates for the same treatment.
+  list: wrong arity now signals through it too (see "v0 limits");
+  division by zero, index out of range, and an unbound-variable *read*
+  still misbehave exactly as before (segfault, garbage, or the raw
+  `IMM_UNBOUND` immediate, respectively) rather than signaling — the
+  natural next candidates for the same treatment.
 - A resizable hash table (grow the bucket array and rehash past some
   load factor, instead of a fixed 61 buckets); the hash table still
   hashes/compares keys with `EQ`
