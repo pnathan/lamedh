@@ -215,6 +215,7 @@
 //! | `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
 //! | `45-hashtable.lisp` | optional | `hashtable` | A hash table built from scratch in pure Lamedh (issue #458): open addressing over `TYPED-ARRAY`/`ARRAY`, not the native `HASH-TABLE` builtin -- `MAKE-LHT`/`LHT-GET`/`LHT-PUT!`/`LHT-REMOVE!`/`LHT-KEYS`/`LHT-EACH` |
 //! | `46-hm-check.lisp` | core | — | The portable Hindley-Milner checker (issue #451): the type vocabulary, unification with row polymorphism and nominal subsumption, the declaration registry, and the bidirectional elaborator over real Lamedh surface syntax — `HM-SEE-TYPE`, `HM-CHECK-LAMBDA`, `HM-CHECK-EXPR`, `HM-VERDICT`, `HM-AUDIT`. Loads before `20-condensation.lisp` so its declaration-plane wrappers see every `declare-type!`/`record-declare`/`variant-declare`/`declare-instance!` the stdlib makes |
+//! | `47-typed-island.lisp` | core | `typed-island` | The typed-island front end: freeze (global macros expanded to a fixpoint), the portable compileable-type gate run over a GROUP, and the hand-off to the host kernel with read-back — `TYPED-ISLAND`, `ISLAND-OPTIMIZE`, `ISLAND-FORMS`, `ISLAND-INSTALL!`, `ISLAND-AGREEMENT` |
 //! | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 //! | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 //! | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -3295,6 +3296,13 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[
     (
         "45-hashtable.lisp",
         include_str!("../lib/45-hashtable.lisp"),
+    ),
+    // ---- The typed-island front end ----
+    // Built on 46-hm-check.lisp's codegen-mode gate; needs OPTIMIZE-FORM
+    // (11/24) and the module system, so it loads after every optional.
+    (
+        "47-typed-island.lisp",
+        include_str!("../lib/47-typed-island.lisp"),
     ),
     (
         "97-doc-renderer.lisp",

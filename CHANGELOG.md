@@ -1,3 +1,31 @@
+# Unreleased
+
+## The portable type checker and the typed-island front end (#451)
+
+`lib/46-hm-check.lisp` ports the reference host's Hindley-Milner checker
+to Lamedh: the type vocabulary, unification with row polymorphism and
+nominal subsumption, generalization, the declaration registry and the
+elaborator over surface syntax, in both of the native elaborator's modes.
+Checking mode drives `condense-verdict` and the condensation honesty
+machinery on every host. Codegen mode is the compileable-type gate —
+`Infer::resolve` and the `checking: false` rules, eager operand
+resolution and the closed call rule included — exposed as
+`hm-compile-verdict` and `hm-compile-group`.
+
+`lib/47-typed-island.lisp` is the front end on that gate. `typed-island`
+turns a list of names into a manifest: the largest group that compiles
+together, each member with a monomorphic signature and a frozen
+(macro-expanded) body, closed under calls, discovered in one shared
+inference state and verified in a clean one so no rejected member shapes
+a signature. `island-optimize` re-gates optimized bodies and reports a
+type-changing optimization rather than taking it. `island-forms` renders
+the manifest as `declare-typed` + `defun-typed` forms; `island-install!`
+hands it to the host kernel and reads the kernel's verdict back per
+member. On the Rust host the portable gate and `explain-compile` agree on
+every standard-library function, and the stdlib island installs with the
+kernel agreeing on every member (`tests/test_typed_island.rs`). See
+`docs/typed-island-frontend.md`.
+
 # v0.4.0 — 2026-07-16
 
 The 0.4.0 arc: more of the typed JIT's surface compiles to native code,

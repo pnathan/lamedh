@@ -246,12 +246,14 @@ fn with_stdlib_still_loads_every_optional_module_and_marks_it_loaded() {
     // #257 codec modules (base64, hex, url, json, mime), the three #258
     // networking modules (net, tcp, udp), the #259 http module, the
     // #260 os/os-linux modules, the #365 tls module, the #408 regex
-    // module, and the #458 hashtable module. (#451's 46-hm-check.lisp is NOT
-    // here: it is a core, load-order-critical file -- it installs the
-    // declaration-plane wrappers every later library's declare-type!/
-    // record-declare calls go through -- so it is unconditionally part of
-    // STDLIB_SOURCES, never requirable.)
-    assert_eq!(line(&env, "(length (loaded-modules))"), "33");
+    // module, the #458 hashtable module, and the typed-island front end
+    // (47-typed-island.lisp, a core file that still registers itself as a
+    // module for introspection). (#451's 46-hm-check.lisp is NOT here: it is
+    // a core, load-order-critical file -- it installs the declaration-plane
+    // wrappers every later library's declare-type!/record-declare calls go
+    // through -- so it is unconditionally part of STDLIB_SOURCES, never
+    // requirable, and registers no module.)
+    assert_eq!(line(&env, "(length (loaded-modules))"), "34");
 }
 
 #[test]
