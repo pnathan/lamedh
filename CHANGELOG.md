@@ -1,3 +1,67 @@
+# v0.5.0 — unreleased
+
+## jit: `Ty::Boxed`, an opaque compileable handle to any `LispVal` (#476)
+
+A new compileable type, surface name `boxed`, lets typed code carry an
+arbitrary, un-narrowed `LispVal` as a native `u64` word — a 1-based index
+into a per-call root table on `Ctx`, not a raw pointer, so it can never
+dangle across the table's own growth and needs no lifetime management
+beyond the call that produced it (handles never enter a `LispVal`, so they
+cannot outlive their call or be observed by `fork_world`). Boxing a
+`Shared`-backed value (array, cons, symbol, hash table, …) clones the
+handle, not the contents, so a `store` through it mutates the caller's own
+object with no write-back path required — for the inline scalar variants
+(number, float, char, nil) it is an ordinary value copy, sound because
+they're immutable.
+
+Five intrinsics are the only way to look inside a handle, all routed
+through one shared `boxed_op` so the interpreter, closure, and native tiers
+can never diverge: `BoxedEqual`, `BoxedHash` (via #474's `hash-code`), and
+a general-array trio `BoxedAref`/`BoxedAset`/`BoxedLen` that error-record
+(never panic) on a non-array receiver or an out-of-range index, matching
+the tree-walker's own `FETCH`/`STORE`/`ARRAY-LENGTH*` wording. A general
+(non-typed) array now crosses the typed/untyped boundary as one handle
+word instead of being copied element-by-element, which is what makes an
+`O(1)`-per-call boundary possible for functions that only touch a few
+elements of a large array.
+
+Arithmetic, comparison (`Cmp`), CAR/CDR and other compiled introspection,
+cons allocation, narrowing, and a boxed→`int64` coercion are all
+deliberately out of scope for v1; `boxed` is never inferred, only written
+explicitly in a `defun-typed`/`declare-typed` signature. See
+`docs/typed-jit-design.md` §0.5.0 for the full design writeup.
+
+## stdlib: the LHT probe loop compiles (the #476 payoff for #458/#472)
+
+`lib/45-hashtable.lisp`'s per-step hot path, `LHT-PROBE`, is now a
+`defun-typed` function with the signature
+`((array int64) boxed int64 boxed int64 int64 int64) -> int64`: BUCKETS
+crosses as a zero-copy typed array, KEYS and KEY as `boxed` handles, and the
+result is one packed int64 (hit = the bucket, miss = `(- -1 bucket)`, full =
+below `-cap`) instead of a `(STATUS BUCKET PAYLOAD)` list consed per step.
+`LHT-INSERT-EMPTY!` (the rehash loop), `LHT-MIX64` and `LHT-HASH` (pure
+int64 once `HASH-CODE` has run; `HASH-CODE` on a `boxed` operand is the
+intrinsic) are typed the same way, and `LHT-INDEX` moved from `defun*` to
+`defun-typed`, which also removes the `; defun* LHT-INDEX ...` line every
+process printed to stderr at startup. `LHT-FIND`/`-GET`/`-PUT!`/`-REMOVE!`
+stay interpreted: they read mixed-type slots out of the table record, which
+needs the boxed-to-int64 coercion that is a v1 non-goal. They decode the
+packed result once per operation.
+
+Measured with `benchmarks/hashtable/bench.lisp` (release, 3000 interned-symbol
+keys, three runs each): insert 108-112 to 74-76 us/op, lookup 27-29 to 17
+us/op; against the native `HASH-TABLE`, 50x to 37x on insert and 13x to 8x on
+lookup. The remaining gap is per-operation interpreted work (`LHT-FIND`'s
+frame, the record accessors, two membrane crossings), not the probe loop.
+
+## tooling: the gauntlet's exit status, and clippy's blind spot
+
+`scripts/gauntlet.sh` exits non-zero when any of its four verdict markers is
+missing; the verdict file stays the record. Clippy, in the gauntlet, in CI's
+lint job and in the documented pre-commit command, now runs with
+`--features fuzz`, so `tests/brutal_correctness.rs` is linted. That file
+compiles under no other gate, and the first such run found three lints in it.
+
 # v0.4.0 — 2026-07-16
 
 The 0.4.0 arc: more of the typed JIT's surface compiles to native code,

@@ -1969,3 +1969,520 @@ fn tco_both_branches_tail_looping_still_compiles() {
         "(defun-typed (spins int64) ((n int64)) (if (> n 0) (spins (- n 1)) (spins (+ n 1))))",
     ]);
 }
+
+// --- boxed (issue #476 phase 2): type, lattice, membrane --------------------
+
+/// `(defun-typed (id boxed) ((x boxed)) x)` registers and round-trips an
+/// arbitrary `LispVal` through the interpreter (closure) tier — the
+/// acceptance criterion for phase 2. Exercise a variety of `LispVal` shapes,
+/// including `Shared`-backed ones, so the "clone aliases the caller's
+/// object" property (the doc comment on `Ty::Boxed`) is at least plausible,
+/// not just true for immutable scalars.
+#[test]
+fn boxed_identity_round_trips_on_interpreter_tier() {
+    let env = Environment::new_with_builtins();
+    let j = build(&["(defun-typed (id boxed) ((x boxed)) x)"]);
+    j.deoptimize_all(); // force the closure/interpreter edition, not native
+
+    let cases: Vec<LispVal> = vec![
+        LispVal::Nil,
+        LispVal::Number(42),
+        LispVal::Float(3.5),
+        LispVal::Char(b'z'),
+        LispVal::Symbol(env.intern_symbol("FOO")),
+        LispVal::String("hello".to_string()),
+        LispVal::Array(Shared::new(SharedCell::new(vec![
+            LispVal::Number(1),
+            LispVal::Number(2),
+        ]))),
+    ];
+    for lv in cases {
+        let out = j.call("ID", &[Value::Boxed(lv.clone())]).unwrap();
+        assert_eq!(out, Value::Boxed(lv));
+    }
+}
+
+/// The same round trip must also hold when a native edition exists (movement
+/// of a boxed handle is just a `u64` word, so nothing about phase 2 should
+/// block native compilation even though phase 3 codegen work hasn't landed).
+#[test]
+fn boxed_identity_round_trips_compiled_vs_interpreted() {
+    let env = Environment::new_with_builtins();
+    let j = build(&["(defun-typed (id boxed) ((x boxed)) x)"]);
+    let lv = LispVal::Number(7);
+    assert_eq!(
+        agree(&j, "id", &[Value::Boxed(lv)]),
+        Value::Boxed(LispVal::Number(7))
+    );
+    let _ = env;
+}
+
+/// `Ty::parse`/`ty_name` round-trip the surface name `boxed`.
+#[test]
+fn boxed_ty_parse_and_name() {
+    assert_eq!(Ty::parse("BOXED"), Some(Ty::Boxed));
+    assert_eq!(super::ty_name(&Ty::Boxed), "boxed");
+}
+
+/// `is_compileable(Ty::Boxed)` must be true — it is the one checkable type
+/// below the #162 line that *does* back a native edition.
+#[test]
+fn boxed_is_compileable() {
+    assert!(is_compileable(&Ty::Boxed));
+}
+
+/// A `boxed` field, array element, and return type must all be accepted by
+/// `defun-typed` — the movement-only surface (issue #476 §3).
+#[test]
+fn boxed_as_local_and_struct_field() {
+    let j = build(&["(defun-typed (through-let boxed) ((x boxed)) (let-typed ((y x)) y))"]);
+    assert_eq!(
+        agree(&j, "through-let", &[Value::Boxed(LispVal::Number(9))]),
+        Value::Boxed(LispVal::Number(9))
+    );
+}
+
+// --- boxed: the three refusals (issue #476 §4) ------------------------------
+
+/// Refusal 1: `elem_ty_matches` must never match `boxed` against any
+/// `TypedArrayObj` element type — a caller's raw scalar buffer must never be
+/// reinterpreted as a table of handles.
+#[test]
+fn boxed_never_matches_a_typed_array_element_type() {
+    assert!(!elem_ty_matches(crate::ElemTy::Int64, &Ty::Boxed));
+    assert!(!elem_ty_matches(crate::ElemTy::Float64, &Ty::Boxed));
+}
+
+/// Refusal 2: `is_flat_scalar_array` must be false for anything involving
+/// `boxed` — no #216 write-back of handle words into a caller's `LispVal::Array`.
+#[test]
+fn boxed_array_is_never_a_flat_scalar_array() {
+    assert!(!is_flat_scalar_array(&Ty::Array(Box::new(Ty::Boxed))));
+    assert!(!is_flat_scalar_array(&Ty::Boxed));
+}
+
+/// Refusal 3: `NativeTy::from_ty(Ty::Boxed)` must stay `None` — a raw native
+/// entry point has no `Ctx` (and so no `Ctx.boxed` root table) a caller
+/// could resolve a handle against.
+#[cfg(feature = "jit")]
+#[test]
+fn boxed_has_no_native_entry_representation() {
+    assert_eq!(super::entry::NativeTy::from_ty(&Ty::Boxed), None);
+}
+
+/// `Ctx::box_value`/`Ctx::unbox` directly: word `0` is `NIL` without taking
+/// a table slot, a fresh box gets index 1, and round-tripping recovers the
+/// original clone.
+#[test]
+fn ctx_box_value_and_unbox_round_trip() {
+    let j = build(&["(defun-typed (noop int64) ((n int64)) n)"]);
+    let ctx = j.ctx();
+    assert_eq!(ctx.box_value(LispVal::Nil), 0);
+    assert_eq!(ctx.unbox(0), LispVal::Nil);
+
+    let w = ctx.box_value(LispVal::Number(123));
+    assert_eq!(w, 1);
+    assert_eq!(ctx.unbox(w), LispVal::Number(123));
+
+    let w2 = ctx.box_value(LispVal::Number(456));
+    assert_eq!(w2, 2);
+    assert_eq!(ctx.unbox(w2), LispVal::Number(456));
+    // Boxing NIL still never takes a slot, even after other values are boxed.
+    assert_eq!(ctx.box_value(LispVal::Nil), 0);
+}
+
+/// An out-of-range handle word must never panic: it records a pending error
+/// and yields `NIL` as the memory-safe substitute (issue #476 §4's
+/// discipline, matching `record_index_error` et al.).
+#[test]
+fn ctx_unbox_out_of_range_records_error_not_panic() {
+    let j = build(&["(defun-typed (noop int64) ((n int64)) n)"]);
+    let ctx = j.ctx();
+    assert!(ctx.pending_error.borrow().is_none());
+    let lv = ctx.unbox(99);
+    assert_eq!(lv, LispVal::Nil);
+    let err = ctx.pending_error.borrow_mut().take();
+    assert!(
+        err.is_some(),
+        "expected a pending error for an out-of-range handle"
+    );
+    assert!(err.unwrap().contains("out of range"));
+}
+
+/// `Ctx::leaf()` (the raw native-entry `Ctx`, `jit` feature only) gets an
+/// empty boxed table, matching every other feature of a leaf `Ctx`.
+#[cfg(feature = "jit")]
+#[test]
+fn ctx_leaf_has_empty_boxed_table() {
+    let ctx = Ctx::leaf();
+    assert!(ctx.boxed.borrow().is_empty());
+    assert_eq!(ctx.unbox(0), LispVal::Nil);
+}
+
+// --- boxed: phase 3a — elaboration guards against arithmetic/comparison ----
+//
+// A `boxed` handle is inert cargo: it supports only movement, `equal`,
+// `hash-code`, and general-array access (issue #476 §3). Arithmetic and
+// ordering comparison must be rejected with a clear, shared message
+// (`BOXED_ARITH_CMP_MSG`) — critically for comparison, so that no
+// `Core::Cmp` node is ever built over a boxed operand: two distinct handles
+// can alias the same object, so comparing handle words would be silently
+// wrong (not just disallowed).
+
+/// `+`/`-`/`*`/`/`/`mod`, at 1 and 2+ arg arities, all refuse a boxed
+/// operand with the exact shared message — not some generic "expects
+/// numeric operands, got Boxed" fallback.
+#[test]
+fn elaboration_rejects_arithmetic_on_boxed_operands() {
+    for src in [
+        "(defun-typed (bad int64) ((x boxed)) (+ x 1))",
+        "(defun-typed (bad int64) ((x boxed)) (+ 1 x))",
+        "(defun-typed (bad int64) ((x boxed)) (- x))",
+        "(defun-typed (bad int64) ((x boxed)) (- x 1))",
+        "(defun-typed (bad int64) ((x boxed)) (* x 1))",
+        "(defun-typed (bad int64) ((x boxed) (y int64)) (/ x y))",
+        "(defun-typed (bad int64) ((x boxed) (y int64)) (mod x y))",
+    ] {
+        let err = def_err(src);
+        assert_eq!(
+            err, BOXED_ARITH_CMP_MSG,
+            "unexpected message for `{src}`: {err}"
+        );
+    }
+}
+
+/// `<`/`>`/`<=`/`>=`/`=`/`/=` all refuse two boxed operands with the exact
+/// shared message, and — the load-bearing case — refuse BEFORE any
+/// `Core::Cmp` node could be built, so a malformed compiled core comparing
+/// two aliasing handles can never be produced by `defun-typed` in the first
+/// place.
+#[test]
+fn elaboration_rejects_comparison_on_boxed_operands() {
+    for op in ["<", ">", "<=", ">=", "=", "/="] {
+        let src = format!("(defun-typed (bad bool) ((x boxed) (y boxed)) ({op} x y))");
+        let err = def_err(&src);
+        assert_eq!(
+            err, BOXED_ARITH_CMP_MSG,
+            "unexpected message for `{src}`: {err}"
+        );
+    }
+}
+
+/// `min`/`max` (both the type-checked-only and the 2-arg compiled-select
+/// path) and `abs` are comparison-/arithmetic-shaped and must refuse a
+/// boxed operand with the same shared message.
+#[test]
+fn elaboration_rejects_min_max_and_abs_on_boxed_operands() {
+    for src in [
+        "(defun-typed (bad boxed) ((x boxed) (y boxed)) (min x y))",
+        "(defun-typed (bad boxed) ((x boxed) (y boxed)) (max x y))",
+        "(defun-typed (bad boxed) ((x boxed)) (abs x))",
+    ] {
+        let err = def_err(src);
+        assert_eq!(
+            err, BOXED_ARITH_CMP_MSG,
+            "unexpected message for `{src}`: {err}"
+        );
+    }
+}
+
+/// Movement alone — `boxed` flowing through `if` branches with no arithmetic
+/// or comparison applied to it — must keep compiling; the guard targets
+/// operators, not the type itself (issue #476 §3's "movement only" scope).
+#[test]
+fn boxed_if_branches_without_operators_still_compile() {
+    let j = build(&["(defun-typed (pick boxed) ((c bool) (x boxed) (y boxed)) (if c x y))"]);
+    assert_eq!(
+        agree(
+            &j,
+            "pick",
+            &[
+                Value::Bool(true),
+                Value::Boxed(LispVal::Number(1)),
+                Value::Boxed(LispVal::Number(2)),
+            ]
+        ),
+        Value::Boxed(LispVal::Number(1))
+    );
+}
+
+/// Structural pin for the doc comment on `verify_core`: `Core::Cmp`/
+/// `Core::Bin` carry a `NumKind`, not a `Ty`, and `NumKind` is exhaustively
+/// `{I, F}` — there is no boxed-flavored variant, so a boxed operand cannot
+/// reach a `Cmp`/`Bin` node at all; the elaborator's refusal above is the
+/// only enforcement point because it is the only place `Ty` information
+/// exists. This match has no wildcard arm: if `NumKind` ever grew a variant
+/// standing in for `boxed`, this stops being exhaustive and the crate fails
+/// to *compile*, catching the regression before `verify_core` (which has no
+/// type information at all) could ever be asked to catch it at runtime.
+#[test]
+fn num_kind_has_no_boxed_variant() {
+    fn describe(k: NumKind) -> &'static str {
+        match k {
+            NumKind::I => "int64",
+            NumKind::F => "float64",
+        }
+    }
+    assert_eq!(describe(NumKind::I), "int64");
+    assert_eq!(describe(NumKind::F), "float64");
+}
+
+// --- boxed: phase 3b/3c — the intrinsics (equal/hash-code/general-array) ---
+
+/// A fixture of heterogeneous `LispVal`s (issue #476 acceptance criterion):
+/// number, float, symbol, string, cons, nil, array, struct.
+fn boxed_fixture(env: &Environment) -> Vec<LispVal> {
+    vec![
+        LispVal::Nil,
+        LispVal::Number(42),
+        LispVal::Float(3.5),
+        LispVal::Symbol(env.intern_symbol("FOO")),
+        LispVal::String("hello".to_string()),
+        LispVal::Cons {
+            car: Shared::new(LispVal::Number(1)),
+            cdr: Shared::new(LispVal::Number(2)),
+        },
+        LispVal::Array(Shared::new(SharedCell::new(vec![
+            LispVal::Number(1),
+            LispVal::Number(2),
+        ]))),
+        LispVal::Struct(Shared::new(StructObj {
+            type_name: "POINT".to_string(),
+            fields: vec![LispVal::Number(1), LispVal::Number(2)],
+        })),
+    ]
+}
+
+/// `(equal a b)`/`(hash-code x)` at boxed operands: all three tiers (tree
+/// interpreter, closure edition, and — when the `jit` feature is on — native
+/// code, all reached via `agree`) must agree bit-for-bit over the
+/// heterogeneous fixture, and must reuse the SAME relation/hash `EQUAL`/
+/// `HASH-CODE` already use outside a typed body: `(equal x x)` is true and
+/// `(hash-code x)` matches `crate::hash_code` called directly.
+#[test]
+fn boxed_equal_and_hash_agree_across_tiers_and_with_the_builtin() {
+    let env = Environment::new_with_builtins();
+    let j = build(&[
+        "(defun-typed (b-equal bool) ((x boxed) (y boxed)) (equal x y))",
+        "(defun-typed (b-hash int64) ((x boxed)) (hash-code x))",
+    ]);
+    for lv in boxed_fixture(&env) {
+        assert_eq!(
+            agree(
+                &j,
+                "b-equal",
+                &[Value::Boxed(lv.clone()), Value::Boxed(lv.clone())]
+            ),
+            Value::Bool(true),
+            "(equal x x) for {lv:?}"
+        );
+        assert_eq!(
+            agree(&j, "b-hash", &[Value::Boxed(lv.clone())]),
+            Value::Int(crate::hash_code(&lv)),
+            "(hash-code x) for {lv:?}"
+        );
+    }
+}
+
+/// Distinct (non-`EQUAL`) fixture values must compare unequal through the
+/// same `(equal x y)` typed body — the boxed dispatch must not collapse
+/// everything to `true`.
+#[test]
+fn boxed_equal_distinguishes_unequal_values() {
+    let env = Environment::new_with_builtins();
+    let j = build(&["(defun-typed (b-equal bool) ((x boxed) (y boxed)) (equal x y))"]);
+    let fixture = boxed_fixture(&env);
+    for i in 0..fixture.len() {
+        for k in 0..fixture.len() {
+            if i == k {
+                continue;
+            }
+            assert_eq!(
+                agree(
+                    &j,
+                    "b-equal",
+                    &[
+                        Value::Boxed(fixture[i].clone()),
+                        Value::Boxed(fixture[k].clone())
+                    ]
+                ),
+                Value::Bool(false),
+                "(equal {:?} {:?}) should be false",
+                fixture[i],
+                fixture[k]
+            );
+        }
+    }
+}
+
+/// `EQUAL a b => hash-code a == hash-code b` (the invariant `hash_code`'s doc
+/// comment promises) over two SEPARATELY constructed but structurally-equal
+/// `Struct`s — not just two clones of the same allocation, which would prove
+/// nothing beyond identity hashing.
+#[test]
+fn boxed_equal_implies_same_hash_for_distinct_struct_instances() {
+    let j = build(&[
+        "(defun-typed (b-equal bool) ((x boxed) (y boxed)) (equal x y))",
+        "(defun-typed (b-hash int64) ((x boxed)) (hash-code x))",
+    ]);
+    let a = LispVal::Struct(Shared::new(StructObj {
+        type_name: "POINT".to_string(),
+        fields: vec![LispVal::Number(1), LispVal::Number(2)],
+    }));
+    let b = LispVal::Struct(Shared::new(StructObj {
+        type_name: "POINT".to_string(),
+        fields: vec![LispVal::Number(1), LispVal::Number(2)],
+    }));
+    assert_eq!(
+        agree(
+            &j,
+            "b-equal",
+            &[Value::Boxed(a.clone()), Value::Boxed(b.clone())]
+        ),
+        Value::Bool(true)
+    );
+    let ha = agree(&j, "b-hash", &[Value::Boxed(a)]);
+    let hb = agree(&j, "b-hash", &[Value::Boxed(b)]);
+    assert_eq!(ha, hb);
+}
+
+/// A boxed-signature function actually reaches the NATIVE tier (not just
+/// the closure edition) — part of phase 3c's acceptance criterion.
+#[cfg(feature = "jit")]
+#[test]
+fn boxed_equal_and_hash_compile_to_native() {
+    let j = build(&[
+        "(defun-typed (b-equal bool) ((x boxed) (y boxed)) (equal x y))",
+        "(defun-typed (b-hash int64) ((x boxed)) (hash-code x))",
+    ]);
+    j.compile_all();
+    assert_eq!(j.tier("B-EQUAL"), Some(Tier::Native));
+    assert_eq!(j.tier("B-HASH"), Some(Tier::Native));
+}
+
+/// `(fetch h i)`/`(store h i v)`/`(array-length* h)` at a BOXED receiver
+/// (issue #476 §1(a)): indexes the general `LispVal::Array` the handle
+/// denotes, agreeing across tiers, and the stored ELEMENT is itself boxed
+/// (round-trips an arbitrary `LispVal`, not just a scalar).
+#[test]
+fn boxed_array_fetch_store_len_agree_across_tiers() {
+    let env = Environment::new_with_builtins();
+    let j = build(&[
+        "(defun-typed (b-len int64) ((h boxed)) (array-length* h))",
+        "(defun-typed (b-get boxed) ((h boxed) (i int64)) (fetch h i))",
+        "(defun-typed (b-put boxed) ((h boxed) (i int64) (v boxed)) (store h i v))",
+    ]);
+    let arr = LispVal::Array(Shared::new(SharedCell::new(vec![
+        LispVal::Number(10),
+        LispVal::String("mid".to_string()),
+        LispVal::Nil,
+    ])));
+    assert_eq!(
+        agree(&j, "b-len", &[Value::Boxed(arr.clone())]),
+        Value::Int(3)
+    );
+    assert_eq!(
+        agree(&j, "b-get", &[Value::Boxed(arr.clone()), Value::Int(1)]),
+        Value::Boxed(LispVal::String("mid".to_string()))
+    );
+    let new_val = LispVal::Symbol(env.intern_symbol("REPLACED"));
+    assert_eq!(
+        agree(
+            &j,
+            "b-put",
+            &[
+                Value::Boxed(arr.clone()),
+                Value::Int(2),
+                Value::Boxed(new_val.clone())
+            ]
+        ),
+        Value::Boxed(new_val)
+    );
+}
+
+/// Issue #476 §1(b): a `store` through a boxed handle mutates the SAME
+/// `Shared` allocation the caller's own `LispVal::Array` uses — aliasing, not
+/// a copy-in/copy-out membrane. Mirrors `call_lisp_writes_back_array_mutation_in_place`
+/// for the ordinary `(array T)` arena buffer, but for a boxed general array.
+#[test]
+fn boxed_array_store_aliases_callers_array() {
+    let j = build(&["(defun-typed (b-put boxed) ((h boxed) (i int64) (v boxed)) (store h i v))"]);
+    let arr = LispVal::Array(Shared::new(SharedCell::new(vec![
+        LispVal::Number(1),
+        LispVal::Number(2),
+    ])));
+    let LispVal::Array(rc) = &arr else {
+        unreachable!()
+    };
+    j.compile_all();
+    let _ = j
+        .call(
+            "B-PUT",
+            &[
+                Value::Boxed(arr.clone()),
+                Value::Int(0),
+                Value::Boxed(LispVal::Number(99)),
+            ],
+        )
+        .unwrap();
+    assert_eq!(rc.borrow()[0], LispVal::Number(99));
+}
+
+/// Out-of-range `fetch`/`store` through a boxed array handle records the
+/// evaluator's own index error (panic-free), matching `record_index_error`'s
+/// discipline for the ordinary flat-buffer `Core::ArrayGet`/`Core::ArraySet`.
+#[test]
+fn boxed_array_out_of_range_records_index_error_not_panic() {
+    let j = build(&[
+        "(defun-typed (b-get boxed) ((h boxed) (i int64)) (fetch h i))",
+        "(defun-typed (b-put boxed) ((h boxed) (i int64) (v boxed)) (store h i v))",
+    ]);
+    let arr = LispVal::Array(Shared::new(SharedCell::new(vec![LispVal::Number(1)])));
+    for name in ["B-GET", "B-PUT"] {
+        let args: Vec<Value> = if name == "B-GET" {
+            vec![Value::Boxed(arr.clone()), Value::Int(5)]
+        } else {
+            vec![
+                Value::Boxed(arr.clone()),
+                Value::Int(5),
+                Value::Boxed(LispVal::Number(0)),
+            ]
+        };
+        j.compile_all();
+        let err_compiled = j.call(name, &args).unwrap_err();
+        j.deoptimize_all();
+        let err_interp = j.call(name, &args).unwrap_err();
+        assert_eq!(err_compiled, err_interp, "{name} OOB message tier-agrees");
+        assert!(
+            err_compiled.contains("index 5 out of bounds"),
+            "got: {err_compiled}"
+        );
+    }
+    j.compile_all();
+}
+
+/// `fetch`/`array-length*` on a boxed handle that does NOT denote a
+/// `LispVal::Array` records the evaluator's "must be an array" type error
+/// rather than panicking or misinterpreting the handle's contents.
+#[test]
+fn boxed_array_ops_on_non_array_handle_record_type_error() {
+    let j = build(&[
+        "(defun-typed (b-get boxed) ((h boxed) (i int64)) (fetch h i))",
+        "(defun-typed (b-len int64) ((h boxed)) (array-length* h))",
+    ]);
+    j.compile_all();
+    let err = j
+        .call("B-GET", &[Value::Boxed(LispVal::Number(5)), Value::Int(0)])
+        .unwrap_err();
+    assert!(
+        err.contains("FETCH: first argument must be an array"),
+        "got: {err}"
+    );
+    let err = j
+        .call("B-LEN", &[Value::Boxed(LispVal::Number(5))])
+        .unwrap_err();
+    assert!(
+        err.contains("ARRAY-LENGTH*: argument must be an array"),
+        "got: {err}"
+    );
+}

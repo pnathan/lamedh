@@ -1667,6 +1667,7 @@ impl Jit {
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
+            boxed: RefCell::new(Vec::new()),
         }
     }
 
@@ -1726,7 +1727,7 @@ impl Jit {
                 if let Some(msg) = ctx.pending_error.borrow_mut().take() {
                     return Err(msg);
                 }
-                return Ok(Value::from_word(w, &ret));
+                return Ok(Value::from_word(w, &ret, &ctx));
             }
         }
         // Compound signature: the full membrane (write-back and all).
@@ -1800,7 +1801,7 @@ impl Jit {
             overflow: ctx.overflow.get(),
             div_by_zero: ctx.div_by_zero.get(),
         };
-        let result = Value::from_word(w, &ret);
+        let result = Value::from_word(w, &ret, &ctx);
         // Skip the write-back copy-out for a parameter the static may-mutate
         // analysis (`core_may_mutate_slot`, computed at define-time into
         // `f.may_mutate`) proves this function's body never writes through —
@@ -1824,7 +1825,7 @@ impl Jit {
                     return None;
                 }
                 let mutates = may_mutate.get(i).copied().unwrap_or(true);
-                (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty))
+                (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty, &ctx))
             })
             .collect();
         Ok((result, updated, flags))
@@ -1868,7 +1869,10 @@ impl Jit {
                         Value::Float(f) => LispVal::Float(f),
                         Value::Bool(b) => LispVal::Number(b as i64),
                         Value::Char(b) => LispVal::Char(b),
-                        Value::Array(_) | Value::Struct(_) | Value::TypedArray(_) => {
+                        Value::Array(_)
+                        | Value::Struct(_)
+                        | Value::TypedArray(_)
+                        | Value::Boxed(_) => {
                             unreachable!("flat scalar array write-back produced a compound element")
                         }
                     })
@@ -1926,7 +1930,7 @@ impl Jit {
             return Err(msg);
         }
         let ret = f.ret.borrow().clone();
-        Ok((Value::from_word(w, &ret), log))
+        Ok((Value::from_word(w, &ret, &ctx), log))
     }
 
     /// Drop every compiled edition (force the interpreter path). Test/diagnostic.
@@ -2267,6 +2271,18 @@ impl Jit {
                 out.push(format!("{l_end}:"));
                 out.push(format!("    {dst} = li   0        ; for yields nil"));
             }
+            Core::BoxedOp(op, args) => {
+                let mut argregs = Vec::with_capacity(args.len());
+                for a in args {
+                    let t = fresh(reg);
+                    self.dis_emit(a, &t, out, reg, lab);
+                    argregs.push(t);
+                }
+                out.push(format!(
+                    "    {dst} = boxed {op:?}({})   ; issue #476 handle intrinsic",
+                    argregs.join(", ")
+                ));
+            }
         }
     }
 }
@@ -2354,6 +2370,11 @@ fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
             inline_call_ids(i, out);
             for f in fields {
                 inline_call_ids(f, out);
+            }
+        }
+        Core::BoxedOp(_, args) => {
+            for a in args {
+                inline_call_ids(a, out);
             }
         }
     }

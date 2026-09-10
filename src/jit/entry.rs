@@ -56,6 +56,13 @@ impl NativeTy {
             Ty::Int64 => Some(NativeTy::Int64),
             Ty::Float64 => Some(NativeTy::Float64),
             Ty::Bool => Some(NativeTy::Bool),
+            // A raw native entry point has no `Ctx` — and therefore no
+            // `Ctx.boxed` root table — for a caller to resolve a handle
+            // against, so `boxed` (issue #476) can never cross one. Kept as
+            // its own arm (not folded into the wildcard) so adding a future
+            // `Ty` variant here is a deliberate decision, not a silent
+            // default to `None`.
+            Ty::Boxed => None,
             _ => None,
         }
     }

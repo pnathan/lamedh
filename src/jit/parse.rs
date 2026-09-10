@@ -136,6 +136,9 @@ pub(super) fn lispval_to_value(lv: &LispVal, ty: &Ty) -> Result<Value, String> {
             LispVal::Number(n) => Ok(Value::Char(char_byte_from_number(*n, "char")?)),
             other => Err(format!("expected char, got {other:?}")),
         },
+        // `boxed` (issue #476) accepts any `LispVal` unconditionally — see
+        // `lispval_to_typed`'s matching arm in `src/evaluator/functions.rs`.
+        Ty::Boxed => Ok(Value::Boxed(lv.clone())),
         Ty::Array(elem) => match lv {
             LispVal::String(s) if matches!(**elem, Ty::Char) => {
                 Ok(Value::Array(s.bytes().map(Value::Char).collect()))
@@ -195,6 +198,10 @@ pub(super) fn value_to_lispval(v: &Value, ty: &Ty) -> LispVal {
         Value::Float(f) => LispVal::Float(*f),
         Value::Bool(b) => LispVal::Number(*b as i64),
         Value::Char(b) => LispVal::Char(*b),
+        // `Value::from_word`'s `Ty::Boxed` arm already resolved the handle
+        // against `Ctx.boxed`, so this is a plain unwrap, matching
+        // `typed_to_lispval`'s counterpart arm.
+        Value::Boxed(lv) => lv.clone(),
         Value::Array(items) => match ty {
             Ty::Array(elem) if matches!(**elem, Ty::Char) => {
                 let bytes: Vec<u8> = items

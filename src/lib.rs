@@ -2952,6 +2952,21 @@ impl Hash for LispVal {
     }
 }
 
+/// The `HASH-CODE` primitive (issue #474): a hash of `v` that is required to
+/// agree with `PartialEq for LispVal` (the relation `EQUAL` and hash-table
+/// keys use) — `EQUAL a b` implies `hash_code(a) == hash_code(b)`, since this
+/// is exactly `Hash for LispVal` above run through a `DefaultHasher`. Shared
+/// by the interpreter builtin (`BuiltinFunc::HashCode`, `evaluator/apply.rs`)
+/// and the `BoxedHash` JIT intrinsic (`src/jit`) so all three tiers agree
+/// bit-for-bit.
+pub fn hash_code(v: &LispVal) -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    v.hash(&mut hasher);
+    hasher.finish() as i64
+}
+
 // ---------------------------------------------------------------------------
 // From<T> for LispVal — infallible conversions from Rust primitives
 // ---------------------------------------------------------------------------
