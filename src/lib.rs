@@ -261,6 +261,40 @@ pub const INTERPRETER_STACK_SIZE: usize = 512 * 1024 * 1024;
 /// embedders running the interpreter from a small-stack thread should too (or
 /// lower [`set_eval_depth_limit`]). Because `LispVal`/`Environment` are `!Send`,
 /// create the environment *inside* `f`.
+/// Lane count of the float `array-sum`/`array-dot` reduction.
+///
+/// Float reductions follow Fortran's `SUM`: the result is a
+/// processor-dependent approximation of the mathematical sum, and the order
+/// of the additions is unspecified. Every tier of this implementation uses
+/// the same shape: [`F64_REDUCE_LANES`] strided accumulators, a balanced
+/// combine, then the tail added in order. That shape is what the native
+/// backend's SIMD loop computes, so the tiers agree bit for bit here, but
+/// that is an implementation property, not the language contract. Callers
+/// and other implementations may not rely on it.
+pub(crate) const F64_REDUCE_LANES: usize = 8;
+
+/// Sum `get(0) .. get(n-1)` in the float reduction shape described on
+/// [`F64_REDUCE_LANES`]: lane `j` accumulates the elements with index
+/// `≡ j (mod 8)` over the largest multiple of 8, the lanes combine as
+/// `((l0+l2)+(l4+l6)) + ((l1+l3)+(l5+l7))`, and the remaining `n mod 8`
+/// elements are then added left to right.
+pub(crate) fn f64_reduce_by(n: usize, get: impl Fn(usize) -> f64) -> f64 {
+    let mut l = [0.0f64; F64_REDUCE_LANES];
+    let body = n - n % F64_REDUCE_LANES;
+    let mut i = 0;
+    while i < body {
+        for (j, lane) in l.iter_mut().enumerate() {
+            *lane += get(i + j);
+        }
+        i += F64_REDUCE_LANES;
+    }
+    let mut acc = ((l[0] + l[2]) + (l[4] + l[6])) + ((l[1] + l[3]) + (l[5] + l[7]));
+    for k in body..n {
+        acc += get(k);
+    }
+    acc
+}
+
 pub fn with_large_stack<F, T>(f: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,

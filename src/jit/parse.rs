@@ -22,6 +22,16 @@ pub(super) fn bin_mnemonic(k: NumKind, op: BinOp) -> &'static str {
     }
 }
 
+/// Disassembly note for an `array-sum`/`array-dot` reduction at kind `k`:
+/// int64 wraps (associative, so any order is exact); float64 is summed in
+/// an unspecified order (see [`Core::ArraySum`]).
+pub(super) fn reduce_note(k: NumKind) -> &'static str {
+    match k {
+        NumKind::I => "wrapping",
+        NumKind::F => "float, unspecified order",
+    }
+}
+
 /// Mnemonic for a comparison [`CmpOp`] at numeric kind `k` (`icmp.*`/`fcmp.*`).
 pub(super) fn cmp_mnemonic(k: NumKind, op: CmpOp) -> &'static str {
     let p = matches!(k, NumKind::I);

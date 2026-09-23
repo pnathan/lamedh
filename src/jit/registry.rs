@@ -2136,19 +2136,21 @@ impl Jit {
                 ));
                 out.push(format!("    {dst} = mov {to}"));
             }
-            Core::ArraySum(a) => {
+            Core::ArraySum(k, a) => {
                 let t = fresh(reg);
                 self.dis_emit(a, &t, out, reg, lab);
                 out.push(format!(
-                    "    {dst} = vsum {t}[i]   ; simd reduce (wrapping), i in 0..len"
+                    "    {dst} = vsum {t}[i]   ; simd reduce ({}), i in 0..len",
+                    reduce_note(*k)
                 ));
             }
-            Core::ArrayDot(a, b) => {
+            Core::ArrayDot(k, a, b) => {
                 let (ta, tb) = (fresh(reg), fresh(reg));
                 self.dis_emit(a, &ta, out, reg, lab);
                 self.dis_emit(b, &tb, out, reg, lab);
                 out.push(format!(
-                    "    {dst} = vdot {ta}[i], {tb}[i]   ; simd reduce (wrapping), i in 0..min(len)"
+                    "    {dst} = vdot {ta}[i], {tb}[i]   ; simd reduce ({}), i in 0..min(len)",
+                    reduce_note(*k)
                 ));
             }
             Core::ArrayNewStride(n, stride) => {
@@ -2321,10 +2323,10 @@ fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
                 inline_call_ids(a, out);
             }
         }
-        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) | Core::ArraySum(a) => {
+        Core::ArrayNew(a) | Core::ArrayLen(a) | Core::FieldGet(a, _) | Core::ArraySum(_, a) => {
             inline_call_ids(a, out)
         }
-        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) | Core::ArrayDot(a, b) => {
+        Core::ArrayGet(a, b) | Core::FieldSet(a, _, b) | Core::ArrayDot(_, a, b) => {
             inline_call_ids(a, out);
             inline_call_ids(b, out);
         }

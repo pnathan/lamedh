@@ -1,20 +1,16 @@
-//! Differential tests for the SIMD integer array-reduction family
-//! (`array-sum`/`array-dot`, `Core::ArraySum`/`Core::ArrayDot`): wrapping,
-//! int64-only reductions over `(array int64)`.
+//! Differential tests for the SIMD array-reduction family
+//! (`array-sum`/`array-dot`, `Core::ArraySum`/`Core::ArrayDot`) over
+//! `(array int64)` (wrapping) and `(array float64)` (issue #392).
 //!
-//! Mirrors `test_simd_arrayops.rs`'s structure: drive the same call through
-//! every typed tier (native-or-closure `compile_all`, the typed-core
-//! `deoptimize_all`, and the tracing interpreter `trace_call`) and assert
-//! they agree bit-for-bit — the native Cranelift SIMD lowering
-//! (`src/jit/native.rs::Emitter::emit_array_sum`/`emit_array_dot`, a 2-lane
-//! `I64X2` accumulator loop plus a horizontal `extractlane`/`iadd` reduction
-//! and a scalar tail) must match the scalar reference
-//! (`src/jit/runtime.rs::array_sum`/`array_dot`, shared by the Core
-//! interpreter, the tracer, and the closure backend) exactly. Wrapping
-//! int64 addition is associative, so a sequential fold and a vectorized
-//! pairwise reduction are bit-identical by construction — that's the whole
-//! point of the exercise, and these tests are the parity anchor for it
-//! (the differential fuzzer does not generate these ops).
+//! int64: wrapping addition is associative, so every tier (native SIMD in
+//! `src/jit/native.rs::Emitter::emit_array_reduce`, the scalar reference
+//! `src/jit/runtime.rs::array_sum`/`array_dot` shared by the Core
+//! interpreter, tracer and closure backend) must agree exactly.
+//!
+//! float64: the contract follows Fortran's `SUM` — addition order is
+//! unspecified — so float tests check a tolerance against a sequential sum;
+//! bitwise tier agreement is asserted only in tests labelled
+//! implementation-level.
 
 use lamedh::environment::Environment;
 use lamedh::jit::{Jit, Value};
@@ -273,4 +269,257 @@ fn array_sum_and_dot_compile_natively() {
         dis_d.contains("vdot"),
         "array-dot disassembly should mention vdot: {dis_d}"
     );
+    let jf = jit_with(&[SUMF, DOTF]);
+    jf.compile_all();
+    assert!(
+        jf.disassemble("sf")
+            .expect("disassemble sf")
+            .contains("vsum")
+    );
+    assert!(
+        jf.disassemble("df")
+            .expect("disassemble df")
+            .contains("vdot")
+    );
+}
+
+// ---- float64 array-sum / array-dot (issue #392) ---------------------------
+//
+// CONTRACT (Fortran `SUM`-aligned): for float64 the result approximates the
+// mathematical sum; the order of additions is unspecified. The contract
+// tests below therefore compare against a sequential left fold with a
+// Higham-style tolerance of `n * eps * sum|x|`, never bit-for-bit.
+//
+// IMPLEMENTATION-LEVEL tests (labelled as such) additionally assert that
+// every tier of THIS implementation agrees bit-for-bit, because they all use
+// the same 8-lane reduction shape. That is not a language guarantee.
+
+const SUMF: &str = "(defun-typed (sf float64) ((a (array float64))) (array-sum a))";
+const DOTF: &str =
+    "(defun-typed (df float64) ((a (array float64)) (b (array float64))) (array-dot a b))";
+const FLOAT_SIZES: &[usize] = &[0, 1, 7, 8, 9, 15, 16, 17, 1000];
+
+fn floats(xs: &[f64]) -> Value {
+    Value::Array(xs.iter().map(|x| Value::Float(*x)).collect())
+}
+
+/// Deterministic mixed-sign, mixed-magnitude data (so reassociation
+/// actually changes rounding).
+fn gen_floats(n: usize, seed: u64) -> Vec<f64> {
+    let mut s = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..n)
+        .map(|_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let m = ((s >> 11) as f64) / ((1u64 << 53) as f64) - 0.5;
+            let e = ((s >> 3) % 12) as i32 - 6;
+            m * 10f64.powi(e)
+        })
+        .collect()
+}
+
+fn as_float(v: &Value) -> f64 {
+    match v {
+        Value::Float(f) => *f,
+        other => panic!("expected a float, got {other:?}"),
+    }
+}
+
+/// Assert `got` is within the Higham-style bound of the sequential sum of
+/// `terms`.
+fn assert_close_to_sequential(got: f64, terms: &[f64], what: &str) {
+    let seq: f64 = terms.iter().fold(0.0, |a, x| a + x);
+    let abs: f64 = terms.iter().map(|x| x.abs()).sum();
+    let tol = (terms.len().max(1) as f64) * f64::EPSILON * abs;
+    assert!(
+        (got - seq).abs() <= tol,
+        "{what}: {got} vs sequential {seq} exceeds tolerance {tol}"
+    );
+}
+
+#[test]
+fn float_sum_within_tolerance_all_tiers() {
+    let j = jit_with(&[SUMF]);
+    for &n in FLOAT_SIZES {
+        let xs = gen_floats(n, n as u64 + 1);
+        for (tier, rv) in
+            ["compiled", "deopt", "traced"]
+                .iter()
+                .zip(call_all_tiers(&j, "sf", &[floats(&xs)]))
+        {
+            assert_close_to_sequential(as_float(&rv), &xs, &format!("sum n={n} {tier}"));
+        }
+    }
+}
+
+#[test]
+fn float_dot_within_tolerance_all_tiers() {
+    let j = jit_with(&[DOTF]);
+    for &n in FLOAT_SIZES {
+        let xs = gen_floats(n, 2 * n as u64 + 3);
+        let ys = gen_floats(n, 3 * n as u64 + 5);
+        let prods: Vec<f64> = xs.iter().zip(&ys).map(|(x, y)| x * y).collect();
+        for (tier, rv) in ["compiled", "deopt", "traced"].iter().zip(call_all_tiers(
+            &j,
+            "df",
+            &[floats(&xs), floats(&ys)],
+        )) {
+            assert_close_to_sequential(as_float(&rv), &prods, &format!("dot n={n} {tier}"));
+        }
+    }
+}
+
+#[test]
+fn float_sum_exact_for_small_integer_values_all_tiers() {
+    // Small integer-valued floats sum exactly in any order.
+    let j = jit_with(&[SUMF, DOTF]);
+    for &n in FLOAT_SIZES {
+        let xs: Vec<f64> = (0..n).map(|i| (i % 13) as f64 - 6.0).collect();
+        let expect: f64 = xs.iter().sum();
+        assert_all_tiers_agree(&j, "sf", &[floats(&xs)], &Value::Float(expect));
+        let dexpect: f64 = xs.iter().map(|x| x * x).sum();
+        assert_all_tiers_agree(
+            &j,
+            "df",
+            &[floats(&xs), floats(&xs)],
+            &Value::Float(dexpect),
+        );
+    }
+}
+
+#[test]
+fn float_empty_sum_is_positive_zero() {
+    let j = jit_with(&[SUMF]);
+    for rv in call_all_tiers(&j, "sf", &[floats(&[])]) {
+        let f = as_float(&rv);
+        assert!(f == 0.0 && f.is_sign_positive(), "empty sum: {f}");
+    }
+}
+
+#[test]
+fn float_nan_and_inf_propagate_all_tiers() {
+    let j = jit_with(&[SUMF, DOTF]);
+    for &n in &[1usize, 8, 9, 17] {
+        for pos in [0, n - 1, n / 2] {
+            let mut xs = vec![1.0; n];
+            xs[pos] = f64::NAN;
+            for rv in call_all_tiers(&j, "sf", &[floats(&xs)]) {
+                assert!(as_float(&rv).is_nan(), "NaN at {pos}/{n}");
+            }
+            xs[pos] = f64::INFINITY;
+            for rv in call_all_tiers(&j, "sf", &[floats(&xs)]) {
+                assert_eq!(as_float(&rv), f64::INFINITY, "inf at {pos}/{n}");
+            }
+            // inf * 0 = NaN in the dot.
+            let zs = vec![0.0; n];
+            for rv in call_all_tiers(&j, "df", &[floats(&xs), floats(&zs)]) {
+                assert!(as_float(&rv).is_nan(), "inf*0 at {pos}/{n}");
+            }
+        }
+        let mut xs = vec![1.0; n];
+        xs[0] = f64::INFINITY;
+        xs[n - 1] = f64::NEG_INFINITY;
+        if n > 1 {
+            for rv in call_all_tiers(&j, "sf", &[floats(&xs)]) {
+                assert!(as_float(&rv).is_nan(), "inf + -inf, n={n}");
+            }
+        }
+    }
+}
+
+#[test]
+fn float_dot_mismatched_lengths_uses_min_len_all_tiers() {
+    let j = jit_with(&[DOTF]);
+    let a = floats(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+    let b = floats(&[1.0, 1.0, 1.0]);
+    assert_all_tiers_agree(&j, "df", &[a.clone(), b.clone()], &Value::Float(6.0));
+    assert_all_tiers_agree(&j, "df", &[b, a], &Value::Float(6.0));
+}
+
+#[test]
+fn mixed_element_types_do_not_elaborate() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    let src = "(defun-typed (m float64) ((a (array int64)) (b (array float64))) (array-dot a b))";
+    let form = read(src, &env).unwrap();
+    assert!(
+        j.define(&form).is_err(),
+        "array-dot over (array int64) x (array float64) must be a type error"
+    );
+    let src = "(defun-typed (m2 int64) ((a (array float64))) (array-sum a))";
+    let form = read(src, &env).unwrap();
+    assert!(
+        j.define(&form).is_err(),
+        "array-sum over (array float64) returns float64, not int64"
+    );
+}
+
+/// IMPLEMENTATION-LEVEL (not a language guarantee): every tier of this
+/// implementation uses the same 8-lane shape, so they agree bit-for-bit.
+#[test]
+fn impl_float_tiers_agree_bitwise() {
+    let j = jit_with(&[SUMF, DOTF]);
+    for &n in FLOAT_SIZES {
+        let xs = gen_floats(n, 7 * n as u64 + 11);
+        let ys = gen_floats(n, 5 * n as u64 + 13);
+        let s = call_all_tiers(&j, "sf", &[floats(&xs)]);
+        let d = call_all_tiers(&j, "df", &[floats(&xs), floats(&ys)]);
+        for r in [s, d] {
+            let bits: Vec<u64> = r.iter().map(|v| as_float(v).to_bits()).collect();
+            assert!(
+                bits.iter().all(|b| *b == bits[0]),
+                "n={n}: tiers differ {r:?}"
+            );
+        }
+    }
+}
+
+/// Tree-walker float path: contract (tolerance) plus, implementation-level,
+/// bitwise agreement with the typed JIT tiers.
+#[test]
+fn tree_walker_float_sum_and_dot() {
+    lamedh::with_large_stack(|| {
+        let env = Environment::with_stdlib();
+        let j = jit_with(&[SUMF, DOTF]);
+        let lit = |xs: &[f64]| {
+            let body: Vec<String> = xs.iter().map(|x| format!("{x:?}")).collect();
+            format!("(list->array '({}))", body.join(" "))
+        };
+        let get = |src: &str| match lamedh::eval_str(src, &env).expect(src) {
+            lamedh::LispVal::Float(f) => f,
+            other => panic!("{src}: expected float, got {other:?}"),
+        };
+        for &n in &[1usize, 7, 8, 9, 15, 16, 17, 200] {
+            let xs: Vec<f64> = gen_floats(n, n as u64 + 99)
+                .iter()
+                .map(|x| (x * 1e6).round() / 1e3 + 0.5)
+                .collect();
+            let ys: Vec<f64> = xs.iter().rev().copied().collect();
+            let s = get(&format!("(array-sum {})", lit(&xs)));
+            assert_close_to_sequential(s, &xs, &format!("tree sum n={n}"));
+            let prods: Vec<f64> = xs.iter().zip(&ys).map(|(x, y)| x * y).collect();
+            let d = get(&format!("(array-dot {} {})", lit(&xs), lit(&ys)));
+            assert_close_to_sequential(d, &prods, &format!("tree dot n={n}"));
+            // Implementation-level: matches the typed tiers bit for bit.
+            j.compile_all();
+            let js = as_float(&j.call("sf", &[floats(&xs)]).unwrap());
+            let jd = as_float(&j.call("df", &[floats(&xs), floats(&ys)]).unwrap());
+            assert_eq!(s.to_bits(), js.to_bits(), "tree vs jit sum n={n}");
+            assert_eq!(d.to_bits(), jd.to_bits(), "tree vs jit dot n={n}");
+        }
+        // Mixed int/float elements promote to float64; all-int stays int.
+        assert_eq!(get("(array-sum (list->array '(1 2.5 3)))"), 6.5);
+        assert_eq!(
+            get("(array-dot (list->array '(1 2)) (list->array '(0.5 0.25 9.0)))"),
+            1.0
+        );
+        assert!(matches!(
+            lamedh::eval_str("(array-sum (list->array '(1 2 3)))", &env).unwrap(),
+            lamedh::LispVal::Number(6)
+        ));
+        assert!(lamedh::eval_str("(array-sum (list->array '(1 a)))", &env).is_err());
+    });
 }

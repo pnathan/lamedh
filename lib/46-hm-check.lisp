@@ -2205,28 +2205,46 @@ Cx::elab_array_map2."
                    (error (concat "array op element type must resolve to int64 or float64, got "
                                   (hm-type-name et))))))))))
 
+(defun hm-reduce-elem-type (state elem what)
+  "Resolve a reduction's element type: int64 or float64; an unconstrained
+element defaults to int64. Mirrors Cx::reduce_elem_kind."
+  (let ((et (handler-case (hm-resolve state elem)
+              (error (e)
+                (if (hm-unifies-p state elem 'int64)
+                    'int64
+                    (error (concat what ": cannot infer element type: "
+                                   (error-message e))))))))
+    (if (hm-arith-kind-p et)
+        et
+        (error (concat what " element type must resolve to int64 or float64, got "
+                       (hm-type-name et))))))
+
 (defun hm-elab-array-sum (state tyenv args)
-  "`(array-sum a)` : (array int64) -> int64. Mirrors Cx::elab_array_sum."
+  "`(array-sum a)` : (array T) -> T for T in {int64, float64}. int64 wraps;
+float64 has Fortran SUM semantics (addition order unspecified). Mirrors
+Cx::elab_array_sum."
   (if (not (= (length args) 1))
       (error (concat "`array-sum` expects 1 arg, got "
                      (princ-to-string (length args))))
-      (if (hm-unifies-p state (hm-elab state tyenv (car args)) '(array int64))
-          'int64
-          (error "`array-sum` expects an (array int64) argument"))))
+      (let ((elem (hm-fresh state)))
+        (if (hm-unifies-p state (hm-elab state tyenv (car args)) (list 'array elem))
+            (hm-reduce-elem-type state elem "`array-sum`")
+            (error "`array-sum` expects an (array int64) or (array float64) argument")))))
 
 (defun hm-elab-array-dot (state tyenv args)
-  "`(array-dot a b)` : (array int64) (array int64) -> int64. Mirrors
-Cx::elab_array_dot."
+  "`(array-dot a b)` : (array T) (array T) -> T for T in {int64, float64}.
+Mirrors Cx::elab_array_dot."
   (if (not (= (length args) 2))
       (error (concat "`array-dot` expects 2 args, got "
                      (princ-to-string (length args))))
-      (progn
-        (if (hm-unifies-p state (hm-elab state tyenv (car args)) '(array int64))
+      (let* ((elem (hm-fresh state))
+             (arr (list 'array elem)))
+        (if (hm-unifies-p state (hm-elab state tyenv (car args)) arr)
             nil
-            (error "`array-dot` expects (array int64) as its first argument"))
-        (if (hm-unifies-p state (hm-elab state tyenv (cadr args)) '(array int64))
-            'int64
-            (error "`array-dot` expects (array int64) as its second argument")))))
+            (error "`array-dot` expects an (array int64) or (array float64) first argument"))
+        (if (hm-unifies-p state (hm-elab state tyenv (cadr args)) arr)
+            (hm-reduce-elem-type state elem "`array-dot`")
+            (error "`array-dot` expects its second argument to have the first's element type")))))
 
 ;;; ---- the closed call rule -------------------------------------------------
 
