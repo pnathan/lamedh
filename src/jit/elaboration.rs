@@ -245,6 +245,12 @@ impl Cx<'_> {
                     "EXP" if !self.checking => {
                         self.elab_funary(FUnOp::Exp, Ty::Float64, args, scope, max)
                     }
+                    // Natural `log` (1 argument; the 2-argument base form
+                    // stays interpreted) and `expt` (#398).
+                    "LOG" if !self.checking => {
+                        self.elab_funary(FUnOp::Log, Ty::Float64, args, scope, max)
+                    }
+                    "EXPT" if !self.checking => self.elab_expt(args, scope, max),
                     "ROUND" if !self.checking => {
                         self.elab_funary(FUnOp::Round, Ty::Int64, args, scope, max)
                     }
@@ -2273,6 +2279,42 @@ impl Cx<'_> {
         self.unify(&arg_ty, &Ty::Float64)
             .map_err(|e| format!("float intrinsic argument must be float64: {e}"))?;
         Ok((Core::FUnary(op, Box::new(arg_core)), result))
+    }
+
+    /// `(expt b e)` (#398) over concrete operand kinds, each combination
+    /// mirroring one arm of the evaluator's `BuiltinFunc::Expt`:
+    /// float^float = `powf`, float^int = `powi(e as i32)`, int^float =
+    /// `(b as f64).powf(e)` — all `float64`, via the `jit_ftrans2` libm
+    /// trampoline. int^int is not compiled: the evaluator returns an integer
+    /// (or a float for a negative exponent) and raises on overflow.
+    fn elab_expt(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!("`expt` expects 2 arguments, got {}", args.len()));
+        }
+        let (bc, tb) = self.elab(&args[0], scope, max)?;
+        let (ec, te) = self.elab(&args[1], scope, max)?;
+        let (bc, ec) = (Box::new(bc), Box::new(ec));
+        let core = match (self.walk(&tb), self.walk(&te)) {
+            (Ty::Float64, Ty::Float64) => Core::FBinary(FBinOp::Pow, bc, ec),
+            (Ty::Float64, Ty::Int64) => Core::FBinary(FBinOp::PowI, bc, ec),
+            (Ty::Int64, Ty::Float64) => {
+                Core::FBinary(FBinOp::Pow, Box::new(Core::IntToFloat(bc)), ec)
+            }
+            (Ty::Int64, Ty::Int64) => {
+                return Err("`expt` of int64 by int64 stays interpreted".to_string());
+            }
+            (b, e) => {
+                return Err(format!(
+                    "`expt` needs concrete int64 or float64 operands, got {b:?} and {e:?}"
+                ));
+            }
+        };
+        Ok((core, Ty::Float64))
     }
 
     /// `(float x)`: int→float conversion, identity on a float. The argument's

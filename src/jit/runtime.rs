@@ -492,6 +492,15 @@ pub(crate) extern "C" fn jit_ftrans(op: u64, x: f64) -> u64 {
     super::types::FUnOp::from_opcode(op).apply_word(x)
 }
 
+/// Host trampoline for the binary float intrinsics (#398): `op` is the
+/// [`super::types::FBinOp`] discriminant, `x`/`y` the raw operand words.
+/// Calls [`super::types::FBinOp::apply_word`], exactly what the Core
+/// interpreter and closure tier call.
+#[cfg(feature = "jit")]
+pub(crate) extern "C" fn jit_ftrans2(op: u64, x: u64, y: u64) -> u64 {
+    super::types::FBinOp::from_opcode(op).apply_word(x, y)
+}
+
 /// Host trampoline for the boxed-handle intrinsics (issue #476 phase 3b/3c):
 /// `op` is the [`BoxedOp`] discriminant, `a`/`b`/`c` the raw argument words
 /// (unused positions are ignored — see [`BoxedOp`]'s doc comment for which
@@ -1101,6 +1110,10 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         }
         Core::ToChar(a) => ctx.to_char(as_i(eval_core_nontail(a, env, ctx))),
         Core::FUnary(op, a) => op.apply_word(as_f(eval_core_nontail(a, env, ctx))),
+        Core::FBinary(op, a, b) => {
+            let x = eval_core_nontail(a, env, ctx);
+            op.apply_word(x, eval_core_nontail(b, env, ctx))
+        }
         Core::IntToFloat(a) => from_f(as_i(eval_core_nontail(a, env, ctx)) as f64),
         Core::ArrayNew(n) => {
             let len = as_i(eval_core_nontail(n, env, ctx));
@@ -1380,6 +1393,11 @@ pub(super) fn eval_core_traced(
             let v = eval_core_traced(a, env, ctx, depth + 1, log);
             step!("funary", op.apply_word(as_f(v)), NO_SLOT, NO_CALLEE)
         }
+        Core::FBinary(op, a, b) => {
+            let x = eval_core_traced(a, env, ctx, depth + 1, log);
+            let y = eval_core_traced(b, env, ctx, depth + 1, log);
+            step!("fbinary", op.apply_word(x, y), NO_SLOT, NO_CALLEE)
+        }
         Core::IntToFloat(a) => {
             let v = eval_core_traced(a, env, ctx, depth + 1, log);
             step!("i2f", from_f(as_i(v) as f64), NO_SLOT, NO_CALLEE)
@@ -1578,6 +1596,7 @@ pub fn core_node_count(core: &Core) -> usize {
             core_node_count(a)
         }
         Core::Bin(_, _, a, b)
+        | Core::FBinary(_, a, b)
         | Core::Cmp(_, _, a, b)
         | Core::And(a, b)
         | Core::Or(a, b)
@@ -1658,7 +1677,11 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
         Core::Not(a) | Core::ToChar(a) | Core::FUnary(_, a) | Core::IntToFloat(a) => {
             verify_core(a, n_slots, n_funcs)
         }
-        Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) | Core::And(a, b) | Core::Or(a, b) => {
+        Core::Bin(_, _, a, b)
+        | Core::FBinary(_, a, b)
+        | Core::Cmp(_, _, a, b)
+        | Core::And(a, b)
+        | Core::Or(a, b) => {
             verify_core(a, n_slots, n_funcs)?;
             verify_core(b, n_slots, n_funcs)
         }
@@ -1862,6 +1885,15 @@ pub fn compile(core: &Core) -> Compiled {
             let op = *op;
             let ca = compile(a);
             Rc::new(move |e, c| op.apply_word(as_f(ca(e, c))))
+        }
+        Core::FBinary(op, a, b) => {
+            let op = *op;
+            let ca = compile(a);
+            let cb = compile(b);
+            Rc::new(move |e, c| {
+                let x = ca(e, c);
+                op.apply_word(x, cb(e, c))
+            })
         }
         Core::IntToFloat(a) => {
             let ca = compile(a);

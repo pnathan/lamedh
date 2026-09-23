@@ -2014,8 +2014,9 @@ the portable registry)."
     ((eq head 'array-length*) (hm-elab-array-len state tyenv args))
     ((eq head 'equal) (hm-elab-equal state tyenv args))
     ((eq head 'hash-code) (hm-elab-hash-code state tyenv args))
-    ((member head '(sqrt sin cos tan exp))
+    ((member head '(sqrt sin cos tan exp log))
      (hm-elab-funary state tyenv head 'float64 args))
+    ((eq head 'expt) (hm-elab-expt state tyenv args))
     ((member head '(floor ceiling truncate round))
      (hm-elab-funary state tyenv head 'int64 args))
     ((eq head 'float) (hm-elab-float state tyenv args))
@@ -2099,6 +2100,22 @@ Cx::elab_funary."
       (if (hm-unifies-p state (hm-elab state tyenv (car args)) 'float64)
           result
           (error "float intrinsic argument must be float64"))))
+
+(defun hm-elab-expt (state tyenv args)
+  "`(expt b e)` (#398): FLOAT64 when the walked operand kinds are
+float/float, float/int or int/float; int/int stays interpreted (integer
+result, overflow checks). Mirrors Cx::elab_expt."
+  (if (not (= (length args) 2))
+      (error (concat "`expt` expects 2 arguments, got "
+                     (princ-to-string (length args))))
+      (let* ((b (hm-walk state (hm-elab state tyenv (car args))))
+             (e (hm-walk state (hm-elab state tyenv (cadr args)))))
+        (cond
+          ((and (eq b 'int64) (eq e 'int64))
+           (error "`expt` of int64 by int64 stays interpreted"))
+          ((and (member b '(int64 float64)) (member e '(int64 float64))) 'float64)
+          (t (error (concat "`expt` needs concrete int64 or float64 operands, got "
+                            (hm-type-name b) " and " (hm-type-name e))))))))
 
 (defun hm-elab-float (state tyenv args)
   "`(float x)`: FLOAT64 on a float or an int; anything else -- including a

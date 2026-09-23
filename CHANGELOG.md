@@ -1,5 +1,21 @@
 # v0.4.1 — unreleased
 
+## `log` and float `expt` compile natively (#398)
+
+`(log x)` (natural log, `float64`) and `expt` now compile in the typed JIT
+for float64^float64, float64^int64 and int64^float64. The result is always
+`float64`. `log` goes through the existing unary libm trampoline, and
+`expt` through a new binary one (`jit_ftrans2`). Each operand combination
+calls the same Rust `f64` method as the evaluator's `EXPT` (`powf`, or
+`powi(n as i32)`), so compiled and interpreted results are bit-identical.
+
+Not compiled, so these stay interpreted:
+- `(expt int int)`: the evaluator returns an integer (a float for a
+  negative exponent) and signals on overflow.
+- Two-argument `(log x base)`.
+
+The portable codegen gate (`46-hm-check.lisp`) mirrors these rules.
+
 ## Same plain array passed twice to a typed function now aliases (#400)
 
 Passing one `LispVal::Array` as two typed parameters used to copy it into
