@@ -692,3 +692,25 @@ fn the_stdlib_island_installs_with_full_kernel_agreement() {
         ev(&e, "(length (island-members isl))")
     );
 }
+
+#[test]
+fn float64_array_reductions_pass_the_portable_gate() {
+    // #392: `array-sum`/`array-dot` accept (array float64) -> float64 in the
+    // portable codegen gate as in the kernel.
+    let e = env();
+    ev(
+        &e,
+        "(defun-typed (isl-fsum float64) ((a (array float64))) (array-sum a))",
+    );
+    ev(
+        &e,
+        "(defun-typed (isl-fdot float64) ((a (array float64)) (b (array float64))) (array-dot a b))",
+    );
+    let m = ev(&e, "(typed-island '(isl-fsum isl-fdot))");
+    assert!(
+        m.contains("(ISL-FSUM (-> ((ARRAY FLOAT64)) FLOAT64)")
+            && m.contains("(ISL-FDOT (-> ((ARRAY FLOAT64) (ARRAY FLOAT64)) FLOAT64)")
+            && m.ends_with("(REJECTED))"),
+        "{m}"
+    );
+}

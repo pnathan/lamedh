@@ -1,4 +1,34 @@
-# v0.5.0 — unreleased
+# v0.4.1 — unreleased
+
+## `array-sum`/`array-dot` over float64, with Fortran `SUM` semantics (#392)
+
+`(array-sum a)` and `(array-dot a b)` now accept `(array float64)` (result
+`float64`) as well as `(array int64)` in the typed JIT, the portable
+checker's codegen gate (`46-hm-check.lisp`), and the tree-walker (which
+also takes typed arrays, and promotes a general array to float64 when any
+element is a float). `array-dot` requires both arrays to have the same
+element type in typed code.
+
+The element type is never guessed. If nothing else in the function fixes
+it (for example an unannotated parameter), the reduction does not
+elaborate, so the function stays interpreted, as it already did for `+`
+and the elementwise `array-add!` family. Previously an unconstrained
+`array-sum`/`array-dot` operand was silently unified with `(array int64)`.
+
+**Contract**, aligned with Fortran's `SUM` intrinsic: for float64 the
+result is a processor-dependent approximation of the mathematical sum and
+the **order of additions is unspecified** — implementations may reassociate
+to optimize, and programs must not depend on a particular rounding order.
+int64 stays wrapping (associative, so exact in any order). An empty float
+sum is `+0.0`; NaN and infinities propagate as in IEEE addition.
+
+Implementation (not a guarantee): every tier uses one shape — 8 strided
+lanes, combined `((l0+l2)+(l4+l6)) + ((l1+l3)+(l5+l7))`, then the `n mod 8`
+tail left to right; `dot` rounds each product (no FMA). The native backend
+lowers both kinds to a loop over four 2-lane vector accumulators
+(`I64X2`/`F64X2`) plus a scalar tail loop, so tiers currently agree
+bit-for-bit. Tests check the contract with a `n·eps·Σ|x|` tolerance against
+a sequential sum and assert tier agreement only as an implementation test.
 
 ## jit: `Ty::Boxed`, an opaque compileable handle to any `LispVal` (#476)
 

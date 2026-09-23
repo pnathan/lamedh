@@ -295,9 +295,8 @@ impl Cx<'_> {
                     "ARRAY-MUL!" if !self.checking => {
                         self.elab_array_map2(BinOp::Mul, args, scope, max)
                     }
-                    // SIMD integer array reductions: wrapping, int64-only
-                    // (float reduction reorders rounding and needs a
-                    // reassociation policy we haven't set — see
+                    // SIMD array reductions: int64 wraps; float64 follows
+                    // Fortran `SUM` (addition order unspecified — see
                     // `Core::ArraySum`'s doc comment). Codegen-only, same
                     // discipline as the elementwise family above.
                     "ARRAY-SUM" if !self.checking => self.elab_array_sum(args, scope, max),
@@ -1718,12 +1717,29 @@ impl Cx<'_> {
         ))
     }
 
-    /// `(array-sum a)` : (array int64) -> int64. Wrapping sum of every
-    /// element. int64-only by design (see [`Core::ArraySum`]'s doc comment
-    /// for why float is out of scope) — unlike [`Self::elab_array_map2`],
-    /// there is no element-type inference here: `a` must unify directly with
-    /// `(array int64)`, or this returns `Err` and the whole function falls
-    /// back to interpreted.
+    /// Resolve the element type of an array reduction operand to a
+    /// [`NumKind`]. The element type must already be determined by the
+    /// function's other constraints, exactly as for `+` and the elementwise
+    /// array ops: an unconstrained element is an elaboration error (the
+    /// function stays interpreted) rather than a guess, so a reduction never
+    /// commits to int64 for an array that turns out to hold floats.
+    fn reduce_elem_kind(&self, elem: &Ty, what: &str) -> Result<(NumKind, Ty), String> {
+        let elem_ty = self
+            .resolve(elem)
+            .map_err(|e| format!("{what}: cannot infer element type: {e}"))?;
+        match elem_ty {
+            Ty::Int64 => Ok((NumKind::I, Ty::Int64)),
+            Ty::Float64 => Ok((NumKind::F, Ty::Float64)),
+            other => Err(format!(
+                "{what} element type must resolve to int64 or float64, got {other:?}"
+            )),
+        }
+    }
+
+    /// `(array-sum a)` : (array int64) -> int64 | (array float64) -> float64.
+    /// int64 wraps (exact in any order). float64 follows Fortran's `SUM`: the
+    /// result approximates the mathematical sum and the order of additions is
+    /// unspecified (see [`Core::ArraySum`]).
     fn elab_array_sum(
         &self,
         args: &[LispVal],
@@ -1734,18 +1750,21 @@ impl Cx<'_> {
             return Err(format!("`array-sum` expects 1 arg, got {}", args.len()));
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
-        if self.unify(&ta, &Ty::Array(Box::new(Ty::Int64))).is_err() {
+        let elem = self.fresh();
+        if self.unify(&ta, &Ty::Array(Box::new(elem.clone()))).is_err() {
             return Err(format!(
-                "`array-sum` expects an (array int64) argument, got {:?}",
+                "`array-sum` expects an (array int64) or (array float64) argument, got {:?}",
                 self.walk(&ta)
             ));
         }
-        Ok((Core::ArraySum(Box::new(a)), Ty::Int64))
+        let (kind, ty) = self.reduce_elem_kind(&elem, "`array-sum`")?;
+        Ok((Core::ArraySum(kind, Box::new(a)), ty))
     }
 
-    /// `(array-dot a b)` : (array int64) (array int64) -> int64. Wrapping sum
-    /// over `i in 0..min(len a, len b)` of `a[i] * b[i]`. int64-only, same
-    /// reasoning as [`Self::elab_array_sum`].
+    /// `(array-dot a b)` : (array T) (array T) -> T for T in {int64, float64}.
+    /// Sum over `i in 0..min(len a, len b)` of `a[i] * b[i]`; same contract as
+    /// [`Self::elab_array_sum`] (float: unspecified addition order, no FMA
+    /// required or forbidden by the language).
     fn elab_array_dot(
         &self,
         args: &[LispVal],
@@ -1757,19 +1776,22 @@ impl Cx<'_> {
         }
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
-        if self.unify(&ta, &Ty::Array(Box::new(Ty::Int64))).is_err() {
+        let elem = self.fresh();
+        let arr = Ty::Array(Box::new(elem.clone()));
+        if self.unify(&ta, &arr).is_err() {
             return Err(format!(
-                "`array-dot` expects (array int64) as its first argument, got {:?}",
+                "`array-dot` expects an (array int64) or (array float64) first argument, got {:?}",
                 self.walk(&ta)
             ));
         }
-        if self.unify(&tb, &Ty::Array(Box::new(Ty::Int64))).is_err() {
+        if self.unify(&tb, &arr).is_err() {
             return Err(format!(
-                "`array-dot` expects (array int64) as its second argument, got {:?}",
+                "`array-dot` expects its second argument to have the first's element type, got {:?}",
                 self.walk(&tb)
             ));
         }
-        Ok((Core::ArrayDot(Box::new(a), Box::new(b)), Ty::Int64))
+        let (kind, ty) = self.reduce_elem_kind(&elem, "`array-dot`")?;
+        Ok((Core::ArrayDot(kind, Box::new(a), Box::new(b)), ty))
     }
 
     // --- checker-only list/pair forms (#162) -------------------------------

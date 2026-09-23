@@ -1889,45 +1889,28 @@ pub(super) fn apply(
                 }
                 Ok(args[0].clone())
             }
-            // SIMD integer array reductions (issue: JIT SIMD reductions):
-            // wrapping, int64-only. This is the tree-walker's reference
-            // implementation — the typed JIT compiles the same semantics to
-            // a vectorized native SIMD reduction (`Core::ArraySum`/
-            // `Core::ArrayDot`) and a scalar Core-interpreter fallback
-            // (`src/jit/runtime.rs::array_sum`/`array_dot`). Wrapping int64
-            // addition is associative, so a sequential left-fold here agrees
-            // bit-for-bit with a vectorized pairwise reduction — see
-            // `Core::ArraySum`'s doc comment for the full argument. Float
-            // reduction is deliberately NOT supported: it would reorder
-            // rounding and needs a reassociation policy we haven't set.
+            // Array reductions (tree-walker reference). int64 elements: a
+            // wrapping sum (associative, exact in any order). If any element
+            // is a float (and all are numeric) the reduction is float64, with
+            // the Fortran `SUM` contract: the result approximates the
+            // mathematical sum and the addition order is UNSPECIFIED. This
+            // implementation uses `crate::f64_reduce_by` (8 strided lanes,
+            // balanced combine, in-order tail) — the same shape the typed
+            // JIT's tiers use, so they happen to agree bit-for-bit; that is
+            // an implementation property, not a guarantee. Dot rounds each
+            // product (no FMA) and reduces the products the same way.
             BuiltinFunc::ArraySum => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(
                         "array-sum: takes exactly one argument".to_string(),
                     ));
                 }
-                let a = match &args[0] {
-                    LispVal::Array(a) => a,
-                    _ => {
-                        return Err(LispError::Generic(format!(
-                            "array-sum: argument must be an array, got {}",
-                            err_val(&args[0])
-                        )));
-                    }
-                };
-                let mut acc: i64 = 0;
-                for v in a.borrow().iter() {
-                    match v {
-                        LispVal::Number(n) => acc = acc.wrapping_add(*n),
-                        _ => {
-                            return Err(LispError::Generic(format!(
-                                "array-sum: elements must be int64, got {}",
-                                err_val(v)
-                            )));
-                        }
-                    }
+                match reduce_operand("array-sum", &args[0])? {
+                    ReduceNums::I(v) => Ok(LispVal::Number(
+                        v.iter().fold(0i64, |acc, x| acc.wrapping_add(*x)),
+                    )),
+                    ReduceNums::F(v) => Ok(LispVal::Float(crate::f64_reduce_by(v.len(), |i| v[i]))),
                 }
-                Ok(LispVal::Number(acc))
             }
             BuiltinFunc::ArrayDot => {
                 if args.len() != 2 {
@@ -1935,33 +1918,23 @@ pub(super) fn apply(
                         "array-dot: takes exactly two arguments".to_string(),
                     ));
                 }
-                let (a, b) = match (&args[0], &args[1]) {
-                    (LispVal::Array(a), LispVal::Array(b)) => (a, b),
-                    _ => {
-                        return Err(LispError::Generic(
-                            "array-dot: both arguments must be arrays".to_string(),
-                        ));
+                let a = reduce_operand("array-dot", &args[0])?;
+                let b = reduce_operand("array-dot", &args[1])?;
+                match (a, b) {
+                    (ReduceNums::I(x), ReduceNums::I(y)) => {
+                        let n = x.len().min(y.len());
+                        let mut acc: i64 = 0;
+                        for i in 0..n {
+                            acc = acc.wrapping_add(x[i].wrapping_mul(y[i]));
+                        }
+                        Ok(LispVal::Number(acc))
                     }
-                };
-                let ab = a.borrow();
-                let bb = b.borrow();
-                let min_len = ab.len().min(bb.len());
-                let mut acc: i64 = 0;
-                for i in 0..min_len {
-                    match (&ab[i], &bb[i]) {
-                        (LispVal::Number(xi), LispVal::Number(yi)) => {
-                            acc = acc.wrapping_add(xi.wrapping_mul(*yi));
-                        }
-                        (x, y) => {
-                            return Err(LispError::Generic(format!(
-                                "array-dot: elements at index {i} are not both int64 ({} vs {})",
-                                err_val(x),
-                                err_val(y)
-                            )));
-                        }
+                    (a, b) => {
+                        let (x, y) = (a.into_f64(), b.into_f64());
+                        let n = x.len().min(y.len());
+                        Ok(LispVal::Float(crate::f64_reduce_by(n, |i| x[i] * y[i])))
                     }
                 }
-                Ok(LispVal::Number(acc))
             }
             BuiltinFunc::Length => {
                 if args.len() != 1 {
@@ -2495,4 +2468,64 @@ fn read_file_section_bytes(who: &str, args: &[LispVal]) -> Result<Vec<u8>, LispE
         .map_err(|e| LispError::Generic(format!("{who}: {e}")))?;
     buf.truncate(n);
     Ok(buf)
+}
+
+/// Numeric contents of an `array-sum`/`array-dot` operand: all-int64, or
+/// float64 (some element was a float; integers are converted).
+enum ReduceNums {
+    I(Vec<i64>),
+    F(Vec<f64>),
+}
+
+impl ReduceNums {
+    fn into_f64(self) -> Vec<f64> {
+        match self {
+            ReduceNums::I(v) => v.into_iter().map(|x| x as f64).collect(),
+            ReduceNums::F(v) => v,
+        }
+    }
+}
+
+fn reduce_operand(name: &str, v: &LispVal) -> Result<ReduceNums, LispError> {
+    match v {
+        LispVal::Array(a) => {
+            let a = a.borrow();
+            if a.iter().all(|x| matches!(x, LispVal::Number(_))) {
+                return Ok(ReduceNums::I(
+                    a.iter()
+                        .map(|x| match x {
+                            LispVal::Number(n) => *n,
+                            _ => unreachable!(),
+                        })
+                        .collect(),
+                ));
+            }
+            a.iter()
+                .map(|x| match x {
+                    LispVal::Number(n) => Ok(*n as f64),
+                    LispVal::Float(f) => Ok(*f),
+                    _ => Err(LispError::Generic(format!(
+                        "{name}: elements must be int64 or float64, got {}",
+                        err_val(x)
+                    ))),
+                })
+                .collect::<Result<Vec<f64>, _>>()
+                .map(ReduceNums::F)
+        }
+        LispVal::TypedArray(t) => {
+            let data = t.data.borrow();
+            let len = data[0] as usize;
+            let words = &data[1..=len];
+            Ok(match t.elem {
+                crate::ElemTy::Int64 => ReduceNums::I(words.iter().map(|w| *w as i64).collect()),
+                crate::ElemTy::Float64 => {
+                    ReduceNums::F(words.iter().map(|w| f64::from_bits(*w)).collect())
+                }
+            })
+        }
+        _ => Err(LispError::Generic(format!(
+            "{name}: argument must be an array, got {}",
+            err_val(v)
+        ))),
+    }
 }

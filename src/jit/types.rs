@@ -642,31 +642,31 @@ pub enum Core {
     /// closure backend use a plain scalar loop — elementwise ops have no
     /// reduction/reassociation, so all three executors agree bit-for-bit.
     ArrayMap2(BinOp, NumKind, Box<Core>, Box<Core>, Box<Core>),
-    /// `(array-sum a)`: **wrapping** sum of every `int64` element of `a`.
-    /// int64-only (unlike [`Core::ArrayMap2`]) — float reduction reorders
-    /// rounding and needs a reassociation policy this intrinsic does not
-    /// attempt, so `array-sum` never elaborates over `(array float64)`.
-    /// Wrapping int64 addition is **associative**
-    /// (`(a+b)+c ≡ a+(b+c) mod 2^64`), so a multi-lane vector reduction (a
-    /// 2-lane SIMD accumulator plus a horizontal add of its lanes) is
-    /// **bit-identical** to a sequential left-fold — that is what lets the
-    /// native backend use a vector accumulator and still match
-    /// [`super::runtime`]'s scalar reference exactly. The native backend
-    /// lowers this to a 2-lane `I64X2` accumulator loop (`splat(0)` seed,
-    /// `iadd` per iteration) plus a horizontal `extractlane`/`iadd` reduction
-    /// and a scalar tail for an odd final element.
-    ArraySum(Box<Core>),
-    /// `(array-dot a b)`: **wrapping** sum over `i in 0..min(len a, len b)`
-    /// of `a[i] * b[i]` — each product wraps, and the running sum wraps.
-    /// int64-only, same reason as [`Core::ArraySum`]. Both the per-lane
-    /// `imul` and the `iadd` accumulation are wrapping two's-complement
-    /// arithmetic, and wrapping addition is associative (see
-    /// [`Core::ArraySum`]'s doc comment), so a vectorized (SIMD multiply +
-    /// pairwise-add reduction) evaluation is bit-identical to the sequential
-    /// scalar fold. The native backend lowers this like [`Core::ArraySum`]
-    /// but with an `imul` of the two loaded vectors feeding the accumulator
-    /// each iteration.
-    ArrayDot(Box<Core>, Box<Core>),
+    /// `(array-sum a)`: sum of every element of an `(array int64)` or
+    /// `(array float64)`; the [`NumKind`] says which.
+    ///
+    /// **Contract** (aligned with Fortran's `SUM` intrinsic):
+    /// - int64: **wrapping** two's-complement sum. Wrapping addition is
+    ///   associative, so the result is exact and order-independent.
+    /// - float64: a processor-dependent approximation of the mathematical
+    ///   sum. The order of the additions is **unspecified**; an
+    ///   implementation may reassociate freely (lanes, trees, SIMD) to
+    ///   optimize. Programs must not depend on a particular rounding order.
+    ///   Empty input yields `+0.0`; NaN/inf propagate as IEEE addition does.
+    ///
+    /// Implementation note (NOT a language guarantee): every tier here uses
+    /// the shape of [`crate::f64_reduce_by`] — 8 strided lanes, a balanced
+    /// combine, then an in-order tail — so the Core interpreter, the closure
+    /// backend and the native backend (four 2-lane vector accumulators)
+    /// currently agree bit-for-bit.
+    ArraySum(NumKind, Box<Core>),
+    /// `(array-dot a b)`: sum over `i in 0..min(len a, len b)` of
+    /// `a[i] * b[i]`, both arrays of the same element type. int64 wraps
+    /// (products and sum). float64 has the same Fortran-style contract as
+    /// [`Core::ArraySum`]: addition order unspecified. This implementation
+    /// rounds each product (`fmul`, no FMA) and then reduces the products in
+    /// the [`crate::f64_reduce_by`] shape on every tier.
+    ArrayDot(NumKind, Box<Core>, Box<Core>),
     /// `(array-new-stride n stride)`: allocate a flat array of `n` inline,
     /// fixed-size (`stride`-word) elements — the contiguous array-of-structs
     /// layout (jit/core-loops follow-up): `[n, e0f0, e0f1, …, e1f0, e1f1,
@@ -945,8 +945,8 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
                 || core_may_mutate_slot(a, slot)
                 || core_may_mutate_slot(b, slot)
         }
-        Core::ArraySum(a) => core_may_mutate_slot(a, slot),
-        Core::ArrayDot(a, b) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot),
+        Core::ArraySum(_, a) => core_may_mutate_slot(a, slot),
+        Core::ArrayDot(_, a, b) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot),
         Core::ArrayNewStride(n, _) => core_may_mutate_slot(n, slot),
         Core::ArraySetStride(a, i, _, fields) => {
             is_var_slot(a, slot)
@@ -979,7 +979,7 @@ pub fn core_references_slot(core: &Core, slot: usize) -> bool {
         | Core::And(a, b)
         | Core::Or(a, b)
         | Core::ArrayGet(a, b)
-        | Core::ArrayDot(a, b) => core_references_slot(a, slot) || core_references_slot(b, slot),
+        | Core::ArrayDot(_, a, b) => core_references_slot(a, slot) || core_references_slot(b, slot),
         Core::If(c, t, e) | Core::ArraySet(c, t, e) | Core::ArrayMap2(_, _, c, t, e) => {
             core_references_slot(c, slot)
                 || core_references_slot(t, slot)
@@ -989,7 +989,7 @@ pub fn core_references_slot(core: &Core, slot: usize) -> bool {
         | Core::ToChar(a)
         | Core::ArrayNew(a)
         | Core::ArrayLen(a)
-        | Core::ArraySum(a)
+        | Core::ArraySum(_, a)
         | Core::FUnary(_, a)
         | Core::IntToFloat(a)
         | Core::ArrayNewStride(a, _) => core_references_slot(a, slot),
@@ -1113,8 +1113,8 @@ pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
                 || allocation_escapes(a, slot)
                 || allocation_escapes(b, slot)
         }
-        Core::ArraySum(a) => allocation_escapes(a, slot),
-        Core::ArrayDot(a, b) => allocation_escapes(a, slot) || allocation_escapes(b, slot),
+        Core::ArraySum(_, a) => allocation_escapes(a, slot),
+        Core::ArrayDot(_, a, b) => allocation_escapes(a, slot) || allocation_escapes(b, slot),
         Core::ArrayNewStride(n, _) => allocation_escapes(n, slot),
         Core::ArraySetStride(a, i, _, fields) => {
             (!is_var_slot(a, slot) && allocation_escapes(a, slot))
@@ -1360,14 +1360,12 @@ fn inline_xform(
             Box::new(inline_xform(a, shift, registry, allow_inline, next)),
             Box::new(inline_xform(b, shift, registry, allow_inline, next)),
         ),
-        Core::ArraySum(a) => Core::ArraySum(Box::new(inline_xform(
-            a,
-            shift,
-            registry,
-            allow_inline,
-            next,
-        ))),
-        Core::ArrayDot(a, b) => Core::ArrayDot(
+        Core::ArraySum(k, a) => Core::ArraySum(
+            *k,
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+        ),
+        Core::ArrayDot(k, a, b) => Core::ArrayDot(
+            *k,
             Box::new(inline_xform(a, shift, registry, allow_inline, next)),
             Box::new(inline_xform(b, shift, registry, allow_inline, next)),
         ),
@@ -1643,8 +1641,9 @@ pub(super) fn stride_walk(core: &Core, sc: &StrideCtx, discard: bool) -> Result<
             Box::new(stride_walk(a, sc, false)?),
             Box::new(stride_walk(b, sc, false)?),
         )),
-        Core::ArraySum(a) => Ok(Core::ArraySum(Box::new(stride_walk(a, sc, false)?))),
-        Core::ArrayDot(a, b) => Ok(Core::ArrayDot(
+        Core::ArraySum(k, a) => Ok(Core::ArraySum(*k, Box::new(stride_walk(a, sc, false)?))),
+        Core::ArrayDot(k, a, b) => Ok(Core::ArrayDot(
+            *k,
             Box::new(stride_walk(a, sc, false)?),
             Box::new(stride_walk(b, sc, false)?),
         )),
