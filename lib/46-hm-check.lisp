@@ -2157,23 +2157,23 @@ any other shift stays interpreted. Mirrors Cx::elab_ash."
                            (hm-type-name rt)))))))
 
 (defun hm-elab-min-max-compiled (state tyenv args)
-  "Binary `min`/`max` over a RESOLVED shared int64/float64 type; any other
-arity stays interpreted. Mirrors Cx::elab_min_max_compiled."
-  (if (not (= (length args) 2))
-      (error (concat "compiled min/max takes exactly 2 arguments (got "
-                     (princ-to-string (length args))
-                     "); other arities stay interpreted"))
-      (let ((ta (hm-elab state tyenv (car args)))
-            (tb (hm-elab state tyenv (cadr args))))
-        (hm-reject-boxed! state ta)
-        (hm-reject-boxed! state tb)
-        (if (not (hm-unifies-p state ta tb))
-            (error "min/max operands disagree")
-            (let ((rt (hm-resolve-operand state ta "min/max")))
-              (if (hm-arith-kind-p rt)
-                  rt
-                  (error (concat "min/max expects numeric operands, got "
-                                 (hm-type-name rt)))))))))
+  "Variadic `min`/`max` (any arity >= 1, #397) over a RESOLVED shared
+int64/float64 type. Mirrors Cx::elab_min_max_compiled: elaborate every
+argument, reject boxed operands, unify each with the first, resolve."
+  (if (null args)
+      (error "compiled min/max needs at least 1 argument")
+      (let ((tys (mapcar (lambda (a) (hm-elab state tyenv a)) args)))
+        (mapc (lambda (ty) (hm-reject-boxed! state ty)) tys)
+        (mapc (lambda (ty)
+                (if (hm-unifies-p state (car tys) ty)
+                    nil
+                    (error "min/max operands disagree")))
+              (cdr tys))
+        (let ((rt (hm-resolve-operand state (car tys) "min/max")))
+          (if (hm-arith-kind-p rt)
+              rt
+              (error (concat "min/max expects numeric operands, got "
+                             (hm-type-name rt))))))))
 
 ;;; ---- the SIMD array family ------------------------------------------------
 
