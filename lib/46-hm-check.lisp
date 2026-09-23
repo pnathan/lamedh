@@ -913,6 +913,7 @@ type error nested inside one surfaces), discarding the types."
     ((member head '(min max)) (hm-elab-min-max state tyenv args))
     ((eq head 'quote) (hm-elab-quote state args))
     ((eq head 'cond) (hm-elab-cond state tyenv args))
+    ((eq head 'case) (hm-elab-case-check state tyenv args))
     ((eq head 'variant-case) (hm-elab-variant-case state tyenv args))
     ((member head '(when unless)) (hm-elab-when state tyenv args))
     (t (hm-elab-call state tyenv head args))))
@@ -924,8 +925,74 @@ Mirrors Cx::elab_body."
       (error "empty body")
       (if (null (cdr forms))
           (hm-elab state tyenv (car forms))
-          (progn (hm-elab state tyenv (car forms))
+          (progn (hm-elab-stmt state tyenv (car forms))
                  (hm-elab-body state tyenv (cdr forms))))))
+
+(defun hm-elab-stmt (state tyenv form)
+  "A form whose value is discarded. In codegen a COND/WHEN/UNLESS/CASE there
+desugars in statement mode (every branch yields FALSE). Mirrors Cx::elab_stmt."
+  (if (and (hm-codegen-p state) (consp form)
+           (member (car form) '(cond when unless case)))
+      (hm-elab state tyenv (hm-desugar-branch (car form) (cdr form) t))
+      (hm-elab state tyenv form)))
+
+(defun hm-elab-loop-body (state tyenv forms)
+  "A WHILE/FOR body: every form's value is discarded. Mirrors
+Cx::elab_loop_body."
+  (if (null forms)
+      (error "empty body")
+      (mapc (lambda (f) (hm-elab-stmt state tyenv f)) forms)))
+
+(defun hm-branch-body (body stmt)
+  "BODY as one form; in statement mode followed by FALSE. Empty is FALSE."
+  (cond ((null body) 'false)
+        (stmt (cons 'progn (append body (list 'false))))
+        (t (cons 'progn body))))
+
+(defun hm-desugar-branch (head args stmt)
+  "Codegen desugaring of COND/WHEN/UNLESS/CASE to nested IF (#404); a missed
+branch is FALSE (native NIL). CASE compiles only for integer keys. Mirrors
+desugar_branch in src/jit/elaboration.rs."
+  (cond
+    ((member head '(when unless))
+     (if (null args)
+         (error "`when`/`unless` need a condition")
+         (if (eq head 'when)
+             (list 'if (car args) (hm-branch-body (cdr args) stmt) 'false)
+             (list 'if (car args) 'false (hm-branch-body (cdr args) stmt)))))
+    ((eq head 'cond)
+     (let ((acc 'false))
+       (mapc (lambda (clause)
+               (setq acc
+                     (cond
+                       ((not (consp clause)) (error "`cond`: empty clause"))
+                       ((eq (car clause) t)
+                        (if (null (cdr clause)) 'true (hm-branch-body (cdr clause) stmt)))
+                       ((null (cdr clause)) (list 'if (car clause) 'true acc))
+                       (t (list 'if (car clause) (hm-branch-body (cdr clause) stmt) acc)))))
+             (reverse args))
+       acc))
+    ((eq head 'case)
+     (if (null args)
+         (error "`case` needs a key")
+         (let* ((k (gensym))
+                (eqk (lambda (d)
+                       (if (and (numberp d) (not (floatp d)))
+                           (list '= k d)
+                           (error "`case`: only integer keys compile"))))
+                (clauses
+                 (mapcar (lambda (clause)
+                           (if (not (consp clause))
+                               (error "`case`: empty clause")
+                               (let ((sel (car clause)))
+                                 (cons (cond ((or (eq sel t) (eq sel 'otherwise)) t)
+                                             ((consp sel) (cons 'or (mapcar eqk sel)))
+                                             (t (funcall eqk sel)))
+                                       (if (null (cdr clause)) (list 'false) (cdr clause))))))
+                         (cdr args))))
+           (list 'let (list (list k (car args)))
+                 (hm-desugar-branch 'cond clauses stmt)))))
+    (t (error "hm-desugar-branch"))))
 
 ;;; ---- arithmetic and comparison -------------------------------------------
 
@@ -1128,6 +1195,26 @@ late and regresses honest CHECKED verdicts into hard TYPE-ERRORs)."
                       (error "`cond` clauses disagree")))))
           clauses)
     (if had (hm-walk state result) 'any)))
+
+(defun hm-elab-case-check (state tyenv args)
+  "Checker-mode `(case key (data body...) ...)` (#404): selectors are data,
+never elaborated; clause bodies join like COND; an empty body is ANY. Mirrors
+Cx::elab_case_check."
+  (if (null args)
+      (error "`case` needs a key")
+      (let ((result (hm-fresh state)) (had nil))
+        (hm-elab state tyenv (car args))
+        (mapc (lambda (clause)
+                (if (not (consp clause))
+                    nil
+                    (let ((bt (if (null (cdr clause))
+                                  'any
+                                  (hm-elab-body state tyenv (cdr clause)))))
+                      (if (hm-unifies-p state bt result)
+                          (setq had t)
+                          (error "`case` clauses disagree")))))
+              (cdr args))
+        (if had (hm-walk state result) 'any))))
 
 (defun hm-elab-when (state tyenv args)
   "`(when test body...)` / `(unless ...)`: the value is the body OR nil
@@ -2006,6 +2093,8 @@ the portable registry)."
     ((eq head 'setq) (hm-elab-setq state tyenv args))
     ((eq head 'while) (hm-elab-while state tyenv args))
     ((eq head 'for) (hm-elab-for state tyenv args))
+    ((member head '(cond when unless case))
+     (hm-elab state tyenv (hm-desugar-branch head args nil)))
     ((eq head 'char-code) (hm-elab-char-code state tyenv args))
     ((eq head 'code-char) (hm-elab-code-char state tyenv args))
     ((member head '(array make-array)) (hm-elab-array-new state tyenv args))
@@ -2057,7 +2146,7 @@ its order (BOOL tried first, INT64 second)."
       (error "while requires a test and at least one body form")
       (let ((tt (hm-elab state tyenv (car args))))
         (if (or (hm-unifies-p state tt 'bool) (hm-unifies-p state tt 'int64))
-            (progn (hm-elab-body state tyenv (cdr args)) 'int64)
+            (progn (hm-elab-loop-body state tyenv (cdr args)) 'int64)
             (error "while: test must be bool or int64")))))
 
 (defun hm-elab-for (state tyenv args)
@@ -2084,7 +2173,7 @@ INT64. Mirrors Cx::elab_for."
                        nil
                        (error "for: step must be int64"))
                    nil)
-               (hm-elab-body state (cons (cons (car spec) 'int64) tyenv) (cdr args))
+               (hm-elab-loop-body state (cons (cons (car spec) 'int64) tyenv) (cdr args))
                'int64))))))
 
 ;;; ---- numeric intrinsics ---------------------------------------------------
