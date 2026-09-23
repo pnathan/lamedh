@@ -2206,14 +2206,14 @@ Cx::elab_array_map2."
                                   (hm-type-name et))))))))))
 
 (defun hm-reduce-elem-type (state elem what)
-  "Resolve a reduction's element type: int64 or float64; an unconstrained
-element defaults to int64. Mirrors Cx::reduce_elem_kind."
+  "Resolve a reduction's element type to int64 or float64. An unconstrained
+element is an error, as for `+` and the elementwise array ops: the function
+stays interpreted rather than committing to a guessed element type. Mirrors
+Cx::reduce_elem_kind."
   (let ((et (handler-case (hm-resolve state elem)
               (error (e)
-                (if (hm-unifies-p state elem 'int64)
-                    'int64
-                    (error (concat what ": cannot infer element type: "
-                                   (error-message e))))))))
+                (error (concat what ": cannot infer element type: "
+                               (error-message e)))))))
     (if (hm-arith-kind-p et)
         et
         (error (concat what " element type must resolve to int64 or float64, got "

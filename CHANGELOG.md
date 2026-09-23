@@ -1,4 +1,4 @@
-# v0.5.0 — unreleased
+# v0.4.1 — unreleased
 
 ## `array-sum`/`array-dot` over float64, with Fortran `SUM` semantics (#392)
 
@@ -8,6 +8,12 @@ checker's codegen gate (`46-hm-check.lisp`), and the tree-walker (which
 also takes typed arrays, and promotes a general array to float64 when any
 element is a float). `array-dot` requires both arrays to have the same
 element type in typed code.
+
+The element type is never guessed. If nothing else in the function fixes
+it (for example an unannotated parameter), the reduction does not
+elaborate, so the function stays interpreted, as it already did for `+`
+and the elementwise `array-add!` family. Previously an unconstrained
+`array-sum`/`array-dot` operand was silently unified with `(array int64)`.
 
 **Contract**, aligned with Fortran's `SUM` intrinsic: for float64 the
 result is a processor-dependent approximation of the mathematical sum and

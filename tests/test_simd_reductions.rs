@@ -523,3 +523,57 @@ fn tree_walker_float_sum_and_dot() {
         assert!(lamedh::eval_str("(array-sum (list->array '(1 a)))", &env).is_err());
     });
 }
+
+/// An unannotated array's element type is not guessed. `defun` over an
+/// untyped parameter must not commit the reduction to int64: the element
+/// type is unconstrained, so the function stays interpreted and a float
+/// array sums as float (and an int array still sums as int).
+#[test]
+fn unannotated_reduction_does_not_default_to_int64() {
+    lamedh::with_large_stack(|| {
+        let env = Environment::with_stdlib();
+        lamedh::eval_str("(defun untyped-sum (a) (array-sum a))", &env).unwrap();
+        lamedh::eval_str("(defun untyped-dot (a b) (array-dot a b))", &env).unwrap();
+        lamedh::eval_str("(defun mixed-use (a) (+ (array-sum a) 1.5))", &env).unwrap();
+        match lamedh::eval_str("(untyped-sum (list->array '(1.5 2.25)))", &env).unwrap() {
+            lamedh::LispVal::Float(f) => assert_eq!(f, 3.75),
+            other => panic!("expected float, got {other:?}"),
+        }
+        match lamedh::eval_str(
+            "(untyped-dot (list->array '(0.5 2.0)) (list->array '(4.0 0.25)))",
+            &env,
+        )
+        .unwrap()
+        {
+            lamedh::LispVal::Float(f) => assert_eq!(f, 2.5),
+            other => panic!("expected float, got {other:?}"),
+        }
+        match lamedh::eval_str("(mixed-use (list->array '(1.0 2.0)))", &env).unwrap() {
+            lamedh::LispVal::Float(f) => assert_eq!(f, 4.5),
+            other => panic!("expected float, got {other:?}"),
+        }
+        assert!(matches!(
+            lamedh::eval_str("(untyped-sum (list->array '(1 2 3)))", &env).unwrap(),
+            lamedh::LispVal::Number(6)
+        ));
+    });
+}
+
+/// The elaborator rejects a reduction whose element type is unconstrained
+/// (`cannot infer element type`) instead of defaulting it to int64; the
+/// blocker is visible through `explain-compile`.
+#[test]
+fn unconstrained_reduction_element_is_an_elaboration_error() {
+    lamedh::with_large_stack(|| {
+        let env = Environment::with_stdlib();
+        for (def, name) in [
+            ("(defun us1 (a) (array-sum a))", "us1"),
+            ("(defun ud1 (a b) (array-dot a b))", "ud1"),
+        ] {
+            lamedh::eval_str(def, &env).unwrap();
+            let why = lamedh::eval_str(&format!("(explain-compile '{name})"), &env).unwrap();
+            let text = format!("{why:?}");
+            assert!(text.contains("cannot infer element type"), "{name}: {text}");
+        }
+    });
+}

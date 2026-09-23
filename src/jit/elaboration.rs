@@ -1718,17 +1718,15 @@ impl Cx<'_> {
     }
 
     /// Resolve the element type of an array reduction operand to a
-    /// [`NumKind`]. An element type left unconstrained defaults to int64 (the
-    /// pre-float behaviour); anything other than int64/float64 is an error.
+    /// [`NumKind`]. The element type must already be determined by the
+    /// function's other constraints, exactly as for `+` and the elementwise
+    /// array ops: an unconstrained element is an elaboration error (the
+    /// function stays interpreted) rather than a guess, so a reduction never
+    /// commits to int64 for an array that turns out to hold floats.
     fn reduce_elem_kind(&self, elem: &Ty, what: &str) -> Result<(NumKind, Ty), String> {
-        let elem_ty = match self.resolve(elem) {
-            Ok(t) => t,
-            Err(_) => {
-                self.unify(elem, &Ty::Int64)
-                    .map_err(|e| format!("{what}: cannot infer element type: {e}"))?;
-                Ty::Int64
-            }
-        };
+        let elem_ty = self
+            .resolve(elem)
+            .map_err(|e| format!("{what}: cannot infer element type: {e}"))?;
         match elem_ty {
             Ty::Int64 => Ok((NumKind::I, Ty::Int64)),
             Ty::Float64 => Ok((NumKind::F, Ty::Float64)),
