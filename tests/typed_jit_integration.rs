@@ -297,22 +297,88 @@ fn nested_array_of_arrays_is_unaffected_by_writeback() {
     assert_eq!(eval_line("(touch nested)", &env), "1");
 }
 
-/// Documented, intentional divergence from true aliasing (issue #216):
-/// passing the *same* array object as two distinct arguments is
-/// last-writer-wins in argument order, not simultaneous true aliasing --
-/// classic value-result/copy-in-copy-out semantics. Pinned here so a future
-/// change can't silently alter this without a test noticing.
+/// Issue #400: passing the *same* plain array object as two typed
+/// parameters gives both parameters ONE buffer inside the call (true
+/// aliasing, matching the interpreter), not copy-in/copy-out last-writer-wins.
 #[test]
-fn same_array_passed_twice_is_last_writer_wins() {
+fn same_array_passed_twice_truly_aliases() {
     let env = Environment::with_stdlib();
     eval_line(
-        "(defun-typed (both int64) ((a (array int64)) (b (array int64))) \
-           (store a 0 111) (store b 0 222))",
+        "(defun-typed (f int64) ((a (array int64)) (b (array int64))) \
+           (store a 0 111) (fetch b 0))",
         &env,
     );
     eval_line("(setq arr (list->array (list 1 2 3)))", &env);
-    eval_line("(both arr arr)", &env);
-    assert_eq!(eval_line("(array->list arr)", &env), "(222 2 3)");
+    assert_eq!(eval_line("(f arr arr)", &env), "111");
+    assert_eq!(eval_line("(array->list arr)", &env), "(111 2 3)");
+}
+
+#[test]
+fn same_array_passed_twice_final_state_has_both_writes() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (both int64) ((a (array int64)) (b (array int64))) \
+           (store a 0 111) (store b 1 222) (+ (fetch b 0) (fetch a 1)))",
+        &env,
+    );
+    eval_line("(setq arr (list->array (list 1 2 3)))", &env);
+    assert_eq!(eval_line("(both arr arr)", &env), "333");
+    assert_eq!(eval_line("(array->list arr)", &env), "(111 222 3)");
+}
+
+#[test]
+fn same_array_passed_as_first_and_third_param_aliases() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (tri int64) ((a (array int64)) (b (array int64)) (c (array int64))) \
+           (store c 0 7) (store b 0 9) (+ (* 100 (fetch a 0)) (fetch b 0)))",
+        &env,
+    );
+    eval_line("(setq x (list->array (list 1 2)))", &env);
+    eval_line("(setq y (list->array (list 5 6)))", &env);
+    assert_eq!(eval_line("(tri x y x)", &env), "709");
+    assert_eq!(eval_line("(array->list x)", &env), "(7 2)");
+    assert_eq!(eval_line("(array->list y)", &env), "(9 6)");
+}
+
+#[test]
+fn distinct_arrays_stay_independent() {
+    let env = Environment::with_stdlib();
+    eval_line(
+        "(defun-typed (f int64) ((a (array int64)) (b (array int64))) \
+           (store a 0 111) (fetch b 0))",
+        &env,
+    );
+    eval_line("(setq p (list->array (list 1 2 3)))", &env);
+    eval_line("(setq q (list->array (list 1 2 3)))", &env);
+    assert_eq!(eval_line("(f p q)", &env), "1");
+    assert_eq!(eval_line("(array->list p)", &env), "(111 2 3)");
+    assert_eq!(eval_line("(array->list q)", &env), "(1 2 3)");
+}
+
+/// The typed result for an aliased call equals the tree-walker's.
+#[test]
+fn aliased_array_call_matches_interpreter() {
+    let prog = "(store a 0 111) (store b 1 (+ (fetch a 0) 1)) (+ (fetch b 0) (fetch a 1))";
+    let typed = Environment::with_stdlib();
+    eval_line(
+        &format!("(defun-typed (g int64) ((a (array int64)) (b (array int64))) {prog})"),
+        &typed,
+    );
+    let interp = Environment::with_stdlib();
+    eval_line(&format!("(defun g (a b) {prog})"), &interp);
+    for env in [&typed, &interp] {
+        eval_line("(setq arr (list->array (list 1 2 3)))", env);
+    }
+    assert_eq!(
+        eval_line("(g arr arr)", &typed),
+        eval_line("(g arr arr)", &interp)
+    );
+    assert_eq!(eval_line("(g arr arr)", &typed), "223");
+    assert_eq!(
+        eval_line("(array->list arr)", &typed),
+        eval_line("(array->list arr)", &interp)
+    );
 }
 
 #[test]

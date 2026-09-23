@@ -108,5 +108,31 @@ pub fn try_parse_ty_simple(form: &crate::LispVal) -> Option<Ty> {
     }
 }
 
+/// Issue #400: argument-identity map for the typed membrane. `result[i] ==
+/// Some(j)` (`j < i`) when argument `i` is the very same `LispVal::Array`
+/// object as the earlier argument `j` and both parameters have the same
+/// array type, so [`Jit::call_with_array_writeback_aliased`] hands both
+/// parameters ONE arena buffer (true aliasing, matching the interpreter)
+/// and writes that array back exactly once. Only top-level parameters are
+/// considered; arrays nested inside struct/array arguments are still copied
+/// independently.
+pub fn array_alias_map(args: &[LispVal], tys: &[Ty]) -> Vec<Option<usize>> {
+    (0..args.len())
+        .map(|i| {
+            let LispVal::Array(rc) = &args[i] else {
+                return None;
+            };
+            let ty = tys.get(i)?;
+            if !matches!(ty, Ty::Array(_)) {
+                return None;
+            }
+            (0..i).find(|&j| {
+                matches!(&args[j], LispVal::Array(o) if Shared::ptr_eq(o, rc))
+                    && tys.get(j) == Some(ty)
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

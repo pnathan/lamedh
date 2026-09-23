@@ -473,11 +473,10 @@ impl Drop for DynamicGuardStack {
 /// written back. A `LispVal::String` passed where `(array char)` was
 /// declared type-checks the same as a genuine array here, but `String` has
 /// no interior mutability at all — skipped, not silently corrupted. If the
-/// same array object is passed as two distinct arguments, this is
-/// last-writer-wins in argument order (matching classic value-result/
-/// copy-in-copy-out semantics, not true aliasing) — a documented,
-/// intentional divergence from in-place mutation for that specific case,
-/// not a bug.
+/// same array object is passed as two distinct arguments (issue #400), the
+/// membrane gives both parameters ONE shared arena buffer (true aliasing,
+/// see `crate::jit::array_alias_map`) and only the first occurrence carries
+/// an `updated` entry, so the array is written back exactly once.
 fn apply_array_writeback(
     args: &[LispVal],
     updated: Vec<Option<crate::jit::Value>>,
@@ -541,7 +540,8 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
             for (a, ty) in args.iter().zip(ptys.iter()) {
                 vals.push(lispval_to_typed(a, ty).map_err(LispError::Generic)?);
             }
-            match env.jit_call_with_array_writeback(&name, &vals) {
+            let alias = crate::jit::array_alias_map(args, &ptys);
+            match env.jit_call_with_array_writeback_aliased(&name, &vals, &alias) {
                 Some(Ok((v, updated, flags))) => {
                     // Set OVERFLOW before signalling a division error: the
                     // tree-walker evaluates left-to-right, so an inner overflow
@@ -596,8 +596,12 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                     }
                 }
                 if fits
-                    && let Some(Ok((v, updated, flags))) =
-                        env.jit_call_with_array_writeback(&name, &vals)
+                    && let Some(Ok((v, updated, flags))) = env
+                        .jit_call_with_array_writeback_aliased(
+                            &name,
+                            &vals,
+                            &crate::jit::array_alias_map(args, &ptys),
+                        )
                 {
                     // Set OVERFLOW before signalling a division error: the
                     // tree-walker evaluates left-to-right, so an inner overflow

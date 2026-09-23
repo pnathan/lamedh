@@ -2524,6 +2524,19 @@ impl Environment {
         Some(jit.call_with_array_writeback(name, args))
     }
 
+    /// [`Environment::jit_call_with_array_writeback`] with argument identity
+    /// (issue #400) — see `Jit::call_with_array_writeback_aliased`.
+    pub fn jit_call_with_array_writeback_aliased(
+        &self,
+        name: &str,
+        args: &[crate::jit::Value],
+        alias: &[Option<usize>],
+    ) -> Option<crate::jit::WritebackResult> {
+        let jit = self.shared.jit.borrow();
+        jit.id(name)?;
+        Some(jit.call_with_array_writeback_aliased(name, args, alias))
+    }
+
     /// The id a binder (lambda/fexpr/macro parameter, SETQ target, …) should
     /// key its frame entry under for `sym` — the binding-side mirror of
     /// [`Environment::resolve`]'s canonicalization (issues #223/#262, #285):

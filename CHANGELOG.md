@@ -10,6 +10,17 @@ Previously `dotimes` was seen as an unknown call and the function stayed
 at the checked tier. `setq`/`while`/`for` over local slots already
 compiled.
 
+## Same plain array passed twice to a typed function now aliases (#400)
+
+Passing one `LispVal::Array` as two typed parameters used to copy it into
+two separate arena buffers and write both back in argument order (last
+writer wins), so `(store a 0 111) (fetch b 0)` returned the old value. The
+membrane now detects argument identity and gives every occurrence of the
+same top-level array ONE buffer, written back once — typed results match
+the interpreter on every entry path (`defun-typed`, auto-typed `defun`/
+`defun*`, `Jit::call_lisp`), with or without the Cranelift backend. Arrays
+nested inside struct or array arguments are still copied independently.
+
 ## `array-sum`/`array-dot` over float64, with Fortran `SUM` semantics (#392)
 
 `(array-sum a)` and `(array-dot a b)` now accept `(array float64)` (result
