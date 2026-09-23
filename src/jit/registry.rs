@@ -1759,7 +1759,37 @@ impl Jit {
         self.call_inner(name, args)
     }
 
+    /// Like [`Jit::call_with_array_writeback`], but with argument identity
+    /// (issue #400). `alias[i] == Some(j)` (with `j < i`) says argument `i`
+    /// is the *same* caller array object as argument `j`: instead of copying
+    /// it into a second arena buffer, argument `i` reuses argument `j`'s
+    /// buffer word, so inside the call the two parameters truly alias (a
+    /// `store` through one is visible through the other, exactly as in the
+    /// interpreter). Only the canonical (first) occurrence reports an
+    /// `updated` entry, so each distinct array is written back exactly once.
+    /// The caller must only alias arguments of identical flat-array type;
+    /// an `alias` shorter than `args` treats the missing slots as `None`.
+    pub fn call_with_array_writeback_aliased(
+        &self,
+        name: &str,
+        args: &[Value],
+        alias: &[Option<usize>],
+    ) -> WritebackResult {
+        self.call_inner_aliased(name, args, alias)
+    }
+
     fn call_inner(&self, name: &str, args: &[Value]) -> WritebackResult {
+        self.call_inner_aliased(name, args, &[])
+    }
+
+    fn call_inner_aliased(
+        &self,
+        name: &str,
+        args: &[Value],
+        alias: &[Option<usize>],
+    ) -> WritebackResult {
+        let alias_of =
+            |i: usize| -> Option<usize> { alias.get(i).copied().flatten().filter(|&j| j < i) };
         let id = self
             .id(name)
             .ok_or_else(|| format!("unknown function `{name}`"))?;
@@ -1782,8 +1812,13 @@ impl Jit {
         let ctx = self.ctx();
         let mut words = Vec::with_capacity(args.len());
         let mut tys = Vec::with_capacity(args.len());
-        for (a, (_, ty)) in args.iter().zip(params.iter()) {
-            words.push(a.to_word(ty, &ctx)?);
+        for (i, (a, (_, ty))) in args.iter().zip(params.iter()).enumerate() {
+            // Issue #400: the same caller array passed twice shares ONE
+            // arena buffer, so the parameters alias as in the interpreter.
+            match alias_of(i) {
+                Some(j) if tys.get(j) == Some(ty) => words.push(words[j]),
+                _ => words.push(a.to_word(ty, &ctx)?),
+            }
             tys.push(ty.clone());
         }
         let ret = f.ret.borrow().clone();
@@ -1824,7 +1859,16 @@ impl Jit {
                 if matches!(args[i], Value::TypedArray(_)) {
                     return None;
                 }
-                let mutates = may_mutate.get(i).copied().unwrap_or(true);
+                // An aliased occurrence shares its canonical argument's
+                // buffer; the canonical entry carries the (single) copy-out.
+                if alias_of(i).is_some_and(|j| words[j] == *w) {
+                    return None;
+                }
+                // The canonical copy-out is needed if ANY occurrence of the
+                // shared buffer may be written through.
+                let mutates = (0..words.len())
+                    .filter(|&k| k == i || (alias_of(k) == Some(i) && words[k] == *w))
+                    .any(|k| may_mutate.get(k).copied().unwrap_or(true));
                 (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty, &ctx))
             })
             .collect();
@@ -1855,7 +1899,9 @@ impl Jit {
         for (a, ty) in args.iter().zip(ptys.iter()) {
             vals.push(lispval_to_value(a, ty)?);
         }
-        let (result, updated, _flags) = self.call_with_array_writeback(name, &vals)?;
+        let alias = crate::jit::array_alias_map(args, &ptys);
+        let (result, updated, _flags) =
+            self.call_with_array_writeback_aliased(name, &vals, &alias)?;
         for (orig, upd) in args.iter().zip(updated) {
             if let (LispVal::Array(rc), Some(Value::Array(items))) = (orig, upd) {
                 // Every item here is scalar (`is_flat_scalar_array` excludes
