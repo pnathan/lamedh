@@ -23,7 +23,7 @@ fn dotimes_defuns_compile_natively() {
             "((TIER . COMPILED) (SIGNATURE -> (INT64) INT64))",
             "{name}"
         );
-        assert_ne!(eval_line(&format!("(compiled-p '{name})"), &e), "NIL");
+        assert_ne!(eval_line(&format!("(compiled-p '{name})"), &e), "()");
     }
 }
 
@@ -40,7 +40,7 @@ fn compiled_dotimes_matches_the_interpreter() {
     }
     // The result form sees VAR bound to COUNT.
     eval_line("(defun dt-e (n) (dotimes (i n i) (+ i 1)))", &e);
-    assert_ne!(eval_line("(compiled-p 'dt-e)", &e), "NIL");
+    assert_ne!(eval_line("(compiled-p 'dt-e)", &e), "()");
     assert_eq!(eval_line("(dt-e 5)", &e), "5");
 }
 
