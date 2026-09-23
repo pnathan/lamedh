@@ -1,5 +1,15 @@
 # v0.4.1 — unreleased
 
+## Clearer error for a `make-array` array passed to a typed call (#399)
+
+`(make-array n)` fills its slots with NIL. Passing such an array to a typed
+`(array int64)`, `(array float64)` or `(array char)` parameter used to fail
+with the bare message `expected int64 argument, got ()`. The error now
+gives the index of the slot, says it is an uninitialized `(make-array n)`
+slot, and names the fix: build the array with `(typed-array n 'int64)`,
+which is zero-filled, or store every element before the call. Any other
+wrong element also reports its index now.
+
 ## Same plain array passed twice to a typed function now aliases (#400)
 
 Passing one `LispVal::Array` as two typed parameters used to copy it into
