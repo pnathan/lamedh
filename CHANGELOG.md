@@ -1,5 +1,32 @@
 # v0.4.1 — unreleased
 
+## More elementwise array ops: `array-div!`, `array-scale!`, `array-fma!`, `array-neg!`, and allocating `array-add`/`array-sub`/`array-mul` (#394, #393)
+
+These extend the `array-add!` family. Like the existing ops, each one
+writes into `out`, runs over the shortest array operand, and wraps int64
+arithmetic:
+
+- `(array-div! out a b)`: `a[i] / b[i]`. **float64 only.** An int64
+  division would need its own divide-by-zero behaviour, so the tree-walker
+  rejects int64 elements and typed code with int64 arrays stays
+  interpreted.
+- `(array-scale! out a s)`: `a[i] * s`, where `s` is a scalar of the
+  element type.
+- `(array-fma! out a b c)`: `a[i] * b[i] + c[i]`. For float64 this is
+  fused (`mul_add`, a single rounding).
+- `(array-neg! out a)`: `-a[i]`. Float64 negation gives `-0.0` for `0.0`.
+- `(array-add a b)`, `(array-sub a b)`, `(array-mul a b)`: return a fresh
+  array of `min(len a, len b)` elements. They are defined in
+  `lib/17-arrays.lisp`; typed code compiles them to an allocation followed
+  by the SIMD `!` op.
+
+In typed code the four new `!` ops compile to a new `Core::ArrayOp` node.
+All tiers call one scalar reference implementation (`runtime.rs::array_op`;
+native code calls it through the `jit_array_op` trampoline), so results
+are bit-identical across tiers. Unlike `add!`/`sub!`/`mul!`, these ops
+are not yet hand-vectorized in Cranelift. The portable codegen gate
+(`46-hm-check.lisp`) mirrors all seven forms.
+
 ## Same plain array passed twice to a typed function now aliases (#400)
 
 Passing one `LispVal::Array` as two typed parameters used to copy it into
