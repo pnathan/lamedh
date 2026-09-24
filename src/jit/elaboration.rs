@@ -283,8 +283,8 @@ impl Cx<'_> {
                     // `(if (< a b) a b)`. This is comparison-select, NOT the FP
                     // fmin/fmax/fabs instructions, so it matches the evaluator's
                     // exact -0.0/NaN behaviour (e.g. `(abs -0.0)` stays `-0.0`).
-                    // int64 and float64. min/max only for the 2-arg case; a
-                    // different arity falls through to the interpreted variadic.
+                    // int64 and float64. min/max take any arity >= 1 (#397);
+                    // every argument is evaluated once into a temp slot.
                     "ABS" if !self.checking => self.elab_abs(args, scope, max),
                     "MIN" if !self.checking => {
                         self.elab_min_max_compiled(CmpOp::Lt, args, scope, max)
@@ -2637,8 +2637,8 @@ impl Cx<'_> {
     /// Core. `Core::LitI(0)` is the zero for both kinds (all-zero bits bitcast
     /// to `+0.0`). Comparison-select, so `(abs -0.0)` = `-0.0` and `(abs NaN)`
     /// = `NaN` unchanged, matching the evaluator (unlike an `fabs` instruction).
-    /// `x` is a pure typed expression, so evaluating it in the test and both
-    /// branches is value-correct (recomputed, not observably different).
+    /// `x` is evaluated once into a temp slot (#397), so a compound argument
+    /// (or one with a side effect, e.g. a `setq`) runs exactly once.
     fn elab_abs(
         &self,
         args: &[LispVal],
@@ -2657,16 +2657,35 @@ impl Cx<'_> {
             .as_num()
             .ok_or_else(|| format!("`abs` expects a numeric operand, got {rt:?}"))?;
         let k: NumKind = num.into();
-        let cond = Core::Cmp(k, CmpOp::Lt, Box::new(xc.clone()), Box::new(Core::LitI(0)));
-        let neg = Core::Bin(k, BinOp::Sub, Box::new(Core::LitI(0)), Box::new(xc.clone()));
-        Ok((Core::If(Box::new(cond), Box::new(neg), Box::new(xc)), rt))
+        // Evaluate the argument once into a fresh slot (#397): a compound
+        // argument is not recomputed in the test and both branches.
+        let slot = self.temp_slot(scope, max, &rt);
+        let x = || Box::new(Core::Var(slot));
+        let cond = Core::Cmp(k, CmpOp::Lt, x(), Box::new(Core::LitI(0)));
+        let neg = Core::Bin(k, BinOp::Sub, Box::new(Core::LitI(0)), x());
+        let sel = Core::If(Box::new(cond), Box::new(neg), x());
+        Ok((Core::Let(slot, Box::new(xc), Box::new(sel)), rt))
     }
 
-    /// `(max a b)` → `(if (> a b) a b)`, `(min a b)` → `(if (< a b) a b)` over a
-    /// shared `int64`/`float64` type, as compilable Core (`cmp` = `Gt` for max,
-    /// `Lt` for min). Only the 2-argument form; other arities return `Err` and
-    /// fall through to the interpreted variadic `min`/`max`. Comparison-select,
-    /// matching the evaluator's `-0.0`/NaN behaviour exactly.
+    /// A fresh, never-named slot for a desugaring temp (#397). It is not left
+    /// in `scope` (no source name can reach it); `max` grows so the frame
+    /// reserves it.
+    fn temp_slot(&self, scope: &mut Scope, max: &mut usize, ty: &Ty) -> usize {
+        let slot = scope.len();
+        scope.push((String::new(), ty.clone()));
+        *max = (*max).max(scope.len());
+        scope.pop();
+        slot
+    }
+
+    /// Variadic `(max a b …)` / `(min a b …)` over a shared `int64`/`float64`
+    /// type, as compilable Core (`cmp` = `Gt` for max, `Lt` for min). Mirrors
+    /// lib/05-math.lisp exactly: arguments are evaluated once, left to right,
+    /// then folded from the RIGHT, `(max a . rest)` = `(if (> a m) a m)` with
+    /// `m = (max . rest)`; one argument is itself. Comparison-select, so the
+    /// evaluator's `-0.0`/NaN behaviour is matched exactly. Every argument
+    /// and every partial result lives in its own slot (#397), so nothing is
+    /// recomputed.
     fn elab_min_max_compiled(
         &self,
         cmp: CmpOp,
@@ -2674,19 +2693,21 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
-        if args.len() != 2 {
-            return Err(format!(
-                "compiled min/max takes exactly 2 arguments (got {}); \
-                 other arities stay interpreted",
-                args.len()
-            ));
+        if args.is_empty() {
+            return Err("compiled min/max needs at least 1 argument".to_string());
         }
-        let (ac, ta) = self.elab(&args[0], scope, max)?;
-        let (bc, tb) = self.elab(&args[1], scope, max)?;
-        self.reject_boxed_arith_cmp(&ta)?;
-        self.reject_boxed_arith_cmp(&tb)?;
-        self.unify(&ta, &tb)
-            .map_err(|e| format!("min/max operands disagree: {e}"))?;
+        let mut elabs = Vec::with_capacity(args.len());
+        for a in args {
+            elabs.push(self.elab(a, scope, max)?);
+        }
+        for (_, t) in &elabs {
+            self.reject_boxed_arith_cmp(t)?;
+        }
+        let ta = elabs[0].1.clone();
+        for (_, t) in &elabs[1..] {
+            self.unify(&ta, t)
+                .map_err(|e| format!("min/max operands disagree: {e}"))?;
+        }
         let rt = self
             .resolve(&ta)
             .map_err(|_| "min/max: cannot infer operand type".to_string())?;
@@ -2694,8 +2715,35 @@ impl Cx<'_> {
             .as_num()
             .ok_or_else(|| format!("min/max expects numeric operands, got {rt:?}"))?;
         let k: NumKind = num.into();
-        let cond = Core::Cmp(k, cmp, Box::new(ac.clone()), Box::new(bc.clone()));
-        Ok((Core::If(Box::new(cond), Box::new(ac), Box::new(bc)), rt))
+        // Reserve one slot per argument, then one per fold step; the slots
+        // stay reserved together while the nested lets are built.
+        let base = scope.len();
+        let n = elabs.len();
+        for _ in 0..(2 * n) {
+            scope.push((String::new(), rt.clone()));
+        }
+        *max = (*max).max(scope.len());
+        scope.truncate(base);
+        let arg_slot = |i: usize| base + i;
+        let acc_slot = |i: usize| base + n + i;
+        // Innermost: fold from the right. acc[n-1] = arg[n-1];
+        // acc[i] = if arg[i] cmp acc[i+1] then arg[i] else acc[i+1].
+        let mut body = Core::Var(acc_slot(0));
+        for i in 0..n - 1 {
+            let a = || Box::new(Core::Var(arg_slot(i)));
+            let m = || Box::new(Core::Var(acc_slot(i + 1)));
+            let sel = Core::If(Box::new(Core::Cmp(k, cmp, a(), m())), a(), m());
+            body = Core::Let(acc_slot(i), Box::new(sel), Box::new(body));
+        }
+        body = Core::Let(
+            acc_slot(n - 1),
+            Box::new(Core::Var(arg_slot(n - 1))),
+            Box::new(body),
+        );
+        for (i, (c, _)) in elabs.into_iter().enumerate().rev() {
+            body = Core::Let(arg_slot(i), Box::new(c), Box::new(body));
+        }
+        Ok((body, rt))
     }
 
     /// Elaborate a form whose value is discarded (a non-final body form, or
