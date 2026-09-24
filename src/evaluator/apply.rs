@@ -1899,6 +1899,98 @@ pub(super) fn apply(
             // JIT's tiers use, so they happen to agree bit-for-bit; that is
             // an implementation property, not a guarantee. Dot rounds each
             // product (no FMA) and reduces the products the same way.
+            // The rest of the elementwise family (#394): tree-walker
+            // reference for `Core::ArrayOp` (`runtime.rs::array_op`), which
+            // every typed tier calls. Same contract as above: out-param,
+            // `min(len)` of the array operands, int64 wraps. `array-div!` is
+            // float64-only (int64 division would need a divide-by-zero
+            // story); `array-fma!` on floats is fused (`mul_add`).
+            BuiltinFunc::ArrayDivBang
+            | BuiltinFunc::ArrayScaleBang
+            | BuiltinFunc::ArrayFmaBang
+            | BuiltinFunc::ArrayNegBang => {
+                let (name, arity, shape) = match builtin {
+                    BuiltinFunc::ArrayDivBang => ("array-div!", 3, "(out a b)"),
+                    BuiltinFunc::ArrayScaleBang => ("array-scale!", 3, "(out a s)"),
+                    BuiltinFunc::ArrayFmaBang => ("array-fma!", 4, "(out a b c)"),
+                    _ => ("array-neg!", 2, "(out a)"),
+                };
+                if args.len() != arity {
+                    return Err(LispError::Generic(format!(
+                        "{name}: takes exactly {arity} arguments {shape}"
+                    )));
+                }
+                let scale = matches!(builtin, BuiltinFunc::ArrayScaleBang);
+                let mut arrays = Vec::with_capacity(arity);
+                for (i, a) in args.iter().enumerate() {
+                    if scale && i == 2 {
+                        continue;
+                    }
+                    match a {
+                        LispVal::Array(arr) => arrays.push(arr),
+                        _ => {
+                            return Err(LispError::Generic(format!(
+                                "{name}: {shape} -- every operand but the scale factor must be an array"
+                            )));
+                        }
+                    }
+                }
+                let min_len = arrays.iter().map(|a| a.borrow().len()).min().unwrap_or(0);
+                for i in 0..min_len {
+                    // Read every input before writing `out[i]` (`out` may
+                    // alias an input; each element depends only on index i).
+                    let mut xs: Vec<LispVal> =
+                        arrays[1..].iter().map(|a| a.borrow()[i].clone()).collect();
+                    if scale {
+                        xs.push(args[2].clone());
+                    }
+                    let ints: Option<Vec<i64>> = xs
+                        .iter()
+                        .map(|x| match x {
+                            LispVal::Number(n) => Some(*n),
+                            _ => None,
+                        })
+                        .collect();
+                    let floats: Option<Vec<f64>> = xs
+                        .iter()
+                        .map(|x| match x {
+                            LispVal::Float(f) => Some(*f),
+                            _ => None,
+                        })
+                        .collect();
+                    let r = match (builtin, ints, floats) {
+                        (BuiltinFunc::ArrayDivBang, _, Some(f)) => LispVal::Float(f[0] / f[1]),
+                        (BuiltinFunc::ArrayDivBang, Some(_), _) => {
+                            return Err(LispError::Generic(format!(
+                                "{name}: float64 elements only; int64 division is not supported \
+                                 (index {i})"
+                            )));
+                        }
+                        (BuiltinFunc::ArrayScaleBang, Some(n), _) => {
+                            LispVal::Number(n[0].wrapping_mul(n[1]))
+                        }
+                        (BuiltinFunc::ArrayScaleBang, _, Some(f)) => LispVal::Float(f[0] * f[1]),
+                        (BuiltinFunc::ArrayFmaBang, Some(n), _) => {
+                            LispVal::Number(n[0].wrapping_mul(n[1]).wrapping_add(n[2]))
+                        }
+                        (BuiltinFunc::ArrayFmaBang, _, Some(f)) => {
+                            LispVal::Float(f[0].mul_add(f[1], f[2]))
+                        }
+                        (BuiltinFunc::ArrayNegBang, Some(n), _) => {
+                            LispVal::Number(n[0].wrapping_neg())
+                        }
+                        (BuiltinFunc::ArrayNegBang, _, Some(f)) => LispVal::Float(-f[0]),
+                        _ => {
+                            return Err(LispError::Generic(format!(
+                                "{name}: operands at index {i} are not all int64 or all float64 ({})",
+                                xs.iter().map(err_val).collect::<Vec<_>>().join(" vs ")
+                            )));
+                        }
+                    };
+                    arrays[0].borrow_mut()[i] = r;
+                }
+                Ok(args[0].clone())
+            }
             BuiltinFunc::ArraySum => {
                 if args.len() != 1 {
                     return Err(LispError::Generic(

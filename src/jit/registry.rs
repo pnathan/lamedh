@@ -2319,6 +2319,18 @@ impl Jit {
                 out.push(format!("{l_end}:"));
                 out.push(format!("    {dst} = li   0        ; for yields nil"));
             }
+            Core::ArrayOp(op, k, args) => {
+                let mut argregs = Vec::with_capacity(args.len());
+                for a in args {
+                    let t = fresh(reg);
+                    self.dis_emit(a, &t, out, reg, lab);
+                    argregs.push(t);
+                }
+                out.push(format!(
+                    "    {dst} = arrayop {op:?}.{k:?}({})   ; elementwise, i in 0..min(len)",
+                    argregs.join(", ")
+                ));
+            }
             Core::BoxedOp(op, args) => {
                 let mut argregs = Vec::with_capacity(args.len());
                 for a in args {
@@ -2420,7 +2432,7 @@ fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
                 inline_call_ids(f, out);
             }
         }
-        Core::BoxedOp(_, args) => {
+        Core::BoxedOp(_, args) | Core::ArrayOp(_, _, args) => {
             for a in args {
                 inline_call_ids(a, out);
             }
