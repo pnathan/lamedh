@@ -1,5 +1,22 @@
 # v0.4.1 — unreleased
 
+## `cond`/`when`/`unless`/`case` compile natively (#404)
+
+These forms were checker-only placeholders in the typed elaborator, so any
+typed body using them stayed interpreted. In codegen they now desugar to
+nested `if` (mirrored in the portable gate, `46-hm-check.lisp`). A missed
+branch is NIL, which native code carries as `false`:
+
+- In a position whose value is discarded (a non-final body form, or any
+  form of a `while`/`for` body) every branch compiles, whatever its type.
+- In value position the form compiles when every branch is `bool`;
+  otherwise the function stays interpreted, as before.
+- `case` compiles for integer keys only (`EQUAL` on int64 is `=`). A
+  `t`/`otherwise` default is supported.
+
+The checker also stops reporting a false TYPE-ERROR for `case`: it used to
+elaborate clause selectors such as `(1 10)` as calls.
+
 ## `dotimes` reaches the compiled tier (#403)
 
 A `defun` whose body uses `dotimes` now compiles natively. The typed

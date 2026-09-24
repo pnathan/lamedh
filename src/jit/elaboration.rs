@@ -198,6 +198,12 @@ impl Cx<'_> {
                     "SETQ" if !self.checking => self.elab_setq(args, scope, max),
                     "WHILE" if !self.checking => self.elab_while(args, scope, max),
                     "FOR" if !self.checking => self.elab_for(args, scope, max),
+                    // `cond`/`when`/`unless`/`case` compile by desugaring to
+                    // nested `if` (#404); see `desugar_branch`.
+                    "COND" | "WHEN" | "UNLESS" | "CASE" if !self.checking => {
+                        let d = desugar_branch(&head, args, false)?;
+                        self.elab(&d, scope, max)
+                    }
                     // `dotimes` (a macro in lib/12-control.lisp, #403) is
                     // desugared here to exactly its expansion — `let` + `for`
                     // + optional result `let` — so a defun using it reaches the
@@ -361,6 +367,7 @@ impl Cx<'_> {
                     "MIN" | "MAX" if self.checking => self.elab_min_max(args, scope, max),
                     "QUOTE" if self.checking => self.elab_quote(args),
                     "COND" if self.checking => self.elab_cond(args, scope, max),
+                    "CASE" if self.checking => self.elab_case_check(args, scope, max),
                     "VARIANT-CASE" if self.checking => self.elab_variant_case(args, scope, max),
                     "WHEN" | "UNLESS" if self.checking => self.elab_when(args, scope, max),
                     _ => self.elab_call(&head, args, scope, max),
@@ -955,7 +962,7 @@ impl Cx<'_> {
             self.unify(&test_ty, &Ty::Int64)
                 .map_err(|_| "while: test must be bool or int64".to_string())?;
         }
-        let (body_core, _) = self.elab_body(&args[1..], scope, max)?;
+        let body_core = self.elab_loop_body(&args[1..], scope, max)?;
         Ok((
             Core::While(Box::new(test_core), Box::new(body_core)),
             Ty::Int64,
@@ -1005,7 +1012,7 @@ impl Cx<'_> {
         let slot = scope.len();
         scope.push((var_name, Ty::Int64));
         *max = (*max).max(scope.len());
-        let (body_core, _) = self.elab_body(&args[1..], scope, max)?;
+        let body_core = self.elab_loop_body(&args[1..], scope, max)?;
         scope.truncate(saved);
 
         Ok((
@@ -2319,6 +2326,51 @@ impl Cx<'_> {
         }
     }
 
+    /// Checker-mode `(case key (data body…) …)` (#404): the key is
+    /// elaborated, the clause selectors are quoted data (never evaluated),
+    /// and every clause body joins to one result type — as `cond` does. An
+    /// empty clause body yields nil at runtime and is `Any`. Previously the
+    /// selectors were elaborated as calls, a false TYPE-ERROR.
+    fn elab_case_check(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let Some(key) = args.first() else {
+            return Err("`case` needs a key".to_string());
+        };
+        self.elab(key, scope, max)?;
+        let result = self.fresh();
+        let mut had_clause = false;
+        for clause in &args[1..] {
+            let parts = list_to_vec(clause);
+            if parts.is_empty() {
+                continue;
+            }
+            let saved = scope.len();
+            let bt = if parts.len() == 1 {
+                Ty::Any
+            } else {
+                self.elab_body(&parts[1..], scope, max)?.1
+            };
+            scope.truncate(saved);
+            if self.unify(&bt, &result).is_err() {
+                return Err(format!(
+                    "`case` clauses disagree: {:?} vs {:?}",
+                    self.walk(&bt),
+                    self.walk(&result)
+                ));
+            }
+            had_clause = true;
+        }
+        if had_clause {
+            Ok((Core::LitI(0), self.walk(&result)))
+        } else {
+            Ok((Core::LitI(0), Ty::Any))
+        }
+    }
+
     /// `(variant-case x (ctor (vars…) body…) … [(else body…)])` — the sum
     /// eliminator (#350). The scrutinee unifies with each clause ctor's
     /// OWNING variant (so mixed-variant clauses clash and constructing a
@@ -2736,6 +2788,52 @@ impl Cx<'_> {
         Ok((body, rt))
     }
 
+    /// Elaborate a form whose value is discarded (a non-final body form, or
+    /// any form of a `while`/`for` body). A `cond`/`when`/`unless`/`case`
+    /// there desugars in statement mode (#404): every branch yields `false`,
+    /// so branches of any type join and the nil-on-miss is representable.
+    fn elab_stmt(
+        &self,
+        form: &LispVal,
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if !self.checking
+            && let LispVal::Cons { .. } = form
+        {
+            let items = list_to_vec(form);
+            if let Some(LispVal::Symbol(s)) = items.first() {
+                let head = s.borrow().name.clone();
+                if matches!(head.as_str(), "COND" | "WHEN" | "UNLESS" | "CASE") {
+                    let d = desugar_branch(&head, &items[1..], true)?;
+                    return self.elab(&d, scope, max);
+                }
+            }
+        }
+        self.elab(form, scope, max)
+    }
+
+    /// A loop body: every form's value is discarded.
+    fn elab_loop_body(
+        &self,
+        forms: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<Core, String> {
+        if forms.is_empty() {
+            return Err("empty body".to_string());
+        }
+        let mut cores = Vec::with_capacity(forms.len());
+        for f in forms {
+            cores.push(self.elab_stmt(f, scope, max)?.0);
+        }
+        Ok(if cores.len() == 1 {
+            cores.pop().unwrap()
+        } else {
+            Core::Seq(cores)
+        })
+    }
+
     pub(super) fn elab_body(
         &self,
         forms: &[LispVal],
@@ -2747,8 +2845,12 @@ impl Cx<'_> {
         }
         let mut cores = Vec::with_capacity(forms.len());
         let mut last_ty = Ty::Int64;
-        for f in forms {
-            let (c, t) = self.elab(f, scope, max)?;
+        for (i, f) in forms.iter().enumerate() {
+            let (c, t) = if i + 1 < forms.len() {
+                self.elab_stmt(f, scope, max)?
+            } else {
+                self.elab(f, scope, max)?
+            };
             cores.push(c);
             last_ty = t;
         }
@@ -2775,4 +2877,115 @@ fn synth_symbol(name: &str) -> LispVal {
         is_dynamic: false,
         special_form: None,
     })))
+}
+
+fn is_sym(v: &LispVal, name: &str) -> bool {
+    matches!(v, LispVal::Symbol(s) if s.borrow().name == name)
+}
+
+/// A branch body as one form. In statement mode (`stmt`) the value is
+/// discarded, so the body is followed by `false` and every branch is `bool`.
+/// An empty body is NIL, i.e. `false`.
+fn branch_body(body: &[LispVal], stmt: bool) -> LispVal {
+    if body.is_empty() {
+        return synth_symbol("FALSE");
+    }
+    let mut v = vec![synth_symbol("PROGN")];
+    v.extend(body.iter().cloned());
+    if stmt {
+        v.push(synth_symbol("FALSE"));
+    }
+    LispVal::list(v)
+}
+
+/// Codegen desugaring of `cond`/`when`/`unless`/`case` to nested `if` (#404),
+/// matching lib/12-control.lisp. A missed branch is NIL, which native code
+/// carries as `false`; so in value position a branch-form compiles only when
+/// every branch is `bool` (otherwise `if` rejects the join and the function
+/// stays interpreted). `case` compiles only for integer literal keys (EQUAL
+/// on int64 is `=`). Mirrored by `hm-desugar-branch` in lib/46-hm-check.lisp.
+fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, String> {
+    let if_ = |c: LispVal, t: LispVal, e: LispVal| LispVal::list(vec![synth_symbol("IF"), c, t, e]);
+    match head {
+        "WHEN" | "UNLESS" => {
+            let Some(test) = args.first() else {
+                return Err("`when`/`unless` need a condition".to_string());
+            };
+            let body = branch_body(&args[1..], stmt);
+            Ok(if head == "WHEN" {
+                if_(test.clone(), body, synth_symbol("FALSE"))
+            } else {
+                if_(test.clone(), synth_symbol("FALSE"), body)
+            })
+        }
+        "COND" => {
+            let mut acc = synth_symbol("FALSE");
+            for clause in args.iter().rev() {
+                let parts = list_to_vec(clause);
+                let Some(test) = parts.first() else {
+                    return Err("`cond`: empty clause".to_string());
+                };
+                acc = if is_sym(test, "T") {
+                    if parts.len() == 1 {
+                        synth_symbol("TRUE")
+                    } else {
+                        branch_body(&parts[1..], stmt)
+                    }
+                } else if parts.len() == 1 {
+                    // A test-only clause yields the (bool) test value: true.
+                    if_(test.clone(), synth_symbol("TRUE"), acc)
+                } else {
+                    if_(test.clone(), branch_body(&parts[1..], stmt), acc)
+                };
+            }
+            Ok(acc)
+        }
+        "CASE" => {
+            let Some(key) = args.first() else {
+                return Err("`case` needs a key".to_string());
+            };
+            let k = synth_symbol("%CASE-KEY");
+            let eq = |d: &LispVal| -> Result<LispVal, String> {
+                match d {
+                    LispVal::Number(_) => {
+                        Ok(LispVal::list(vec![synth_symbol("="), k.clone(), d.clone()]))
+                    }
+                    _ => Err("`case`: only integer keys compile".to_string()),
+                }
+            };
+            let mut clauses = vec![synth_symbol("COND")];
+            for clause in &args[1..] {
+                let parts = list_to_vec(clause);
+                let Some(sel) = parts.first() else {
+                    return Err("`case`: empty clause".to_string());
+                };
+                let test = if is_sym(sel, "T") || is_sym(sel, "OTHERWISE") {
+                    synth_symbol("T")
+                } else if let LispVal::Cons { .. } = sel {
+                    let mut or = vec![synth_symbol("OR")];
+                    for d in list_to_vec(sel) {
+                        or.push(eq(&d)?);
+                    }
+                    LispVal::list(or)
+                } else {
+                    eq(sel)?
+                };
+                let mut c = vec![test];
+                if parts.len() == 1 {
+                    // `(datum)` with no body yields NIL.
+                    c.push(synth_symbol("FALSE"));
+                } else {
+                    c.extend(parts[1..].iter().cloned());
+                }
+                clauses.push(LispVal::list(c));
+            }
+            let cond = desugar_branch("COND", &list_to_vec(&LispVal::list(clauses))[1..], stmt)?;
+            Ok(LispVal::list(vec![
+                synth_symbol("LET"),
+                LispVal::list(vec![LispVal::list(vec![k, key.clone()])]),
+                cond,
+            ]))
+        }
+        _ => unreachable!("desugar_branch: {head}"),
+    }
 }
