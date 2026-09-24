@@ -204,6 +204,11 @@ impl Cx<'_> {
                         let d = desugar_branch(&head, args, false)?;
                         self.elab(&d, scope, max)
                     }
+                    // `dotimes` (a macro in lib/12-control.lisp, #403) is
+                    // desugared here to exactly its expansion — `let` + `for`
+                    // + optional result `let` — so a defun using it reaches the
+                    // native tier like a hand-written `for`.
+                    "DOTIMES" if !self.checking => self.elab_dotimes(args, scope, max),
                     "CHAR-CODE" => self.elab_char_code(args, scope, max),
                     "CODE-CHAR" => self.elab_code_char(args, scope, max),
                     "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
@@ -1020,6 +1025,43 @@ impl Cx<'_> {
             },
             Ty::Int64,
         ))
+    }
+
+    /// `(dotimes (var count [result]) body...)`, desugared to the same shape
+    /// lib/12-control.lisp's macro expands to:
+    /// `(let ((%n count)) (for (var 0 (- %n 1)) body...) [(let ((var %n)) result)])`.
+    /// The count temp is un-interned and named so user code cannot capture it.
+    fn elab_dotimes(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let spec = args.first().map(list_to_vec).unwrap_or_default();
+        if spec.len() != 2 && spec.len() != 3 {
+            return Err("dotimes spec must be (var count [result])".to_string());
+        }
+        let var = spec[0].clone();
+        let n = synth_symbol("%DOTIMES-COUNT");
+        let limit = LispVal::list(vec![synth_symbol("-"), n.clone(), LispVal::Number(1)]);
+        let mut for_form = vec![
+            synth_symbol("FOR"),
+            LispVal::list(vec![var.clone(), LispVal::Number(0), limit]),
+        ];
+        for_form.extend(args[1..].iter().cloned());
+        let mut let_form = vec![
+            synth_symbol("LET"),
+            LispVal::list(vec![LispVal::list(vec![n.clone(), spec[1].clone()])]),
+            LispVal::list(for_form),
+        ];
+        if let Some(result) = spec.get(2) {
+            let_form.push(LispVal::list(vec![
+                synth_symbol("LET"),
+                LispVal::list(vec![LispVal::list(vec![var, n])]),
+                result.clone(),
+            ]));
+        }
+        self.elab(&LispVal::list(let_form), scope, max)
     }
 
     /// `(append l1 ... ln)` : every argument `(list a)`, result `(list a)`.
@@ -2823,9 +2865,9 @@ impl Cx<'_> {
     }
 }
 
-/// An un-interned symbol for the codegen desugarings below. The elaborator
+/// An un-interned symbol for elaborator-internal desugarings. The elaborator
 /// resolves heads and variables by name, so no interning is needed.
-fn branch_sym(name: &str) -> LispVal {
+fn synth_symbol(name: &str) -> LispVal {
     LispVal::Symbol(Shared::new(SharedCell::new(crate::Symbol {
         name: name.to_string(),
         plist: std::collections::HashMap::new(),
@@ -2846,12 +2888,12 @@ fn is_sym(v: &LispVal, name: &str) -> bool {
 /// An empty body is NIL, i.e. `false`.
 fn branch_body(body: &[LispVal], stmt: bool) -> LispVal {
     if body.is_empty() {
-        return branch_sym("FALSE");
+        return synth_symbol("FALSE");
     }
-    let mut v = vec![branch_sym("PROGN")];
+    let mut v = vec![synth_symbol("PROGN")];
     v.extend(body.iter().cloned());
     if stmt {
-        v.push(branch_sym("FALSE"));
+        v.push(synth_symbol("FALSE"));
     }
     LispVal::list(v)
 }
@@ -2863,7 +2905,7 @@ fn branch_body(body: &[LispVal], stmt: bool) -> LispVal {
 /// stays interpreted). `case` compiles only for integer literal keys (EQUAL
 /// on int64 is `=`). Mirrored by `hm-desugar-branch` in lib/46-hm-check.lisp.
 fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, String> {
-    let if_ = |c: LispVal, t: LispVal, e: LispVal| LispVal::list(vec![branch_sym("IF"), c, t, e]);
+    let if_ = |c: LispVal, t: LispVal, e: LispVal| LispVal::list(vec![synth_symbol("IF"), c, t, e]);
     match head {
         "WHEN" | "UNLESS" => {
             let Some(test) = args.first() else {
@@ -2871,13 +2913,13 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
             };
             let body = branch_body(&args[1..], stmt);
             Ok(if head == "WHEN" {
-                if_(test.clone(), body, branch_sym("FALSE"))
+                if_(test.clone(), body, synth_symbol("FALSE"))
             } else {
-                if_(test.clone(), branch_sym("FALSE"), body)
+                if_(test.clone(), synth_symbol("FALSE"), body)
             })
         }
         "COND" => {
-            let mut acc = branch_sym("FALSE");
+            let mut acc = synth_symbol("FALSE");
             for clause in args.iter().rev() {
                 let parts = list_to_vec(clause);
                 let Some(test) = parts.first() else {
@@ -2885,13 +2927,13 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
                 };
                 acc = if is_sym(test, "T") {
                     if parts.len() == 1 {
-                        branch_sym("TRUE")
+                        synth_symbol("TRUE")
                     } else {
                         branch_body(&parts[1..], stmt)
                     }
                 } else if parts.len() == 1 {
                     // A test-only clause yields the (bool) test value: true.
-                    if_(test.clone(), branch_sym("TRUE"), acc)
+                    if_(test.clone(), synth_symbol("TRUE"), acc)
                 } else {
                     if_(test.clone(), branch_body(&parts[1..], stmt), acc)
                 };
@@ -2902,25 +2944,25 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
             let Some(key) = args.first() else {
                 return Err("`case` needs a key".to_string());
             };
-            let k = branch_sym("%CASE-KEY");
+            let k = synth_symbol("%CASE-KEY");
             let eq = |d: &LispVal| -> Result<LispVal, String> {
                 match d {
                     LispVal::Number(_) => {
-                        Ok(LispVal::list(vec![branch_sym("="), k.clone(), d.clone()]))
+                        Ok(LispVal::list(vec![synth_symbol("="), k.clone(), d.clone()]))
                     }
                     _ => Err("`case`: only integer keys compile".to_string()),
                 }
             };
-            let mut clauses = vec![branch_sym("COND")];
+            let mut clauses = vec![synth_symbol("COND")];
             for clause in &args[1..] {
                 let parts = list_to_vec(clause);
                 let Some(sel) = parts.first() else {
                     return Err("`case`: empty clause".to_string());
                 };
                 let test = if is_sym(sel, "T") || is_sym(sel, "OTHERWISE") {
-                    branch_sym("T")
+                    synth_symbol("T")
                 } else if let LispVal::Cons { .. } = sel {
-                    let mut or = vec![branch_sym("OR")];
+                    let mut or = vec![synth_symbol("OR")];
                     for d in list_to_vec(sel) {
                         or.push(eq(&d)?);
                     }
@@ -2931,7 +2973,7 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
                 let mut c = vec![test];
                 if parts.len() == 1 {
                     // `(datum)` with no body yields NIL.
-                    c.push(branch_sym("FALSE"));
+                    c.push(synth_symbol("FALSE"));
                 } else {
                     c.extend(parts[1..].iter().cloned());
                 }
@@ -2939,7 +2981,7 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
             }
             let cond = desugar_branch("COND", &list_to_vec(&LispVal::list(clauses))[1..], stmt)?;
             Ok(LispVal::list(vec![
-                branch_sym("LET"),
+                synth_symbol("LET"),
                 LispVal::list(vec![LispVal::list(vec![k, key.clone()])]),
                 cond,
             ]))

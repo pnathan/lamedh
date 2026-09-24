@@ -2095,6 +2095,7 @@ the portable registry)."
     ((eq head 'for) (hm-elab-for state tyenv args))
     ((member head '(cond when unless case))
      (hm-elab state tyenv (hm-desugar-branch head args nil)))
+    ((eq head 'dotimes) (hm-elab-dotimes state tyenv args))
     ((eq head 'char-code) (hm-elab-char-code state tyenv args))
     ((eq head 'code-char) (hm-elab-code-char state tyenv args))
     ((member head '(array make-array)) (hm-elab-array-new state tyenv args))
@@ -2180,6 +2181,23 @@ INT64. Mirrors Cx::elab_for."
                    nil)
                (hm-elab-loop-body state (cons (cons (car spec) 'int64) tyenv) (cdr args))
                'int64))))))
+
+(defun hm-elab-dotimes (state tyenv args)
+  "`(dotimes (var count [result]) body...)`, desugared to its macro expansion
+`(let ((%n count)) (for (var 0 (- %n 1)) body...) [(let ((var %n)) result)])`
+with an uninterned count temp. Mirrors Cx::elab_dotimes (#403)."
+  (let ((spec (car args)))
+    (if (not (and (consp spec) (member (length spec) '(2 3))))
+        (error "dotimes spec must be (var count [result])")
+        (let ((n (gensym)))
+          (hm-elab state tyenv
+                   (append (list 'let (list (list n (cadr spec)))
+                                 (cons 'for (cons (list (car spec) 0 (list '- n 1))
+                                                  (cdr args))))
+                           (if (cddr spec)
+                               (list (list 'let (list (list (car spec) n))
+                                           (caddr spec)))
+                               nil)))))))
 
 ;;; ---- numeric intrinsics ---------------------------------------------------
 
