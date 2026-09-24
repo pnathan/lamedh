@@ -622,6 +622,10 @@ pub enum Core {
     /// A unary floating-point intrinsic over a `float64` argument. The op
     /// determines the math and the result representation (see [`FUnOp`]).
     FUnary(FUnOp, Box<Core>),
+    /// A binary floating-point intrinsic (#398) over raw operand words; the
+    /// op fixes each operand's representation (see [`FBinOp`]). Always a
+    /// `float64` result, computed by libm via the `jit_ftrans2` trampoline.
+    FBinary(FBinOp, Box<Core>, Box<Core>),
     /// `(float x)` on an `int64` argument: widen to `float64` (`fcvt_from_sint`
     /// natively / `i64 as f64` in the interpreter). `(float x)` on a value that
     /// is already `float64` needs no node — it elaborates to the argument
@@ -868,6 +872,49 @@ pub enum FUnOp {
     /// `round`: `f64::round` (half away from zero, unlike Cranelift's
     /// ties-to-even `nearest`) via the trampoline, then `as i64`; `-> int64`.
     Round,
+    /// `log` (natural, #398): libm trampoline; `float64 -> float64`.
+    Log,
+}
+
+/// Binary float intrinsics (#398), the operands of `expt` in the typed
+/// tiers. Each mirrors one arm of the evaluator's `BuiltinFunc::Expt`
+/// exactly (an int64 base is widened with `IntToFloat` first, which is the
+/// evaluator's `base as f64`). `int64 ^ int64` is never compiled: its result
+/// type depends on the exponent's sign and it can raise overflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
+pub enum FBinOp {
+    /// `float64 ^ float64` -> `x.powf(y)`; both words are float bits.
+    Pow,
+    /// `float64 ^ int64` -> `x.powi(y as i32)`; `y` is an int64 word.
+    PowI,
+}
+
+impl FBinOp {
+    /// Apply the op to raw operand words, returning the float result bits.
+    /// The single source of truth for every tier (the native backend calls
+    /// it through [`super::jit_ftrans2`]).
+    pub fn apply_word(self, x: u64, y: u64) -> u64 {
+        let x = f64::from_bits(x);
+        match self {
+            FBinOp::Pow => x.powf(f64::from_bits(y)).to_bits(),
+            FBinOp::PowI => x.powi(y as i64 as i32).to_bits(),
+        }
+    }
+
+    /// The `jit_ftrans2` opcode.
+    pub fn opcode(self) -> u64 {
+        self as u64
+    }
+
+    /// Inverse of [`Self::opcode`].
+    pub fn from_opcode(op: u64) -> FBinOp {
+        match op {
+            0 => FBinOp::Pow,
+            1 => FBinOp::PowI,
+            other => panic!("jit_ftrans2: unknown FBinOp opcode {other}"),
+        }
+    }
 }
 
 impl FUnOp {
@@ -888,6 +935,7 @@ impl FUnOp {
             FUnOp::Cos => x.cos().to_bits(),
             FUnOp::Tan => x.tan().to_bits(),
             FUnOp::Exp => x.exp().to_bits(),
+            FUnOp::Log => x.ln().to_bits(),
             FUnOp::Round => x.round() as i64 as u64,
         }
     }
@@ -897,7 +945,7 @@ impl FUnOp {
     pub fn is_libm(self) -> bool {
         matches!(
             self,
-            FUnOp::Sin | FUnOp::Cos | FUnOp::Tan | FUnOp::Exp | FUnOp::Round
+            FUnOp::Sin | FUnOp::Cos | FUnOp::Tan | FUnOp::Exp | FUnOp::Log | FUnOp::Round
         )
     }
 
@@ -919,6 +967,7 @@ impl FUnOp {
             6 => FUnOp::Tan,
             7 => FUnOp::Exp,
             8 => FUnOp::Round,
+            9 => FUnOp::Log,
             other => panic!("jit_ftrans: unknown FUnOp opcode {other}"),
         }
     }
@@ -947,7 +996,7 @@ fn is_var_slot(c: &Core, slot: usize) -> bool {
 pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
     match core {
         Core::LitI(_) | Core::LitF(_) | Core::Var(_) => false,
-        Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) => {
+        Core::Bin(_, _, a, b) | Core::FBinary(_, a, b) | Core::Cmp(_, _, a, b) => {
             core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot)
         }
         Core::Not(a) => core_may_mutate_slot(a, slot),
@@ -1034,6 +1083,7 @@ pub fn core_references_slot(core: &Core, slot: usize) -> bool {
         Core::Var(s) => *s == slot,
         Core::LitI(_) | Core::LitF(_) => false,
         Core::Bin(_, _, a, b)
+        | Core::FBinary(_, a, b)
         | Core::Cmp(_, _, a, b)
         | Core::And(a, b)
         | Core::Or(a, b)
@@ -1122,7 +1172,7 @@ pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
     match core {
         Core::LitI(_) | Core::LitF(_) => false,
         Core::Var(s) => *s == slot,
-        Core::Bin(_, _, a, b) | Core::Cmp(_, _, a, b) => {
+        Core::Bin(_, _, a, b) | Core::FBinary(_, a, b) | Core::Cmp(_, _, a, b) => {
             allocation_escapes(a, slot) || allocation_escapes(b, slot)
         }
         Core::Not(a) => allocation_escapes(a, slot),
@@ -1301,6 +1351,11 @@ fn inline_xform(
         ))),
         Core::Bin(k, op, a, b) => Core::Bin(
             *k,
+            *op,
+            Box::new(inline_xform(a, shift, registry, allow_inline, next)),
+            Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::FBinary(op, a, b) => Core::FBinary(
             *op,
             Box::new(inline_xform(a, shift, registry, allow_inline, next)),
             Box::new(inline_xform(b, shift, registry, allow_inline, next)),
@@ -1548,6 +1603,11 @@ pub(super) fn stride_walk(core: &Core, sc: &StrideCtx, discard: bool) -> Result<
         }
         Core::Bin(k, op, a, b) => Ok(Core::Bin(
             *k,
+            *op,
+            Box::new(stride_walk(a, sc, false)?),
+            Box::new(stride_walk(b, sc, false)?),
+        )),
+        Core::FBinary(op, a, b) => Ok(Core::FBinary(
             *op,
             Box::new(stride_walk(a, sc, false)?),
             Box::new(stride_walk(b, sc, false)?),

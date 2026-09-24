@@ -2087,6 +2087,13 @@ impl Jit {
                 self.dis_emit(a, dst, out, reg, lab);
                 out.push(format!("    {dst} = not  {dst}"));
             }
+            Core::FBinary(op, a, b) => {
+                let t1 = fresh(reg);
+                let t2 = fresh(reg);
+                self.dis_emit(a, &t1, out, reg, lab);
+                self.dis_emit(b, &t2, out, reg, lab);
+                out.push(format!("    {dst} = fbin {op:?} {t1}, {t2}"));
+            }
             Core::Bin(k, op, a, b) => {
                 let t1 = fresh(reg);
                 let t2 = fresh(reg);
@@ -2363,6 +2370,7 @@ fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
             inline_call_ids(a, out)
         }
         Core::Bin(_, _, a, b)
+        | Core::FBinary(_, a, b)
         | Core::Cmp(_, _, a, b)
         | Core::And(a, b)
         | Core::Or(a, b)
