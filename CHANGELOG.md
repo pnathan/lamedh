@@ -1,5 +1,15 @@
 # v0.4.1 — unreleased
 
+## `dotimes` reaches the compiled tier (#403)
+
+A `defun` whose body uses `dotimes` now compiles natively. The typed
+elaborator desugars `(dotimes (var count [result]) body...)` to the same
+`let` + `for` (+ result `let`) the macro in `lib/12-control.lisp` expands
+to, and the portable codegen gate in `46-hm-check.lisp` mirrors it.
+Previously `dotimes` was seen as an unknown call and the function stayed
+at the checked tier. `setq`/`while`/`for` over local slots already
+compiled.
+
 ## Compiled `abs`/`min`/`max` evaluate each argument once; `min`/`max` compile at any arity (#397)
 
 The typed JIT compiles `abs`/`min`/`max` by desugaring them to `if` plus a

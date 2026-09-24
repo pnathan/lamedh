@@ -198,6 +198,11 @@ impl Cx<'_> {
                     "SETQ" if !self.checking => self.elab_setq(args, scope, max),
                     "WHILE" if !self.checking => self.elab_while(args, scope, max),
                     "FOR" if !self.checking => self.elab_for(args, scope, max),
+                    // `dotimes` (a macro in lib/12-control.lisp, #403) is
+                    // desugared here to exactly its expansion — `let` + `for`
+                    // + optional result `let` — so a defun using it reaches the
+                    // native tier like a hand-written `for`.
+                    "DOTIMES" if !self.checking => self.elab_dotimes(args, scope, max),
                     "CHAR-CODE" => self.elab_char_code(args, scope, max),
                     "CODE-CHAR" => self.elab_code_char(args, scope, max),
                     "ARRAY" | "MAKE-ARRAY" => self.elab_array_new(args, scope, max),
@@ -1013,6 +1018,43 @@ impl Cx<'_> {
             },
             Ty::Int64,
         ))
+    }
+
+    /// `(dotimes (var count [result]) body...)`, desugared to the same shape
+    /// lib/12-control.lisp's macro expands to:
+    /// `(let ((%n count)) (for (var 0 (- %n 1)) body...) [(let ((var %n)) result)])`.
+    /// The count temp is un-interned and named so user code cannot capture it.
+    fn elab_dotimes(
+        &self,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        let spec = args.first().map(list_to_vec).unwrap_or_default();
+        if spec.len() != 2 && spec.len() != 3 {
+            return Err("dotimes spec must be (var count [result])".to_string());
+        }
+        let var = spec[0].clone();
+        let n = synth_symbol("%DOTIMES-COUNT");
+        let limit = LispVal::list(vec![synth_symbol("-"), n.clone(), LispVal::Number(1)]);
+        let mut for_form = vec![
+            synth_symbol("FOR"),
+            LispVal::list(vec![var.clone(), LispVal::Number(0), limit]),
+        ];
+        for_form.extend(args[1..].iter().cloned());
+        let mut let_form = vec![
+            synth_symbol("LET"),
+            LispVal::list(vec![LispVal::list(vec![n.clone(), spec[1].clone()])]),
+            LispVal::list(for_form),
+        ];
+        if let Some(result) = spec.get(2) {
+            let_form.push(LispVal::list(vec![
+                synth_symbol("LET"),
+                LispVal::list(vec![LispVal::list(vec![var, n])]),
+                result.clone(),
+            ]));
+        }
+        self.elab(&LispVal::list(let_form), scope, max)
     }
 
     /// `(append l1 ... ln)` : every argument `(list a)`, result `(list a)`.
@@ -2719,4 +2761,18 @@ impl Cx<'_> {
         };
         Ok((core, last_ty))
     }
+}
+
+/// An un-interned symbol for elaborator-internal desugarings. The elaborator
+/// resolves heads and variables by name, so no interning is needed.
+fn synth_symbol(name: &str) -> LispVal {
+    LispVal::Symbol(Shared::new(SharedCell::new(crate::Symbol {
+        name: name.to_string(),
+        plist: std::collections::HashMap::new(),
+        value: None,
+        id: 0,
+        is_keyword: false,
+        is_dynamic: false,
+        special_form: None,
+    })))
 }
