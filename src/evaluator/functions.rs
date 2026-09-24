@@ -762,6 +762,25 @@ pub(super) fn char_byte_from_number(n: i64, context: &str) -> Result<u8, String>
     u8::try_from(n).map_err(|_| format!("{context}: {n} out of range 0-255"))
 }
 
+/// The membrane error for element `i` of a general Lisp array passed where a
+/// typed `(array T)` is expected (#399). A NIL element of a scalar-typed
+/// array is almost always a `(make-array n)` slot never stored to, so the
+/// message says so and names the fix: `typed-array` (zero-filled) or storing
+/// every element first.
+fn array_element_error(i: usize, it: &LispVal, elem: &crate::jit::Ty, e: String) -> String {
+    use crate::jit::Ty;
+    let name = crate::jit::ty_name(elem);
+    if matches!(it, LispVal::Nil) && matches!(elem, Ty::Int64 | Ty::Float64 | Ty::Char) {
+        format!(
+            "expected (array {name}) argument, but element {i} is () -- an uninitialized \
+             (make-array n) slot. Build the array with (typed-array n '{name}), which is \
+             zero-filled, or store every element before the call"
+        )
+    } else {
+        format!("expected (array {name}) argument, element {i}: {e}")
+    }
+}
+
 pub(super) fn lispval_to_typed(
     lv: &LispVal,
     ty: &crate::jit::Ty,
@@ -810,8 +829,11 @@ pub(super) fn lispval_to_typed(
             LispVal::Array(a) => {
                 let items = a.borrow();
                 let mut out = Vec::with_capacity(items.len());
-                for it in items.iter() {
-                    out.push(lispval_to_typed(it, elem)?);
+                for (i, it) in items.iter().enumerate() {
+                    out.push(
+                        lispval_to_typed(it, elem)
+                            .map_err(|e| array_element_error(i, it, elem, e))?,
+                    );
                 }
                 Ok(Value::Array(out))
             }
