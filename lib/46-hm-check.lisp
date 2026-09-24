@@ -2024,6 +2024,10 @@ the portable registry)."
     ((eq head 'ash) (hm-elab-ash state tyenv args))
     ((eq head 'abs) (hm-elab-abs state tyenv args))
     ((member head '(min max)) (hm-elab-min-max-compiled state tyenv args))
+    ((member head '(array-div! array-scale! array-fma! array-neg!))
+     (hm-elab-array-op state tyenv head args))
+    ((member head '(array-add array-sub array-mul))
+     (hm-elab-array-alloc state tyenv args))
     ((member head '(array-add! array-sub! array-mul!))
      (hm-elab-array-map2 state tyenv args))
     ((eq head 'array-sum) (hm-elab-array-sum state tyenv args))
@@ -2222,6 +2226,63 @@ Cx::elab_array_map2."
                    (list 'array et)
                    (error (concat "array op element type must resolve to int64 or float64, got "
                                   (hm-type-name et))))))))))
+
+(defun hm-array-elem-kind (state elem)
+  "Resolve an elementwise op's element type to int64 or float64, in the
+wording of the native array ops."
+  (let ((et (handler-case (hm-resolve state elem)
+              (error (e)
+                (error (concat "array op: cannot infer element type: "
+                               (error-message e)))))))
+    (if (hm-arith-kind-p et)
+        et
+        (error (concat "array op element type must resolve to int64 or float64, got "
+                       (hm-type-name et))))))
+
+(defun hm-elab-array-op (state tyenv head args)
+  "`(array-div!/-scale!/-fma!/-neg! out ...)` (#394): every array operand
+unifies with one (array T), the ARRAY-SCALE! factor with T; T resolves to
+int64/float64, and to float64 for ARRAY-DIV!. Mirrors Cx::elab_array_op."
+  (let ((arity (cond ((eq head 'array-neg!) 2) ((eq head 'array-fma!) 4) (t 3))))
+    (if (not (= (length args) arity))
+        (error (concat "array op expects " (princ-to-string arity) " args, got "
+                       (princ-to-string (length args))))
+        (let* ((elem (hm-fresh state))
+               (arr (list 'array elem))
+               (i 0))
+          (mapc (lambda (a)
+                  (let ((ty (hm-elab state tyenv a)))
+                    (if (and (eq head 'array-scale!) (= i 2))
+                        (if (hm-unifies-p state ty elem)
+                            nil
+                            (error "array-scale! factor must have the array element type"))
+                        (if (hm-unifies-p state ty arr)
+                            nil
+                            (error (concat "array op `" (nth i '("out" "a" "b" "c"))
+                                           "` must be an array of the same element type as `out`"))))
+                    (setq i (+ i 1))))
+                args)
+          (let ((et (hm-array-elem-kind state elem)))
+            (if (and (eq head 'array-div!) (eq et 'int64))
+                (error "array-div! is float64-only; int64 stays interpreted")
+                (list 'array et)))))))
+
+(defun hm-elab-array-alloc (state tyenv args)
+  "`(array-add/-sub/-mul a b)` (#394): two arrays of one element type that
+resolves to int64/float64; the result is a fresh array of that type. Mirrors
+Cx::elab_array_alloc."
+  (if (not (= (length args) 2))
+      (error (concat "allocating array op expects 2 args (a b), got "
+                     (princ-to-string (length args))))
+      (let* ((ta (hm-elab state tyenv (car args)))
+             (tb (hm-elab state tyenv (cadr args)))
+             (elem (hm-fresh state))
+             (arr (list 'array elem)))
+        (cond
+          ((not (hm-unifies-p state ta arr)) (error "array op `a` must be an array"))
+          ((not (hm-unifies-p state tb arr))
+           (error "array op `b` must be an array of the same element type as `a`"))
+          (t (list 'array (hm-array-elem-kind state elem)))))))
 
 (defun hm-reduce-elem-type (state elem what)
   "Resolve a reduction's element type to int64 or float64. An unconstrained

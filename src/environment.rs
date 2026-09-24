@@ -1207,6 +1207,23 @@ impl Environment {
             "ARRAY-MUL!".to_string(),
             LispVal::Builtin(BuiltinFunc::ArrayMulBang),
         );
+        // The rest of the family (#394), compiled to `Core::ArrayOp`.
+        env.set(
+            "ARRAY-DIV!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayDivBang),
+        );
+        env.set(
+            "ARRAY-SCALE!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayScaleBang),
+        );
+        env.set(
+            "ARRAY-FMA!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayFmaBang),
+        );
+        env.set(
+            "ARRAY-NEG!".to_string(),
+            LispVal::Builtin(BuiltinFunc::ArrayNegBang),
+        );
         // SIMD integer array reductions: the typed JIT compiles these to a
         // vectorized native loop (`Core::ArraySum`/`Core::ArrayDot`); this
         // registration is the tree-walker's own (scalar, wrapping) reference
