@@ -29,6 +29,21 @@
     (for (i 0 (- n 1)) (store arr i val))
     arr))
 
+;; Allocating elementwise sugar (#394, from #393): a fresh array of
+;; min(len a, len b) elements, filled by the out-param op. Typed code compiles
+;; these directly (the elaborator allocates and runs the SIMD op in place).
+(defun array-add (a b)
+  "Return a fresh array of A[i] + B[i] over min(len A, len B) (int64 wraps)."
+  (array-add! (make-array (min (array-length* a) (array-length* b))) a b))
+
+(defun array-sub (a b)
+  "Return a fresh array of A[i] - B[i] over min(len A, len B) (int64 wraps)."
+  (array-sub! (make-array (min (array-length* a) (array-length* b))) a b))
+
+(defun array-mul (a b)
+  "Return a fresh array of A[i] * B[i] over min(len A, len B) (int64 wraps)."
+  (array-mul! (make-array (min (array-length* a) (array-length* b))) a b))
+
 (defun array-copy* (arr)
   "Return a fresh array with the same elements as ARR."
   (list->array (array->list arr)))

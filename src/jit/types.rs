@@ -642,6 +642,14 @@ pub enum Core {
     /// closure backend use a plain scalar loop — elementwise ops have no
     /// reduction/reassociation, so all three executors agree bit-for-bit.
     ArrayMap2(BinOp, NumKind, Box<Core>, Box<Core>, Box<Core>),
+    /// The rest of the elementwise array family (#394): `array-div!`,
+    /// `array-scale!`, `array-fma!`, `array-neg!`. Operands are evaluated
+    /// left to right, `out` first; the operand shape is [`ArrOp`]'s. Mutates
+    /// `out` in place over `min(len)` of its array operands and evaluates to
+    /// `out`. Every executor calls the one scalar reference
+    /// (`runtime.rs::array_op`; native code through the `jit_array_op`
+    /// trampoline), so all tiers agree bit-for-bit. Int arithmetic wraps.
+    ArrayOp(ArrOp, NumKind, Vec<Core>),
     /// `(array-sum a)`: sum of every element of an `(array int64)` or
     /// `(array float64)`; the [`NumKind`] says which.
     ///
@@ -733,6 +741,54 @@ pub enum Core {
 /// materialize-then-`Core::ArrayGet` desugaring. `#[repr(u64)]` mirrors
 /// [`FUnOp`] so the native trampoline (`jit_boxed_op`) dispatches on a single
 /// `u64` opcode exactly like `jit_ftrans` does.
+/// The [`Core::ArrayOp`] operations (#394) and their operand shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
+pub enum ArrOp {
+    /// `(array-div! out a b)`: `out[i] = a[i] / b[i]`, float64 only.
+    Div,
+    /// `(array-scale! out a s)`: `out[i] = a[i] * s`, `s` a scalar.
+    Scale,
+    /// `(array-fma! out a b c)`: `out[i] = a[i] * b[i] + c[i]`; float64 is
+    /// fused (`f64::mul_add`, one rounding), int64 wraps.
+    Fma,
+    /// `(array-neg! out a)`: `out[i] = -a[i]` (int64 wraps; float64 flips
+    /// the sign, so `-0.0` for `0.0`).
+    Neg,
+}
+
+impl ArrOp {
+    /// Number of operands, `out` included.
+    pub fn arity(self) -> usize {
+        match self {
+            ArrOp::Neg => 2,
+            ArrOp::Div | ArrOp::Scale => 3,
+            ArrOp::Fma => 4,
+        }
+    }
+
+    /// Is operand `i` an array (as opposed to the scalar of `Scale`)?
+    pub fn operand_is_array(self, i: usize) -> bool {
+        !(self == ArrOp::Scale && i == 2)
+    }
+
+    /// The `jit_array_op` opcode.
+    pub fn opcode(self) -> u64 {
+        self as u64
+    }
+
+    /// Inverse of [`Self::opcode`].
+    pub fn from_opcode(op: u64) -> ArrOp {
+        match op {
+            0 => ArrOp::Div,
+            1 => ArrOp::Scale,
+            2 => ArrOp::Fma,
+            3 => ArrOp::Neg,
+            other => panic!("jit_array_op: unknown ArrOp opcode {other}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum BoxedOp {
@@ -946,6 +1002,9 @@ pub fn core_may_mutate_slot(core: &Core, slot: usize) -> bool {
                 || core_may_mutate_slot(b, slot)
         }
         Core::ArraySum(_, a) => core_may_mutate_slot(a, slot),
+        Core::ArrayOp(_, _, xs) => {
+            is_var_slot(&xs[0], slot) || xs.iter().any(|x| core_may_mutate_slot(x, slot))
+        }
         Core::ArrayDot(_, a, b) => core_may_mutate_slot(a, slot) || core_may_mutate_slot(b, slot),
         Core::ArrayNewStride(n, _) => core_may_mutate_slot(n, slot),
         Core::ArraySetStride(a, i, _, fields) => {
@@ -1026,7 +1085,9 @@ pub fn core_references_slot(core: &Core, slot: usize) -> bool {
                 || core_references_slot(i, slot)
                 || core_references_slot(v, slot)
         }
-        Core::BoxedOp(_, args) => args.iter().any(|a| core_references_slot(a, slot)),
+        Core::BoxedOp(_, args) | Core::ArrayOp(_, _, args) => {
+            args.iter().any(|a| core_references_slot(a, slot))
+        }
     }
 }
 
@@ -1114,6 +1175,7 @@ pub fn allocation_escapes(core: &Core, slot: usize) -> bool {
                 || allocation_escapes(b, slot)
         }
         Core::ArraySum(_, a) => allocation_escapes(a, slot),
+        Core::ArrayOp(_, _, xs) => xs.iter().any(|x| allocation_escapes(x, slot)),
         Core::ArrayDot(_, a, b) => allocation_escapes(a, slot) || allocation_escapes(b, slot),
         Core::ArrayNewStride(n, _) => allocation_escapes(n, slot),
         Core::ArraySetStride(a, i, _, fields) => {
@@ -1359,6 +1421,13 @@ fn inline_xform(
             Box::new(inline_xform(o, shift, registry, allow_inline, next)),
             Box::new(inline_xform(a, shift, registry, allow_inline, next)),
             Box::new(inline_xform(b, shift, registry, allow_inline, next)),
+        ),
+        Core::ArrayOp(op, k, xs) => Core::ArrayOp(
+            *op,
+            *k,
+            xs.iter()
+                .map(|x| inline_xform(x, shift, registry, allow_inline, next))
+                .collect(),
         ),
         Core::ArraySum(k, a) => Core::ArraySum(
             *k,
@@ -1642,6 +1711,13 @@ pub(super) fn stride_walk(core: &Core, sc: &StrideCtx, discard: bool) -> Result<
             Box::new(stride_walk(b, sc, false)?),
         )),
         Core::ArraySum(k, a) => Ok(Core::ArraySum(*k, Box::new(stride_walk(a, sc, false)?))),
+        Core::ArrayOp(op, k, xs) => Ok(Core::ArrayOp(
+            *op,
+            *k,
+            xs.iter()
+                .map(|x| stride_walk(x, sc, false))
+                .collect::<Result<_, _>>()?,
+        )),
         Core::ArrayDot(k, a, b) => Ok(Core::ArrayDot(
             *k,
             Box::new(stride_walk(a, sc, false)?),
