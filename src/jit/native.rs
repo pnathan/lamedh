@@ -223,6 +223,7 @@ pub fn compile_native(
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
     jb.symbol("jit_bad_char", super::jit_bad_char as *const u8);
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
+    jb.symbol("jit_ftrans2", super::jit_ftrans2 as *const u8);
     jb.symbol("jit_boxed_op", super::jit_boxed_op as *const u8);
     jb.symbol("jit_array_op", super::jit_array_op as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
@@ -322,6 +323,17 @@ pub fn compile_native(
         .declare_function("jit_ftrans", Linkage::Import, &ftsig)
         .map_err(|e| format!("{e:?}"))?;
 
+    // Imported binary float-intrinsic trampoline (`expt`, #398):
+    // (opcode, x word, y word) -> result word. Pure math, no `Ctx`.
+    let mut ft2sig = module.make_signature();
+    ft2sig.params.push(AbiParam::new(types::I64));
+    ft2sig.params.push(AbiParam::new(types::I64));
+    ft2sig.params.push(AbiParam::new(types::I64));
+    ft2sig.returns.push(AbiParam::new(types::I64));
+    let ftrans2_id = module
+        .declare_function("jit_ftrans2", Linkage::Import, &ft2sig)
+        .map_err(|e| format!("{e:?}"))?;
+
     // Imported boxed-handle intrinsic trampoline (issue #476 phase 3b/3c):
     // (ctx, opcode, a, b, c) -> result word — follows `jit_ftrans`'s
     // single-opcode-dispatch shape (`BoxedOp::opcode`/`from_opcode`, mirroring
@@ -401,6 +413,7 @@ pub fn compile_native(
         let array_oob_ref = module.declare_func_in_func(array_oob_id, b.func);
         let bad_char_ref = module.declare_func_in_func(bad_char_id, b.func);
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
+        let ftrans2_ref = module.declare_func_in_func(ftrans2_id, b.func);
         let boxed_op_ref = module.declare_func_in_func(boxed_op_id, b.func);
         let array_op_ref = module.declare_func_in_func(array_op_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
@@ -457,6 +470,7 @@ pub fn compile_native(
             array_oob_ref,
             bad_char_ref,
             ftrans_ref,
+            ftrans2_ref,
             boxed_op_ref,
             array_op_ref,
             enter_call_ref,
@@ -535,6 +549,9 @@ struct Emitter<'a, 'b, 'c> {
     /// Imported [`super::jit_ftrans`]: the libm float-intrinsic trampoline
     /// (`sin`/`cos`/`tan`/`exp`/`round`), called from the `FUnary` arm.
     ftrans_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_ftrans2`] (#398): the binary libm trampoline
+    /// (`expt`), called from the `FBinary` arm.
+    ftrans2_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_boxed_op`] (issue #476 phase 3b/3c): the boxed-
     /// handle intrinsic trampoline (`equal`/`hash-code`/general-array
     /// access), called from the `Core::BoxedOp` arm.
@@ -733,6 +750,15 @@ impl Emitter<'_, '_, '_> {
                     }
                 };
                 Emitted::Value(r)
+            }
+            Core::FBinary(op, a, b) => {
+                // Binary float intrinsic: both operands already are raw
+                // words; the trampoline returns the result's float bits.
+                let x = self.emit_value(a);
+                let y = self.emit_value(b);
+                let opc = self.iconst(op.opcode() as i64);
+                let call = self.b.ins().call(self.ftrans2_ref, &[opc, x, y]);
+                Emitted::Value(self.b.inst_results(call)[0])
             }
             Core::IntToFloat(a) => {
                 // `(float int)`: widen an int64 word to a float64 word.

@@ -17,6 +17,22 @@ branch is NIL, which native code carries as `false`:
 The checker also stops reporting a false TYPE-ERROR for `case`: it used to
 elaborate clause selectors such as `(1 10)` as calls.
 
+## `log` and float `expt` compile natively (#398)
+
+`(log x)` (natural log, `float64`) and `expt` now compile in the typed JIT
+for float64^float64, float64^int64 and int64^float64. The result is always
+`float64`. `log` goes through the existing unary libm trampoline, and
+`expt` through a new binary one (`jit_ftrans2`). Each operand combination
+calls the same Rust `f64` method as the evaluator's `EXPT` (`powf`, or
+`powi(n as i32)`), so compiled and interpreted results are bit-identical.
+
+Not compiled, so these stay interpreted:
+- `(expt int int)`: the evaluator returns an integer (a float for a
+  negative exponent) and signals on overflow.
+- Two-argument `(log x base)`.
+
+The portable codegen gate (`46-hm-check.lisp`) mirrors these rules.
+
 ## Clearer error for a `make-array` array passed to a typed call (#399)
 
 `(make-array n)` fills its slots with NIL. Passing such an array to a typed
