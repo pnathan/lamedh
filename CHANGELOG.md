@@ -1,5 +1,17 @@
 # v0.4.1 — unreleased
 
+## Compiled `abs`/`min`/`max` evaluate each argument once; `min`/`max` compile at any arity (#397)
+
+The typed JIT compiles `abs`/`min`/`max` by desugaring them to `if` plus a
+comparison. That desugaring cloned the argument's code into the test and
+both branches, so `(abs (f x))` evaluated `(f x)` up to three times, and a
+side effect in the argument ran more than once. Each argument is now
+evaluated once into a temp slot. `min`/`max` also compile at any arity of
+at least one, not only with 2 arguments. They fold from the right exactly
+as `lib/05-math.lisp` does, so ties between signed zeros resolve the same
+way as in the interpreter. The portable codegen gate (`46-hm-check.lisp`)
+accepts the same arities.
+
 ## `log` and float `expt` compile natively (#398)
 
 `(log x)` (natural log, `float64`) and `expt` now compile in the typed JIT
