@@ -12,6 +12,16 @@ as `lib/05-math.lisp` does, so ties between signed zeros resolve the same
 way as in the interpreter. The portable codegen gate (`46-hm-check.lisp`)
 accepts the same arities.
 
+## Clearer error for a `make-array` array passed to a typed call (#399)
+
+`(make-array n)` fills its slots with NIL. Passing such an array to a typed
+`(array int64)`, `(array float64)` or `(array char)` parameter used to fail
+with the bare message `expected int64 argument, got ()`. The error now
+gives the index of the slot, says it is an uninitialized `(make-array n)`
+slot, and names the fix: build the array with `(typed-array n 'int64)`,
+which is zero-filled, or store every element before the call. Any other
+wrong element also reports its index now.
+
 ## More elementwise array ops: `array-div!`, `array-scale!`, `array-fma!`, `array-neg!`, and allocating `array-add`/`array-sub`/`array-mul` (#394, #393)
 
 These extend the `array-add!` family. Like the existing ops, each one
