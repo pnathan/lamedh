@@ -301,6 +301,30 @@ impl Cx<'_> {
                     "ARRAY-MUL!" if !self.checking => {
                         self.elab_array_map2(BinOp::Mul, args, scope, max)
                     }
+                    // The rest of the family (#394): `Core::ArrayOp`.
+                    "ARRAY-DIV!" if !self.checking => {
+                        self.elab_array_op(ArrOp::Div, args, scope, max)
+                    }
+                    "ARRAY-SCALE!" if !self.checking => {
+                        self.elab_array_op(ArrOp::Scale, args, scope, max)
+                    }
+                    "ARRAY-FMA!" if !self.checking => {
+                        self.elab_array_op(ArrOp::Fma, args, scope, max)
+                    }
+                    "ARRAY-NEG!" if !self.checking => {
+                        self.elab_array_op(ArrOp::Neg, args, scope, max)
+                    }
+                    // Allocating sugar (#394, from #393): a fresh `out` of
+                    // `min(len a, len b)` elements, then the `!` op.
+                    "ARRAY-ADD" if !self.checking => {
+                        self.elab_array_alloc(BinOp::Add, args, scope, max)
+                    }
+                    "ARRAY-SUB" if !self.checking => {
+                        self.elab_array_alloc(BinOp::Sub, args, scope, max)
+                    }
+                    "ARRAY-MUL" if !self.checking => {
+                        self.elab_array_alloc(BinOp::Mul, args, scope, max)
+                    }
                     // SIMD array reductions: int64 wraps; float64 follows
                     // Fortran `SUM` (addition order unspecified — see
                     // `Core::ArraySum`'s doc comment). Codegen-only, same
@@ -1721,6 +1745,142 @@ impl Cx<'_> {
         Ok((
             Core::ArrayMap2(op, kind, Box::new(out), Box::new(a), Box::new(b)),
             Ty::Array(Box::new(elem_ty)),
+        ))
+    }
+
+    /// `(array-div!/-scale!/-fma!/-neg! out …)` (#394): every array operand
+    /// unifies with one `(array α)`, the `array-scale!` factor with `α`;
+    /// `α` must RESOLVE to int64/float64 (as for [`Self::elab_array_map2`]),
+    /// and `array-div!` to float64 — int64 division stays interpreted, where
+    /// the tree-walker rejects it.
+    fn elab_array_op(
+        &self,
+        op: ArrOp,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        const NAMES: [&str; 4] = ["out", "a", "b", "c"];
+        if args.len() != op.arity() {
+            return Err(format!(
+                "array op expects {} args, got {}",
+                op.arity(),
+                args.len()
+            ));
+        }
+        let elem = self.fresh();
+        let arr_ty = Ty::Array(Box::new(elem.clone()));
+        let mut cores = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let (c, t) = self.elab(a, scope, max)?;
+            if !op.operand_is_array(i) {
+                if self.unify(&t, &elem).is_err() {
+                    return Err(format!(
+                        "array-scale! factor must have the array element type, got {:?}",
+                        self.walk(&t)
+                    ));
+                }
+            } else if self.unify(&t, &arr_ty).is_err() {
+                return Err(format!(
+                    "array op `{}` must be an array of the same element type as `out`, got {:?}",
+                    NAMES[i],
+                    self.walk(&t)
+                ));
+            }
+            cores.push(c);
+        }
+        let elem_ty = self
+            .resolve(&elem)
+            .map_err(|e| format!("array op: cannot infer element type: {e}"))?;
+        let kind = match elem_ty {
+            Ty::Int64 if op == ArrOp::Div => {
+                return Err("array-div! is float64-only; int64 stays interpreted".to_string());
+            }
+            Ty::Int64 => NumKind::I,
+            Ty::Float64 => NumKind::F,
+            other => {
+                return Err(format!(
+                    "array op element type must resolve to int64 or float64, got {other:?}"
+                ));
+            }
+        };
+        Ok((Core::ArrayOp(op, kind, cores), Ty::Array(Box::new(elem_ty))))
+    }
+
+    /// `(array-add/-sub/-mul a b)` (#394): a fresh array of
+    /// `min(len a, len b)` elements holding `a[i] OP b[i]`, i.e.
+    /// `(array-OP! (make-array (min (array-length* a) (array-length* b))) a b)`
+    /// with `a`/`b` each evaluated once into a temp slot. Same element-type
+    /// rule as [`Self::elab_array_map2`].
+    fn elab_array_alloc(
+        &self,
+        op: BinOp,
+        args: &[LispVal],
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
+        if args.len() != 2 {
+            return Err(format!(
+                "allocating array op expects 2 args (a b), got {}",
+                args.len()
+            ));
+        }
+        let (a, ta) = self.elab(&args[0], scope, max)?;
+        let (b, tb) = self.elab(&args[1], scope, max)?;
+        let elem = self.fresh();
+        let arr_ty = Ty::Array(Box::new(elem.clone()));
+        if self.unify(&ta, &arr_ty).is_err() {
+            return Err(format!(
+                "array op `a` must be an array, got {:?}",
+                self.walk(&ta)
+            ));
+        }
+        if self.unify(&tb, &arr_ty).is_err() {
+            return Err(format!(
+                "array op `b` must be an array of the same element type as `a`, got {:?}",
+                self.walk(&tb)
+            ));
+        }
+        let elem_ty = self
+            .resolve(&elem)
+            .map_err(|e| format!("array op: cannot infer element type: {e}"))?;
+        let kind = match elem_ty {
+            Ty::Int64 => NumKind::I,
+            Ty::Float64 => NumKind::F,
+            other => {
+                return Err(format!(
+                    "array op element type must resolve to int64 or float64, got {other:?}"
+                ));
+            }
+        };
+        let rt = Ty::Array(Box::new(elem_ty));
+        let base = scope.len();
+        for _ in 0..2 {
+            scope.push((String::new(), rt.clone()));
+        }
+        *max = (*max).max(scope.len());
+        scope.truncate(base);
+        let (sa, sb) = (base, base + 1);
+        let len = |s: usize| Box::new(Core::ArrayLen(Box::new(Core::Var(s))));
+        let n = Core::If(
+            Box::new(Core::Cmp(NumKind::I, CmpOp::Lt, len(sa), len(sb))),
+            len(sa),
+            len(sb),
+        );
+        let map = Core::ArrayMap2(
+            op,
+            kind,
+            Box::new(Core::ArrayNew(Box::new(n))),
+            Box::new(Core::Var(sa)),
+            Box::new(Core::Var(sb)),
+        );
+        Ok((
+            Core::Let(
+                sa,
+                Box::new(a),
+                Box::new(Core::Let(sb, Box::new(b), Box::new(map))),
+            ),
+            rt,
         ))
     }
 

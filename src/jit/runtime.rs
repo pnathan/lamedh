@@ -890,6 +890,69 @@ unsafe fn array_map2(op: BinOp, kind: NumKind, base_out: u64, base_a: u64, base_
     }
 }
 
+/// Shared scalar reference implementation of [`Core::ArrayOp`] (#394), the
+/// one every executor calls (native code through [`jit_array_op`]). `w` holds
+/// the operand words, `out` first; array operands are buffer pointers and
+/// the `Scale` scalar is a raw int64/float64 word. Iterates `min(len)` of the
+/// array operands; each element depends only on its own index, so `out` may
+/// alias an input. Returns `out`.
+///
+/// # Safety
+/// Every array operand must be a live buffer pointer from
+/// [`Ctx::alloc_buffer`]/[`Ctx::alloc_buffer_signed`].
+pub(super) unsafe fn array_op(op: ArrOp, kind: NumKind, w: &[u64]) -> u64 {
+    let len = |p: u64| unsafe { *(p as *const u64) } as i64;
+    let mut n = i64::MAX;
+    for (i, &p) in w.iter().enumerate().take(op.arity()) {
+        if op.operand_is_array(i) {
+            n = n.min(len(p));
+        }
+    }
+    let n = n.max(0) as usize;
+    let at = |p: u64, i: usize| unsafe { *(p as *const u64).add(i + 1) };
+    let po = w[0] as *mut u64;
+    for i in 0..n {
+        let r = match (op, kind) {
+            (ArrOp::Div, NumKind::F) => from_f(as_f(at(w[1], i)) / as_f(at(w[2], i))),
+            (ArrOp::Div, NumKind::I) => unreachable!("array-div! is float64-only"),
+            (ArrOp::Scale, NumKind::I) => from_i(as_i(at(w[1], i)).wrapping_mul(as_i(w[2]))),
+            (ArrOp::Scale, NumKind::F) => from_f(as_f(at(w[1], i)) * as_f(w[2])),
+            (ArrOp::Fma, NumKind::I) => from_i(
+                as_i(at(w[1], i))
+                    .wrapping_mul(as_i(at(w[2], i)))
+                    .wrapping_add(as_i(at(w[3], i))),
+            ),
+            (ArrOp::Fma, NumKind::F) => {
+                from_f(as_f(at(w[1], i)).mul_add(as_f(at(w[2], i)), as_f(at(w[3], i))))
+            }
+            (ArrOp::Neg, NumKind::I) => from_i(as_i(at(w[1], i)).wrapping_neg()),
+            (ArrOp::Neg, NumKind::F) => from_f(-as_f(at(w[1], i))),
+        };
+        unsafe { *po.add(i + 1) = r };
+    }
+    w[0]
+}
+
+/// Host trampoline for [`Core::ArrayOp`] (#394): `op`/`kind` are the
+/// [`ArrOp`] opcode and `0` (int64) / `1` (float64); `a`..`d` the operand
+/// words (unused trailing ones ignored). Calls [`array_op`], exactly what the
+/// Core interpreter and the closure tier call.
+///
+/// # Safety
+/// Called only from Cranelift-generated code with live buffer pointers.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_array_op(
+    op: u64,
+    kind: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64,
+) -> u64 {
+    let kind = if kind == 0 { NumKind::I } else { NumKind::F };
+    unsafe { array_op(ArrOp::from_opcode(op), kind, &[a, b, c, d]) }
+}
+
 /// Shared scalar reference implementation of [`Core::ArraySum`], returning
 /// the result as raw word bits. int64: wrapping sum (associative, so any
 /// order is exact). float64: [`crate::f64_reduce_by`] — the language leaves
@@ -1130,6 +1193,10 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             let base_b = eval_core_nontail(b, env, ctx);
             unsafe { array_map2(*op, *kind, base_out, base_a, base_b) };
             base_out
+        }
+        Core::ArrayOp(op, kind, xs) => {
+            let w: Vec<u64> = xs.iter().map(|x| eval_core_nontail(x, env, ctx)).collect();
+            unsafe { array_op(*op, *kind, &w) }
         }
         Core::ArraySum(k, a) => {
             let base_a = eval_core_nontail(a, env, ctx);
@@ -1426,6 +1493,14 @@ pub(super) fn eval_core_traced(
             unsafe { array_map2(*op, *kind, base_out, base_a, base_b) };
             step!("arraymap2", base_out, NO_SLOT, NO_CALLEE)
         }
+        Core::ArrayOp(op, kind, xs) => {
+            let w: Vec<u64> = xs
+                .iter()
+                .map(|x| eval_core_traced(x, env, ctx, depth + 1, log))
+                .collect();
+            let r = unsafe { array_op(*op, *kind, &w) };
+            step!("arrayop", r, NO_SLOT, NO_CALLEE)
+        }
         Core::ArraySum(k, a) => {
             let base_a = eval_core_traced(a, env, ctx, depth + 1, log);
             step!(
@@ -1619,7 +1694,9 @@ pub fn core_node_count(core: &Core) -> usize {
                 + core_node_count(i)
                 + fields.iter().map(core_node_count).sum::<usize>()
         }
-        Core::BoxedOp(_, args) => args.iter().map(core_node_count).sum(),
+        Core::BoxedOp(_, args) | Core::ArrayOp(_, _, args) => {
+            args.iter().map(core_node_count).sum()
+        }
     }
 }
 
@@ -1752,7 +1829,7 @@ pub fn verify_core(core: &Core, n_slots: usize, n_funcs: usize) -> Result<(), St
             }
             Ok(())
         }
-        Core::BoxedOp(_, args) => {
+        Core::BoxedOp(_, args) | Core::ArrayOp(_, _, args) => {
             for a in args {
                 verify_core(a, n_slots, n_funcs)?;
             }
@@ -1908,6 +1985,14 @@ pub fn compile(core: &Core) -> Compiled {
                 let base_b = cb(e, c);
                 unsafe { array_map2(op, kind, base_out, base_a, base_b) };
                 base_out
+            })
+        }
+        Core::ArrayOp(op, kind, xs) => {
+            let (op, kind) = (*op, *kind);
+            let cs: Vec<_> = xs.iter().map(&compile).collect();
+            Rc::new(move |e, c| {
+                let w: Vec<u64> = cs.iter().map(|cx| cx(e, c)).collect();
+                unsafe { array_op(op, kind, &w) }
             })
         }
         Core::ArraySum(k, a) => {

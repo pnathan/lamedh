@@ -691,6 +691,12 @@ pub enum BuiltinFunc {
     ArrayAddBang,
     ArraySubBang,
     ArrayMulBang,
+    // The rest of the elementwise family (#394): tree-walker references for
+    // `Core::ArrayOp`.
+    ArrayDivBang,
+    ArrayScaleBang,
+    ArrayFmaBang,
+    ArrayNegBang,
     // SIMD-in-the-typed-JIT integer array reductions (wrapping, int64-only):
     // the interpreter-side / tree-walker reference for `Core::ArraySum`/
     // `Core::ArrayDot`.
