@@ -49,7 +49,7 @@ where `elaboration.rs` tests `self.checking`:
 | `setq` `while` `for` | ordinary call path | native rules (local slots; `int64` statement) |
 | `sqrt floor ceiling truncate round sin cos tan exp float` | declared schemes | native rules over `float64` |
 | `logand logior logxor`, constant `ash`, `abs`, binary `min`/`max` | variadic schemes | native rules over resolved kinds |
-| `array-add! array-sub! array-mul! array-sum array-dot` | ordinary call path | native rules over resolved element types |
+| `array-add! array-sub! array-mul! array-div! array-scale! array-fma! array-neg! array-add array-sub array-mul array-sum array-dot` | ordinary call path | native rules over resolved element types |
 | `cons car cdr list null record-* append concat quote cond variant-case when unless` | native rules | ordinary call path: `call to unknown function` |
 | a call | host registry, protocol, declared scheme, derived scheme, `any` | run registry, host registry, `funcall`/`apply` as `any`, else `call to unknown function` |
 | `equal`, `hash-code`, `fetch`/`store`/`array-length*` at a `boxed` operand (#476) | the boxed intrinsics, both modes | the boxed intrinsics, both modes; `boxed` is never inferred, only pinned by a signature |

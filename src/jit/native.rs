@@ -225,6 +225,7 @@ pub fn compile_native(
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
     jb.symbol("jit_ftrans2", super::jit_ftrans2 as *const u8);
     jb.symbol("jit_boxed_op", super::jit_boxed_op as *const u8);
+    jb.symbol("jit_array_op", super::jit_array_op as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     jb.symbol("jit_for_step_zero", super::jit_for_step_zero as *const u8);
@@ -339,6 +340,17 @@ pub fn compile_native(
     // `FUnOp`), but needs `Ctx` (to resolve handles via `Ctx::unbox` and to
     // record a pending error on the array ops), so it takes the `ctx` pointer
     // `jit_ftrans` doesn't.
+    // Imported elementwise array-op trampoline (#394):
+    // (opcode, kind, w0, w1, w2, w3) -> out. No `Ctx`: buffers only.
+    let mut aosig = module.make_signature();
+    for _ in 0..6 {
+        aosig.params.push(AbiParam::new(types::I64));
+    }
+    aosig.returns.push(AbiParam::new(types::I64));
+    let array_op_id = module
+        .declare_function("jit_array_op", Linkage::Import, &aosig)
+        .map_err(|e| format!("{e:?}"))?;
+
     let mut bosig = module.make_signature();
     bosig.params.push(AbiParam::new(ptr));
     bosig.params.push(AbiParam::new(types::I64));
@@ -403,6 +415,7 @@ pub fn compile_native(
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
         let ftrans2_ref = module.declare_func_in_func(ftrans2_id, b.func);
         let boxed_op_ref = module.declare_func_in_func(boxed_op_id, b.func);
+        let array_op_ref = module.declare_func_in_func(array_op_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let for_step_zero_ref = module.declare_func_in_func(for_step_zero_id, b.func);
@@ -459,6 +472,7 @@ pub fn compile_native(
             ftrans_ref,
             ftrans2_ref,
             boxed_op_ref,
+            array_op_ref,
             enter_call_ref,
             exit_call_ref,
             for_step_zero_ref,
@@ -542,6 +556,9 @@ struct Emitter<'a, 'b, 'c> {
     /// handle intrinsic trampoline (`equal`/`hash-code`/general-array
     /// access), called from the `Core::BoxedOp` arm.
     boxed_op_ref: cranelift_codegen::ir::FuncRef,
+    /// Imported [`super::jit_array_op`] (#394): the elementwise array-op
+    /// trampoline, called from the `Core::ArrayOp` arm.
+    array_op_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
@@ -809,6 +826,22 @@ impl Emitter<'_, '_, '_> {
                 let base_a = self.emit_value(a);
                 let base_b = self.emit_value(b);
                 Emitted::Value(self.emit_array_map2(*op, *kind, base_out, base_a, base_b))
+            }
+            Core::ArrayOp(op, kind, xs) => {
+                // Evaluate the operands left to right, pad to four with a
+                // zero placeholder, and call the shared scalar reference.
+                let mut vals: Vec<Value> = xs.iter().map(|x| self.emit_value(x)).collect();
+                let zero = self.iconst(0);
+                while vals.len() < 4 {
+                    vals.push(zero);
+                }
+                let opc = self.iconst(op.opcode() as i64);
+                let kc = self.iconst(if matches!(kind, NumKind::I) { 0 } else { 1 });
+                let call = self.b.ins().call(
+                    self.array_op_ref,
+                    &[opc, kc, vals[0], vals[1], vals[2], vals[3]],
+                );
+                Emitted::Value(self.b.inst_results(call)[0])
             }
             Core::ArraySum(k, a) => {
                 let base_a = self.emit_value(a);
