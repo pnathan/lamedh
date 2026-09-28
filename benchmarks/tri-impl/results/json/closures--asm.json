@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/lamedh-asm/build/lamedhc /home/user/lamedh/benchmarks/tri-impl/build/asm/closures.lisp",
+      "mean": 0.21917836520000003,
+      "stddev": 0.02158086919107158,
+      "median": 0.22793233400000001,
+      "user": 0.2125826,
+      "system": 0.0028998,
+      "min": 0.18404925500000002,
+      "max": 0.23953490400000002,
+      "times": [
+        0.21444981000000002,
+        0.23953490400000002,
+        0.22793233400000001,
+        0.18404925500000002,
+        0.22992552300000002
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

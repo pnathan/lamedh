@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/lamedh-asm/build/lamedhc /home/user/lamedh/benchmarks/tri-impl/build/asm/lists.lisp",
+      "mean": 0.2973338984,
+      "stddev": 0.010101940797786705,
+      "median": 0.300608531,
+      "user": 0.26955539999999995,
+      "system": 0.0196042,
+      "min": 0.279543898,
+      "max": 0.30459931700000004,
+      "times": [
+        0.29997848800000004,
+        0.30193925800000004,
+        0.279543898,
+        0.300608531,
+        0.30459931700000004
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

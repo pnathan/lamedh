@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-interp/sieve.lisp",
+      "mean": 12.844677756,
+      "stddev": 0.15440605910716235,
+      "median": 12.85391593,
+      "user": 12.599872,
+      "system": 0.0469186,
+      "min": 12.616337535,
+      "max": 12.998427759,
+      "times": [
+        12.9705359,
+        12.998427759,
+        12.85391593,
+        12.784171656,
+        12.616337535
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

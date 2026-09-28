@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/ack.lisp",
+      "mean": 3.6347148251999997,
+      "stddev": 0.21841283938576553,
+      "median": 3.620181732,
+      "user": 3.4256431999999997,
+      "system": 0.146914,
+      "min": 3.3964044380000002,
+      "max": 3.979769878,
+      "times": [
+        3.3964044380000002,
+        3.516155103,
+        3.661062975,
+        3.979769878,
+        3.620181732
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}
