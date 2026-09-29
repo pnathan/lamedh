@@ -66,7 +66,26 @@ pub struct Ctx<'a> {
     /// and aliasing contract. Dropped with the rest of `Ctx` when the
     /// top-level membrane call returns.
     pub(super) boxed: RefCell<Vec<LispVal>>,
+    /// Whether this call runs under an armed kernel fuel budget (issue
+    /// #502), sampled when the `Ctx` is built. A metered call never enters
+    /// a native or closure edition — their internal loops never return to
+    /// any metering point — and instead runs the reference interpreter
+    /// ([`eval_core`]), which charges one kernel fuel step per loop
+    /// iteration, self tail call and function entry (see
+    /// [`Ctx::charge_fuel`]).
+    pub(super) metered: bool,
+    /// Set once a metered call has spent the budget: every loop and call
+    /// then unwinds promptly, and the membrane reports
+    /// [`FUEL_EXHAUSTED`] in place of the result.
+    pub(super) fuel_out: Cell<bool>,
 }
+
+/// The pending-error message a metered typed call records when the kernel
+/// fuel budget runs out (issue #502). The evaluator's typed membrane maps it
+/// back to `LispError::FuelExhausted`, so the owning `WITH-FUEL` fence (or
+/// the `--fuel`/`--mcp` toplevel) sees exactly the signal the tree-walker
+/// raises.
+pub const FUEL_EXHAUSTED: &str = "fuel exhausted (kernel step budget)";
 
 impl Ctx<'_> {
     /// Byte offset of the `overflow` field from the start of `Ctx`.
@@ -129,6 +148,28 @@ impl Ctx<'_> {
             self.depth.set(d + 1);
             true
         }
+    }
+
+    /// Charge one kernel fuel step for a metered call (issue #502); always
+    /// `true` for an unmetered one. Returns `false` once the budget is
+    /// spent, after recording [`FUEL_EXHAUSTED`] as the pending error — it
+    /// overrides any earlier pending error, because exhaustion is a
+    /// control-flow signal the owning fence must see, not an ordinary
+    /// condition. Callers stop looping / return a memory-safe substitute.
+    #[inline]
+    pub(super) fn charge_fuel(&self) -> bool {
+        if !self.metered {
+            return true;
+        }
+        if self.fuel_out.get() {
+            return false;
+        }
+        if crate::evaluator::core::charge_kernel_fuel().is_err() {
+            self.fuel_out.set(true);
+            *self.pending_error.borrow_mut() = Some(FUEL_EXHAUSTED.to_string());
+            return false;
+        }
+        true
     }
 
     /// Leave a non-tail call entered via [`Ctx::enter_call`].
@@ -389,6 +430,9 @@ impl Ctx<'_> {
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
+            // Raw entries are documented as unmetered (see `entry.rs`).
+            metered: false,
+            fuel_out: Cell::new(false),
         }
     }
 
@@ -1076,6 +1120,9 @@ pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize)
                     .map(|a| eval_core_nontail(a, env, ctx))
                     .collect();
                 env[..vals.len()].copy_from_slice(&vals);
+                if !ctx.charge_fuel() {
+                    return ctx.alloc_buffer(0) as u64;
+                }
                 current = top;
             }
             Core::Call(id, args) => {
@@ -1271,6 +1318,9 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         }
         Core::While(test, body) => {
             while eval_core_nontail(test, env, ctx) != 0 {
+                if !ctx.charge_fuel() {
+                    break;
+                }
                 eval_core_nontail(body, env, ctx);
             }
             0
@@ -1297,6 +1347,9 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             loop {
                 // Inclusive bound; direction depends on the sign of step.
                 if (st > 0 && i > e) || (st < 0 && i < e) {
+                    break;
+                }
+                if !ctx.charge_fuel() {
                     break;
                 }
                 env[*slot] = from_i(i);
