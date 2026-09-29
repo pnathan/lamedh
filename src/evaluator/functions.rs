@@ -595,14 +595,23 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                         }
                     }
                 }
-                if fits
-                    && let Some(Ok((v, updated, flags))) = env
-                        .jit_call_with_array_writeback_aliased(
-                            &name,
-                            &vals,
-                            &crate::jit::array_alias_map(args, &ptys),
-                        )
-                {
+                // Only a call the native code *declined to enter* may fall
+                // back (issue #500). Once the body has run it may already
+                // have mutated a zero-copy typed array or called the host,
+                // so re-running it interpreted would repeat those effects:
+                // a post-entry error (recursion cap, out-of-range index, …)
+                // propagates instead.
+                let entry = if fits {
+                    env.jit_call_entry_aliased(
+                        &name,
+                        &vals,
+                        &crate::jit::array_alias_map(args, &ptys),
+                    )
+                } else {
+                    None
+                };
+                if let Some(crate::jit::JitEntry::Entered(result)) = entry {
+                    let (v, updated, flags) = result.map_err(LispError::Generic)?;
                     // Set OVERFLOW before signalling a division error: the
                     // tree-walker evaluates left-to-right, so an inner overflow
                     // leaves the flag observable even when a later division by
