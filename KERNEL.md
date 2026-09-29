@@ -56,7 +56,8 @@ whitespace and comments, then tries a fixed, ordered list of productions
 and commits to the first one that matches, consuming exactly what that
 production matched. Except where a production is stated below to carry a
 boundary guard, **nothing requires the character after a matched
-production to be a delimiter** — the next production simply starts there.
+production to be a delimiter** (every numeric production, and `1+`/`1-`,
+carries one: see *Integer literals*) — the next production simply starts there.
 Several concrete consequences of this rule are listed under each
 production; a conforming reader must reproduce them.
 
@@ -118,9 +119,10 @@ constituent of anything and is a parse error outside strings.
   is the symbol named `NIL` (not `Nil`). An unterminated escape is a hard
   parse failure. `|` begins nothing else outside a block comment.
 - *`1+`/`1-`*: the two-character sequences `1+` and `1-` read as the
-  symbols `1+` and `1-`. This is a prefix match with no boundary guard
-  and it is tried **before** numbers, so `1+x` reads as `1+` then `X`,
-  and `1-5` reads as `1-` then `5`. No other digit-leading symbol exists.
+  symbols `1+` and `1-`. It is tried **before** numbers and carries the
+  numeric token boundary (see *Integer literals*), so `1+x` and `1-5` are
+  parse errors, not `1+` then `X` or `1-` then `5`. No other digit-leading
+  symbol exists.
 - *Earmuff*: `* letter (letter | digit | -)* *`. Tried before the keyword
   and general productions. The tail admits **only** letters, digits, and
   `-`: `*foo*` and `*a-b1*` are earmuff symbols, but `*foo?*` is not —
@@ -156,7 +158,9 @@ constituent of anything and is a parse error outside strings.
   symbol. Operator symbols contain no letters and are unaffected. There is
   no case-sensitivity mode; the escaped production is the only way to
   read a name containing lower-case letters. `INTERN` does **not** fold:
-  `(intern "foo")` is the symbol `|foo|`, distinct from `FOO`.
+  `(intern "foo")` is the symbol `|foo|`, distinct from `FOO`. (It
+  upcased its string before issue #523; code that relied on that must now
+  write `(intern (string-upcase s))`.)
 - `T` (after uppercasing) reads as the ordinary interned symbol `T`.
   `NIL` (after uppercasing) does **not** read as a symbol — it reads as
   the same `Nil` value that `()` reads as. This special-casing happens
@@ -173,45 +177,50 @@ constituent of anything and is a parse error outside strings.
 
 **Integer literals.** A `Number` is a 64-bit two's-complement signed
 integer (Part V). Five productions, tried in the order given under
-*Dispatch order*:
+*Dispatch order*.
 
-- *Decimal*: `-? digit+`. No `+` sign, leading zeros allowed. **No
-  boundary guard**: `12abc` reads as `12` then `ABC`; `5.` reads as `5`
-  followed by a dotted-pair marker. If the digits do not fit in `i64`, the
-  token instead reads as a `Float` (`9223372036854775808` reads as the
-  float `9223372036854775808.0`; `-9223372036854775808` fits and is a
-  `Number`). It never errors and never becomes a bignum on any host
-  (Part XII, axis 1, is about arithmetic results, not literals).
-- *Octal, `Q` suffix*: `-? digit+ Q` (uppercase `Q` only). No boundary
-  guard: `17Qx` is `15` then `X`. If a digit is not octal (`8Q`) or the
-  value overflows `i64`, the production fails and the reader falls
-  through to the decimal production (`8Q` reads as `8` then the symbol
-  `Q`; an overflowing `777…7Q` reads as a float then `Q`). Portable
-  programs must not write such tokens.
+**Token boundary (every numeric production, issue #503).** A numeric
+literal is complete only when the character after it is a *delimiter*:
+end of input, a *space* character (defined above), `(`, `)`, `"`, `'`, `` ` ``, `,` or `;`. A
+production whose match is followed by anything else fails, so a token
+that merely *starts* like a number (`12abc`, `1.5x`, `2.0.3`, `5.`,
+`1-2`, `17Qx`, `1Ahx`) is matched by no production and is a **parse
+error** — never a number followed by a symbol. The `1+`/`1-` symbols obey
+the same boundary: `(1+ x)` reads the symbol `1+`, `1+2` is a parse error.
+
+- *Decimal*: `-? digit+`. No `+` sign, leading zeros allowed. If the
+  digits do not fit in `i64`, the token instead reads as a `Float`
+  (`9223372036854775808` reads as the float `9223372036854775808.0`;
+  `-9223372036854775808` fits and is a `Number`). It never becomes a
+  bignum on any host (Part XII, axis 1, is about arithmetic results, not
+  literals).
+- *Octal, `Q`/`q` suffix*: `-? digit+ [Qq]`. The sign is part of the
+  parsed value, so `-1000000000000000000000Q` is `i64::MIN`. A complete
+  token with a non-octal digit (`8Q`) or a value outside `i64` is a parse
+  error; the reader never falls through to re-read the digits as decimal.
 - *Hexadecimal, `H`/`h` suffix*: `-? digit hex-digit* [Hh]`, hex digits
   in either case. The digit run **must start with a decimal digit**: `FFh`
-  is the symbol `FFH`; write `0FFh`. **Boundary guard**: if the character
-  after the suffix is alphanumeric or `-`, the production fails
-  (`ffhello` is a symbol; `1Ahx` falls through to read `1` then `AHX`).
-  Overflow fails the production and falls through as for octal.
-- *Radix-prefixed*: `# [xXbBoO] -? digit-in-radix+`. **Boundary guard**:
-  an alphanumeric or `-` immediately after the digits fails the whole
-  production, and because no other production accepts `#x`, the result is
-  a parse error (`#b102` and `#xFG` are parse errors, not `#b10` `2`).
-  Overflow is likewise a parse error. There is no `#d` prefix.
-- *`i64::MIN`* can be written in decimal (`-9223372036854775808`) but not
-  via any suffixed or prefixed form (those parse the magnitude first).
+  is the symbol `FFH`; write `0FFh`. Signed like octal
+  (`-8000000000000000H` is `i64::MIN`); a value outside `i64` is a parse
+  error.
+- *Radix-prefixed*: `# [xXbBoO] -? digit-in-radix+`. A non-delimiter
+  after the digits is a parse error (`#b102` and `#xFG` are parse errors,
+  not `#b10` `2`). Signed like octal (`#x-8000000000000000` is
+  `i64::MIN`); a value outside `i64` is a parse error. There is no `#d`
+  prefix.
 
-**Float literals.** `-? digit+ "." digit+ (("e"|"E") ("+"|"-")? digit+)?`.
-Both the integer part and the fractional part require at least one digit,
-and the exponent is legal **only after a fractional part**: `1.5`,
-`-2.0e-3`, `1.0E10` are floats; `.5`, `5.`, and `1e5` are **not**. `1e5`
-reads as the number `1` followed by the symbol `E5`. Inside a list, `.`
-is the dotted-pair marker, so `(a .5)` reads as `(A . 5)`, `(5. a)` reads
-as `(5 . A)`, and `(.5)` is a parse error. At top level a stray `.` is a
-parse error. No boundary guard: `1.5x` reads as `1.5` then `X`. A literal
-whose magnitude exceeds `f64` range reads as the corresponding infinity
-(`1.0e999` is `+inf`), never an error.
+**Float literals.** `-? digit+ ( "." digit+ exponent? | exponent )`,
+where `exponent` is `("e"|"E") ("+"|"-")? digit+`. The integer part
+requires at least one digit, and a `.` requires at least one fractional
+digit: `1.5`, `-2.0e-3`, `1.0E10`, `1e5`, `-2E-3` are floats; `.5` and
+`5.` are **not**. Because the float production is tried first, a
+digit-leading token ending in `H` that also contains an `e` is still hex
+when the float's boundary check fails (`1e5h` is `485`). Inside a list,
+`.` is the dotted-pair marker, so `(a .5)` reads as `(A . 5)` and `(.5)`
+is a parse error; `(5. a)` is a parse error by the boundary rule. At top
+level a stray `.` is a parse error. A literal whose magnitude exceeds
+`f64` range reads as the corresponding infinity (`1.0e999` and `1e400`
+are `+inf`), never an error.
 
 **String literals**, delimited by `"`, may span lines (a raw LF inside a
 string is part of the string). Recognized escapes: `\n` `\t` `\r` `\\`

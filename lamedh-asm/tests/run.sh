@@ -442,6 +442,20 @@ T'
         '(THROW (QUOTE MYTAG) 42)'
     err_case car_of_fixnum 1 "" "CAR: expected a cons or NIL: 5" \
         '(PRINT (CAR 5))'
+    # APPLY/FUNCALL on a non-function: a catchable condition, not a
+    # SIGSEGV (#544); a symbol resolves to its function binding.
+    err_case apply_fixnum 1 "" "lamedhc: unhandled error: not a function: 5" \
+        '(apply 5 nil)'
+    err_case funcall_fixnum 1 "" "lamedhc: unhandled error: not a function: 5" \
+        '(funcall 5 1)'
+    err_case apply_nil 1 "" "lamedhc: unhandled error: not a function" \
+        '(apply nil nil)'
+    err_case apply_string 1 "" "lamedhc: unhandled error: not a function: s" \
+        '(apply "s" nil)'
+    err_case apply_not_callable_caught 0 "(A B C D)" "" \
+        '(print (list (handler-case (apply 5 nil) (error (e) (quote a))) (handler-case (funcall 5 1) (error (e) (quote b))) (handler-case (apply nil nil) (error (e) (quote c))) (handler-case (apply "s" nil) (error (e) (quote d)))))'
+    err_case apply_symbol 0 "(1 (1 2))" "" \
+        "(print (list (apply 'car (list (list 1))) (funcall 'list 1 2)))"
     err_case variadic_arith 0 "(6 7 24 T () T 0 1 5 -5 T)" "" \
         '(PRINT (LIST (+ 1 2 3) (- 10 1 2) (* 2 3 4) (< 1 2 3) (< 1 3 2) (= 1 1 1) (+) (*) (+ 5) (- 5) (< 7)))'
     err_case variadic_once 0 "(T 3)" "" \

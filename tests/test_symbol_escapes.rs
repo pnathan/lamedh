@@ -115,13 +115,49 @@ fn printer_escapes_names_that_would_not_read_back() {
         (":A:B", "|:A:B|"),
         ("1+X", "|1+X|"),
         ("É", "|É|"),
+        // Earmuff tails admit only letters, digits and `-`: bare, `*FOO?*`
+        // reads as `*` then `FOO?*`, and `*A_B*` as `*` then `A_B*`.
+        ("*FOO?*", "|*FOO?*|"),
+        ("*A_B*", "|*A_B*|"),
+        // `@` and `/` are not general-symbol constituents: protocol impl
+        // names (`$NAME@TYPE`, lib/29-protocols.lisp) are a parse error
+        // bare, and `A/B` reads as `A` then `/B`.
+        ("$SHOW@INT", "|$SHOW@INT|"),
+        ("FOO@BAR", "|FOO@BAR|"),
+        ("A/B", "|A/B|"),
         ("a|b", r"|a\|b|"),
         (r"a\b", r"|a\\b|"),
     ] {
         let s = sym(name, &env);
         assert_eq!(print(&s), printed, "printing symbol {name:?}");
         assert_eq!(read_symbol_name(printed, &env).as_deref(), Some(name));
+        // The bare spelling really does not read back as this symbol.
+        assert_ne!(read_symbol_name(name, &env).as_deref(), Some(name));
     }
+}
+
+/// A protocol implementation symbol (`$NAME@TYPE`, lib/29-protocols.lisp)
+/// prints escaped and reads back as the very symbol the protocol layer
+/// interned.
+#[test]
+fn protocol_impl_names_round_trip() {
+    lamedh::with_large_stack(|| {
+        let env = Environment::with_stdlib();
+        eval_line("(defprotocol describe523 (x) string)", &env);
+        eval_line("(definstance describe523 ((x int)) string \"int\")", &env);
+        assert_eq!(
+            eval_line("(prin1-to-string (intern \"$DESCRIBE523@INT\"))", &env),
+            "\"|$DESCRIBE523@INT|\""
+        );
+        assert_eq!(
+            eval_line(
+                "(let ((s (intern \"$DESCRIBE523@INT\"))) \
+                   (and (boundp s) (eq (read-from-string (prin1-to-string s)) s)))",
+                &env
+            ),
+            "T"
+        );
+    });
 }
 
 #[test]

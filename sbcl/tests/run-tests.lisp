@@ -15,7 +15,7 @@
   '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
     "60-special-forms" "65-loops" "70-hash-and-plist" "90-bitwise"
-    "95-stdlib-batteries" "96-format-and-io"))
+    "95-stdlib-batteries" "96-format-and-io" "97-port-regressions"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
@@ -23,5 +23,15 @@
     (format t "~&; loading ~A~%" name)
     (run-string (uiop:read-file-string path))))
 
-(let ((ok (leval (lread "(run-tests)") *global-env*)))
-  (uiop:quit (if (eq ok *t-sym*) 0 1)))
+;; Shell-level CLI exit-status check (#535): runs the documented script
+;; invocation in child SBCL processes and checks their exit codes.
+(defun run-cli-exit-status-test ()
+  (format t "~&; running cli-exit-status.sh~%")
+  (let ((script (namestring (merge-pathnames "cli-exit-status.sh" *load-truename*))))
+    (zerop (nth-value 2 (uiop:run-program (list "sh" script)
+                                          :output t :error-output t
+                                          :ignore-error-status t)))))
+
+(let ((ok (leval (lread "(run-tests)") *global-env*))
+      (cli-ok (run-cli-exit-status-test)))
+  (uiop:quit (if (and (eq ok *t-sym*) cli-ok) 0 1)))
