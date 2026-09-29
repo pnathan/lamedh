@@ -1452,3 +1452,19 @@
                 (APPEND (REVERSE STORES)
                         (LIST (CONS (QUOTE LET)
                                     (CONS ($LABELS-REBIND BOX NAMES (QUOTE ())) BODY))))))))
+
+; STRING->LIST* — the reference's one-pass builtin (#510,
+; evaluator/builtins_core.rs) behind lib/14-strings.lisp's STRING->LIST:
+; the characters of S as one-character strings. Walks the UTF-8 bytes
+; from the end, so each character's start is found by skipping back
+; over continuation bytes and the list is built in order with no
+; reversal; SUBSTRING here is byte-indexed.
+(DEFUN STRING->LIST* (S)
+  (LET ((I (STRING-LENGTH S)) (J 0) (ACC (QUOTE ())))
+    (WHILE (< 0 I)
+      (PROGN (SETQ J (- I 1))
+             (WHILE (IF (< 0 J) (EQ (LOGAND (STRING-REF S J) 192) 128) (QUOTE ()))
+               (SETQ J (- J 1)))
+             (SETQ ACC (CONS (SUBSTRING S J I) ACC))
+             (SETQ I J)))
+    ACC))

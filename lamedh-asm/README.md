@@ -1370,7 +1370,7 @@ support), `FOR`, and the portability basics of #552 (`CONSP`, `LENGTH`,
 `ABS`, `MEMBER`, `DOLIST`, `MAKE-ARRAY`/`AREF`/`ARRAY-LENGTH`,
 `LIST->ARRAY`/`ARRAY->LIST`, `STRING=`, `SYMBOL-NAME`, `SETF`/`PUSH`/`INCF`,
 `FLET`, `LABELS` — all `WHILE` loops, so no per-element native stack;
-`tests/cases/070_prelude_basics.asm`) — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
+`tests/cases/075_prelude_basics.asm`) — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
 over kernel primitives, no compiler change needed (see
 `lib/prelude.lisp`'s own comments for exactly why; `DOTIMES` is
 derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part XII axis 3's

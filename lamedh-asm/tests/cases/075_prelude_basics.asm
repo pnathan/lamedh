@@ -1,10 +1,11 @@
-; 070_prelude_basics — the portability basics lib/prelude.lisp gained
+; 075_prelude_basics — the portability basics lib/prelude.lisp gained
 ; for #552: CONSP, LENGTH (lists, UTF-8 strings in characters, arrays,
 ; hash tables), ABS, MEMBER, DOLIST, MAKE-ARRAY, AREF, ARRAY-LENGTH,
 ; LIST->ARRAY, ARRAY->LIST, STRING=, SYMBOL-NAME, SETF/PUSH/INCF over
 ; symbol/GETHASH/FETCH/AREF/ELT places, FLET, and LABELS (mutual and
 ; self recursion through the array box, parameter shadowing of a
-; sibling name, a closure over an outer variable, &REST).
+; sibling name, a closure over an outer variable, &REST), and
+; STRING->LIST* (the reference builtin lib/14-strings.lisp now needs).
 ;
 ; Every expected value was checked against the Rust reference
 ; (target/release/lamedh) except LABELS, SYMBOL-NAME and ARRAY-LENGTH,
@@ -97,6 +98,8 @@ prog_start:
     db '(NEWLINE)', 10
     db '(DEFINE BIG (IOTA 200000 1))', 10
     db '(PRINT (LIST (LENGTH BIG) (MEMBER 200000 BIG) (LENGTH (ARRAY->LIST (LIST->ARRAY BIG)))))', 10
+    db '(NEWLINE)', 10
+    db '(PRINT (LIST (STRING->LIST* "aéb") (STRING->LIST* "") (LENGTH (STRING->LIST* (PRINC-TO-STRING (IOTA 10000 1))))))', 10
     db '(NEWLINE)', 10
     db '(PRINT (LET ((N 0)) (DOLIST (X BIG) (SETQ N (+ N X))) N))', 10
     db '(NEWLINE)', 10
