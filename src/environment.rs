@@ -1324,6 +1324,18 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::StringCasefold),
         );
         env.set(
+            "STRING->LIST*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringToList),
+        );
+        env.set(
+            "STRING-SPLIT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringSplit),
+        );
+        env.set(
+            "STRING-JOIN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringJoin),
+        );
+        env.set(
             "STRING->UTF8*".to_string(),
             LispVal::Builtin(BuiltinFunc::StringToUtf8),
         );
