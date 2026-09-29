@@ -627,6 +627,30 @@ pub(super) fn apply(
                 let epoch = EPOCH.get_or_init(std::time::Instant::now);
                 Ok(LispVal::Number(epoch.elapsed().as_micros() as i64))
             }
+            // (eval-depth-limit) — the current thread's recursion limit, in
+            // interpreted eval frames (issue #520).
+            BuiltinFunc::EvalDepthLimit => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "eval-depth-limit takes no arguments".to_string(),
+                    ));
+                }
+                Ok(LispVal::Number(
+                    crate::evaluator::core::eval_depth_limit() as i64
+                ))
+            }
+            // (set-eval-depth-limit! n) — set the recursion limit, at most the
+            // host's ceiling (`lamedh --max-depth N`); returns the old limit.
+            BuiltinFunc::SetEvalDepthLimit => {
+                let [LispVal::Number(n)] = args else {
+                    return Err(LispError::Generic(format!(
+                        "SET-EVAL-DEPTH-LIMIT!: expected one positive integer, got {}",
+                        err_val(&vec_to_list(args.to_vec()))
+                    )));
+                };
+                crate::evaluator::core::set_eval_depth_limit_from_lisp(*n)
+                    .map(|prev| LispVal::Number(prev as i64))
+            }
             // (last-backtrace) — the frames of the most recently CAUGHT
             // error (innermost first), as a list of symbols.
             BuiltinFunc::LastBacktrace => {

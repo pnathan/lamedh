@@ -265,6 +265,15 @@ struct Args {
     #[arg(long, value_name = "N")]
     fuel: Option<u64>,
 
+    /// Maximum interpreted recursion depth, in nested eval frames (default
+    /// 10000). Deep non-tail recursion past it is a recoverable `recursion
+    /// limit exceeded` error. It is also the ceiling for Lisp's
+    /// `(set-eval-depth-limit! n)`. The interpreter runs on a 512 MiB stack;
+    /// a limit far above the default can exhaust it and abort the process.
+    /// Compiled (JIT) code has its own non-tail call limit (see docs).
+    #[arg(long = "max-depth", value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    max_depth: Option<u64>,
+
     /// Script file to run, followed by arguments for the script.  The
     /// arguments are exposed to Lisp as the list *ARGV* (strings).  The
     /// process exits after the script finishes; use (exit n) to set the
@@ -498,6 +507,12 @@ fn run_check(args: &Args) -> ! {
 }
 
 fn run(args: Args) {
+    // Before any mode builds an environment: the depth limit is per-thread,
+    // and this is the interpreter thread (issue #520).
+    if let Some(n) = args.max_depth {
+        lamedh::set_eval_depth_limit(n as usize);
+    }
+
     // Static-check, format, and test modes short-circuit everything else:
     // none of them load -i files or start a REPL, and each builds its own
     // environment sized to what it actually needs.

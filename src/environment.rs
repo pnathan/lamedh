@@ -919,6 +919,14 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::MonotonicMicros),
         );
         env.set(
+            "EVAL-DEPTH-LIMIT".to_string(),
+            LispVal::Builtin(BuiltinFunc::EvalDepthLimit),
+        );
+        env.set(
+            "SET-EVAL-DEPTH-LIMIT!".to_string(),
+            LispVal::Builtin(BuiltinFunc::SetEvalDepthLimit),
+        );
+        env.set(
             "EXPLAIN-COMPILE".to_string(),
             LispVal::Builtin(BuiltinFunc::ExplainCompile),
         );
