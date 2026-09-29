@@ -12,7 +12,8 @@
 
 (defun lprint-1 (v stream readably)
   (cond
-    ((null v) (write-string "NIL" stream))
+    ;; The empty list prints as () everywhere, never NIL (KERNEL Part III).
+    ((null v) (write-string "()" stream))
     ((eq v *t-sym*) (write-string "T" stream))
     ((symbolp v) (write-string (symbol-name v) stream))
     ((integerp v) (princ v stream))
@@ -49,8 +50,9 @@
      (lprint-1 (lamedh-struct-type-name v) stream readably)
      (loop for f across (lamedh-struct-values v) do (write-char #\Space stream) (lprint-1 f stream readably))
      (write-char #\) stream))
-    ((hash-table-p v) (format stream "#<HASH-TABLE ~D entries>" (hash-table-count v)))
-    ((simple-vector-p v) (format stream "#<ARRAY ~D>" (length v)))
+    ;; Opaque tags match the reference printer (src/printer.rs).
+    ((hash-table-p v) (write-string "<hash-table>" stream))
+    ((simple-vector-p v) (format stream "<array:~D>" (length v)))
     ((lambda-obj-p v) (format stream "#<LAMBDA~@[ ~A~]>" (lambda-obj-name v)))
     ((macro-obj-p v) (write-string "#<MACRO>" stream))
     ((fexpr-obj-p v) (write-string "#<FEXPR>" stream))
@@ -64,10 +66,10 @@
   (with-output-to-string (s) (lprint-1 v s readably)))
 
 (defun lprint (v)
-  "PRINT semantics: a leading newline, the READABLE representation, and a
-trailing space (matches common Lisp PRINT); used by the (print ...)
-builtin."
-  (format t "~%~A " (lprint-to-string v t))
+  "PRINT semantics: the READABLE representation, then a newline (matches
+the reference implementation, not CL's leading-newline/trailing-space
+framing); used by the (print ...) builtin."
+  (format t "~A~%" (lprint-to-string v t))
   v)
 
 (defun lprinc (v) (format t "~A" (lprint-to-string v nil)) v)

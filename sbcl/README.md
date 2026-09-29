@@ -61,13 +61,16 @@ sbcl --non-interactive --load tests/run-tests.lisp
 ```
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
-implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
+implementation's `tests/lisp/*.lisp` language-level fixtures, plus the
+port-specific printer-conformance file `97-printer.lisp` — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **512 assertions** across
+At the time of writing this passes all **530 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
-FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
+and printer output checked against the reference binary (`()` for the
+empty list, `PRINT` framing, opaque `<array:N>`/`<hash-table>` tags).
 
 ### Running the `examples/` programs
 
