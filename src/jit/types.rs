@@ -603,8 +603,8 @@ pub enum Core {
     /// in the tree-walker.
     Assign(usize, Box<Core>),
     /// `(while test body)`: evaluate TEST; if truthy (nonzero), evaluate
-    /// BODY for side effects, then loop. Evaluates to 0 (NIL). Statement
-    /// node — legal only in discarded position (non-tail Seq element).
+    /// BODY for side effects, then loop. Evaluates to 0, typed `bool`
+    /// (NIL, #524).
     While(Box<Core>, Box<Core>),
     /// `(for (var start end [step]) body...)`: evaluate START, END, STEP
     /// once; iterate VAR from START to END (inclusive) by STEP. Direction
