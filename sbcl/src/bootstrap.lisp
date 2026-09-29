@@ -32,11 +32,19 @@
     (dolist (form forms) (leval form *global-env*))))
 
 (defun bootstrap ()
-  (dolist (name *bootstrap-files*)
-    (let ((path (merge-pathnames (concatenate 'string name ".lisp") (lib-directory))))
-      (handler-case (load-lamedh-file path)
-        (error (c)
-          (format *error-output* "~&; bootstrap error loading ~A: ~A~%" name c)
-          (error c))))))
+  ;; The stdlib factory cache (compile.lisp) supplies the compiled forms of
+  ;; the stdlib's lambdas, so a warm bootstrap need not call COMPILE.
+  (lc-load-cache)
+  (let ((*lc-recording* t))
+    (dolist (name *bootstrap-files*)
+      (let ((path (merge-pathnames (concatenate 'string name ".lisp") (lib-directory))))
+        (handler-case (load-lamedh-file path)
+          (error (c)
+            (format *error-output* "~&; bootstrap error loading ~A: ~A~%" name c)
+            (error c))))))
+  (lc-save-cache)
+  (setf *lc-recorded* nil)
+  (clrhash *lc-recorded-set*))
 
 (bootstrap)
+(capture-equal-kernel)

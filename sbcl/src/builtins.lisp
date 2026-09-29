@@ -78,7 +78,62 @@ gets compared structurally as part of the struct's own deep equality."
     ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
     (t (eq a b))))
 
-(defun lamedh-equal (a b) (lamedh-truthy-p (lapply-fn (env-resolve *global-env* (lsym "EQUAL")) (list a b))))
+(defvar *equal-kernel* nil
+  "Alist of (symbol . value) for EQUAL and every global its stdlib
+definition (lib/04-predicates.lisp) calls -- ATOM, EQ, CAR, CDR --
+captured once the stdlib is loaded (CAPTURE-EQUAL-KERNEL, bootstrap.lisp).
+While each is still bound to exactly that object, calling EQUAL can be
+done natively (NATIVE-EQUAL) with the same result.")
+
+(defvar *equal-builtins* nil
+  "The native ATOM/EQ/CAR/CDR closures this file installs, as an alist --
+the ones NATIVE-EQUAL transcribes.")
+
+(defparameter *stdlib-equal-source*
+  "(if (atom a) (eq a b) (if (atom b) nil (if (equal (car a) (car b)) (equal (cdr a) (cdr b)) nil)))"
+  "The body of lib/04-predicates.lisp's EQUAL, which NATIVE-EQUAL transcribes.")
+
+(defun capture-equal-kernel ()
+  "Record EQUAL/ATOM/EQ/CAR/CDR's current global values -- but only if
+EQUAL is exactly lib/04-predicates.lisp's definition (same parameters and
+body, closed over the global environment) and the others are still this
+file's native builtins; otherwise leave *EQUAL-KERNEL* NIL, so EQUAL is
+always interpreted."
+  (let ((equal-fn (env-resolve *global-env* (lsym "EQUAL"))))
+    (setf *equal-kernel*
+          (and (lambda-obj-p equal-fn)
+               (equal (lambda-obj-params equal-fn) (list (lsym "A") (lsym "B")))
+               (null (lambda-obj-rest equal-fn))
+               (eq (lambda-obj-env equal-fn) *global-env*)
+               (equal (lambda-obj-body equal-fn) (lread *stdlib-equal-source*))
+               (every (lambda (cell) (eq (cdr cell) (env-resolve *global-env* (car cell))))
+                      *equal-builtins*)
+               (acons (lsym "EQUAL") equal-fn (copy-alist *equal-builtins*))))))
+
+(defun native-equal (a b)
+  "lib/04-predicates.lisp's EQUAL, transcribed: atoms compare with EQ,
+conses recursively by CAR then CDR."
+  (loop
+    (cond ((not (consp a)) (return (lamedh-eq a b)))
+          ((not (consp b)) (return nil))
+          ((not (native-equal (car a) (car b))) (return nil))
+          (t (setf a (cdr a) b (cdr b))))))
+
+(defun lamedh-equal (a b)
+  "Call the Lamedh-level EQUAL (as currently bound) on A and B."
+  (lamedh-truthy-p (lapply-fn (env-resolve *global-env* (lsym "EQUAL")) (list a b))))
+
+(defun lamedh-equal-test ()
+  "The two-argument CL predicate ASSOC/SUBST/SUBLIS compare with, chosen
+once per call. While the stdlib EQUAL and every builtin it calls are still
+the objects bound at bootstrap, and no step budget is armed (an interpreted
+call would charge fuel), that is NATIVE-EQUAL -- same answers, no
+interpretation; protocol dispatch reaches EQUAL through ASSOC once per
+instance on every call (#542). Otherwise it is LAMEDH-EQUAL."
+  (if (and *equal-kernel* (null *kernel-fuel*)
+           (every (lambda (cell) (eq (cdr cell) (env-resolve *global-env* (car cell)))) *equal-kernel*))
+      #'native-equal
+      #'lamedh-equal))
 
 ;;; ---- core kernel: cons cells, identity, predicates --------------------------
 
@@ -97,6 +152,9 @@ gets compared structurally as part of the struct's own deep equality."
 (defbuiltin "ATOM" (x) (bool (not (consp x))))
 (defbuiltin "EQ" (a b) (bool (lamedh-eq a b)))
 (defbuiltin "NOT" (x) (bool (null x)))
+(setf *equal-builtins*
+      (mapcar (lambda (name) (cons (lsym name) (env-resolve *global-env* (lsym name))))
+              '("ATOM" "EQ" "CAR" "CDR")))
 (defbuiltin "$LENGTH" (lst)
   (let ((n 0) (cur lst))
     (loop
@@ -109,18 +167,20 @@ gets compared structurally as part of the struct's own deep equality."
 (defbuiltin "LIST" (&rest args) args)
 (defbuiltin "MAPCAR" (fn &rest lists) (apply #'mapcar (lambda (&rest xs) (lapply-fn fn xs)) lists))
 (defbuiltin "MAPLIST" (fn lst) (loop for tail on lst collect (lapply-fn fn (list tail))))
-(defbuiltin "ASSOC" (key alist) (find key alist :key #'car :test #'lamedh-equal))
+(defbuiltin "ASSOC" (key alist) (find key alist :key #'car :test (lamedh-equal-test)))
 (defbuiltin "SUBST" (new old tree)
-  (labels ((walk (x) (cond ((lamedh-equal x old) new)
-                            ((consp x) (cons (walk (car x)) (walk (cdr x))))
-                            (t x))))
-    (walk tree)))
-(defbuiltin "SUBLIS" (alist tree)
-  (labels ((walk (x) (let ((cell (assoc x alist :test #'lamedh-equal)))
-                        (cond (cell (cdr cell))
+  (let ((equal-p (lamedh-equal-test)))
+    (labels ((walk (x) (cond ((funcall equal-p x old) new)
                               ((consp x) (cons (walk (car x)) (walk (cdr x))))
-                              (t x)))))
-    (walk tree)))
+                              (t x))))
+      (walk tree))))
+(defbuiltin "SUBLIS" (alist tree)
+  (let ((equal-p (lamedh-equal-test)))
+    (labels ((walk (x) (let ((cell (assoc x alist :test equal-p)))
+                          (cond (cell (cdr cell))
+                                ((consp x) (cons (walk (car x)) (walk (cdr x))))
+                                (t x)))))
+      (walk tree))))
 (defbuiltin "INDEX" (s i) (string (char (->str s) i)))
 (defbuiltin "EXPLODE" (sym) (map 'list (lambda (c) (intern-lamedh (string c))) (symbol-name sym)))
 (defbuiltin "IMPLODE" (lst) (intern-lamedh (apply #'concatenate 'string (mapcar #'symbol-name lst))))
@@ -202,13 +262,21 @@ without evaluating it further."
 
 (defun numify (x) (if (characterp x) (char-code x) x))
 
-(macrolet ((wrap (name fn) `(defbuiltin ,name (&rest args) (apply ,fn (mapcar #'numify args)))))
-  (wrap "+" #'+) (wrap "-" #'-) (wrap "*" #'*)
-  (wrap "PLUS" #'+) (wrap "TIMES" #'*)
-  (wrap "=" #'=) (wrap "<" #'<) (wrap ">" #'>)
-  (wrap "MAX" #'max) (wrap "MIN" #'min)
-  (wrap "GCD" #'gcd) (wrap "LCM" #'lcm)
-  (wrap "LESSP" #'<) (wrap "GREATERP" #'>))
+;;; Two fixnum arguments -- the overwhelmingly common call -- skip the
+;;; &rest MAPCAR/APPLY round trip; NUMIFY is the identity on them, so the
+;;; result is the same (#542).
+(macrolet ((wrap (name fn)
+             `(defbuiltin ,name (&rest args)
+                (if (and (consp args) (consp (cdr args)) (null (cddr args))
+                         (typep (car args) 'fixnum) (typep (cadr args) 'fixnum))
+                    (,fn (car args) (cadr args))
+                    (apply #',fn (mapcar #'numify args))))))
+  (wrap "+" +) (wrap "-" -) (wrap "*" *)
+  (wrap "PLUS" +) (wrap "TIMES" *)
+  (wrap "=" =) (wrap "<" <) (wrap ">" >)
+  (wrap "MAX" max) (wrap "MIN" min)
+  (wrap "GCD" gcd) (wrap "LCM" lcm)
+  (wrap "LESSP" <) (wrap "GREATERP" >))
 
 (defun lamedh-divide (&rest args)
   "Integer / -- truncating (C/Rust-style integer division), not CL's exact
@@ -447,15 +515,18 @@ as int64; a plain array mixing integers and floats reduces as float64."
             (wrap-int64 (loop for i below n sum (* (aref x i) (aref y i))))
             (f64-reduce-by n (lambda (i) (* (coerce (aref x i) 'double-float)
                                             (coerce (aref y i) 'double-float)))))))))
+;;; FETCH/STORE: an in-bounds fixnum index into a SIMPLE-VECTOR (what ARRAY
+;;; makes) goes straight to SVREF; anything else -- a typed array included --
+;;; takes the generic path.
 (defbuiltin "FETCH" (arr i)
-  (if (and (>= i 0) (< i (length arr))) (aref arr i)
-      (lamedh-error (format nil "FETCH: index ~D out of bounds for array of length ~D" i (length arr)))))
+  (cond ((and (simple-vector-p arr) (typep i 'fixnum) (< -1 i (length arr))) (svref arr i))
+        ((and (>= i 0) (< i (length arr))) (aref arr i))
+        (t (lamedh-error (format nil "FETCH: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "STORE" (arr i val)
-  (cond
-    ((typed-array-p arr) (typed-array-store arr i val))
-    ((and (>= i 0) (< i (length arr)))
-     (setf (aref arr i) val))
-    (t (lamedh-error (format nil "STORE: index ~D out of bounds for array of length ~D" i (length arr))))))
+  (cond ((and (simple-vector-p arr) (typep i 'fixnum) (< -1 i (length arr))) (setf (svref arr i) val))
+        ((typed-array-p arr) (typed-array-store arr i val))
+        ((and (>= i 0) (< i (length arr))) (setf (aref arr i) val))
+        (t (lamedh-error (format nil "STORE: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "ARRAY-LENGTH*" (arr) (length arr))
 (defbuiltin "AREF" (arr i)
   (if (and (>= i 0) (< i (length arr))) (aref arr i)

@@ -261,6 +261,37 @@ self-tail-call loop rewrite that would let compiled-to-compiled recursion
 keep an O(1) Lamedh stack — is future work, not a correctness gap in what
 exists today.
 
+### Compiled factories and the stdlib cache
+
+The compiler emits a *factory* per lambda — `(lambda (%env %k0 …) (lambda
+(%args) …))` — whose code depends only on the lambda's source: the closed-
+over environment and every literal that is not a symbol, number, or
+character (strings, quoted lists) are factory arguments, so each closure
+still sees exactly the objects its own source holds. Lambdas that generate
+the same factory form share one `compile`d factory, so SBCL's compiler
+runs once per distinct lambda shape, not once per `LAMBDA` evaluation — a
+lambda inside a loop, or one that a macro such as `DOLIST` expands to on
+every iteration, used to be recompiled each time. Numeric literals are
+compiled inline and so are part of a factory's form; code that `EVAL`s
+lambdas built with fresh numbers makes a new shape each time. The stdlib's
+factories are therefore pinned in their own table, and every other factory
+goes to a table bounded at `*lc-factory-limit*` (4096) forms, flushed whole
+when full: a flushed shape is recompiled on its next `LAMBDA`, and closures
+already made keep their code.
+
+The same keying persists the stdlib's factories: when a bootstrap has to
+compile any, it writes every factory it used to
+`$XDG_CACHE_HOME/lamedh-sbcl/<sbcl-version>-<port-source-md5>/stdlib-lambdas.fasl`
+(by default under `~/.cache`), and the next process loads that fasl instead
+of compiling. It is an ordinary fasl beside ASDF's own, not a core image:
+launching still goes through the ASDF system. The key is an MD5 digest
+(`sb-md5`) over the port's `src/*.lisp` and `lamedh.asd`, so a change to
+either, or to SBCL, selects a new file; a changed stdlib lambda
+generates a different form, so it is compiled (and then cached) on its next
+bootstrap. Set `LAMEDH_SBCL_NO_CACHE` to bypass the cache entirely. A
+missing, unreadable, or unwritable cache is never an error: the cache only
+ever saves calls to `compile`.
+
 ## Deliberate deviations
 
 - **Integers are CL bignums**, not wrapping 64-bit integers; the reference
