@@ -236,21 +236,37 @@ the i64 bounds."
   (wrap "GCD" #'gcd) (wrap "LCM" #'lcm)
   (wrap "LESSP" #'<) (wrap "GREATERP" #'>))
 
-(defun lamedh-divide (&rest args)
+(defun lamedh-divide (a b)
   "Integer / -- truncating (C/Rust-style integer division), not CL's exact
-rational result -- when every argument is an integer; ordinary division
-otherwise (a float argument, or any single-argument reciprocal)."
-  (let ((args (mapcar #'numify args)))
-    (if (and (every #'integerp args) (cdr args))
-        (reduce (lambda (a b) (truncate a b)) args)
-        (with-ieee-floats (apply #'/ args)))))
-(defbuiltin "/" (&rest args) (apply #'lamedh-divide args))
+rational result -- when both arguments are integers; ordinary float
+division otherwise, with IEEE-754 results (inf, -inf, NaN) for a zero
+float divisor. Exactly two arguments, as in the reference: no
+single-argument reciprocal, so no CL ratio can ever be produced."
+  (let ((a (numify a)) (b (numify b)))
+    (if (and (integerp a) (integerp b))
+        (values (truncate a b))
+        (with-ieee-floats (/ a b)))))
+(defbuiltin "/" (&rest args)
+  (unless (= (length args) 2)
+    (lamedh-error "/ requires exactly two arguments"))
+  (lamedh-divide (first args) (second args)))
 
 (defbuiltin "DIFFERENCE" (a b) (- (numify a) (numify b)))
 (defbuiltin "QUOTIENT" (a b) (lamedh-divide a b))
 (defbuiltin "MOD" (a b) (mod (numify a) (numify b)))
 (defbuiltin "REMAINDER" (a b) (rem (numify a) (numify b)))
-(defbuiltin "EXPT" (a b) (with-ieee-floats (real-or-nan (expt (numify a) (numify b)))))
+(defun lamedh-expt (a b)
+  "EXPT without CL ratios or complexes, with IEEE-754 results: an integer
+base raised to a negative integer exponent is computed in double-float, as
+the reference does (so 3^-2 is 0.1111111111111111, not 1/9, and 0^-1 is
+inf, not DIVISION-BY-ZERO); overflow is inf, and a result CL would make
+complex, such as (expt -8 0.5), is NaN."
+  (with-ieee-floats
+    (real-or-nan
+     (if (and (integerp b) (minusp b) (or (integerp a) (floatp a)))
+         (expt (coerce a 'double-float) b)
+         (expt a b)))))
+(defbuiltin "EXPT" (a b) (lamedh-expt (numify a) (numify b)))
 (defbuiltin "ZEROP" (x) (bool (zerop (numify x))))
 (defbuiltin "EVENP" (x) (bool (evenp (numify x))))
 (defbuiltin "ODDP" (x) (bool (oddp (numify x))))
