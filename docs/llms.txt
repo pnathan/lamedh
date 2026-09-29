@@ -197,7 +197,7 @@ LESSP [f] (lessp a b) -- Classic Lisp 1.5 name for <. Returns T if a is strictly
 LOG [f] (log x) or (log x base) -- With one argument returns the natural logarithm (ln) of x. With two arguments returns the logarithm of x in...
 MAX [f] (max number...) -- Returns the largest of its arguments.
 MIN [f] (min number...) -- Returns the smallest of its arguments.
-MOD [f] (mod x y) -- Returns x modulo y. Result has same sign as divisor.
+MOD [f] (mod x y) -- Returns the Euclidean remainder of x divided by y: always 0 <= r < |y|, whatever the signs of x and y. Diff...
 PLUS [f] (plus number...) -- Classic Lisp 1.5 name for +. Returns the sum of all arguments.
 QUOTIENT [f] (quotient dividend divisor) -- Classic Lisp 1.5 name for /. Returns the quotient; integer division truncates toward zero.
 RANDOM [f] (random n) -- Returns a random integer from 0 (inclusive) to n (exclusive).
