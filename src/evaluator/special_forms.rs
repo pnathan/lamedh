@@ -74,7 +74,8 @@ pub(super) fn eval_for(rest: &LispVal, env: &Shared<Environment>) -> Result<TcoS
         match v {
             LispVal::Number(n) => Ok(*n),
             other => Err(LispError::Generic(format!(
-                "for {who} must be an integer, got {other:?}"
+                "for {who} must be an integer, got {}",
+                err_val(other)
             ))),
         }
     };
@@ -263,7 +264,8 @@ pub(super) fn apply_unevaluated(
     }
 
     Ok(TcoStep::Done(Err(LispError::Generic(format!(
-        "apply_unevaluated: not a macro/fexpr/vau: {func:?}"
+        "apply_unevaluated: not a macro/fexpr/vau: {}",
+        err_val(func)
     )))))
 }
 
