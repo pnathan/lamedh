@@ -68,7 +68,7 @@ fn limit_message_names_a_user_reachable_knob() {
         // Plain non-tail recursion deeper than the default limit. (This used
         // to be a long DOLIST, which #504 made constant-stack.)
         eval_line(
-            "(defun knob-deep (n) (if (= n 0) 0 (+ 1 (knob-deep (- n 1)))))",
+            "(defun knob-deep (n) (declare (no-compile)) (if (= n 0) 0 (+ 1 (knob-deep (- n 1)))))",
             &env,
         );
         let out = eval_line("(knob-deep 20000)", &env);
@@ -81,8 +81,8 @@ fn limit_message_names_a_user_reachable_knob() {
         );
         assert!(!out.contains("set_eval_depth_limit"), "got: {out}");
         // The runaway frames collapse into one counted entry.
-        assert!(out.contains("\n  in: MAPC (\u{d7}"), "got: {out}");
-        assert!(!out.contains("MAPC \u{2190} MAPC"), "got: {out}");
+        assert!(out.contains("\n  in: KNOB-DEEP (\u{d7}"), "got: {out}");
+        assert!(!out.contains("KNOB-DEEP \u{2190} KNOB-DEEP"), "got: {out}");
     });
 }
 
