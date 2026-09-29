@@ -32,7 +32,8 @@
     "40-list-processing" "50-strings-symbols" "51-string-completions"
     "52-text-module" "60-special-forms" "65-loops" "70-hash-and-plist"
     "80-kernel-conformance" "90-bitwise" "95-stdlib-batteries"
-    "96-format-and-io" "97-port-regressions" "97-recursion-limit"))
+    "96-format-and-io" "97-ieee-floats" "97-no-ratios" "97-port-regressions"
+    "97-printer" "97-recursion-limit" "97-reference-builtins"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
@@ -103,6 +104,34 @@
 
 (load (merge-pathnames "host-regressions.lisp" *load-pathname*))
 
+(defun print-framing-ok ()
+  "PRINT writes the readable value then a newline -- no leading newline,
+no trailing space -- matching the reference implementation (issue #537).
+Checked here because PRINT writes to the host stream, which the Lamedh-level
+WITH-OUTPUT-TO-STRING does not capture."
+  (let* ((cases '(("(print (list nil))" . "(())")
+                  ("(print nil)" . "()")
+                  ("(print \"s\")" . "\"s\"")))
+         (bad (loop for (src . want) in cases
+                    for got = (with-output-to-string (*standard-output*)
+                                (leval (lread src) *global-env*))
+                    unless (string= got (format nil "~A~%" want))
+                      collect (list src got))))
+    (format t "~&; print framing: ~:[OK~;FAILED ~:*~S~]~%" bad)
+    (null bad)))
+
+(defun typed-array-tags-ok ()
+  "Typed arrays print as the reference's <typed-array:elem:n> tag."
+  (let* ((cases (list (cons (make-array 3 :element-type '(signed-byte 64) :initial-element 0)
+                            "<typed-array:int64:3>")
+                      (cons (make-array 2 :element-type 'double-float :initial-element 0d0)
+                            "<typed-array:float64:2>")))
+         (bad (loop for (v . want) in cases
+                    for got = (lprint-to-string v)
+                    unless (string= got want) collect (list want got))))
+    (format t "~&; typed-array tags: ~:[OK~;FAILED ~:*~S~]~%" bad)
+    (null bad)))
+
 ;; Shell-level CLI exit-status check (#535): runs the documented script
 ;; invocation in child SBCL processes and checks their exit codes.
 (defun run-cli-exit-status-test ()
@@ -112,8 +141,26 @@
                                           :output t :error-output t
                                           :ignore-error-status t)))))
 
+;; The user factory table is bounded (#542 review): lambdas EVALed with
+;; fresh numeric literals each make a new factory shape, and must not grow
+;; *LC-FACTORIES* past *LC-FACTORY-LIMIT*.
+(defun run-factory-bound-test ()
+  (format t "~&; checking the compiled-factory table bound~%")
+  (let* ((*lc-factory-limit* 8)
+         (ok (progn
+               (run-string "(dotimes (i 20) (eval (list 'lambda '(x) (list '+ 'x i))))")
+               (and (<= *lc-factory-count* *lc-factory-limit*)
+                    (eql (run-string "(funcall (eval (list 'lambda '(x) (list '+ 'x 41))) 1)")
+                         42)))))
+    (format t "~&; factory table bound ~:[FAIL~;ok~] (~D forms)~%" ok *lc-factory-count*)
+    ok))
+
 (let ((ok (leval (lread "(run-tests)") *global-env*))
       (host-ok (run-host-regressions))
+      (framing (print-framing-ok))
+      (typed-tags (typed-array-tags-ok))
       (recursion-ok (run-recursion-limit-checks))
+      (factory-ok (run-factory-bound-test))
       (cli-ok (run-cli-exit-status-test)))
-  (uiop:quit (if (and (eq ok *t-sym*) host-ok recursion-ok cli-ok) 0 1)))
+  (uiop:quit (if (and (eq ok *t-sym*) host-ok framing typed-tags recursion-ok factory-ok cli-ok)
+                 0 1)))

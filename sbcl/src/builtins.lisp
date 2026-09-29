@@ -78,16 +78,83 @@ gets compared structurally as part of the struct's own deep equality."
     ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
     (t (eq a b))))
 
-(defun lamedh-equal (a b) (lamedh-truthy-p (lapply-fn (env-resolve *global-env* (lsym "EQUAL")) (list a b))))
+(defvar *equal-kernel* nil
+  "Alist of (symbol . value) for EQUAL and every global its stdlib
+definition (lib/04-predicates.lisp) calls -- ATOM, EQ, CAR, CDR --
+captured once the stdlib is loaded (CAPTURE-EQUAL-KERNEL, bootstrap.lisp).
+While each is still bound to exactly that object, calling EQUAL can be
+done natively (NATIVE-EQUAL) with the same result.")
+
+(defvar *equal-builtins* nil
+  "The native ATOM/EQ/CAR/CDR closures this file installs, as an alist --
+the ones NATIVE-EQUAL transcribes.")
+
+(defparameter *stdlib-equal-source*
+  "(if (atom a) (eq a b) (if (atom b) nil (if (equal (car a) (car b)) (equal (cdr a) (cdr b)) nil)))"
+  "The body of lib/04-predicates.lisp's EQUAL, which NATIVE-EQUAL transcribes.")
+
+(defun capture-equal-kernel ()
+  "Record EQUAL/ATOM/EQ/CAR/CDR's current global values -- but only if
+EQUAL is exactly lib/04-predicates.lisp's definition (same parameters and
+body, closed over the global environment) and the others are still this
+file's native builtins; otherwise leave *EQUAL-KERNEL* NIL, so EQUAL is
+always interpreted."
+  (let ((equal-fn (env-resolve *global-env* (lsym "EQUAL"))))
+    (setf *equal-kernel*
+          (and (lambda-obj-p equal-fn)
+               (equal (lambda-obj-params equal-fn) (list (lsym "A") (lsym "B")))
+               (null (lambda-obj-rest equal-fn))
+               (eq (lambda-obj-env equal-fn) *global-env*)
+               (equal (lambda-obj-body equal-fn) (lread *stdlib-equal-source*))
+               (every (lambda (cell) (eq (cdr cell) (env-resolve *global-env* (car cell))))
+                      *equal-builtins*)
+               (acons (lsym "EQUAL") equal-fn (copy-alist *equal-builtins*))))))
+
+(defun native-equal (a b)
+  "lib/04-predicates.lisp's EQUAL, transcribed: atoms compare with EQ,
+conses recursively by CAR then CDR."
+  (loop
+    (cond ((not (consp a)) (return (lamedh-eq a b)))
+          ((not (consp b)) (return nil))
+          ((not (native-equal (car a) (car b))) (return nil))
+          (t (setf a (cdr a) b (cdr b))))))
+
+(defun lamedh-equal (a b)
+  "Call the Lamedh-level EQUAL (as currently bound) on A and B."
+  (lamedh-truthy-p (lapply-fn (env-resolve *global-env* (lsym "EQUAL")) (list a b))))
+
+(defun lamedh-equal-test ()
+  "The two-argument CL predicate ASSOC/SUBST/SUBLIS compare with, chosen
+once per call. While the stdlib EQUAL and every builtin it calls are still
+the objects bound at bootstrap, and no step budget is armed (an interpreted
+call would charge fuel), that is NATIVE-EQUAL -- same answers, no
+interpretation; protocol dispatch reaches EQUAL through ASSOC once per
+instance on every call (#542). Otherwise it is LAMEDH-EQUAL."
+  (if (and *equal-kernel* (null *kernel-fuel*)
+           (every (lambda (cell) (eq (cdr cell) (env-resolve *global-env* (car cell)))) *equal-kernel*))
+      #'native-equal
+      #'lamedh-equal))
 
 ;;; ---- core kernel: cons cells, identity, predicates --------------------------
 
 (defbuiltin "CAR" (x) (if (consp x) (car x) (if (null x) nil (lamedh-error (format nil "CAR: not a list: ~A" (lprint-to-string x))))))
 (defbuiltin "CDR" (x) (if (consp x) (cdr x) (if (null x) nil (lamedh-error (format nil "CDR: not a list: ~A" (lprint-to-string x))))))
 (defbuiltin "CONS" (a b) (cons a b))
+;; RPLACA/RPLACD are NON-mutating, as in the reference implementation
+;; (#508): each returns a NEW cell sharing the untouched half, so no
+;; circular list can be built and the original cell is left intact.
+(defbuiltin "RPLACA" (x new-car)
+  (if (consp x) (cons new-car (cdr x))
+      (lamedh-error (format nil "RPLACA: expected a cons cell as its first argument, got ~A" (lprint-to-string x)))))
+(defbuiltin "RPLACD" (x new-cdr)
+  (if (consp x) (cons (car x) new-cdr)
+      (lamedh-error (format nil "RPLACD: expected a cons cell as its first argument, got ~A" (lprint-to-string x)))))
 (defbuiltin "ATOM" (x) (bool (not (consp x))))
 (defbuiltin "EQ" (a b) (bool (lamedh-eq a b)))
 (defbuiltin "NOT" (x) (bool (null x)))
+(setf *equal-builtins*
+      (mapcar (lambda (name) (cons (lsym name) (env-resolve *global-env* (lsym name))))
+              '("ATOM" "EQ" "CAR" "CDR")))
 (defbuiltin "$LENGTH" (lst)
   (let ((n 0) (cur lst))
     (loop
@@ -100,18 +167,20 @@ gets compared structurally as part of the struct's own deep equality."
 (defbuiltin "LIST" (&rest args) args)
 (defbuiltin "MAPCAR" (fn &rest lists) (apply #'mapcar (lambda (&rest xs) (lapply-fn fn xs)) lists))
 (defbuiltin "MAPLIST" (fn lst) (loop for tail on lst collect (lapply-fn fn (list tail))))
-(defbuiltin "ASSOC" (key alist) (find key alist :key #'car :test #'lamedh-equal))
+(defbuiltin "ASSOC" (key alist) (find key alist :key #'car :test (lamedh-equal-test)))
 (defbuiltin "SUBST" (new old tree)
-  (labels ((walk (x) (cond ((lamedh-equal x old) new)
-                            ((consp x) (cons (walk (car x)) (walk (cdr x))))
-                            (t x))))
-    (walk tree)))
-(defbuiltin "SUBLIS" (alist tree)
-  (labels ((walk (x) (let ((cell (assoc x alist :test #'lamedh-equal)))
-                        (cond (cell (cdr cell))
+  (let ((equal-p (lamedh-equal-test)))
+    (labels ((walk (x) (cond ((funcall equal-p x old) new)
                               ((consp x) (cons (walk (car x)) (walk (cdr x))))
-                              (t x)))))
-    (walk tree)))
+                              (t x))))
+      (walk tree))))
+(defbuiltin "SUBLIS" (alist tree)
+  (let ((equal-p (lamedh-equal-test)))
+    (labels ((walk (x) (let ((cell (assoc x alist :test equal-p)))
+                          (cond (cell (cdr cell))
+                                ((consp x) (cons (walk (car x)) (walk (cdr x))))
+                                (t x)))))
+      (walk tree))))
 (defbuiltin "INDEX" (s i) (string (char (->str s) i)))
 (defbuiltin "EXPLODE" (sym) (map 'list (lambda (c) (intern-lamedh (string c))) (symbol-name sym)))
 (defbuiltin "IMPLODE" (lst) (intern-lamedh (apply #'concatenate 'string (mapcar #'symbol-name lst))))
@@ -125,7 +194,7 @@ gets compared structurally as part of the struct's own deep equality."
 (defbuiltin "SYMBOLP" (x) (bool (or (null x) (symbolp x))))
 (defbuiltin "CHARP" (x) (bool (characterp x)))
 (defbuiltin "FUNCTIONP" (x) (bool (callable-p x)))
-(defbuiltin "ARRAYP" (x) (bool (simple-vector-p x)))
+(defbuiltin "ARRAYP" (x) (bool (lamedh-array-p x)))
 (defbuiltin "HASH-TABLE-P" (x) (bool (hash-table-p x)))
 (defbuiltin "BOUNDP" (sym) (bool (env-boundp (or *current-env* *global-env*) sym)))
 (defbuiltin "GETP" (sym key) (getp sym key))
@@ -193,23 +262,72 @@ without evaluating it further."
 
 (defun numify (x) (if (characterp x) (char-code x) x))
 
-(macrolet ((wrap (name fn) `(defbuiltin ,name (&rest args) (apply ,fn (mapcar #'numify args)))))
-  (wrap "+" #'+) (wrap "-" #'-) (wrap "*" #'*)
-  (wrap "PLUS" #'+) (wrap "TIMES" #'*)
-  (wrap "=" #'=) (wrap "<" #'<) (wrap ">" #'>)
-  (wrap "MAX" #'max) (wrap "MIN" #'min)
-  (wrap "GCD" #'gcd) (wrap "LCM" #'lcm)
-  (wrap "LESSP" #'<) (wrap "GREATERP" #'>))
+(defmacro with-ieee-floats (&body body)
+  "Run BODY with SBCL's float traps masked, so float arithmetic yields the
+IEEE-754 results KERNEL §V and the reference implementation specify
+(inf, -inf, NaN) instead of signalling CL arithmetic conditions. Integer
+division by zero is a software check, unaffected by the masking."
+  `(sb-int:with-float-traps-masked (:divide-by-zero :invalid :overflow) ,@body))
 
-(defun lamedh-divide (&rest args)
+(defvar *nan*
+  (sb-int:with-float-traps-masked (:invalid)
+    (- sb-ext:double-float-positive-infinity sb-ext:double-float-positive-infinity)))
+
+(defun real-or-nan (x)
+  "CL returns a complex where IEEE (and Rust's f64) yields NaN."
+  (if (complexp x) *nan* x))
+
+(defun ln (x)
+  "Natural log with IEEE semantics: a negative argument is NaN, not a CL
+complex; zero is -inf."
+  (with-ieee-floats
+    (let ((d (coerce x 'double-float)))
+      (if (minusp d) *nan* (log d)))))
+
+(defun saturating-round (fn x y)
+  "Apply the CL rounding FN (FLOOR/CEILING/TRUNCATE) to X/Y. When a float is
+involved and the quotient is NaN or outside the i64 range, saturate the way
+Rust's float-to-int `as` cast does: NaN -> 0, +/-inf and overflow clamp to
+the i64 bounds."
+  (with-ieee-floats
+    (let ((q (if (or (floatp x) (floatp y)) (/ x y) nil)))
+      (cond ((null q) (values (funcall fn x y)))
+            ((sb-ext:float-nan-p q) 0)
+            ((>= q 9.223372036854775808d18) (1- (expt 2 63)))
+            ((< q -9.223372036854775808d18) (- (expt 2 63)))
+            (t (values (funcall fn x y)))))))
+
+;;; Two fixnum arguments -- the overwhelmingly common call -- skip the
+;;; &rest MAPCAR/APPLY round trip and the float-trap masking; NUMIFY is the
+;;; identity on them and fixnum arithmetic cannot trap, so the result is the
+;;; same (#542). Every other call runs WITH-IEEE-FLOATS (#534).
+(macrolet ((wrap (name fn)
+             `(defbuiltin ,name (&rest args)
+                (if (and (consp args) (consp (cdr args)) (null (cddr args))
+                         (typep (car args) 'fixnum) (typep (cadr args) 'fixnum))
+                    (,fn (car args) (cadr args))
+                    (with-ieee-floats (apply #',fn (mapcar #'numify args)))))))
+  (wrap "+" +) (wrap "-" -) (wrap "*" *)
+  (wrap "PLUS" +) (wrap "TIMES" *)
+  (wrap "=" =) (wrap "<" <) (wrap ">" >)
+  (wrap "MAX" max) (wrap "MIN" min)
+  (wrap "GCD" gcd) (wrap "LCM" lcm)
+  (wrap "LESSP" <) (wrap "GREATERP" >))
+
+(defun lamedh-divide (a b)
   "Integer / -- truncating (C/Rust-style integer division), not CL's exact
-rational result -- when every argument is an integer; ordinary division
-otherwise (a float argument, or any single-argument reciprocal)."
-  (let ((args (mapcar #'numify args)))
-    (if (and (every #'integerp args) (cdr args))
-        (reduce (lambda (a b) (truncate a b)) args)
-        (apply #'/ args))))
-(defbuiltin "/" (&rest args) (apply #'lamedh-divide args))
+rational result -- when both arguments are integers; ordinary float
+division otherwise, with IEEE-754 results (inf, -inf, NaN) for a zero
+float divisor. Exactly two arguments, as in the reference: no
+single-argument reciprocal, so no CL ratio can ever be produced."
+  (let ((a (numify a)) (b (numify b)))
+    (if (and (integerp a) (integerp b))
+        (values (truncate a b))
+        (with-ieee-floats (/ a b)))))
+(defbuiltin "/" (&rest args)
+  (unless (= (length args) 2)
+    (lamedh-error "/ requires exactly two arguments"))
+  (lamedh-divide (first args) (second args)))
 
 (defbuiltin "DIFFERENCE" (a b) (- (numify a) (numify b)))
 (defbuiltin "QUOTIENT" (a b) (lamedh-divide a b))
@@ -221,7 +339,18 @@ otherwise (a float argument, or any single-argument reciprocal)."
     (let ((r (mod a b)))
       (if (minusp r) (+ r (abs b)) r))))
 (defbuiltin "REMAINDER" (a b) (rem (numify a) (numify b)))
-(defbuiltin "EXPT" (a b) (expt (numify a) (numify b)))
+(defun lamedh-expt (a b)
+  "EXPT without CL ratios or complexes, with IEEE-754 results: an integer
+base raised to a negative integer exponent is computed in double-float, as
+the reference does (so 3^-2 is 0.1111111111111111, not 1/9, and 0^-1 is
+inf, not DIVISION-BY-ZERO); overflow is inf, and a result CL would make
+complex, such as (expt -8 0.5), is NaN."
+  (with-ieee-floats
+    (real-or-nan
+     (if (and (integerp b) (minusp b) (or (integerp a) (floatp a)))
+         (expt (coerce a 'double-float) b)
+         (expt a b)))))
+(defbuiltin "EXPT" (a b) (lamedh-expt (numify a) (numify b)))
 (defbuiltin "ZEROP" (x)
   ;; KERNEL: ZEROP accepts only a fixnum -- (zerop 0.0) is an error.
   (unless (integerp x)
@@ -234,7 +363,9 @@ otherwise (a float argument, or any single-argument reciprocal)."
 (defbuiltin "SUB1" (x) (- (numify x) 1))
 (env-set-local *global-env* (lsym "1+") (lambda (x) (+ (numify x) 1)))
 (env-set-local *global-env* (lsym "1-") (lambda (x) (- (numify x) 1)))
-(defbuiltin "SQRT" (x) (sqrt (coerce x 'double-float)))
+(defbuiltin "SQRT" (x)
+  (with-ieee-floats
+    (let ((d (coerce x 'double-float))) (if (minusp d) *nan* (sqrt d)))))
 (defbuiltin "ISQRT" (x) (isqrt x))
 
 (defvar *lamedh-random-state* (make-random-state t)
@@ -254,20 +385,25 @@ code sharing this Lisp image.")
   ;; a Monte Carlo estimate converges), never on the exact sequence.
   (setf *lamedh-random-state* (sb-ext:seed-random-state n))
   n)
-(defbuiltin "SIN" (x) (sin (coerce x 'double-float)))
-(defbuiltin "COS" (x) (cos (coerce x 'double-float)))
-(defbuiltin "TAN" (x) (tan (coerce x 'double-float)))
-(defbuiltin "LOG" (x &optional base) (if base (log (coerce x 'double-float) (coerce base 'double-float)) (log (coerce x 'double-float))))
-(defbuiltin "EXP" (x) (exp (coerce x 'double-float)))
-(defbuiltin "FLOOR" (x &optional (y 1)) (values (floor x y)))
-(defbuiltin "CEILING" (x &optional (y 1)) (values (ceiling x y)))
+(defbuiltin "SIN" (x) (with-ieee-floats (sin (coerce x 'double-float))))
+(defbuiltin "COS" (x) (with-ieee-floats (cos (coerce x 'double-float))))
+(defbuiltin "TAN" (x) (with-ieee-floats (tan (coerce x 'double-float))))
+(defbuiltin "LOG" (x &optional base)
+  "ln(x), or ln(x)/ln(base) -- Rust's f64::log."
+  (if base (with-ieee-floats (/ (ln x) (ln base))) (ln x)))
+(defbuiltin "EXP" (x) (with-ieee-floats (exp (coerce x 'double-float))))
+(defbuiltin "FLOOR" (x &optional (y 1)) (saturating-round #'floor x y))
+(defbuiltin "CEILING" (x &optional (y 1)) (saturating-round #'ceiling x y))
 (defbuiltin "ROUND" (x &optional (y 1))
   "Round half AWAY FROM ZERO (C/Rust f64::round convention), not CL's
 round-half-to-even."
-  (let ((q (/ x y)))
-    (if (minusp q) (- (floor (+ (- q) 1/2))) (floor (+ q 1/2)))))
-(defbuiltin "TRUNCATE" (x &optional (y 1)) (values (truncate x y)))
-(defbuiltin "SIGNUM" (x) (let ((s (signum x))) (if (floatp x) s (truncate s))))
+  (saturating-round
+   (lambda (x y)
+     (let ((q (/ x y)))
+       (if (minusp q) (- (floor (+ (- q) 1/2))) (floor (+ q 1/2)))))
+   x y))
+(defbuiltin "TRUNCATE" (x &optional (y 1)) (saturating-round #'truncate x y))
+(defbuiltin "SIGNUM" (x) (with-ieee-floats (let ((s (signum x))) (if (floatp x) s (truncate s)))))
 (defbuiltin "FLOAT" (x) (coerce x 'double-float))
 
 ;;; ---- strings ------------------------------------------------------------------
@@ -349,22 +485,127 @@ round-half-to-even."
 
 ;;; ---- arrays ---------------------------------------------------------------------
 
-(defbuiltin "ARRAY" (n) (make-array n :initial-element nil))
+(defconstant +max-array+ (* 16 1024 1024)
+  "The reference implementation's MakeArray/MakeTypedArray size cap (16 M elements).")
+
+(defun check-array-size (n what)
+  (cond ((not (and (integerp n) (>= n 0)))
+         (lamedh-error (format nil "~:@(~A~): size must be a non-negative integer, got ~A" what (lprint-to-string n))))
+        ((> n +max-array+)
+         (lamedh-error (format nil "~(~A~): size ~D exceeds maximum of ~D" what n +max-array+)))
+        (t n)))
+
+(defun make-lamedh-array (n) (make-array (check-array-size n "array") :initial-element nil))
+(defbuiltin "ARRAY" (n) (make-lamedh-array n))
+(defbuiltin "MAKE-ARRAY" (n) (make-lamedh-array n))
+
+;;; Flat typed arrays, `(typed-array n 'int64|'float64)`: the reference
+;;; implementation's zero-copy JIT membrane array (TypedArrayObj). Here they
+;;; are SBCL's own specialized vectors, zero-initialized; FETCH/STORE/AREF/
+;;; ASET/ARRAY-LENGTH*/ARRAYP/$ARRAY->LIST accept them alongside a plain array.
+(deftype int64-array () '(simple-array (signed-byte 64) (*)))
+(deftype float64-array () '(simple-array double-float (*)))
+(defun typed-array-p (x) (or (typep x 'int64-array) (typep x 'float64-array)))
+(defun lamedh-array-p (x) (or (simple-vector-p x) (typed-array-p x)))
+(defun typed-array-elem-name (arr) (if (typep arr 'int64-array) "int64" "float64"))
+
+(defbuiltin "TYPED-ARRAY" (n elem)
+  (check-array-size n "typed-array")
+  (cond ((not (and elem (symbolp elem)))
+         (lamedh-error (format nil "TYPED-ARRAY: element type must be a symbol, got ~A" (lprint-to-string elem))))
+        ((string= (symbol-name elem) "INT64") (make-array n :element-type '(signed-byte 64) :initial-element 0))
+        ((string= (symbol-name elem) "FLOAT64") (make-array n :element-type 'double-float :initial-element 0d0))
+        (t (lamedh-error (format nil "TYPED-ARRAY: unknown element type '~A, expected 'int64 or 'float64" (symbol-name elem))))))
+(defbuiltin "TYPED-ARRAY-P" (x) (bool (typed-array-p x)))
+
+(defun typed-array-store (arr i val)
+  "TypedArrayObj::set: an int64 array takes only integers, a float64 array
+floats or integers (widened); anything else is refused, never coerced."
+  (let ((word (cond ((typep arr 'int64-array)
+                     (and (integerp val) (typep val '(signed-byte 64)) val))
+                    ((floatp val) (coerce val 'double-float))
+                    ((integerp val) (coerce val 'double-float)))))
+    (cond ((null word)
+           (lamedh-error (format nil "typed array of ~A: cannot store ~A" (typed-array-elem-name arr) (lprint-to-string val))))
+          ((not (and (integerp i) (>= i 0) (< i (length arr))))
+           (lamedh-error (format nil "typed array: index ~A out of bounds (length ~D)" (lprint-to-string i) (length arr))))
+          (t (setf (aref arr i) word) val))))
+
+;;; ARRAY-SUM / ARRAY-DOT: int64 reductions wrap (two's complement); float64
+;;; reductions follow Fortran's SUM -- a processor-dependent approximation
+;;; with an unspecified order of additions (#392). The float shape below is
+;;; the reference implementation's (f64_reduce_by: 8 strided lanes, a
+;;; balanced combine, then the tail in order), so the two agree bit for bit
+;;; today; that agreement is an implementation property, not the contract.
+
+(defun wrap-int64 (n)
+  (let ((m (ldb (byte 64 0) n))) (if (logbitp 63 m) (- m (ash 1 64)) m)))
+
+(defun f64-reduce-by (n get)
+  (sb-int:with-float-traps-masked (:overflow :invalid :inexact :divide-by-zero)
+    (let* ((l (make-array 8 :element-type 'double-float :initial-element 0d0))
+           (body (- n (mod n 8))))
+      (loop for i from 0 below body by 8
+            do (dotimes (j 8) (incf (aref l j) (funcall get (+ i j)))))
+      (let ((acc (+ (+ (+ (aref l 0) (aref l 2)) (+ (aref l 4) (aref l 6)))
+                    (+ (+ (aref l 1) (aref l 3)) (+ (aref l 5) (aref l 7))))))
+        (loop for k from body below n do (incf acc (funcall get k)))
+        acc))))
+
+(defun reduce-operand (name v)
+  "(VALUES elements :int|:float) -- the reference implementation's
+reduce_operand: an all-integer plain array or an int64 typed array reduces
+as int64; a plain array mixing integers and floats reduces as float64."
+  (cond ((typep v 'int64-array) (values v :int))
+        ((typep v 'float64-array) (values v :float))
+        ((simple-vector-p v)
+         (if (every #'integerp v)
+             (values v :int)
+             (values (map 'vector
+                          (lambda (x)
+                            (if (or (integerp x) (floatp x))
+                                (coerce x 'double-float)
+                                (lamedh-error (format nil "~A: elements must be int64 or float64, got ~A" name (lprint-to-string x)))))
+                          v)
+                     :float)))
+        (t (lamedh-error (format nil "~A: argument must be an array, got ~A" name (lprint-to-string v))))))
+
+(defbuiltin "ARRAY-SUM" (arr)
+  (multiple-value-bind (v kind) (reduce-operand "array-sum" arr)
+    (if (eq kind :int)
+        (wrap-int64 (reduce #'+ v))
+        (f64-reduce-by (length v) (lambda (i) (aref v i))))))
+
+(defbuiltin "ARRAY-DOT" (a b)
+  (multiple-value-bind (x kx) (reduce-operand "array-dot" a)
+    (multiple-value-bind (y ky) (reduce-operand "array-dot" b)
+      (let ((n (min (length x) (length y))))
+        (if (and (eq kx :int) (eq ky :int))
+            (wrap-int64 (loop for i below n sum (* (aref x i) (aref y i))))
+            (f64-reduce-by n (lambda (i) (* (coerce (aref x i) 'double-float)
+                                            (coerce (aref y i) 'double-float)))))))))
+;;; FETCH/STORE: an in-bounds fixnum index into a SIMPLE-VECTOR (what ARRAY
+;;; makes) goes straight to SVREF; anything else -- a typed array included --
+;;; takes the generic path.
 (defbuiltin "FETCH" (arr i)
-  (if (and (>= i 0) (< i (length arr))) (aref arr i)
-      (lamedh-error (format nil "FETCH: index ~D out of bounds for array of length ~D" i (length arr)))))
+  (cond ((and (simple-vector-p arr) (typep i 'fixnum) (< -1 i (length arr))) (svref arr i))
+        ((and (>= i 0) (< i (length arr))) (aref arr i))
+        (t (lamedh-error (format nil "FETCH: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "STORE" (arr i val)
-  (if (and (>= i 0) (< i (length arr)))
-      (setf (aref arr i) val)
-      (lamedh-error (format nil "STORE: index ~D out of bounds for array of length ~D" i (length arr)))))
+  (cond ((and (simple-vector-p arr) (typep i 'fixnum) (< -1 i (length arr))) (setf (svref arr i) val))
+        ((typed-array-p arr) (typed-array-store arr i val))
+        ((and (>= i 0) (< i (length arr))) (setf (aref arr i) val))
+        (t (lamedh-error (format nil "STORE: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "ARRAY-LENGTH*" (arr) (length arr))
 (defbuiltin "AREF" (arr i)
   (if (and (>= i 0) (< i (length arr))) (aref arr i)
       (lamedh-error (format nil "AREF: index ~D out of bounds for array of length ~D" i (length arr)))))
 (defbuiltin "ASET" (arr i val)
-  (if (and (>= i 0) (< i (length arr)))
-      (setf (aref arr i) val)
-      (lamedh-error (format nil "ASET: index ~D out of bounds for array of length ~D" i (length arr)))))
+  (cond
+    ((typed-array-p arr) (typed-array-store arr i val))
+    ((and (>= i 0) (< i (length arr)))
+     (setf (aref arr i) val))
+    (t (lamedh-error (format nil "ASET: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "$ARRAY->LIST" (arr) (coerce arr 'list))
 (defbuiltin "$LIST->ARRAY" (lst) (coerce lst 'simple-vector))
 

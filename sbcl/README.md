@@ -84,20 +84,39 @@ sbcl --non-interactive --load tests/run-tests.lisp
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
 port-only files with no verbatim `tests/lisp/` counterpart
-(PORTLIST) — and runs
+(`11-mod-euclidean.lisp`; `80-kernel-conformance.lisp`, which pins KERNEL.md
+deviations fixed in this port; the printer-conformance file
+`97-printer.lisp`; `97-ieee-floats.lisp`, `97-no-ratios.lisp`,
+`97-port-regressions.lisp`, `97-recursion-limit.lisp` and
+`97-reference-builtins.lisp`) — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **NNN assertions** across
+At the time of writing this passes all **697 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
-plus the port-specific recursion-limit suite (`97-recursion-limit.lisp`,
-not a reference copy) and two CLI host-boundary checks (uncaught deep
+and printer output checked against the reference binary (`()` for the
+empty list, `PRINT` framing, opaque `<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags),
+plus two CLI host-boundary checks (uncaught deep
 recursion and stack exhaustion exit with status 1 and a message, not a
 crash).
 It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.
+
+`97-ieee-floats.lisp` pins
+the IEEE-754 edge cases (`(/ 1.0 0)` is `inf`, `(log 0)` is `-inf`,
+`(sqrt -1)` is `NaN`, float-to-integer rounding saturates) where Common
+Lisp would otherwise signal a condition or return a complex number; every
+expected value in it is the reference implementation's own output.
+`97-no-ratios.lisp` pins
+regressions where Common Lisp's numeric tower leaked through (issue #536:
+`/` takes exactly two arguments; integer `expt` with a negative exponent
+returns a float). Every assertion in it also holds on the reference.
+`97-reference-builtins.lisp` pins the builtins added for #540 (`RPLACA`/
+`RPLACD`, `MAKE-ARRAY`, `TYPED-ARRAY`, `ARRAY-SUM`/`ARRAY-DOT`, `DEFUN*`,
+`COMPILED-P`) to the reference implementation's semantics, and passes
+unmodified on both implementations.
 
 ### Running the `examples/` programs
 
@@ -216,8 +235,14 @@ happened (an honest dynamic approximation — see its docstring in
 instance error is reformatted to match the checker's own backtick-quoted
 message convention, since that specific fact — "no instance for this
 type" — is equally true whether discovered statically or dynamically).
-`defun*`/HM inference and the typed JIT are consequently also not
-ported; `JIT-OPTIMIZE` is a no-op special form so `defun`'s expansion
+HM inference and the typed JIT are consequently also not ported, but
+the surface that degrades gracefully in the reference implementation does
+so here too: `DEFUN*` parses the reference grammar (docstring, classic or
+flat `(p type)` parameters, optional return-type annotation), discards the
+annotations, and defines the function exactly as `DEFUN` would, which is
+the reference's own documented fallback when inference fails;
+`COMPILED-P` always returns `()`, since no definition is ever typed-JIT
+compiled here. `JIT-OPTIMIZE` is a no-op special form so `defun`'s expansion
 (which calls it on every definition) still loads unmodified, and
 `DEFUN-TYPED` itself — the reference implementation's typed-definition
 entry point — signals a clear, named "not supported in this port" error
@@ -275,11 +300,55 @@ self-tail-call loop rewrite that would let compiled-to-compiled recursion
 keep an O(1) Lamedh stack — is future work, not a correctness gap in what
 exists today.
 
+### Compiled factories and the stdlib cache
+
+The compiler emits a *factory* per lambda — `(lambda (%env %k0 …) (lambda
+(%args) …))` — whose code depends only on the lambda's source: the closed-
+over environment and every literal that is not a symbol, number, or
+character (strings, quoted lists) are factory arguments, so each closure
+still sees exactly the objects its own source holds. Lambdas that generate
+the same factory form share one `compile`d factory, so SBCL's compiler
+runs once per distinct lambda shape, not once per `LAMBDA` evaluation — a
+lambda inside a loop, or one that a macro such as `DOLIST` expands to on
+every iteration, used to be recompiled each time. Numeric literals are
+compiled inline and so are part of a factory's form; code that `EVAL`s
+lambdas built with fresh numbers makes a new shape each time. The stdlib's
+factories are therefore pinned in their own table, and every other factory
+goes to a table bounded at `*lc-factory-limit*` (4096) forms, flushed whole
+when full: a flushed shape is recompiled on its next `LAMBDA`, and closures
+already made keep their code.
+
+The same keying persists the stdlib's factories: when a bootstrap has to
+compile any, it writes every factory it used to
+`$XDG_CACHE_HOME/lamedh-sbcl/<sbcl-version>-<port-source-md5>/stdlib-lambdas.fasl`
+(by default under `~/.cache`), and the next process loads that fasl instead
+of compiling. It is an ordinary fasl beside ASDF's own, not a core image:
+launching still goes through the ASDF system. The key is an MD5 digest
+(`sb-md5`) over the port's `src/*.lisp` and `lamedh.asd`, so a change to
+either, or to SBCL, selects a new file; a changed stdlib lambda
+generates a different form, so it is compiled (and then cached) on its next
+bootstrap. Set `LAMEDH_SBCL_NO_CACHE` to bypass the cache entirely. A
+missing, unreadable, or unwritable cache is never an error: the cache only
+ever saves calls to `compile`.
+
 ## Deliberate deviations
 
 - **Integers are CL bignums**, not wrapping 64-bit integers; the reference
   implementation's `OVERFLOW` flag and float-promotion-on-overflow behavior
   is not reproduced.
+  The exceptions are the explicitly int64 operations: `ARRAY-SUM`/
+  `ARRAY-DOT` wrap in two's complement exactly as the reference does, and
+  an `(typed-array n 'int64)` refuses a value outside the int64 range.
+  Their float64 forms follow Fortran's `SUM` (#392): the order of the
+  additions is unspecified; this port happens to use the reference's
+  8-lane shape, so the two agree bit for bit, but callers may not rely on
+  that.
+- **`RPLACA`/`RPLACD` do not mutate**, matching the reference (#508): each
+  returns a new cell sharing the untouched half, so no circular list can be
+  built.
+- **Typed arrays** are SBCL specialized vectors (`(signed-byte 64)` /
+  `double-float`); they print exactly as the reference does,
+  `<typed-array:int64:3>`.
 - **`EQ`** is identity for symbols and callables, but *value* equality for
   the immutable atomic types (numbers, characters, strings) and *deep
   structural* equality for records/structs — recursing into every field,
