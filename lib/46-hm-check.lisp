@@ -2433,6 +2433,13 @@ Mirrors Cx::elab_array_dot."
 
 ;;; ---- the closed call rule -------------------------------------------------
 
+;;; Builtins the checking mode types but codegen has no lowering for; the call
+;;; rule names them as unsupported in compiled code, not as unknown functions
+;;; (#512). Mirrors `checking_only_builtin` in src/jit/elaboration.rs.
+(def $hm-checking-only-builtins
+  '(cons car first cdr rest list null null? endp record-ref record-new record-with
+    append concat gcd lcm quote variant-case))
+
 (defun hm-elab-call-codegen (state tyenv name args)
   "Cx::elab_call under `checking: false`: `by_name` first -- here the run's
 REGISTRY (the in-flight group, which shadows the host exactly as the native
@@ -2445,6 +2452,11 @@ else is a known callee. No declared scheme, no protocol, no derived callee."
       (arrow (hm-apply-arrow-codegen state tyenv name arrow args))
       ((member name '(funcall apply))
        (progn (hm-elab-all state tyenv args) 'any))
+      ;; A builtin the checker types but codegen cannot lower is not an
+      ;; unknown function (#512).
+      ((member name $hm-checking-only-builtins)
+       (error (concat "builtin `" (princ-to-string name)
+                      "` is not supported in compiled code")))
       (t (error (concat "call to unknown function `" (princ-to-string name) "`"))))))
 
 (defun hm-apply-arrow-codegen (state tyenv name arrow args)
@@ -2542,32 +2554,36 @@ this from its provisional registry entry; this is the portable equivalent)."
     ((not (every #'symbolp params)) (list 'dynamic "non-symbol parameter"))
     ((exists (lambda (m) (member m params)) '(&rest &optional &key))
      (list 'dynamic "variadic parameter list"))
-    (t (let* ((state (hm-new-state))
-              (ptys (mapcar (lambda (p) (hm-fresh state)) params))
-              (ret (hm-fresh state))
-              (arrow (list '-> ptys ret))
-              (tyenv (mapcar #'cons params ptys)))
-         (progn
-           ;; NAME is the function under check, not merely a callee: the
-           ;; native checker reaches it through a provisional registry entry
-           ;; (see HM-ELAB-DERIVED-CALL's arity arm). An anonymous check
-           ;; (NAME nil) has no such entry and seeds neither.
-           (if name
-               (progn (sethash (gethash state 'assumptions) name arrow)
-                      (sethash state 'self name))
-               nil)
-           ;; This function's own in-flight variables seed the AVOID set so a
-           ;; callee checked on demand never quantifies them.
-           (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
-           (handler-case
-               (let ((bt (hm-elab-body state tyenv body)))
-                 (if (hm-unifies-p state bt ret)
-                     (list 'checked
-                           (hm-render-scheme
-                            (hm-generalize state (list '-> (mapcar (lambda (p) (hm-zonk state p)) ptys)
-                                                       (hm-zonk state ret)))))
-                     (list 'type-error "return type mismatch across branches")))
-             (error (e) (list 'type-error (error-message e)))))))))
+    (t (handler-case
+           (list 'checked (hm-render-scheme (hm-check-scheme name params body)))
+         (error (e) (list 'type-error (error-message e)))))))
+
+(defun hm-check-scheme (name params body)
+  "HM-CHECK-NAMED's generalized scheme in the internal representation
+((FORALL ids arrow)), unrendered; signals the checker's error. PARAMS must
+already be a flat list of bare symbols and BODY non-empty."
+  (let* ((state (hm-new-state))
+         (ptys (mapcar (lambda (p) (hm-fresh state)) params))
+         (ret (hm-fresh state))
+         (arrow (list '-> ptys ret))
+         (tyenv (mapcar #'cons params ptys)))
+    (progn
+      ;; NAME is the function under check, not merely a callee: the
+      ;; native checker reaches it through a provisional registry entry
+      ;; (see HM-ELAB-DERIVED-CALL's arity arm). An anonymous check
+      ;; (NAME nil) has no such entry and seeds neither.
+      (if name
+          (progn (sethash (gethash state 'assumptions) name arrow)
+                 (sethash state 'self name))
+          nil)
+      ;; This function's own in-flight variables seed the AVOID set so a
+      ;; callee checked on demand never quantifies them.
+      (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
+      (let ((bt (hm-elab-body state tyenv body)))
+        (if (hm-unifies-p state bt ret)
+            (hm-generalize state (list '-> (mapcar (lambda (p) (hm-zonk state p)) ptys)
+                                       (hm-zonk state ret)))
+            (error "return type mismatch across branches"))))))
 
 (defun hm-check-expr (expr)
   "Check a single EXPR in an empty environment. Returns (CHECKED scheme) |
@@ -2907,6 +2923,38 @@ Returns (COMPILEABLE (-> (T...) R)) with every type concrete, or (BLOCKED
               (list 'compileable (list '-> ps ret)))))
     (error (e) (list 'blocked (error-message e)))))
 
+(defun hm-mono-pin (name params body)
+  "The checker's own scheme for NAME as a codegen pin (#512): its internal
+arrow when the scheme is monomorphic and every position compileable, else NIL.
+Codegen resolves operand types eagerly, so a body the checker solves only as a
+whole (`fib`'s `(+ (fib ..) (fib ..))`, whose operands are the still-free
+recursive return type) is blocked unpinned; pinned, it compiles -- and codegen
+still elaborates the body strictly against the pin. Mirrors `mono_pins`."
+  (let ((s (handler-case (hm-check-scheme name params body) (error (e) nil))))
+    (if (and s
+             (null (cadr s))
+             (every #'hm-compileable-ty-p (cadr (caddr s)))
+             (hm-compileable-ty-p (caddr (caddr s))))
+        (caddr s)
+        nil)))
+
+(defun hm-seed-arrow (state name pin params body)
+  "The arrow a member is registered under before its body is elaborated:
+PIN (see HM-PIN-ARROW) when there is one, its holes `?` filled from the
+checker's monomorphic scheme (HM-MONO-PIN) where it has one; otherwise that
+scheme; otherwise a provisional arrow. The portable `define_partial`/
+`analyze_untyped` seeding. Signals on a malformed pin."
+  (let ((mono (hm-mono-pin name params body)))
+    (cond
+      ((null pin) (if mono mono (hm-provisional-arrow state params)))
+      ((and mono (eq (car pin) 'annotated))
+       (let ((arrow (hm-pin-arrow state pin params)))
+         (list '->
+               (mapcar (lambda (a p m) (if (eq a '?) m p))
+                       (cadr pin) (cadr arrow) (cadr mono))
+               (if (eq (caddr pin) '?) (caddr mono) (caddr arrow)))))
+      (t (hm-pin-arrow state pin params)))))
+
 (defun hm-compile-lambda (name params body)
   "The codegen-mode verdict for ONE function in isolation: NAME is registered
 provisionally (so it may call itself) and every other callee resolves through
@@ -2917,7 +2965,7 @@ the host's typed registry alone. The portable twin of `Jit::compile_reason`."
     ((exists (lambda (m) (member m params)) '(&rest &optional &key))
      (list 'dynamic "variadic parameter list"))
     (t (let* ((state (hm-codegen-state))
-              (arrow (hm-provisional-arrow state params)))
+              (arrow (hm-seed-arrow state name nil params body)))
          (sethash (gethash state 'registry) name arrow)
          (hm-compile-one state arrow params body)))))
 
@@ -2971,10 +3019,8 @@ round in which every participant compiled."
     (mapc (lambda (m)
             (let ((pin (assoc (car m) pins)))
               (sethash reg (car m)
-                       (if pin
-                           (handler-case (hm-pin-arrow state (cdr pin) (cadr m))
-                             (error (e) (list 'bad-pin (error-message e))))
-                           (hm-provisional-arrow state (cadr m))))))
+                       (handler-case (hm-seed-arrow state (car m) (cdr pin) (cadr m) (cddr m))
+                         (error (e) (list 'bad-pin (error-message e)))))))
           members)
     (mapcar (lambda (m)
               (let ((arrow (gethash reg (car m))))

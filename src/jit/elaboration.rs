@@ -1435,6 +1435,13 @@ impl Cx<'_> {
                 }
                 return Ok((Core::LitI(0), Ty::Any));
             }
+            // A builtin the checker types but codegen has no lowering for is
+            // not an unknown function (#512): say what it is.
+            None if checking_only_builtin(name) => {
+                return Err(format!(
+                    "builtin `{name}` is not supported in compiled code"
+                ));
+            }
             None => return Err(format!("call to unknown function `{name}`")),
         };
         let callee = &self.funcs[id];
@@ -2988,4 +2995,34 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
         }
         _ => unreachable!("desugar_branch: {head}"),
     }
+}
+
+/// The builtins [`Cx::elab`] types only in checking mode (#162) — list/pair,
+/// record, variant and string forms with no codegen lowering. In codegen mode
+/// they fall through to the call rule, which reports them as unsupported in
+/// compiled code rather than as unknown functions (#512). Heads with a codegen
+/// arm of their own (`MIN`, `LOGAND`, `COND`, ...) never get here.
+/// `lib/46-hm-check.lisp`'s `$hm-checking-only-builtins` is the portable twin.
+pub(super) fn checking_only_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "CONS"
+            | "CAR"
+            | "FIRST"
+            | "CDR"
+            | "REST"
+            | "LIST"
+            | "NULL"
+            | "NULL?"
+            | "ENDP"
+            | "RECORD-REF"
+            | "RECORD-NEW"
+            | "RECORD-WITH"
+            | "APPEND"
+            | "CONCAT"
+            | "GCD"
+            | "LCM"
+            | "QUOTE"
+            | "VARIANT-CASE"
+    )
 }

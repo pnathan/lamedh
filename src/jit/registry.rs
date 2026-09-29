@@ -1151,15 +1151,32 @@ impl Jit {
         params: &[String],
         body: &[LispVal],
     ) -> Result<usize, String> {
+        self.infer_untyped_pinned(name, params, body, None)
+    }
+
+    /// [`Self::infer_untyped`] with the signature optionally PINNED (#512):
+    /// `Some(pins)` seeds the parameter and return slots with the concrete
+    /// types the checker already inferred (see [`mono_pins`]) instead of fresh
+    /// variables. Codegen resolves operand types eagerly, left to right, so
+    /// without pins a recursive call's still-unsolved return type (`fib`'s
+    /// `(+ (fib ..) (fib ..))`) is "cannot infer operand type" even though the
+    /// whole body pins it; the pins are exactly what `island-forms` hands the
+    /// kernel via `declare-typed`. Codegen still elaborates the body strictly
+    /// against them, so a pin the body does not honor is rejected, not trusted.
+    fn infer_untyped_pinned(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+        pins: Option<&MonoPins>,
+    ) -> Result<usize, String> {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
         let mut infer = Infer::new()
             .with_structs(std::rc::Rc::new(self.structs.clone()))
             .with_generics(std::rc::Rc::new(self.generics.clone()));
-        let param_tys: Vec<(String, Ty)> =
-            params.iter().map(|p| (p.clone(), infer.fresh())).collect();
-        let ret_var = infer.fresh();
+        let (param_tys, ret_var) = seed_signature(&mut infer, params, pins);
 
         // Provisionally register under the name so a self-recursive call resolves
         // during elaboration. A fresh func id is pushed; `prev` lets us roll the
@@ -1237,21 +1254,29 @@ impl Jit {
     /// installing anything: `Ok(())` when it would compile natively,
     /// `Err(reason)` with the concrete blocker otherwise. The dry-run twin
     /// of [`Self::infer_untyped`], powering `explain-compile`.
+    ///
+    /// `resolver` is the checker's lambda source: the checker runs first, and
+    /// a monomorphic compileable scheme is pinned exactly as
+    /// [`Self::analyze_untyped`] pins it, so the verdict is the one the
+    /// install path would reach.
     pub fn compile_reason(
         &mut self,
         name: &str,
         params: &[String],
         body: &[LispVal],
+        resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Result<(), String> {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
+        let pins = self
+            .check_untyped_scheme(name, params, body, resolver)
+            .ok()
+            .and_then(|s| mono_pins(&s));
         let mut infer = Infer::new()
             .with_structs(std::rc::Rc::new(self.structs.clone()))
             .with_generics(std::rc::Rc::new(self.generics.clone()));
-        let param_tys: Vec<(String, Ty)> =
-            params.iter().map(|p| (p.clone(), infer.fresh())).collect();
-        let ret_var = infer.fresh();
+        let (param_tys, ret_var) = seed_signature(&mut infer, params, pins.as_ref());
         let new_id = self.funcs.len();
         self.funcs.push(Rc::new(TypedFn::placeholder(
             new_id,
@@ -1308,23 +1333,47 @@ impl Jit {
     /// Returns `(id, sig_string)` on success, where `sig_string` is the resolved
     /// full signature (params + return) formatted as surface-syntax text, so the
     /// caller can emit a note when types were inferred. Rolls back on failure.
+    ///
+    /// An unspecified slot is first filled from the checker's scheme when that
+    /// is monomorphic and compileable ([`mono_pins`], #512) — `resolver` is the
+    /// checker's lambda source — and only otherwise left a fresh variable.
     pub fn define_partial(
         &mut self,
         name: &str,
         params: &[(String, Option<Ty>)],
         ret_hint: Option<Ty>,
         body: &[LispVal],
+        resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Result<(usize, String), String> {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
+        let unspecified = params.iter().any(|(_, t)| t.is_none()) || ret_hint.is_none();
+        let pins = if unspecified {
+            let names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+            self.check_untyped_scheme(name, &names, body, resolver)
+                .ok()
+                .and_then(|s| mono_pins(&s))
+                .filter(|(ps, _)| ps.len() == params.len())
+        } else {
+            None
+        };
         let mut infer = Infer::new();
-        // Pin specified slots; fresh var for unspecified slots.
+        // Pin specified slots; then the checker's pins; fresh var otherwise.
         let param_tys: Vec<(String, Ty)> = params
             .iter()
-            .map(|(n, opt)| (n.clone(), opt.clone().unwrap_or_else(|| infer.fresh())))
+            .enumerate()
+            .map(|(i, (n, opt))| {
+                let ty = opt
+                    .clone()
+                    .or_else(|| pins.as_ref().map(|(ps, _)| ps[i].clone()))
+                    .unwrap_or_else(|| infer.fresh());
+                (n.clone(), ty)
+            })
             .collect();
-        let ret_var = ret_hint.unwrap_or_else(|| infer.fresh());
+        let ret_var = ret_hint
+            .or_else(|| pins.map(|(_, r)| r))
+            .unwrap_or_else(|| infer.fresh());
 
         let new_id = self.funcs.len();
         self.funcs.push(Rc::new(TypedFn::placeholder(
@@ -1413,6 +1462,18 @@ impl Jit {
         body: &[LispVal],
         resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Result<String, String> {
+        self.check_untyped_scheme(name, params, body, resolver)
+            .map(|s| infer::scheme_name(&s))
+    }
+
+    /// [`Self::check_untyped`]'s generalized scheme, unrendered.
+    fn check_untyped_scheme(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[LispVal],
+        resolver: Option<super::elaboration::LambdaSource<'_>>,
+    ) -> Result<infer::Scheme, String> {
         if body.is_empty() {
             return Err("empty body".to_string());
         }
@@ -1435,7 +1496,7 @@ impl Jit {
 
         let mut scope: Scope = param_tys.clone();
         let mut max_slots = scope.len();
-        let outcome: Result<String, String> = (|| {
+        let outcome: Result<infer::Scheme, String> = (|| {
             // This function's own in-flight variables seed `avoid_gen` so a
             // callee checked on demand (via `resolver`) never quantifies them.
             let own_vars: Vec<u32> = param_tys
@@ -1471,7 +1532,7 @@ impl Jit {
                 param_tys.iter().map(|(_, t)| inf.zonk(t)).collect(),
                 Box::new(inf.zonk(&ret_var)),
             );
-            Ok(infer::scheme_name(&inf.generalize(&arrow)))
+            Ok(inf.generalize(&arrow))
         })();
 
         // Always roll back — checking is side-effect-free.
@@ -1499,13 +1560,18 @@ impl Jit {
         body: &[LispVal],
         resolver: Option<super::elaboration::LambdaSource<'_>>,
     ) -> Analysis {
-        match self.check_untyped(name, params, body, resolver) {
+        match self.check_untyped_scheme(name, params, body, resolver) {
             Err(e) => Analysis::TypeError(e),
             Ok(scheme) => {
-                if self.infer_untyped(name, params, body).is_ok() {
-                    Analysis::Native(scheme)
+                let pins = mono_pins(&scheme);
+                let rendered = infer::scheme_name(&scheme);
+                if self
+                    .infer_untyped_pinned(name, params, body, pins.as_ref())
+                    .is_ok()
+                {
+                    Analysis::Native(rendered)
                 } else {
-                    Analysis::Checked(scheme)
+                    Analysis::Checked(rendered)
                 }
             }
         }
@@ -2363,6 +2429,42 @@ impl Jit {
 /// Collect every distinct callee id referenced anywhere in `core` (not just
 /// tail position, and without following into any callee's own body) — the
 /// direct-call set an inlining decision starts from.
+/// A concrete signature to pin codegen to: parameter types and return type.
+type MonoPins = (Vec<Ty>, Ty);
+
+/// The checker's SCHEME as codegen pins (#512), when it is a monomorphic arrow
+/// over the compileable sub-lattice; `None` otherwise (a polymorphic scheme
+/// leaves codegen to its own inference, which then reports the ambiguity).
+fn mono_pins(scheme: &infer::Scheme) -> Option<MonoPins> {
+    match &scheme.ty {
+        Ty::Fn(ps, ret)
+            if scheme.vars.is_empty() && ps.iter().all(is_compileable) && is_compileable(ret) =>
+        {
+            Some((ps.clone(), (**ret).clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The parameter slots and return slot a codegen elaboration starts from:
+/// PINS when given (and of the right arity), fresh variables otherwise.
+fn seed_signature(
+    infer: &mut Infer,
+    params: &[String],
+    pins: Option<&MonoPins>,
+) -> (Vec<(String, Ty)>, Ty) {
+    match pins {
+        Some((ptys, ret)) if ptys.len() == params.len() => (
+            params.iter().cloned().zip(ptys.iter().cloned()).collect(),
+            ret.clone(),
+        ),
+        _ => (
+            params.iter().map(|p| (p.clone(), infer.fresh())).collect(),
+            infer.fresh(),
+        ),
+    }
+}
+
 fn inline_call_ids(core: &Core, out: &mut HashSet<usize>) {
     match core {
         Core::LitI(_) | Core::LitF(_) | Core::Var(_) => {}
