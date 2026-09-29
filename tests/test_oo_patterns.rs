@@ -46,11 +46,12 @@ fn compound_list_field_flows_into_the_row() {
 fn row_polymorphism_gives_independent_argument_rows() {
     let env = env_with_patterns();
     // allied-p's two arguments each get their own row var — they need not be
-    // the same kind, only both affiliation-bearing.
+    // the same kind, only both affiliation-bearing. The `equal` result is the
+    // gradual `any`, not a quantified variable (#505).
     assert_eq!(
         eval_line("(see-type 'allied-p)", &env),
-        "(CHECKED (FORALL (A B C D E) (-> ((RECORD ((AFFILIATION A)) B) \
-         (RECORD ((AFFILIATION C)) D)) E)))"
+        "(CHECKED (FORALL (A B C D) (-> ((RECORD ((AFFILIATION A)) B) \
+         (RECORD ((AFFILIATION C)) D)) ANY)))"
     );
 }
 
