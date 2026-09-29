@@ -888,7 +888,8 @@ type error nested inside one surfaces), discarding the types."
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (progn (hm-elab-all state tyenv args) 'any))
     ((eq head 'if) (hm-elab-if state tyenv args))
-    ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ;; hm-elab-let binds sequentially: exactly `let*` (#513).
+    ((member head '(let let-typed let*)) (hm-elab-let state tyenv args))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'char-code) (hm-elab-char-code state tyenv args))
     ((eq head 'code-char) (hm-elab-code-char state tyenv args))
@@ -918,23 +919,31 @@ type error nested inside one surfaces), discarding the types."
     ((member head '(when unless)) (hm-elab-when state tyenv args))
     (t (hm-elab-call state tyenv head args))))
 
-(defun hm-elab-body (state tyenv forms)
+(defun hm-elab-body (state tyenv forms &optional stmt)
   "A body: every form elaborated in order, the last one's type is the result.
-Mirrors Cx::elab_body."
+With STMT the body's value is discarded, so the last form is in statement
+mode too (#513). Mirrors Cx::elab_body_mode."
   (if (null forms)
       (error "empty body")
       (if (null (cdr forms))
-          (hm-elab state tyenv (car forms))
+          (if stmt
+              (hm-elab-stmt state tyenv (car forms))
+              (hm-elab state tyenv (car forms)))
           (progn (hm-elab-stmt state tyenv (car forms))
-                 (hm-elab-body state tyenv (cdr forms))))))
+                 (hm-elab-body state tyenv (cdr forms) stmt)))))
 
 (defun hm-elab-stmt (state tyenv form)
   "A form whose value is discarded. In codegen a COND/WHEN/UNLESS/CASE there
-desugars in statement mode (every branch yields FALSE). Mirrors Cx::elab_stmt."
-  (if (and (hm-codegen-p state) (consp form)
-           (member (car form) '(cond when unless case)))
-      (hm-elab state tyenv (hm-desugar-branch (car form) (cdr form) t))
-      (hm-elab state tyenv form)))
+desugars in statement mode (every branch yields FALSE), and statement mode
+reaches through a LET/LET-TYPED/PROGN's last form (#513). Mirrors
+Cx::elab_stmt."
+  (cond
+    ((not (and (hm-codegen-p state) (consp form))) (hm-elab state tyenv form))
+    ((member (car form) '(cond when unless case))
+     (hm-elab state tyenv (hm-desugar-branch (car form) (cdr form) t)))
+    ((member (car form) '(let let-typed let*)) (hm-elab-let state tyenv (cdr form) t))
+    ((eq (car form) 'progn) (hm-elab-body state tyenv (cdr form) t))
+    (t (hm-elab state tyenv form))))
 
 (defun hm-elab-loop-body (state tyenv forms)
   "A WHILE/FOR body: every form's value is discarded. Mirrors
@@ -1262,10 +1271,11 @@ native annotation parser accepts."
          (error "type must be a scalar, struct, `array`, or `(array T)`")))
     (t (error "bad type annotation"))))
 
-(defun hm-elab-let (state tyenv args)
+(defun hm-elab-let (state tyenv args &optional stmt)
   "`(let ((name init) ...) body...)`, and LET-TYPED's `(name type init)` shape
 which pins the type explicitly. Bindings are MONOTYPES and all enter scope
-together for the body (matching the native Scope discipline)."
+together for the body (matching the native Scope discipline). STMT: the
+LET's value is discarded, so its body is elaborated in statement mode (#513)."
   (if (null (cdr args))
       (error "`let-typed` needs a body")
       (let ((inner tyenv))
@@ -1288,7 +1298,7 @@ together for the body (matching the native Scope discipline)."
                        (setq inner (cons (cons (car parts) v) inner))))
                     (t (error "`let-typed` binding must be (name type init) or (name init)")))))
               (car args))
-        (hm-elab-body state inner (cdr args)))))
+        (hm-elab-body state inner (cdr args) stmt))))
 
 ;;; ---- list and pair rules --------------------------------------------------
 
@@ -2088,7 +2098,8 @@ the portable registry)."
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (hm-elab-logic state tyenv head args))
     ((eq head 'if) (hm-elab-if state tyenv args))
-    ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ;; hm-elab-let binds sequentially: exactly `let*` (#513).
+    ((member head '(let let-typed let*)) (hm-elab-let state tyenv args))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'setq) (hm-elab-setq state tyenv args))
     ((eq head 'while) (hm-elab-while state tyenv args))

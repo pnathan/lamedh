@@ -189,7 +189,9 @@ impl Cx<'_> {
                     // typed body using ordinary `let`/`progn` reaches the native
                     // tier instead of stalling at CHECKED. `LET-TYPED` stays as the
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
-                    "LET" | "LET-TYPED" => self.elab_let(args, scope, max),
+                    // `elab_let` binds sequentially, each init seeing the
+                    // bindings before it: exactly `let*` (#513).
+                    "LET" | "LET-TYPED" | "LET*" => self.elab_let(args, false, scope, max),
                     "PROGN" => self.elab_body(args, scope, max),
                     // `setq`/`while`/`for` compile natively when they only touch
                     // local slots (params/let-bindings) — codegen-only so
@@ -735,9 +737,12 @@ impl Cx<'_> {
         Ok(self.walk(lty))
     }
 
+    /// `stmt`: the `let`'s value is discarded, so its last body form is
+    /// elaborated in statement mode too (#513) — see [`Self::elab_stmt`].
     fn elab_let(
         &self,
         args: &[LispVal],
+        stmt: bool,
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
@@ -800,7 +805,7 @@ impl Cx<'_> {
             *max = (*max).max(scope.len());
             writes.push((slot, init_core, ty));
         }
-        let (mut body_core, body_ty) = self.elab_body(body, scope, max)?;
+        let (mut body_core, body_ty) = self.elab_body_mode(body, stmt, scope, max)?;
         // Array-of-structs inline layout (jit/core-loops follow-up): for each
         // binding in this `let` whose (now fully-constrained-by-the-body)
         // type is a scalar-fields struct array, try to fuse its uses in
@@ -2792,6 +2797,8 @@ impl Cx<'_> {
     /// any form of a `while`/`for` body). A `cond`/`when`/`unless`/`case`
     /// there desugars in statement mode (#404): every branch yields `false`,
     /// so branches of any type join and the nil-on-miss is representable.
+    /// A `let`/`let-typed`/`progn` there discards its last form's value too,
+    /// so statement mode reaches through it (#513).
     fn elab_stmt(
         &self,
         form: &LispVal,
@@ -2804,9 +2811,16 @@ impl Cx<'_> {
             let items = list_to_vec(form);
             if let Some(LispVal::Symbol(s)) = items.first() {
                 let head = s.borrow().name.clone();
-                if matches!(head.as_str(), "COND" | "WHEN" | "UNLESS" | "CASE") {
-                    let d = desugar_branch(&head, &items[1..], true)?;
-                    return self.elab(&d, scope, max);
+                match head.as_str() {
+                    "COND" | "WHEN" | "UNLESS" | "CASE" => {
+                        let d = desugar_branch(&head, &items[1..], true)?;
+                        return self.elab(&d, scope, max);
+                    }
+                    "LET" | "LET-TYPED" | "LET*" => {
+                        return self.elab_let(&items[1..], true, scope, max);
+                    }
+                    "PROGN" => return self.elab_body_mode(&items[1..], true, scope, max),
+                    _ => {}
                 }
             }
         }
@@ -2840,13 +2854,25 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
+        self.elab_body_mode(forms, false, scope, max)
+    }
+
+    /// A body whose last form is in statement mode when `stmt` (the body's
+    /// own value is discarded, #513), else in value position.
+    fn elab_body_mode(
+        &self,
+        forms: &[LispVal],
+        stmt: bool,
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
         if forms.is_empty() {
             return Err("empty body".to_string());
         }
         let mut cores = Vec::with_capacity(forms.len());
         let mut last_ty = Ty::Int64;
         for (i, f) in forms.iter().enumerate() {
-            let (c, t) = if i + 1 < forms.len() {
+            let (c, t) = if stmt || i + 1 < forms.len() {
                 self.elab_stmt(f, scope, max)?
             } else {
                 self.elab(f, scope, max)?
