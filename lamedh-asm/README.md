@@ -67,8 +67,11 @@ instead.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
-  and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
-  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound.
+  and `REMAINDER`; `+`/`-`/`*` set an observable `OVERFLOW` flag
+  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. Fixnums
+  carry 62 bits of payload, so "overflow" means the result left the
+  fixnum range, not the 64-bit machine range; `EXPT` is repeated `*`
+  and sets the flag the same way.
 - `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`,
   `BLOCK`/`RETURN-FROM`, `WHILE`, `PROG`/`GO`/`RETURN` (lexical v0 scope
   — see "KERNEL.md conformance" above) as real special forms (Part

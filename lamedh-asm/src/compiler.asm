@@ -3288,7 +3288,7 @@ compile_newline_form:
     ret
 
 ; compile_binop_overflow_guard() — emits target code testing the hardware
-; overflow flag (OF) left by the +/- instruction compile_binop just
+; overflow flag (OF) left by the +/-/* instruction compile_binop just
 ; emitted, and calling set_overflow_flag (overflow.asm) when it's set:
 ;
 ;     jno .skip
@@ -3302,9 +3302,11 @@ compile_newline_form:
 ; bit-for-bit ordinary 64-bit two's-complement arithmetic on a value
 ; already multiplied by 4 (see overflow.asm's own header), so OF here
 ; already means exactly what KERNEL.md Part V's fixed-width model
-; requires it to mean for this representation. `*` is not wired to this
-; (see overflow.asm) — the same emitted-code technique would report the
-; wrong condition there, not the right one with extra steps.
+; requires it to mean for this representation. `*` gets the same guard
+; because compile_binop untags only the rhs before its `imul`: tagged
+; lhs (4a) times raw rhs (b) is the tagged product 4ab, so OF there is
+; overflow of the represented fixnum product too — i.e. "exceeds the
+; 62-bit fixnum range", not "exceeds 64 bits" (#546).
 compile_binop_overflow_guard:
     push rbx
     call emit_jno                          ; target: jno rel32; rax=patch site
@@ -3469,12 +3471,17 @@ compile_binop:
 .not_sub:
     cmp bl, '*'
     jne .not_mul
+    ; Untag rhs *before* the multiply rather than correcting the product
+    ; after it: 4a * b = 4ab is already the tagged result, so imul's OF
+    ; means exactly "ab exceeds the 62-bit fixnum range" — the same
+    ; condition compile_binop_overflow_guard reports for +/- (#546).
+    mov dil, REG_RBX
+    mov sil, 2
+    call emit_sar_imm8                     ; rbx = untagged rhs
     mov dil, REG_RAX
     mov sil, REG_RBX
-    call emit_imul_rr
-    mov dil, REG_RAX
-    mov sil, 2
-    call emit_sar_imm8                     ; correct the <<4 back to <<2
+    call emit_imul_rr                        ; rax = tagged lhs * rhs
+    call compile_binop_overflow_guard
     jmp .done
 .not_mul:
     cmp bl, '<'
