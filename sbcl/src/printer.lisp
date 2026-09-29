@@ -3,6 +3,10 @@
 (in-package #:lamedh-rt)
 
 (defun float-repr (f)
+  ;; Non-finite values (reachable through the trap-masked ARRAY-SUM/
+  ;; ARRAY-DOT reductions) print as Rust's f64 Display does.
+  (cond ((sb-ext:float-nan-p f) (return-from float-repr "NaN"))
+        ((sb-ext:float-infinity-p f) (return-from float-repr (if (plusp f) "inf" "-inf"))))
   (let ((s (let ((*read-default-float-format* 'double-float)) (prin1-to-string f))))
     ;; CL prints 3.0d0 / 1.0d5; Lamedh wants 3.0 / 100000.0 (no exponent
     ;; marker for plain doubles, matching the reference reader/printer,
@@ -51,6 +55,7 @@
      (write-char #\) stream))
     ((hash-table-p v) (format stream "#<HASH-TABLE ~D entries>" (hash-table-count v)))
     ((simple-vector-p v) (format stream "#<ARRAY ~D>" (length v)))
+    ((typed-array-p v) (format stream "#<TYPED-ARRAY ~A ~D>" (typed-array-elem-name v) (length v)))
     ((lambda-obj-p v) (format stream "#<LAMBDA~@[ ~A~]>" (lambda-obj-name v)))
     ((macro-obj-p v) (write-string "#<MACRO>" stream))
     ((fexpr-obj-p v) (write-string "#<FEXPR>" stream))
