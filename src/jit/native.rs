@@ -993,8 +993,8 @@ impl Emitter<'_, '_, '_> {
     /// TEST at the top of every iteration. `header` has two predecessors (the
     /// initial fall-through and the body's back edge) so it is sealed only
     /// once both are known, exactly mirroring the discipline `compile_native`
-    /// uses for the self-tail-call loop header. Always yields `0` (NIL) — a
-    /// statement node, legal only in discarded position.
+    /// uses for the self-tail-call loop header. Always yields `0` — `false`,
+    /// i.e. NIL, at the elaborated type `bool` (#524).
     fn emit_while(&mut self, test: &Core, body: &Core) -> Value {
         let header = self.b.create_block();
         let body_b = self.b.create_block();

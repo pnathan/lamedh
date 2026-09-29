@@ -2208,19 +2208,20 @@ global or dynamic target is not compileable. Mirrors Cx::elab_setq."
 
 (defun hm-elab-while (state tyenv args)
   "`(while test body...)`: TEST is BOOL or INT64 (truthy word); the value is
-always 0 (NIL), typed INT64 as a statement. Mirrors Cx::elab_while, including
-its order (BOOL tried first, INT64 second)."
+always 0, typed BOOL: native code carries NIL as `false`, so a loop in value
+position yields NIL as the interpreter does (#524). Mirrors Cx::elab_while,
+including its order (BOOL tried first, INT64 second)."
   (if (< (length args) 2)
       (error "while requires a test and at least one body form")
       (let ((tt (hm-elab state tyenv (car args))))
         (if (or (hm-unifies-p state tt 'bool) (hm-unifies-p state tt 'int64))
-            (progn (hm-elab-loop-body state tyenv (cdr args)) 'int64)
+            (progn (hm-elab-loop-body state tyenv (cdr args)) 'bool)
             (error "while: test must be bool or int64")))))
 
 (defun hm-elab-for (state tyenv args)
   "`(for (var start end [step]) body...)`: START/END/STEP are INT64 in the
-OUTER scope, VAR is a fresh INT64 slot for the body, the value is 0 (NIL) typed
-INT64. Mirrors Cx::elab_for."
+OUTER scope, VAR is a fresh INT64 slot for the body, the value is 0 typed BOOL
+(NIL, #524). Mirrors Cx::elab_for."
   (if (< (length args) 2)
       (error "for requires a spec list (var start end [step]) and a body")
       (let ((spec (car args)))
@@ -2242,7 +2243,7 @@ INT64. Mirrors Cx::elab_for."
                        (error "for: step must be int64"))
                    nil)
                (hm-elab-loop-body state (cons (cons (car spec) 'int64) tyenv) (cdr args))
-               'int64))))))
+               'bool))))))
 
 (defun hm-elab-dotimes (state tyenv args)
   "`(dotimes (var count [result]) body...)`, desugared to its macro expansion

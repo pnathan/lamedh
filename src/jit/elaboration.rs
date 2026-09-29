@@ -985,10 +985,10 @@ impl Cx<'_> {
     }
 
     /// `(while test body...)`: evaluate TEST; while truthy, evaluate BODY for
-    /// side effects, then loop. Always evaluates to `0` (NIL) — typed as
-    /// `int64` since the typed island has no dedicated unit/NIL type and the
-    /// result is always discarded (WHILE is a statement, legal only in
-    /// non-tail/discarded position).
+    /// side effects, then loop. Always evaluates to `0`, typed `bool`: native
+    /// code carries NIL as `false`, so a loop in value position yields NIL
+    /// exactly as the tree-walker does (#524), and a use of it as a number
+    /// fails to unify, leaving the function interpreted.
     fn elab_while(
         &self,
         args: &[LispVal],
@@ -1008,7 +1008,7 @@ impl Cx<'_> {
         let body_core = self.elab_loop_body(&args[1..], scope, max)?;
         Ok((
             Core::While(Box::new(test_core), Box::new(body_core)),
-            Ty::Int64,
+            Ty::Bool,
         ))
     }
 
@@ -1016,7 +1016,7 @@ impl Cx<'_> {
     /// in the OUTER scope (the loop variable is not yet bound — matches the
     /// tree-walker, `special_forms.rs::eval_for`), then bind VAR to a fresh
     /// slot and iterate it from START to END inclusive by STEP (default 1).
-    /// Always evaluates to `0` (NIL), typed `int64` for the same reason as
+    /// Always evaluates to `0`, typed `bool` (NIL) for the same reason as
     /// `while`.
     fn elab_for(
         &self,
@@ -1066,7 +1066,7 @@ impl Cx<'_> {
                 step: Box::new(step_core),
                 body: Box::new(body_core),
             },
-            Ty::Int64,
+            Ty::Bool,
         ))
     }
 
