@@ -15,6 +15,7 @@
 //! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
 //! | `0FFh` | Hex literal (digit-leading, assembly-style `H` suffix) |
 //! | `'c'` | Character literal → `LispVal::Char` (byte 0–255; escapes `\n \t \r \\ \' \0`) |
+//! | `#\a`, `#\(`, `#\Space` | CL-style character literal → the same `LispVal::Char` (issue #526) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
@@ -143,6 +144,7 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
                 // Char literal 'c' before the quote reader macro: 'a' is a char,
                 // 'a (no closing quote) stays (quote a).
                 parse_char_literal,
+                parse_hash_char_literal,
                 parse_quoted(env.clone(), remaining),
                 parse_quasiquoted(env.clone(), remaining),
                 // ,@ before , : `,@e` is splicing, `,e` is plain unquote.
@@ -500,6 +502,55 @@ fn parse_char_literal(input: &str) -> ParseResult<'_> {
         return Err(err());
     }
     Ok((rest2, LispVal::Char(code as u8)))
+}
+
+/// Named characters accepted after `#\\` (matched case-insensitively), per
+/// the Common Lisp standard and semi-standard names.
+const CHAR_NAMES: &[(&str, u8)] = &[
+    ("SPACE", b' '),
+    ("NEWLINE", b'\n'),
+    ("LINEFEED", b'\n'),
+    ("TAB", b'\t'),
+    ("RETURN", b'\r'),
+    ("PAGE", 12),
+    ("BACKSPACE", 8),
+    ("ESCAPE", 27),
+    ("RUBOUT", 127),
+    ("NUL", 0),
+    ("NULL", 0),
+];
+
+/// Common Lisp character syntax (issue #526): `#\a` reads as the same
+/// `LispVal::Char` that `'a'` does. It is a second spelling of the one char
+/// value, not a new type, so `(eq #\a 'a')` holds.
+///
+/// After `#\` comes either a single character of any kind (`#\(`, `#\;`,
+/// `#\"`, `#\ `), or, when that character is alphanumeric and more
+/// alphanumerics follow, a character NAME from [`CHAR_NAMES`] (`#\Space`,
+/// `#\newline`). An alphanumeric run that is not a known name (`#\ab`) is an
+/// error rather than a character followed by a symbol. As with `'c'`, the
+/// code point must fit in a byte.
+fn parse_hash_char_literal(input: &str) -> ParseResult<'_> {
+    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
+    let (rest, _) = tag("#\\")(input)?;
+    let c0 = rest.chars().next().ok_or_else(err)?;
+    let token_len = if c0.is_alphanumeric() {
+        rest.find(|c: char| !c.is_alphanumeric())
+            .unwrap_or(rest.len())
+    } else {
+        c0.len_utf8()
+    };
+    let token = &rest[..token_len];
+    let code = if token.len() == c0.len_utf8() {
+        u8::try_from(c0 as u32).map_err(|_| err())?
+    } else {
+        CHAR_NAMES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(token))
+            .map(|&(_, code)| code)
+            .ok_or_else(err)?
+    };
+    Ok((&rest[token_len..], LispVal::Char(code)))
 }
 
 fn parse_one_plus_minus(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
@@ -1006,6 +1057,11 @@ pub fn is_incomplete(input: &str) -> bool {
                 block_depth = 1;
                 i += 2;
             }
+            b'#' if i + 1 < n && bytes[i + 1] == b'\\' => {
+                // Skip a `#\c` char literal so `#\(` or `#\"` does not skew
+                // the depth count or open a string.
+                i += 2 + input[i + 2..].chars().next().map_or(0, char::len_utf8);
+            }
             b'"' => {
                 i += 1;
                 let mut closed = false;
@@ -1227,6 +1283,58 @@ mod tests {
         assert_eq!(parse_char_literal("'\\\\'"), Ok(("", LispVal::Char(92))));
         // trailing input is left for the next parser
         assert_eq!(parse_char_literal("'a'b"), Ok(("b", LispVal::Char(97))));
+    }
+
+    #[test]
+    fn test_parse_hash_char_literal() {
+        // Issue #526: #\c is the same Char value as 'c'.
+        let ok = |src: &str, rest: &str, code: u8| {
+            assert_eq!(
+                parse_hash_char_literal(src),
+                Ok((rest, LispVal::Char(code))),
+                "{src}"
+            );
+        };
+        ok("#\\a", "", b'a');
+        ok("#\\A", "", b'A');
+        ok("#\\0", "", b'0');
+        // Any single non-alphanumeric character, including delimiters.
+        ok("#\\(", "", b'(');
+        ok("#\\)", "", b')');
+        ok("#\\\"", "", b'"');
+        ok("#\\;", "", b';');
+        ok("#\\ ", "", b' ');
+        ok("#\\\\", "", b'\\');
+        // Names, case-insensitive.
+        ok("#\\Space", "", b' ');
+        ok("#\\NEWLINE", "", b'\n');
+        ok("#\\tab", "", b'\t');
+        ok("#\\Nul", "", 0);
+        // A delimiter ends the token.
+        ok("#\\a)", ")", b'a');
+        ok("#\\Space)", ")", b' ');
+        ok("#\\x y", " y", b'x');
+        // An unknown multi-character name is an error, as is a code point
+        // that does not fit the byte-wide char.
+        assert!(parse_hash_char_literal("#\\ab").is_err());
+        assert!(parse_hash_char_literal("#\\Spaces").is_err());
+        assert!(parse_hash_char_literal("#\\").is_err());
+        assert!(parse_hash_char_literal("#\\\u{3bb}").is_err());
+    }
+
+    #[test]
+    fn test_hash_char_literal_in_forms() {
+        let env = Shared::new(Environment::new());
+        assert_eq!(
+            read("(#\\a #\\( #\\) #\\\" #\\Space 'b')", &env).unwrap(),
+            read("('a' '(' ')' '\"' ' ' 'b')", &env).unwrap()
+        );
+        // #\ is not the #' / #x / #| dispatch.
+        assert_eq!(read("#x1F", &env).unwrap(), LispVal::Number(31));
+        // The REPL continuation check must not count a #\( or #\" as open.
+        assert!(!is_incomplete("(list #\\( #\\\")"));
+        assert!(!is_incomplete("#\\("));
+        assert!(is_incomplete("(list #\\)"));
     }
 
     #[test]

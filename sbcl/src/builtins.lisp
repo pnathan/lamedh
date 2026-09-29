@@ -52,15 +52,15 @@ EQ itself never does (see LAMEDH-EQ)."
 immutable atomic types (numbers, characters, strings) and DEEP structural
 equality for records/structs (recursing into every field, cons cells
 included) -- matching the reference implementation's derived LispVal
-PartialEq exactly, including its one asymmetry: a cons cell is never EQ
-to anything, not even itself by identity (Lisp 1.5 manual: EQ is defined
-only for atoms), while a Struct field that happens to hold a cons still
-gets compared structurally as part of the struct's own deep equality."
+PartialEq exactly, including its one asymmetry: a cons cell is EQ only
+to itself, by identity (issue #454), while a Struct field that happens to
+hold a cons still gets compared structurally as part of the struct's own
+deep equality."
   (cond
     ((and (numberp a) (numberp b)) (eql a b))
     ((and (characterp a) (characterp b)) (char= a b))
     ((and (stringp a) (stringp b)) (string= a b))
-    ((or (consp a) (consp b)) nil)
+    ((or (consp a) (consp b)) (eq a b))
     ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
     (t (eq a b))))
 
@@ -113,6 +113,11 @@ gets compared structurally as part of the struct's own deep equality."
 (defbuiltin "FUNCTIONP" (x) (bool (callable-p x)))
 (defbuiltin "ARRAYP" (x) (bool (simple-vector-p x)))
 (defbuiltin "HASH-TABLE-P" (x) (bool (hash-table-p x)))
+(defbuiltin "MACROP" (x) (bool (macro-obj-p x)))
+;; This host has no typed arrays or host extension values; the predicates
+;; exist so portable code (TYPE-OF, lib/21-cl-compat.lisp) can ask.
+(defbuiltin "TYPED-ARRAY-P" (x) (declare (ignore x)) nil)
+(defbuiltin "EXTENSION-P" (x) (declare (ignore x)) nil)
 (defbuiltin "BOUNDP" (sym) (bool (env-boundp (or *current-env* *global-env*) sym)))
 (defbuiltin "GETP" (sym key) (getp sym key))
 (defbuiltin "PUTP" (sym key val) (putp sym key val))
