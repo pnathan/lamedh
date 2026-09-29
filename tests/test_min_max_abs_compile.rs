@@ -96,3 +96,54 @@ fn the_portable_gate_agrees_on_variadic_min_max() {
         "(COMPILEABLE (-> (FLOAT64) FLOAT64))"
     );
 }
+
+/// #518: `(abs -0.0)` is `0.0` in both tiers (-0.0 is not `minusp`, so a
+/// bare comparison-select returned it unchanged).
+#[test]
+fn abs_of_negative_zero_is_positive_zero_in_both_tiers() {
+    let e = env();
+    // Compiled tier: the float path of `elab_abs`.
+    eval_line("(defun-typed (fab float64) ((a float64)) (abs a))", &e);
+    assert_eq!(
+        eval_line("(see-type 'fab)", &e),
+        "(TYPED (-> (FLOAT64) FLOAT64) COMPILED)"
+    );
+    for (arg, want) in [
+        ("-0.0", "0.0"),
+        ("0.0", "0.0"),
+        ("-2.5", "2.5"),
+        ("3.0", "3.0"),
+    ] {
+        // Interpreter tier: lib/05-math.lisp.
+        assert_eq!(eval_line(&format!("(abs {arg})"), &e), want, "arg={arg}");
+        assert_eq!(eval_line(&format!("(fab {arg})"), &e), want, "arg={arg}");
+    }
+    assert_eq!(
+        eval_line("(fab (/ 0.0 0.0))", &e),
+        eval_line("(abs (/ 0.0 0.0))", &e)
+    );
+}
+
+/// #518: the integer path is unchanged in both tiers, including the wrapping
+/// abs of i64::MIN that sets OVERFLOW.
+#[test]
+fn abs_integer_path_unchanged_in_both_tiers() {
+    let e = env();
+    eval_line("(defun-typed (iab int64) ((a int64)) (abs a))", &e);
+    assert_eq!(
+        eval_line("(see-type 'iab)", &e),
+        "(TYPED (-> (INT64) INT64) COMPILED)"
+    );
+    for f in ["abs", "iab"] {
+        for (arg, want) in [("-7", "7"), ("0", "0"), ("5", "5")] {
+            assert_eq!(eval_line(&format!("({f} {arg})"), &e), want, "{f} {arg}");
+        }
+        eval_line("(clear-flag 'overflow)", &e);
+        assert_eq!(
+            eval_line(&format!("({f} (- -9223372036854775807 1))"), &e),
+            "-9223372036854775808",
+            "{f}"
+        );
+        assert_eq!(eval_line("(flag-set-p 'overflow)", &e), "T", "{f}");
+    }
+}

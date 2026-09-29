@@ -2677,8 +2677,9 @@ impl Cx<'_> {
 
     /// `(abs x)` → `(if (< x 0) (- x) x)` over `int64`/`float64`, as compilable
     /// Core. `Core::LitI(0)` is the zero for both kinds (all-zero bits bitcast
-    /// to `+0.0`). Comparison-select, so `(abs -0.0)` = `-0.0` and `(abs NaN)`
-    /// = `NaN` unchanged, matching the evaluator (unlike an `fabs` instruction).
+    /// to `+0.0`). Comparison-select, so `(abs NaN)` = `NaN` unchanged,
+    /// matching the evaluator. The float else-branch is `x + 0`, as in
+    /// lib/05-math.lisp, so `(abs -0.0)` = `+0.0` (#518).
     /// `x` is evaluated once into a temp slot (#397), so a compound argument
     /// (or one with a side effect, e.g. a `setq`) runs exactly once.
     fn elab_abs(
@@ -2705,7 +2706,11 @@ impl Cx<'_> {
         let x = || Box::new(Core::Var(slot));
         let cond = Core::Cmp(k, CmpOp::Lt, x(), Box::new(Core::LitI(0)));
         let neg = Core::Bin(k, BinOp::Sub, Box::new(Core::LitI(0)), x());
-        let sel = Core::If(Box::new(cond), Box::new(neg), x());
+        let pos = match k {
+            NumKind::I => x(),
+            NumKind::F => Box::new(Core::Bin(k, BinOp::Add, x(), Box::new(Core::LitI(0)))),
+        };
+        let sel = Core::If(Box::new(cond), Box::new(neg), pos);
         Ok((Core::Let(slot, Box::new(xc), Box::new(sel)), rt))
     }
 
