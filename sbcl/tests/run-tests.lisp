@@ -15,7 +15,7 @@
   '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
     "60-special-forms" "65-loops" "70-hash-and-plist" "90-bitwise"
-    "95-stdlib-batteries" "96-format-and-io" "97-printer"))
+    "95-stdlib-batteries" "96-format-and-io" "97-port-regressions" "97-printer"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
@@ -39,6 +39,30 @@ WITH-OUTPUT-TO-STRING does not capture."
     (format t "~&; print framing: ~:[OK~;FAILED ~:*~S~]~%" bad)
     (null bad)))
 
+(defun typed-array-tags-ok ()
+  "Typed arrays print as the reference's <typed-array:elem:n> tag. Built
+host-side, since no Lamedh constructor for them exists without #540."
+  (let* ((cases (list (cons (make-array 3 :element-type '(signed-byte 64) :initial-element 0)
+                            "<typed-array:int64:3>")
+                      (cons (make-array 2 :element-type 'double-float :initial-element 0d0)
+                            "<typed-array:float64:2>")))
+         (bad (loop for (v . want) in cases
+                    for got = (lprint-to-string v)
+                    unless (string= got want) collect (list want got))))
+    (format t "~&; typed-array tags: ~:[OK~;FAILED ~:*~S~]~%" bad)
+    (null bad)))
+
+;; Shell-level CLI exit-status check (#535): runs the documented script
+;; invocation in child SBCL processes and checks their exit codes.
+(defun run-cli-exit-status-test ()
+  (format t "~&; running cli-exit-status.sh~%")
+  (let ((script (namestring (merge-pathnames "cli-exit-status.sh" *load-truename*))))
+    (zerop (nth-value 2 (uiop:run-program (list "sh" script)
+                                          :output t :error-output t
+                                          :ignore-error-status t)))))
+
 (let ((ok (leval (lread "(run-tests)") *global-env*))
-      (framing (print-framing-ok)))
-  (uiop:quit (if (and (eq ok *t-sym*) framing) 0 1)))
+      (framing (print-framing-ok))
+      (typed-tags (typed-array-tags-ok))
+      (cli-ok (run-cli-exit-status-test)))
+  (uiop:quit (if (and (eq ok *t-sym*) framing typed-tags cli-ok) 0 1)))
