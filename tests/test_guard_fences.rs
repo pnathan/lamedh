@@ -385,6 +385,28 @@ fn typed_fuel_exhaustion_cannot_be_caught_inside_its_fence() {
 }
 
 #[test]
+fn auto_typed_fuel_exhaustion_escapes_errorset_inside_its_fence() {
+    // The auto-typed (`defun*`) membrane must deliver exhaustion as the fence
+    // signal too: an ERRORSET inside the fence must not swallow it and let
+    // the guest carry on.
+    let out = eval_line_with_timeout(
+        "(progn
+           (defun* issue502-auto-inf ((n int64))
+             (let ((s 0)) (while (> n 0) (setq s (+ s 1))) s))
+           (handler-case
+             (with-fuel 1000
+               (errorset (issue502-auto-inf 1))
+               'escaped-fence)
+             (error (er) (error-message er))))",
+        Duration::from_secs(20),
+    );
+    assert!(
+        out.contains("fuel exhausted"),
+        "the fence, not ERRORSET, must receive exhaustion: {out}"
+    );
+}
+
+#[test]
 fn terminating_typed_calls_return_correct_values_under_fuel() {
     with_large_stack(|| {
         let e = env();
