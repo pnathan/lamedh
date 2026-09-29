@@ -3,6 +3,9 @@
 (in-package #:lamedh-rt)
 
 (defun float-repr (f)
+  ;; Non-finite values print as Rust's f64 Display does: inf, -inf, NaN.
+  (cond ((sb-ext:float-nan-p f) (return-from float-repr "NaN"))
+        ((sb-ext:float-infinity-p f) (return-from float-repr (if (plusp f) "inf" "-inf"))))
   (let ((s (let ((*read-default-float-format* 'double-float)) (prin1-to-string f))))
     ;; CL prints 3.0d0 / 1.0d5; Lamedh wants 3.0 / 100000.0 (no exponent
     ;; marker for plain doubles, matching the reference reader/printer,

@@ -63,11 +63,16 @@ sbcl --non-interactive --load tests/run-tests.lisp
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **512 assertions** across
+At the time of writing this passes all **555 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+One file is port-specific rather than a copy: `97-ieee-floats.lisp` pins
+the IEEE-754 edge cases (`(/ 1.0 0)` is `inf`, `(log 0)` is `-inf`,
+`(sqrt -1)` is `NaN`, float-to-integer rounding saturates) where Common
+Lisp would otherwise signal a condition or return a complex number; every
+expected value in it is the reference implementation's own output.
 
 ### Running the `examples/` programs
 
