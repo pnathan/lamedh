@@ -25,7 +25,7 @@ before calling this."
             (format t "~A~%" (lprint-to-string (leval form *global-env*) t)))
         (lamedh-unbound-variable (c) (format t "~&error: ~A~%" c))
         (lamedh-condition (c) (format t "~&error: ~A~%" (lamedh-condition-value-string c)))
-        (error (c) (format t "~&error: ~A~%" c))))))
+        ((or error storage-condition) (c) (format t "~&error: ~A~%" c))))))
 
 ;;; ---- argv parsing: --sandbox / --capability NAME / a script path -----------
 ;;;
@@ -55,5 +55,6 @@ before calling this."
         (t (enable-all-features)))
       (handler-case
           (if script (run-file script) (run-repl))
-        (error (c) (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit :unix-status 1)))))
-  (uiop:quit :unix-status 0))
+        ((or error storage-condition) (c)
+          (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit 1)))))
+  (uiop:quit 0))

@@ -722,10 +722,14 @@ its shallow-bound value), then evaluate BODY."
            (let ((henv (make-child-env env)))
              (env-set-local henv var (lamedh-condition-lisp-value c))
              (progn-eval handler-body henv)))
-         (error (c)
+         ((or error storage-condition) (c)
            ;; Catch-all: any other CL condition of type ERROR that escapes a
            ;; builtin (division by zero, a wrong-type argument, ...) is
            ;; still catchable as a Lamedh error, carrying its report string.
+           ;; STORAGE-CONDITION (control stack or heap exhausted) is not an
+           ;; ERROR in CL, but in Lamedh it must be catchable like one: it is
+           ;; the backstop should native recursion (a compiled lambda, a
+           ;; builtin) outrun the *EVAL-DEPTH-LIMIT* guard.
            (let ((henv (make-child-env env)))
              (env-set-local henv var (make-lamedh-error-obj :message (princ-to-string c)))
              (progn-eval handler-body henv))))))))
@@ -813,7 +817,28 @@ its shallow-bound value), then evaluate BODY."
          (dyn (bind-params menv (macro-obj-params m) (macro-obj-rest m) arg-forms "macro")))
     (with-dyn-pairs dyn (leval (macro-obj-body m) menv))))
 
+(defparameter *eval-depth-limit* 10000
+  "Maximum number of nested LEVAL calls before a catchable Lamedh error is
+signalled instead of exhausting SBCL's control stack -- the reference
+implementation's DEFAULT_EVAL_DEPTH_LIMIT (src/evaluator/core.rs). Trampoline
+iterations (tail calls) do not count; only genuine nesting does. The host must
+run with a control stack large enough for this bound to be reached first (see
+README.md, --control-stack-size).")
+
+(defvar *eval-depth* 0
+  "Current LEVAL nesting depth. Rebound (not mutated) on every LEVAL entry, so
+every exit path -- normal return, non-local exit, a caught error -- restores
+it, and each SB-THREAD thread counts its own depth.")
+
 (defun leval (form env)
+  (let ((*eval-depth* (1+ *eval-depth*)))
+    (when (> *eval-depth* *eval-depth-limit*)
+      (lamedh-error
+       (format nil "recursion limit exceeded (~D eval frames); rewrite iteratively or raise it with set_eval_depth_limit"
+               *eval-depth-limit*)))
+    (leval-1 form env)))
+
+(defun leval-1 (form env)
   (loop
     (charge-kernel-fuel)
     (cond
