@@ -213,7 +213,13 @@ otherwise (a float argument, or any single-argument reciprocal)."
 
 (defbuiltin "DIFFERENCE" (a b) (- (numify a) (numify b)))
 (defbuiltin "QUOTIENT" (a b) (lamedh-divide a b))
-(defbuiltin "MOD" (a b) (mod (numify a) (numify b)))
+(defbuiltin "MOD" (a b)
+  ;; Euclidean, not CL's floored MOD: always 0 <= r < |b| (KERNEL Part V),
+  ;; so (mod 7 -2) is 1, not -1.
+  (let ((a (numify a)) (b (numify b)))
+    (when (zerop b) (lamedh-error "Division by zero"))
+    (let ((r (mod a b)))
+      (if (minusp r) (+ r (abs b)) r))))
 (defbuiltin "REMAINDER" (a b) (rem (numify a) (numify b)))
 (defbuiltin "EXPT" (a b) (expt (numify a) (numify b)))
 (defbuiltin "ZEROP" (x) (bool (zerop (numify x))))
