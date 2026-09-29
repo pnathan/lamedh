@@ -139,6 +139,60 @@ fn match_clauses_guards_and_default() {
 }
 
 #[test]
+fn ematch_signals_match_failure_when_no_clause_matches() {
+    let e = env();
+    // Same clause semantics as MATCH when a clause matches, guards included.
+    assert_eq!(
+        eval_line(
+            "(ematch '(add 2 1)
+               ((add ?a ?b) :when (> ?b ?a) 'ascending)
+               ((add ?a ?b) 'other))",
+            &e
+        ),
+        "OTHER"
+    );
+    // A matching clause whose body is NIL is a match, not a failure.
+    assert_eq!(eval_line("(ematch 3 (?_ nil))", &e), "()");
+    // No matching clause (a failing guard included): a MATCH-FAILURE
+    // condition carrying the datum, where MATCH would return NIL.
+    assert_eq!(
+        eval_line(
+            "(handler-case (ematch '(add 1 2) ((add ?a ?b) :when (> ?a ?b) 'desc))
+               (error (c) (list (match-failure-p c) (error-data c))))",
+            &e
+        ),
+        "(T (MATCH-FAILURE (ADD 1 2)))"
+    );
+    assert_eq!(
+        eval_line(
+            "(handler-case (ematch 7 (2 'two)) (error (c) (error-message c)))",
+            &e
+        ),
+        "\"ematch: no clause matches 7\""
+    );
+    // MATCH-FAILURE-P rejects other conditions and non-conditions.
+    assert_eq!(
+        eval_line(
+            "(handler-case (error \"boom\") (error (c) (match-failure-p c)))",
+            &e
+        ),
+        "()"
+    );
+    assert_eq!(eval_line("(match-failure-p 'match-failure)", &e), "()");
+    // MATCH itself keeps the NIL fall-through.
+    assert_eq!(eval_line("(match 7 (2 'two))", &e), "()");
+}
+
+#[test]
+fn match_help_states_the_question_mark_rule() {
+    let e = env();
+    let doc = eval_line("(documentation 'match)", &e);
+    assert!(doc.contains("MUST START WITH ?"), "{doc}");
+    assert!(doc.contains("LITERAL"), "{doc}");
+    assert!(doc.contains("EMATCH"), "{doc}");
+}
+
+#[test]
 fn match_binds_segments_in_body() {
     let e = env();
     assert_eq!(
