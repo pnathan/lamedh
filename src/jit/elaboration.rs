@@ -159,6 +159,11 @@ impl Cx<'_> {
                 }
                 match scope.iter().rposition(|(n, _)| n == name) {
                     Some(slot) => Ok((Core::Var(slot), scope[slot].1.clone())),
+                    // `t` is the canonical true (#505): a checker-mode `bool`,
+                    // the same type a comparison or predicate produces, so a
+                    // `t`/`nil` function types as `bool` instead of letting an
+                    // absorbing `Any` vanish into a quantified return.
+                    None if self.checking && name == "T" => Ok((Core::LitI(1), Ty::Bool)),
                     // A free symbol in checker mode is some global we don't track
                     // — the gradual frontier (`Any`). The codegen path rejects it.
                     None if self.checking => Ok((Core::LitI(0), Ty::Any)),
@@ -672,6 +677,11 @@ impl Cx<'_> {
         scope.truncate(saved);
         let (e, te) = self.elab(&args[2], scope, max)?;
         scope.truncate(saved);
+        // `nil` is also false (#505): a branch ending in `nil` meeting a
+        // `bool` branch is that boolean's false, not a heterogeneous `any`.
+        if self.nil_meets_bool(&args[1], &tt, &args[2], &te) {
+            return Ok((Core::If(Box::new(c), Box::new(t), Box::new(e)), Ty::Bool));
+        }
         let lhs_nil = self.is_bare_nil(&args[1]);
         let rhs_nil = self.is_bare_nil(&args[2]);
         let result_ty =
@@ -686,6 +696,27 @@ impl Cx<'_> {
     /// match arm). Used by [`Cx::join_branch_types`] (#336).
     fn is_bare_nil(&self, expr: &LispVal) -> bool {
         self.checking && matches!(expr, LispVal::Nil)
+    }
+
+    /// Does a checker-mode branch/clause yield a bare `nil` literal — the
+    /// literal itself, or the tail of a `progn` (#505)?
+    fn ends_in_bare_nil(&self, expr: &LispVal) -> bool {
+        if self.is_bare_nil(expr) {
+            return true;
+        }
+        let items = list_to_vec(expr);
+        match items.first() {
+            Some(LispVal::Symbol(s)) if s.borrow().name == "PROGN" && items.len() > 1 => {
+                self.ends_in_bare_nil(&items[items.len() - 1])
+            }
+            _ => false,
+        }
+    }
+
+    /// Is this `if` a `bool` branch against a branch ending in `nil` (#505)?
+    fn nil_meets_bool(&self, lhs: &LispVal, lty: &Ty, rhs: &LispVal, rty: &Ty) -> bool {
+        (self.ends_in_bare_nil(lhs) && matches!(self.walk(rty), Ty::Bool))
+            || (self.ends_in_bare_nil(rhs) && matches!(self.walk(lty), Ty::Bool))
     }
 
     /// Join the two branch result types of an `if` (#336 — the
@@ -731,6 +762,13 @@ impl Cx<'_> {
                 self.walk(lty),
                 self.walk(rty)
             ));
+        }
+        // An `any` branch makes the join `any` whichever side it is on
+        // (#505): `unify` absorbs it without binding, so returning the other
+        // side would let the gradual branch vanish (`(if p nil (eval x))`
+        // typing as `(list a)`).
+        if matches!(self.walk(rty), Ty::Any) {
+            return Ok(Ty::Any);
         }
         Ok(self.walk(lty))
     }
@@ -1333,7 +1371,10 @@ impl Cx<'_> {
                 // Trust `bt` and force `ret` back to `any` rather than let
                 // the internal concretization leak into the generalized
                 // scheme.
-                if matches!(wbt, Ty::Any) && !matches!(self.walk(&ret), Ty::Var(_)) {
+                // #505: the same holds when `ret` is still free — `unify(any,
+                // ret)` would leave it free and generalization would turn the
+                // gradual `any` into a `∀` any caller could instantiate.
+                if matches!(wbt, Ty::Any) {
                     if let Ty::Var(id) = &ret {
                         self.infer.borrow_mut().force_any(*id);
                     }
@@ -2299,6 +2340,7 @@ impl Cx<'_> {
     ) -> Result<(Core, Ty), String> {
         let result = self.fresh();
         let mut had_clause = false;
+        let mut nil_bodies = Vec::new();
         for clause in clauses {
             let parts = list_to_vec(clause);
             if parts.is_empty() {
@@ -2313,6 +2355,11 @@ impl Cx<'_> {
                 self.elab_body(&parts[1..], scope, max)?.1
             };
             scope.truncate(saved);
+            had_clause = true;
+            if parts.len() > 1 && self.ends_in_bare_nil(&parts[parts.len() - 1]) {
+                nil_bodies.push(bt);
+                continue;
+            }
             if self.unify(&bt, &result).is_err() {
                 return Err(format!(
                     "`cond` clauses disagree: {:?} vs {:?}",
@@ -2320,8 +2367,8 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
-            had_clause = true;
         }
+        self.join_nil_clauses("cond", &result, nil_bodies)?;
         if had_clause {
             Ok((Core::LitI(0), self.walk(&result)))
         } else {
@@ -2346,6 +2393,7 @@ impl Cx<'_> {
         self.elab(key, scope, max)?;
         let result = self.fresh();
         let mut had_clause = false;
+        let mut nil_bodies = Vec::new();
         for clause in &args[1..] {
             let parts = list_to_vec(clause);
             if parts.is_empty() {
@@ -2358,6 +2406,11 @@ impl Cx<'_> {
                 self.elab_body(&parts[1..], scope, max)?.1
             };
             scope.truncate(saved);
+            had_clause = true;
+            if parts.len() > 1 && self.ends_in_bare_nil(&parts[parts.len() - 1]) {
+                nil_bodies.push(bt);
+                continue;
+            }
             if self.unify(&bt, &result).is_err() {
                 return Err(format!(
                     "`case` clauses disagree: {:?} vs {:?}",
@@ -2365,13 +2418,34 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
-            had_clause = true;
         }
+        self.join_nil_clauses("case", &result, nil_bodies)?;
         if had_clause {
             Ok((Core::LitI(0), self.walk(&result)))
         } else {
             Ok((Core::LitI(0), Ty::Any))
         }
+    }
+
+    /// Join the bare-`nil` clause bodies of a `cond`/`case` (#505), deferred
+    /// until every other clause has joined: `nil` is also false, so once the
+    /// other clauses settled on `bool` a nil clause is that boolean's false.
+    /// Otherwise each unifies as an empty list exactly as an in-order clause
+    /// would (unification order does not change the outcome).
+    fn join_nil_clauses(&self, form: &str, result: &Ty, nil_bodies: Vec<Ty>) -> Result<(), String> {
+        for bt in nil_bodies {
+            if matches!(self.walk(result), Ty::Bool) {
+                continue;
+            }
+            if self.unify(&bt, result).is_err() {
+                return Err(format!(
+                    "`{form}` clauses disagree: {:?} vs {:?}",
+                    self.walk(&bt),
+                    self.walk(result)
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// `(variant-case x (ctor (vars…) body…) … [(else body…)])` — the sum
