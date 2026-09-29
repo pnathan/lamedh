@@ -86,9 +86,13 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(mod x y)")
     (cons 'CATEGORY 'arithmetic)
-    (cons 'DESCRIPTION "Returns x modulo y. Result has same sign as divisor.")
+    (cons 'DESCRIPTION "Returns the Euclidean remainder of x divided by y: always 0 <= r < |y|, whatever the signs of x and y. Differs from Common Lisp's floored MOD when y is negative.")
     (cons 'EXAMPLES '(((mod 10 3) 1)
-                       ((mod -10 3) 2)))
+                       ((mod -10 3) 2)
+                       ((mod -7 3) 2)
+                       ((mod 7 -2) 1)
+                       ((mod 5 -3) 2)
+                       ((mod -7 -3) 2)))
     (cons 'SEE-ALSO '(remainder /))))
 
 (register-doc 'expt
@@ -2539,8 +2543,9 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(rplaca cons new-car)")
     (cons 'CATEGORY 'lists)
-    (cons 'DESCRIPTION "Destructively replaces the CAR of a cons cell with new-car. Returns the modified cons cell. This is a mutating operation — use with care as it modifies shared structure. Classic Lisp 1.5 primitive.")
-    (cons 'EXAMPLES '(((let ((x (cons 1 2))) (rplaca x 99) x) (99 . 2))))
+    (cons 'DESCRIPTION "Returns a NEW cons cell whose CAR is new-car and whose CDR is the CDR of cons. The argument is not modified: Lamedh cons cells are immutable, so unlike Lisp 1.5's destructive RPLACA this cannot alter shared structure. Use the return value. See the Lamedh manual (Lisp 1.5 differences).")
+    (cons 'EXAMPLES '(((rplaca (cons 1 2) 99) (99 . 2))
+                      ((let ((x (cons 1 2))) (rplaca x 99) x) (1 . 2))))
     (cons 'SEE-ALSO '(rplacd car cons))))
 
 (register-doc 'rplacd
@@ -2549,8 +2554,9 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(rplacd cons new-cdr)")
     (cons 'CATEGORY 'lists)
-    (cons 'DESCRIPTION "Destructively replaces the CDR of a cons cell with new-cdr. Returns the modified cons cell. This is a mutating operation — use with care as it can create circular structure. Classic Lisp 1.5 primitive.")
-    (cons 'EXAMPLES '(((let ((x (cons 1 2))) (rplacd x 99) x) (1 . 99))))
+    (cons 'DESCRIPTION "Returns a NEW cons cell whose CAR is the CAR of cons and whose CDR is new-cdr. The argument is not modified: Lamedh cons cells are immutable, so unlike Lisp 1.5's destructive RPLACD this cannot create circular structure. Use the return value. See the Lamedh manual (Lisp 1.5 differences).")
+    (cons 'EXAMPLES '(((rplacd (cons 1 2) 99) (1 . 99))
+                      ((let ((x (list 1 2))) (rplacd x (list 9)) x) (1 2))))
     (cons 'SEE-ALSO '(rplaca cdr cons))))
 
 (register-doc 'sublis
@@ -4383,6 +4389,18 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "call to unknown function `CONS`")))
     (cons 'SEE-ALSO '(signature compiled-p defun* explain-compile))))
 
+(register-doc 'time
+  (list
+    (cons 'NAME 'time)
+    (cons 'TYPE 'vau)
+    (cons 'SYNTAX "(time form...)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Evaluate FORMs, print the elapsed wall time of their normal execution as (TIME-MS ms), and return the value of the last. TIME does not arm fuel, so auto-compiled functions run their native code exactly as they would untimed; for kernel steps (the WITH-FUEL unit) use STEP-COUNT, which arms fuel and therefore forces the interpreted path. Inside an already-armed fuel fence the steps are read off the live counter and printed too: (TIME-MS ms STEPS n).")
+    (cons 'ARGS '((form "Forms to evaluate, in order")))
+    (cons 'RETURNS "The value of the last FORM")
+    (cons 'EXAMPLES '(((time (+ 20 22)) 42)))
+    (cons 'SEE-ALSO '(step-count with-fuel))))
+
 ;;; ============================================================
 ;;; REGEX MODULE (lib/44-regex.lisp)
 ;;; ============================================================
@@ -4524,7 +4542,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'introspection
   "Inspecting registered definitions and compiled code"
-  '(describe see-source disassemble documentation signature compiled-p why-not-typed))
+  '(describe see-source disassemble documentation signature compiled-p why-not-typed time))
 
 ;;; Done loading help data. Keep stdlib loading silent so CLI -s output is
 ;;; machine-readable and benchmark harnesses can parse stdout directly.

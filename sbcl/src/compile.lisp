@@ -190,8 +190,27 @@ lambda's closed-over environment."
 
 ;;; ---- the factory table --------------------------------------------------------
 
+;;; Factories live in two tables. The stdlib's -- those compiled or looked
+;;; up while it bootstraps, and those its cache fasl registers -- are pinned
+;;; in *LC-STDLIB-FACTORIES*: a fixed set, bounded by the stdlib's source.
+;;; Every other factory goes to *LC-FACTORIES*, which is bounded: numeric
+;;; literals are compiled inline and are part of a factory's form, so code
+;;; that EVALs lambdas built with fresh numbers (or fresh symbols) makes a
+;;; new shape each time. When that table reaches *LC-FACTORY-LIMIT* forms
+;;; it is flushed whole; a flushed shape is simply recompiled on its next
+;;; LAMBDA, and closures already made keep their compiled code.
+
+(defvar *lc-stdlib-factories* (make-hash-table :test 'eql :synchronized t)
+  "Structural hash of a pinned stdlib factory form -> list of (FORM . COMPILED-FACTORY).")
+
 (defvar *lc-factories* (make-hash-table :test 'eql :synchronized t)
-  "Structural hash of a factory form -> list of (FORM . COMPILED-FACTORY).")
+  "Structural hash of a user factory form -> list of (FORM . COMPILED-FACTORY).
+Holds at most *LC-FACTORY-LIMIT* forms.")
+
+(defparameter *lc-factory-limit* 4096
+  "Most user factory forms *LC-FACTORIES* holds before it is flushed.")
+
+(defvar *lc-factory-count* 0 "Forms currently in *LC-FACTORIES*.")
 
 (defvar *lc-recording* nil
   "True while the stdlib bootstraps: factories compiled then are the ones
@@ -214,11 +233,21 @@ cache (if any) did not cover this bootstrap and is worth rewriting.")
     h))
 
 (defun lc-find-factory (form hash)
-  (cdr (assoc form (gethash hash *lc-factories*) :test #'equal)))
+  (cdr (or (assoc form (gethash hash *lc-stdlib-factories*) :test #'equal)
+           (assoc form (gethash hash *lc-factories*) :test #'equal))))
 
-(defun lc-add-factory (form hash factory)
-  (sb-ext:with-locked-hash-table (*lc-factories*)
-    (push (cons form factory) (gethash hash *lc-factories*))))
+(defun lc-add-factory (form hash factory &optional (pinned *lc-recording*))
+  "Record FACTORY as FORM's compiled factory: pinned (never evicted) for
+the stdlib, otherwise in the bounded user table."
+  (if pinned
+      (sb-ext:with-locked-hash-table (*lc-stdlib-factories*)
+        (push (cons form factory) (gethash hash *lc-stdlib-factories*)))
+      (sb-ext:with-locked-hash-table (*lc-factories*)
+        (when (>= *lc-factory-count* *lc-factory-limit*)
+          (clrhash *lc-factories*)
+          (setf *lc-factory-count* 0))
+        (incf *lc-factory-count*)
+        (push (cons form factory) (gethash hash *lc-factories*)))))
 
 (defun lc-persistable-p (form)
   "True if FORM holds only atoms a fasl can reproduce by value: numbers
@@ -292,20 +321,33 @@ then simply runs tree-walked, exactly as if this compiler did not exist."
 
 (defun lc-cache-disabled-p () (and (uiop:getenv "LAMEDH_SBCL_NO_CACHE") t))
 
+(defun lc-source-digest ()
+  "Hex MD5 over the port's own source -- src/*.lisp and lamedh.asd -- each
+file's name and length-prefixed text, in name order, so any edit, rename,
+addition or removal changes it."
+  (let ((files (sort (cons (asdf:system-relative-pathname :lamedh "lamedh.asd")
+                           (directory (asdf:system-relative-pathname :lamedh "src/*.lisp")))
+                     #'string< :key #'file-namestring)))
+    (with-output-to-string (hex)
+      (loop for byte across
+            (sb-md5:md5sum-string
+             (with-output-to-string (s)
+               (dolist (f files)
+                 (let ((text (uiop:read-file-string f :external-format :utf-8)))
+                   (format s "~A~%~D~%~A" (file-namestring f) (length text) text))))
+             :external-format :utf-8)
+            do (format hex "~(~2,'0X~)" byte)))))
+
 (defun lc-cache-path ()
-  (let ((key 0))
-    (dolist (f (sort (directory (asdf:system-relative-pathname :lamedh "src/*.lisp"))
-                     #'string< :key #'namestring))
-      (setf key (sb-int:mix (logand key most-positive-fixnum)
-                            (sxhash (uiop:read-file-string f)))))
-    (uiop:xdg-cache-home
-     "lamedh-sbcl"
-     (format nil "~A-~A-~36R" (lisp-implementation-type) (lisp-implementation-version) key)
-     "stdlib-lambdas.fasl")))
+  (uiop:xdg-cache-home
+   "lamedh-sbcl"
+   (format nil "~A-~A-~A" (lisp-implementation-type) (lisp-implementation-version)
+           (lc-source-digest))
+   "stdlib-lambdas.fasl"))
 
 (defun lc-register-cached-factory (form factory)
   "Called by the cache fasl's top-level forms."
-  (lc-add-factory form (lc-form-hash form) factory))
+  (lc-add-factory form (lc-form-hash form) factory t))
 
 (defun lc-load-cache ()
   (unless (lc-cache-disabled-p)

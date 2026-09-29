@@ -61,13 +61,18 @@ sbcl --non-interactive --load tests/run-tests.lisp
 ```
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
-implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
+implementation's `tests/lisp/*.lisp` language-level fixtures, plus one
+port-only file, `97-port-regressions.lisp`, for regressions with no
+verbatim counterpart there — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **512 assertions** across
+At the time of writing this passes all **521 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+It then runs `tests/cli-exit-status.sh`, which drives the documented
+`--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
+checks that a clean script exits 0 and an erroring one exits 1.
 
 ### Running the `examples/` programs
 
@@ -252,15 +257,22 @@ still sees exactly the objects its own source holds. Lambdas that generate
 the same factory form share one `compile`d factory, so SBCL's compiler
 runs once per distinct lambda shape, not once per `LAMBDA` evaluation — a
 lambda inside a loop, or one that a macro such as `DOLIST` expands to on
-every iteration, used to be recompiled each time.
+every iteration, used to be recompiled each time. Numeric literals are
+compiled inline and so are part of a factory's form; code that `EVAL`s
+lambdas built with fresh numbers makes a new shape each time. The stdlib's
+factories are therefore pinned in their own table, and every other factory
+goes to a table bounded at `*lc-factory-limit*` (4096) forms, flushed whole
+when full: a flushed shape is recompiled on its next `LAMBDA`, and closures
+already made keep their code.
 
 The same keying persists the stdlib's factories: when a bootstrap has to
 compile any, it writes every factory it used to
-`$XDG_CACHE_HOME/lamedh-sbcl/<sbcl-version>-<port-source-hash>/stdlib-lambdas.fasl`
+`$XDG_CACHE_HOME/lamedh-sbcl/<sbcl-version>-<port-source-md5>/stdlib-lambdas.fasl`
 (by default under `~/.cache`), and the next process loads that fasl instead
 of compiling. It is an ordinary fasl beside ASDF's own, not a core image:
-launching still goes through the ASDF system. A change to the port's
-`src/*.lisp` or to SBCL selects a new file; a changed stdlib lambda
+launching still goes through the ASDF system. The key is an MD5 digest
+(`sb-md5`) over the port's `src/*.lisp` and `lamedh.asd`, so a change to
+either, or to SBCL, selects a new file; a changed stdlib lambda
 generates a different form, so it is compiled (and then cached) on its next
 bootstrap. Set `LAMEDH_SBCL_NO_CACHE` to bypass the cache entirely. A
 missing, unreadable, or unwritable cache is never an error: the cache only
