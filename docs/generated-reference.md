@@ -5937,12 +5937,16 @@ Returns the remainder of integer division.
 
 **Syntax:** `(mod x y)`
 
-Returns x modulo y. Result has same sign as divisor.
+Returns the Euclidean remainder of x divided by y: always 0 <= r < |y|, whatever the signs of x and y. Differs from Common Lisp's floored MOD when y is negative.
 
 **Examples:**
 ```lisp
 (MOD 10 3)  ; => 1
 (MOD -10 3)  ; => 2
+(MOD -7 3)  ; => 2
+(MOD 7 -2)  ; => 1
+(MOD 5 -3)  ; => 2
+(MOD -7 -3)  ; => 2
 ```
 
 **See also:** REMAINDER, /
