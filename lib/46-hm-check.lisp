@@ -868,6 +868,10 @@ rejected, exactly as the native codegen path rejects it."
            (hit (cdr hit))
            ((hm-codegen-p state)
             (error (concat "unbound variable: " (princ-to-string sym))))
+           ;; T is the canonical true (#505): BOOL, as a comparison or
+           ;; predicate produces, so a t/nil function types as BOOL instead of
+           ;; letting an absorbing ANY vanish into a quantified return.
+           ((eq sym t) 'bool)
            (t 'any))))))
 
 (defun hm-elab-all (state tyenv args)
@@ -1131,6 +1135,21 @@ codegen mode, where a nil literal is rejected before any branch is joined
 (mirrors Cx::is_bare_nil's `self.checking &&` guard)."
   (and (not (hm-codegen-p state)) (null expr)))
 
+(defun hm-ends-in-bare-nil-p (state expr)
+  "Does a checker-mode branch/clause yield a bare nil literal -- the literal
+itself, or the tail of a PROGN (#505)? Mirrors Cx::ends_in_bare_nil."
+  (cond
+    ((hm-bare-nil-p state expr) t)
+    ((and (consp expr) (eq (car expr) 'progn) (consp (cdr expr)))
+     (hm-ends-in-bare-nil-p state (car (last expr))))
+    (t nil)))
+
+(defun hm-nil-meets-bool-p (state lhs lty rhs rty)
+  "Is this IF a BOOL branch against a branch ending in nil (#505)? NIL is also
+false, so the IF is that boolean. Mirrors Cx::nil_meets_bool."
+  (or (and (hm-ends-in-bare-nil-p state lhs) (eq (hm-walk state rty) 'bool))
+      (and (hm-ends-in-bare-nil-p state rhs) (eq (hm-walk state lty) 'bool))))
+
 (defun hm-elab-if (state tyenv args)
   "`(if c then else)`. The condition follows Lisp truthiness (any type)."
   (if (not (= (length args) 3))
@@ -1147,8 +1166,10 @@ codegen mode, where a nil literal is rejected before any branch is joined
                (te (hm-elab state tyenv (caddr args)))
                (lhs-nil (hm-bare-nil-p state (cadr args)))
                (rhs-nil (hm-bare-nil-p state (caddr args))))
-          (hm-join-branches state lhs-nil tt rhs-nil te
-                            "`if` branches disagree")))))
+          (if (hm-nil-meets-bool-p state (cadr args) tt (caddr args) te)
+              'bool
+              (hm-join-branches state lhs-nil tt rhs-nil te
+                                "`if` branches disagree"))))))
 
 (defun hm-join-branches (state lhs-nil lty rhs-nil rty disagreement)
   "Join two branch result types -- the nil-on-miss honesty rule (mirrors
@@ -1168,7 +1189,10 @@ concrete branches still errors."
              (not (or (eq (hm-tag other) 'list) (eq other 'any)))))
       'any
       (if (hm-unifies-p state lty rty)
-          (hm-walk state lty)
+          ;; An ANY branch makes the join ANY whichever side it is on (#505):
+          ;; unification absorbs it without binding, so returning the other
+          ;; side would let the gradual branch vanish.
+          (if (eq (hm-walk state rty) 'any) 'any (hm-walk state lty))
           (error disagreement))))
 
 (defun hm-elab-cond (state tyenv clauses)
@@ -1178,7 +1202,7 @@ including its deliberate NON-application of the nil honesty rule (see that
 function's comment: a self-recursive nil-on-miss helper's own clause join
 happens before COND's result type is computed, so degrading here arrives too
 late and regresses honest CHECKED verdicts into hard TYPE-ERRORs)."
-  (let ((result (hm-fresh state)) (had nil))
+  (let ((result (hm-fresh state)) (had nil) (nil-bodies nil))
     (mapc (lambda (clause)
             ;; A non-cons clause has no parts at all (the native
             ;; `list_to_vec` yields an empty vector and the clause is
@@ -1190,11 +1214,29 @@ late and regresses honest CHECKED verdicts into hard TYPE-ERRORs)."
                        (bt (if (null (cdr parts))
                                test-ty
                                (hm-elab-body state tyenv (cdr parts)))))
-                  (if (hm-unifies-p state bt result)
-                      (setq had t)
-                      (error "`cond` clauses disagree")))))
+                  (progn
+                    (setq had t)
+                    (cond
+                      ((and (cdr parts) (hm-ends-in-bare-nil-p state (car (last parts))))
+                       (setq nil-bodies (cons bt nil-bodies)))
+                      ((hm-unifies-p state bt result) nil)
+                      (t (error "`cond` clauses disagree")))))))
           clauses)
+    (hm-join-nil-clauses state "`cond` clauses disagree" result nil-bodies)
     (if had (hm-walk state result) 'any)))
+
+(defun hm-join-nil-clauses (state disagreement result nil-bodies)
+  "Join the nil-ending clause bodies of a COND/CASE (#505), deferred until
+every other clause has joined: NIL is also false, so once the other clauses
+settled on BOOL a nil clause is that boolean's false. Otherwise each unifies
+as an empty list exactly as an in-order clause would. Mirrors
+Cx::join_nil_clauses."
+  (mapc (lambda (bt)
+          (cond
+            ((eq (hm-walk state result) 'bool) nil)
+            ((hm-unifies-p state bt result) nil)
+            (t (error disagreement))))
+        nil-bodies))
 
 (defun hm-elab-case-check (state tyenv args)
   "Checker-mode `(case key (data body...) ...)` (#404): selectors are data,
@@ -1202,7 +1244,7 @@ never elaborated; clause bodies join like COND; an empty body is ANY. Mirrors
 Cx::elab_case_check."
   (if (null args)
       (error "`case` needs a key")
-      (let ((result (hm-fresh state)) (had nil))
+      (let ((result (hm-fresh state)) (had nil) (nil-bodies nil))
         (hm-elab state tyenv (car args))
         (mapc (lambda (clause)
                 (if (not (consp clause))
@@ -1210,10 +1252,16 @@ Cx::elab_case_check."
                     (let ((bt (if (null (cdr clause))
                                   'any
                                   (hm-elab-body state tyenv (cdr clause)))))
-                      (if (hm-unifies-p state bt result)
-                          (setq had t)
-                          (error "`case` clauses disagree")))))
+                      (progn
+                        (setq had t)
+                        (cond
+                          ((and (cdr clause)
+                                (hm-ends-in-bare-nil-p state (car (last clause))))
+                           (setq nil-bodies (cons bt nil-bodies)))
+                          ((hm-unifies-p state bt result) nil)
+                          (t (error "`case` clauses disagree")))))))
               (cdr args))
+        (hm-join-nil-clauses state "`case` clauses disagree" result nil-bodies)
         (if had (hm-walk state result) 'any))))
 
 (defun hm-elab-when (state tyenv args)
@@ -1987,7 +2035,10 @@ still-FREE variable. Trust BT and force RET back to ANY rather than let the
 internal concretization leak into the generalized scheme."
   (let* ((bt (hm-elab-body state tyenv body))
          (wbt (hm-walk state bt)))
-    (if (and (eq wbt 'any) (not (hm-tvar-p (hm-walk state ret))))
+    ;; #505: the same holds when RET is still free -- unify(any, ret) would
+    ;; leave it free and generalization would turn the gradual ANY into a
+    ;; FORALL any caller could instantiate.
+    (if (eq wbt 'any)
         (progn (hm-force-any! state (cadr ret)) t)
         (if (hm-unifies-p state bt ret)
             t
@@ -2561,7 +2612,12 @@ this from its provisional registry entry; this is the portable equivalent)."
            (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
            (handler-case
                (let ((bt (hm-elab-body state tyenv body)))
-                 (if (hm-unifies-p state bt ret)
+                 ;; A gradual ANY body is an ANY return (#505): unify(any,
+                 ;; ret) leaves RET free, and generalizing it would claim
+                 ;; FORALL a. ... -> a.
+                 (if (or (and (eq (hm-walk state bt) 'any)
+                              (progn (hm-force-any! state (cadr ret)) t))
+                         (hm-unifies-p state bt ret))
                      (list 'checked
                            (hm-render-scheme
                             (hm-generalize state (list '-> (mapcar (lambda (p) (hm-zonk state p)) ptys)

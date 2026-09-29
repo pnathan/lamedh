@@ -1464,8 +1464,16 @@ impl Jit {
                 avoid_gen: RefCell::new(own_vars),
             };
             let (_core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
-            cx.unify(&body_ty, &ret_var)
-                .map_err(|_| "return type mismatch across branches".to_string())?;
+            // A gradual `any` body is an `any` return (#505): `unify(any, ret)`
+            // leaves `ret` free, and generalizing it would claim `∀a. … -> a`.
+            if matches!(cx.walk(&body_ty), Ty::Any) {
+                if let Ty::Var(id) = &ret_var {
+                    cx.infer.borrow_mut().force_any(*id);
+                }
+            } else {
+                cx.unify(&body_ty, &ret_var)
+                    .map_err(|_| "return type mismatch across branches".to_string())?;
+            }
             let inf = cx.infer.borrow();
             let arrow = Ty::Fn(
                 param_tys.iter().map(|(_, t)| inf.zonk(t)).collect(),
