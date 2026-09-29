@@ -623,9 +623,17 @@ pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
         BinOp::BitOr => x | y,
         BinOp::BitXor => x ^ y,
         // Shifts: `y` is a compile-time constant in 1..=63 (the elaborator only
-        // emits these for a literal in-range `ash`), so neither masks nor
-        // overflows, matching the evaluator's in-range `ash`.
-        BinOp::Shl => x.wrapping_shl(y as u32),
+        // emits these for a literal in-range `ash`), so the amount never
+        // masks. A left shift sets OVERFLOW exactly when bits are lost (the
+        // shift back does not recover `x`), matching the evaluator's `ash`
+        // (#514).
+        BinOp::Shl => {
+            let v = x.wrapping_shl(y as u32);
+            if (v >> (y as u32)) != x {
+                ctx.overflow.set(true);
+            }
+            v
+        }
         BinOp::AShr => x >> (y as u32),
     }
 }

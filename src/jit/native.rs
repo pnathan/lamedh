@@ -1423,7 +1423,14 @@ impl Emitter<'_, '_, '_> {
             // `y` is a constant in 1..=63 (the elaborator only emits shifts for a
             // literal in-range `ash`), so Cranelift's shift-amount masking never
             // engages and this matches the evaluator's in-range `ash` exactly.
-            BinOp::Shl => self.b.ins().ishl(x, y),
+            // OVERFLOW is set exactly when bits are lost: `(v >> y) != x` (#514).
+            BinOp::Shl => {
+                let v = self.b.ins().ishl(x, y);
+                let back = self.b.ins().sshr(v, y);
+                let lost = self.b.ins().icmp(IntCC::NotEqual, back, x);
+                self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, lost);
+                v
+            }
             BinOp::AShr => self.b.ins().sshr(x, y),
         }
     }
