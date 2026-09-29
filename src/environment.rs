@@ -2554,6 +2554,21 @@ impl Environment {
         Some(jit.call_with_array_writeback_aliased(name, args, alias))
     }
 
+    /// [`Environment::jit_call_with_array_writeback_aliased`], but telling a
+    /// call the native code *declined to enter* from one that failed after
+    /// entering (issue #500) — see `Jit::call_entry_aliased`. Only a
+    /// declined call may be retried through a dynamic fallback.
+    pub fn jit_call_entry_aliased(
+        &self,
+        name: &str,
+        args: &[crate::jit::Value],
+        alias: &[Option<usize>],
+    ) -> Option<crate::jit::JitEntry> {
+        let jit = self.shared.jit.borrow();
+        jit.id(name)?;
+        Some(jit.call_entry_aliased(name, args, alias))
+    }
+
     /// The id a binder (lambda/fexpr/macro parameter, SETQ target, …) should
     /// key its frame entry under for `sym` — the binding-side mirror of
     /// [`Environment::resolve`]'s canonicalization (issues #223/#262, #285):
