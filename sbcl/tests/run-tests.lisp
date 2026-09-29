@@ -23,5 +23,8 @@
     (format t "~&; loading ~A~%" name)
     (run-string (uiop:read-file-string path))))
 
-(let ((ok (leval (lread "(run-tests)") *global-env*)))
-  (uiop:quit (if (eq ok *t-sym*) 0 1)))
+(load (merge-pathnames "host-regressions.lisp" *load-pathname*))
+
+(let ((ok (leval (lread "(run-tests)") *global-env*))
+      (host-ok (run-host-regressions)))
+  (uiop:quit (if (and (eq ok *t-sym*) host-ok) 0 1)))
