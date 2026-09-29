@@ -1873,8 +1873,17 @@ impl Cx<'_> {
                 args.len()
             ));
         }
+        // Reserve the two temp slots BEFORE elaborating `a`/`b` (#501): `sa`
+        // is live while `b` runs, so a temp user nested in `b` must take
+        // slots above it rather than overwrite it.
+        let base = scope.len();
+        for _ in 0..2 {
+            scope.push((String::new(), self.fresh()));
+        }
+        *max = (*max).max(scope.len());
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
+        scope.truncate(base);
         let elem = self.fresh();
         let arr_ty = Ty::Array(Box::new(elem.clone()));
         if self.unify(&ta, &arr_ty).is_err() {
@@ -1902,12 +1911,6 @@ impl Cx<'_> {
             }
         };
         let rt = Ty::Array(Box::new(elem_ty));
-        let base = scope.len();
-        for _ in 0..2 {
-            scope.push((String::new(), rt.clone()));
-        }
-        *max = (*max).max(scope.len());
-        scope.truncate(base);
         let (sa, sb) = (base, base + 1);
         let len = |s: usize| Box::new(Core::ArrayLen(Box::new(Core::Var(s))));
         let n = Core::If(
@@ -2738,10 +2741,22 @@ impl Cx<'_> {
         if args.is_empty() {
             return Err("compiled min/max needs at least 1 argument".to_string());
         }
-        let mut elabs = Vec::with_capacity(args.len());
+        // Reserve one slot per argument, then one per fold step, BEFORE
+        // elaborating the arguments (#501): a nested min/max/abs (or any
+        // other temp user) then takes slots above these, so its lets cannot
+        // overwrite an argument slot that is still live. The slots stay
+        // reserved together while the nested lets are built.
+        let base = scope.len();
+        let n = args.len();
+        for _ in 0..(2 * n) {
+            scope.push((String::new(), self.fresh()));
+        }
+        *max = (*max).max(scope.len());
+        let mut elabs = Vec::with_capacity(n);
         for a in args {
             elabs.push(self.elab(a, scope, max)?);
         }
+        scope.truncate(base);
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
@@ -2757,15 +2772,6 @@ impl Cx<'_> {
             .as_num()
             .ok_or_else(|| format!("min/max expects numeric operands, got {rt:?}"))?;
         let k: NumKind = num.into();
-        // Reserve one slot per argument, then one per fold step; the slots
-        // stay reserved together while the nested lets are built.
-        let base = scope.len();
-        let n = elabs.len();
-        for _ in 0..(2 * n) {
-            scope.push((String::new(), rt.clone()));
-        }
-        *max = (*max).max(scope.len());
-        scope.truncate(base);
         let arg_slot = |i: usize| base + i;
         let acc_slot = |i: usize| base + n + i;
         // Innermost: fold from the right. acc[n-1] = arg[n-1];
