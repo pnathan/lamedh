@@ -57,5 +57,5 @@ error in a late form is reported only after every earlier form has run."
         (t (enable-all-features)))
       (handler-case
           (if script (run-file script) (run-repl))
-        (error (c) (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit :unix-status 1)))))
-  (uiop:quit :unix-status 0))
+        (error (c) (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit 1)))))
+  (uiop:quit 0))

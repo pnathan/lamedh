@@ -80,3 +80,41 @@ fn control_flow_unwinds_do_not_corrupt_traces() {
     let out = eval_line("(+ 1 (deep))", &e);
     assert_eq!(out, "Error: CAR: expected a list, got 5\n  in: DEEP");
 }
+
+#[test]
+fn runs_of_identical_frames_collapse_with_a_count() {
+    // Issue #520: non-tail recursion prints `R (×6)`, not `R ← R ← …`.
+    let e = env_with_stdlib();
+    eval_line(
+        "(defun r (n) (if (= n 0) (error \"boom\") (+ 1 (r (- n 1)))))",
+        &e,
+    );
+    eval_line("(defun top () (* 2 (r 5)))", &e);
+    assert_eq!(
+        eval_line("(top)", &e),
+        "Error: boom\n  in: R (\u{d7}6) \u{2190} TOP"
+    );
+    // LAST-BACKTRACE stays one symbol per frame.
+    assert_eq!(
+        eval_line("(handler-case (top) (error (er) (last-backtrace)))", &e),
+        "(R R R R R R TOP)"
+    );
+}
+
+#[test]
+fn collapsed_counts_span_the_whole_recursion() {
+    // The count is the real depth, not capped at the 64 LAST-BACKTRACE keeps.
+    let e = env_with_stdlib();
+    eval_line(
+        "(defun r (n) (if (= n 0) (error \"boom\") (+ 1 (r (- n 1)))))",
+        &e,
+    );
+    assert_eq!(eval_line("(r 499)", &e), "Error: boom\n  in: R (\u{d7}500)");
+    assert_eq!(
+        eval_line(
+            "(handler-case (r 499) (error (er) (length (last-backtrace))))",
+            &e
+        ),
+        "64"
+    );
+}
