@@ -26,7 +26,7 @@
 //! `if`/`and`/`or` and bounds-checked-access merges pass their result as a
 //! single block parameter on the merge block.
 
-use super::{BinOp, CmpOp, Core, Ctx, NumKind, allocation_escapes};
+use super::{ArrOp, BinOp, CmpOp, Core, Ctx, NumKind, allocation_escapes};
 use core::ffi::c_void;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -225,7 +225,6 @@ pub fn compile_native(
     jb.symbol("jit_ftrans", super::jit_ftrans as *const u8);
     jb.symbol("jit_ftrans2", super::jit_ftrans2 as *const u8);
     jb.symbol("jit_boxed_op", super::jit_boxed_op as *const u8);
-    jb.symbol("jit_array_op", super::jit_array_op as *const u8);
     jb.symbol("jit_enter_call", super::jit_enter_call as *const u8);
     jb.symbol("jit_exit_call", super::jit_exit_call as *const u8);
     jb.symbol("jit_for_step_zero", super::jit_for_step_zero as *const u8);
@@ -340,17 +339,6 @@ pub fn compile_native(
     // `FUnOp`), but needs `Ctx` (to resolve handles via `Ctx::unbox` and to
     // record a pending error on the array ops), so it takes the `ctx` pointer
     // `jit_ftrans` doesn't.
-    // Imported elementwise array-op trampoline (#394):
-    // (opcode, kind, w0, w1, w2, w3) -> out. No `Ctx`: buffers only.
-    let mut aosig = module.make_signature();
-    for _ in 0..6 {
-        aosig.params.push(AbiParam::new(types::I64));
-    }
-    aosig.returns.push(AbiParam::new(types::I64));
-    let array_op_id = module
-        .declare_function("jit_array_op", Linkage::Import, &aosig)
-        .map_err(|e| format!("{e:?}"))?;
-
     let mut bosig = module.make_signature();
     bosig.params.push(AbiParam::new(ptr));
     bosig.params.push(AbiParam::new(types::I64));
@@ -415,7 +403,6 @@ pub fn compile_native(
         let ftrans_ref = module.declare_func_in_func(ftrans_id, b.func);
         let ftrans2_ref = module.declare_func_in_func(ftrans2_id, b.func);
         let boxed_op_ref = module.declare_func_in_func(boxed_op_id, b.func);
-        let array_op_ref = module.declare_func_in_func(array_op_id, b.func);
         let enter_call_ref = module.declare_func_in_func(enter_call_id, b.func);
         let exit_call_ref = module.declare_func_in_func(exit_call_id, b.func);
         let for_step_zero_ref = module.declare_func_in_func(for_step_zero_id, b.func);
@@ -472,7 +459,6 @@ pub fn compile_native(
             ftrans_ref,
             ftrans2_ref,
             boxed_op_ref,
-            array_op_ref,
             enter_call_ref,
             exit_call_ref,
             for_step_zero_ref,
@@ -556,9 +542,6 @@ struct Emitter<'a, 'b, 'c> {
     /// handle intrinsic trampoline (`equal`/`hash-code`/general-array
     /// access), called from the `Core::BoxedOp` arm.
     boxed_op_ref: cranelift_codegen::ir::FuncRef,
-    /// Imported [`super::jit_array_op`] (#394): the elementwise array-op
-    /// trampoline, called from the `Core::ArrayOp` arm.
-    array_op_ref: cranelift_codegen::ir::FuncRef,
     /// Imported [`super::jit_enter_call`]/[`super::jit_exit_call`] (issue
     /// #271): the non-tail call depth guard `emit_call` wraps every call in.
     enter_call_ref: cranelift_codegen::ir::FuncRef,
@@ -828,20 +811,9 @@ impl Emitter<'_, '_, '_> {
                 Emitted::Value(self.emit_array_map2(*op, *kind, base_out, base_a, base_b))
             }
             Core::ArrayOp(op, kind, xs) => {
-                // Evaluate the operands left to right, pad to four with a
-                // zero placeholder, and call the shared scalar reference.
-                let mut vals: Vec<Value> = xs.iter().map(|x| self.emit_value(x)).collect();
-                let zero = self.iconst(0);
-                while vals.len() < 4 {
-                    vals.push(zero);
-                }
-                let opc = self.iconst(op.opcode() as i64);
-                let kc = self.iconst(if matches!(kind, NumKind::I) { 0 } else { 1 });
-                let call = self.b.ins().call(
-                    self.array_op_ref,
-                    &[opc, kc, vals[0], vals[1], vals[2], vals[3]],
-                );
-                Emitted::Value(self.b.inst_results(call)[0])
+                // Operands left to right, `out` first (#525).
+                let vals: Vec<Value> = xs.iter().map(|x| self.emit_value(x)).collect();
+                Emitted::Value(self.emit_array_op(*op, *kind, &vals))
             }
             Core::ArraySum(k, a) => {
                 let base_a = self.emit_value(a);
@@ -1485,18 +1457,9 @@ impl Emitter<'_, '_, '_> {
     }
 
     /// Lower [`Core::ArrayMap2`]: `out[i] = a[i] OP b[i]` for `i` in
-    /// `0..min_len` where `min_len = min(len out, len a, len b)`, as a
-    /// 2-lane SIMD loop (`I64X2`/`F64X2` — maps to SSE on x86-64 and NEON on
-    /// aarch64) with a scalar tail for a final odd element. Returns
-    /// `base_out` unchanged (the node's value is the mutated `out` array).
-    ///
-    /// Buffer layout: `[len, e0, e1, …]`, element `i` at `base + 8*(i+1)`
-    /// (`elem_addr`) — elements `i, i+1` are 16 contiguous bytes, so one
-    /// vector load/store per iteration covers both lanes. The buffer is
-    /// only 8-byte aligned (allocated as a `u64` buffer), so every vector
-    /// access uses **unaligned**, `notrap` `MemFlagsData` — the addresses are
-    /// always in-bounds by construction (`i < vec_end <= min_len`), so
-    /// `notrap` is sound, but `aligned` would be a lie for an odd `i`.
+    /// `0..min(len out, len a, len b)`, via [`Self::emit_elementwise`].
+    /// Returns `base_out` unchanged (the node's value is the mutated `out`
+    /// array).
     fn emit_array_map2(
         &mut self,
         op: BinOp,
@@ -1505,20 +1468,99 @@ impl Emitter<'_, '_, '_> {
         base_a: Value,
         base_b: Value,
     ) -> Value {
+        self.emit_elementwise(kind, base_out, &[base_a, base_b], None, |s, x| {
+            s.lane_bin(op, kind, x[0], x[1])
+        })
+    }
+
+    /// Lower [`Core::ArrayOp`] (#394, #525): `array-div!`, `array-scale!`,
+    /// `array-fma!`, `array-neg!` over `min(len)` of the array operands, via
+    /// [`Self::emit_elementwise`]. `w` holds the operand words, `out` first
+    /// (the `Scale` scalar is a raw int64/float64 word). Each lane computes
+    /// exactly what `runtime.rs::array_op` computes per element: int64
+    /// wraps (`imul`/`iadd`/`ineg` are two's-complement), float64 `fdiv`/
+    /// `fmul` round as Rust's `/`/`*` do, `fneg` flips the sign bit as unary
+    /// `-` does, and `array-fma!` is the
+    /// fused `fma` (one rounding, as `f64::mul_add`) — Cranelift emits
+    /// `vfmadd`/NEON `fmla` where the host has it and a per-lane `fma`
+    /// libcall otherwise, both correctly rounded, so every tier agrees
+    /// bit-for-bit. Returns `w[0]`.
+    fn emit_array_op(&mut self, op: ArrOp, kind: NumKind, w: &[Value]) -> Value {
+        let (arrays, scalar) = match op {
+            ArrOp::Scale => (&w[1..2], Some(w[2])),
+            _ => (&w[1..op.arity()], None),
+        };
+        self.emit_elementwise(kind, w[0], arrays, scalar, |s, x| {
+            let ins = s.b.ins();
+            match (op, kind) {
+                (ArrOp::Div, NumKind::F) => ins.fdiv(x[0], x[1]),
+                (ArrOp::Div, NumKind::I) => unreachable!("array-div! is float64-only"),
+                (ArrOp::Scale, NumKind::I) => ins.imul(x[0], x[1]),
+                (ArrOp::Scale, NumKind::F) => ins.fmul(x[0], x[1]),
+                (ArrOp::Fma, NumKind::I) => {
+                    let p = ins.imul(x[0], x[1]);
+                    s.b.ins().iadd(p, x[2])
+                }
+                (ArrOp::Fma, NumKind::F) => ins.fma(x[0], x[1], x[2]),
+                (ArrOp::Neg, NumKind::I) => ins.ineg(x[0]),
+                (ArrOp::Neg, NumKind::F) => ins.fneg(x[0]),
+            }
+        })
+    }
+
+    /// The shared elementwise loop behind [`Self::emit_array_map2`] and
+    /// [`Self::emit_array_op`]: `out[i] = lane(arrays[0][i], …, scalar)` for
+    /// `i` in `0..min_len`, `min_len` the minimum of `out`'s and every
+    /// `arrays` length, as a 2-lane SIMD loop (`I64X2`/`F64X2` — SSE on
+    /// x86-64, NEON on aarch64) with a scalar tail for a final odd element.
+    /// `lane` is called once with vector operands (the body) and once with
+    /// scalar `I64`/`F64` operands (the tail), so it must use only
+    /// lane-polymorphic instructions; `scalar` (a raw int64/float64 word) is
+    /// appended as the last operand, splatted for the body. Each element
+    /// depends only on its own index, so `out` may alias an input. Returns
+    /// `base_out`.
+    ///
+    /// Buffer layout: `[len, e0, e1, …]`, element `i` at `base + 8*(i+1)`
+    /// (`elem_addr`) — elements `i, i+1` are 16 contiguous bytes, so one
+    /// vector load/store per iteration covers both lanes. The buffer is
+    /// only 8-byte aligned (allocated as a `u64` buffer), so every vector
+    /// access uses **unaligned**, `notrap` `MemFlagsData` — the addresses are
+    /// always in-bounds by construction (`i < vec_end <= min_len`), so
+    /// `notrap` is sound, but `aligned` would be a lie for an odd `i`.
+    fn emit_elementwise(
+        &mut self,
+        kind: NumKind,
+        base_out: Value,
+        arrays: &[Value],
+        scalar: Option<Value>,
+        lane: impl Fn(&mut Self, &[Value]) -> Value,
+    ) -> Value {
         let trusted = MemFlagsData::trusted();
         let unaligned = MemFlagsData::new().with_notrap();
+        let (sty, vty) = match kind {
+            NumKind::I => (types::I64, types::I64X2),
+            NumKind::F => (types::F64, types::F64X2),
+        };
 
-        let len_a = self.b.ins().load(types::I64, trusted, base_a, 0);
-        let len_b = self.b.ins().load(types::I64, trusted, base_b, 0);
-        let len_out = self.b.ins().load(types::I64, trusted, base_out, 0);
-        let min_ab = self.b.ins().smin(len_a, len_b);
-        let min_len = self.b.ins().smin(min_ab, len_out);
+        let mut min_len = self.b.ins().load(types::I64, trusted, base_out, 0);
+        for &base in arrays {
+            let len = self.b.ins().load(types::I64, trusted, base, 0);
+            min_len = self.b.ins().smin(min_len, len);
+        }
         // Largest even n <= min_len (clears the low bit); safe for a
         // negative min_len too (never occurs — buffer lengths are
         // non-negative by construction) since it only ever moves `vec_end`
         // further from 0 in magnitude, and the `i < vec_end` loop guard
         // below still degenerates to zero iterations.
         let vec_end = self.b.ins().band_imm(min_len, -2i64);
+        // The broadcast operand, typed once outside the loop.
+        let scalar = scalar.map(|w| {
+            let sv = match kind {
+                NumKind::I => w,
+                NumKind::F => self.as_f(w),
+            };
+            (sv, self.b.ins().splat(vty, sv))
+        });
 
         // --- vectorized loop: i = 0, 2, 4, ... while i < vec_end ---------
         let zero = self.iconst(0);
@@ -1537,13 +1579,14 @@ impl Emitter<'_, '_, '_> {
 
         self.b.switch_to_block(body_b);
         self.b.seal_block(body_b); // single predecessor: loop_b, known now
-        let vty = vec_ty(kind);
-        let addr_a = self.elem_addr(base_a, i);
-        let addr_b = self.elem_addr(base_b, i);
+        let mut xs = vec![];
+        for &base in arrays {
+            let addr = self.elem_addr(base, i);
+            xs.push(self.b.ins().load(vty, unaligned, addr, 0));
+        }
+        xs.extend(scalar.map(|(_, v)| v));
+        let vr = lane(self, &xs);
         let addr_out = self.elem_addr(base_out, i);
-        let va = self.b.ins().load(vty, unaligned, addr_a, 0);
-        let vb = self.b.ins().load(vty, unaligned, addr_b, 0);
-        let vr = self.vec_bin(op, kind, va, vb);
         self.b.ins().store(unaligned, vr, addr_out, 0);
         let next_i = self.b.ins().iadd_imm(i, 2);
         self.b.ins().jump(loop_b, &[BlockArg::from(next_i)]);
@@ -1560,16 +1603,18 @@ impl Emitter<'_, '_, '_> {
 
         self.b.switch_to_block(tail_b);
         self.b.seal_block(tail_b); // single predecessor: after_vec_b's brif
-        let addr_a_s = self.elem_addr(base_a, vec_end);
-        let addr_b_s = self.elem_addr(base_b, vec_end);
-        let addr_out_s = self.elem_addr(base_out, vec_end);
         // Scalar element loads/stores are always 8-byte offsets from an
         // 8-byte-aligned base, so (unlike the vector path) `trusted`'s
         // `aligned` bit is honest here too.
-        let sa = self.b.ins().load(types::I64, trusted, addr_a_s, 0);
-        let sb = self.b.ins().load(types::I64, trusted, addr_b_s, 0);
-        let sr = self.scalar_wrapping_bin(op, kind, sa, sb);
-        self.b.ins().store(trusted, sr, addr_out_s, 0);
+        let mut xs = vec![];
+        for &base in arrays {
+            let addr = self.elem_addr(base, vec_end);
+            xs.push(self.b.ins().load(sty, trusted, addr, 0));
+        }
+        xs.extend(scalar.map(|(s, _)| s));
+        let sr = lane(self, &xs);
+        let addr_out = self.elem_addr(base_out, vec_end);
+        self.b.ins().store(trusted, sr, addr_out, 0);
         self.b.ins().jump(done_b, &[]);
 
         self.b.switch_to_block(done_b);
@@ -1579,13 +1624,15 @@ impl Emitter<'_, '_, '_> {
         base_out
     }
 
-    /// `x OP y` on 2-lane vector operands (`I64X2`/`F64X2`) — wrapping for
-    /// int64 (plain `iadd`/`isub`/`imul` are already two's-complement
-    /// wraparound, matching `wrapping_add`/`wrapping_sub`/`wrapping_mul`; no
-    /// per-lane overflow flag exists to set, which is the whole reason
-    /// [`Core::ArrayMap2`] is defined as wrapping). Only `Add`/`Sub`/`Mul`
-    /// are ever constructed for this node.
-    fn vec_bin(&mut self, op: BinOp, kind: NumKind, x: Value, y: Value) -> Value {
+    /// `x OP y` for [`Core::ArrayMap2`], on 2-lane vector operands
+    /// (`I64X2`/`F64X2`) or scalar `I64`/`F64` ones (the odd-length tail) —
+    /// wrapping for int64 (plain `iadd`/`isub`/`imul` are already
+    /// two's-complement wraparound, matching `wrapping_add`/`wrapping_sub`/
+    /// `wrapping_mul`; no per-lane overflow flag exists to set, which is the
+    /// whole reason [`Core::ArrayMap2`] is defined as wrapping, and the tail
+    /// never touches the `OVERFLOW`/`DIV_BY_ZERO` `Ctx` flags either). Only
+    /// `Add`/`Sub`/`Mul` are ever constructed for this node.
+    fn lane_bin(&mut self, op: BinOp, kind: NumKind, x: Value, y: Value) -> Value {
         match (kind, op) {
             (NumKind::I, BinOp::Add) => self.b.ins().iadd(x, y),
             (NumKind::I, BinOp::Sub) => self.b.ins().isub(x, y),
@@ -1594,32 +1641,6 @@ impl Emitter<'_, '_, '_> {
             (NumKind::F, BinOp::Sub) => self.b.ins().fsub(x, y),
             (NumKind::F, BinOp::Mul) => self.b.ins().fmul(x, y),
             _ => unreachable!("ArrayMap2 only ever carries Add/Sub/Mul"),
-        }
-    }
-
-    /// Scalar counterpart of [`Self::vec_bin`] for the odd-length tail
-    /// element: raw `I64` words in, bitcasting to `F64` for the float case
-    /// (mirroring [`Self::float_bin`], but — unlike it — never touching the
-    /// `OVERFLOW`/`DIV_BY_ZERO` `Ctx` flags, since this whole node family is
-    /// defined as flagless/wrapping to match the vectorized body).
-    fn scalar_wrapping_bin(&mut self, op: BinOp, kind: NumKind, x: Value, y: Value) -> Value {
-        match kind {
-            NumKind::I => match op {
-                BinOp::Add => self.b.ins().iadd(x, y),
-                BinOp::Sub => self.b.ins().isub(x, y),
-                BinOp::Mul => self.b.ins().imul(x, y),
-                _ => unreachable!("ArrayMap2 only ever carries Add/Sub/Mul"),
-            },
-            NumKind::F => {
-                let (xf, yf) = (self.as_f(x), self.as_f(y));
-                let rf = match op {
-                    BinOp::Add => self.b.ins().fadd(xf, yf),
-                    BinOp::Sub => self.b.ins().fsub(xf, yf),
-                    BinOp::Mul => self.b.ins().fmul(xf, yf),
-                    _ => unreachable!("ArrayMap2 only ever carries Add/Sub/Mul"),
-                };
-                self.as_i(rf)
-            }
         }
     }
 
@@ -1962,17 +1983,5 @@ fn float_cc(op: CmpOp) -> FloatCC {
         CmpOp::Ge => FloatCC::GreaterThanOrEqual,
         CmpOp::Eq => FloatCC::Equal,
         CmpOp::Ne => FloatCC::NotEqual,
-    }
-}
-
-/// The 2-lane vector type for [`Emitter::emit_array_map2`]: `I64X2` for
-/// int64 (SSE2 `paddq`/`psubq`/hand-rolled `pmuludq` shuffle on x86-64, NEON
-/// `add`/`sub`/`mul` `v2i64`/`v2i64` — Cranelift picks the ISA-appropriate
-/// lowering), `F64X2` for float64 (SSE2 `addpd`/`subpd`/`mulpd`, NEON
-/// `fadd`/`fsub`/`fmul` `v2f64`).
-fn vec_ty(kind: NumKind) -> types::Type {
-    match kind {
-        NumKind::I => types::I64X2,
-        NumKind::F => types::F64X2,
     }
 }
