@@ -950,9 +950,17 @@
 (DEFUN SIGNUM (X) (IF (< X 0) -1 (IF (< 0 X) 1 0)))
 (DEFUN LAST (L) (IF (NULL L) (QUOTE ()) (IF (NULL (CDR L)) L (LAST (CDR L)))))
 (DEFUN NTHCDR (N L) (IF (EQ N 0) L (NTHCDR (- N 1) (CDR L))))
+; A negative exponent yields a float (KERNEL.md Part V). The reference
+; computes it as f64::powi, i.e. compiler-rt's __powidf2: square-and-
+; multiply over |E| in f64, then one reciprocal. $EXPT-POWI is that exact
+; operation order, so the result matches bit-for-bit. F*/F/ rather than
+; generic */ since those are the float primitives here.
+(DEFUN $EXPT-POWI (A N R)
+  (LET ((R (IF (EQ (REMAINDER N 2) 1) (F* R A) R)) (N (ASH N -1)))
+    (IF (EQ N 0) R ($EXPT-POWI (F* A A) N R))))
 (DEFUN EXPT (B E)
   (IF (< E 0)
-      (ERROR "EXPT: negative exponent is not supported for fixnums" E)
+      (F/ 1.0 ($EXPT-POWI (IF (FLOATP B) B (FLOAT B)) (- 0 E) 1.0))
       (IF (EQ E 0) 1 (* B (EXPT B (- E 1))))))
 (DEFUN GCD (A B)
   (LET ((A (IF (< A 0) (- 0 A) A)) (B (IF (< B 0) (- 0 B) B)))

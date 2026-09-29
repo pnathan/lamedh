@@ -492,6 +492,12 @@ T'
         '(SYSCALL 39 1.5)'
     err_case file_p 0 "(T () ())" "" \
         '(PRINT (LIST (FILE-P "/etc/passwd") (FILE-P "/etc") (FILE-P "/nonexistent")))'
+    # EXPT with a negative exponent is a float (issue #550; it used to
+    # be an error), bit-for-bit the reference's f64::powi: 7^22 by
+    # square-and-multiply is 3909821048582988288, by naive repeated
+    # multiplication 3909821048582987776 — only the former may match.
+    err_case expt_negative_exponent 0 "(T () 0.500000 0.250000 0.010000 inf 1024)" "" \
+        '(PRINT (LIST (EQ (EXPT 7 -22) (F/ 1.0 3909821048582988288)) (EQ (EXPT 7 -22) (F/ 1.0 3909821048582987776)) (EXPT 2 -1) (EXPT 2.0 -2) (EXPT 10 -2) (EXPT 0 -1) (EXPT 2 10)))'
     # SHELL returns (code stdout stderr) like the reference; printed
     # readably so the strings show their quotes and newlines. A
     # one-argument SHELL goes through sh -c (so a missing program is
