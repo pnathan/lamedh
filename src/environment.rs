@@ -919,6 +919,14 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::MonotonicMicros),
         );
         env.set(
+            "EVAL-DEPTH-LIMIT".to_string(),
+            LispVal::Builtin(BuiltinFunc::EvalDepthLimit),
+        );
+        env.set(
+            "SET-EVAL-DEPTH-LIMIT!".to_string(),
+            LispVal::Builtin(BuiltinFunc::SetEvalDepthLimit),
+        );
+        env.set(
             "EXPLAIN-COMPILE".to_string(),
             LispVal::Builtin(BuiltinFunc::ExplainCompile),
         );
@@ -1322,6 +1330,18 @@ impl Environment {
         env.set(
             "STRING-CASEFOLD*".to_string(),
             LispVal::Builtin(BuiltinFunc::StringCasefold),
+        );
+        env.set(
+            "STRING->LIST*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringToList),
+        );
+        env.set(
+            "STRING-SPLIT*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringSplit),
+        );
+        env.set(
+            "STRING-JOIN*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringJoin),
         );
         env.set(
             "STRING->UTF8*".to_string(),
@@ -2552,6 +2572,21 @@ impl Environment {
         let jit = self.shared.jit.borrow();
         jit.id(name)?;
         Some(jit.call_with_array_writeback_aliased(name, args, alias))
+    }
+
+    /// [`Environment::jit_call_with_array_writeback_aliased`], but telling a
+    /// call the native code *declined to enter* from one that failed after
+    /// entering (issue #500) — see `Jit::call_entry_aliased`. Only a
+    /// declined call may be retried through a dynamic fallback.
+    pub fn jit_call_entry_aliased(
+        &self,
+        name: &str,
+        args: &[crate::jit::Value],
+        alias: &[Option<usize>],
+    ) -> Option<crate::jit::JitEntry> {
+        let jit = self.shared.jit.borrow();
+        jit.id(name)?;
+        Some(jit.call_entry_aliased(name, args, alias))
     }
 
     /// The id a binder (lambda/fexpr/macro parameter, SETQ target, …) should

@@ -96,3 +96,122 @@ fn the_portable_gate_agrees_on_variadic_min_max() {
         "(COMPILEABLE (-> (FLOAT64) FLOAT64))"
     );
 }
+
+/// #501: a min/max/abs nested in a compiled min/max argument must not reuse
+/// the outer call's temp slots. Every compiled result is compared with the
+/// same body run by the tree-walker.
+fn agrees_with_interpreter(e: &Shared<Environment>, name: &str, params: &[&str], body: &str) {
+    for vals in [
+        [5, 1, 9],
+        [7, -3, 2],
+        [-4, 6, -8],
+        [0, 0, 0],
+        [3, 10, -10],
+        [-2, -9, 4],
+    ] {
+        let args: Vec<String> = vals[..params.len()].iter().map(i64::to_string).collect();
+        let binds: Vec<String> = params
+            .iter()
+            .zip(&args)
+            .map(|(p, v)| format!("({p} {v})"))
+            .collect();
+        assert_eq!(
+            eval_line(&format!("({name} {})", args.join(" ")), e),
+            eval_line(&format!("(let ({}) {body})", binds.join(" ")), e),
+            "{name} {args:?}"
+        );
+    }
+}
+
+#[test]
+fn nested_min_max_abs_argument_keeps_the_outer_slots() {
+    let e = env();
+    // The issue's repro forms, via `defun-typed`.
+    for (name, body) in [
+        ("n501-mxmn", "(max b (min x 9))"),
+        ("n501-mxmx", "(max b (max x 0))"),
+        ("n501-mxab", "(max b (abs x))"),
+        ("n501-mnab", "(min b (abs x))"),
+    ] {
+        eval_line(
+            &format!("(defun-typed ({name} int64) ((b int64) (x int64)) {body})"),
+            &e,
+        );
+        compiled(&e, name);
+        agrees_with_interpreter(&e, name, &["b", "x"], body);
+    }
+    assert_eq!(eval_line("(n501-mxmn 5 1)", &e), "5");
+    assert_eq!(eval_line("(n501-mxab 7 -3)", &e), "7");
+}
+
+#[test]
+fn nested_min_max_abs_at_depth_two_and_more_match_the_interpreter() {
+    let e = env();
+    let bodies = [
+        (
+            "d501-a",
+            "(min (max a (abs (- b c))) (max (min a b) (abs c)) (abs (min a (max b c))))",
+        ),
+        (
+            "d501-b",
+            "(max (min a (max b (min c 1))) (abs (max a (min b c))))",
+        ),
+        ("d501-c", "(abs (max a (abs (min b (abs c)))))"),
+        (
+            "d501-d",
+            "(max (+ a 0) (min b (max c (abs (- a b)))) (abs c))",
+        ),
+    ];
+    for (name, body) in bodies {
+        eval_line(
+            &format!("(defun-typed ({name} int64) ((a int64) (b int64) (c int64)) {body})"),
+            &e,
+        );
+        compiled(&e, name);
+        agrees_with_interpreter(&e, name, &["a", "b", "c"], body);
+    }
+    // Float operands take the same path.
+    let fbody = "(max (+ a 0.0) (min b (abs (max c -1.5))))";
+    eval_line(
+        &format!("(defun-typed (d501-f float64) ((a float64) (b float64) (c float64)) {fbody})"),
+        &e,
+    );
+    compiled(&e, "d501-f");
+    for [a, b, c] in [["0.5", "2.5", "-3.0"], ["-1.0", "0.25", "1.0"]] {
+        assert_eq!(
+            eval_line(&format!("(d501-f {a} {b} {c})"), &e),
+            eval_line(&format!("(let ((a {a}) (b {b}) (c {c})) {fbody})"), &e),
+            "d501-f {a} {b} {c}"
+        );
+    }
+}
+
+#[test]
+fn nested_min_in_a_max_loop_accumulator() {
+    // #501's real-world hit: Container With Most Water.
+    let e = env();
+    let body = "(let ((i 0) (j (- (array-length* h) 1)) (best 0)) \
+                (while (< i j) \
+                  (setq best (max best (* (- j i) (min (aref h i) (aref h j))))) \
+                  (if (< (aref h i) (aref h j)) (setq i (+ i 1)) (setq j (- j 1)))) \
+                best)";
+    eval_line(
+        &format!("(defun-typed (max-area int64) ((h (array int64))) {body})"),
+        &e,
+    );
+    compiled(&e, "max-area");
+    for (heights, want) in [
+        ("(1 8 6 2 5 4 8 3 7)", "49"),
+        ("(1 1)", "1"),
+        ("(4 3 2 1 4)", "16"),
+        ("(1 2 1)", "2"),
+    ] {
+        let h = format!("($list->array '{heights})");
+        assert_eq!(eval_line(&format!("(max-area {h})"), &e), want, "{heights}");
+        assert_eq!(
+            eval_line(&format!("(let ((h {h})) {body})"), &e),
+            want,
+            "interpreted {heights}"
+        );
+    }
+}

@@ -645,6 +645,8 @@ pub enum BuiltinFunc {
     VariantDeclare,
     LastBacktrace,
     MonotonicMicros,
+    EvalDepthLimit,
+    SetEvalDepthLimit,
     ExplainCompile,
     SetValue,
     CapMaskAllowsP,
@@ -775,6 +777,13 @@ pub enum BuiltinFunc {
     // Unicode-aware, locale-independent case fold (issue #254); backs the
     // case-insensitive string comparison family in lib/14-strings.lisp.
     StringCasefold,
+    // Linear-time whole-string walks (issue #510): a Lisp loop over
+    // SUBSTRING rescans the UTF-8 string from the start on every character
+    // index, so these back STRING->LIST, STRING-SPLIT and STRING-JOIN in
+    // lib/14-strings.lisp.
+    StringToList,
+    StringSplit,
+    StringJoin,
     // Explicit String <-> Array<Char> UTF-8 boundary (issue #254); wrapped by
     // the TEXT module in lib/30-text.lisp.
     StringToUtf8,
@@ -3878,13 +3887,26 @@ pub fn eval_line(line: &str, env: &Shared<Environment>) -> String {
 /// the backtrace of named frames the unwind left behind (innermost first),
 /// consuming those frames. Errors with no named frames (a direct toplevel
 /// mistake) format exactly as before.
+///
+/// Runs of identical adjacent frames print once with a count (issue #520):
+/// `F (×9998) ← MAIN`.
 pub fn format_error_with_backtrace(e: &LispError, env: &Shared<Environment>) -> String {
-    let trace = evaluator::core::bt_capture(0, env);
+    let trace = evaluator::core::bt_capture_runs(0, env);
     let msg = format!("{e}");
     if trace.is_empty() {
         msg
     } else {
-        format!("{msg}\n  in: {}", trace.join(" \u{2190} "))
+        let frames: Vec<String> = trace
+            .into_iter()
+            .map(|(name, n)| {
+                if n == 1 {
+                    name
+                } else {
+                    format!("{name} (\u{d7}{n})")
+                }
+            })
+            .collect();
+        format!("{msg}\n  in: {}", frames.join(" \u{2190} "))
     }
 }
 

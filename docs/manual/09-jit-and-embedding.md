@@ -330,6 +330,46 @@ function's result, flags, or error type ever diverge from what
 `(declare (no-compile))` on the same body produces, that is a compiler
 bug, not an acceptable optimization artifact.
 
+### Recursion limits differ by tier
+
+One thing that is *not* identical across tiers is how deep non-tail
+recursion may go before it becomes a recoverable `recursion limit
+exceeded` error (tail calls consume no depth in either tier):
+
+| Tier | Limit | Counts | Adjustable |
+|---|---|---|---|
+| Tree-walking evaluator | 10,000 | nested `eval` frames | `lamedh --max-depth N`; Lisp `(set-eval-depth-limit! n)`; Rust `lamedh::set_eval_depth_limit` |
+| Compiled (typed JIT) | 50,000 | non-tail typed calls | no |
+
+So a deeply non-tail-recursive function can succeed when compiled and
+fail when interpreted (for example under `(declare (no-compile))`, or
+inside a fuel fence, which disables compilation). Unifying the two is
+tracked in #553. Note that one interpreted call can use more than one
+`eval` frame, so 10,000 frames is fewer than 10,000 calls.
+
+The interpreted limit is per thread. `(eval-depth-limit)` reads it;
+`(set-eval-depth-limit! n)` sets it and returns the previous value. Lisp
+code may lower the limit and restore it, but never raise it past the
+host's ceiling — the value the host last set (`--max-depth N` in the
+CLI, `set_eval_depth_limit` in Rust; 10,000 by default) — because only the
+host knows how large the native stack is:
+
+```lisp
+(set-eval-depth-limit! 500)
+; => 10000
+(set-eval-depth-limit! 20000)
+; Error: SET-EVAL-DEPTH-LIMIT!: limit must be between 1 and 10000 ...
+```
+
+The interpreter thread has a 512 MiB stack. Raising `--max-depth` far
+above the default can exhaust it and abort the process instead of
+signalling; debug builds use much larger frames than release builds and
+reach that point first.
+
+The error's backtrace collapses runs of identical frames, so runaway
+recursion reads `in: F (×9998) ← MAIN` rather than repeating `F`.
+`(last-backtrace)` still returns one symbol per frame (at most 64).
+
 ## 9.6 Opting Out of Compilation
 
 Sometimes you want a function pinned to the tree-walker — for debugging,
