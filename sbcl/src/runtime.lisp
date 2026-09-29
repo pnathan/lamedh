@@ -301,10 +301,13 @@ bound; the caller wraps the body evaluation in PROGV for those."
 
 (defspecial "IF" (args env whole)
   (declare (ignore whole))
-  (destructuring-bind (test then &optional (else nil else-p)) args
+  ;; KERNEL: IF takes exactly three operands -- no implicit NIL else.
+  (unless (and (consp args) (consp (cdr args)) (consp (cddr args)) (null (cdddr args)))
+    (lamedh-error "if takes exactly three arguments"))
+  (destructuring-bind (test then else) args
     (if (lamedh-truthy-p (leval test env))
         (tail then env)
-        (if else-p (tail else env) (done nil)))))
+        (tail else env))))
 
 (defspecial "COND" (args env whole)
   (declare (ignore whole))
