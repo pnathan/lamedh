@@ -351,12 +351,21 @@ result, not collapsed to a single value by a short-circuiting OR."
       (unless (cur-eof-p c) (reader-error* "unexpected trailing input"))
       form)))
 
-(defun lread-all (string)
-  "Read every top-level Lamedh form from STRING; returns a list."
-  (let ((c (make-cursor (strip-shebang string))) (out nil))
+(defun lread-each (string fn)
+  "Read the top-level Lamedh forms of STRING one at a time, calling FN on
+each as soon as it is read -- so FN has run on every earlier form before a
+parse error in a later one is signalled (the reference implementation's
+script loader interleaves reading and evaluation the same way)."
+  (let ((c (make-cursor (strip-shebang string))))
     (loop
       (skip-ws c)
-      (when (cur-eof-p c) (return (nreverse out)))
-      (push (read-form c) out))))
+      (when (cur-eof-p c) (return))
+      (funcall fn (read-form c)))))
+
+(defun lread-all (string)
+  "Read every top-level Lamedh form from STRING; returns a list."
+  (let ((out nil))
+    (lread-each string (lambda (form) (push form out)))
+    (nreverse out)))
 
 (eval-when (:load-toplevel :execute) (init-reader-symbols))

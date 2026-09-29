@@ -101,6 +101,8 @@
             results))
     (every #'identity results)))
 
+(load (merge-pathnames "host-regressions.lisp" *load-pathname*))
+
 ;; Shell-level CLI exit-status check (#535): runs the documented script
 ;; invocation in child SBCL processes and checks their exit codes.
 (defun run-cli-exit-status-test ()
@@ -111,6 +113,7 @@
                                           :ignore-error-status t)))))
 
 (let ((ok (leval (lread "(run-tests)") *global-env*))
+      (host-ok (run-host-regressions))
       (recursion-ok (run-recursion-limit-checks))
       (cli-ok (run-cli-exit-status-test)))
-  (uiop:quit (if (and (eq ok *t-sym*) recursion-ok cli-ok) 0 1)))
+  (uiop:quit (if (and (eq ok *t-sym*) host-ok recursion-ok cli-ok) 0 1)))
