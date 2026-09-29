@@ -1281,3 +1281,19 @@
                 (SYSCALL SYS-CLOSE ERR-R)
                 (SYSCALL SYS-WAIT4 PID STATUS 0 NIL)
                 (LIST (LOGAND (ASH ($LE32 STATUS 0) -8) 255) OUT ERR))))))))
+
+; STRING->LIST* — the reference's one-pass builtin (#510,
+; evaluator/builtins_core.rs) behind lib/14-strings.lisp's STRING->LIST:
+; the characters of S as one-character strings. Walks the UTF-8 bytes
+; from the end, so each character's start is found by skipping back
+; over continuation bytes and the list is built in order with no
+; reversal; SUBSTRING here is byte-indexed.
+(DEFUN STRING->LIST* (S)
+  (LET ((I (STRING-LENGTH S)) (J 0) (ACC (QUOTE ())))
+    (WHILE (< 0 I)
+      (PROGN (SETQ J (- I 1))
+             (WHILE (IF (< 0 J) (EQ (LOGAND (STRING-REF S J) 192) 128) (QUOTE ()))
+               (SETQ J (- J 1)))
+             (SETQ ACC (CONS (SUBSTRING S J I) ACC))
+             (SETQ I J)))
+    ACC))
