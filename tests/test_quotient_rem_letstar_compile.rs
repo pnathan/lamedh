@@ -1,5 +1,5 @@
 //! #522: `quotient` (the evaluator's name for `/`), `remainder`/`rem`
-//! (truncated remainder) and `let*` (nested `let`) compile. Differential:
+//! (truncated remainder) and `let*` (sequential `let`, #513) compile. Differential:
 //! every compiled result, OVERFLOW flag and error equals the interpreter's
 //! for the same body, and the portable codegen gate agrees on admission.
 

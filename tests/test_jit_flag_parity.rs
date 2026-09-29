@@ -239,3 +239,64 @@ fn for_zero_step_errors_in_both_worlds() {
         "typed zero-step for must error identically, got: {ty_val}"
     );
 }
+
+/// Issue #514: `ash` edge cases. `(value, shift, expected result, expected
+/// OVERFLOW)`. OVERFLOW is set exactly when a left shift loses bits; a right
+/// shift never sets it; a shift of `i64::MIN` saturates instead of wrapping
+/// to a no-op.
+const ASH_CASES: &[(i64, i64, i64, bool)] = &[
+    (1, i64::MIN, 0, false),
+    (-1, i64::MIN, -1, false),
+    (5, i64::MIN, 0, false),
+    (i64::MAX, i64::MIN, 0, false),
+    (i64::MIN, i64::MIN, -1, false),
+    (1, i64::MIN + 1, 0, false),
+    (-16, -100, -1, false),
+    (i64::MAX, -63, 0, false),
+    (i64::MIN, -63, -1, false),
+    (16, -4, 1, false),
+    (7, 0, 7, false),
+    (0, 100, 0, false),
+    (0, 64, 0, false),
+    (0, i64::MAX, 0, false),
+    (1, 100, 0, true),
+    (-1, 64, 0, true),
+    (1, 62, 1 << 62, false),
+    (1, 63, i64::MIN, true),
+    (-1, 63, i64::MIN, false),
+    (3, 63, i64::MIN, true),
+    (0, 63, 0, false),
+    (i64::MAX, 1, -2, true),
+    (i64::MIN, 1, 0, true),
+    (-(1 << 62), 1, i64::MIN, false),
+    ((1 << 62) - 1, 1, i64::MAX - 1, false),
+    (1 << 62, 1, i64::MIN, true),
+];
+
+#[test]
+fn ash_edge_cases_evaluator() {
+    for &(n, k, want, want_flag) in ASH_CASES {
+        let (val, flag) = run_evaluator(&format!("(ash {n} {k})"));
+        assert_eq!(val, want.to_string(), "(ash {n} {k}) value");
+        assert_eq!(flag, want_flag, "(ash {n} {k}) OVERFLOW flag");
+    }
+}
+
+/// The compiled `ash` (constant shift in -63..=63) must agree with the
+/// evaluator on value and OVERFLOW flag for every compilable row (#514).
+#[test]
+fn ash_edge_cases_typed_parity() {
+    for &(n, k, want, want_flag) in ASH_CASES {
+        if !(-63..=63).contains(&k) {
+            continue;
+        }
+        let (val, flag) = run_typed(
+            &[&format!(
+                "(defun-typed (tash int64) ((x int64)) (ash x {k}))"
+            )],
+            &format!("(tash {n})"),
+        );
+        assert_eq!(val, want.to_string(), "typed (ash {n} {k}) value");
+        assert_eq!(flag, want_flag, "typed (ash {n} {k}) OVERFLOW flag");
+    }
+}
