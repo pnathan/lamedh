@@ -2151,8 +2151,43 @@ pub(super) fn apply(
             }
         }
         LispVal::Native(f) => f(args, env),
-        _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
+        _ => Err(not_a_function(func, env)),
     }
+}
+
+/// The error for applying a non-callable value (issue #521). The value is
+/// rendered with the Lisp printer, never Rust `Debug`. Operatives say why
+/// they cannot be applied, and a bare symbol — a quoted name passed where a
+/// function object is needed, as in `(mapcar 'car ...)` — says what the
+/// name is bound to, so the fix (`#'car`) is visible from the message.
+fn not_a_function(func: &LispVal, env: &Shared<Environment>) -> LispError {
+    let msg = match func {
+        LispVal::Macro(_) => {
+            "Not a function: <macro> (a macro transforms unevaluated code and cannot be applied)"
+                .to_string()
+        }
+        LispVal::Fexpr(_) | LispVal::Vau(_) => format!(
+            "Not a function: {} (an operative receives unevaluated operands and cannot be applied)",
+            err_val(func)
+        ),
+        LispVal::Symbol(s) => {
+            let name = s.borrow().name.clone();
+            match env.get(&name) {
+                Some(LispVal::Lambda(_) | LispVal::Builtin(_) | LispVal::Native(_)) => format!(
+                    "Not a function: the symbol {name} (pass the function it names with #'{name})"
+                ),
+                Some(LispVal::Macro(_)) => format!(
+                    "Not a function: the symbol {name}, which names a macro; a macro cannot be applied"
+                ),
+                Some(LispVal::Fexpr(_) | LispVal::Vau(_)) => format!(
+                    "Not a function: the symbol {name}, which names an operative; an operative cannot be applied"
+                ),
+                _ => format!("Not a function: the symbol {name}"),
+            }
+        }
+        _ => format!("Not a function: {}", err_val(func)),
+    };
+    LispError::Generic(msg)
 }
 
 /// Apply a callable to an **owned** argument vector, moving each value into the
