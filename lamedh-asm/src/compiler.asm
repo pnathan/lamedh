@@ -5145,9 +5145,11 @@ compile_lambda:
 ; target rax, per the ordinary compiled-code calling convention every
 ; compile_call site also honors) to decide which register-argument
 ; slots hold real REST data. This version handles any number of
-; call-site operands (capped at MAX_MACRO_ARGS, matching this
-; project's own "generous fixed size, not an unbounded general answer"
-; v0 sizing elsewhere — see README): the first 3 go in rsi/rdx/rcx as
+; call-site operands — no cap: the list is walked once to count it
+; and the scratch array below is sized to fit on the host stack (an
+; earlier fixed 32-slot array silently dropped every operand past the
+; 32nd, which APPLY — the other caller — exposed as a wrong answer,
+; issue #545): the first 3 go in rsi/rdx/rcx as
 ; before, and any beyond that are pushed onto the *real* host stack
 ; immediately before the call, in the same order compile_call_args'
 ; own target-code convention produces (operand index 3 ends up closest
@@ -5156,7 +5158,6 @@ compile_lambda:
 ; at exactly the offsets build_param_frame already expects — the exact
 ; layout an ordinary compiled call site would produce, just assembled
 ; by hand here instead of emitted.
-%define MAX_MACRO_ARGS 32
 global invoke_macro
 invoke_macro:
     push rbx
@@ -5167,24 +5168,42 @@ invoke_macro:
     mov r12, rdi                    ; closure
     mov r13, rsi                      ; args list cursor
 
-    sub rsp, MAX_MACRO_ARGS*8           ; scratch array, host-stack-resident
+    ; Pass 1: count the list, so the scratch array can hold all of it.
+    xor r15, r15                        ; n
+    mov r14, r13
+.count:
+    cmp r14, IMM_NIL
+    je .counted
+    mov rdi, r14
+    call cdr
+    mov r14, rax
+    inc r15
+    jmp .count
+.counted:
+    ; Scratch array, host-stack-resident, n slots rounded up to an even
+    ; count so rsp keeps the 16-byte alignment the old fixed 32-slot
+    ; array preserved.
+    lea rbx, [r15+1]
+    and rbx, -2
+    shl rbx, 3
+    sub rsp, rbx
     mov r14, rsp                          ; scratch array base
-    xor r15, r15                            ; count so far
+
+    ; Pass 2: collect.
+    xor rbx, rbx                            ; index so far
 .collect:
-    cmp r13, IMM_NIL
-    je .collected
-    cmp r15, MAX_MACRO_ARGS
+    cmp rbx, r15
     jae .collected
     mov rdi, r13
     call car
-    mov [r14+r15*8], rax
+    mov [r14+rbx*8], rax
     mov rdi, r13
     call cdr
     mov r13, rax
-    inc r15
+    inc rbx
     jmp .collect
 .collected:
-    ; r15 = n, capped. Registers first.
+    ; r15 = n. Registers first.
     xor rsi, rsi
     xor rdx, rdx
     xor rcx, rcx
@@ -5231,7 +5250,9 @@ invoke_macro:
                                                 ; operands this call
                                                 ; itself pushed
 .no_extra_cleanup:
-    add rsp, MAX_MACRO_ARGS*8                    ; discard scratch array
+    lea rbx, [r15+1]
+    and rbx, -2
+    lea rsp, [rsp + rbx*8]                       ; discard scratch array
 
     pop r15
     pop r14
