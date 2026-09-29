@@ -64,6 +64,85 @@ fn depth_limit_is_configurable() {
     });
 }
 
+#[test]
+fn limit_message_names_a_user_reachable_knob() {
+    // Issue #520: the hint used to name the Rust-only set_eval_depth_limit.
+    with_large_stack(|| {
+        let env = env_with_stdlib();
+        // A runaway non-tail recursion kept on the interpreter (`dolist`, the
+        // original driver, runs in constant stack since #504, and naive
+        // recursion compiles natively since #512).
+        eval_line(
+            "(defun runaway (n) (declare (no-compile)) (+ 1 (runaway (- n 1))))",
+            &env,
+        );
+        let out = eval_line("(runaway 20000)", &env);
+        assert!(
+            out.starts_with(
+                "Error: recursion limit exceeded (10000 eval frames); \
+                 rewrite iteratively or raise it with `lamedh --max-depth N`"
+            ),
+            "got: {out}"
+        );
+        assert!(!out.contains("set_eval_depth_limit"), "got: {out}");
+        // The runaway frames collapse into one counted entry.
+        assert!(out.contains("\n  in: RUNAWAY (\u{d7}"), "got: {out}");
+        assert!(!out.contains("RUNAWAY \u{2190} RUNAWAY"), "got: {out}");
+    });
+}
+
+#[test]
+fn lisp_can_lower_and_restore_the_limit() {
+    with_large_stack(|| {
+        let env = env_with_stdlib();
+        assert_eq!(eval_line("(eval-depth-limit)", &env), "10000");
+        // Returns the previous limit.
+        assert_eq!(eval_line("(set-eval-depth-limit! 50)", &env), "10000");
+        assert_eq!(eval_line("(eval-depth-limit)", &env), "50");
+        eval_line(
+            "(defun nt (n) (if (= n 0) (error \"bottom\") (+ 1 (nt (- n 1)))))",
+            &env,
+        );
+        let out = eval_line("(nt 200)", &env);
+        assert!(
+            out.contains("recursion limit exceeded (50 eval frames)"),
+            "got: {out}"
+        );
+        // Back up to (but not past) the host's ceiling.
+        assert_eq!(eval_line("(set-eval-depth-limit! 10000)", &env), "50");
+        assert_eq!(
+            eval_line("(nt 200)", &env),
+            "Error: bottom\n  in: NT (\u{d7}201)"
+        );
+    });
+}
+
+#[test]
+fn lisp_cannot_raise_the_limit_past_the_host_ceiling() {
+    // Only the host knows the native stack size; a (possibly sandboxed)
+    // program raising the limit could abort the process on stack overflow.
+    with_large_stack(|| {
+        let env = env_with_stdlib();
+        let out = eval_line("(set-eval-depth-limit! 10001)", &env);
+        assert!(
+            out.contains("limit must be between 1 and 10000"),
+            "got: {out}"
+        );
+        assert_eq!(eval_line("(eval-depth-limit)", &env), "10000");
+        for bad in ["0", "-3", "'x", "1.5"] {
+            let out = eval_line(&format!("(set-eval-depth-limit! {bad})"), &env);
+            assert!(
+                out.starts_with("Error: SET-EVAL-DEPTH-LIMIT!"),
+                "{bad}: {out}"
+            );
+        }
+        // The host raising the limit raises the ceiling with it.
+        set_eval_depth_limit(20_000);
+        assert_eq!(eval_line("(set-eval-depth-limit! 100)", &env), "20000");
+        assert_eq!(eval_line("(set-eval-depth-limit! 20000)", &env), "100");
+    });
+}
+
 // Since #512 an un-annotated naive fib compiles natively. Past the typed call
 // cap the native edition must stop promptly: before, frames below the cap kept
 // calling after the error was pending (exponential work, OOM-killed), and the

@@ -784,7 +784,7 @@ All arithmetic auto-promotes to float when any argument is a float.
 | `/` / `QUOTIENT` | `(/ n…)` | Divide |
 | `EXPT` | `(expt base exp)` | Power |
 | `REMAINDER` | `(remainder n m)` | Integer remainder (sign of dividend) |
-| `MOD` | `(mod n m)` | Modulo (sign of divisor) |
+| `MOD` | `(mod n m)` | Euclidean modulo (0 ≤ r < \|m\|) |
 | `ADD1` / `1+` | `(add1 n)` | Increment by 1 |
 | `SUB1` / `1-` | `(sub1 n)` | Decrement by 1 |
 | `ABS` | `(abs n)` | Absolute value |
@@ -801,6 +801,7 @@ All arithmetic auto-promotes to float when any argument is a float.
 (expt 2 10)         ; => 1024
 (remainder 17 5)    ; => 2
 (mod -7 3)          ; => 2
+(mod 7 -2)          ; => 1  (Euclidean: never negative)
 ```
 
 Overflow: checked arithmetic; on overflow the `"OVERFLOW"` condition flag is

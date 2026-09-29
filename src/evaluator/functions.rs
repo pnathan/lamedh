@@ -565,32 +565,6 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
     ))
 }
 
-thread_local! {
-    /// Depth of auto-typed fallbacks taken because the native call itself
-    /// failed (#512). While nonzero, auto-typed membranes skip the native
-    /// attempt: the fallback is re-running the call on the dynamic definition,
-    /// and letting each nested call retry native (each with a fresh typed
-    /// depth budget) turns one failed attempt into one per interpreted level.
-    static NATIVE_FAILED_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Holds [`NATIVE_FAILED_FALLBACKS`] raised for the dynamic extent of one
-/// fallback, however it exits.
-struct NativeFailedFallback;
-
-impl NativeFailedFallback {
-    fn enter() -> Self {
-        NATIVE_FAILED_FALLBACKS.with(|c| c.set(c.get() + 1));
-        NativeFailedFallback
-    }
-}
-
-impl Drop for NativeFailedFallback {
-    fn drop(&mut self) {
-        NATIVE_FAILED_FALLBACKS.with(|c| c.set(c.get().saturating_sub(1)));
-    }
-}
-
 /// Build an **auto-typed** membrane entry: a function that tries the typed
 /// (native) fast path and silently falls back to the original dynamic closure
 /// when the arguments do not fit the inferred signature. This is what makes HM
@@ -604,9 +578,7 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
             // (#320): compiled internal loops never return to the metered
             // trampoline, so fenced calls take the interpreted fallback,
             // which charges per step like everything else.
-            if crate::evaluator::core::kernel_fuel_remaining().is_some()
-                || NATIVE_FAILED_FALLBACKS.with(|c| c.get()) > 0
-            {
+            if crate::evaluator::core::kernel_fuel_remaining().is_some() {
                 return apply(&fallback, args, env);
             }
             if let Some((ptys, ret)) = env.jit_signature(&name)
@@ -623,15 +595,23 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                         }
                     }
                 }
-                if !fits {
-                    return apply(&fallback, args, env);
-                }
-                let called = env.jit_call_with_array_writeback_aliased(
-                    &name,
-                    &vals,
-                    &crate::jit::array_alias_map(args, &ptys),
-                );
-                if let Some(Ok((v, updated, flags))) = called {
+                // Only a call the native code *declined to enter* may fall
+                // back (issue #500). Once the body has run it may already
+                // have mutated a zero-copy typed array or called the host,
+                // so re-running it interpreted would repeat those effects:
+                // a post-entry error (recursion cap, out-of-range index, …)
+                // propagates instead.
+                let entry = if fits {
+                    env.jit_call_entry_aliased(
+                        &name,
+                        &vals,
+                        &crate::jit::array_alias_map(args, &ptys),
+                    )
+                } else {
+                    None
+                };
+                if let Some(crate::jit::JitEntry::Entered(result)) = entry {
+                    let (v, updated, flags) = result.map_err(LispError::Generic)?;
                     // Set OVERFLOW before signalling a division error: the
                     // tree-walker evaluates left-to-right, so an inner overflow
                     // leaves the flag observable even when a later division by
@@ -644,13 +624,6 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                     }
                     apply_array_writeback(args, updated, env);
                     return Ok(typed_to_lispval(v, &ret, env));
-                }
-                if let Some(Err(_)) = called {
-                    // The native call failed (a pending error, e.g. the
-                    // typed recursion cap): re-run on the dynamic definition
-                    // without native retries inside it.
-                    let _guard = NativeFailedFallback::enter();
-                    return apply(&fallback, args, env);
                 }
             }
             // Fall back to the original dynamic definition.

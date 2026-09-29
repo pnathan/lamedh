@@ -1525,8 +1525,16 @@ impl Jit {
                 avoid_gen: RefCell::new(own_vars),
             };
             let (_core, body_ty) = cx.elab_body(body, &mut scope, &mut max_slots)?;
-            cx.unify(&body_ty, &ret_var)
-                .map_err(|_| "return type mismatch across branches".to_string())?;
+            // A gradual `any` body is an `any` return (#505): `unify(any, ret)`
+            // leaves `ret` free, and generalizing it would claim `∀a. … -> a`.
+            if matches!(cx.walk(&body_ty), Ty::Any) {
+                if let Ty::Var(id) = &ret_var {
+                    cx.infer.borrow_mut().force_any(*id);
+                }
+            } else {
+                cx.unify(&body_ty, &ret_var)
+                    .map_err(|_| "return type mismatch across branches".to_string())?;
+            }
             let inf = cx.infer.borrow();
             let arrow = Ty::Fn(
                 param_tys.iter().map(|(_, t)| inf.zonk(t)).collect(),
@@ -1854,18 +1862,34 @@ impl Jit {
         args: &[Value],
         alias: &[Option<usize>],
     ) -> WritebackResult {
+        match self.call_entry_aliased(name, args, alias) {
+            JitEntry::Declined(e) => Err(e),
+            JitEntry::Entered(r) => r,
+        }
+    }
+
+    /// [`Jit::call_with_array_writeback_aliased`], but reporting whether the
+    /// native body was entered (issue #500): every rejection before
+    /// `invoke` is [`JitEntry::Declined`], and everything after it —
+    /// including a pending error raised mid-body — is [`JitEntry::Entered`].
+    pub fn call_entry_aliased(
+        &self,
+        name: &str,
+        args: &[Value],
+        alias: &[Option<usize>],
+    ) -> JitEntry {
         let alias_of =
             |i: usize| -> Option<usize> { alias.get(i).copied().flatten().filter(|&j| j < i) };
-        let id = self
-            .id(name)
-            .ok_or_else(|| format!("unknown function `{name}`"))?;
+        let Some(id) = self.id(name) else {
+            return JitEntry::Declined(format!("unknown function `{name}`"));
+        };
         let f = &self.funcs[id];
         if !f.is_defined() {
-            return Err(format!("{name}: declared but not defined"));
+            return JitEntry::Declined(format!("{name}: declared but not defined"));
         }
         let params = f.params.borrow();
         if args.len() != params.len() {
-            return Err(format!(
+            return JitEntry::Declined(format!(
                 "{name}: expected {} args, got {}",
                 params.len(),
                 args.len()
@@ -1883,7 +1907,10 @@ impl Jit {
             // arena buffer, so the parameters alias as in the interpreter.
             match alias_of(i) {
                 Some(j) if tys.get(j) == Some(ty) => words.push(words[j]),
-                _ => words.push(a.to_word(ty, &ctx)?),
+                _ => match a.to_word(ty, &ctx) {
+                    Ok(w) => words.push(w),
+                    Err(e) => return JitEntry::Declined(e),
+                },
             }
             tys.push(ty.clone());
         }
@@ -1896,7 +1923,7 @@ impl Jit {
         // means the computed word `w` is a meaningless placeholder, not a
         // real (if flagged) result.
         if let Some(msg) = ctx.pending_error.borrow_mut().take() {
-            return Err(msg);
+            return JitEntry::Entered(Err(msg));
         }
         let flags = JitFlags {
             overflow: ctx.overflow.get(),
@@ -1938,7 +1965,7 @@ impl Jit {
                 (is_flat_scalar_array(ty) && mutates).then(|| Value::from_word(*w, ty, &ctx))
             })
             .collect();
-        Ok((result, updated, flags))
+        JitEntry::Entered(Ok((result, updated, flags)))
     }
 
     /// Convenience for callers holding `LispVal`s: maps `Number`/`Float` to
