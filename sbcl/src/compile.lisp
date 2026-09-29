@@ -24,10 +24,10 @@
 ;;;;     and short-circuit semantics (matching SF-AND/SF-OR exactly)
 ;;;;   - variable references: a lambda parameter compiles to a native CL
 ;;;;     lexical variable; any other symbol compiles to a fresh ENV-RESOLVE
-;;;;     against the lambda's closed-over environment (embedded as a
-;;;;     literal %ENV binding), so a later global redefinition is still
-;;;;     seen -- nothing is baked in as a compile-time constant except the
-;;;;     environment object identity itself
+;;;;     against the lambda's closed-over environment (the %ENV parameter
+;;;;     of the compiled factory -- see "literals and generated names"
+;;;;     below), so a later global redefinition is still seen -- nothing is
+;;;;     baked in as a compile-time constant
 ;;;;   - calls (OP . ARGS), for any operator expression, but ONLY when OP is
 ;;;;     a symbol that resolves, AT THE MOMENT THIS LAMBDA IS BEING
 ;;;;     COMPILED, to a native CL function or another LAMBDA-OBJ (never a
@@ -94,11 +94,50 @@
         (or (functionp v) (lambda-obj-p v)))
     (error () nil)))
 
+;;; ---- literals and generated names ------------------------------------------
+;;;
+;;; A compiled lambda is built as a FACTORY, (LAMBDA (%ENV %K0 %K1 ...)
+;;; (LAMBDA (%ARGS) ...)), whose code depends only on the lambda's source:
+;;; its closed-over environment and every literal object in its body that is
+;;; not a symbol, number or character (strings, quoted lists, records, ...)
+;;; are factory arguments, supplied when a closure is instantiated -- so each
+;;; closure sees exactly the objects its own source holds, as before. Two
+;;; lambdas with the same generated form share one compiled factory
+;;; (*LC-FACTORIES*), so SBCL's COMPILE runs once per distinct lambda shape,
+;;; not once per LAMBDA evaluation -- a LAMBDA inside a loop, or produced by
+;;; a macro expansion, used to recompile on every iteration (#542). The
+;;; same keying lets the stdlib's factories persist across processes in a
+;;; fasl (see "The stdlib factory cache" below).
+
+(defvar *lc-literals* nil "Literal objects lifted out of the form being compiled, in reverse order.")
+(defvar *lc-literal-count* 0)
+(defvar *lc-gensym-count* 0)
+
+(defun lc-lift (obj)
+  "Return the factory parameter that will hold OBJ in the generated code."
+  (push obj *lc-literals*)
+  (prog1 (intern (format nil "%K~D" *lc-literal-count*) '#:lamedh-rt)
+    (incf *lc-literal-count*)))
+
+(defun lc-gensym (prefix)
+  "A generated local name that is the same on every compile of the same
+source (unlike GENSYM), so equal lambdas generate EQUAL forms."
+  (prog1 (intern (format nil "%~A~D" prefix *lc-gensym-count*) '#:lamedh-rt)
+    (incf *lc-gensym-count*)))
+
+(defun lc-inline-constant-p (x)
+  "True for a literal that can appear in the generated code itself: a
+number, a character, or an interned symbol (NIL included)."
+  (or (numberp x) (characterp x) (and (symbolp x) (or (null x) (symbol-package x)))))
+
+(defun lc-quote (x)
+  (if (lc-inline-constant-p x) (list 'quote x) (lc-lift x)))
+
 (defun lc-compile-and (args bound env)
   (cond
     ((null args) (list 'quote *t-sym*))
     ((null (cdr args)) (lc-compile-form (car args) bound env))
-    (t (let ((v (gensym "AND")))
+    (t (let ((v (lc-gensym "AND")))
          `(let ((,v ,(lc-compile-form (car args) bound env)))
             (if (lamedh-truthy-p ,v) ,(lc-compile-and (cdr args) bound env) nil))))))
 
@@ -106,7 +145,7 @@
   (cond
     ((null args) nil)
     ((null (cdr args)) (lc-compile-form (car args) bound env))
-    (t (let ((v (gensym "OR")))
+    (t (let ((v (lc-gensym "OR")))
          `(let ((,v ,(lc-compile-form (car args) bound env)))
             (if (lamedh-truthy-p ,v) ,v ,(lc-compile-or (cdr args) bound env)))))))
 
@@ -114,24 +153,24 @@
   "Compile FORM (a Lamedh s-expression) to a CL form, or signal
 COMPILE-UNSUPPORTED. BOUND is the list of Lamedh symbols currently bound
 as native CL lexical variables (this lambda's parameters); every other
-symbol reference goes through %ENV, a local the generated lambda binds to
-the literal, closed-over ENV object."
+symbol reference goes through %ENV, the factory parameter holding the
+lambda's closed-over environment."
   (lc-init-syms)
   (cond
     ((null form) nil)
     ((numberp form) form)
-    ((stringp form) form)
+    ((stringp form) (lc-lift form))
     ((characterp form) form)
     ((symbolp form)
      (cond
-       ((self-evaluating-symbol-p form) (list 'quote form))
+       ((self-evaluating-symbol-p form) (lc-quote form))
        ((member form bound) form)
-       (t (list 'env-resolve '%env (list 'quote form)))))
+       (t (list 'env-resolve '%env (lc-quote form)))))
     ((not (consp form)) (cbail "form ~S is neither a literal nor a cons" form))
     (t
      (let ((op (car form)) (args (cdr form)))
        (cond
-         ((eq op *lc-quote*) (list 'quote (car args)))
+         ((eq op *lc-quote*) (lc-quote (car args)))
          ((eq op *lc-if*)
           (destructuring-bind (c th &optional el) args
             (list 'if (list 'lamedh-truthy-p (lc-compile-form c bound env))
@@ -149,6 +188,52 @@ the literal, closed-over ENV object."
           (list 'lapply-fn (lc-compile-form op bound env)
                 (cons 'list (mapcar (lambda (a) (lc-compile-form a bound env)) args)))))))))
 
+;;; ---- the factory table --------------------------------------------------------
+
+(defvar *lc-factories* (make-hash-table :test 'eql :synchronized t)
+  "Structural hash of a factory form -> list of (FORM . COMPILED-FACTORY).")
+
+(defvar *lc-recording* nil
+  "True while the stdlib bootstraps: factories compiled then are the ones
+the stdlib factory cache persists.")
+(defvar *lc-recorded* nil
+  "Persistable (FORM . FACTORY) pairs used while *LC-RECORDING*, newest first.")
+(defvar *lc-recorded-set* (make-hash-table :test 'eq) "Factories already in *LC-RECORDED*.")
+(defvar *lc-compiled-while-recording* nil
+  "True once a factory had to be compiled while *LC-RECORDING* -- the
+cache (if any) did not cover this bootstrap and is worth rewriting.")
+
+(defun lc-form-hash (form)
+  (let ((h 0))
+    (declare (type fixnum h))
+    (labels ((walk (x)
+               (if (consp x)
+                   (progn (setf h (sb-int:mix h 7)) (walk (car x)) (walk (cdr x)))
+                   (setf h (sb-int:mix h (sxhash x))))))
+      (walk form))
+    h))
+
+(defun lc-find-factory (form hash)
+  (cdr (assoc form (gethash hash *lc-factories*) :test #'equal)))
+
+(defun lc-add-factory (form hash factory)
+  (sb-ext:with-locked-hash-table (*lc-factories*)
+    (push (cons form factory) (gethash hash *lc-factories*))))
+
+(defun lc-persistable-p (form)
+  "True if FORM holds only atoms a fasl can reproduce by value: numbers
+(finite floats only, as infinities and NaNs have no readable syntax),
+characters, and interned symbols."
+  (labels ((ok (x)
+             (cond ((consp x) (and (ok (car x)) (ok (cdr x))))
+                   ((floatp x) (not (or (sb-ext:float-infinity-p x) (sb-ext:float-nan-p x))))
+                   (t (lc-inline-constant-p x)))))
+    (ok form)))
+
+(defun lc-compile-factory (form)
+  (handler-bind ((warning #'muffle-warning))
+    (compile nil form)))
+
 (defun try-compile-lambda (fixed rest body env)
   "Attempt to ahead-of-time compile a LAMBDA/DEFUN body. On success,
 returns a native CL function of one argument (the already-evaluated
@@ -159,22 +244,102 @@ then simply runs tree-walked, exactly as if this compiler did not exist."
       (progn
         (when (or (some #'dynamic-sym-p fixed) (and rest (dynamic-sym-p rest)))
           (cbail "dynamic (special) parameters are not supported"))
-        (let* ((bound (if rest (cons rest fixed) fixed))
+        (let* ((*lc-literals* nil) (*lc-literal-count* 0) (*lc-gensym-count* 0)
+               (bound (if rest (cons rest fixed) fixed))
                (body-cl (lc-compile-form body bound env))
-               (lambda-form
-                 (if rest
-                     `(lambda (%args)
-                        (let ((%env ,env))
-                          (destructuring-bind (,@fixed &rest ,rest) %args
-                            (declare (ignorable ,@fixed ,rest %env))
-                            ,body-cl)))
-                     `(lambda (%args)
-                        (let ((%env ,env))
-                          (destructuring-bind (,@fixed) %args
-                            (declare (ignorable ,@fixed %env))
-                            ,body-cl))))))
-          (compile nil lambda-form)))
+               (lits (reverse *lc-literals*))
+               (lit-vars (loop for i below (length lits)
+                               collect (intern (format nil "%K~D" i) '#:lamedh-rt)))
+               (factory-form
+                 `(lambda (%env ,@lit-vars)
+                    (declare (ignorable %env ,@lit-vars))
+                    (lambda (%args)
+                      (destructuring-bind (,@fixed ,@(and rest `(&rest ,rest))) %args
+                        (declare (ignorable ,@fixed ,@(and rest (list rest))))
+                        ,body-cl))))
+               (hash (lc-form-hash factory-form))
+               (factory (or (lc-find-factory factory-form hash)
+                            (let ((f (lc-compile-factory factory-form)))
+                              (lc-add-factory factory-form hash f)
+                              (when *lc-recording* (setf *lc-compiled-while-recording* t))
+                              f))))
+          (when (and *lc-recording* (not (gethash factory *lc-recorded-set*))
+                     (lc-persistable-p factory-form))
+            (setf (gethash factory *lc-recorded-set*) t)
+            (push (cons factory-form factory) *lc-recorded*))
+          (apply factory env lits)))
     (compile-unsupported () nil)
     (error () nil)))
 
 (setf *lambda-compile-hook* #'try-compile-lambda)
+
+;;; ============================================================================
+;;; The stdlib factory cache
+;;; ============================================================================
+;;;
+;;; Bootstrapping the stdlib creates ~1,100 lambdas; compiling ~630 of them
+;;; with COMPILE was most of the port's startup time (#542). Their factory
+;;; forms depend only on the stdlib's source, so after a bootstrap that had
+;;; to compile any, every stdlib factory is written out as one COMPILE-FILEd
+;;; fasl; the next process loads it and bootstraps without calling the
+;;; compiler. The cache lives under the XDG cache directory, keyed by the SBCL
+;;; version and a hash of this port's own source (src/*.lisp), so a port or
+;;; compiler change starts a fresh file; the stdlib's source needs no key,
+;;; since a changed lambda simply generates a different form and misses.
+;;; Setting LAMEDH_SBCL_NO_CACHE (to anything) disables both reading and
+;;; writing. Any failure to read or write it is ignored: the cache only ever
+;;; saves calls to COMPILE, it never changes what a lambda does.
+
+(defun lc-cache-disabled-p () (and (uiop:getenv "LAMEDH_SBCL_NO_CACHE") t))
+
+(defun lc-cache-path ()
+  (let ((key 0))
+    (dolist (f (sort (directory (asdf:system-relative-pathname :lamedh "src/*.lisp"))
+                     #'string< :key #'namestring))
+      (setf key (sb-int:mix (logand key most-positive-fixnum)
+                            (sxhash (uiop:read-file-string f)))))
+    (uiop:xdg-cache-home
+     "lamedh-sbcl"
+     (format nil "~A-~A-~36R" (lisp-implementation-type) (lisp-implementation-version) key)
+     "stdlib-lambdas.fasl")))
+
+(defun lc-register-cached-factory (form factory)
+  "Called by the cache fasl's top-level forms."
+  (lc-add-factory form (lc-form-hash form) factory))
+
+(defun lc-load-cache ()
+  (unless (lc-cache-disabled-p)
+    (let ((path (ignore-errors (lc-cache-path))))
+      (when (and path (probe-file path))
+        (handler-case (handler-bind ((warning #'muffle-warning)) (load path))
+          (error () nil))))))
+
+(defun lc-save-cache ()
+  "Write every persistable factory this bootstrap used to the cache fasl,
+if it had to compile any of them."
+  (when (and *lc-compiled-while-recording* (not (lc-cache-disabled-p)))
+    (ignore-errors
+     (let* ((path (lc-cache-path))
+            (tag (format nil "~36R" (random (expt 2 64) (make-random-state t))))
+            (src (make-pathname :name (format nil "stdlib-lambdas-~A" tag) :type "lisp" :defaults path))
+            (tmp (make-pathname :name (format nil "stdlib-lambdas-~A" tag) :type "fasl" :defaults path)))
+       (ensure-directories-exist path)
+       (unwind-protect
+            (progn
+              (with-open-file (out src :direction :output :if-exists :supersede :external-format :utf-8)
+                (with-standard-io-syntax
+                  (let ((*package* (find-package '#:lamedh-rt)) (*print-circle* t) (*print-readably* t))
+                    (format out "(in-package #:lamedh-rt)~%")
+                    (dolist (entry (reverse *lc-recorded*))
+                      (prin1 `(lc-register-cached-factory ',(car entry) #',(car entry)) out)
+                      (terpri out)))))
+              (with-standard-io-syntax
+                (let ((*print-readably* nil) (*compile-verbose* nil) (*compile-print* nil))
+                  (handler-bind ((warning #'muffle-warning))
+                    (multiple-value-bind (fasl warnings-p failure-p)
+                        (compile-file src :output-file tmp)
+                      (declare (ignore warnings-p))
+                      (when (and fasl (not failure-p))
+                        (rename-file tmp path)))))))
+         (ignore-errors (delete-file src))
+         (when (probe-file tmp) (ignore-errors (delete-file tmp))))))))
