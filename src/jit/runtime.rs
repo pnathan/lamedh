@@ -117,9 +117,17 @@ impl Ctx<'_> {
     /// [`Ctx::MAX_CALL_DEPTH`]. Returns `true` on success; a successful
     /// `enter_call` must be paired with exactly one [`Ctx::exit_call`] once
     /// the call returns.
+    ///
+    /// Once any error is pending, every further call is refused too: the
+    /// result is already discarded (the membrane raises the error instead and
+    /// skips write-back), and the tree-walker would have stopped at the first
+    /// error. Without this, frames below the cap keep calling — naive `fib`
+    /// past the cap is exponential work that never finishes (#512).
     pub(super) fn enter_call(&self) -> bool {
         let d = self.depth.get();
-        if d >= Self::MAX_CALL_DEPTH {
+        if self.pending_error.borrow().is_some() {
+            false
+        } else if d >= Self::MAX_CALL_DEPTH {
             self.set_pending_error(format!(
                 "recursion limit exceeded ({} non-tail typed calls); rewrite as a tail call or iteratively",
                 Self::MAX_CALL_DEPTH
