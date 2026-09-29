@@ -37,14 +37,24 @@ Nests inside an armed fuel fence (steps still charge the fence)."
           (kernel-fuel-set! ())))))
 
 (defvau time (x e)
-  "(TIME form...) -- evaluate FORMs, print elapsed wall time and kernel
-steps (the WITH-FUEL unit), and return the value."
-  (let* ((t0 (monotonic-micros))
-         (measured (eval (cons 'step-count x) e))
+  "(TIME form...) -- evaluate FORMs, print the elapsed wall time of their
+normal execution as (TIME-MS ms), and return the value. TIME does not arm
+fuel: armed fuel forces the interpreted path (compiled code never returns
+to the metered trampoline), so metering here would time the tree-walker
+instead of the code that normally runs. Use STEP-COUNT for kernel steps.
+Inside an already-armed fuel fence execution is metered regardless, so
+the steps are read off the live counter for free and printed as
+(TIME-MS ms STEPS n)."
+  (let* ((body (if (null (cdr x)) (car x) (cons 'progn x)))
+         (before (kernel-fuel-remaining))
+         (t0 (monotonic-micros))
+         (v (eval body e))
          (t1 (monotonic-micros))
-         (micros (- t1 t0)))
-    (print (list 'time-ms (/ micros 1000) 'steps (car measured)))
-    (cdr measured)))
+         (ms (/ (- t1 t0) 1000)))
+    (print (if before
+               (list 'time-ms ms 'steps (- before (kernel-fuel-remaining)))
+               (list 'time-ms ms)))
+    v))
 
 ;;; ---- trace / untrace -------------------------------------------------------
 

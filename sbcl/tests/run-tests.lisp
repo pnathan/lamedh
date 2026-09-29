@@ -31,7 +31,8 @@
   '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
     "60-special-forms" "65-loops" "70-hash-and-plist" "90-bitwise"
-    "95-stdlib-batteries" "96-format-and-io" "97-recursion-limit"))
+    "95-stdlib-batteries" "96-format-and-io" "97-port-regressions"
+    "97-recursion-limit"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
@@ -43,8 +44,6 @@
 ;;; Run the CLI (TOPLEVEL) in a child SBCL on a script whose recursion is
 ;;; *not* caught by Lamedh code, and check the process exits cleanly with
 ;;; status 1 and the error on stderr, instead of dying in SBCL's debugger.
-
-(defparameter *host-failures* 0)
 
 (defun run-cli-child (stack-size script-source &rest evals)
   "Returns (VALUES EXIT-CODE STDOUT STDERR)."
@@ -65,35 +64,53 @@
            (values code out err))
       (delete-file script))))
 
-(defun host-check (name ok)
-  (format t "~&; host check ~A: ~:[FAIL~;ok~]~%" name ok)
-  (unless ok (incf *host-failures*)))
+(defun recursion-limit-check (name ok)
+  (format t "~&; recursion-limit check ~A: ~:[FAIL~;ok~]~%" name ok)
+  ok)
 
-(multiple-value-bind (code out err)
-    (run-cli-child cl-user::*lamedh-control-stack-size*
-                   "(defun rec (n) (+ 1 (rec n)))
-                    (print (handler-case (rec 1) (error (e) 'caught)))
-                    (rec 1)
-                    (print 'unreachable)")
-  (host-check "cli-caught-then-uncaught-overflow"
-              (and (eql code 1)
-                   (search "CAUGHT" out)
-                   (not (search "UNREACHABLE" out))
-                   (search "lamedh: recursion limit exceeded (10000 eval frames)" err))))
+(defun run-recursion-limit-checks ()
+  "True when both CLI host-boundary checks pass."
+  (let ((results '()))
+    (multiple-value-bind (code out err)
+        (run-cli-child cl-user::*lamedh-control-stack-size*
+                       "(defun rec (n) (+ 1 (rec n)))
+                        (print (handler-case (rec 1) (error (e) 'caught)))
+                        (rec 1)
+                        (print 'unreachable)")
+      (push (recursion-limit-check
+             "cli-caught-then-uncaught-overflow"
+             (and (eql code 1)
+                  (search "CAUGHT" out)
+                  (not (search "UNREACHABLE" out))
+                  (search "lamedh: recursion limit exceeded (10000 eval frames)" err)))
+            results))
+    ;; STORAGE-CONDITION backstop: with the guard raised out of reach,
+    ;; exhausting a modest control stack is still a catchable Lamedh error,
+    ;; and uncaught it is a clean exit 1 at the CLI boundary.
+    (multiple-value-bind (code out err)
+        (run-cli-child "16MB"
+                       "(defun rec (n) (+ 1 (rec n)))
+                        (print (handler-case (rec 1) (error (e) 'caught)))
+                        (rec 1)"
+                       "(setf lamedh-rt::*eval-depth-limit* most-positive-fixnum)")
+      (push (recursion-limit-check
+             "cli-storage-condition-mapped"
+             (and (eql code 1)
+                  (search "CAUGHT" out)
+                  (search "lamedh: Control stack exhausted" err)))
+            results))
+    (every #'identity results)))
 
-;; STORAGE-CONDITION backstop: with the guard raised out of reach, exhausting
-;; a modest control stack is still a catchable Lamedh error, and uncaught it
-;; is a clean exit 1 at the CLI boundary.
-(multiple-value-bind (code out err)
-    (run-cli-child "16MB"
-                   "(defun rec (n) (+ 1 (rec n)))
-                    (print (handler-case (rec 1) (error (e) 'caught)))
-                    (rec 1)"
-                   "(setf lamedh-rt::*eval-depth-limit* most-positive-fixnum)")
-  (host-check "cli-storage-condition-mapped"
-              (and (eql code 1)
-                   (search "CAUGHT" out)
-                   (search "lamedh: Control stack exhausted" err))))
+;; Shell-level CLI exit-status check (#535): runs the documented script
+;; invocation in child SBCL processes and checks their exit codes.
+(defun run-cli-exit-status-test ()
+  (format t "~&; running cli-exit-status.sh~%")
+  (let ((script (namestring (merge-pathnames "cli-exit-status.sh" *load-truename*))))
+    (zerop (nth-value 2 (uiop:run-program (list "sh" script)
+                                          :output t :error-output t
+                                          :ignore-error-status t)))))
 
-(let ((ok (leval (lread "(run-tests)") *global-env*)))
-  (uiop:quit (if (and (eq ok *t-sym*) (zerop *host-failures*)) 0 1)))
+(let ((ok (leval (lread "(run-tests)") *global-env*))
+      (recursion-ok (run-recursion-limit-checks))
+      (cli-ok (run-cli-exit-status-test)))
+  (uiop:quit (if (and (eq ok *t-sym*) recursion-ok cli-ok) 0 1)))

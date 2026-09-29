@@ -46,7 +46,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "see-type requires a symbol, got {other:?}"
+                        "see-type requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -62,7 +63,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "explain-compile requires a symbol, got {other:?}"
+                        "explain-compile requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -78,7 +80,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "signature requires a symbol, got {other:?}"
+                        "signature requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -94,7 +97,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "compiled-p requires a symbol, got {other:?}"
+                        "compiled-p requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -110,7 +114,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "why-not-typed requires a symbol, got {other:?}"
+                        "why-not-typed requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -128,7 +133,8 @@ pub(super) fn apply_introspection(
                 LispVal::String(s) => s.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "read-string requires a string, got {other:?}"
+                        "read-string requires a string, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -150,7 +156,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "declare-type! requires a symbol, got {other:?}"
+                        "declare-type! requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };
@@ -173,7 +180,8 @@ pub(super) fn apply_introspection(
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 other => {
                     return Err(LispError::Generic(format!(
-                        "disassemble requires a symbol, got {other:?}"
+                        "disassemble requires a symbol, got {}",
+                        err_val(other)
                     )));
                 }
             };

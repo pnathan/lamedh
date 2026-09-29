@@ -82,9 +82,11 @@ sbcl --non-interactive --load tests/run-tests.lisp
 `--control-stack-size 512MB`; see "Running it" above.)
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
-implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
+implementation's `tests/lisp/*.lisp` language-level fixtures, plus
+port-only files with no verbatim `tests/lisp/` counterpart
+(`97-port-regressions.lisp`, `97-recursion-limit.lisp`) — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **518 assertions** across
+At the time of writing this passes all **530 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
@@ -93,6 +95,9 @@ plus the port-specific recursion-limit suite (`97-recursion-limit.lisp`,
 not a reference copy) and two CLI host-boundary checks (uncaught deep
 recursion and stack exhaustion exit with status 1 and a message, not a
 crash).
+It then runs `tests/cli-exit-status.sh`, which drives the documented
+`--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
+checks that a clean script exits 0 and an erroring one exits 1.
 
 ### Running the `examples/` programs
 
