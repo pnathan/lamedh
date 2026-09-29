@@ -183,7 +183,12 @@ impl Cx<'_> {
                 };
                 let args = &items[1..];
                 match head.as_str() {
-                    "+" | "-" | "*" | "/" | "MOD" => self.elab_bin(&head, args, scope, max),
+                    // `quotient` is the evaluator's classic name for `/` (the
+                    // same builtin); `remainder`/`rem` are its truncated
+                    // remainder (#522).
+                    "+" | "-" | "*" | "/" | "QUOTIENT" | "MOD" | "REMAINDER" | "REM" => {
+                        self.elab_bin(&head, args, scope, max)
+                    }
                     "<" | ">" | "<=" | ">=" | "=" | "/=" => self.elab_cmp(&head, args, scope, max),
                     "NOT" => self.elab_not(args, scope, max),
                     "AND" | "OR" => self.elab_logic(&head, args, scope, max),
@@ -195,8 +200,13 @@ impl Cx<'_> {
                     // tier instead of stalling at CHECKED. `LET-TYPED` stays as the
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
                     // `elab_let` binds sequentially, each init seeing the
-                    // bindings before it: exactly `let*` (#513).
-                    "LET" | "LET-TYPED" | "LET*" => self.elab_let(args, false, scope, max),
+                    // bindings before it: exactly `let*` (#513). `let*` takes
+                    // only the evaluator's shapes (#522); see `check_let_star`.
+                    "LET" | "LET-TYPED" => self.elab_let(args, false, scope, max),
+                    "LET*" => {
+                        check_let_star(args)?;
+                        self.elab_let(args, false, scope, max)
+                    }
                     "PROGN" => self.elab_body(args, scope, max),
                     // `setq`/`while`/`for` compile natively when they only touch
                     // local slots (params/let-bindings) — codegen-only so
@@ -397,7 +407,8 @@ impl Cx<'_> {
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
         // `+` and `*` support 0–N args; `-` requires at least 1 (unary
-        // negate, or N-ary left-fold). `/` and `MOD` are strictly BINARY in
+        // negate, or N-ary left-fold). `/` (alias `QUOTIENT`), `MOD` and
+        // `REMAINDER` (alias `REM`, #522) are strictly BINARY in
         // the evaluator (`BuiltinFunc::Divide` in `apply_math_op`,
         // `builtins_core.rs`, and `mod` in `builtins_extra.rs` both reject
         // anything but exactly 2 arguments — no unary reciprocal, no
@@ -411,10 +422,11 @@ impl Cx<'_> {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
             "*" => BinOp::Mul,
-            "/" => BinOp::Div,
+            "/" | "QUOTIENT" => BinOp::Div,
+            "REMAINDER" | "REM" => BinOp::Rem,
             _ => BinOp::Mod,
         };
-        if matches!(bop, BinOp::Div | BinOp::Mod) && args.len() != 2 {
+        if matches!(bop, BinOp::Div | BinOp::Mod | BinOp::Rem) && args.len() != 2 {
             return Err(format!(
                 "`{op}` requires exactly 2 arguments, got {}",
                 args.len()
@@ -434,7 +446,7 @@ impl Cx<'_> {
         }
 
         // 1-arg: unary identity — (+ x) = x, (* x) = x, (- x) = (- 0 x).
-        // (`/`/`MOD` can never reach here: pinned to exactly 2 args above.)
+        // (`/`/`MOD`/`REMAINDER` can never reach here: pinned to exactly 2 args above.)
         if args.len() == 1 {
             let (a, ta) = self.elab(&args[0], scope, max)?;
             self.reject_boxed_arith_cmp(&ta)?;
@@ -459,7 +471,7 @@ impl Cx<'_> {
         }
 
         // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp
-        // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
+        // tree. For `/`/`MOD`/`REMAINDER` this loop runs exactly once (arity pinned to 2
         // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
         self.reject_boxed_arith_cmp(&ty)?;
@@ -487,6 +499,9 @@ impl Cx<'_> {
                 .ok_or_else(|| format!("`{op}` expects numeric operands, got {rt:?}"))?;
             if matches!(bop, BinOp::Mod) && !matches!(num, NumTy::I) {
                 return Err("`mod` is int64-only".to_string());
+            }
+            if matches!(bop, BinOp::Rem) && !matches!(num, NumTy::I) {
+                return Err("`remainder` is int64-only".to_string());
             }
             ty = rt.clone();
             acc = Core::Bin(num.into(), bop, Box::new(acc), Box::new(b));
@@ -2897,6 +2912,9 @@ impl Cx<'_> {
                         return self.elab(&d, scope, max);
                     }
                     "LET" | "LET-TYPED" | "LET*" => {
+                        if head == "LET*" {
+                            check_let_star(&items[1..])?;
+                        }
                         return self.elab_let(&items[1..], true, scope, max);
                     }
                     "PROGN" => return self.elab_body_mode(&items[1..], true, scope, max),
@@ -3094,4 +3112,21 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
         }
         _ => unreachable!("desugar_branch: {head}"),
     }
+}
+
+/// Rejects `let*` shapes the evaluator's LET* does not accept (#522): it
+/// needs a binding list and a body, and every binding is a `(name init)` pair,
+/// so the typed `(name type init)` shape of `let-typed` does not leak into
+/// `let*` (`elab_let`, which `let*` shares, accepts both).
+/// Mirrored by `hm-check-let-star` in lib/46-hm-check.lisp.
+fn check_let_star(args: &[LispVal]) -> Result<(), String> {
+    if args.len() < 2 || !matches!(args[0], LispVal::Nil | LispVal::Cons { .. }) {
+        return Err("let* requires a binding list and at least one body form".to_string());
+    }
+    for b in list_to_vec(&args[0]) {
+        if !matches!(list_to_vec(&b).as_slice(), [LispVal::Symbol(_), _]) {
+            return Err("let* binding must be a (name init) pair".to_string());
+        }
+    }
+    Ok(())
 }

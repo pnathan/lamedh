@@ -548,6 +548,10 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// Truncated remainder on int64 (`remainder`/`rem`, #522): the sign
+    /// follows the dividend, unlike the Euclidean `Mod`. `MIN rem -1` is 0
+    /// and sets OVERFLOW, matching the evaluator's REMAINDER.
+    Rem,
     /// Bitwise AND/OR/XOR on int64 (`logand`/`logior`/`logxor`).
     BitAnd,
     BitOr,

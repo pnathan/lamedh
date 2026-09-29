@@ -201,6 +201,11 @@ fn int_bin_condition_flags_agree_across_editions() {
         ("divv", [10, 3], false, false),
         ("modd", [10, 3], false, false),
         ("modd", [-7, 3], false, false), // Euclidean: 2, not -1 (#280)
+        // #522: REMAINDER is truncated; MIN rem -1 is 0 WITH the flag, as
+        // the evaluator's REMAINDER sets it.
+        ("remd", [i64::MIN, -1], true, false),
+        ("remd", [10, 0], false, true),
+        ("remd", [-7, 3], false, false),
     ];
     let j = build(&[
         "(defun-typed (add int64) ((a int64) (b int64)) (+ a b))",
@@ -208,6 +213,7 @@ fn int_bin_condition_flags_agree_across_editions() {
         "(defun-typed (mul int64) ((a int64) (b int64)) (* a b))",
         "(defun-typed (divv int64) ((a int64) (b int64)) (/ a b))",
         "(defun-typed (modd int64) ((a int64) (b int64)) (mod a b))",
+        "(defun-typed (remd int64) ((a int64) (b int64)) (remainder a b))",
     ]);
 
     let flags_of = |j: &Jit, name: &str, args: &[i64; 2]| -> JitFlags {
