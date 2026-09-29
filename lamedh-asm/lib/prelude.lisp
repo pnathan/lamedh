@@ -1281,3 +1281,29 @@
                 (SYSCALL SYS-CLOSE ERR-R)
                 (SYSCALL SYS-WAIT4 PID STATUS 0 NIL)
                 (LIST (LOGAND (ASH ($LE32 STATUS 0) -8) 255) OUT ERR))))))))
+
+;;; STRING->LIST* / STRING-SPLIT* / STRING-JOIN*: the reference provides these
+;;; as native builtins (issue #510) and ../lib/14-strings.lisp calls them
+;;; directly, so this host supplies them here. All three are tail-recursive,
+;;; so they run in constant stack on long strings and lists.
+(DEFUN $STRING->LIST-AUX (S I ACC)
+  (IF (< I 0)
+      ACC
+      ($STRING->LIST-AUX S (- I 1) (CONS (SUBSTRING S I (+ I 1)) ACC))))
+(DEFUN STRING->LIST* (S)
+  ($STRING->LIST-AUX S (- (STRING-LENGTH* S) 1) (QUOTE ())))
+(DEFUN $STRING-SPLIT-AUX (S DELIM ACC)
+  (LET ((IDX (STRING-INDEX-OF S DELIM)))
+    (IF (OR (NULL IDX) (= (STRING-LENGTH* DELIM) 0))
+        (REVERSE (CONS S ACC))
+        ($STRING-SPLIT-AUX
+         (SUBSTRING S (+ IDX (STRING-LENGTH* DELIM)) (STRING-LENGTH* S))
+         DELIM
+         (CONS (SUBSTRING S 0 IDX) ACC)))))
+(DEFUN STRING-SPLIT* (S DELIM) ($STRING-SPLIT-AUX S DELIM (QUOTE ())))
+(DEFUN $STRING-JOIN-AUX (LST SEP ACC)
+  (IF (NULL LST)
+      ACC
+      ($STRING-JOIN-AUX (CDR LST) SEP (CONCAT ACC SEP (CAR LST)))))
+(DEFUN STRING-JOIN* (LST SEP)
+  (IF (NULL LST) "" ($STRING-JOIN-AUX (CDR LST) SEP (CAR LST))))
