@@ -2539,8 +2539,9 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(rplaca cons new-car)")
     (cons 'CATEGORY 'lists)
-    (cons 'DESCRIPTION "Destructively replaces the CAR of a cons cell with new-car. Returns the modified cons cell. This is a mutating operation — use with care as it modifies shared structure. Classic Lisp 1.5 primitive.")
-    (cons 'EXAMPLES '(((let ((x (cons 1 2))) (rplaca x 99) x) (99 . 2))))
+    (cons 'DESCRIPTION "Returns a NEW cons cell whose CAR is new-car and whose CDR is the CDR of cons. The argument is not modified: Lamedh cons cells are immutable, so unlike Lisp 1.5's destructive RPLACA this cannot alter shared structure. Use the return value. See the Lamedh manual (Lisp 1.5 differences).")
+    (cons 'EXAMPLES '(((rplaca (cons 1 2) 99) (99 . 2))
+                      ((let ((x (cons 1 2))) (rplaca x 99) x) (1 . 2))))
     (cons 'SEE-ALSO '(rplacd car cons))))
 
 (register-doc 'rplacd
@@ -2549,8 +2550,9 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(rplacd cons new-cdr)")
     (cons 'CATEGORY 'lists)
-    (cons 'DESCRIPTION "Destructively replaces the CDR of a cons cell with new-cdr. Returns the modified cons cell. This is a mutating operation — use with care as it can create circular structure. Classic Lisp 1.5 primitive.")
-    (cons 'EXAMPLES '(((let ((x (cons 1 2))) (rplacd x 99) x) (1 . 99))))
+    (cons 'DESCRIPTION "Returns a NEW cons cell whose CAR is the CAR of cons and whose CDR is new-cdr. The argument is not modified: Lamedh cons cells are immutable, so unlike Lisp 1.5's destructive RPLACD this cannot create circular structure. Use the return value. See the Lamedh manual (Lisp 1.5 differences).")
+    (cons 'EXAMPLES '(((rplacd (cons 1 2) 99) (1 . 99))
+                      ((let ((x (list 1 2))) (rplacd x (list 9)) x) (1 2))))
     (cons 'SEE-ALSO '(rplaca cdr cons))))
 
 (register-doc 'sublis
