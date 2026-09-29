@@ -102,7 +102,10 @@ fn only_closing_bodies_are_rebound() {
     assert!(!plain.contains("(LET ((I I))"), "{plain}");
     // DOLIST expands to a closure-free WHILE loop (#504), so a DOLIST body
     // that merely reads I is not a closure either.
-    let dl = eval_line("(macroexpand '(dotimes (i 3) (dolist (x l) (print i))))", &e);
+    let dl = eval_line(
+        "(macroexpand '(dotimes (i 3) (dolist (x l) (print i))))",
+        &e,
+    );
     assert!(!dl.contains("(LET ((I I))"), "{dl}");
     // A quoted LAMBDA is data, not a closure.
     let quoted = eval_line("(macroexpand '(dotimes (i 3) (print '(lambda () i))))", &e);
