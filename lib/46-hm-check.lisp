@@ -935,7 +935,7 @@ mode too (#513). Mirrors Cx::elab_body_mode."
 (defun hm-elab-stmt (state tyenv form)
   "A form whose value is discarded. In codegen a COND/WHEN/UNLESS/CASE there
 desugars in statement mode (every branch yields FALSE), and statement mode
-reaches through a LET/LET-TYPED/PROGN's last form (#513). Mirrors
+reaches through a LET/LET*/LET-TYPED/PROGN's last form (#513). Mirrors
 Cx::elab_stmt."
   (cond
     ((not (and (hm-codegen-p state) (consp form))) (hm-elab state tyenv form))

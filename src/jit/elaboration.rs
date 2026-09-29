@@ -2797,8 +2797,8 @@ impl Cx<'_> {
     /// any form of a `while`/`for` body). A `cond`/`when`/`unless`/`case`
     /// there desugars in statement mode (#404): every branch yields `false`,
     /// so branches of any type join and the nil-on-miss is representable.
-    /// A `let`/`let-typed`/`progn` there discards its last form's value too,
-    /// so statement mode reaches through it (#513).
+    /// A `let`/`let*`/`let-typed`/`progn` there discards its last form's
+    /// value too, so statement mode reaches through it (#513).
     fn elab_stmt(
         &self,
         form: &LispVal,
