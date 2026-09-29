@@ -94,16 +94,48 @@ Returns RESULT (evaluated with VAR bound to NIL) or NIL."
               (list 'let (list (list var nil)) (car result))
               nil))))
 
+;; DOTIMES-BODY-CLOSES-P: may FORM, once expanded, build a closure over the
+;; loop variable? FOR reuses one counter slot for the whole loop, so a closure
+;; made in its body sees the last value (#528). The walk expands global macro
+;; heads (DOLIST, FLET, ... expand to LAMBDA) and answers T at any closure
+;; constructor; QUOTE data is skipped. It is conservative: a false T only costs
+;; a per-iteration LET, so running out of expansion fuel, or an expansion
+;; that signals, answers T.
+(defun dotimes-closure-head-p (head)
+  (member head '(lambda function label macro fexpr vau
+                 def define defexpr defmacro defun-typed defun*)))
+
+(defun dotimes-body-closes-p (form fuel)
+  (cond ((not (consp form)) nil)
+        ((< fuel 1) t)
+        ((eq (car form) 'quote) nil)
+        ((dotimes-closure-head-p (car form)) t)
+        (t (let ((x (handler-case (macroexpand form) (error (e) 'lambda))))
+             (if (equal x form)
+                 (dotimes-forms-close-p form fuel)
+                 (dotimes-body-closes-p x (- fuel 1)))))))
+
+(defun dotimes-forms-close-p (forms fuel)
+  (cond ((not (consp forms)) nil)
+        ((dotimes-body-closes-p (car forms) fuel) t)
+        (t (dotimes-forms-close-p (cdr forms) fuel))))
+
 ;; DOTIMES: (dotimes (var count [result]) body...)
 (defmacro dotimes (spec &rest body)
   "Iterate VAR from 0 below COUNT, evaluating BODY each time.
-Returns RESULT (with VAR bound to COUNT) or NIL."
+Each iteration binds VAR afresh, as DOLIST does: a closure made in BODY keeps
+the value of its own iteration. Returns RESULT (with VAR bound to COUNT) or NIL."
   (let ((var (car spec))
         (count-form (car (cdr spec)))
         (result (cdr (cdr spec)))
         (n (gensym)))
     (list 'let (list (list n count-form))
-          (cons 'for (cons (list var 0 (list '- n 1)) body))
+          (cons 'for (cons (list var 0 (list '- n 1))
+                           ;; Rebind only when BODY can close over VAR: the
+                           ;; closure-free loop keeps FOR's single reused slot.
+                           (if (dotimes-forms-close-p body 64)
+                               (list (cons 'let (cons (list (list var var)) body)))
+                               body)))
           (if result
               (list 'let (list (list var n)) (car result))
               nil))))
