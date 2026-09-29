@@ -537,8 +537,8 @@ pub enum BinOp {
     BitOr,
     BitXor,
     /// Left shift `x << y` (`ash` with a positive constant); the right operand
-    /// is always a compile-time constant in `1..=63`, so it never masks or
-    /// overflows.
+    /// is always a compile-time constant in `1..=63`, so it never masks. The
+    /// result wraps; `OVERFLOW` is set exactly when bits are lost (#514).
     Shl,
     /// Arithmetic right shift `x >> y` (`ash` with a negative constant); right
     /// operand a compile-time constant in `1..=63`.
