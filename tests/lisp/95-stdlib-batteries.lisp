@@ -37,6 +37,19 @@
     (dotimes (i 0) (setq acc (cons i acc)))
     (assert-nil acc)))
 
+;; #528: each DOTIMES iteration binds VAR afresh, as DOLIST does, so a
+;; closure made in the body keeps its own iteration's value.
+(deftest control-dotimes-fresh-binding
+  (let ((fs nil))
+    (dotimes (i 3) (setq fs (cons (lambda () i) fs)))
+    (assert-equal (mapcar (lambda (f) (f)) (reverse fs)) '(0 1 2)))
+  (let ((fs nil))
+    (dolist (x '(0 1 2)) (setq fs (cons (lambda () x) fs)))
+    (assert-equal (mapcar (lambda (f) (f)) (reverse fs)) '(0 1 2)))
+  (let ((fs nil))
+    (dotimes (i 3) (flet ((g () i)) (setq fs (cons g fs))))
+    (assert-equal (mapcar (lambda (f) (f)) (reverse fs)) '(0 1 2))))
+
 ;;; ---- #143 functional toolkit ---------------------------------------------
 
 (deftest fn-reduce-fold

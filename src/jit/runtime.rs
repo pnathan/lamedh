@@ -623,9 +623,17 @@ pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
         BinOp::BitOr => x | y,
         BinOp::BitXor => x ^ y,
         // Shifts: `y` is a compile-time constant in 1..=63 (the elaborator only
-        // emits these for a literal in-range `ash`), so neither masks nor
-        // overflows, matching the evaluator's in-range `ash`.
-        BinOp::Shl => x.wrapping_shl(y as u32),
+        // emits these for a literal in-range `ash`), so the amount never
+        // masks. A left shift sets OVERFLOW exactly when bits are lost (the
+        // shift back does not recover `x`), matching the evaluator's `ash`
+        // (#514).
+        BinOp::Shl => {
+            let v = x.wrapping_shl(y as u32);
+            if (v >> (y as u32)) != x {
+                ctx.overflow.set(true);
+            }
+            v
+        }
         BinOp::AShr => x >> (y as u32),
     }
 }
@@ -900,7 +908,9 @@ unsafe fn array_map2(op: BinOp, kind: NumKind, base_out: u64, base_a: u64, base_
 }
 
 /// Shared scalar reference implementation of [`Core::ArrayOp`] (#394), the
-/// one every executor calls (native code through [`jit_array_op`]). `w` holds
+/// one the interpreting tiers call; the native backend emits the same
+/// per-element arithmetic as a SIMD loop (#525,
+/// `native.rs::Emitter::emit_array_op`). `w` holds
 /// the operand words, `out` first; array operands are buffer pointers and
 /// the `Scale` scalar is a raw int64/float64 word. Iterates `min(len)` of the
 /// array operands; each element depends only on its own index, so `out` may
@@ -940,26 +950,6 @@ pub(super) unsafe fn array_op(op: ArrOp, kind: NumKind, w: &[u64]) -> u64 {
         unsafe { *po.add(i + 1) = r };
     }
     w[0]
-}
-
-/// Host trampoline for [`Core::ArrayOp`] (#394): `op`/`kind` are the
-/// [`ArrOp`] opcode and `0` (int64) / `1` (float64); `a`..`d` the operand
-/// words (unused trailing ones ignored). Calls [`array_op`], exactly what the
-/// Core interpreter and the closure tier call.
-///
-/// # Safety
-/// Called only from Cranelift-generated code with live buffer pointers.
-#[cfg(feature = "jit")]
-pub(crate) unsafe extern "C" fn jit_array_op(
-    op: u64,
-    kind: u64,
-    a: u64,
-    b: u64,
-    c: u64,
-    d: u64,
-) -> u64 {
-    let kind = if kind == 0 { NumKind::I } else { NumKind::F };
-    unsafe { array_op(ArrOp::from_opcode(op), kind, &[a, b, c, d]) }
 }
 
 /// Shared scalar reference implementation of [`Core::ArraySum`], returning
