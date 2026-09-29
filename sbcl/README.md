@@ -62,14 +62,17 @@ sbcl --non-interactive --load tests/run-tests.lisp
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
-port-only files with no verbatim `tests/lisp/` counterpart
-(`97-port-regressions.lisp`, `97-reference-builtins.lisp`) — and runs
+port-only files with no verbatim `tests/lisp/` counterpart (the
+printer-conformance file `97-printer.lisp`, `97-port-regressions.lisp` and
+`97-reference-builtins.lisp`) — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **575 assertions** across
+At the time of writing this passes all **595 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
-FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
+and printer output checked against the reference binary (`()` for the
+empty list, `PRINT` framing, opaque `<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags).
 It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.
@@ -274,8 +277,7 @@ exists today.
   returns a new cell sharing the untouched half, so no circular list can be
   built.
 - **Typed arrays** are SBCL specialized vectors (`(signed-byte 64)` /
-  `double-float`) and print as `#<TYPED-ARRAY int64 3>`, following this
-  port's `#<ARRAY 3>` convention rather than the reference's
+  `double-float`); they print exactly as the reference does,
   `<typed-array:int64:3>`.
 - **`EQ`** is identity for symbols and callables, but *value* equality for
   the immutable atomic types (numbers, characters, strings) and *deep
