@@ -556,6 +556,10 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
                     apply_array_writeback(args, updated, env);
                     Ok(typed_to_lispval(v, &ret, env))
                 }
+                // Under an armed fuel budget the call ran metered (#502);
+                // exhaustion rides the same control-flow signal the
+                // tree-walker raises, so only the owning fence catches it.
+                Some(Err(e)) if e == crate::jit::FUEL_EXHAUSTED => Err(LispError::FuelExhausted),
                 Some(Err(e)) => Err(LispError::Generic(e)),
                 None => Err(LispError::Generic(format!(
                     "typed function {name} is not defined"
