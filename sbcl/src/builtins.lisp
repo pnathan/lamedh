@@ -267,6 +267,25 @@ round-half-to-even."
             (if (and ok (cur-eof-p c)) v nil))))))
 (defbuiltin "NUMBER->STRING" (n) (lprint-to-string n nil))
 (defbuiltin "STRING-CASEFOLD*" (s) (string-downcase (->str s)))
+;; Unicode full case mapping and code-point classes (issue #519), mirroring
+;; the reference kernel's Rust `str::to_uppercase`/`char::is_alphabetic` &c.
+(defbuiltin "STRING-UPCASE*" (s) (sb-unicode:uppercase (->str s)))
+(defbuiltin "STRING-DOWNCASE*" (s) (sb-unicode:lowercase (->str s)))
+(defun scalar-char (n)
+  "The character for code point N, or NIL for a surrogate or out-of-range N."
+  (let ((n (numify n)))
+    (unless (integerp n)
+      (lamedh-error (format nil "expected an integer code point, got ~A" (lprint-to-string n))))
+    (and (<= 0 n #x10FFFF) (not (<= #xD800 n #xDFFF)) (code-char n))))
+(defbuiltin "CHAR-ALPHABETIC-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:alphabetic-p c)))))
+(defbuiltin "CHAR-NUMERIC-P*" (n)
+  (let ((c (scalar-char n)))
+    (bool (and c (member (sb-unicode:general-category c) '(:nd :nl :no))))))
+(defbuiltin "CHAR-UPPERCASE-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:uppercase-p c)))))
+(defbuiltin "CHAR-LOWERCASE-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:lowercase-p c)))))
 (defbuiltin "PRIN1-TO-STRING" (x) (lprint-to-string x t))
 (defbuiltin "PRINC-TO-STRING" (x) (lprint-to-string x nil))
 
