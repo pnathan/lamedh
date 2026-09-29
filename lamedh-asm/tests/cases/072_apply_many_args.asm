@@ -1,4 +1,4 @@
-; 070_apply_many_args — APPLY (and macro expansion, which shares
+; 072_apply_many_args — APPLY (and macro expansion, which shares
 ; invoke_macro) with more than 32 arguments. invoke_macro used to copy
 ; the argument list into a fixed 32-slot host-stack scratch array and
 ; stop collecting at slot 32 without complaint, so

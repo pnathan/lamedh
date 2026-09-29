@@ -59,6 +59,62 @@ fn step_count_disarms_even_on_error() {
 fn time_prints_and_returns_the_value() {
     let e = env_with_stdlib();
     assert_eq!(eval_line("(time (+ 20 22))", &e), "42");
+    assert_eq!(eval_line("(time 1 2 3)", &e), "3");
+}
+
+#[test]
+fn time_does_not_arm_fuel() {
+    // #511: armed fuel forces the interpreted path, so TIME must leave the
+    // counter unarmed while its body runs.
+    let e = env_with_stdlib();
+    assert_eq!(eval_line("(time (kernel-fuel-remaining))", &e), "()");
+    assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+    // Inside an armed fence TIME neither disarms nor re-arms it.
+    assert_eq!(
+        eval_line(
+            "(with-fuel 100000 (time (numberp (kernel-fuel-remaining))))",
+            &e
+        ),
+        "T"
+    );
+    assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn time_runs_auto_compiled_native_code() {
+    // #511: timing an auto-compiled defun must time its native code, not
+    // the tree-walker. Interpreted, this loop is orders of magnitude slower
+    // than native; the bound below leaves a wide margin for noise.
+    let e = env_with_stdlib();
+    eval_line(
+        "(defun p3 (n)
+           (let ((s 0) (i 0))
+             (while (< i n) (setq s (+ s (* i 3))) (setq i (+ i 1)))
+             s))",
+        &e,
+    );
+    assert!(
+        eval_line("(see-type 'p3)", &e).contains("COMPILED"),
+        "p3 must auto-compile for this test to mean anything"
+    );
+    let n = 1_000_000;
+    let expected = eval_line(&format!("(p3 {n})"), &e);
+    let measure = |form: String| -> i64 {
+        eval_line(
+            &format!("(let ((t0 (monotonic-micros))) {form} (- (monotonic-micros) t0))"),
+            &e,
+        )
+        .parse()
+        .unwrap()
+    };
+    let untimed = measure(format!("(p3 {n})"));
+    let timed = measure(format!("(time (p3 {n}))"));
+    assert_eq!(eval_line(&format!("(time (p3 {n}))"), &e), expected);
+    assert!(
+        timed <= 20 * untimed + 50_000,
+        "time forced the slow path: untimed {untimed}us, timed {timed}us"
+    );
 }
 
 #[test]

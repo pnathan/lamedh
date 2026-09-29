@@ -300,7 +300,8 @@
 ; invokes LENGTH (lib/25-variants.lisp's DEFVARIANT does, via
 ; `(length params)`), which is why an entirely unbound $LENGTH went
 ; unnoticed until now.
-(DEFUN $LENGTH (LST) (IF (NULL LST) 0 (+ 1 ($LENGTH (CDR LST)))))
+(DEFUN $LENGTH (LST) ($LENGTH-ONTO LST 0))
+(DEFUN $LENGTH-ONTO (LST N) (IF (NULL LST) N ($LENGTH-ONTO (CDR LST) (+ N 1))))
 
 ; $LIST->ARRAY/$ARRAY->LIST — the reference's own Rust-level builtins
 ; (evaluator/builtins_core.rs) backing lib/17-arrays.lisp's LIST->ARRAY/
@@ -319,9 +320,10 @@
              ($LIST->ARRAY-FILL! ARR (CDR LST) (+ I 1)))))
 (DEFUN $LIST->ARRAY (LST)
   ($LIST->ARRAY-FILL! (ARRAY ($LENGTH LST)) LST 0))
-(DEFUN $ARRAY->LIST-LOOP (ARR I N)
-  (IF (NOT (< I N)) (QUOTE ()) (CONS (FETCH ARR I) ($ARRAY->LIST-LOOP ARR (+ I 1) N))))
-(DEFUN $ARRAY->LIST (ARR) ($ARRAY->LIST-LOOP ARR 0 (ARRAY-LENGTH* ARR)))
+;; Built from the last index down, so the loop is a tail call.
+(DEFUN $ARRAY->LIST-LOOP (ARR I ACC)
+  (IF (< I 0) ACC ($ARRAY->LIST-LOOP ARR (- I 1) (CONS (FETCH ARR I) ACC))))
+(DEFUN $ARRAY->LIST (ARR) ($ARRAY->LIST-LOOP ARR (- (ARRAY-LENGTH* ARR) 1) (QUOTE ())))
 
 ; STRING->UTF8*/UTF8->STRING*/UTF8->STRING-LOSSY* — the three genuine
 ; Rust-level builtins (evaluator/builtins_core.rs) lib/30-text.lisp's
@@ -349,12 +351,12 @@
 ; immediate in any real call path this kernel's own Lisp code takes.
 (DEFUN $CHAR-ARRAY-ELEM-BYTE (X)
   (IF (STRINGP X) (STRING-REF X 0) (IF (CHARP X) (CHAR-CODE X) X)))
-(DEFUN $STRING->UTF8-LOOP (S I N)
-  (IF (NOT (< I N))
-      (QUOTE ())
-      (CONS (CODE-CHAR (STRING-REF S I)) ($STRING->UTF8-LOOP S (+ I 1) N))))
+(DEFUN $STRING->UTF8-LOOP (S I ACC)
+  (IF (< I 0)
+      ACC
+      ($STRING->UTF8-LOOP S (- I 1) (CONS (CODE-CHAR (STRING-REF S I)) ACC))))
 (DEFUN STRING->UTF8* (S)
-  ($LIST->ARRAY ($STRING->UTF8-LOOP S 0 (STRING-LENGTH S))))
+  ($LIST->ARRAY ($STRING->UTF8-LOOP S (- (STRING-LENGTH S) 1) (QUOTE ()))))
 (DEFUN $UTF8->STRING-LOOP (ARR I N)
   (IF (NOT (< I N))
       ""
@@ -383,7 +385,11 @@
 (DEFUN EQ (A B) (EQ A B))
 (DEFUN NULL (X) (NULL X))
 
-(DEFUN APPEND (A B) (IF (NULL A) B (CONS (CAR A) (APPEND (CDR A) B))))
+;; Constant stack: A reversed, then reversed back onto B (B is shared,
+;; as before). REVERSE-ONTO rather than REVERSE, which the reference
+;; stdlib redefines (lib/21-cl-compat.lisp) in terms of functions that
+;; may themselves use APPEND/MAPCAR.
+(DEFUN APPEND (A B) (REVERSE-ONTO (REVERSE-ONTO A (QUOTE ())) B))
 
 ; IOTA — (iota n start) is the n-element list (start start+1 ... start+n-1).
 (DEFUN IOTA-ONTO (N START ACC)
@@ -454,9 +460,13 @@
           (ASSOC KEY (CDR ALIST)))))
 
 ; MAPCAR — apply FN to each element of L, collecting the results.
-; examples/fizzbuzz/main.lisp's own self-check uses this.
-(DEFUN MAPCAR (FN L)
-  (IF (NULL L) (QUOTE ()) (CONS (FN (CAR L)) (MAPCAR FN (CDR L)))))
+; examples/fizzbuzz/main.lisp's own self-check uses this. Iterative
+; (#549): results are collected in reverse by a tail call and reversed
+; once at the end, so a 300 000-element list runs in constant native
+; stack. FN is still applied left to right.
+(DEFUN MAPCAR (FN L) ($MAPCAR-ONTO FN L (QUOTE ())))
+(DEFUN $MAPCAR-ONTO (FN L ACC)
+  (IF (NULL L) (REVERSE-ONTO ACC (QUOTE ())) ($MAPCAR-ONTO FN (CDR L) (CONS (FN (CAR L)) ACC))))
 
 ; NUMBER->STRING — PRINC-TO-STRING already renders a fixnum as its
 ; plain decimal text (print_value's own fixnum case); this is just
@@ -595,14 +605,12 @@
 ; on every expansion, before the indicator has necessarily ever been
 ; PUTP'd at all, so this must also be silently correct (a no-op) when
 ; IND isn't present.
-(DEFUN REMPROP-ONTO (IND PL)
+(DEFUN REMPROP-ONTO (IND PL ACC)
   (IF (NULL PL)
-      (QUOTE ())
-      (IF (EQ (CAR (CAR PL)) IND)
-          (REMPROP-ONTO IND (CDR PL))
-          (CONS (CAR PL) (REMPROP-ONTO IND (CDR PL))))))
+      (REVERSE-ONTO ACC (QUOTE ()))
+      (REMPROP-ONTO IND (CDR PL) (IF (EQ (CAR (CAR PL)) IND) ACC (CONS (CAR PL) ACC)))))
 (DEFUN REMPROP (SYM IND)
-  (SET-SYMBOL-PLIST! SYM (REMPROP-ONTO IND (SYMBOL-PLIST SYM))))
+  (SET-SYMBOL-PLIST! SYM (REMPROP-ONTO IND (SYMBOL-PLIST SYM) (QUOTE ()))))
 
 ; SEXPR-RENAME — a genuine Rust-level builtin in the reference
 ; (evaluator/builtins_core.rs, backing lib/27-modules.lisp's own
@@ -716,12 +724,11 @@
       (QUOTE ())
       (PROGN (FN (CAR L)) (FOR-EACH FN (CDR L)))))
 
-(DEFUN FILTER (PRED L)
+(DEFUN FILTER (PRED L) ($FILTER-ONTO PRED L (QUOTE ())))
+(DEFUN $FILTER-ONTO (PRED L ACC)
   (IF (NULL L)
-      (QUOTE ())
-      (IF (PRED (CAR L))
-          (CONS (CAR L) (FILTER PRED (CDR L)))
-          (FILTER PRED (CDR L)))))
+      (REVERSE-ONTO ACC (QUOTE ()))
+      ($FILTER-ONTO PRED (CDR L) (IF (PRED (CAR L)) (CONS (CAR L) ACC) ACC))))
 
 (DEFUN SOME (PRED L)
   (IF (NULL L)
@@ -988,18 +995,18 @@
 (DEFUN PRINC (X) (PRINT X))
 (DEFUN PRIN1 (X) (PRINT (PRIN1-TO-STRING X)))
 (DEFUN SPACES (N) (IF (< 0 N) (PROGN (PRINT " ") (SPACES (- N 1))) (QUOTE ())))
-(DEFUN DELETE (ITEM L)
+(DEFUN DELETE (ITEM L) ($DELETE-ONTO ITEM L (QUOTE ())))
+(DEFUN $DELETE-ONTO (ITEM L ACC)
   (IF (NULL L)
-      (QUOTE ())
-      (IF (EQUAL ITEM (CAR L))
-          (DELETE ITEM (CDR L))
-          (CONS (CAR L) (DELETE ITEM (CDR L))))))
-(DEFUN EFFACE (ITEM L)
+      (REVERSE-ONTO ACC (QUOTE ()))
+      ($DELETE-ONTO ITEM (CDR L) (IF (EQUAL ITEM (CAR L)) ACC (CONS (CAR L) ACC)))))
+(DEFUN EFFACE (ITEM L) ($EFFACE-ONTO ITEM L (QUOTE ())))
+(DEFUN $EFFACE-ONTO (ITEM L ACC)
   (IF (NULL L)
-      (QUOTE ())
+      (REVERSE-ONTO ACC (QUOTE ()))
       (IF (EQUAL ITEM (CAR L))
-          (CDR L)
-          (CONS (CAR L) (EFFACE ITEM (CDR L))))))
+          (REVERSE-ONTO ACC (CDR L))
+          ($EFFACE-ONTO ITEM (CDR L) (CONS (CAR L) ACC)))))
 (DEFUN SUBST (NEW OLD TREE)
   (IF (EQUAL OLD TREE)
       NEW
@@ -1019,14 +1026,15 @@
   (IF (NULL L)
       (CONS (REVERSE A) (REVERSE B))
       ($SORT-SPLIT (CDR L) B (CONS (CAR L) A))))
-(DEFUN $SORT-MERGE (A B PRED)
+(DEFUN $SORT-MERGE (A B PRED) ($SORT-MERGE-ONTO A B PRED (QUOTE ())))
+(DEFUN $SORT-MERGE-ONTO (A B PRED ACC)
   (IF (NULL A)
-      B
+      (REVERSE-ONTO ACC B)
       (IF (NULL B)
-          A
+          (REVERSE-ONTO ACC A)
           (IF (PRED (CAR B) (CAR A))
-              (CONS (CAR B) ($SORT-MERGE A (CDR B) PRED))
-              (CONS (CAR A) ($SORT-MERGE (CDR A) B PRED))))))
+              ($SORT-MERGE-ONTO A (CDR B) PRED (CONS (CAR B) ACC))
+              ($SORT-MERGE-ONTO (CDR A) B PRED (CONS (CAR A) ACC))))))
 ; INDEX — (index string i): the one-character string at byte index i
 ; (the reference indexes by character; this kernel's strings are byte
 ; buffers — README "v0 limits").
@@ -1040,9 +1048,14 @@
 ; PLIST — the reference returns a flat (key value ...) list; this
 ; kernel's own plist (GETP/PUTP above) is an alist, flattened here.
 (DEFUN PLIST (SYM) ($PLIST-FLATTEN (SYMBOL-PLIST SYM)))
-(DEFUN $PLIST-FLATTEN (AL)
-  (IF (NULL AL) (QUOTE ()) (CONS (CAR (CAR AL)) (CONS (CDR (CAR AL)) ($PLIST-FLATTEN (CDR AL))))))
-(DEFUN EVLIS (L) (IF (NULL L) (QUOTE ()) (CONS (EVAL (CAR L)) (EVLIS (CDR L)))))
+(DEFUN $PLIST-FLATTEN (AL) ($PLIST-FLATTEN-ONTO AL (QUOTE ())))
+(DEFUN $PLIST-FLATTEN-ONTO (AL ACC)
+  (IF (NULL AL)
+      (REVERSE-ONTO ACC (QUOTE ()))
+      ($PLIST-FLATTEN-ONTO (CDR AL) (CONS (CDR (CAR AL)) (CONS (CAR (CAR AL)) ACC)))))
+(DEFUN EVLIS (L) ($EVLIS-ONTO L (QUOTE ())))
+(DEFUN $EVLIS-ONTO (L ACC)
+  (IF (NULL L) (REVERSE-ONTO ACC (QUOTE ())) ($EVLIS-ONTO (CDR L) (CONS (EVAL (CAR L)) ACC))))
 (DEFUN EVCON (CLAUSES)
   (IF (NULL CLAUSES)
       (QUOTE ())
@@ -1190,9 +1203,16 @@
 (DEFINE SYS-UNLINK 87) (DEFINE SYS-GETPID 39)
 
 ; MAKE-STRING — N zero bytes: a buffer for a system call to fill.
-(DEFUN MAKE-STRING (N) ($MAKE-STRING-LOOP N ""))
-(DEFUN $MAKE-STRING-LOOP (N ACC)
-  (IF (< N 1) ACC ($MAKE-STRING-LOOP (- N 1) (STRING-APPEND ACC (CODE-CHAR 0)))))
+; Linear time (#549): halve, build, then double with one STRING-APPEND,
+; so the bytes copied total under 2N across log2(N) levels. (Appending
+; one byte at a time copied the whole accumulator every step: O(N^2).)
+(DEFUN MAKE-STRING (N)
+  (IF (< N 1)
+      ""
+      (LET ((HALF (MAKE-STRING (ASH N -1))))
+        (IF (EQ (REMAINDER N 2) 0)
+            (STRING-APPEND HALF HALF)
+            (STRING-APPEND (STRING-APPEND HALF HALF) (CODE-CHAR 0))))))
 ; $LE32 — the little-endian 32-bit integer at byte offset I of buffer S
 ; (the int[2] pipe(2) fills, wait4's status word, stat's st_mode).
 (DEFUN $LE32 (S I)
@@ -1261,3 +1281,19 @@
                 (SYSCALL SYS-CLOSE ERR-R)
                 (SYSCALL SYS-WAIT4 PID STATUS 0 NIL)
                 (LIST (LOGAND (ASH ($LE32 STATUS 0) -8) 255) OUT ERR))))))))
+
+; STRING->LIST* — the reference's one-pass builtin (#510,
+; evaluator/builtins_core.rs) behind lib/14-strings.lisp's STRING->LIST:
+; the characters of S as one-character strings. Walks the UTF-8 bytes
+; from the end, so each character's start is found by skipping back
+; over continuation bytes and the list is built in order with no
+; reversal; SUBSTRING here is byte-indexed.
+(DEFUN STRING->LIST* (S)
+  (LET ((I (STRING-LENGTH S)) (J 0) (ACC (QUOTE ())))
+    (WHILE (< 0 I)
+      (PROGN (SETQ J (- I 1))
+             (WHILE (IF (< 0 J) (EQ (LOGAND (STRING-REF S J) 192) 128) (QUOTE ()))
+               (SETQ J (- J 1)))
+             (SETQ ACC (CONS (SUBSTRING S J I) ACC))
+             (SETQ I J)))
+    ACC))

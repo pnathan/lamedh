@@ -5168,6 +5168,43 @@ invoke_macro:
     mov r12, rdi                    ; closure
     mov r13, rsi                      ; args list cursor
 
+    ; Validate the callee before the indirect call below (#544). APPLY
+    ; reaches here with an arbitrary runtime value, and `call [raw+8]`
+    ; on a fixnum/NIL/string used to be a SIGSEGV no HANDLER-CASE could
+    ; catch. A symbol stands for its function binding — this host is a
+    ; Lisp-1, so that is its global value cell ([raw+16]) — which is
+    ; what (APPLY 'CAR ...) needs; the resolved value is then checked
+    ; exactly like any other. Anything that is not an HDR_CLOSURE or
+    ; HDR_OPERATIVE heapobj signals the same catchable "not a function"
+    ; condition an ordinary call site's check does, naming the original
+    ; value (the symbol itself, for an unbound or non-function one).
+    mov rax, r12
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_callable
+    mov rax, r12
+    UNTAG_PTR rax
+    cmp qword [rax], HDR_SYMBOL
+    jne .check_fn
+    mov r12, [rax+16]                   ; symbol -> its value cell
+    mov rax, r12
+    and rax, TAG_MASK
+    cmp rax, TAG_HEAPOBJ
+    jne .not_callable
+    mov rax, r12
+    UNTAG_PTR rax
+.check_fn:
+    cmp qword [rax], HDR_CLOSURE
+    je .callable
+    cmp qword [rax], HDR_OPERATIVE
+    je .callable
+.not_callable:
+    ; rdi still holds the original callee value.
+    lea rsi, [rel not_callable_err_msg]
+    mov rdx, not_callable_err_msg_len
+    call fail_wrong_type                  ; never returns
+.callable:
+
     ; Pass 1: count the list, so the scratch array can hold all of it.
     xor r15, r15                        ; n
     mov r14, r13
