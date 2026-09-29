@@ -65,7 +65,13 @@ fn limit_message_names_a_user_reachable_knob() {
     // Issue #520: the hint used to name the Rust-only set_eval_depth_limit.
     with_large_stack(|| {
         let env = env_with_stdlib();
-        let out = eval_line("(dolist (x (iota 20000)) x)", &env);
+        // Plain non-tail recursion deeper than the default limit. (This used
+        // to be a long DOLIST, which #504 made constant-stack.)
+        eval_line(
+            "(defun knob-deep (n) (declare (no-compile)) (if (= n 0) 0 (+ 1 (knob-deep (- n 1)))))",
+            &env,
+        );
+        let out = eval_line("(knob-deep 20000)", &env);
         assert!(
             out.starts_with(
                 "Error: recursion limit exceeded (10000 eval frames); \
@@ -75,8 +81,8 @@ fn limit_message_names_a_user_reachable_knob() {
         );
         assert!(!out.contains("set_eval_depth_limit"), "got: {out}");
         // The runaway frames collapse into one counted entry.
-        assert!(out.contains("\n  in: MAPC (\u{d7}"), "got: {out}");
-        assert!(!out.contains("MAPC \u{2190} MAPC"), "got: {out}");
+        assert!(out.contains("\n  in: KNOB-DEEP (\u{d7}"), "got: {out}");
+        assert!(!out.contains("KNOB-DEEP \u{2190} KNOB-DEEP"), "got: {out}");
     });
 }
 
