@@ -267,6 +267,27 @@ round-half-to-even."
             (if (and ok (cur-eof-p c)) v nil))))))
 (defbuiltin "NUMBER->STRING" (n) (lprint-to-string n nil))
 (defbuiltin "STRING-CASEFOLD*" (s) (string-downcase (->str s)))
+;; One-pass walks backing STRING->LIST, STRING-SPLIT and STRING-JOIN in
+;; lib/14-strings.lisp (issue #510).
+(defbuiltin "STRING->LIST*" (s) (map 'list #'string (->str s)))
+(defbuiltin "STRING-SPLIT*" (s delim)
+  (let ((s (->str s)) (delim (->str delim)))
+    (if (zerop (length delim))
+        (list s)
+        (loop with m = (length delim)
+              for start = 0 then (+ idx m)
+              for idx = (search delim s :start2 start)
+              collect (subseq s start idx)
+              while idx))))
+(defbuiltin "STRING-JOIN*" (strs sep)
+  (let ((sep (->str sep)))
+    (with-output-to-string (out)
+      (loop for (x . more) on strs
+            do (unless (stringp x)
+                 (lamedh-error (format nil "STRING-JOIN*: expected a list of strings, got element ~A"
+                                       (lprint-to-string x))))
+               (write-string x out)
+               (when more (write-string sep out))))))
 (defbuiltin "PRIN1-TO-STRING" (x) (lprint-to-string x t))
 (defbuiltin "PRINC-TO-STRING" (x) (lprint-to-string x nil))
 

@@ -79,6 +79,9 @@ pub(super) fn apply(
             | BuiltinFunc::StringToNumber
             | BuiltinFunc::NumberToString
             | BuiltinFunc::StringCasefold
+            | BuiltinFunc::StringToList
+            | BuiltinFunc::StringSplit
+            | BuiltinFunc::StringJoin
             | BuiltinFunc::StringToUtf8
             | BuiltinFunc::Utf8ToString
             | BuiltinFunc::Utf8ToStringLossy
