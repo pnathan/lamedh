@@ -1454,7 +1454,8 @@ fn membrane_rejects_wrong_arity() {
 
 #[test]
 fn reject_mixed_numeric_operands() {
-    let err = def_err("(defun-typed (bad float64) ((x float64)) (+ x 1))");
+    // An int LITERAL beside a float coerces (#530); an int64 variable never does.
+    let err = def_err("(defun-typed (bad float64) ((x float64) (n int64)) (+ x n))");
     assert!(err.contains("operands disagree"), "got: {err}");
 }
 
