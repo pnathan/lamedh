@@ -159,6 +159,11 @@ impl Cx<'_> {
                 }
                 match scope.iter().rposition(|(n, _)| n == name) {
                     Some(slot) => Ok((Core::Var(slot), scope[slot].1.clone())),
+                    // `t` is the canonical true (#505): a checker-mode `bool`,
+                    // the same type a comparison or predicate produces, so a
+                    // `t`/`nil` function types as `bool` instead of letting an
+                    // absorbing `Any` vanish into a quantified return.
+                    None if self.checking && name == "T" => Ok((Core::LitI(1), Ty::Bool)),
                     // A free symbol in checker mode is some global we don't track
                     // — the gradual frontier (`Any`). The codegen path rejects it.
                     None if self.checking => Ok((Core::LitI(0), Ty::Any)),
@@ -189,7 +194,9 @@ impl Cx<'_> {
                     // typed body using ordinary `let`/`progn` reaches the native
                     // tier instead of stalling at CHECKED. `LET-TYPED` stays as the
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
-                    "LET" | "LET-TYPED" => self.elab_let(args, scope, max),
+                    // `elab_let` binds sequentially, each init seeing the
+                    // bindings before it: exactly `let*` (#513).
+                    "LET" | "LET-TYPED" | "LET*" => self.elab_let(args, false, scope, max),
                     "PROGN" => self.elab_body(args, scope, max),
                     // `setq`/`while`/`for` compile natively when they only touch
                     // local slots (params/let-bindings) — codegen-only so
@@ -672,6 +679,11 @@ impl Cx<'_> {
         scope.truncate(saved);
         let (e, te) = self.elab(&args[2], scope, max)?;
         scope.truncate(saved);
+        // `nil` is also false (#505): a branch ending in `nil` meeting a
+        // `bool` branch is that boolean's false, not a heterogeneous `any`.
+        if self.nil_meets_bool(&args[1], &tt, &args[2], &te) {
+            return Ok((Core::If(Box::new(c), Box::new(t), Box::new(e)), Ty::Bool));
+        }
         let lhs_nil = self.is_bare_nil(&args[1]);
         let rhs_nil = self.is_bare_nil(&args[2]);
         let result_ty =
@@ -686,6 +698,27 @@ impl Cx<'_> {
     /// match arm). Used by [`Cx::join_branch_types`] (#336).
     fn is_bare_nil(&self, expr: &LispVal) -> bool {
         self.checking && matches!(expr, LispVal::Nil)
+    }
+
+    /// Does a checker-mode branch/clause yield a bare `nil` literal — the
+    /// literal itself, or the tail of a `progn` (#505)?
+    fn ends_in_bare_nil(&self, expr: &LispVal) -> bool {
+        if self.is_bare_nil(expr) {
+            return true;
+        }
+        let items = list_to_vec(expr);
+        match items.first() {
+            Some(LispVal::Symbol(s)) if s.borrow().name == "PROGN" && items.len() > 1 => {
+                self.ends_in_bare_nil(&items[items.len() - 1])
+            }
+            _ => false,
+        }
+    }
+
+    /// Is this `if` a `bool` branch against a branch ending in `nil` (#505)?
+    fn nil_meets_bool(&self, lhs: &LispVal, lty: &Ty, rhs: &LispVal, rty: &Ty) -> bool {
+        (self.ends_in_bare_nil(lhs) && matches!(self.walk(rty), Ty::Bool))
+            || (self.ends_in_bare_nil(rhs) && matches!(self.walk(lty), Ty::Bool))
     }
 
     /// Join the two branch result types of an `if` (#336 — the
@@ -732,12 +765,22 @@ impl Cx<'_> {
                 self.walk(rty)
             ));
         }
+        // An `any` branch makes the join `any` whichever side it is on
+        // (#505): `unify` absorbs it without binding, so returning the other
+        // side would let the gradual branch vanish (`(if p nil (eval x))`
+        // typing as `(list a)`).
+        if matches!(self.walk(rty), Ty::Any) {
+            return Ok(Ty::Any);
+        }
         Ok(self.walk(lty))
     }
 
+    /// `stmt`: the `let`'s value is discarded, so its last body form is
+    /// elaborated in statement mode too (#513) — see [`Self::elab_stmt`].
     fn elab_let(
         &self,
         args: &[LispVal],
+        stmt: bool,
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
@@ -800,7 +843,7 @@ impl Cx<'_> {
             *max = (*max).max(scope.len());
             writes.push((slot, init_core, ty));
         }
-        let (mut body_core, body_ty) = self.elab_body(body, scope, max)?;
+        let (mut body_core, body_ty) = self.elab_body_mode(body, stmt, scope, max)?;
         // Array-of-structs inline layout (jit/core-loops follow-up): for each
         // binding in this `let` whose (now fully-constrained-by-the-body)
         // type is a scalar-fields struct array, try to fuse its uses in
@@ -1333,7 +1376,10 @@ impl Cx<'_> {
                 // Trust `bt` and force `ret` back to `any` rather than let
                 // the internal concretization leak into the generalized
                 // scheme.
-                if matches!(wbt, Ty::Any) && !matches!(self.walk(&ret), Ty::Var(_)) {
+                // #505: the same holds when `ret` is still free — `unify(any,
+                // ret)` would leave it free and generalization would turn the
+                // gradual `any` into a `∀` any caller could instantiate.
+                if matches!(wbt, Ty::Any) {
                     if let Ty::Var(id) = &ret {
                         self.infer.borrow_mut().force_any(*id);
                     }
@@ -1873,8 +1919,17 @@ impl Cx<'_> {
                 args.len()
             ));
         }
+        // Reserve the two temp slots BEFORE elaborating `a`/`b` (#501): `sa`
+        // is live while `b` runs, so a temp user nested in `b` must take
+        // slots above it rather than overwrite it.
+        let base = scope.len();
+        for _ in 0..2 {
+            scope.push((String::new(), self.fresh()));
+        }
+        *max = (*max).max(scope.len());
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
+        scope.truncate(base);
         let elem = self.fresh();
         let arr_ty = Ty::Array(Box::new(elem.clone()));
         if self.unify(&ta, &arr_ty).is_err() {
@@ -1902,12 +1957,6 @@ impl Cx<'_> {
             }
         };
         let rt = Ty::Array(Box::new(elem_ty));
-        let base = scope.len();
-        for _ in 0..2 {
-            scope.push((String::new(), rt.clone()));
-        }
-        *max = (*max).max(scope.len());
-        scope.truncate(base);
         let (sa, sb) = (base, base + 1);
         let len = |s: usize| Box::new(Core::ArrayLen(Box::new(Core::Var(s))));
         let n = Core::If(
@@ -2296,6 +2345,7 @@ impl Cx<'_> {
     ) -> Result<(Core, Ty), String> {
         let result = self.fresh();
         let mut had_clause = false;
+        let mut nil_bodies = Vec::new();
         for clause in clauses {
             let parts = list_to_vec(clause);
             if parts.is_empty() {
@@ -2310,6 +2360,11 @@ impl Cx<'_> {
                 self.elab_body(&parts[1..], scope, max)?.1
             };
             scope.truncate(saved);
+            had_clause = true;
+            if parts.len() > 1 && self.ends_in_bare_nil(&parts[parts.len() - 1]) {
+                nil_bodies.push(bt);
+                continue;
+            }
             if self.unify(&bt, &result).is_err() {
                 return Err(format!(
                     "`cond` clauses disagree: {:?} vs {:?}",
@@ -2317,8 +2372,8 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
-            had_clause = true;
         }
+        self.join_nil_clauses("cond", &result, nil_bodies)?;
         if had_clause {
             Ok((Core::LitI(0), self.walk(&result)))
         } else {
@@ -2343,6 +2398,7 @@ impl Cx<'_> {
         self.elab(key, scope, max)?;
         let result = self.fresh();
         let mut had_clause = false;
+        let mut nil_bodies = Vec::new();
         for clause in &args[1..] {
             let parts = list_to_vec(clause);
             if parts.is_empty() {
@@ -2355,6 +2411,11 @@ impl Cx<'_> {
                 self.elab_body(&parts[1..], scope, max)?.1
             };
             scope.truncate(saved);
+            had_clause = true;
+            if parts.len() > 1 && self.ends_in_bare_nil(&parts[parts.len() - 1]) {
+                nil_bodies.push(bt);
+                continue;
+            }
             if self.unify(&bt, &result).is_err() {
                 return Err(format!(
                     "`case` clauses disagree: {:?} vs {:?}",
@@ -2362,13 +2423,34 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
-            had_clause = true;
         }
+        self.join_nil_clauses("case", &result, nil_bodies)?;
         if had_clause {
             Ok((Core::LitI(0), self.walk(&result)))
         } else {
             Ok((Core::LitI(0), Ty::Any))
         }
+    }
+
+    /// Join the bare-`nil` clause bodies of a `cond`/`case` (#505), deferred
+    /// until every other clause has joined: `nil` is also false, so once the
+    /// other clauses settled on `bool` a nil clause is that boolean's false.
+    /// Otherwise each unifies as an empty list exactly as an in-order clause
+    /// would (unification order does not change the outcome).
+    fn join_nil_clauses(&self, form: &str, result: &Ty, nil_bodies: Vec<Ty>) -> Result<(), String> {
+        for bt in nil_bodies {
+            if matches!(self.walk(result), Ty::Bool) {
+                continue;
+            }
+            if self.unify(&bt, result).is_err() {
+                return Err(format!(
+                    "`{form}` clauses disagree: {:?} vs {:?}",
+                    self.walk(&bt),
+                    self.walk(result)
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// `(variant-case x (ctor (vars…) body…) … [(else body…)])` — the sum
@@ -2738,10 +2820,22 @@ impl Cx<'_> {
         if args.is_empty() {
             return Err("compiled min/max needs at least 1 argument".to_string());
         }
-        let mut elabs = Vec::with_capacity(args.len());
+        // Reserve one slot per argument, then one per fold step, BEFORE
+        // elaborating the arguments (#501): a nested min/max/abs (or any
+        // other temp user) then takes slots above these, so its lets cannot
+        // overwrite an argument slot that is still live. The slots stay
+        // reserved together while the nested lets are built.
+        let base = scope.len();
+        let n = args.len();
+        for _ in 0..(2 * n) {
+            scope.push((String::new(), self.fresh()));
+        }
+        *max = (*max).max(scope.len());
+        let mut elabs = Vec::with_capacity(n);
         for a in args {
             elabs.push(self.elab(a, scope, max)?);
         }
+        scope.truncate(base);
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
@@ -2757,15 +2851,6 @@ impl Cx<'_> {
             .as_num()
             .ok_or_else(|| format!("min/max expects numeric operands, got {rt:?}"))?;
         let k: NumKind = num.into();
-        // Reserve one slot per argument, then one per fold step; the slots
-        // stay reserved together while the nested lets are built.
-        let base = scope.len();
-        let n = elabs.len();
-        for _ in 0..(2 * n) {
-            scope.push((String::new(), rt.clone()));
-        }
-        *max = (*max).max(scope.len());
-        scope.truncate(base);
         let arg_slot = |i: usize| base + i;
         let acc_slot = |i: usize| base + n + i;
         // Innermost: fold from the right. acc[n-1] = arg[n-1];
@@ -2792,6 +2877,8 @@ impl Cx<'_> {
     /// any form of a `while`/`for` body). A `cond`/`when`/`unless`/`case`
     /// there desugars in statement mode (#404): every branch yields `false`,
     /// so branches of any type join and the nil-on-miss is representable.
+    /// A `let`/`let*`/`let-typed`/`progn` there discards its last form's
+    /// value too, so statement mode reaches through it (#513).
     fn elab_stmt(
         &self,
         form: &LispVal,
@@ -2804,9 +2891,16 @@ impl Cx<'_> {
             let items = list_to_vec(form);
             if let Some(LispVal::Symbol(s)) = items.first() {
                 let head = s.borrow().name.clone();
-                if matches!(head.as_str(), "COND" | "WHEN" | "UNLESS" | "CASE") {
-                    let d = desugar_branch(&head, &items[1..], true)?;
-                    return self.elab(&d, scope, max);
+                match head.as_str() {
+                    "COND" | "WHEN" | "UNLESS" | "CASE" => {
+                        let d = desugar_branch(&head, &items[1..], true)?;
+                        return self.elab(&d, scope, max);
+                    }
+                    "LET" | "LET-TYPED" | "LET*" => {
+                        return self.elab_let(&items[1..], true, scope, max);
+                    }
+                    "PROGN" => return self.elab_body_mode(&items[1..], true, scope, max),
+                    _ => {}
                 }
             }
         }
@@ -2840,13 +2934,25 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
+        self.elab_body_mode(forms, false, scope, max)
+    }
+
+    /// A body whose last form is in statement mode when `stmt` (the body's
+    /// own value is discarded, #513), else in value position.
+    fn elab_body_mode(
+        &self,
+        forms: &[LispVal],
+        stmt: bool,
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
         if forms.is_empty() {
             return Err("empty body".to_string());
         }
         let mut cores = Vec::with_capacity(forms.len());
         let mut last_ty = Ty::Int64;
         for (i, f) in forms.iter().enumerate() {
-            let (c, t) = if i + 1 < forms.len() {
+            let (c, t) = if stmt || i + 1 < forms.len() {
                 self.elab_stmt(f, scope, max)?
             } else {
                 self.elab(f, scope, max)?

@@ -397,6 +397,22 @@ pub struct JitFlags {
 
 pub type WritebackResult = Result<(Value, Vec<Option<Value>>, JitFlags), String>;
 
+/// A typed call that distinguishes *declining to enter* native code from
+/// *failing after entering* it (issue #500). A membrane that falls back to a
+/// dynamic closure may do so only on [`JitEntry::Declined`]: once the native
+/// body has started it may already have performed side effects (a `store`
+/// into a zero-copy typed array, a host call), so re-running the body
+/// interpreted would repeat them. [`JitEntry::Entered`] carries the call's
+/// own result, whose `Err` must propagate.
+#[derive(Debug)]
+pub enum JitEntry {
+    /// Rejected before the native body ran (not defined, arity, argument
+    /// lowering); nothing was executed.
+    Declined(String),
+    /// The native body ran; its outcome, success or error.
+    Entered(WritebackResult),
+}
+
 impl Value {
     /// Lower a boundary value to its runtime `u64` word for a parameter of type
     /// `ty`, allocating compound values (arrays/structs) into the call arena so

@@ -86,9 +86,13 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(mod x y)")
     (cons 'CATEGORY 'arithmetic)
-    (cons 'DESCRIPTION "Returns x modulo y. Result has same sign as divisor.")
+    (cons 'DESCRIPTION "Returns the Euclidean remainder of x divided by y: always 0 <= r < |y|, whatever the signs of x and y. Differs from Common Lisp's floored MOD when y is negative.")
     (cons 'EXAMPLES '(((mod 10 3) 1)
-                       ((mod -10 3) 2)))
+                       ((mod -10 3) 2)
+                       ((mod -7 3) 2)
+                       ((mod 7 -2) 1)
+                       ((mod 5 -3) 2)
+                       ((mod -7 -3) 2)))
     (cons 'SEE-ALSO '(remainder /))))
 
 (register-doc 'expt
