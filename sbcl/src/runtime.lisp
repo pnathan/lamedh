@@ -952,17 +952,25 @@ run with a control stack large enough for this bound to be reached first (see
 README.md, --control-stack-size).")
 
 (defvar *eval-depth* 0
-  "Current LEVAL nesting depth. Rebound (not mutated) on every LEVAL entry, so
-every exit path -- normal return, non-local exit, a caught error -- restores
-it, and each SB-THREAD thread counts its own depth.")
+  "Current LEVAL nesting depth. Rebound (not mutated) on every counted LEVAL
+entry, so every exit path -- normal return, non-local exit, a caught error --
+restores it, and each SB-THREAD thread counts its own depth.")
+
+(declaim (type fixnum *eval-depth* *eval-depth-limit*))
 
 (defun leval (form env)
-  (let ((*eval-depth* (1+ *eval-depth*)))
-    (when (> *eval-depth* *eval-depth-limit*)
-      (lamedh-error
-       (format nil "recursion limit exceeded (~D eval frames); rewrite iteratively or raise it with set_eval_depth_limit"
-               *eval-depth-limit*)))
-    (leval-1 form env)))
+  ;; An atom (a symbol or a constant) evaluates without recursing, so it
+  ;; cannot deepen the stack and skips the depth binding -- most LEVAL calls
+  ;; are on atoms (arguments, operators), and the special binding is the
+  ;; guard's whole cost.
+  (if (atom form)
+      (leval-1 form env)
+      (let ((*eval-depth* (1+ *eval-depth*)))
+        (when (> *eval-depth* *eval-depth-limit*)
+          (lamedh-error
+           (format nil "recursion limit exceeded (~D eval frames); rewrite iteratively or raise it with set_eval_depth_limit"
+                   *eval-depth-limit*)))
+        (leval-1 form env))))
 
 (defun leval-1 (form env)
   (loop

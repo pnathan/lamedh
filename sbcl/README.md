@@ -52,7 +52,8 @@ sbcl --control-stack-size 512MB --non-interactive --eval '(require :asdf)' \
 `--control-stack-size 512MB` is required, not a tuning knob, and must come
 before any other option (it is an SBCL *runtime* option). Runaway non-tail
 recursion is stopped by an eval-depth guard: more than 10,000 nested `LEVAL`
-frames (`*EVAL-DEPTH-LIMIT*`, the reference implementation's
+frames on compound forms (an atom evaluates without recursing, so it is not
+counted; `*EVAL-DEPTH-LIMIT*`, the reference implementation's
 `DEFAULT_EVAL_DEPTH_LIMIT`) signals the catchable Lamedh error
 `recursion limit exceeded (10000 eval frames); ...` -- but only if the
 control stack can hold 10,000 frames first. SBCL's default stack (2 MB) holds
