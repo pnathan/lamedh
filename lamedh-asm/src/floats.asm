@@ -194,64 +194,113 @@ float_eq_exact:
 ; representation to stdout (no scientific notation, no shortest
 ; round-trip formatting — see README roadmap). The FLOAT-printing half
 ; of print_value's runtime dispatch (strings.asm).
+;
+; The sign comes from the sign bit, not a compare, so -0.0 prints as
+; "-0.000000" (a compare treats it as equal to 0.0 and lost the sign).
+; The six decimals are the fraction rounded to nearest, ties to even
+; (cvtsd2si under the default MXCSR rounding), carrying into the
+; integer part — 3.14159265 is "3.141593" and 0.9999999 is "1.000000",
+; not the truncated "3.141592"/"0.999999". Infinities and NaN print as
+; the reference prints them: "inf", "-inf", "NaN". The integer part is
+; printed as an unsigned 64-bit value, so magnitudes of 2^64 and up are
+; still wrong (README roadmap: shortest round-trip printing).
 global float_print
 float_print:
     push rbx
     push r12
-    mov rbx, rdi
+    push r13
     call float_val                    ; xmm0 = value
 
+    movq rax, xmm0
     xor r12, r12                        ; sign flag
-    pxor xmm1, xmm1
-    comisd xmm0, xmm1
-    jae .nonneg
+    btr rax, 63                           ; rax = |value|'s bits, CF = sign
+    jnc .sign_done
     mov r12, 1
-    mov rax, 0x8000000000000000           ; sign-bit mask
-    movq xmm2, rax
-    xorpd xmm0, xmm2                        ; xmm0 = |value|
-.nonneg:
+.sign_done:
+    mov rcx, 0x7FF0000000000000             ; exponent all ones:
+    cmp rax, rcx                              ; = inf, > NaN
+    ja .nan
+    je .inf
+    movq xmm0, rax                              ; xmm0 = |value|
+    roundsd xmm1, xmm0, 3                         ; xmm1 = trunc(|value|)
+    subsd xmm0, xmm1                                ; fraction (exact)
+    mulsd xmm0, [rel float_1e6]
+    cvtsd2si r13, xmm0                                ; round, ties to even
+    movsd xmm0, [rel float_2p63]
+    comisd xmm1, xmm0
+    jae .int_high
+    cvttsd2si rbx, xmm1
+    jmp .have_int
+.int_high:
+    subsd xmm1, xmm0                                    ; [2^63, 2^64)
+    cvttsd2si rbx, xmm1
+    btc rbx, 63
+.have_int:
+    cmp r13, 1000000
+    jb .emit
+    sub r13, 1000000                                      ; x.9999996 -> x+1
+    inc rbx
+.emit:
+    ; every value lives in rbx/r12/r13 (callee-saved) from here on:
+    ; write_buf clobbers rax (the stdout path leaves the syscall's byte
+    ; count in it; the capture path used by PRINC-TO-STRING leaves a
+    ; buffer address there, which once printed 2.5 as "2.775808").
     test r12, r12
-    jz .print_int_part
+    jz .int_part
     mov rsi, minus_buf
     mov rdx, 1
     call write_buf
-.print_int_part:
-    cvttsd2si rax, xmm0                    ; truncate toward zero -> int part
-    mov rbx, rax                              ; keep the raw value for the
-                                               ; fractional-part math below —
-                                               ; print_fixnum wants a *tagged*
-                                               ; fixnum (it untags on entry),
-                                               ; so only a tagged copy goes in
-    mov rdi, rax
-    TO_FIXNUM rdi
-    call print_fixnum
-    mov rax, rbx
-
+.int_part:
+    mov rdi, rbx
+    call print_u64
     mov rsi, dot_buf
     mov rdx, 1
     call write_buf
-
-    ; fractional part: (|value| - int_part) * 10^6, truncated, zero-padded
-    ; int_part is reloaded from rbx HERE, after the write: write_buf
-    ; clobbers rax (the stdout path leaves the syscall's byte count, 1,
-    ; in it — which made the fraction come out right by arithmetic
-    ; accident, since (v-1)*10^6 and (v-int)*10^6 share their last six
-    ; digits; the capture path used by PRINC-TO-STRING leaves a buffer
-    ; address there, which printed 2.5 as "2.775808").
-    mov rax, rbx
-    cvtsi2sd xmm1, rax
-    subsd xmm0, xmm1
-    mov rax, 1000000
-    cvtsi2sd xmm1, rax
-    mulsd xmm0, xmm1
-    cvttsd2si rax, xmm0
-    test rax, rax
-    jns .frac_nonneg
-    neg rax
-.frac_nonneg:
-    mov rdi, rax
+    mov rdi, r13
     call print_fixnum6
+    jmp .out
+.inf:
+    test r12, r12
+    jz .inf_text
+    mov rsi, minus_buf
+    mov rdx, 1
+    call write_buf
+.inf_text:
+    mov rsi, inf_buf
+    mov rdx, 3
+    call write_buf
+    jmp .out
+.nan:
+    mov rsi, nan_buf
+    mov rdx, 3
+    call write_buf
+.out:
+    pop r13
     pop r12
+    pop rbx
+    ret
+
+; print_u64(rdi=raw unsigned int) -> writes its decimal digits
+; (float_print's integer part, which can exceed the fixnum range
+; print_fixnum takes).
+print_u64:
+    push rbx
+    sub rsp, 32
+    mov rax, rdi
+    mov r9, 10
+    lea rsi, [rsp+31]
+.loop:
+    xor rdx, rdx
+    div r9
+    add dl, '0'
+    dec rsi
+    mov [rsi], dl
+    test rax, rax
+    jnz .loop
+    lea rdx, [rsp+31]
+    sub rdx, rsi
+    call write_buf
+    add rsp, 32
     pop rbx
     ret
 
@@ -283,6 +332,11 @@ print_fixnum6:
 section .rodata
 minus_buf: db "-"
 dot_buf: db "."
+inf_buf: db "inf"
+nan_buf: db "NaN"
+align 8
+float_1e6: dq 1.0e6
+float_2p63: dq 9223372036854775808.0
 
 ; ---------------------------------------------------------------------
 ; Math library (the reference's SQRT/SIN/COS/TAN/EXP/LOG/FLOOR/CEILING/

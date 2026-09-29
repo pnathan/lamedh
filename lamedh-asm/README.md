@@ -1055,14 +1055,20 @@ concrete reason it landed last of the three features in its spec:
   neither argument mutated, matching every other value's immutability
   here. All three are byte-indexed, not Unicode-scalar-indexed — Part
   IV's own indexing rule remains unmet, tracked as ongoing work below.
-  Escapes are limited to `\n`, `\t`, `\"`, `\\` (anything else after a
-  backslash is copied through literally); a literal longer than the
-  reader's 4KB scratch buffer is silently truncated.
+  Escapes are the reference's: `\n`, `\t`, `\r`, `\0`, `\"`, `\\`
+  decode, and any other backslash-prefixed character keeps its
+  backslash (`"\a"` is two characters, as in the reference — #551); a
+  literal longer than the reader's 4KB scratch buffer is silently
+  truncated.
 - Float arithmetic (`F+`/`F-`/`F*`/`F/`/`F<`) is a real host-routine
   call per operation, not an inlined target instruction — see "The
   kernel surface" above. `PRINT` of a float is always fixed
   6-decimal-place formatting (`3.500000`), never scientific notation
-  or shortest round-trip output; there is no `FLOAT<`-style family for
+  or shortest round-trip output: the six decimals are rounded to
+  nearest (ties to even), the sign of `-0.0` is kept, and infinities
+  and NaN print as the reference's `inf`/`-inf`/`NaN` (#551), but the
+  integer part is only right below 2^64. A float literal may carry an
+  `e`/`E` exponent (`1.5e2`, `1e5`, `-2E-3`). There is no `FLOAT<`-style family for
   `<=`/`>`/`>=`/`=` yet, and no mixed fixnum/float arithmetic (`(F+ 1
   2.0)` does not work — both operands must already be floats; use
   `FLOAT` to convert first).
@@ -1377,8 +1383,9 @@ literal datum in this compiler is, and runs through the identical
 does, just from an in-memory buffer instead of an mmap'd file.
 
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
-`REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
-`+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
+`REVERSE`, `FORMAT`, `1+`/`1-`, real (variadic) global closures for
+`+`/`-`/`*`/`</`=` and `LOGAND`/`LOGIOR`/`LOGXOR`, `APPEND`, `IOTA`,
+`REDUCE`, `DOTIMES`, `EQUAL`,
 `MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, `RPLACD`, `DEF`,
 `FUNCALL`, `>`/`>=`/`<=`, `MAX`/`MIN`, `FOR-EACH`, `FILTER`, `SOME`,
 `EVERY`, `MAKE-HASH-TABLE`, `SETHASH`, `GETHASH`, `REMHASH`, `KEYS`,

@@ -1,0 +1,9 @@
+(A . B)
+(A B C)
+T
+((A B . C) (A . B) 2 ((A . B) C . D))
+((A QUOTE B) (A) (A . B))
+(X . Y)
+(READ: malformed dotted list READ: malformed dotted list READ: malformed dotted list READ: malformed dotted list)
+READ: end of input inside a list
+AFTER
