@@ -883,12 +883,14 @@ type error nested inside one surfaces), discarding the types."
 (defun hm-elab-form-checking (state tyenv head args)
   "Cx::elab's dispatch table under `checking: true`."
   (cond
-    ((member head '(+ - * / mod)) (hm-elab-bin state tyenv head args))
+    ((member head '(+ - * / quotient mod remainder rem))
+     (hm-elab-bin state tyenv head args))
     ((member head '(< > <= >= = /=)) (hm-elab-cmp state tyenv head args))
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (progn (hm-elab-all state tyenv args) 'any))
     ((eq head 'if) (hm-elab-if state tyenv args))
     ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ((eq head 'let*) (hm-elab state tyenv (hm-desugar-let-star args)))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'char-code) (hm-elab-char-code state tyenv args))
     ((eq head 'code-char) (hm-elab-code-char state tyenv args))
@@ -994,14 +996,32 @@ desugar_branch in src/jit/elaboration.rs."
                  (hm-desugar-branch 'cond clauses stmt)))))
     (t (error "hm-desugar-branch"))))
 
+(defun hm-desugar-let-star (args)
+  "`(let* ((a x) (b y)) body...)` as `(let ((a x)) (let ((b y)) body...))`
+(#522). Only the evaluator's shapes: a binding list, a body, and every binding
+a `(name init)` pair. Mirrors desugar_let_star in src/jit/elaboration.rs."
+  (cond
+    ((or (null (cdr args)) (not (listp (car args))))
+     (error "let* requires a binding list and at least one body form"))
+    ((not (every (lambda (b) (and (consp b) (symbolp (car b))
+                                  (consp (cdr b)) (null (cddr b))))
+                 (car args)))
+     (error "let* binding must be a (name init) pair"))
+    ((null (car args)) (cons 'let (cons nil (cdr args))))
+    (t (let ((acc nil) (rev (reverse (car args))))
+         (setq acc (cons 'let (cons (list (car rev)) (cdr args))))
+         (mapc (lambda (b) (setq acc (list 'let (list b) acc))) (cdr rev))
+         acc))))
+
 ;;; ---- arithmetic and comparison -------------------------------------------
 
 (defun hm-elab-bin (state tyenv op args)
-  "`+ - * / mod`. `/` and `mod` are strictly BINARY in the evaluator and must
-be rejected at every other arity here too; `-` needs at least one operand.
-Mirrors Cx::elab_bin's checking path."
+  "`+ - * / mod`, plus `quotient` (the evaluator's name for `/`) and
+`remainder`/`rem` (truncated remainder, #522). `/`, `mod` and `remainder` are
+strictly BINARY in the evaluator and must be rejected at every other arity here
+too; `-` needs at least one operand. Mirrors Cx::elab_bin's checking path."
   (cond
-    ((and (member op '(/ mod)) (not (= (length args) 2)))
+    ((and (member op '(/ quotient mod remainder rem)) (not (= (length args) 2)))
      (error (concat "`" (princ-to-string op) "` requires exactly 2 arguments, got "
                     (princ-to-string (length args)))))
     ((and (eq op '-) (null args))
@@ -1043,6 +1063,8 @@ Mirrors Cx::elab_bin's checking path."
                                                  (hm-type-name rt))))
                                  ((and (eq op 'mod) (not (eq rt 'int64)))
                                   (error "`mod` is int64-only"))
+                                 ((and (member op '(remainder rem)) (not (eq rt 'int64)))
+                                  (error "`remainder` is int64-only"))
                                  (t (setq ty rt))))
                              nil))
                        (error (concat "`" (princ-to-string op)
@@ -2083,12 +2105,14 @@ the portable registry)."
 (defun hm-elab-form-codegen (state tyenv head args)
   "Cx::elab's dispatch table under `checking: false`."
   (cond
-    ((member head '(+ - * / mod)) (hm-elab-bin state tyenv head args))
+    ((member head '(+ - * / quotient mod remainder rem))
+     (hm-elab-bin state tyenv head args))
     ((member head '(< > <= >= = /=)) (hm-elab-cmp state tyenv head args))
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (hm-elab-logic state tyenv head args))
     ((eq head 'if) (hm-elab-if state tyenv args))
     ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ((eq head 'let*) (hm-elab state tyenv (hm-desugar-let-star args)))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'setq) (hm-elab-setq state tyenv args))
     ((eq head 'while) (hm-elab-while state tyenv args))

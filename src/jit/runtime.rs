@@ -618,6 +618,19 @@ pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
                 x.checked_rem_euclid(y).unwrap_or(0)
             }
         }
+        // Truncated remainder, matching the evaluator's REMAINDER (#522):
+        // MIN rem -1 is 0 and, unlike MOD, sets OVERFLOW there.
+        BinOp::Rem => {
+            if y == 0 {
+                ctx.div_by_zero.set(true);
+                0
+            } else if x == i64::MIN && y == -1 {
+                ctx.overflow.set(true);
+                x.wrapping_rem(y)
+            } else {
+                x % y
+            }
+        }
         // Pure bitwise: exact match to the evaluator's i64 ops, no flags.
         BinOp::BitAnd => x & y,
         BinOp::BitOr => x | y,
@@ -636,7 +649,7 @@ pub(super) fn float_bin(op: BinOp, x: f64, y: f64) -> f64 {
         BinOp::Sub => x - y,
         BinOp::Mul => x * y,
         BinOp::Div => x / y,
-        BinOp::Mod => x % y,
+        BinOp::Mod | BinOp::Rem => x % y,
         BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::AShr => {
             unreachable!("bitwise/shift ops are int64-only")
         }
