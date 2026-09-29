@@ -4387,6 +4387,18 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "call to unknown function `CONS`")))
     (cons 'SEE-ALSO '(signature compiled-p defun* explain-compile))))
 
+(register-doc 'time
+  (list
+    (cons 'NAME 'time)
+    (cons 'TYPE 'vau)
+    (cons 'SYNTAX "(time form...)")
+    (cons 'CATEGORY 'introspection)
+    (cons 'DESCRIPTION "Evaluate FORMs, print the elapsed wall time of their normal execution as (TIME-MS ms), and return the value of the last. TIME does not arm fuel, so auto-compiled functions run their native code exactly as they would untimed; for kernel steps (the WITH-FUEL unit) use STEP-COUNT, which arms fuel and therefore forces the interpreted path. Inside an already-armed fuel fence the steps are read off the live counter and printed too: (TIME-MS ms STEPS n).")
+    (cons 'ARGS '((form "Forms to evaluate, in order")))
+    (cons 'RETURNS "The value of the last FORM")
+    (cons 'EXAMPLES '(((time (+ 20 22)) 42)))
+    (cons 'SEE-ALSO '(step-count with-fuel))))
+
 ;;; ============================================================
 ;;; REGEX MODULE (lib/44-regex.lisp)
 ;;; ============================================================
@@ -4528,7 +4540,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 
 (register-category 'introspection
   "Inspecting registered definitions and compiled code"
-  '(describe see-source disassemble documentation signature compiled-p why-not-typed))
+  '(describe see-source disassemble documentation signature compiled-p why-not-typed time))
 
 ;;; Done loading help data. Keep stdlib loading silent so CLI -s output is
 ;;; machine-readable and benchmark harnesses can parse stdout directly.
