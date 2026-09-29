@@ -68,6 +68,9 @@ arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+It then runs `tests/cli-exit-status.sh`, which drives the documented
+`--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
+checks that a clean script exits 0 and an erroring one exits 1.
 
 ### Running the `examples/` programs
 
