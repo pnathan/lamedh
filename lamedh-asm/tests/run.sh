@@ -617,6 +617,22 @@ a b&c
         echo "FAIL  stdlib_conformance  stdout: got [$stdlib_got] want [$stdlib_want] exit: got $stdlib_exit"
         fail=$((fail+1))
     fi
+
+    # #547: PRIN1 is the prelude's (PRINT (PRIN1-TO-STRING X)), whose
+    # capture buffer used to clamp at 64 KB — a 40 000-element list
+    # (80 001 bytes) came out as exactly 65 536 bytes with no closing
+    # paren. tests/cases/070_capture_growth covers the kernel side.
+    prin1_prog="$BUILD/file_runner_prin1_large.lisp"
+    printf '(def l nil) (dotimes (i 40000) (setq l (cons 7 l))) (prin1 l)\n' > "$prin1_prog"
+    prin1_bytes=$("$runner_bin" "$prin1_prog" | wc -c)
+    prin1_tail=$("$runner_bin" "$prin1_prog" | tail -c 4)
+    if [ "$prin1_bytes" = "80001" ] && [ "$prin1_tail" = "7 7)" ]; then
+        echo "ok    file_runner_prin1_large"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_prin1_large  bytes: got $prin1_bytes want 80001  tail: got [$prin1_tail]"
+        fail=$((fail+1))
+    fi
 fi
 
 for case_asm in tests/cases/*.asm; do
