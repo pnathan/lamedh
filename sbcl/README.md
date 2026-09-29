@@ -69,6 +69,11 @@ completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
 
+One file is port-specific rather than a copy: `97-no-ratios.lisp` pins
+regressions where Common Lisp's numeric tower leaked through (issue #536:
+`/` takes exactly two arguments; integer `expt` with a negative exponent
+returns a float). Every assertion in it also holds on the reference.
+
 ### Running the `examples/` programs
 
 The repository root's `examples/<name>/main.lisp` programs (the reference
