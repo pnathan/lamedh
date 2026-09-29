@@ -265,8 +265,7 @@ fn random_bytes_has_requested_length_and_varies() {
     let env = env_with_os();
     let len = eval_line("(array-length* (os:random-bytes 16))", &env);
     assert_eq!(len, "16");
-    // The printer does not show array contents ("<array:16>" for any
-    // 16-byte array), so compare with EQUAL rather than the printed form.
+    // Compare with EQUAL rather than the printed form.
     let differ = eval_line(
         "(null (equal (os:random-bytes 16) (os:random-bytes 16)))",
         &env,

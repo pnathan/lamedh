@@ -24,6 +24,7 @@
 //! | `,e` | `(UNQUOTE e)` |
 //! | `,@e` | `(UNQUOTE-SPLICING e)` |
 //! | `#'f` | `(FUNCTION f)` |
+//! | `#(a b c)` | `LispVal::Array` literal; elements unevaluated (issue #527) |
 //! | `#x1F`, `#b101`, `#o17` | Radix literals (hex, binary, octal) |
 //! | `; comment` | Ignored to end of line |
 //! | `#\| comment \|#` | Block comment (nests) |
@@ -139,6 +140,7 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
                 // #S(...) before plain lists so the dispatch never treats
                 // the payload list as a form.
                 parse_struct_literal(env.clone(), remaining),
+                parse_array_literal(env.clone(), remaining),
                 parse_list(env.clone(), remaining),
                 // Char literal 'c' before the quote reader macro: 'a' is a char,
                 // 'a (no closing quote) stays (quote a).
@@ -763,6 +765,41 @@ fn parse_struct_literal(
                 type_name: brand.borrow().name.clone(),
                 fields,
             })),
+        ))
+    }
+}
+
+// Readable array literal (issue #527): `#(e1 ... en)` reads as a fresh
+// `LispVal::Array` of the elements, unevaluated -- the inverse of the
+// printer's array form. Like `#S`, the literal is built once at read time,
+// so a quoted or self-evaluating literal in a function body is one shared
+// array across calls. A dotted tail is rejected.
+fn parse_array_literal(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, _) = tag("#")(input)?;
+        // `parse_list` itself counts the nesting level, so pass `remaining`
+        // unchanged (`remaining - 1` would underflow at the limit).
+        let (rest, body) = parse_list(env.clone(), remaining)(rest)?;
+        let mut elems = Vec::new();
+        let mut cur = &body;
+        loop {
+            match cur {
+                LispVal::Nil => break,
+                LispVal::Cons { car, cdr } => {
+                    elems.push(car.as_ref().clone());
+                    cur = cdr.as_ref();
+                }
+                _ => {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Tag,
+                    )));
+                }
+            }
+        }
+        Ok((
+            rest,
+            LispVal::Array(Shared::new(crate::SharedCell::new(elems))),
         ))
     }
 }

@@ -92,15 +92,16 @@ order (`parse_expr`); the first match wins:
    symbol, operator symbol;
 2. string literal;
 3. `#S(` record literal;
-4. `(` list;
-5. `'x'` character literal;
-6. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
+4. `#(` array literal;
+5. `(` list;
+6. `'x'` character literal;
+7. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
    `#'` function shorthand.
 
 If none matches, the text is a parse error at that position. In particular
 `.` never begins a form (it is only the dotted-pair marker inside a list),
 `)` outside a list is an error, and `#` followed by anything other than
-`|`, `S`, `s`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
+`|`, `S`, `s`, `(`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
 carry a 1-based line and column; the message text is not portable.
 
 **Symbols.** Four productions, all producing an ordinary interned
@@ -231,6 +232,12 @@ declaration order. A dotted tail, a non-symbol head, or an empty `#S()`
 is a hard parse failure. Reading is purely structural — no type registry
 is consulted, so a literal for an undeclared brand still reads.
 
+**Array literals**, `#(e1 ... en)` (issue #527). No whitespace is
+permitted between `#` and `(`. The elements are read by these same rules
+and **not evaluated**; the result is a fresh array of them, built once at
+read time (so a literal in a function body is one array shared across
+calls). `#()` is the empty array. A dotted tail is a hard parse failure.
+
 **Lists.** `( ws (expr ws)* ( "." ws expr ws )? ")"`. `()` reads as `Nil`.
 The dotted tail requires at least one preceding element (`( . x)` is an
 error) and must be the last thing before `)` (`(a . b c)` is an error).
@@ -253,7 +260,8 @@ exhausting its native stack. The reference's default limit is 512 levels
 integers, symbols (all four productions), strings, proper and dotted
 lists, `NIL`/`T`, and the quote family are what a bare `lib/*.lisp`-running
 host cannot do without; octal/hex-suffix and radix-prefix integers,
-floats, block comments, character literals, and `#S(...)` records are no
+floats, block comments, character literals, `#S(...)` records, and
+`#(...)` arrays are no
 longer optional latitude either — a conformant host implements all of
 them, with exactly the meaning stated above. There is no
 partial-conformance status for a host still missing one of these: it is
@@ -309,11 +317,19 @@ rules:
 - `#S(TYPENAME f1 f2 ...)` prints the brand followed by each field printed
   by these same rules, in declaration order — the exact inverse of the
   reader's record production.
+- An array prints as `#(e1 e2 ...)`, each element printed by these same
+  rules — the inverse of the reader's array production. A host may abridge
+  a long array for display; the reference shows the first 100 elements and
+  then a `#<...N more>` marker, which is not readable, so an abridged array
+  can never read back as a shorter one. Serialization paths (channel and
+  spawn payloads) print unabridged. An array that contains itself prints
+  `#<circular-array>` at the back-reference. A typed array prints as the
+  non-readable `#<typed-array:int64 e1 e2 ...>` /
+  `#<typed-array:float64 ...>`, abridged the same way.
 - **Opaque values print as non-readable tags**, and a host must print
   *something* non-readable for them (the exact text is not portable):
   `<builtin>`, `<lambda>`, `<fexpr>`, `<macro>`, `<vau>`, `<native>`,
-  `<hash-table>`, `<array:N>` (N the length), `<typed-array:int64:N>` /
-  `<typed-array:float64:N>`, `<environment>`, and for a condition value
+  `<hash-table>`, `<environment>`, and for a condition value
   `#<error "message">` or `#<error "message" data>` (message rendered as
   a debug-escaped string, data printed by these rules). Ports, network
   handles, and process handles print as `#<port:...>`, `#<net:...>`,
