@@ -190,3 +190,51 @@ fn the_portable_gate_agrees() {
         );
     }
 }
+
+#[test]
+fn nested_allocating_ops_keep_the_outer_slots() {
+    // #501: the inner op's temps must not overwrite the outer op's `a` slot,
+    // which is still live while `b` runs.
+    let e = env();
+    for (name, body) in [
+        ("n501-add", "(array-add a (array-add b c))"),
+        (
+            "n501-mix",
+            "(array-sub (array-mul a b) (array-add b (array-mul c a)))",
+        ),
+        (
+            "n501-deep",
+            "(array-mul a (array-sub b (array-add c (array-add a b))))",
+        ),
+    ] {
+        eval_line(
+            &format!(
+                "(defun-typed ({name} (array int64)) ((a (array int64)) (b (array int64)) (c (array int64))) {body})"
+            ),
+            &e,
+        );
+        let ex = eval_line(&format!("(explain-compile '{name})"), &e);
+        assert!(ex.starts_with("((TIER . COMPILED)"), "{name}: {ex}");
+        for args in [
+            ["(l '(1 2 3))", "(l '(10 20 30))", "(l '(100 200 300))"],
+            ["(l '(-4 5))", "(l '(7 -1 9))", "(l '(2 3 4 5))"],
+        ] {
+            let [a, b, c] = args;
+            assert_eq!(
+                eval_line(&format!("(array->list ({name} {a} {b} {c}))"), &e),
+                eval_line(
+                    &format!("(array->list (let ((a {a}) (b {b}) (c {c})) {body}))"),
+                    &e
+                ),
+                "{name} {args:?}"
+            );
+        }
+    }
+    assert_eq!(
+        eval_line(
+            "(array->list (n501-add (l '(1 2 3)) (l '(10 20 30)) (l '(100 200 300))))",
+            &e
+        ),
+        "(111 222 333)"
+    );
+}

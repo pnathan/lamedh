@@ -779,6 +779,57 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
             let s = get_str(0, "string-casefold*")?;
             Ok(LispVal::String(s.to_lowercase()))
         }
+        BuiltinFunc::StringToList => {
+            // (string->list* s) — the characters of S as a list of
+            // one-character strings, in one pass (issue #510).
+            require_one("string->list*")?;
+            let s = get_str(0, "string->list*")?;
+            Ok(vec_to_list(
+                s.chars().map(|c| LispVal::String(c.to_string())).collect(),
+            ))
+        }
+        BuiltinFunc::StringSplit => {
+            // (string-split* s delim) — the fields of S between
+            // non-overlapping, left-to-right occurrences of DELIM, empty
+            // fields kept; an empty DELIM yields (S) (issue #510).
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "string-split* requires exactly two arguments".to_string(),
+                ));
+            }
+            let s = get_str(0, "string-split*")?;
+            let delim = get_str(1, "string-split*")?;
+            if delim.is_empty() {
+                return Ok(vec_to_list(vec![LispVal::String(s)]));
+            }
+            Ok(vec_to_list(
+                s.split(delim.as_str())
+                    .map(|field| LispVal::String(field.to_string()))
+                    .collect(),
+            ))
+        }
+        BuiltinFunc::StringJoin => {
+            // (string-join* strs sep) — the strings of the list STRS joined
+            // with SEP, in one pass (issue #510).
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "string-join* requires exactly two arguments".to_string(),
+                ));
+            }
+            let sep = get_str(1, "string-join*")?;
+            let items = list_to_vec_ctx(&args[0], "string-join*")?;
+            let strs = items
+                .iter()
+                .map(|item| match item {
+                    LispVal::String(s) => Ok(s.as_str()),
+                    other => Err(LispError::Generic(format!(
+                        "STRING-JOIN*: expected a list of strings, got element {}",
+                        err_val(other)
+                    ))),
+                })
+                .collect::<Result<Vec<&str>, LispError>>()?;
+            Ok(LispVal::String(strs.join(sep.as_str())))
+        }
         BuiltinFunc::StringToUtf8 => {
             // (string->utf8* s) — exact UTF-8 bytes of S as an Array<Char>
             // (issue #254 / epic #253: Array<Char> is the language-level

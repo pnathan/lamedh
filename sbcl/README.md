@@ -61,15 +61,20 @@ sbcl --non-interactive --load tests/run-tests.lisp
 ```
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
-implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
+implementation's `tests/lisp/*.lisp` language-level fixtures, plus
+port-only files with no verbatim `tests/lisp/` counterpart
+(`97-no-ratios.lisp`, `97-port-regressions.lisp`) — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **512 assertions** across
+At the time of writing this passes all **541 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+It then runs `tests/cli-exit-status.sh`, which drives the documented
+`--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
+checks that a clean script exits 0 and an erroring one exits 1.
 
-One file is port-specific rather than a copy: `97-no-ratios.lisp` pins
+`97-no-ratios.lisp` pins
 regressions where Common Lisp's numeric tower leaked through (issue #536:
 `/` takes exactly two arguments; integer `expt` with a negative exponent
 returns a float). Every assertion in it also holds on the reference.

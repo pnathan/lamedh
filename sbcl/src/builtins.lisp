@@ -13,8 +13,22 @@
   "Bind NAME (a string) in the global environment to a native function."
   `(env-set-local *global-env* (lsym ,name) (lambda ,lambda-list ,@body)))
 
+(defun lresolve-fn (fn)
+  "A symbol in function position (`(funcall 'car ...)`) names its binding in
+the calling environment, resolved once -- matching the reference
+implementation's FUNCALL/APPLY, including its `Function not found: NAME`
+error when unbound. T is bound to itself there, so it resolves to T (and
+then fails as not a function); NIL is the empty list, never a name."
+  (cond
+    ((or (null fn) (not (symbolp fn)) (eq fn *t-sym*)) fn)
+    (t (let ((env (or *current-env* *global-env*)))
+         (if (env-boundp env fn)
+             (env-resolve env fn)
+             (lamedh-error (format nil "Function not found: ~A" (symbol-name fn))))))))
+
 (defun lapply-fn (fn args)
   "The one calling convention every FUNCALL/APPLY/HOF callback goes through."
+  (setf fn (lresolve-fn fn))
   (cond
     ((functionp fn) (apply fn args))
     ((lambda-obj-p fn)
@@ -279,6 +293,27 @@ round-half-to-even."
             (if (and ok (cur-eof-p c)) v nil))))))
 (defbuiltin "NUMBER->STRING" (n) (lprint-to-string n nil))
 (defbuiltin "STRING-CASEFOLD*" (s) (string-downcase (->str s)))
+;; One-pass walks backing STRING->LIST, STRING-SPLIT and STRING-JOIN in
+;; lib/14-strings.lisp (issue #510).
+(defbuiltin "STRING->LIST*" (s) (map 'list #'string (->str s)))
+(defbuiltin "STRING-SPLIT*" (s delim)
+  (let ((s (->str s)) (delim (->str delim)))
+    (if (zerop (length delim))
+        (list s)
+        (loop with m = (length delim)
+              for start = 0 then (+ idx m)
+              for idx = (search delim s :start2 start)
+              collect (subseq s start idx)
+              while idx))))
+(defbuiltin "STRING-JOIN*" (strs sep)
+  (let ((sep (->str sep)))
+    (with-output-to-string (out)
+      (loop for (x . more) on strs
+            do (unless (stringp x)
+                 (lamedh-error (format nil "STRING-JOIN*: expected a list of strings, got element ~A"
+                                       (lprint-to-string x))))
+               (write-string x out)
+               (when more (write-string sep out))))))
 (defbuiltin "PRIN1-TO-STRING" (x) (lprint-to-string x t))
 (defbuiltin "PRINC-TO-STRING" (x) (lprint-to-string x nil))
 

@@ -276,6 +276,20 @@ runaway-code backstop, not a security boundary — see Chapter 7 for the
 narrow-only `WITH-FUEL` fence and the MCP server (below) for the
 hardened, per-tool-call variant.
 
+Deep *non-tail* recursion is bounded separately, by a depth limit:
+10,000 nested `eval` frames by default, after which the call fails with
+a catchable error whose backtrace collapses the repeated frames:
+
+```bash
+$ lamedh -s "(dolist (x (iota 20000)) x)"
+Error: recursion limit exceeded (10000 eval frames); rewrite iteratively or raise it with `lamedh --max-depth N`
+  in: MAPC (×9997)
+```
+
+`--max-depth N` raises (or lowers) that limit for the whole process.
+Compiled code has its own, higher limit; section 9.5 covers both and the
+Lisp-level `set-eval-depth-limit!`.
+
 The Model Context Protocol server, [`lamedh --mcp`](../mcp.md), builds on
 both `--fuel` and the capability model: it starts fully sandboxed and
 meters every tool call, so an agent can drive a live interpreter over
