@@ -63,10 +63,11 @@ sbcl --non-interactive --load tests/run-tests.lisp
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
 port-only files with no verbatim `tests/lisp/` counterpart (the
-printer-conformance file `97-printer.lisp`, `97-port-regressions.lisp` and
+printer-conformance file `97-printer.lisp`, `97-ieee-floats.lisp`,
+`97-no-ratios.lisp`, `97-port-regressions.lisp` and
 `97-reference-builtins.lisp`) — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **595 assertions** across
+At the time of writing this passes all **655 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
@@ -77,6 +78,15 @@ It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.
 
+`97-ieee-floats.lisp` pins
+the IEEE-754 edge cases (`(/ 1.0 0)` is `inf`, `(log 0)` is `-inf`,
+`(sqrt -1)` is `NaN`, float-to-integer rounding saturates) where Common
+Lisp would otherwise signal a condition or return a complex number; every
+expected value in it is the reference implementation's own output.
+`97-no-ratios.lisp` pins
+regressions where Common Lisp's numeric tower leaked through (issue #536:
+`/` takes exactly two arguments; integer `expt` with a negative exponent
+returns a float). Every assertion in it also holds on the reference.
 `97-reference-builtins.lisp` pins the builtins added for #540 (`RPLACA`/
 `RPLACD`, `MAKE-ARRAY`, `TYPED-ARRAY`, `ARRAY-SUM`/`ARRAY-DOT`, `DEFUN*`,
 `COMPILED-P`) to the reference implementation's semantics, and passes

@@ -3,8 +3,9 @@
 (in-package #:lamedh-rt)
 
 (defun float-repr (f)
-  ;; Non-finite values (reachable through the trap-masked ARRAY-SUM/
-  ;; ARRAY-DOT reductions) print as Rust's f64 Display does.
+  ;; Non-finite values -- from IEEE float arithmetic (#534) or the
+  ;; trap-masked ARRAY-SUM/ARRAY-DOT reductions -- print as the reference
+  ;; does (Rust's f64 Display): inf, -inf, NaN.
   (cond ((sb-ext:float-nan-p f) (return-from float-repr "NaN"))
         ((sb-ext:float-infinity-p f) (return-from float-repr (if (plusp f) "inf" "-inf"))))
   (let ((s (let ((*read-default-float-format* 'double-float)) (prin1-to-string f))))
