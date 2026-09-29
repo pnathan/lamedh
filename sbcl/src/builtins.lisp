@@ -222,7 +222,11 @@ otherwise (a float argument, or any single-argument reciprocal)."
       (if (minusp r) (+ r (abs b)) r))))
 (defbuiltin "REMAINDER" (a b) (rem (numify a) (numify b)))
 (defbuiltin "EXPT" (a b) (expt (numify a) (numify b)))
-(defbuiltin "ZEROP" (x) (bool (zerop (numify x))))
+(defbuiltin "ZEROP" (x)
+  ;; KERNEL: ZEROP accepts only a fixnum -- (zerop 0.0) is an error.
+  (unless (integerp x)
+    (lamedh-error (format nil "ZEROP: expected a number, got ~A" (lprint-to-string x))))
+  (bool (zerop x)))
 (defbuiltin "EVENP" (x) (bool (evenp (numify x))))
 (defbuiltin "ODDP" (x) (bool (oddp (numify x))))
 (defbuiltin "PLUSP" (x) (bool (plusp (numify x))))
