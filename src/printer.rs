@@ -11,6 +11,7 @@
 //! | Value | Output |
 //! |-------|--------|
 //! | `Symbol("FOO")` | `FOO` |
+//! | `Symbol("a b")` | `\|a b\|` (any name that would not read back bare; issue #523) |
 //! | `Number(42)` | `42` |
 //! | `Char(97)` | `'a'` (same escapes as the reader: `\n \t \r \\ \' \0`) |
 //! | `Float(3.0)` | `3.0` (always includes `.`) |
@@ -29,12 +30,33 @@
 
 use crate::LispVal;
 
-fn print_list_contents(cdr: &LispVal) -> String {
+fn print_list_contents(cdr: &LispVal, escape: bool) -> String {
     match cdr {
-        LispVal::Cons { car, cdr } => format!(" {}", print(car)) + &print_list_contents(cdr),
+        LispVal::Cons { car, cdr } => {
+            format!(" {}", render(car, escape)) + &print_list_contents(cdr, escape)
+        }
         LispVal::Nil => "".to_string(),
-        _ => format!(" . {}", print(cdr)),
+        _ => format!(" . {}", render(cdr, escape)),
     }
+}
+
+/// A symbol name as readable text: bare when it reads back as itself,
+/// otherwise wrapped in the reader's `|...|` escape with `|` and `\`
+/// backslashed (issue #523).
+fn print_symbol_name(name: &str) -> String {
+    if crate::reader::symbol_reads_bare(name) {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len() + 2);
+    out.push('|');
+    for c in name.chars() {
+        if c == '|' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('|');
+    out
 }
 
 /// Format `val` as readable Lisp text.
@@ -44,11 +66,22 @@ fn print_list_contents(cdr: &LispVal) -> String {
 /// output round-trips through [`crate::reader::read`]; opaque types emit
 /// non-readable tags like `<lambda>`.
 pub fn print(val: &LispVal) -> String {
+    render(val, true)
+}
+
+/// [`print()`] with every symbol written as its bare name, never
+/// `|...|`-escaped — the `PRINC` view of a symbol, whose name is text for a
+/// human rather than for the reader. Everything else prints as [`print()`]
+/// does.
+pub fn print_plain_symbols(val: &LispVal) -> String {
+    render(val, false)
+}
+
+fn render(val: &LispVal, escape: bool) -> String {
     match val {
-        LispVal::Symbol(s) => {
-            // Always print just the symbol name, regardless of plist
-            s.borrow().name.clone()
-        }
+        // Just the symbol name, regardless of plist.
+        LispVal::Symbol(s) if escape => print_symbol_name(&s.borrow().name),
+        LispVal::Symbol(s) => s.borrow().name.clone(),
         LispVal::Number(n) => n.to_string(),
         LispVal::Char(b) => match b {
             b'\n' => "'\\n'".to_string(),
@@ -104,7 +137,7 @@ pub fn print(val: &LispVal) -> String {
             let mut out = format!("#S({}", s.type_name);
             for f in &s.fields {
                 out.push(' ');
-                out.push_str(&print(f));
+                out.push_str(&render(f, escape));
             }
             out.push(')');
             out
@@ -114,7 +147,7 @@ pub fn print(val: &LispVal) -> String {
             if e.data == LispVal::Nil {
                 format!("#<error {:?}>", e.message)
             } else {
-                format!("#<error {:?} {}>", e.message, print(&e.data))
+                format!("#<error {:?} {}>", e.message, render(&e.data, escape))
             }
         }
         LispVal::Native(_) => "<native>".to_string(),
@@ -140,7 +173,11 @@ pub fn print(val: &LispVal) -> String {
         LispVal::Channel(_) => "<channel>".to_string(),
         LispVal::Nil => "()".to_string(),
         LispVal::Cons { car, cdr } => {
-            format!("({}{})", print(car), print_list_contents(cdr))
+            format!(
+                "({}{})",
+                render(car, escape),
+                print_list_contents(cdr, escape)
+            )
         }
     }
 }
@@ -194,18 +231,18 @@ mod tests {
     #[test]
     fn test_print_dotted_list() {
         let mut env = Environment::new();
-        let list = cons(symbol("a", &mut env), symbol("b", &mut env));
-        assert_eq!(print(&list), "(a . b)");
+        let list = cons(symbol("A", &mut env), symbol("B", &mut env));
+        assert_eq!(print(&list), "(A . B)");
     }
 
     #[test]
     fn test_print_complex_dotted_list() {
         let mut env = Environment::new();
         let list = cons(
-            symbol("a", &mut env),
-            cons(symbol("b", &mut env), symbol("c", &mut env)),
+            symbol("A", &mut env),
+            cons(symbol("B", &mut env), symbol("C", &mut env)),
         );
-        assert_eq!(print(&list), "(a b . c)");
+        assert_eq!(print(&list), "(A B . C)");
     }
 
     #[test]
@@ -216,12 +253,12 @@ mod tests {
     #[test]
     fn test_print_symbol_with_plist() {
         let env = Environment::new();
-        let s = env.intern_symbol("a");
+        let s = env.intern_symbol("A");
         s.borrow_mut()
             .plist
             .insert("key".to_string(), LispVal::String("value".to_string()));
         let lisp_val = LispVal::Symbol(s);
         // Symbols always print as just their name, regardless of plist
-        assert_eq!(print(&lisp_val), "a");
+        assert_eq!(print(&lisp_val), "A");
     }
 }

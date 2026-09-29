@@ -830,7 +830,7 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
                 // Human representation: a top-level string yields its raw contents,
                 // mirroring PRINC; everything else uses the printer.
                 Some(LispVal::String(s)) => Ok(LispVal::String(s.clone())),
-                Some(v) => Ok(LispVal::String(crate::printer::print(v))),
+                Some(v) => Ok(LispVal::String(crate::printer::print_plain_symbols(v))),
                 None => unreachable!("arity checked above"),
             }
         }

@@ -96,7 +96,9 @@ pub(super) fn apply_string_symbol_ops(
                 ));
             }
             let name = match &args[0] {
-                LispVal::String(s) => s.to_uppercase(),
+                // The name is taken verbatim: the reader's case fold belongs
+                // to the reader, not to INTERN (issue #523).
+                LispVal::String(s) => s.clone(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
                     return Err(LispError::Generic(format!(

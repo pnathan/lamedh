@@ -17,6 +17,7 @@
 //! | `'c'` | Character literal → `LispVal::Char` (byte 0–255; escapes `\n \t \r \\ \' \0`) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
+//! | `\|a b\|` | `LispVal::Symbol` named verbatim — case kept; `\\|` and `\\` escape (issue #523) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
 //! | `(a . b)` | Dotted pair |
 //! | `'e` | `(QUOTE e)` |
@@ -542,9 +543,91 @@ fn is_operator_char(c: char) -> bool {
     matches!(c, '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '~')
 }
 
+/// `|...|` symbol escape (issue #523): the name between the bars, taken
+/// verbatim — no case folding, and whitespace, parens, quotes and digits are
+/// all ordinary constituents. Inside the bars `\|` stands for `|` and `\\`
+/// for `\`; any other backslash is kept as written. `|NIL|` is the symbol
+/// named `NIL`, not the empty list. This is the syntax the printer emits for
+/// a symbol whose bare name would not read back as itself
+/// ([`symbol_reads_bare`]). `|` had no meaning outside `#|...|#` before, so
+/// no existing program changes meaning.
+fn parse_bar_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, _) = char('|')(input)?;
+        let mut name = String::new();
+        let mut chars = rest.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '|' => {
+                    return Ok((&rest[i + 1..], LispVal::Symbol(env.intern_symbol(&name))));
+                }
+                '\\' => match chars.next() {
+                    Some((_, e @ ('|' | '\\'))) => name.push(e),
+                    Some((_, e)) => {
+                        name.push('\\');
+                        name.push(e);
+                    }
+                    None => break,
+                },
+                _ => name.push(c),
+            }
+        }
+        // Once `|` is consumed no other production applies: an unterminated
+        // escape is a hard failure, like an unterminated string.
+        Err(nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )))
+    }
+}
+
+/// Whether `name` printed bare reads back as the symbol named `name`
+/// (issue #523). The printer's readable mode wraps every other name in
+/// `|...|`. Mirrors [`parse_atom`]'s symbol productions — the token must
+/// match one of them *in full* (else it splits or reads as something else)
+/// and must not be caught by an earlier number production — and the
+/// reader's case fold, so the name must already be upper case. `NIL` is
+/// excluded (it reads as the empty list). ASCII only, like nom's
+/// `alpha1`/`alphanumeric1`.
+pub(crate) fn symbol_reads_bare(name: &str) -> bool {
+    let b = name.as_bytes();
+    if b.is_empty() || name == "NIL" || b.iter().any(|&c| !c.is_ascii() || c.is_ascii_lowercase()) {
+        return false;
+    }
+    let tail = |s: &[u8], extra: &[u8]| {
+        s.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || b"-*?!+=<>_".contains(&c) || extra.contains(&c))
+    };
+    let earmuffed = |m: u8| {
+        b.len() >= 3
+            && b[0] == m
+            && b[b.len() - 1] == m
+            && b[1].is_ascii_alphabetic()
+            && b[2..b.len() - 1]
+                .iter()
+                .all(|&c| c.is_ascii_alphanumeric() || c == b'-')
+    };
+    match b[0] {
+        // `1+` / `1-` are the only digit-led symbols; any other digit start
+        // is claimed by a number production or splits.
+        b'0'..=b'9' => name == "1+" || name == "1-",
+        c if c.is_ascii_alphabetic() || matches!(c, b'&' | b'$' | b'?') => tail(&b[1..], b":"),
+        b':' => {
+            b.len() >= 2
+                && (b[1].is_ascii_alphabetic() || matches!(b[1], b'&' | b'$'))
+                && tail(&b[2..], b"")
+        }
+        // An earmuffed name, else an operator run — which must cover the
+        // whole name (`*A` would split into `*` and `A`).
+        b'*' | b'+' if earmuffed(b[0]) => true,
+        _ => name.chars().all(is_operator_char),
+    }
+}
+
 fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
+            parse_bar_symbol(env.clone()),
             // Parse special numeric symbols like 1+ and 1- BEFORE numbers
             parse_one_plus_minus(env.clone()),
             parse_number,
@@ -1005,6 +1088,26 @@ pub fn is_incomplete(input: &str) -> bool {
             b'#' if i + 1 < n && bytes[i + 1] == b'|' => {
                 block_depth = 1;
                 i += 2;
+            }
+            b'|' => {
+                // A `|...|` symbol escape (issue #523): skip it so a `(` in
+                // the name does not skew the depth count.
+                i += 1;
+                let mut closed = false;
+                while i < n {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'|' => {
+                            closed = true;
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if !closed {
+                    return true;
+                }
             }
             b'"' => {
                 i += 1;
