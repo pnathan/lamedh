@@ -2537,7 +2537,7 @@ impl Cx<'_> {
 
     /// `(expt b e)` (#398) over concrete operand kinds, each combination
     /// mirroring one arm of the evaluator's `BuiltinFunc::Expt`:
-    /// float^float = `powf`, float^int = `powi(e as i32)`, int^float =
+    /// float^float = `powf`, float^int = `float_powi(b, e)` (#507), int^float =
     /// `(b as f64).powf(e)` — all `float64`, via the `jit_ftrans2` libm
     /// trampoline. int^int is not compiled: the evaluator returns an integer
     /// (or a float for a negative exponent) and raises on overflow.

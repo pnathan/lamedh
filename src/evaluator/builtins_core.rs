@@ -1067,7 +1067,7 @@ pub(super) fn apply_numeric_primitives(
                 (LispVal::Number(base), LispVal::Number(exp)) => {
                     if *exp < 0 {
                         // negative integer exponent → float result
-                        return Ok(LispVal::Float((*base as f64).powi(*exp as i32)));
+                        return Ok(LispVal::Float(crate::jit::float_powi(*base as f64, *exp)));
                     }
                     if *exp > u32::MAX as i64 {
                         return Err(LispError::Generic("exponent too large".to_string()));
@@ -1077,7 +1077,7 @@ pub(super) fn apply_numeric_primitives(
                         .ok_or_else(|| LispError::Generic("exponentiation overflow".to_string()))
                 }
                 (LispVal::Float(base), LispVal::Number(exp)) => {
-                    Ok(LispVal::Float(base.powi(*exp as i32)))
+                    Ok(LispVal::Float(crate::jit::float_powi(*base, *exp)))
                 }
                 (LispVal::Number(base), LispVal::Float(exp)) => {
                     Ok(LispVal::Float((*base as f64).powf(*exp)))

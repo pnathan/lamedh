@@ -886,8 +886,29 @@ pub enum FUnOp {
 pub enum FBinOp {
     /// `float64 ^ float64` -> `x.powf(y)`; both words are float bits.
     Pow,
-    /// `float64 ^ int64` -> `x.powi(y as i32)`; `y` is an int64 word.
+    /// `float64 ^ int64` -> [`float_powi`]`(x, y)`; `y` is an int64 word.
     PowI,
+}
+
+/// `x ^ e` for a float base and an integer exponent (#507): the evaluator's
+/// `BuiltinFunc::Expt` float^int and int^negative-int arms and
+/// [`FBinOp::PowI`] all call this, so every tier agrees bit for bit.
+/// `powi` when `e` fits in `i32`; otherwise `|x|.powf(e as f64)` with the
+/// sign restored from `e`'s parity (`e as f64` is always even above 2^53,
+/// so `powf` alone would drop the sign of a negative base), which saturates
+/// to `inf`/`0.0` as IEEE `pow` does instead of truncating `e`.
+pub fn float_powi(x: f64, e: i64) -> f64 {
+    match i32::try_from(e) {
+        Ok(e) => x.powi(e),
+        Err(_) => {
+            let m = x.abs().powf(e as f64);
+            if x.is_sign_negative() && e & 1 == 1 {
+                -m
+            } else {
+                m
+            }
+        }
+    }
 }
 
 impl FBinOp {
@@ -898,7 +919,7 @@ impl FBinOp {
         let x = f64::from_bits(x);
         match self {
             FBinOp::Pow => x.powf(f64::from_bits(y)).to_bits(),
-            FBinOp::PowI => x.powi(y as i64 as i32).to_bits(),
+            FBinOp::PowI => float_powi(x, y as i64).to_bits(),
         }
     }
 
