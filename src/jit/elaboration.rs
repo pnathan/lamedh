@@ -91,6 +91,21 @@ impl Cx<'_> {
         Ok(())
     }
 
+    /// An integer LITERAL in source (issue #530): the only int form that may
+    /// be coerced to `float64`. There is no general int→float subtyping — an
+    /// int-typed variable or expression is never coerced.
+    fn int_literal(form: &LispVal) -> Option<i64> {
+        match form {
+            LispVal::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Is `t` already known to be `float64` under the substitution?
+    fn is_float(&self, t: &Ty) -> bool {
+        matches!(self.walk(t), Ty::Float64)
+    }
+
     /// A resolved operand type the EVALUATOR would reject for arithmetic /
     /// numeric comparison (#322): known non-numerics fail the check early;
     /// variables and Any stay gradual. Char is numeric (byte arithmetic).
@@ -454,11 +469,51 @@ impl Cx<'_> {
         // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp
         // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
         // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
+        //
+        // Issue #530: an integer LITERAL meeting a `float64` operand is
+        // elaborated as the float constant `n as f64`. This is exactly what
+        // the evaluator does (`apply_math_op`: any float operand promotes
+        // every argument with `as f64`), so the compiled result is the
+        // interpreter's. `+`/`*` fold left to right in both; the evaluator's
+        // N-ary `-` is `a - (b + c …)`, not the fold, so `-` coerces only
+        // at arity 2. `mod` is int-only and never coerces.
+        let coerces = match bop {
+            BinOp::Add | BinOp::Mul => true,
+            BinOp::Sub | BinOp::Div => args.len() == 2,
+            _ => false,
+        };
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
         self.reject_boxed_arith_cmp(&ty)?;
+        // The operands so far while they are ALL int literals (else `None`):
+        // a later `float64` operand re-elaborates this prefix as floats.
+        let mut lit_prefix: Option<Vec<i64>> = Self::int_literal(&args[0]).map(|n| vec![n]);
         for arg in &args[1..] {
-            let (b, tb) = self.elab(arg, scope, max)?;
+            let (mut b, mut tb) = self.elab(arg, scope, max)?;
             self.reject_boxed_arith_cmp(&tb)?;
+            let lit = Self::int_literal(arg);
+            if coerces
+                && self.is_float(&ty)
+                && let Some(n) = lit
+            {
+                (b, tb) = (Core::LitF(n as f64), Ty::Float64);
+            } else if coerces
+                && self.is_float(&tb)
+                && let Some(ns) = lit_prefix.take()
+            {
+                let f = |n: i64| Box::new(Core::LitF(n as f64));
+                acc = Core::LitF(ns[0] as f64);
+                for n in &ns[1..] {
+                    acc = Core::Bin(NumKind::F, bop, Box::new(acc), f(*n));
+                }
+                ty = Ty::Float64;
+            }
+            lit_prefix = match (lit_prefix.take(), lit) {
+                (Some(mut ns), Some(n)) if !self.is_float(&tb) => {
+                    ns.push(n);
+                    Some(ns)
+                }
+                _ => None,
+            };
             if self.unify(&ty, &tb).is_err() {
                 return Err(format!(
                     "`{op}` operands disagree: {:?} vs {:?}",
@@ -509,8 +564,20 @@ impl Cx<'_> {
         if args.len() != 2 {
             return Err(format!("`{op}` expects 2 args, got {}", args.len()));
         }
-        let (a, ta) = self.elab(&args[0], scope, max)?;
-        let (b, tb) = self.elab(&args[1], scope, max)?;
+        let (mut a, mut ta) = self.elab(&args[0], scope, max)?;
+        let (mut b, mut tb) = self.elab(&args[1], scope, max)?;
+        // Issue #530: an integer literal compared with a `float64` operand is
+        // the float constant `n as f64` — the evaluator's own mixed-operand
+        // comparison (`as_f64` on both sides), so the result is unchanged.
+        if let Some(n) = Self::int_literal(&args[1])
+            && self.is_float(&ta)
+        {
+            (b, tb) = (Core::LitF(n as f64), Ty::Float64);
+        } else if let Some(n) = Self::int_literal(&args[0])
+            && self.is_float(&tb)
+        {
+            (a, ta) = (Core::LitF(n as f64), Ty::Float64);
+        }
         // #476: reject before unify/resolve so no `Core::Cmp` is ever built
         // over a boxed operand — two distinct handles can alias the same
         // object, so comparing handle words would be silently wrong, not
@@ -2745,10 +2812,25 @@ impl Cx<'_> {
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
+        // Issue #530: unlike `+`/`<`, an integer literal is NOT coerced here.
+        // `min`/`max` return the selected argument itself, so the evaluator's
+        // `(max 0.5 1)` is the integer `1`; a float constant would change the
+        // observable result. Say so, instead of a bare unify clash.
+        let lit_hint = |e: String| {
+            let lit = args.iter().any(|a| Self::int_literal(a).is_some());
+            if lit && elabs.iter().any(|(_, t)| self.is_float(t)) {
+                format!(
+                    "min/max operands disagree: {e} (an integer literal is not \
+                     coerced to float64 here: min/max return the selected argument \
+                     unchanged, so write the literal as a float, e.g. 1.0)"
+                )
+            } else {
+                format!("min/max operands disagree: {e}")
+            }
+        };
         let ta = elabs[0].1.clone();
         for (_, t) in &elabs[1..] {
-            self.unify(&ta, t)
-                .map_err(|e| format!("min/max operands disagree: {e}"))?;
+            self.unify(&ta, t).map_err(lit_hint)?;
         }
         let rt = self
             .resolve(&ta)

@@ -1020,11 +1020,26 @@ Mirrors Cx::elab_bin's checking path."
                 (error (concat "`-` expects a numeric operand, got "
                                (hm-type-name rt))))))
          (t ta))))
-    (t (let ((ty (hm-elab state tyenv (car args))))
+    ;; #530: an integer LITERAL meeting a float64 operand types as float64
+    ;; (the evaluator promotes it with `as f64`); `+`/`*` at any arity, `-`
+    ;; and `/` only at arity 2, `mod` never. LITS is T while every operand so
+    ;; far is an int literal, so a later float64 operand re-types that prefix.
+    (t (let ((ty (hm-elab state tyenv (car args)))
+             (coerces (or (member op '(+ *))
+                          (and (member op '(- /)) (= (length args) 2))))
+             (lits (hm-int-literal-p (car args))))
          (hm-reject-boxed! state ty)
          (mapc (lambda (a)
                  (let ((tb (hm-elab state tyenv a)))
                    (hm-reject-boxed! state tb)
+                   (cond
+                     ((not coerces) nil)
+                     ((and (hm-int-literal-p a) (eq (hm-walk state ty) 'float64))
+                      (setq tb 'float64))
+                     ((and lits (eq (hm-walk state tb) 'float64))
+                      (setq ty 'float64)))
+                   (setq lits (and lits (hm-int-literal-p a)
+                                   (not (eq (hm-walk state tb) 'float64))))
                    (if (hm-unifies-p state ty tb)
                        (progn
                          (setq ty (hm-walk state ty))
@@ -1056,6 +1071,11 @@ Mirrors Cx::elab_bin's checking path."
                                   "` expects numeric operands, got " (hm-type-name w)))
                    w)))))))
 
+(defun hm-int-literal-p (form)
+  "An integer LITERAL in source (#530): the only int form coerced to float64.
+Mirrors Cx::int_literal -- no general int->float subtyping."
+  (and (numberp form) (not (floatp form))))
+
 (defun hm-unifies-p (state a b)
   "T when A and B unify (extending the substitution); NIL on a clash -- the
 Lamedh spelling of the native `self.unify(..).is_err()` idiom. NOTE that a
@@ -1074,6 +1094,13 @@ non-comparable operand kinds are rejected as the evaluator would at runtime."
                      (princ-to-string (length args))))
       (let ((ta (hm-elab state tyenv (car args)))
             (tb (hm-elab state tyenv (cadr args))))
+        ;; #530: an integer literal compared with a float64 operand is a
+        ;; float64 constant -- the evaluator's own mixed comparison.
+        (cond
+          ((and (hm-int-literal-p (cadr args)) (eq (hm-walk state ta) 'float64))
+           (setq tb 'float64))
+          ((and (hm-int-literal-p (car args)) (eq (hm-walk state tb) 'float64))
+           (setq ta 'float64)))
         ;; #476: refused BEFORE unify, so no comparison is ever typed over a
         ;; handle whose aliasing makes word equality wrong.
         (hm-reject-boxed! state ta)
@@ -2292,10 +2319,15 @@ argument, reject boxed operands, unify each with the first, resolve."
       (error "compiled min/max needs at least 1 argument")
       (let ((tys (mapcar (lambda (a) (hm-elab state tyenv a)) args)))
         (mapc (lambda (ty) (hm-reject-boxed! state ty)) tys)
+        ;; #530: no literal coercion here -- min/max return the selected
+        ;; argument unchanged ((max 0.5 1) is the integer 1), so say so.
         (mapc (lambda (ty)
-                (if (hm-unifies-p state (car tys) ty)
-                    nil
-                    (error "min/max operands disagree")))
+                (cond
+                  ((hm-unifies-p state (car tys) ty) nil)
+                  ((and (not (every (lambda (a) (not (hm-int-literal-p a))) args))
+                        (not (every (lambda (u) (not (eq (hm-walk state u) 'float64))) tys)))
+                   (error "min/max operands disagree (an integer literal is not coerced to float64 here: min/max return the selected argument unchanged, so write the literal as a float, e.g. 1.0)"))
+                  (t (error "min/max operands disagree"))))
               (cdr tys))
         (let ((rt (hm-resolve-operand state (car tys) "min/max")))
           (if (hm-arith-kind-p rt)
