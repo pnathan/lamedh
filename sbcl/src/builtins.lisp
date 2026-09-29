@@ -13,8 +13,22 @@
   "Bind NAME (a string) in the global environment to a native function."
   `(env-set-local *global-env* (lsym ,name) (lambda ,lambda-list ,@body)))
 
+(defun lresolve-fn (fn)
+  "A symbol in function position (`(funcall 'car ...)`) names its binding in
+the calling environment, resolved once -- matching the reference
+implementation's FUNCALL/APPLY, including its `Function not found: NAME`
+error when unbound. T is bound to itself there, so it resolves to T (and
+then fails as not a function); NIL is the empty list, never a name."
+  (cond
+    ((or (null fn) (not (symbolp fn)) (eq fn *t-sym*)) fn)
+    (t (let ((env (or *current-env* *global-env*)))
+         (if (env-boundp env fn)
+             (env-resolve env fn)
+             (lamedh-error (format nil "Function not found: ~A" (symbol-name fn))))))))
+
 (defun lapply-fn (fn args)
   "The one calling convention every FUNCALL/APPLY/HOF callback goes through."
+  (setf fn (lresolve-fn fn))
   (cond
     ((functionp fn) (apply fn args))
     ((lambda-obj-p fn)

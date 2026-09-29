@@ -520,18 +520,27 @@ takes. `(step-count form...)` evaluates `form...` and returns `(steps
 ; => (11 . 3)
 ```
 
-`(time form...)` does the same, but prints `(TIME-MS ms STEPS n)` and
-returns just `value`. The millisecond figure is wall-clock and will vary
-run to run and machine to machine; the step count will not:
+`(time form...)` evaluates `form...`, prints `(TIME-MS ms)`, and returns
+just the value. The millisecond figure is wall-clock and will vary run to
+run and machine to machine:
 
 ```lisp
 (defun spin (n) (if (< n 1) 'done (spin (- n 1))))
 (time (spin 1000))
 ```
 ```
-(TIME-MS 6 STEPS 11016)
+(TIME-MS 0)
 ; => DONE
 ```
+
+`time` deliberately does not report steps. Counting steps means arming the
+fuel counter, and armed fuel sends auto-compiled functions down the
+interpreted path (compiled loops never return to the metered trampoline) —
+so a metered `time` would clock the tree-walker, not the code that
+normally runs. `time` measures normal execution; `step-count` measures
+steps. The one exception is free: inside an already-armed `with-fuel`
+fence execution is metered anyway, and `time` prints `(TIME-MS ms STEPS
+n)` off the live counter.
 
 ### The fuel identity
 

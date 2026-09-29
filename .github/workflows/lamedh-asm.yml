@@ -3,19 +3,21 @@ name: lamedh-asm
 # lamedh-asm is a separate, freestanding x86-64 host: no Cargo project,
 # no Rust toolchain, no dependency on anything under src/ or cli/. This
 # gate mirrors that isolation — it never touches cargo, and path filters
-# mean it only runs when lamedh-asm/ (or this workflow file) actually
-# changes, so it never blocks or slows down PRs that don't touch it.
+# mean it only runs when lamedh-asm/, the shared ../lib stdlib its
+# stdlib_conformance test loads, or this workflow file changes.
 
 on:
   push:
     branches: ["main", "plurality"]
     paths:
       - "lamedh-asm/**"
+      - "lib/**"
       - ".github/workflows/lamedh-asm.yml"
   pull_request:
     branches: ["main", "plurality"]
     paths:
       - "lamedh-asm/**"
+      - "lib/**"
       - ".github/workflows/lamedh-asm.yml"
 
 jobs:
