@@ -916,6 +916,23 @@ objects and are not counted at all: `data_alloc_raw` + an explicit
 removed a documented 64 KB-per-call leak that could exhaust the whole
 arena inside one heavy `WITH-MODULE` body.
 
+**Free space** (issue #548). A freed run goes on one of 30 doubly
+linked size-class bins, threaded through the run's own first two words:
+classes 1–8 are exact granule counts, and above that there is one class
+per power of two. A free run is coalesced with free neighbours on both
+sides as soon as it is freed. The run above is found through the side
+table, and the run below through a boundary tag (`GF_FREE_TAIL`) in the
+entry of that run's last granule. An allocation takes an exact small
+class, or first fit within its own large class, or else the head of the
+smallest non-empty class above it (a bitmap keeps that lookup to one
+`bsf`). A longer run is split and the remainder goes back on a bin.
+Only then does it bump. Splitting and coalescing never touch a live
+run's entry, so the collector cannot see either of them. Before this,
+the free lists were exact-fit only, and growing a string 4 bytes at a
+time 12,000 times exhausted the 256 MiB arena while almost all of it
+was free. `tests/cases/070_alloc_split_coalesce.asm` and
+`071_gc_split_coalesce_stress.asm` cover this.
+
 **Observability, and how this is tested.** `(HEAP-BYTES-USED)`,
 `(HEAP-BYTES-LIVE)`, `(GC-COLLECT)`, `(REFCOUNT x)` and — the
 important one — **`(GC-VERIFY)`**, which walks the whole heap
