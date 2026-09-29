@@ -107,11 +107,21 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
 
 ;;; ---- mapping that concatenates -------------------------------------------
 
+(defun $mapcan-append-aux (rs acc)
+  (if (null rs)
+      acc
+      ($mapcan-append-aux (cdr rs) (append (car rs) acc))))
+
+(defun $mapcan-aux (fn lst rs)
+  (if (null lst)
+      ($mapcan-append-aux rs nil)
+      ($mapcan-aux fn (cdr lst) (cons (funcall fn (car lst)) rs))))
+
 (defun mapcan (fn lst)
   "Map FN over LST and APPEND the resulting lists."
-  (if (null lst)
-      nil
-      (append (funcall fn (car lst)) (mapcan fn (cdr lst)))))
+  ;; Collect the results in reverse, then append right to left: the same
+  ;; FN call order and the same APPENDs as the nested form, in constant stack.
+  ($mapcan-aux fn lst nil))
 
 ;;; ---- slicing -------------------------------------------------------------
 

@@ -81,9 +81,15 @@ NUMBER INTEGER FLOAT STRING SYMBOL CHAR CHARACTER CONS LIST NULL ATOM."
 Returns RESULT (evaluated with VAR bound to NIL) or NIL."
   (let ((var (car spec))
         (lst (car (cdr spec)))
-        (result (cdr (cdr spec))))
-    (list 'progn
-          (list 'mapc (cons 'lambda (cons (list var) body)) lst)
+        (result (cdr (cdr spec)))
+        (tail (gensym)))
+    ;; A WHILE loop, not MAPC: constant stack, and natively compileable.
+    ;; VAR gets a fresh binding per element, as the MAPC lambda gave it.
+    (list 'let (list (list tail lst))
+          (list 'while (list 'not (list 'null tail))
+                (cons 'let (cons (list (list var (list 'car tail)))
+                                 (if body body (list nil))))
+                (list 'setq tail (list 'cdr tail)))
           (if result
               (list 'let (list (list var nil)) (car result))
               nil))))
