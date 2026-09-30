@@ -38,6 +38,7 @@
 %define GF_MARK    8      ; found by the conservative root scan this cycle
 %define GF_RAW     16     ; not a Lisp object: explicit data_free, never counted
 %define GF_CONS    32     ; a bare 16-byte [car|cdr] cell: no header word to read
+%define GF_FREE_TAIL 64   ; last granule of a free run of >= 2 granules (see free_run)
 
 ; ZCT capacity, in entries. Overflow is not a correctness problem (it
 ; sets zct_overflowed, and the collector's linear sweep picks up what
@@ -63,12 +64,22 @@ rc_bytes_live:          resq 1   ; bytes in live (allocated, not freed) blocks
 rc_bytes_since_collect: resq 1
 stack_base:             resq 1   ; target-stack root-scan limit (boot.asm)
 
-; free_lists[n] (1 <= n <= 8) threads freed runs of exactly n granules;
-; free_list_large threads everything bigger. A freed run's own first
-; word is the next link — LISP 1.5's free-storage list trick, no
-; separate free-block header anywhere.
-free_lists:      resq 9
-free_list_large: resq 1
+; free_bins[c] threads the free runs of size class c, doubly linked
+; through each run's own first two words ([+0] next, [+8] prev; raw
+; addresses, 0 = none) — LISP 1.5's free-storage list trick, still
+; with no separate free-block header anywhere: a granule is exactly two
+; words, so even a one-granule run has room for both links. Doubly
+; linked because coalescing (free_run) must unlink a neighbouring run
+; from the middle of whatever bin it sits in, in O(1).
+;
+; Classes 1..8 are exact (runs of exactly c granules — a cons is class
+; 1). Class c >= 9 holds runs of 2^(c-6) .. 2^(c-5)-1 granules, so the
+; u24 ngranules range needs classes up to 29. free_bin_map bit c is set
+; iff bin c is non-empty: "the smallest non-empty class above this
+; request" is one shift and one bsf, not a walk over empty bins.
+%define NBINS 30
+free_bins:    resq NBINS
+free_bin_map: resq 1
 
 ; The zero-count table: objects whose count has reached (or started at)
 ; zero and which are therefore *candidates* for reclamation — not
@@ -125,43 +136,246 @@ rc_init:
     add %1, [rc_table_base]
 %endmacro
 
+; BIN_OF dst, n — dst = the size class of an n-granule run (n >= 1;
+; dst and n distinct 64-bit registers). Clobbers dst and flags only.
+%macro BIN_OF 2
+    mov %1, %2
+    cmp %2, 8
+    jbe %%done
+    bsr %1, %2
+    add %1, 6
+%%done:
+%endmacro
+
+; ====================================================================
+; Free runs (issue #548).
+;
+; Every granule in [data_heap_base, data_heap_cur) belongs to exactly
+; one run, live or free, and the side table describes the tiling:
+;
+;   live run:  head entry  = count | flags incl. GF_HEAD | ngranules
+;   free run:  head entry  = 0     | flags 0             | ngranules
+;              last entry  = ngranules | GF_FREE_TAIL | 0  (only if >= 2)
+;   any other granule of either kind: an all-zero entry.
+;
+; So "ngranules != 0" still means "a run starts here" (the linear walks
+; of GC-VERIFY and rc_sweep are unchanged), GF_HEAD still means "a live
+; allocation starts here" (every conservative/RC_RESOLVE check is
+; unchanged), and the free tail tag is the boundary tag that lets a run
+; being freed find a free run immediately *below* it without a walk.
+;
+; Free runs are split to satisfy smaller requests (alloc_granules) and
+; coalesced with free neighbours on both sides the moment they are
+; freed (free_run), so a heap whose live set is small cannot run out
+; merely because its free space is in the wrong sizes. Neither ever
+; touches a live run's entry, which is what keeps them invisible to the
+; collector: an object's entry changes only when it is itself allocated
+; or freed.
+; ====================================================================
+
+; bin_insert(rdi = free run, rsi = its ngranules) — push onto its bin.
+; Clobbers rax, rcx, r8.
+bin_insert:
+    BIN_OF rcx, rsi
+    mov rax, [free_bins + rcx*8]
+    mov [rdi], rax
+    mov qword [rdi+8], 0
+    test rax, rax
+    jz .first
+    mov [rax+8], rdi
+.first:
+    mov [free_bins + rcx*8], rdi
+    mov r8d, 1
+    shl r8, cl
+    or [free_bin_map], r8
+    ret
+
+; bin_unlink(rdi = free run, rsi = its ngranules) — remove it from its
+; bin, wherever in the bin it is. Clobbers rax, rcx, r8.
+bin_unlink:
+    mov rax, [rdi]                        ; next
+    mov r8, [rdi+8]                       ; prev
+    test r8, r8
+    jz .was_first
+    mov [r8], rax
+    jmp .fix_next
+.was_first:
+    BIN_OF rcx, rsi
+    mov [free_bins + rcx*8], rax
+    test rax, rax
+    jnz .fix_next                         ; r8 = 0 = the new first's prev
+    mov r8d, 1
+    shl r8, cl
+    not r8
+    and [free_bin_map], r8                ; that bin is now empty
+    ret
+.fix_next:
+    test rax, rax
+    jz .out
+    mov [rax+8], r8
+.out:
+    ret
+
+; free_run(rdi = run start, rsi = ngranules) -> rax = start of the free
+; run now containing it, rdx = that run's ngranules.
+;
+; The run must be dead (its head entry is overwritten here; every other
+; entry of it is already zero, as for any live run). Merges it with a
+; free run directly above and/or directly below, writes the merged
+; run's head and tail entries, and puts it on its bin. A merge that
+; would overflow the u24 ngranules field is simply not made.
+;
+; Clobbers rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11.
+free_run:
+    mov r9, rdi                           ; r9  = start of the run being built
+    mov rdx, rsi                          ; rdx = its length so far
+    ENTRY_OF r10, r9
+    mov qword [r10], 0                    ; interior now, or rewritten below
+    ; --- below: does the granule just under r9 end a free run? ---
+    cmp r9, [data_heap_base]
+    jbe .above
+    lea r11, [r10-8]                      ; that granule's entry
+    mov eax, [r11+4]
+    test al, GF_HEAD
+    jnz .above                            ; a live one-granule run
+    test al, GF_FREE_TAIL
+    jnz .below_tail
+    shr eax, 8
+    cmp eax, 1                            ; a free one-granule run (its head
+    jne .above                            ; is its last granule); 0 = interior
+    mov esi, 1                            ; of a live run
+    jmp .merge_below
+.below_tail:
+    mov esi, [r11]                        ; the free run's length
+.merge_below:
+    lea rax, [rdx+rsi]
+    cmp rax, 0xFFFFFF
+    ja .above
+    mov qword [r11], 0                    ; its tail becomes interior
+    mov rdi, rsi
+    shl rdi, 4
+    neg rdi
+    add rdi, r9                           ; its start
+    call bin_unlink
+    mov r9, rdi
+    add rdx, rsi
+.above:
+    ; --- above: is the run just past this one free? ---
+    mov rdi, rdx
+    shl rdi, 4
+    add rdi, r9
+    cmp rdi, [data_heap_cur]
+    jae .write                            ; the bump region, not a run
+    ENTRY_OF r11, rdi
+    mov eax, [r11+4]
+    test al, GF_HEAD
+    jnz .write
+    shr eax, 8
+    jz .write                             ; not a run start: tiling lost, don't touch
+    mov esi, eax
+    lea rax, [rdx+rsi]
+    cmp rax, 0xFFFFFF
+    ja .write
+    mov qword [r11], 0                    ; its head becomes interior
+    cmp esi, 1
+    je .above_unlink
+    mov qword [r11+rsi*8-8], 0            ; and so does its tail
+.above_unlink:
+    call bin_unlink
+    add rdx, rsi
+.write:
+    ENTRY_OF r10, r9
+    mov eax, edx
+    shl eax, 8
+    mov dword [r10], 0
+    mov [r10+4], eax                      ; flags 0, ngranules
+    cmp rdx, 1
+    je .insert
+    mov [r10+rdx*8-8], edx                ; tail: count field = length
+    mov dword [r10+rdx*8-4], GF_FREE_TAIL
+.insert:
+    mov rdi, r9
+    mov rsi, rdx
+    call bin_insert
+    mov rax, r9
+    ret
+
 ; alloc_granules(rdi = ngranules >= 1, rsi = extra flag bits) -> rax raw
 ;
-; Exact-fit free list first, bump second. Exact fit (rather than the
-; spec's first-fit-with-split for the large class) is deliberate: every
-; large allocation this kernel makes is a repeat of a fixed size (the
-; 64 KB PRINC-TO-STRING capture buffer, a port's read scratch), so an
-; exact-fit list recycles them perfectly with no splitting, no
-; coalescing, and no possibility of a partially-consumed run confusing
-; the linear heap walk GC-VERIFY depends on.
+; Free runs first, bump second. The request's own class is tried first
+; — its head for an exact small class, a first-fit walk for a large
+; one — then the head of the smallest non-empty class above it, whose
+; every run is longer than the request. A longer run is split: the
+; front is the allocation and the rest goes back on its bin as a free
+; run of its own.
 ;
-; Internal; clobbers rax, rcx, rdi, rsi, r8, r9, r10.
+; Internal; clobbers rax, rcx, rdx, rdi, rsi, r8, r9, r10, r11.
 alloc_granules:
-    cmp rdi, 8
-    ja .large
-    mov rax, [free_lists + rdi*8]
+    BIN_OF rcx, rdi
+    mov rax, [free_bins + rcx*8]
+    cmp rcx, 8
+    ja .walk
     test rax, rax
-    jz .bump
-    mov rcx, [rax]                       ; the run's own first word = next link
-    mov [free_lists + rdi*8], rcx
-    jmp .have
-.large:
-    lea r9, [rel free_list_large]        ; r9 = address of the link pointing at rax
-    mov rax, [r9]
+    jnz .take                             ; exact fit
+    jmp .larger
 .walk:
     test rax, rax
-    jz .bump
+    jz .larger
     ENTRY_OF r10, rax
     mov r8d, [r10+4]
-    shr r8d, 8                            ; r8 = this run's ngranules
+    shr r8d, 8
     cmp r8, rdi
-    je .unlink
-    mov r9, rax
+    jae .take
     mov rax, [rax]
     jmp .walk
-.unlink:
-    mov rcx, [rax]
-    mov [r9], rcx
+.larger:
+    mov rax, [free_bin_map]
+    inc ecx
+    shr rax, cl
+    jz .bump
+    bsf rax, rax
+    add ecx, eax
+    mov rax, [free_bins + rcx*8]
+.take:
+    ; rax = a free run of >= rdi granules
+    mov r9, rax
+    push rsi
+    push rdi
+    ENTRY_OF r10, r9
+    mov esi, [r10+4]
+    shr esi, 8                            ; rsi = the run's length N
+    mov rdi, r9
+    call bin_unlink
+    pop rdi
+    mov rdx, rsi
+    sub rdx, rdi                          ; rdx = what is left over
+    jz .whole
+    mov r11, rdi
+    shl r11, 4
+    add r11, r9                           ; r11 = the remainder's start
+    ENTRY_OF r10, r11
+    mov eax, edx
+    shl eax, 8
+    mov dword [r10], 0
+    mov [r10+4], eax                      ; its head (if it is one granule
+    cmp rdx, 1                            ; long this overwrote the old tail)
+    je .rest_insert
+    mov [r10+rdx*8-8], edx                ; the old tail is its tail: new length
+.rest_insert:
+    push rdi
+    mov rdi, r11
+    mov rsi, rdx
+    call bin_insert
+    pop rdi
+    jmp .took
+.whole:
+    cmp rdi, 1
+    je .took
+    ENTRY_OF r10, r9
+    mov qword [r10+rdi*8-8], 0            ; the old tail is interior now
+.took:
+    pop rsi
+    mov rax, r9
     jmp .have
 .bump:
     mov rax, [data_heap_cur]
@@ -239,9 +453,11 @@ global data_alloc
 data_alloc:
     push rsi
     push rcx
+    push rdx
     push r8
     push r9
     push r10
+    push r11
     add rdi, 15
     shr rdi, 4
     jnz .go
@@ -249,9 +465,11 @@ data_alloc:
 .go:
     xor esi, esi
     call alloc_granules
+    pop r11
     pop r10
     pop r9
     pop r8
+    pop rdx
     pop rcx
     pop rsi
     ret
@@ -267,15 +485,19 @@ global data_alloc_cons
 data_alloc_cons:
     push rsi
     push rcx
+    push rdx
     push r8
     push r9
     push r10
+    push r11
     mov edi, 1
     mov esi, GF_CONS
     call alloc_granules
+    pop r11
     pop r10
     pop r9
     pop r8
+    pop rdx
     pop rcx
     pop rsi
     ret
@@ -290,9 +512,11 @@ global data_alloc_raw
 data_alloc_raw:
     push rsi
     push rcx
+    push rdx
     push r8
     push r9
     push r10
+    push r11
     add rdi, 15
     shr rdi, 4
     jnz .go
@@ -300,53 +524,49 @@ data_alloc_raw:
 .go:
     mov esi, GF_RAW
     call alloc_granules
+    pop r11
     pop r10
     pop r9
     pop r8
+    pop rdx
     pop rcx
     pop rsi
     ret
 
 ; data_free(rdi = raw pointer previously returned by data_alloc_raw or
-; data_alloc) — threads the run onto its size class's free list. A
-; pointer whose granule is not a live HEAD is ignored rather than
-; corrupting a free list (a double free must not be able to thread the
-; same run twice; alloc_granules asserts the other half of this).
-; Clobbers nothing.
+; data_alloc) — returns the run to the free bins, coalesced with any
+; free neighbours (free_run). A pointer whose granule is not a live
+; HEAD is ignored rather than corrupting a bin (a double free must not
+; be able to free the same run twice; alloc_granules asserts the other
+; half of this). Clobbers nothing.
 global data_free
 data_free:
     push rax
     push rcx
     push rdx
+    push rsi
+    push rdi
     push r8
     push r9
     push r10
+    push r11
     ENTRY_OF r10, rdi
     mov r8d, [r10+4]
     test r8b, GF_HEAD
     jz .out
     shr r8d, 8                             ; r8 = ngranules
-    mov dword [r10], 0                     ; count = 0
-    mov r9d, r8d
-    shl r9d, 8                              ; flags byte cleared, length kept
-    mov [r10+4], r9d
     mov rcx, r8
     shl rcx, 4
     sub [rc_bytes_live], rcx
-    cmp r8, 8
-    ja .large
-    mov rax, [free_lists + r8*8]
-    mov [rdi], rax
-    mov [free_lists + r8*8], rdi
-    jmp .out
-.large:
-    mov rax, [free_list_large]
-    mov [rdi], rax
-    mov [free_list_large], rdi
+    mov rsi, r8
+    call free_run
 .out:
+    pop r11
     pop r10
     pop r9
     pop r8
+    pop rdi
+    pop rsi
     pop rdx
     pop rcx
     pop rax
@@ -356,7 +576,7 @@ data_free:
 
 ; (HEAP-BYTES-USED) -> bump-pointer high-water mark, in bytes. Does not
 ; retreat when memory is reclaimed — freed granules are reused from the
-; free lists, so a program whose live set is bounded stops advancing
+; free bins, so a program whose live set is bounded stops advancing
 ; this number, which is exactly the observable the spec's reclamation
 ; test asserts on.
 global heap_bytes_used
@@ -1091,7 +1311,11 @@ scan_all_roots:
 ; decrement everything it points at (which may put those on the ZCT, to
 ; be handled by the drain loop, never by recursion — freeing a
 ; million-cell list must not recurse a million deep on the host stack),
-; then thread its granule run onto the matching free list.
+; then return its granule run to the free bins, coalesced with any free
+; neighbours. Returns rax = start and rdx = ngranules of the free run
+; now containing it (rc_sweep steps over that whole run); both are
+; meaningless if rdi was not a live head.
+; Clobbers rax, rcx, rdx, rsi, rdi, r8-r11.
 rc_free:
     push rbx
     push r12
@@ -1100,31 +1324,20 @@ rc_free:
     mov eax, [r12+4]
     test al, GF_HEAD
     jz .out                               ; not live: refuse to free twice
-    ; children first: threading the run onto a free list overwrites
-    ; word 0, which for a cons *is* the car.
+    ; children first: putting the run on a free bin overwrites words
+    ; 0 and 1 (the bin links), which for a cons *are* the car and cdr.
     movzx esi, al
     mov rdi, rbx
     lea rdx, [rel cb_dec]
     call rc_walk_children
     mov eax, [r12+4]
     shr eax, 8                             ; ngranules
-    mov dword [r12], 0                      ; count = 0
-    mov ecx, eax
-    shl ecx, 8                               ; flags cleared, length kept
-    mov [r12+4], ecx
     mov rcx, rax
     shl rcx, 4
     sub [rc_bytes_live], rcx
-    cmp rax, 8
-    ja .large
-    mov rcx, [free_lists + rax*8]
-    mov [rbx], rcx
-    mov [free_lists + rax*8], rbx
-    jmp .out
-.large:
-    mov rcx, [free_list_large]
-    mov [rbx], rcx
-    mov [free_list_large], rbx
+    mov rdi, rbx
+    mov esi, eax
+    call free_run                          ; -> rax, rdx: the coalesced free run
 .out:
     pop r12
     pop rbx
@@ -1304,6 +1517,11 @@ rc_safepoint:
 ; (ngranules in each head entry is what makes this possible without a
 ; per-header size switch) and frees every object the drain loop's own
 ; predicate accepts. Only ever reached after an overflow.
+;
+; A freed object is coalesced with its free neighbours on the spot, so
+; the run just past it may no longer start a run of its own; the walk
+; therefore resumes after the whole free run rc_free reports, never
+; after the freed object's own length.
 rc_sweep:
     push rbx
     push r12
@@ -1313,13 +1531,11 @@ rc_sweep:
     jae .done
     ENTRY_OF r12, rbx
     mov eax, [r12+4]
-    shr eax, 8
-    test eax, eax
+    mov edx, eax
+    shr edx, 8                            ; rdx = ngranules of THIS run
     jz .done                              ; a zero-length run: the walk
                                            ; has lost the thread; stop
                                            ; rather than run off the end
-    push rax                                ; ngranules of THIS run
-    mov eax, [r12+4]
     test al, GF_HEAD
     jz .next
     test al, GF_RAW | GF_PINNED | GF_MARK
@@ -1328,10 +1544,10 @@ rc_sweep:
     jne .next
     mov rdi, rbx
     call rc_free
+    mov rbx, rax                          ; the free run now holding it
 .next:
-    pop rax
-    shl rax, 4
-    add rbx, rax
+    shl rdx, 4
+    add rbx, rdx
     jmp .loop
 .done:
     pop r12

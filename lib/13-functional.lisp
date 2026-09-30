@@ -107,11 +107,21 @@ With INIT supplied: folds starting from INIT (so an empty LST returns INIT)."
 
 ;;; ---- mapping that concatenates -------------------------------------------
 
+(defun $mapcan-append-aux (rs acc)
+  (if (null rs)
+      acc
+      ($mapcan-append-aux (cdr rs) (append (car rs) acc))))
+
+(defun $mapcan-aux (fn lst rs)
+  (if (null lst)
+      ($mapcan-append-aux rs nil)
+      ($mapcan-aux fn (cdr lst) (cons (funcall fn (car lst)) rs))))
+
 (defun mapcan (fn lst)
   "Map FN over LST and APPEND the resulting lists."
-  (if (null lst)
-      nil
-      (append (funcall fn (car lst)) (mapcan fn (cdr lst)))))
+  ;; Collect the results in reverse, then append right to left: the same
+  ;; FN call order and the same APPENDs as the nested form, in constant stack.
+  ($mapcan-aux fn lst nil))
 
 ;;; ---- slicing -------------------------------------------------------------
 
@@ -250,15 +260,36 @@ PRED (default #'<) compares the extracted keys."
 
 ;;; ---- de-duplication / flattening -----------------------------------------
 
-(defun $remove-duplicates-aux (lst acc)
+(defun $hash-key-safe-p (x)
+  "True if X is built only from numbers, strings and symbols (conses of them
+included): values whose EQUAL is exactly EQUAL-keyed hash-table lookup on
+every host. Structs are not: the SBCL port's EQUAL-test tables compare them
+by identity, where EQUAL here compares their fields."
+  (cond ((null x) t)
+        ((atom x) (or (numberp x) (stringp x) (symbolp x)))
+        (t (and ($hash-key-safe-p (car x)) ($hash-key-safe-p (cdr x))))))
+
+(defun $remove-duplicates-aux (lst seen others acc)
+  "SEEN is a hash set of the hash-key-safe elements kept so far; OTHERS a
+list of the rest. An element and its EQUAL duplicates are all safe or all
+not, so each is checked against only the one store it could be in."
   (cond ((null lst) (reverse-aux acc nil))
-        ((member (car lst) (cdr lst))
-         ($remove-duplicates-aux (remove-all (cdr lst) (car lst)) (cons (car lst) acc)))
-        (t ($remove-duplicates-aux (cdr lst) (cons (car lst) acc)))))
+        (($hash-key-safe-p (car lst))
+         (if (gethash seen (car lst))
+             ($remove-duplicates-aux (cdr lst) seen others acc)
+             (progn
+               (sethash seen (car lst) t)
+               ($remove-duplicates-aux (cdr lst) seen others (cons (car lst) acc)))))
+        ((member (car lst) others)
+         ($remove-duplicates-aux (cdr lst) seen others acc))
+        (t ($remove-duplicates-aux (cdr lst) seen (cons (car lst) others)
+                                   (cons (car lst) acc)))))
 
 (defun remove-duplicates (lst)
-  "Return LST with later EQUAL duplicates removed (keeps first occurrence)."
-  ($remove-duplicates-aux lst nil))
+  "Return LST with later EQUAL duplicates removed (keeps first occurrence).
+Linear for numbers, strings, symbols and lists of them (issue #510); other
+elements fall back to a scan of the earlier such elements."
+  ($remove-duplicates-aux lst (make-hash-table) nil nil))
 
 (defun remove-all (lst item)
   "Return LST with every element EQUAL to ITEM removed."

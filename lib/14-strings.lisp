@@ -3,8 +3,11 @@
 ;;;
 ;;; Built on the Rust string primitives: STRING-LENGTH*, SUBSTRING, CHAR-CODE,
 ;;; CODE-CHAR, STRING->NUMBER, NUMBER->STRING, STRING-CASEFOLD*, plus
-;;; CONCAT/INDEX. STRING-CASEFOLD* is Unicode-aware and locale-independent
-;;; (Rust's default case fold); it backs the STRING-CI= family below. The
+;;; CONCAT/INDEX, and the one-pass walks STRING->LIST*, STRING-SPLIT* and
+;;; STRING-JOIN* (issue #510: SUBSTRING indexes by character, so a Lisp loop
+;;; over it rescans the UTF-8 string each step and is quadratic).
+;;; STRING-CASEFOLD* is Unicode-aware and locale-independent (Rust's default
+;;; case fold); it backs the STRING-CI= family below. The
 ;;; explicit UTF-8 <-> Array<Char> boundary (STRING->UTF8, UTF8->STRING,
 ;;; UTF8->STRING-LOSSY) lives in the TEXT module, lib/30-text.lisp — see its
 ;;; header for why that surface is namespaced instead of flat.
@@ -34,17 +37,9 @@
 
 ;;; ---- string <-> list of chars --------------------------------------------
 
-(defun $string->list-aux (s i acc)
-  "Walk S from the last index down to 0, consing each character onto ACC.
-Iterating backwards builds the result in forward order directly (no
-separate reverse pass), and stays a single self-recursive tail call."
-  (if (< i 0)
-      acc
-      ($string->list-aux s (- i 1) (cons (substring s i (+ i 1)) acc))))
-
 (defun string->list (s)
   "Return the characters of S as a list of one-character strings."
-  ($string->list-aux s (- (string-length* s) 1) nil))
+  (string->list* s))
 
 (defun list->string (chars)
   "Concatenate a list of strings into one string."
@@ -330,33 +325,19 @@ STRING-REPLACE, named to pair explicitly with STRING-REPLACE-FIRST."
                 new
                 (substring s (+ idx (string-length* old)) (string-length* s))))))
 
-(defun $string-split-aux (s delim acc)
-  (let ((idx (string-index-of s delim)))
-    (if (or (null idx) (= (string-length* delim) 0))
-        (reverse-aux (cons s acc) nil)
-        ($string-split-aux
-         (substring s (+ idx (string-length* delim)) (string-length* s))
-         delim
-         (cons (substring s 0 idx) acc)))))
-
 (defun string-split (s delim)
   "Split S on (non-empty) string DELIM into a list of substrings. Empty
 fields are preserved: a leading/trailing/doubled DELIM yields \"\" list
 elements, e.g. (string-split \",a,,b,\" \",\") is (\"\" \"a\" \"\" \"b\" \"\").
 A DELIM that never occurs (or is empty) yields (list S) unchanged."
-  ($string-split-aux s delim nil))
-
-(defun $string-join-aux (lst sep acc)
-  (if (null lst)
-      acc
-      ($string-join-aux (cdr lst) sep (concat acc sep (car lst)))))
+  (string-split* s delim))
 
 (defun string-join (lst sep)
   "Join a list of strings LST with separator SEP. (string-join nil sep) is
 \"\"; a single-element list is returned unchanged (no separator)."
   (cond ((null lst) "")
         ((null (cdr lst)) (car lst))
-        (t ($string-join-aux (cdr lst) sep (car lst)))))
+        (t (string-join* lst sep))))
 
 (defun $string-ltrim (s i n)
   (if (and (< i n) (whitespace-p (substring s i (+ i 1))))
