@@ -69,6 +69,7 @@ fn nil_on_miss_functions_stay_gradual_and_still_run() {
     // `parse-integer` itself is keyword-taking now, so it is gradual
     // (honesty rule 2) -- and in particular never list-typed.
     let out = eval_line("(see-type 'parse-integer)", &e);
+    assert!(out.starts_with("(DYNAMIC"), "got: {out}");
     assert!(
         !out.contains("LIST"),
         "parse-integer must not be list-typed: {out}"

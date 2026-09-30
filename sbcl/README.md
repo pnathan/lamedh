@@ -61,15 +61,20 @@ sbcl --non-interactive --load tests/run-tests.lisp
 ```
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
-implementation's `tests/lisp/*.lisp` language-level fixtures — and runs
+implementation's `tests/lisp/*.lisp` language-level fixtures, plus one
+port-only file, `97-port-regressions.lisp`, for regressions with no
+verbatim counterpart there — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **586 assertions** across
+At the time of writing this passes all **638 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
 and the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
 `#\c`, ...).
+It then runs `tests/cli-exit-status.sh`, which drives the documented
+`--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
+checks that a clean script exits 0 and an erroring one exits 1.
 
 ### Running the `examples/` programs
 

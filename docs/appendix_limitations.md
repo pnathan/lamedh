@@ -83,7 +83,9 @@ spelled that way here — the case-sensitive inequality function is
 
 The evaluator trampolines known tail positions (`IF`, `COND`, `PROGN`, `LET`,
 `LET*`, and function bodies). Non-tail recursion still consumes Rust stack
-frames and is protected by a recursion-depth guard.
+frames and is protected by a recursion-depth guard: 10,000 nested `eval`
+frames when interpreted (raise it with `lamedh --max-depth N`; see
+manual section 9.5), 50,000 non-tail calls in compiled code.
 
 ```lisp
 (defun count-down-tail (n)
