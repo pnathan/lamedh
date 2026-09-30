@@ -397,6 +397,22 @@ pub struct JitFlags {
 
 pub type WritebackResult = Result<(Value, Vec<Option<Value>>, JitFlags), String>;
 
+/// A typed call that distinguishes *declining to enter* native code from
+/// *failing after entering* it (issue #500). A membrane that falls back to a
+/// dynamic closure may do so only on [`JitEntry::Declined`]: once the native
+/// body has started it may already have performed side effects (a `store`
+/// into a zero-copy typed array, a host call), so re-running the body
+/// interpreted would repeat them. [`JitEntry::Entered`] carries the call's
+/// own result, whose `Err` must propagate.
+#[derive(Debug)]
+pub enum JitEntry {
+    /// Rejected before the native body ran (not defined, arity, argument
+    /// lowering); nothing was executed.
+    Declined(String),
+    /// The native body ran; its outcome, success or error.
+    Entered(WritebackResult),
+}
+
 impl Value {
     /// Lower a boundary value to its runtime `u64` word for a parameter of type
     /// `ty`, allocating compound values (arrays/structs) into the call arena so
@@ -532,13 +548,17 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    /// Truncated remainder on int64 (`remainder`/`rem`, #522): the sign
+    /// follows the dividend, unlike the Euclidean `Mod`. `MIN rem -1` is 0
+    /// and sets OVERFLOW, matching the evaluator's REMAINDER.
+    Rem,
     /// Bitwise AND/OR/XOR on int64 (`logand`/`logior`/`logxor`).
     BitAnd,
     BitOr,
     BitXor,
     /// Left shift `x << y` (`ash` with a positive constant); the right operand
-    /// is always a compile-time constant in `1..=63`, so it never masks or
-    /// overflows.
+    /// is always a compile-time constant in `1..=63`, so it never masks. The
+    /// result wraps; `OVERFLOW` is set exactly when bits are lost (#514).
     Shl,
     /// Arithmetic right shift `x >> y` (`ash` with a negative constant); right
     /// operand a compile-time constant in `1..=63`.
@@ -603,8 +623,8 @@ pub enum Core {
     /// in the tree-walker.
     Assign(usize, Box<Core>),
     /// `(while test body)`: evaluate TEST; if truthy (nonzero), evaluate
-    /// BODY for side effects, then loop. Evaluates to 0 (NIL). Statement
-    /// node — legal only in discarded position (non-tail Seq element).
+    /// BODY for side effects, then loop. Evaluates to 0, typed `bool`
+    /// (NIL, #524).
     While(Box<Core>, Box<Core>),
     /// `(for (var start end [step]) body...)`: evaluate START, END, STEP
     /// once; iterate VAR from START to END (inclusive) by STEP. Direction
@@ -650,9 +670,10 @@ pub enum Core {
     /// `array-scale!`, `array-fma!`, `array-neg!`. Operands are evaluated
     /// left to right, `out` first; the operand shape is [`ArrOp`]'s. Mutates
     /// `out` in place over `min(len)` of its array operands and evaluates to
-    /// `out`. Every executor calls the one scalar reference
-    /// (`runtime.rs::array_op`; native code through the `jit_array_op`
-    /// trampoline), so all tiers agree bit-for-bit. Int arithmetic wraps.
+    /// `out`. The interpreting tiers call the one scalar reference
+    /// (`runtime.rs::array_op`); the native backend lowers it to a 2-lane
+    /// SIMD loop with the same per-element arithmetic (#525; `array-fma!`
+    /// stays fused), so all tiers agree bit-for-bit. Int arithmetic wraps.
     ArrayOp(ArrOp, NumKind, Vec<Core>),
     /// `(array-sum a)`: sum of every element of an `(array int64)` or
     /// `(array float64)`; the [`NumKind`] says which.
@@ -747,7 +768,6 @@ pub enum Core {
 /// `u64` opcode exactly like `jit_ftrans` does.
 /// The [`Core::ArrayOp`] operations (#394) and their operand shapes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u64)]
 pub enum ArrOp {
     /// `(array-div! out a b)`: `out[i] = a[i] / b[i]`, float64 only.
     Div,
@@ -774,22 +794,6 @@ impl ArrOp {
     /// Is operand `i` an array (as opposed to the scalar of `Scale`)?
     pub fn operand_is_array(self, i: usize) -> bool {
         !(self == ArrOp::Scale && i == 2)
-    }
-
-    /// The `jit_array_op` opcode.
-    pub fn opcode(self) -> u64 {
-        self as u64
-    }
-
-    /// Inverse of [`Self::opcode`].
-    pub fn from_opcode(op: u64) -> ArrOp {
-        match op {
-            0 => ArrOp::Div,
-            1 => ArrOp::Scale,
-            2 => ArrOp::Fma,
-            3 => ArrOp::Neg,
-            other => panic!("jit_array_op: unknown ArrOp opcode {other}"),
-        }
     }
 }
 
