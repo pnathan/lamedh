@@ -95,14 +95,14 @@ order (`parse_expr`); the first match wins:
 3. `#S(` record literal;
 4. `#(` array literal;
 5. `(` list;
-6. `'x'` character literal;
+6. `'x'` character literal, then `#\x` character literal;
 7. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
    `#'` function shorthand.
 
 If none matches, the text is a parse error at that position. In particular
 `.` never begins a form (it is only the dotted-pair marker inside a list),
 `)` outside a list is an error, and `#` followed by anything other than
-`|`, `S`, `s`, `(`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
+`|`, `S`, `s`, `(`, `\`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
 carry a 1-based line and column; the message text is not portable.
 
 **Symbols.** Four productions, all producing an ordinary interned
@@ -230,6 +230,14 @@ literal. Because this production is tried before quote, `'a'` is the
 character `a` while `'a` followed by a delimiter is `(QUOTE A)`; `'(1)`
 is `(QUOTE (1))` because `(` is followed by `1`, not `'`, but `'('` is the
 character `(`.
+
+**`#\` character literals** (issue #526) are a second spelling of the same
+`Char`: `#\` followed by one character of any kind (`#\a`, `#\(`, `#\"`,
+`#\;`, `#\ `), or, when that character is alphanumeric and more
+alphanumerics follow, a name matched case-insensitively from `Space`,
+`Newline`, `Linefeed`, `Tab`, `Return`, `Page`, `Backspace`, `Escape`,
+`Rubout`, `Nul`, `Null`. Any other alphanumeric run (`#\ab`) is a parse
+error, as is a character above U+00FF. Chars always print as `'x'`.
 
 **Record literals**, `#S(TypeName field...)` (also `#s`). No whitespace is
 permitted between `#S` and `(`. The head of the inner list must be a
