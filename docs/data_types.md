@@ -438,7 +438,7 @@ no array literal in the reader; build arrays with `ARRAY` or `LIST->ARRAY`.
 rather than a vector of boxed values:
 
 ```lisp
-(typed-array 4 'int64)          ; => <typed-array:int64:4>
+(typed-array 4 'int64)          ; => #<typed-array:int64 0 0 0 0>
 (typed-array-p (typed-array 3 'float64))  ; => T
 ```
 

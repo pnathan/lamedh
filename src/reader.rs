@@ -11,8 +11,8 @@
 //! | Input | Parsed as |
 //! |-------|-----------|
 //! | `123`, `-456` | `LispVal::Number(i64)` |
-//! | `3.14`, `-1e5` | `LispVal::Float(f64)` |
-//! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
+//! | `3.14`, `-1e5`, `1.5E-3` | `LispVal::Float(f64)` |
+//! | `177Q`, `177q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
 //! | `0FFh` | Hex literal (digit-leading, assembly-style `H` suffix) |
 //! | `'c'` | Character literal → `LispVal::Char` (byte 0–255; escapes `\n \t \r \\ \' \0`) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
@@ -33,6 +33,13 @@
 //! | `#-feature form` | The complement of `#+` |
 //!
 //! Parse errors are reported with 1-based line/column positions (issue #238).
+//!
+//! A numeric literal must end at a delimiter (end of input, space, tab, CR,
+//! LF, `(`, `)`, `"`, `'`, `` ` ``, `,`, `;`). A token that starts like a
+//! number but is not a complete one (`123abc`, `1.5x`, `2.0.3`, `1-2`, `8Q`) is a parse
+//! error, never a number followed by a symbol; `1+` and `1-` alone are
+//! symbols. A Q/H/radix literal outside the i64 range is also a parse error
+//! (issue #503). An oversized decimal integer still reads as a float.
 //!
 //! ## Reader `#+`/`#-` conditionals (issue #459)
 //!
@@ -76,7 +83,7 @@ use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, take_while, take_while1},
     character::complete::{alpha1, alphanumeric1, char, digit1, hex_digit1, multispace1, one_of},
-    combinator::{cut, map, map_res, opt, recognize},
+    combinator::{cut, map, opt, recognize},
     multi::many0,
     sequence::{delimited, pair, preceded, tuple},
 };
@@ -356,34 +363,74 @@ fn ws(input: &str) -> IResult<&str, &str> {
     ))))(input)
 }
 
+// End-of-token check shared by every number parser (issue #503). A numeric
+// literal is complete only when the next char is a delimiter (end of input,
+// `ws` whitespace, a paren, or the start of a string/quote/quasiquote/unquote/
+// comment). Anything else (`123abc`, `1.5x`, `2.0.3`, `1-2`) means the token
+// only STARTS like a number: the parser rejects it rather than half-consume
+// it, and since no symbol production accepts a leading digit, such a token
+// is a parse error -- never a number followed by a stray symbol.
+fn is_delimiter(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '\t' | '\r' | '\n' | '(' | ')' | '"' | '\'' | '`' | ',' | ';'
+    )
+}
+
+fn at_token_end(rest: &str) -> bool {
+    rest.chars().next().is_none_or(is_delimiter)
+}
+
+fn number_error(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+}
+
+/// `nom::error::ErrorKind` used as a sentinel for a complete Q/H/radix
+/// literal whose value is not an i64 (overflow, or a non-octal digit in
+/// `8Q`), so [`read_next_with_depth_limit`] can render a dedicated message.
+/// Not otherwise produced by this module.
+const BAD_NUMBER_KIND: nom::error::ErrorKind = nom::error::ErrorKind::MapRes;
+
+// A hard Failure: falling through would let another number parser re-read
+// the same digits in a different base (issue #503).
+fn number_overflow(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Failure(nom::error::Error::new(input, BAD_NUMBER_KIND))
+}
+
 fn parse_float(input: &str) -> ParseResult<'_> {
-    map(
-        map_res(
-            recognize(tuple((
-                opt(tag("-")),
-                digit1,
-                tag("."),
-                digit1,
-                opt(tuple((one_of("Ee"), opt(one_of("+-")), digit1))),
-            ))),
-            |s: &str| s.parse::<f64>(),
-        ),
-        LispVal::Float,
-    )(input)
+    // `1.5`, `1.5e3`, and exponent-only `1e5` / `-2E-3`.
+    let exponent = || recognize(tuple((one_of("Ee"), opt(one_of("+-")), digit1)));
+    let (rest, s) = recognize(tuple((
+        opt(tag("-")),
+        digit1,
+        alt((
+            recognize(tuple((tag("."), digit1, opt(exponent())))),
+            exponent(),
+        )),
+    )))(input)?;
+    if !at_token_end(rest) {
+        return Err(number_error(input));
+    }
+    match s.parse::<f64>() {
+        Ok(f) => Ok((rest, LispVal::Float(f))),
+        Err(_) => Err(number_error(input)),
+    }
 }
 
 fn parse_octal_integer(input: &str) -> ParseResult<'_> {
-    // Lisp 1.5: digits followed by Q means octal, e.g. 177Q = 127
+    // Lisp 1.5: digits followed by Q means octal, e.g. 177Q = 127. The suffix
+    // is case-insensitive, like hex's H.
     let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
-    let (rest, _) = tag("Q")(rest)?;
-    let negative = s.starts_with('-');
-    let digits = if negative { &s[1..] } else { s };
-    match i64::from_str_radix(digits, 8) {
-        Ok(n) => Ok((rest, LispVal::Number(if negative { -n } else { n }))),
-        Err(_) => Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Digit,
-        ))),
+    let (rest, _) = one_of("qQ")(rest)?;
+    if !at_token_end(rest) {
+        return Err(number_error(input));
+    }
+    // Parse with the sign attached so i64::MIN is representable. A failure
+    // here is an overflow or a non-octal digit (`8Q`): either way the token
+    // is a complete, malformed octal literal.
+    match i64::from_str_radix(s, 8) {
+        Ok(n) => Ok((rest, LispVal::Number(n))),
+        Err(_) => Err(number_overflow(input)),
     }
 }
 
@@ -394,46 +441,39 @@ fn parse_hex_integer(input: &str) -> ParseResult<'_> {
     // START WITH A DECIMAL DIGIT (the assembly convention) — so short
     // letters-then-h names like `ch`, `each`, `fh` are ordinary symbols.
     // Write 0FFh (or #xFF) where you meant FFh.
-    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
     let (rest, s) = recognize(pair(opt(tag("-")), hex_digit1))(input)?;
     let digits_start = s.trim_start_matches('-');
     if !digits_start.starts_with(|c: char| c.is_ascii_digit()) {
-        return Err(err());
+        return Err(number_error(input));
     }
     let (rest, _) = one_of("hH")(rest)?;
-    // Boundary guard: a following identifier char means this was a symbol, not a
-    // hex literal (so `ffhello` stays a symbol rather than 255 + "ello").
-    if let Some(c) = rest.chars().next()
-        && (c.is_alphanumeric() || c == '-')
-    {
-        return Err(err());
+    if !at_token_end(rest) {
+        return Err(number_error(input));
     }
-    let negative = s.starts_with('-');
-    let digits = if negative { &s[1..] } else { s };
-    match i64::from_str_radix(digits, 16) {
-        Ok(n) => Ok((rest, LispVal::Number(if negative { -n } else { n }))),
-        Err(_) => Err(err()),
+    // Sign attached, so -8000000000000000H is i64::MIN.
+    match i64::from_str_radix(s, 16) {
+        Ok(n) => Ok((rest, LispVal::Number(n))),
+        Err(_) => Err(number_overflow(input)),
     }
 }
 
 fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
     let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
+    if !at_token_end(rest) {
+        return Err(number_error(input));
+    }
     if let Ok(n) = s.parse::<i64>() {
         Ok((rest, LispVal::Number(n)))
     } else if let Ok(f) = s.parse::<f64>() {
         Ok((rest, LispVal::Float(f)))
     } else {
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Digit,
-        )))
+        Err(number_error(input))
     }
 }
 
 // CL-style radix literals: #x1F / #X1f (hex), #b101 (binary), #o17 (octal),
 // with an optional sign after the marker (issue #248).
 fn parse_radix_literal(input: &str) -> ParseResult<'_> {
-    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
     let (rest, _) = tag("#")(input)?;
     let (rest, marker) = one_of("xXbBoO")(rest)?;
     let radix = match marker {
@@ -443,16 +483,20 @@ fn parse_radix_literal(input: &str) -> ParseResult<'_> {
     };
     let (rest, neg) = opt(tag("-"))(rest)?;
     let (rest, digits) = take_while1(|c: char| c.is_digit(radix))(rest)?;
-    // Boundary guard: a trailing identifier char means this was malformed
+    // Boundary guard: a trailing constituent means this was malformed
     // (e.g. #b102 or #xFG) — fail rather than half-consume.
-    if let Some(c) = rest.chars().next()
-        && (c.is_alphanumeric() || c == '-')
-    {
-        return Err(err());
+    if !at_token_end(rest) {
+        return Err(number_error(input));
     }
-    match i64::from_str_radix(digits, radix) {
-        Ok(n) => Ok((rest, LispVal::Number(if neg.is_some() { -n } else { n }))),
-        Err(_) => Err(err()),
+    // Sign attached, so #x-8000000000000000 is i64::MIN.
+    let signed = if neg.is_some() {
+        format!("-{digits}")
+    } else {
+        digits.to_string()
+    };
+    match i64::from_str_radix(&signed, radix) {
+        Ok(n) => Ok((rest, LispVal::Number(n))),
+        Err(_) => Err(number_overflow(input)),
     }
 }
 
@@ -507,6 +551,10 @@ fn parse_char_literal(input: &str) -> ParseResult<'_> {
 fn parse_one_plus_minus(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (rest, sym) = alt((tag("1+"), tag("1-")))(input)?;
+        // `1-2` is not `1-` followed by `2` (issue #503).
+        if !at_token_end(rest) {
+            return Err(number_error(input));
+        }
         Ok((rest, LispVal::Symbol(env.intern_symbol(sym))))
     }
 }
@@ -981,6 +1029,11 @@ pub fn read_next_with_depth_limit<'a>(
             nom::Err::Error(e) | nom::Err::Failure(e) => {
                 let detail = if e.code == TOO_DEEP_KIND {
                     format!("nesting too deep (limit {depth_limit})")
+                } else if e.code == BAD_NUMBER_KIND {
+                    format!(
+                        "number literal out of range or with an invalid digit near '{}'",
+                        e.input.split(is_delimiter).next().unwrap_or("")
+                    )
                 } else {
                     error_detail(e.input)
                 };
