@@ -326,6 +326,128 @@ fn no_compile_inside_fuel_fence() {
     });
 }
 
+// ------------------------------- issue #502: defun-typed under fuel ----
+
+#[test]
+fn with_fuel_bounds_a_runaway_defun_typed_loop() {
+    // The issue's reproduction: a typed `while` loop that never terminates.
+    // Before #502 the call entered native code with no fuel check and hung;
+    // it must now stop with the ordinary catchable `fuel exhausted` error.
+    let out = eval_line_with_timeout(
+        "(progn
+           (defun-typed (issue502-inf int64) ((n int64))
+             (let ((s 0)) (while (> n 0) (setq s (+ s 1))) s))
+           (handler-case (with-fuel 1000 (issue502-inf 1))
+             (error (er) (error-message er))))",
+        Duration::from_secs(20),
+    );
+    assert!(
+        out.contains("fuel exhausted"),
+        "expected a fuel-exhausted error, got: {out}"
+    );
+}
+
+#[test]
+fn with_fuel_bounds_typed_for_loops_and_tail_recursion() {
+    let out = eval_line_with_timeout(
+        "(progn
+           (defun-typed (issue502-for int64) ((n int64))
+             (let ((s 0)) (for (i 0 n) (setq s (+ s 1))) s))
+           (defun-typed (issue502-tail int64) ((n int64)) (issue502-tail (+ n 1)))
+           (list
+             (handler-case (with-fuel 1000 (issue502-for 4000000000000))
+               (error (er) 'for-stopped))
+             (handler-case (with-fuel 1000 (issue502-tail 0))
+               (error (er) 'tail-stopped))))",
+        Duration::from_secs(20),
+    );
+    assert_eq!(out, "(FOR-STOPPED TAIL-STOPPED)");
+}
+
+#[test]
+fn typed_fuel_exhaustion_cannot_be_caught_inside_its_fence() {
+    // As for the tree-walker (#457): exhaustion inside typed code rides the
+    // control-flow signal, so a HANDLER-CASE inside the fence never sees it.
+    let out = eval_line_with_timeout(
+        "(progn
+           (defun-typed (issue502-inf2 int64) ((n int64))
+             (let ((s 0)) (while (> n 0) (setq s (+ s 1))) s))
+           (handler-case
+             (with-fuel 1000
+               (handler-case (issue502-inf2 1) (error (er) 'caught-inside)))
+             (error (er) (error-message er))))",
+        Duration::from_secs(20),
+    );
+    assert!(
+        out.contains("fuel exhausted"),
+        "the fence, not the inner handler, must receive exhaustion: {out}"
+    );
+}
+
+#[test]
+fn auto_typed_fuel_exhaustion_escapes_errorset_inside_its_fence() {
+    // The auto-typed (`defun*`) membrane must deliver exhaustion as the fence
+    // signal too: an ERRORSET inside the fence must not swallow it and let
+    // the guest carry on.
+    let out = eval_line_with_timeout(
+        "(progn
+           (defun* issue502-auto-inf ((n int64))
+             (let ((s 0)) (while (> n 0) (setq s (+ s 1))) s))
+           (handler-case
+             (with-fuel 1000
+               (errorset (issue502-auto-inf 1))
+               'escaped-fence)
+             (error (er) (error-message er))))",
+        Duration::from_secs(20),
+    );
+    assert!(
+        out.contains("fuel exhausted"),
+        "the fence, not ERRORSET, must receive exhaustion: {out}"
+    );
+}
+
+#[test]
+fn terminating_typed_calls_return_correct_values_under_fuel() {
+    with_large_stack(|| {
+        let e = env();
+        for def in [
+            "(defun-typed (issue502-sum int64) ((n int64))
+               (let ((s 0)) (while (> n 0) (setq s (+ s n)) (setq n (- n 1))) s))",
+            "(defun-typed (issue502-fib int64) ((n int64))
+               (if (< n 2) n (+ (issue502-fib (- n 1)) (issue502-fib (- n 2)))))",
+            "(defun-typed (issue502-acc int64) ((n int64) (acc int64))
+               (if (< n 1) acc (issue502-acc (- n 1) (+ acc n))))",
+            "(defun-typed (issue502-put int64) ((a (array int64)) (i int64) (v int64))
+               (store a i v))",
+        ] {
+            assert!(!eval_line(def, &e).starts_with("Error"), "{def}");
+        }
+        assert_eq!(
+            eval_line("(with-fuel 100000 (issue502-sum 100))", &e),
+            "5050"
+        );
+        assert_eq!(
+            eval_line("(with-fuel 1000000 (issue502-fib 15))", &e),
+            "610"
+        );
+        assert_eq!(
+            eval_line("(with-fuel 100000 (issue502-acc 100 0))", &e),
+            "5050"
+        );
+        // Array write-back still reaches the caller on the metered path.
+        assert_eq!(
+            eval_line(
+                "(let ((a (array 3))) (dotimes (i 3) (store a i 0)) (with-fuel 1000 (issue502-put a 1 7)) (aref a 1))",
+                &e
+            ),
+            "7"
+        );
+        // Unfenced calls are unaffected, and the fence left no budget armed.
+        assert_eq!(eval_line("(issue502-fib 15)", &e), "610");
+        assert_eq!(eval_line("(kernel-fuel-remaining)", &e), "()");
+    });
+}
+
 // -------------------------------------------------------- capabilities ----
 
 #[test]

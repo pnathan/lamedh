@@ -81,23 +81,61 @@ NUMBER INTEGER FLOAT STRING SYMBOL CHAR CHARACTER CONS LIST NULL ATOM."
 Returns RESULT (evaluated with VAR bound to NIL) or NIL."
   (let ((var (car spec))
         (lst (car (cdr spec)))
-        (result (cdr (cdr spec))))
-    (list 'progn
-          (list 'mapc (cons 'lambda (cons (list var) body)) lst)
+        (result (cdr (cdr spec)))
+        (tail (gensym)))
+    ;; A WHILE loop, not MAPC: constant stack, and natively compileable.
+    ;; VAR gets a fresh binding per element, as the MAPC lambda gave it.
+    (list 'let (list (list tail lst))
+          (list 'while (list 'not (list 'null tail))
+                (cons 'let (cons (list (list var (list 'car tail)))
+                                 (if body body (list nil))))
+                (list 'setq tail (list 'cdr tail)))
           (if result
               (list 'let (list (list var nil)) (car result))
               nil))))
 
+;; DOTIMES-BODY-CLOSES-P: may FORM, once expanded, build a closure over the
+;; loop variable? FOR reuses one counter slot for the whole loop, so a closure
+;; made in its body sees the last value (#528). The walk expands global macro
+;; heads (DOLIST, FLET, ... expand to LAMBDA) and answers T at any closure
+;; constructor; QUOTE data is skipped. It is conservative: a false T only costs
+;; a per-iteration LET, so running out of expansion fuel, or an expansion
+;; that signals, answers T.
+(defun dotimes-closure-head-p (head)
+  (member head '(lambda function label macro fexpr vau
+                 def define defexpr defmacro defun-typed defun*)))
+
+(defun dotimes-body-closes-p (form fuel)
+  (cond ((not (consp form)) nil)
+        ((< fuel 1) t)
+        ((eq (car form) 'quote) nil)
+        ((dotimes-closure-head-p (car form)) t)
+        (t (let ((x (handler-case (macroexpand form) (error (e) 'lambda))))
+             (if (equal x form)
+                 (dotimes-forms-close-p form fuel)
+                 (dotimes-body-closes-p x (- fuel 1)))))))
+
+(defun dotimes-forms-close-p (forms fuel)
+  (cond ((not (consp forms)) nil)
+        ((dotimes-body-closes-p (car forms) fuel) t)
+        (t (dotimes-forms-close-p (cdr forms) fuel))))
+
 ;; DOTIMES: (dotimes (var count [result]) body...)
 (defmacro dotimes (spec &rest body)
   "Iterate VAR from 0 below COUNT, evaluating BODY each time.
-Returns RESULT (with VAR bound to COUNT) or NIL."
+Each iteration binds VAR afresh, as DOLIST does: a closure made in BODY keeps
+the value of its own iteration. Returns RESULT (with VAR bound to COUNT) or NIL."
   (let ((var (car spec))
         (count-form (car (cdr spec)))
         (result (cdr (cdr spec)))
         (n (gensym)))
     (list 'let (list (list n count-form))
-          (cons 'for (cons (list var 0 (list '- n 1)) body))
+          (cons 'for (cons (list var 0 (list '- n 1))
+                           ;; Rebind only when BODY can close over VAR: the
+                           ;; closure-free loop keeps FOR's single reused slot.
+                           (if (dotimes-forms-close-p body 64)
+                               (list (cons 'let (cons (list (list var var)) body)))
+                               body)))
           (if result
               (list 'let (list (list var n)) (car result))
               nil))))
@@ -114,8 +152,9 @@ Returns RESULT (with VAR bound to COUNT) or NIL."
 ;;;
 ;;; Each clause is (name (params...) body...), mirroring DEFUN/DEFMACRO.
 ;;; Bindings are parallel (LET semantics): clauses do not see one another,
-;;; which matches Common Lisp FLET / MACROLET. (LABELS-style mutual
-;;; recursion is intentionally not provided here — it would need mutation.)
+;;; which matches Common Lisp FLET / MACROLET. LABELS is the recursive
+;;; exception: it binds every name first and then SETQs each to its LAMBDA,
+;;; so the closures see one another (the classic letrec-by-mutation).
 
 (defun make-oplet-binding (head clause)
   "Turn a (name (params...) body...) clause into a LET binding
@@ -128,6 +167,18 @@ Each binding is (name (params...) body...)."
   (cons 'let
         (cons (mapcar (lambda (b) (make-oplet-binding 'lambda b)) bindings)
               body)))
+
+(defmacro labels (bindings &rest body)
+  "Locally bind named functions that may call themselves and one another
+(Common Lisp LABELS). Each binding is (name (params...) body...). Expands to
+a LET binding every name to NIL, then a SETQ of each name to its LAMBDA, then
+BODY -- so every closure captures the same, completed bindings."
+  (cons 'let
+        (cons (mapcar (lambda (b) (list (car b) nil)) bindings)
+              (append (mapcar (lambda (b)
+                                (list 'setq (car b) (cons 'lambda (cdr b))))
+                              bindings)
+                      (if body body (list nil))))))
 
 (defmacro macrolet (bindings &rest body)
   "Locally bind macros for the extent of BODY.

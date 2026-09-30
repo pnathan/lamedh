@@ -79,11 +79,20 @@ pub(super) fn apply(
             | BuiltinFunc::StringToNumber
             | BuiltinFunc::NumberToString
             | BuiltinFunc::StringCasefold
+            | BuiltinFunc::StringUpcase
+            | BuiltinFunc::StringDowncase
+            | BuiltinFunc::StringToList
+            | BuiltinFunc::StringSplit
+            | BuiltinFunc::StringJoin
             | BuiltinFunc::StringToUtf8
             | BuiltinFunc::Utf8ToString
             | BuiltinFunc::Utf8ToStringLossy
             | BuiltinFunc::Prin1ToString
             | BuiltinFunc::PrincToString => apply_string_lib(builtin, args),
+            BuiltinFunc::CharAlphabetic
+            | BuiltinFunc::CharNumeric
+            | BuiltinFunc::CharUppercase
+            | BuiltinFunc::CharLowercase => apply_char_class(builtin, args, env),
             BuiltinFunc::ReadFromString => {
                 // (read-from-string "(+ 1 2)") — parse one s-expression into
                 // data via the reader (issue #245). Enables Lisp-side tooling
@@ -626,6 +635,30 @@ pub(super) fn apply(
                 static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
                 let epoch = EPOCH.get_or_init(std::time::Instant::now);
                 Ok(LispVal::Number(epoch.elapsed().as_micros() as i64))
+            }
+            // (eval-depth-limit) — the current thread's recursion limit, in
+            // interpreted eval frames (issue #520).
+            BuiltinFunc::EvalDepthLimit => {
+                if !args.is_empty() {
+                    return Err(LispError::Generic(
+                        "eval-depth-limit takes no arguments".to_string(),
+                    ));
+                }
+                Ok(LispVal::Number(
+                    crate::evaluator::core::eval_depth_limit() as i64
+                ))
+            }
+            // (set-eval-depth-limit! n) — set the recursion limit, at most the
+            // host's ceiling (`lamedh --max-depth N`); returns the old limit.
+            BuiltinFunc::SetEvalDepthLimit => {
+                let [LispVal::Number(n)] = args else {
+                    return Err(LispError::Generic(format!(
+                        "SET-EVAL-DEPTH-LIMIT!: expected one positive integer, got {}",
+                        err_val(&vec_to_list(args.to_vec()))
+                    )));
+                };
+                crate::evaluator::core::set_eval_depth_limit_from_lisp(*n)
+                    .map(|prev| LispVal::Number(prev as i64))
             }
             // (last-backtrace) — the frames of the most recently CAUGHT
             // error (innermost first), as a list of symbols.
@@ -2151,8 +2184,43 @@ pub(super) fn apply(
             }
         }
         LispVal::Native(f) => f(args, env),
-        _ => Err(LispError::Generic(format!("Not a function: {func:?}"))),
+        _ => Err(not_a_function(func, env)),
     }
+}
+
+/// The error for applying a non-callable value (issue #521). The value is
+/// rendered with the Lisp printer, never Rust `Debug`. Operatives say why
+/// they cannot be applied, and a bare symbol — a quoted name passed where a
+/// function object is needed, as in `(mapcar 'car ...)` — says what the
+/// name is bound to, so the fix (`#'car`) is visible from the message.
+fn not_a_function(func: &LispVal, env: &Shared<Environment>) -> LispError {
+    let msg = match func {
+        LispVal::Macro(_) => {
+            "Not a function: <macro> (a macro transforms unevaluated code and cannot be applied)"
+                .to_string()
+        }
+        LispVal::Fexpr(_) | LispVal::Vau(_) => format!(
+            "Not a function: {} (an operative receives unevaluated operands and cannot be applied)",
+            err_val(func)
+        ),
+        LispVal::Symbol(s) => {
+            let name = s.borrow().name.clone();
+            match env.get(&name) {
+                Some(LispVal::Lambda(_) | LispVal::Builtin(_) | LispVal::Native(_)) => format!(
+                    "Not a function: the symbol {name} (pass the function it names with #'{name})"
+                ),
+                Some(LispVal::Macro(_)) => format!(
+                    "Not a function: the symbol {name}, which names a macro; a macro cannot be applied"
+                ),
+                Some(LispVal::Fexpr(_) | LispVal::Vau(_)) => format!(
+                    "Not a function: the symbol {name}, which names an operative; an operative cannot be applied"
+                ),
+                _ => format!("Not a function: the symbol {name}"),
+            }
+        }
+        _ => format!("Not a function: {}", err_val(func)),
+    };
+    LispError::Generic(msg)
 }
 
 /// Apply a callable to an **owned** argument vector, moving each value into the

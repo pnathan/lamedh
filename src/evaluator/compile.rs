@@ -766,7 +766,8 @@ pub(super) fn exec_step(
                 match v {
                     LispVal::Number(n) => Ok(*n),
                     other => Err(LispError::Generic(format!(
-                        "for {who} must be an integer, got {other:?}"
+                        "for {who} must be an integer, got {}",
+                        err_val(other)
                     ))),
                 }
             };

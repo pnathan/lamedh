@@ -868,6 +868,10 @@ rejected, exactly as the native codegen path rejects it."
            (hit (cdr hit))
            ((hm-codegen-p state)
             (error (concat "unbound variable: " (princ-to-string sym))))
+           ;; T is the canonical true (#505): BOOL, as a comparison or
+           ;; predicate produces, so a t/nil function types as BOOL instead of
+           ;; letting an absorbing ANY vanish into a quantified return.
+           ((eq sym t) 'bool)
            (t 'any))))))
 
 (defun hm-elab-all (state tyenv args)
@@ -883,12 +887,15 @@ type error nested inside one surfaces), discarding the types."
 (defun hm-elab-form-checking (state tyenv head args)
   "Cx::elab's dispatch table under `checking: true`."
   (cond
-    ((member head '(+ - * / mod)) (hm-elab-bin state tyenv head args))
+    ((member head '(+ - * / quotient mod remainder rem))
+     (hm-elab-bin state tyenv head args))
     ((member head '(< > <= >= = /=)) (hm-elab-cmp state tyenv head args))
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (progn (hm-elab-all state tyenv args) 'any))
     ((eq head 'if) (hm-elab-if state tyenv args))
+    ;; hm-elab-let binds sequentially: exactly `let*` (#513).
     ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ((eq head 'let*) (hm-elab-let state tyenv (hm-check-let-star args)))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'char-code) (hm-elab-char-code state tyenv args))
     ((eq head 'code-char) (hm-elab-code-char state tyenv args))
@@ -918,23 +925,33 @@ type error nested inside one surfaces), discarding the types."
     ((member head '(when unless)) (hm-elab-when state tyenv args))
     (t (hm-elab-call state tyenv head args))))
 
-(defun hm-elab-body (state tyenv forms)
+(defun hm-elab-body (state tyenv forms &optional stmt)
   "A body: every form elaborated in order, the last one's type is the result.
-Mirrors Cx::elab_body."
+With STMT the body's value is discarded, so the last form is in statement
+mode too (#513). Mirrors Cx::elab_body_mode."
   (if (null forms)
       (error "empty body")
       (if (null (cdr forms))
-          (hm-elab state tyenv (car forms))
+          (if stmt
+              (hm-elab-stmt state tyenv (car forms))
+              (hm-elab state tyenv (car forms)))
           (progn (hm-elab-stmt state tyenv (car forms))
-                 (hm-elab-body state tyenv (cdr forms))))))
+                 (hm-elab-body state tyenv (cdr forms) stmt)))))
 
 (defun hm-elab-stmt (state tyenv form)
   "A form whose value is discarded. In codegen a COND/WHEN/UNLESS/CASE there
-desugars in statement mode (every branch yields FALSE). Mirrors Cx::elab_stmt."
-  (if (and (hm-codegen-p state) (consp form)
-           (member (car form) '(cond when unless case)))
-      (hm-elab state tyenv (hm-desugar-branch (car form) (cdr form) t))
-      (hm-elab state tyenv form)))
+desugars in statement mode (every branch yields FALSE), and statement mode
+reaches through a LET/LET*/LET-TYPED/PROGN's last form (#513). Mirrors
+Cx::elab_stmt."
+  (cond
+    ((not (and (hm-codegen-p state) (consp form))) (hm-elab state tyenv form))
+    ((member (car form) '(cond when unless case))
+     (hm-elab state tyenv (hm-desugar-branch (car form) (cdr form) t)))
+    ((member (car form) '(let let-typed)) (hm-elab-let state tyenv (cdr form) t))
+    ((eq (car form) 'let*)
+     (hm-elab-let state tyenv (hm-check-let-star (cdr form)) t))
+    ((eq (car form) 'progn) (hm-elab-body state tyenv (cdr form) t))
+    (t (hm-elab state tyenv form))))
 
 (defun hm-elab-loop-body (state tyenv forms)
   "A WHILE/FOR body: every form's value is discarded. Mirrors
@@ -994,14 +1011,29 @@ desugar_branch in src/jit/elaboration.rs."
                  (hm-desugar-branch 'cond clauses stmt)))))
     (t (error "hm-desugar-branch"))))
 
+(defun hm-check-let-star (args)
+  "ARGS of a `let*`, unchanged, once they have the evaluator's shapes (#522): a
+binding list, a body, and every binding a `(name init)` pair -- so `let-typed`'s
+`(name type init)` shape does not leak into `let*`. Mirrors check_let_star in
+src/jit/elaboration.rs."
+  (cond
+    ((or (null (cdr args)) (not (listp (car args))))
+     (error "let* requires a binding list and at least one body form"))
+    ((not (every (lambda (b) (and (consp b) (symbolp (car b))
+                                  (consp (cdr b)) (null (cddr b))))
+                 (car args)))
+     (error "let* binding must be a (name init) pair"))
+    (t args)))
+
 ;;; ---- arithmetic and comparison -------------------------------------------
 
 (defun hm-elab-bin (state tyenv op args)
-  "`+ - * / mod`. `/` and `mod` are strictly BINARY in the evaluator and must
-be rejected at every other arity here too; `-` needs at least one operand.
-Mirrors Cx::elab_bin's checking path."
+  "`+ - * / mod`, plus `quotient` (the evaluator's name for `/`) and
+`remainder`/`rem` (truncated remainder, #522). `/`, `mod` and `remainder` are
+strictly BINARY in the evaluator and must be rejected at every other arity here
+too; `-` needs at least one operand. Mirrors Cx::elab_bin's checking path."
   (cond
-    ((and (member op '(/ mod)) (not (= (length args) 2)))
+    ((and (member op '(/ quotient mod remainder rem)) (not (= (length args) 2)))
      (error (concat "`" (princ-to-string op) "` requires exactly 2 arguments, got "
                     (princ-to-string (length args)))))
     ((and (eq op '-) (null args))
@@ -1020,11 +1052,26 @@ Mirrors Cx::elab_bin's checking path."
                 (error (concat "`-` expects a numeric operand, got "
                                (hm-type-name rt))))))
          (t ta))))
-    (t (let ((ty (hm-elab state tyenv (car args))))
+    ;; #530: an integer LITERAL meeting a float64 operand types as float64
+    ;; (the evaluator promotes it with `as f64`); `+`/`*` at any arity, `-`
+    ;; and `/` only at arity 2, `mod` never. LITS is T while every operand so
+    ;; far is an int literal, so a later float64 operand re-types that prefix.
+    (t (let ((ty (hm-elab state tyenv (car args)))
+             (coerces (or (member op '(+ *))
+                          (and (member op '(- /)) (= (length args) 2))))
+             (lits (hm-int-literal-p (car args))))
          (hm-reject-boxed! state ty)
          (mapc (lambda (a)
                  (let ((tb (hm-elab state tyenv a)))
                    (hm-reject-boxed! state tb)
+                   (cond
+                     ((not coerces) nil)
+                     ((and (hm-int-literal-p a) (eq (hm-walk state ty) 'float64))
+                      (setq tb 'float64))
+                     ((and lits (eq (hm-walk state tb) 'float64))
+                      (setq ty 'float64)))
+                   (setq lits (and lits (hm-int-literal-p a)
+                                   (not (eq (hm-walk state tb) 'float64))))
                    (if (hm-unifies-p state ty tb)
                        (progn
                          (setq ty (hm-walk state ty))
@@ -1043,6 +1090,8 @@ Mirrors Cx::elab_bin's checking path."
                                                  (hm-type-name rt))))
                                  ((and (eq op 'mod) (not (eq rt 'int64)))
                                   (error "`mod` is int64-only"))
+                                 ((and (member op '(remainder rem)) (not (eq rt 'int64)))
+                                  (error "`remainder` is int64-only"))
                                  (t (setq ty rt))))
                              nil))
                        (error (concat "`" (princ-to-string op)
@@ -1055,6 +1104,11 @@ Mirrors Cx::elab_bin's checking path."
                    (error (concat "`" (princ-to-string op)
                                   "` expects numeric operands, got " (hm-type-name w)))
                    w)))))))
+
+(defun hm-int-literal-p (form)
+  "An integer LITERAL in source (#530): the only int form coerced to float64.
+Mirrors Cx::int_literal -- no general int->float subtyping."
+  (and (numberp form) (not (floatp form))))
 
 (defun hm-unifies-p (state a b)
   "T when A and B unify (extending the substitution); NIL on a clash -- the
@@ -1074,6 +1128,13 @@ non-comparable operand kinds are rejected as the evaluator would at runtime."
                      (princ-to-string (length args))))
       (let ((ta (hm-elab state tyenv (car args)))
             (tb (hm-elab state tyenv (cadr args))))
+        ;; #530: an integer literal compared with a float64 operand is a
+        ;; float64 constant -- the evaluator's own mixed comparison.
+        (cond
+          ((and (hm-int-literal-p (cadr args)) (eq (hm-walk state ta) 'float64))
+           (setq tb 'float64))
+          ((and (hm-int-literal-p (car args)) (eq (hm-walk state tb) 'float64))
+           (setq ta 'float64)))
         ;; #476: refused BEFORE unify, so no comparison is ever typed over a
         ;; handle whose aliasing makes word equality wrong.
         (hm-reject-boxed! state ta)
@@ -1131,6 +1192,21 @@ codegen mode, where a nil literal is rejected before any branch is joined
 (mirrors Cx::is_bare_nil's `self.checking &&` guard)."
   (and (not (hm-codegen-p state)) (null expr)))
 
+(defun hm-ends-in-bare-nil-p (state expr)
+  "Does a checker-mode branch/clause yield a bare nil literal -- the literal
+itself, or the tail of a PROGN (#505)? Mirrors Cx::ends_in_bare_nil."
+  (cond
+    ((hm-bare-nil-p state expr) t)
+    ((and (consp expr) (eq (car expr) 'progn) (consp (cdr expr)))
+     (hm-ends-in-bare-nil-p state (car (last expr))))
+    (t nil)))
+
+(defun hm-nil-meets-bool-p (state lhs lty rhs rty)
+  "Is this IF a BOOL branch against a branch ending in nil (#505)? NIL is also
+false, so the IF is that boolean. Mirrors Cx::nil_meets_bool."
+  (or (and (hm-ends-in-bare-nil-p state lhs) (eq (hm-walk state rty) 'bool))
+      (and (hm-ends-in-bare-nil-p state rhs) (eq (hm-walk state lty) 'bool))))
+
 (defun hm-elab-if (state tyenv args)
   "`(if c then else)`. The condition follows Lisp truthiness (any type)."
   (if (not (= (length args) 3))
@@ -1147,8 +1223,10 @@ codegen mode, where a nil literal is rejected before any branch is joined
                (te (hm-elab state tyenv (caddr args)))
                (lhs-nil (hm-bare-nil-p state (cadr args)))
                (rhs-nil (hm-bare-nil-p state (caddr args))))
-          (hm-join-branches state lhs-nil tt rhs-nil te
-                            "`if` branches disagree")))))
+          (if (hm-nil-meets-bool-p state (cadr args) tt (caddr args) te)
+              'bool
+              (hm-join-branches state lhs-nil tt rhs-nil te
+                                "`if` branches disagree"))))))
 
 (defun hm-join-branches (state lhs-nil lty rhs-nil rty disagreement)
   "Join two branch result types -- the nil-on-miss honesty rule (mirrors
@@ -1168,7 +1246,10 @@ concrete branches still errors."
              (not (or (eq (hm-tag other) 'list) (eq other 'any)))))
       'any
       (if (hm-unifies-p state lty rty)
-          (hm-walk state lty)
+          ;; An ANY branch makes the join ANY whichever side it is on (#505):
+          ;; unification absorbs it without binding, so returning the other
+          ;; side would let the gradual branch vanish.
+          (if (eq (hm-walk state rty) 'any) 'any (hm-walk state lty))
           (error disagreement))))
 
 (defun hm-elab-cond (state tyenv clauses)
@@ -1178,7 +1259,7 @@ including its deliberate NON-application of the nil honesty rule (see that
 function's comment: a self-recursive nil-on-miss helper's own clause join
 happens before COND's result type is computed, so degrading here arrives too
 late and regresses honest CHECKED verdicts into hard TYPE-ERRORs)."
-  (let ((result (hm-fresh state)) (had nil))
+  (let ((result (hm-fresh state)) (had nil) (nil-bodies nil))
     (mapc (lambda (clause)
             ;; A non-cons clause has no parts at all (the native
             ;; `list_to_vec` yields an empty vector and the clause is
@@ -1190,11 +1271,29 @@ late and regresses honest CHECKED verdicts into hard TYPE-ERRORs)."
                        (bt (if (null (cdr parts))
                                test-ty
                                (hm-elab-body state tyenv (cdr parts)))))
-                  (if (hm-unifies-p state bt result)
-                      (setq had t)
-                      (error "`cond` clauses disagree")))))
+                  (progn
+                    (setq had t)
+                    (cond
+                      ((and (cdr parts) (hm-ends-in-bare-nil-p state (car (last parts))))
+                       (setq nil-bodies (cons bt nil-bodies)))
+                      ((hm-unifies-p state bt result) nil)
+                      (t (error "`cond` clauses disagree")))))))
           clauses)
+    (hm-join-nil-clauses state "`cond` clauses disagree" result nil-bodies)
     (if had (hm-walk state result) 'any)))
+
+(defun hm-join-nil-clauses (state disagreement result nil-bodies)
+  "Join the nil-ending clause bodies of a COND/CASE (#505), deferred until
+every other clause has joined: NIL is also false, so once the other clauses
+settled on BOOL a nil clause is that boolean's false. Otherwise each unifies
+as an empty list exactly as an in-order clause would. Mirrors
+Cx::join_nil_clauses."
+  (mapc (lambda (bt)
+          (cond
+            ((eq (hm-walk state result) 'bool) nil)
+            ((hm-unifies-p state bt result) nil)
+            (t (error disagreement))))
+        nil-bodies))
 
 (defun hm-elab-case-check (state tyenv args)
   "Checker-mode `(case key (data body...) ...)` (#404): selectors are data,
@@ -1202,7 +1301,7 @@ never elaborated; clause bodies join like COND; an empty body is ANY. Mirrors
 Cx::elab_case_check."
   (if (null args)
       (error "`case` needs a key")
-      (let ((result (hm-fresh state)) (had nil))
+      (let ((result (hm-fresh state)) (had nil) (nil-bodies nil))
         (hm-elab state tyenv (car args))
         (mapc (lambda (clause)
                 (if (not (consp clause))
@@ -1210,10 +1309,16 @@ Cx::elab_case_check."
                     (let ((bt (if (null (cdr clause))
                                   'any
                                   (hm-elab-body state tyenv (cdr clause)))))
-                      (if (hm-unifies-p state bt result)
-                          (setq had t)
-                          (error "`case` clauses disagree")))))
+                      (progn
+                        (setq had t)
+                        (cond
+                          ((and (cdr clause)
+                                (hm-ends-in-bare-nil-p state (car (last clause))))
+                           (setq nil-bodies (cons bt nil-bodies)))
+                          ((hm-unifies-p state bt result) nil)
+                          (t (error "`case` clauses disagree")))))))
               (cdr args))
+        (hm-join-nil-clauses state "`case` clauses disagree" result nil-bodies)
         (if had (hm-walk state result) 'any))))
 
 (defun hm-elab-when (state tyenv args)
@@ -1262,10 +1367,11 @@ native annotation parser accepts."
          (error "type must be a scalar, struct, `array`, or `(array T)`")))
     (t (error "bad type annotation"))))
 
-(defun hm-elab-let (state tyenv args)
+(defun hm-elab-let (state tyenv args &optional stmt)
   "`(let ((name init) ...) body...)`, and LET-TYPED's `(name type init)` shape
 which pins the type explicitly. Bindings are MONOTYPES and all enter scope
-together for the body (matching the native Scope discipline)."
+together for the body (matching the native Scope discipline). STMT: the
+LET's value is discarded, so its body is elaborated in statement mode (#513)."
   (if (null (cdr args))
       (error "`let-typed` needs a body")
       (let ((inner tyenv))
@@ -1288,7 +1394,7 @@ together for the body (matching the native Scope discipline)."
                        (setq inner (cons (cons (car parts) v) inner))))
                     (t (error "`let-typed` binding must be (name type init) or (name init)")))))
               (car args))
-        (hm-elab-body state inner (cdr args)))))
+        (hm-elab-body state inner (cdr args) stmt))))
 
 ;;; ---- list and pair rules --------------------------------------------------
 
@@ -1987,7 +2093,10 @@ still-FREE variable. Trust BT and force RET back to ANY rather than let the
 internal concretization leak into the generalized scheme."
   (let* ((bt (hm-elab-body state tyenv body))
          (wbt (hm-walk state bt)))
-    (if (and (eq wbt 'any) (not (hm-tvar-p (hm-walk state ret))))
+    ;; #505: the same holds when RET is still free -- unify(any, ret) would
+    ;; leave it free and generalization would turn the gradual ANY into a
+    ;; FORALL any caller could instantiate.
+    (if (eq wbt 'any)
         (progn (hm-force-any! state (cadr ret)) t)
         (if (hm-unifies-p state bt ret)
             t
@@ -2083,12 +2192,15 @@ the portable registry)."
 (defun hm-elab-form-codegen (state tyenv head args)
   "Cx::elab's dispatch table under `checking: false`."
   (cond
-    ((member head '(+ - * / mod)) (hm-elab-bin state tyenv head args))
+    ((member head '(+ - * / quotient mod remainder rem))
+     (hm-elab-bin state tyenv head args))
     ((member head '(< > <= >= = /=)) (hm-elab-cmp state tyenv head args))
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (hm-elab-logic state tyenv head args))
     ((eq head 'if) (hm-elab-if state tyenv args))
+    ;; hm-elab-let binds sequentially: exactly `let*` (#513).
     ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ((eq head 'let*) (hm-elab-let state tyenv (hm-check-let-star args)))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'setq) (hm-elab-setq state tyenv args))
     ((eq head 'while) (hm-elab-while state tyenv args))
@@ -2146,19 +2258,20 @@ global or dynamic target is not compileable. Mirrors Cx::elab_setq."
 
 (defun hm-elab-while (state tyenv args)
   "`(while test body...)`: TEST is BOOL or INT64 (truthy word); the value is
-always 0 (NIL), typed INT64 as a statement. Mirrors Cx::elab_while, including
-its order (BOOL tried first, INT64 second)."
+always 0, typed BOOL: native code carries NIL as `false`, so a loop in value
+position yields NIL as the interpreter does (#524). Mirrors Cx::elab_while,
+including its order (BOOL tried first, INT64 second)."
   (if (< (length args) 2)
       (error "while requires a test and at least one body form")
       (let ((tt (hm-elab state tyenv (car args))))
         (if (or (hm-unifies-p state tt 'bool) (hm-unifies-p state tt 'int64))
-            (progn (hm-elab-loop-body state tyenv (cdr args)) 'int64)
+            (progn (hm-elab-loop-body state tyenv (cdr args)) 'bool)
             (error "while: test must be bool or int64")))))
 
 (defun hm-elab-for (state tyenv args)
   "`(for (var start end [step]) body...)`: START/END/STEP are INT64 in the
-OUTER scope, VAR is a fresh INT64 slot for the body, the value is 0 (NIL) typed
-INT64. Mirrors Cx::elab_for."
+OUTER scope, VAR is a fresh INT64 slot for the body, the value is 0 typed BOOL
+(NIL, #524). Mirrors Cx::elab_for."
   (if (< (length args) 2)
       (error "for requires a spec list (var start end [step]) and a body")
       (let ((spec (car args)))
@@ -2180,7 +2293,7 @@ INT64. Mirrors Cx::elab_for."
                        (error "for: step must be int64"))
                    nil)
                (hm-elab-loop-body state (cons (cons (car spec) 'int64) tyenv) (cdr args))
-               'int64))))))
+               'bool))))))
 
 (defun hm-elab-dotimes (state tyenv args)
   "`(dotimes (var count [result]) body...)`, desugared to its macro expansion
@@ -2292,10 +2405,15 @@ argument, reject boxed operands, unify each with the first, resolve."
       (error "compiled min/max needs at least 1 argument")
       (let ((tys (mapcar (lambda (a) (hm-elab state tyenv a)) args)))
         (mapc (lambda (ty) (hm-reject-boxed! state ty)) tys)
+        ;; #530: no literal coercion here -- min/max return the selected
+        ;; argument unchanged ((max 0.5 1) is the integer 1), so say so.
         (mapc (lambda (ty)
-                (if (hm-unifies-p state (car tys) ty)
-                    nil
-                    (error "min/max operands disagree")))
+                (cond
+                  ((hm-unifies-p state (car tys) ty) nil)
+                  ((and (not (every (lambda (a) (not (hm-int-literal-p a))) args))
+                        (not (every (lambda (u) (not (eq (hm-walk state u) 'float64))) tys)))
+                   (error "min/max operands disagree (an integer literal is not coerced to float64 here: min/max return the selected argument unchanged, so write the literal as a float, e.g. 1.0)"))
+                  (t (error "min/max operands disagree"))))
               (cdr tys))
         (let ((rt (hm-resolve-operand state (car tys) "min/max")))
           (if (hm-arith-kind-p rt)
@@ -2561,7 +2679,12 @@ this from its provisional registry entry; this is the portable equivalent)."
            (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
            (handler-case
                (let ((bt (hm-elab-body state tyenv body)))
-                 (if (hm-unifies-p state bt ret)
+                 ;; A gradual ANY body is an ANY return (#505): unify(any,
+                 ;; ret) leaves RET free, and generalizing it would claim
+                 ;; FORALL a. ... -> a.
+                 (if (or (and (eq (hm-walk state bt) 'any)
+                              (progn (hm-force-any! state (cadr ret)) t))
+                         (hm-unifies-p state bt ret))
                      (list 'checked
                            (hm-render-scheme
                             (hm-generalize state (list '-> (mapcar (lambda (p) (hm-zonk state p)) ptys)

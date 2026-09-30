@@ -91,6 +91,21 @@ impl Cx<'_> {
         Ok(())
     }
 
+    /// An integer LITERAL in source (issue #530): the only int form that may
+    /// be coerced to `float64`. There is no general int→float subtyping — an
+    /// int-typed variable or expression is never coerced.
+    fn int_literal(form: &LispVal) -> Option<i64> {
+        match form {
+            LispVal::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Is `t` already known to be `float64` under the substitution?
+    fn is_float(&self, t: &Ty) -> bool {
+        matches!(self.walk(t), Ty::Float64)
+    }
+
     /// A resolved operand type the EVALUATOR would reject for arithmetic /
     /// numeric comparison (#322): known non-numerics fail the check early;
     /// variables and Any stay gradual. Char is numeric (byte arithmetic).
@@ -159,6 +174,11 @@ impl Cx<'_> {
                 }
                 match scope.iter().rposition(|(n, _)| n == name) {
                     Some(slot) => Ok((Core::Var(slot), scope[slot].1.clone())),
+                    // `t` is the canonical true (#505): a checker-mode `bool`,
+                    // the same type a comparison or predicate produces, so a
+                    // `t`/`nil` function types as `bool` instead of letting an
+                    // absorbing `Any` vanish into a quantified return.
+                    None if self.checking && name == "T" => Ok((Core::LitI(1), Ty::Bool)),
                     // A free symbol in checker mode is some global we don't track
                     // — the gradual frontier (`Any`). The codegen path rejects it.
                     None if self.checking => Ok((Core::LitI(0), Ty::Any)),
@@ -178,7 +198,12 @@ impl Cx<'_> {
                 };
                 let args = &items[1..];
                 match head.as_str() {
-                    "+" | "-" | "*" | "/" | "MOD" => self.elab_bin(&head, args, scope, max),
+                    // `quotient` is the evaluator's classic name for `/` (the
+                    // same builtin); `remainder`/`rem` are its truncated
+                    // remainder (#522).
+                    "+" | "-" | "*" | "/" | "QUOTIENT" | "MOD" | "REMAINDER" | "REM" => {
+                        self.elab_bin(&head, args, scope, max)
+                    }
                     "<" | ">" | "<=" | ">=" | "=" | "/=" => self.elab_cmp(&head, args, scope, max),
                     "NOT" => self.elab_not(args, scope, max),
                     "AND" | "OR" => self.elab_logic(&head, args, scope, max),
@@ -189,7 +214,14 @@ impl Cx<'_> {
                     // typed body using ordinary `let`/`progn` reaches the native
                     // tier instead of stalling at CHECKED. `LET-TYPED` stays as the
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
-                    "LET" | "LET-TYPED" => self.elab_let(args, scope, max),
+                    // `elab_let` binds sequentially, each init seeing the
+                    // bindings before it: exactly `let*` (#513). `let*` takes
+                    // only the evaluator's shapes (#522); see `check_let_star`.
+                    "LET" | "LET-TYPED" => self.elab_let(args, false, scope, max),
+                    "LET*" => {
+                        check_let_star(args)?;
+                        self.elab_let(args, false, scope, max)
+                    }
                     "PROGN" => self.elab_body(args, scope, max),
                     // `setq`/`while`/`for` compile natively when they only touch
                     // local slots (params/let-bindings) — codegen-only so
@@ -390,7 +422,8 @@ impl Cx<'_> {
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
         // `+` and `*` support 0–N args; `-` requires at least 1 (unary
-        // negate, or N-ary left-fold). `/` and `MOD` are strictly BINARY in
+        // negate, or N-ary left-fold). `/` (alias `QUOTIENT`), `MOD` and
+        // `REMAINDER` (alias `REM`, #522) are strictly BINARY in
         // the evaluator (`BuiltinFunc::Divide` in `apply_math_op`,
         // `builtins_core.rs`, and `mod` in `builtins_extra.rs` both reject
         // anything but exactly 2 arguments — no unary reciprocal, no
@@ -404,10 +437,11 @@ impl Cx<'_> {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
             "*" => BinOp::Mul,
-            "/" => BinOp::Div,
+            "/" | "QUOTIENT" => BinOp::Div,
+            "REMAINDER" | "REM" => BinOp::Rem,
             _ => BinOp::Mod,
         };
-        if matches!(bop, BinOp::Div | BinOp::Mod) && args.len() != 2 {
+        if matches!(bop, BinOp::Div | BinOp::Mod | BinOp::Rem) && args.len() != 2 {
             return Err(format!(
                 "`{op}` requires exactly 2 arguments, got {}",
                 args.len()
@@ -427,7 +461,7 @@ impl Cx<'_> {
         }
 
         // 1-arg: unary identity — (+ x) = x, (* x) = x, (- x) = (- 0 x).
-        // (`/`/`MOD` can never reach here: pinned to exactly 2 args above.)
+        // (`/`/`MOD`/`REMAINDER` can never reach here: pinned to exactly 2 args above.)
         if args.len() == 1 {
             let (a, ta) = self.elab(&args[0], scope, max)?;
             self.reject_boxed_arith_cmp(&ta)?;
@@ -452,13 +486,53 @@ impl Cx<'_> {
         }
 
         // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp
-        // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
+        // tree. For `/`/`MOD`/`REMAINDER` this loop runs exactly once (arity pinned to 2
         // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
+        //
+        // Issue #530: an integer LITERAL meeting a `float64` operand is
+        // elaborated as the float constant `n as f64`. This is exactly what
+        // the evaluator does (`apply_math_op`: any float operand promotes
+        // every argument with `as f64`), so the compiled result is the
+        // interpreter's. `+`/`*` fold left to right in both; the evaluator's
+        // N-ary `-` is `a - (b + c …)`, not the fold, so `-` coerces only
+        // at arity 2. `mod` is int-only and never coerces.
+        let coerces = match bop {
+            BinOp::Add | BinOp::Mul => true,
+            BinOp::Sub | BinOp::Div => args.len() == 2,
+            _ => false,
+        };
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
         self.reject_boxed_arith_cmp(&ty)?;
+        // The operands so far while they are ALL int literals (else `None`):
+        // a later `float64` operand re-elaborates this prefix as floats.
+        let mut lit_prefix: Option<Vec<i64>> = Self::int_literal(&args[0]).map(|n| vec![n]);
         for arg in &args[1..] {
-            let (b, tb) = self.elab(arg, scope, max)?;
+            let (mut b, mut tb) = self.elab(arg, scope, max)?;
             self.reject_boxed_arith_cmp(&tb)?;
+            let lit = Self::int_literal(arg);
+            if coerces
+                && self.is_float(&ty)
+                && let Some(n) = lit
+            {
+                (b, tb) = (Core::LitF(n as f64), Ty::Float64);
+            } else if coerces
+                && self.is_float(&tb)
+                && let Some(ns) = lit_prefix.take()
+            {
+                let f = |n: i64| Box::new(Core::LitF(n as f64));
+                acc = Core::LitF(ns[0] as f64);
+                for n in &ns[1..] {
+                    acc = Core::Bin(NumKind::F, bop, Box::new(acc), f(*n));
+                }
+                ty = Ty::Float64;
+            }
+            lit_prefix = match (lit_prefix.take(), lit) {
+                (Some(mut ns), Some(n)) if !self.is_float(&tb) => {
+                    ns.push(n);
+                    Some(ns)
+                }
+                _ => None,
+            };
             if self.unify(&ty, &tb).is_err() {
                 return Err(format!(
                     "`{op}` operands disagree: {:?} vs {:?}",
@@ -480,6 +554,9 @@ impl Cx<'_> {
                 .ok_or_else(|| format!("`{op}` expects numeric operands, got {rt:?}"))?;
             if matches!(bop, BinOp::Mod) && !matches!(num, NumTy::I) {
                 return Err("`mod` is int64-only".to_string());
+            }
+            if matches!(bop, BinOp::Rem) && !matches!(num, NumTy::I) {
+                return Err("`remainder` is int64-only".to_string());
             }
             ty = rt.clone();
             acc = Core::Bin(num.into(), bop, Box::new(acc), Box::new(b));
@@ -509,8 +586,20 @@ impl Cx<'_> {
         if args.len() != 2 {
             return Err(format!("`{op}` expects 2 args, got {}", args.len()));
         }
-        let (a, ta) = self.elab(&args[0], scope, max)?;
-        let (b, tb) = self.elab(&args[1], scope, max)?;
+        let (mut a, mut ta) = self.elab(&args[0], scope, max)?;
+        let (mut b, mut tb) = self.elab(&args[1], scope, max)?;
+        // Issue #530: an integer literal compared with a `float64` operand is
+        // the float constant `n as f64` — the evaluator's own mixed-operand
+        // comparison (`as_f64` on both sides), so the result is unchanged.
+        if let Some(n) = Self::int_literal(&args[1])
+            && self.is_float(&ta)
+        {
+            (b, tb) = (Core::LitF(n as f64), Ty::Float64);
+        } else if let Some(n) = Self::int_literal(&args[0])
+            && self.is_float(&tb)
+        {
+            (a, ta) = (Core::LitF(n as f64), Ty::Float64);
+        }
         // #476: reject before unify/resolve so no `Core::Cmp` is ever built
         // over a boxed operand — two distinct handles can alias the same
         // object, so comparing handle words would be silently wrong, not
@@ -672,6 +761,11 @@ impl Cx<'_> {
         scope.truncate(saved);
         let (e, te) = self.elab(&args[2], scope, max)?;
         scope.truncate(saved);
+        // `nil` is also false (#505): a branch ending in `nil` meeting a
+        // `bool` branch is that boolean's false, not a heterogeneous `any`.
+        if self.nil_meets_bool(&args[1], &tt, &args[2], &te) {
+            return Ok((Core::If(Box::new(c), Box::new(t), Box::new(e)), Ty::Bool));
+        }
         let lhs_nil = self.is_bare_nil(&args[1]);
         let rhs_nil = self.is_bare_nil(&args[2]);
         let result_ty =
@@ -686,6 +780,27 @@ impl Cx<'_> {
     /// match arm). Used by [`Cx::join_branch_types`] (#336).
     fn is_bare_nil(&self, expr: &LispVal) -> bool {
         self.checking && matches!(expr, LispVal::Nil)
+    }
+
+    /// Does a checker-mode branch/clause yield a bare `nil` literal — the
+    /// literal itself, or the tail of a `progn` (#505)?
+    fn ends_in_bare_nil(&self, expr: &LispVal) -> bool {
+        if self.is_bare_nil(expr) {
+            return true;
+        }
+        let items = list_to_vec(expr);
+        match items.first() {
+            Some(LispVal::Symbol(s)) if s.borrow().name == "PROGN" && items.len() > 1 => {
+                self.ends_in_bare_nil(&items[items.len() - 1])
+            }
+            _ => false,
+        }
+    }
+
+    /// Is this `if` a `bool` branch against a branch ending in `nil` (#505)?
+    fn nil_meets_bool(&self, lhs: &LispVal, lty: &Ty, rhs: &LispVal, rty: &Ty) -> bool {
+        (self.ends_in_bare_nil(lhs) && matches!(self.walk(rty), Ty::Bool))
+            || (self.ends_in_bare_nil(rhs) && matches!(self.walk(lty), Ty::Bool))
     }
 
     /// Join the two branch result types of an `if` (#336 — the
@@ -732,12 +847,22 @@ impl Cx<'_> {
                 self.walk(rty)
             ));
         }
+        // An `any` branch makes the join `any` whichever side it is on
+        // (#505): `unify` absorbs it without binding, so returning the other
+        // side would let the gradual branch vanish (`(if p nil (eval x))`
+        // typing as `(list a)`).
+        if matches!(self.walk(rty), Ty::Any) {
+            return Ok(Ty::Any);
+        }
         Ok(self.walk(lty))
     }
 
+    /// `stmt`: the `let`'s value is discarded, so its last body form is
+    /// elaborated in statement mode too (#513) — see [`Self::elab_stmt`].
     fn elab_let(
         &self,
         args: &[LispVal],
+        stmt: bool,
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
@@ -800,7 +925,7 @@ impl Cx<'_> {
             *max = (*max).max(scope.len());
             writes.push((slot, init_core, ty));
         }
-        let (mut body_core, body_ty) = self.elab_body(body, scope, max)?;
+        let (mut body_core, body_ty) = self.elab_body_mode(body, stmt, scope, max)?;
         // Array-of-structs inline layout (jit/core-loops follow-up): for each
         // binding in this `let` whose (now fully-constrained-by-the-body)
         // type is a scalar-fields struct array, try to fuse its uses in
@@ -942,10 +1067,10 @@ impl Cx<'_> {
     }
 
     /// `(while test body...)`: evaluate TEST; while truthy, evaluate BODY for
-    /// side effects, then loop. Always evaluates to `0` (NIL) — typed as
-    /// `int64` since the typed island has no dedicated unit/NIL type and the
-    /// result is always discarded (WHILE is a statement, legal only in
-    /// non-tail/discarded position).
+    /// side effects, then loop. Always evaluates to `0`, typed `bool`: native
+    /// code carries NIL as `false`, so a loop in value position yields NIL
+    /// exactly as the tree-walker does (#524), and a use of it as a number
+    /// fails to unify, leaving the function interpreted.
     fn elab_while(
         &self,
         args: &[LispVal],
@@ -965,7 +1090,7 @@ impl Cx<'_> {
         let body_core = self.elab_loop_body(&args[1..], scope, max)?;
         Ok((
             Core::While(Box::new(test_core), Box::new(body_core)),
-            Ty::Int64,
+            Ty::Bool,
         ))
     }
 
@@ -973,7 +1098,7 @@ impl Cx<'_> {
     /// in the OUTER scope (the loop variable is not yet bound — matches the
     /// tree-walker, `special_forms.rs::eval_for`), then bind VAR to a fresh
     /// slot and iterate it from START to END inclusive by STEP (default 1).
-    /// Always evaluates to `0` (NIL), typed `int64` for the same reason as
+    /// Always evaluates to `0`, typed `bool` (NIL) for the same reason as
     /// `while`.
     fn elab_for(
         &self,
@@ -1023,7 +1148,7 @@ impl Cx<'_> {
                 step: Box::new(step_core),
                 body: Box::new(body_core),
             },
-            Ty::Int64,
+            Ty::Bool,
         ))
     }
 
@@ -1333,7 +1458,10 @@ impl Cx<'_> {
                 // Trust `bt` and force `ret` back to `any` rather than let
                 // the internal concretization leak into the generalized
                 // scheme.
-                if matches!(wbt, Ty::Any) && !matches!(self.walk(&ret), Ty::Var(_)) {
+                // #505: the same holds when `ret` is still free — `unify(any,
+                // ret)` would leave it free and generalization would turn the
+                // gradual `any` into a `∀` any caller could instantiate.
+                if matches!(wbt, Ty::Any) {
                     if let Ty::Var(id) = &ret {
                         self.infer.borrow_mut().force_any(*id);
                     }
@@ -1873,8 +2001,17 @@ impl Cx<'_> {
                 args.len()
             ));
         }
+        // Reserve the two temp slots BEFORE elaborating `a`/`b` (#501): `sa`
+        // is live while `b` runs, so a temp user nested in `b` must take
+        // slots above it rather than overwrite it.
+        let base = scope.len();
+        for _ in 0..2 {
+            scope.push((String::new(), self.fresh()));
+        }
+        *max = (*max).max(scope.len());
         let (a, ta) = self.elab(&args[0], scope, max)?;
         let (b, tb) = self.elab(&args[1], scope, max)?;
+        scope.truncate(base);
         let elem = self.fresh();
         let arr_ty = Ty::Array(Box::new(elem.clone()));
         if self.unify(&ta, &arr_ty).is_err() {
@@ -1902,12 +2039,6 @@ impl Cx<'_> {
             }
         };
         let rt = Ty::Array(Box::new(elem_ty));
-        let base = scope.len();
-        for _ in 0..2 {
-            scope.push((String::new(), rt.clone()));
-        }
-        *max = (*max).max(scope.len());
-        scope.truncate(base);
         let (sa, sb) = (base, base + 1);
         let len = |s: usize| Box::new(Core::ArrayLen(Box::new(Core::Var(s))));
         let n = Core::If(
@@ -2296,6 +2427,7 @@ impl Cx<'_> {
     ) -> Result<(Core, Ty), String> {
         let result = self.fresh();
         let mut had_clause = false;
+        let mut nil_bodies = Vec::new();
         for clause in clauses {
             let parts = list_to_vec(clause);
             if parts.is_empty() {
@@ -2310,6 +2442,11 @@ impl Cx<'_> {
                 self.elab_body(&parts[1..], scope, max)?.1
             };
             scope.truncate(saved);
+            had_clause = true;
+            if parts.len() > 1 && self.ends_in_bare_nil(&parts[parts.len() - 1]) {
+                nil_bodies.push(bt);
+                continue;
+            }
             if self.unify(&bt, &result).is_err() {
                 return Err(format!(
                     "`cond` clauses disagree: {:?} vs {:?}",
@@ -2317,8 +2454,8 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
-            had_clause = true;
         }
+        self.join_nil_clauses("cond", &result, nil_bodies)?;
         if had_clause {
             Ok((Core::LitI(0), self.walk(&result)))
         } else {
@@ -2343,6 +2480,7 @@ impl Cx<'_> {
         self.elab(key, scope, max)?;
         let result = self.fresh();
         let mut had_clause = false;
+        let mut nil_bodies = Vec::new();
         for clause in &args[1..] {
             let parts = list_to_vec(clause);
             if parts.is_empty() {
@@ -2355,6 +2493,11 @@ impl Cx<'_> {
                 self.elab_body(&parts[1..], scope, max)?.1
             };
             scope.truncate(saved);
+            had_clause = true;
+            if parts.len() > 1 && self.ends_in_bare_nil(&parts[parts.len() - 1]) {
+                nil_bodies.push(bt);
+                continue;
+            }
             if self.unify(&bt, &result).is_err() {
                 return Err(format!(
                     "`case` clauses disagree: {:?} vs {:?}",
@@ -2362,13 +2505,34 @@ impl Cx<'_> {
                     self.walk(&result)
                 ));
             }
-            had_clause = true;
         }
+        self.join_nil_clauses("case", &result, nil_bodies)?;
         if had_clause {
             Ok((Core::LitI(0), self.walk(&result)))
         } else {
             Ok((Core::LitI(0), Ty::Any))
         }
+    }
+
+    /// Join the bare-`nil` clause bodies of a `cond`/`case` (#505), deferred
+    /// until every other clause has joined: `nil` is also false, so once the
+    /// other clauses settled on `bool` a nil clause is that boolean's false.
+    /// Otherwise each unifies as an empty list exactly as an in-order clause
+    /// would (unification order does not change the outcome).
+    fn join_nil_clauses(&self, form: &str, result: &Ty, nil_bodies: Vec<Ty>) -> Result<(), String> {
+        for bt in nil_bodies {
+            if matches!(self.walk(result), Ty::Bool) {
+                continue;
+            }
+            if self.unify(&bt, result).is_err() {
+                return Err(format!(
+                    "`{form}` clauses disagree: {:?} vs {:?}",
+                    self.walk(&bt),
+                    self.walk(result)
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// `(variant-case x (ctor (vars…) body…) … [(else body…)])` — the sum
@@ -2537,7 +2701,7 @@ impl Cx<'_> {
 
     /// `(expt b e)` (#398) over concrete operand kinds, each combination
     /// mirroring one arm of the evaluator's `BuiltinFunc::Expt`:
-    /// float^float = `powf`, float^int = `powi(e as i32)`, int^float =
+    /// float^float = `powf`, float^int = `float_powi(b, e)` (#507), int^float =
     /// `(b as f64).powf(e)` — all `float64`, via the `jit_ftrans2` libm
     /// trampoline. int^int is not compiled: the evaluator returns an integer
     /// (or a float for a negative exponent) and raises on overflow.
@@ -2677,8 +2841,9 @@ impl Cx<'_> {
 
     /// `(abs x)` → `(if (< x 0) (- x) x)` over `int64`/`float64`, as compilable
     /// Core. `Core::LitI(0)` is the zero for both kinds (all-zero bits bitcast
-    /// to `+0.0`). Comparison-select, so `(abs -0.0)` = `-0.0` and `(abs NaN)`
-    /// = `NaN` unchanged, matching the evaluator (unlike an `fabs` instruction).
+    /// to `+0.0`). Comparison-select, so `(abs NaN)` = `NaN` unchanged,
+    /// matching the evaluator. The float else-branch is `x + 0`, as in
+    /// lib/05-math.lisp, so `(abs -0.0)` = `+0.0` (#518).
     /// `x` is evaluated once into a temp slot (#397), so a compound argument
     /// (or one with a side effect, e.g. a `setq`) runs exactly once.
     fn elab_abs(
@@ -2705,7 +2870,11 @@ impl Cx<'_> {
         let x = || Box::new(Core::Var(slot));
         let cond = Core::Cmp(k, CmpOp::Lt, x(), Box::new(Core::LitI(0)));
         let neg = Core::Bin(k, BinOp::Sub, Box::new(Core::LitI(0)), x());
-        let sel = Core::If(Box::new(cond), Box::new(neg), x());
+        let pos = match k {
+            NumKind::I => x(),
+            NumKind::F => Box::new(Core::Bin(k, BinOp::Add, x(), Box::new(Core::LitI(0)))),
+        };
+        let sel = Core::If(Box::new(cond), Box::new(neg), pos);
         Ok((Core::Let(slot, Box::new(xc), Box::new(sel)), rt))
     }
 
@@ -2738,17 +2907,44 @@ impl Cx<'_> {
         if args.is_empty() {
             return Err("compiled min/max needs at least 1 argument".to_string());
         }
-        let mut elabs = Vec::with_capacity(args.len());
+        // Reserve one slot per argument, then one per fold step, BEFORE
+        // elaborating the arguments (#501): a nested min/max/abs (or any
+        // other temp user) then takes slots above these, so its lets cannot
+        // overwrite an argument slot that is still live. The slots stay
+        // reserved together while the nested lets are built.
+        let base = scope.len();
+        let n = args.len();
+        for _ in 0..(2 * n) {
+            scope.push((String::new(), self.fresh()));
+        }
+        *max = (*max).max(scope.len());
+        let mut elabs = Vec::with_capacity(n);
         for a in args {
             elabs.push(self.elab(a, scope, max)?);
         }
+        scope.truncate(base);
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
+        // Issue #530: unlike `+`/`<`, an integer literal is NOT coerced here.
+        // `min`/`max` return the selected argument itself, so the evaluator's
+        // `(max 0.5 1)` is the integer `1`; a float constant would change the
+        // observable result. Say so, instead of a bare unify clash.
+        let lit_hint = |e: String| {
+            let lit = args.iter().any(|a| Self::int_literal(a).is_some());
+            if lit && elabs.iter().any(|(_, t)| self.is_float(t)) {
+                format!(
+                    "min/max operands disagree: {e} (an integer literal is not \
+                     coerced to float64 here: min/max return the selected argument \
+                     unchanged, so write the literal as a float, e.g. 1.0)"
+                )
+            } else {
+                format!("min/max operands disagree: {e}")
+            }
+        };
         let ta = elabs[0].1.clone();
         for (_, t) in &elabs[1..] {
-            self.unify(&ta, t)
-                .map_err(|e| format!("min/max operands disagree: {e}"))?;
+            self.unify(&ta, t).map_err(lit_hint)?;
         }
         let rt = self
             .resolve(&ta)
@@ -2757,15 +2953,6 @@ impl Cx<'_> {
             .as_num()
             .ok_or_else(|| format!("min/max expects numeric operands, got {rt:?}"))?;
         let k: NumKind = num.into();
-        // Reserve one slot per argument, then one per fold step; the slots
-        // stay reserved together while the nested lets are built.
-        let base = scope.len();
-        let n = elabs.len();
-        for _ in 0..(2 * n) {
-            scope.push((String::new(), rt.clone()));
-        }
-        *max = (*max).max(scope.len());
-        scope.truncate(base);
         let arg_slot = |i: usize| base + i;
         let acc_slot = |i: usize| base + n + i;
         // Innermost: fold from the right. acc[n-1] = arg[n-1];
@@ -2792,6 +2979,8 @@ impl Cx<'_> {
     /// any form of a `while`/`for` body). A `cond`/`when`/`unless`/`case`
     /// there desugars in statement mode (#404): every branch yields `false`,
     /// so branches of any type join and the nil-on-miss is representable.
+    /// A `let`/`let*`/`let-typed`/`progn` there discards its last form's
+    /// value too, so statement mode reaches through it (#513).
     fn elab_stmt(
         &self,
         form: &LispVal,
@@ -2804,9 +2993,19 @@ impl Cx<'_> {
             let items = list_to_vec(form);
             if let Some(LispVal::Symbol(s)) = items.first() {
                 let head = s.borrow().name.clone();
-                if matches!(head.as_str(), "COND" | "WHEN" | "UNLESS" | "CASE") {
-                    let d = desugar_branch(&head, &items[1..], true)?;
-                    return self.elab(&d, scope, max);
+                match head.as_str() {
+                    "COND" | "WHEN" | "UNLESS" | "CASE" => {
+                        let d = desugar_branch(&head, &items[1..], true)?;
+                        return self.elab(&d, scope, max);
+                    }
+                    "LET" | "LET-TYPED" | "LET*" => {
+                        if head == "LET*" {
+                            check_let_star(&items[1..])?;
+                        }
+                        return self.elab_let(&items[1..], true, scope, max);
+                    }
+                    "PROGN" => return self.elab_body_mode(&items[1..], true, scope, max),
+                    _ => {}
                 }
             }
         }
@@ -2840,13 +3039,25 @@ impl Cx<'_> {
         scope: &mut Scope,
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
+        self.elab_body_mode(forms, false, scope, max)
+    }
+
+    /// A body whose last form is in statement mode when `stmt` (the body's
+    /// own value is discarded, #513), else in value position.
+    fn elab_body_mode(
+        &self,
+        forms: &[LispVal],
+        stmt: bool,
+        scope: &mut Scope,
+        max: &mut usize,
+    ) -> Result<(Core, Ty), String> {
         if forms.is_empty() {
             return Err("empty body".to_string());
         }
         let mut cores = Vec::with_capacity(forms.len());
         let mut last_ty = Ty::Int64;
         for (i, f) in forms.iter().enumerate() {
-            let (c, t) = if i + 1 < forms.len() {
+            let (c, t) = if stmt || i + 1 < forms.len() {
                 self.elab_stmt(f, scope, max)?
             } else {
                 self.elab(f, scope, max)?
@@ -2988,4 +3199,21 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
         }
         _ => unreachable!("desugar_branch: {head}"),
     }
+}
+
+/// Rejects `let*` shapes the evaluator's LET* does not accept (#522): it
+/// needs a binding list and a body, and every binding is a `(name init)` pair,
+/// so the typed `(name type init)` shape of `let-typed` does not leak into
+/// `let*` (`elab_let`, which `let*` shares, accepts both).
+/// Mirrored by `hm-check-let-star` in lib/46-hm-check.lisp.
+fn check_let_star(args: &[LispVal]) -> Result<(), String> {
+    if args.len() < 2 || !matches!(args[0], LispVal::Nil | LispVal::Cons { .. }) {
+        return Err("let* requires a binding list and at least one body form".to_string());
+    }
+    for b in list_to_vec(&args[0]) {
+        if !matches!(list_to_vec(&b).as_slice(), [LispVal::Symbol(_), _]) {
+            return Err("let* binding must be a (name init) pair".to_string());
+        }
+    }
+    Ok(())
 }
