@@ -7,7 +7,9 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_lamedh")
 }
 
-const DEEP: &str = "(let ((n 0)) (dolist (x (iota 15000)) (setq n (+ n 1))) n)";
+// Non-tail recursion 15000 frames deep: past the default limit of 10000.
+// (A long DOLIST no longer recurses since #504.)
+const DEEP: &str = "(progn (defun deep-15k (n) (declare (no-compile)) (if (= n 0) 0 (+ 1 (deep-15k (- n 1))))) (deep-15k 15000))";
 
 #[test]
 fn default_limit_error_names_the_flag() {

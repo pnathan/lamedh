@@ -100,19 +100,21 @@ fn only_closing_bodies_are_rebound() {
         &e,
     );
     assert!(!plain.contains("(LET ((I I))"), "{plain}");
+    // DOLIST expands to a closure-free WHILE loop (#504), so a DOLIST body
+    // that merely reads I is not a closure either.
+    let dl = eval_line(
+        "(macroexpand '(dotimes (i 3) (dolist (x l) (print i))))",
+        &e,
+    );
+    assert!(!dl.contains("(LET ((I I))"), "{dl}");
     // A quoted LAMBDA is data, not a closure.
     let quoted = eval_line("(macroexpand '(dotimes (i 3) (print '(lambda () i))))", &e);
     assert!(!quoted.contains("(LET ((I I))"), "{quoted}");
-    // A closure, direct or macro-produced, is rebound. (`dolist` no longer
-    // expands to a closure since #504, so a local macro stands in for it.)
-    eval_line(
-        "(defmacro with-thunk (&rest body) (list 'funcall (cons 'lambda (cons nil body))))",
-        &e,
-    );
+    // A closure, direct or macro-produced, is rebound.
     for body in [
         "(push (lambda () i) fs)",
         "(flet ((g () i)) (g))",
-        "(with-thunk (print i))",
+        "(dolist (x l) (push (lambda () i) fs))",
     ] {
         let exp = eval_line(&format!("(macroexpand '(dotimes (i 3) {body}))"), &e);
         assert!(exp.contains("(LET ((I I))"), "{body}: {exp}");

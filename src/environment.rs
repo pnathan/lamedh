@@ -1332,6 +1332,30 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::StringCasefold),
         );
         env.set(
+            "STRING-UPCASE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringUpcase),
+        );
+        env.set(
+            "STRING-DOWNCASE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringDowncase),
+        );
+        env.set(
+            "CHAR-ALPHABETIC-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharAlphabetic),
+        );
+        env.set(
+            "CHAR-NUMERIC-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharNumeric),
+        );
+        env.set(
+            "CHAR-UPPERCASE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharUppercase),
+        );
+        env.set(
+            "CHAR-LOWERCASE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharLowercase),
+        );
+        env.set(
             "STRING->LIST*".to_string(),
             LispVal::Builtin(BuiltinFunc::StringToList),
         );

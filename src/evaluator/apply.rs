@@ -79,6 +79,8 @@ pub(super) fn apply(
             | BuiltinFunc::StringToNumber
             | BuiltinFunc::NumberToString
             | BuiltinFunc::StringCasefold
+            | BuiltinFunc::StringUpcase
+            | BuiltinFunc::StringDowncase
             | BuiltinFunc::StringToList
             | BuiltinFunc::StringSplit
             | BuiltinFunc::StringJoin
@@ -87,6 +89,10 @@ pub(super) fn apply(
             | BuiltinFunc::Utf8ToStringLossy
             | BuiltinFunc::Prin1ToString
             | BuiltinFunc::PrincToString => apply_string_lib(builtin, args),
+            BuiltinFunc::CharAlphabetic
+            | BuiltinFunc::CharNumeric
+            | BuiltinFunc::CharUppercase
+            | BuiltinFunc::CharLowercase => apply_char_class(builtin, args, env),
             BuiltinFunc::ReadFromString => {
                 // (read-from-string "(+ 1 2)") — parse one s-expression into
                 // data via the reader (issue #245). Enables Lisp-side tooling

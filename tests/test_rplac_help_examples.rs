@@ -23,7 +23,8 @@ fn mismatched_examples(name: &str) -> String {
             " (dolist (ex $examples (reverse acc))",
             "  (let ((actual (eval (car ex))))",
             "    (if (not (equal actual (cadr ex)))",
-            "        (setq acc (cons (list (car ex) (cadr ex) actual) acc)))))))"
+            "        (setq acc (cons (list (car ex) (cadr ex) actual) acc))",
+            "        nil)))))"
         ),
         &env,
     );

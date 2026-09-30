@@ -152,8 +152,9 @@ the value of its own iteration. Returns RESULT (with VAR bound to COUNT) or NIL.
 ;;;
 ;;; Each clause is (name (params...) body...), mirroring DEFUN/DEFMACRO.
 ;;; Bindings are parallel (LET semantics): clauses do not see one another,
-;;; which matches Common Lisp FLET / MACROLET. (LABELS-style mutual
-;;; recursion is intentionally not provided here — it would need mutation.)
+;;; which matches Common Lisp FLET / MACROLET. LABELS is the recursive
+;;; exception: it binds every name first and then SETQs each to its LAMBDA,
+;;; so the closures see one another (the classic letrec-by-mutation).
 
 (defun make-oplet-binding (head clause)
   "Turn a (name (params...) body...) clause into a LET binding
@@ -166,6 +167,18 @@ Each binding is (name (params...) body...)."
   (cons 'let
         (cons (mapcar (lambda (b) (make-oplet-binding 'lambda b)) bindings)
               body)))
+
+(defmacro labels (bindings &rest body)
+  "Locally bind named functions that may call themselves and one another
+(Common Lisp LABELS). Each binding is (name (params...) body...). Expands to
+a LET binding every name to NIL, then a SETQ of each name to its LAMBDA, then
+BODY -- so every closure captures the same, completed bindings."
+  (cons 'let
+        (cons (mapcar (lambda (b) (list (car b) nil)) bindings)
+              (append (mapcar (lambda (b)
+                                (list 'setq (car b) (cons 'lambda (cdr b))))
+                              bindings)
+                      (if body body (list nil))))))
 
 (defmacro macrolet (bindings &rest body)
   "Locally bind macros for the extent of BODY.

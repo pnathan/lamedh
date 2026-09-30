@@ -4922,7 +4922,7 @@ Removes trailing whitespace from s.
 
 **Syntax:** `(string-capitalize s)`
 
-Returns s with its first character uppercased (ASCII) and the rest lowercased.
+Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).
 
 **Examples:**
 ```lisp

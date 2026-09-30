@@ -556,6 +556,10 @@ pub(super) fn make_typed_native(name: String) -> LispVal {
                     apply_array_writeback(args, updated, env);
                     Ok(typed_to_lispval(v, &ret, env))
                 }
+                // Under an armed fuel budget the call ran metered (#502);
+                // exhaustion rides the same control-flow signal the
+                // tree-walker raises, so only the owning fence catches it.
+                Some(Err(e)) if e == crate::jit::FUEL_EXHAUSTED => Err(LispError::FuelExhausted),
                 Some(Err(e)) => Err(LispError::Generic(e)),
                 None => Err(LispError::Generic(format!(
                     "typed function {name} is not defined"
@@ -611,7 +615,15 @@ pub(super) fn make_auto_typed_native(name: String, fallback: LispVal) -> LispVal
                     None
                 };
                 if let Some(crate::jit::JitEntry::Entered(result)) = entry {
-                    let (v, updated, flags) = result.map_err(LispError::Generic)?;
+                    // Fuel exhaustion is a fence signal, never a catchable
+                    // generic error (#502), exactly as in `make_typed_native`.
+                    let (v, updated, flags) = result.map_err(|e| {
+                        if e == crate::jit::FUEL_EXHAUSTED {
+                            LispError::FuelExhausted
+                        } else {
+                            LispError::Generic(e)
+                        }
+                    })?;
                     // Set OVERFLOW before signalling a division error: the
                     // tree-walker evaluates left-to-right, so an inner overflow
                     // leaves the flag observable even when a later division by

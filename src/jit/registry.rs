@@ -328,13 +328,21 @@ impl TypedFn {
     /// frame, dispatches to the compiled edition if present (pinning it for
     /// the call), else interprets.
     fn invoke_once(&self, args: &[u64], ctx: &Ctx) -> u64 {
+        // A metered call (issue #502) charges one fuel step per function
+        // entry and runs only the reference interpreter below: native and
+        // closure editions loop internally without ever charging fuel.
+        if !ctx.charge_fuel() {
+            return ctx.alloc_buffer(0) as u64;
+        }
         // Native edition first (pinned for the call so a redefinition can't free
         // the code out from under us). `args` are the parameter words directly;
         // the native function builds its own local frame.
         #[cfg(feature = "jit")]
         {
             let native = self.native.borrow().clone();
-            if let Some(ed) = native {
+            if !ctx.metered
+                && let Some(ed) = native
+            {
                 // The native prologue reads exactly `n_params` words from the
                 // args pointer.  A stale caller compiled against an old signature
                 // may pass the wrong count; skip native (fall through to the
@@ -365,8 +373,8 @@ impl TypedFn {
         env[..args.len()].copy_from_slice(args);
         let edition = self.compiled.borrow().clone();
         match edition {
-            Some(f) => f(&mut env, ctx),
-            None => {
+            Some(f) if !ctx.metered => f(&mut env, ctx),
+            _ => {
                 let core = self.core.borrow();
                 match core.as_ref() {
                     Some(core) => eval_core(core, &mut env, ctx, self.id),
@@ -1742,6 +1750,8 @@ impl Jit {
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
+            metered: crate::evaluator::core::kernel_fuel_remaining().is_some(),
+            fuel_out: Cell::new(false),
         }
     }
 

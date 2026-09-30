@@ -69,14 +69,13 @@ fn limit_message_names_a_user_reachable_knob() {
     // Issue #520: the hint used to name the Rust-only set_eval_depth_limit.
     with_large_stack(|| {
         let env = env_with_stdlib();
-        // A runaway non-tail recursion kept on the interpreter (`dolist`, the
-        // original driver, runs in constant stack since #504, and naive
-        // recursion compiles natively since #512).
+        // Plain non-tail recursion deeper than the default limit. (This used
+        // to be a long DOLIST, which #504 made constant-stack.)
         eval_line(
-            "(defun runaway (n) (declare (no-compile)) (+ 1 (runaway (- n 1))))",
+            "(defun knob-deep (n) (declare (no-compile)) (if (= n 0) 0 (+ 1 (knob-deep (- n 1)))))",
             &env,
         );
-        let out = eval_line("(runaway 20000)", &env);
+        let out = eval_line("(knob-deep 20000)", &env);
         assert!(
             out.starts_with(
                 "Error: recursion limit exceeded (10000 eval frames); \
@@ -86,8 +85,8 @@ fn limit_message_names_a_user_reachable_knob() {
         );
         assert!(!out.contains("set_eval_depth_limit"), "got: {out}");
         // The runaway frames collapse into one counted entry.
-        assert!(out.contains("\n  in: RUNAWAY (\u{d7}"), "got: {out}");
-        assert!(!out.contains("RUNAWAY \u{2190} RUNAWAY"), "got: {out}");
+        assert!(out.contains("\n  in: KNOB-DEEP (\u{d7}"), "got: {out}");
+        assert!(!out.contains("KNOB-DEEP \u{2190} KNOB-DEEP"), "got: {out}");
     });
 }
 
@@ -145,8 +144,7 @@ fn lisp_cannot_raise_the_limit_past_the_host_ceiling() {
 
 // Since #512 an un-annotated naive fib compiles natively. Past the typed call
 // cap the native edition must stop promptly: before, frames below the cap kept
-// calling after the error was pending (exponential work, OOM-killed), and the
-// auto-typed membrane's fallback retried native at every interpreted level.
+// calling after the error was pending (exponential work, OOM-killed).
 
 #[test]
 fn native_deep_recursion_errors_promptly_for_defun_typed() {
