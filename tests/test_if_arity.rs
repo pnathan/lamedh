@@ -63,3 +63,54 @@ fn optimizers_do_not_complete_one_armed_if() {
     // An optimized one-armed IF still errors when evaluated.
     assert_arity_error("(eval (optimize-form '(if nil 1)))", &env);
 }
+
+/// Every `(if ...)` in the embedded stdlib has exactly three operands, so no
+/// stdlib body depends on the one-armed form this change rejects. Quoted data
+/// is skipped: it is never evaluated as an `IF`.
+#[test]
+fn stdlib_sources_use_only_three_operand_if() {
+    use lamedh::LispVal;
+    fn walk(v: &LispVal, file: &str, bad: &mut Vec<String>) {
+        let LispVal::Cons { car, cdr } = v else {
+            return;
+        };
+        let head = lamedh::printer::print(car);
+        if head == "QUOTE" {
+            return;
+        }
+        let mut items = vec![(**car).clone()];
+        let mut rest = (**cdr).clone();
+        while let LispVal::Cons { car, cdr } = rest {
+            items.push((*car).clone());
+            rest = (*cdr).clone();
+        }
+        if head == "IF" && items.len() != 4 {
+            bad.push(format!("{file}: {}", lamedh::printer::print(v)));
+        }
+        for item in &items {
+            walk(item, file, bad);
+        }
+    }
+    let env = env_with_stdlib();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lib");
+    let mut bad = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "lisp"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty());
+    for path in files {
+        let src = std::fs::read_to_string(&path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        for form in lamedh::reader::read_all(&src, &env).unwrap() {
+            walk(&form, &name, &mut bad);
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "non-three-operand IF in stdlib:\n{}",
+        bad.join("\n")
+    );
+}
