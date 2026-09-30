@@ -1388,6 +1388,15 @@ mod tests {
         assert!(!is_incomplete("(list #\\( #\\\")"));
         assert!(!is_incomplete("#\\("));
         assert!(is_incomplete("(list #\\)"));
+        // A named char is complete input; only its first character is
+        // skipped, the rest of the name is inert letters.
+        assert!(!is_incomplete("(list #\\Space)"));
+        assert!(!is_incomplete("#\\Space"));
+        // `#\|` is a char, not the start of a `#|` block comment.
+        assert!(!is_incomplete("(list #\\| 1)"));
+        // `#\Space(` is the char followed by an unclosed list: genuinely
+        // incomplete, exactly as the reader sees it.
+        assert!(is_incomplete("#\\Space("));
     }
 
     #[test]
