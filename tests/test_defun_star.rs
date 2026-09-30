@@ -96,7 +96,8 @@ fn check_type_of_integer_arithmetic() {
 #[test]
 fn check_type_reports_a_mismatch() {
     let env = env_with_stdlib();
-    let out = eval_line("(check-type (+ 10 1.0))", &env);
+    // An int LITERAL beside a float coerces (#530); an int expression does not.
+    let out = eval_line("(check-type (+ (+ 10 1) 1.0))", &env);
     assert!(out.contains("type error"), "got: {out}");
 }
 

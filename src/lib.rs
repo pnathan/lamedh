@@ -777,6 +777,17 @@ pub enum BuiltinFunc {
     // Unicode-aware, locale-independent case fold (issue #254); backs the
     // case-insensitive string comparison family in lib/14-strings.lisp.
     StringCasefold,
+    // Unicode full case mapping (issue #519); back STRING-UPCASE and
+    // STRING-DOWNCASE (and, one character at a time, CHAR-UPCASE and
+    // CHAR-DOWNCASE) in lib/14-strings.lisp.
+    StringUpcase,
+    StringDowncase,
+    // Unicode character classes over a code point (issue #519); back the
+    // ALPHA-P/ALPHANUMERIC-P/CHAR-UPPER-P/CHAR-LOWER-P family.
+    CharAlphabetic,
+    CharNumeric,
+    CharUppercase,
+    CharLowercase,
     // Linear-time whole-string walks (issue #510): a Lisp loop over
     // SUBSTRING rescans the UTF-8 string from the start on every character
     // index, so these back STRING->LIST, STRING-SPLIT and STRING-JOIN in

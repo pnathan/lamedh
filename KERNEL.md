@@ -94,7 +94,7 @@ order (`parse_expr`); the first match wins:
 2. string literal;
 3. `#S(` record literal;
 4. `(` list;
-5. `'x'` character literal;
+5. `'x'` character literal, then `#\x` character literal;
 6. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
    `#'` function shorthand.
 
@@ -243,6 +243,14 @@ literal. Because this production is tried before quote, `'a'` is the
 character `a` while `'a` followed by a delimiter is `(QUOTE A)`; `'(1)`
 is `(QUOTE (1))` because `(` is followed by `1`, not `'`, but `'('` is the
 character `(`.
+
+**`#\` character literals** (issue #526) are a second spelling of the same
+`Char`: `#\` followed by one character of any kind (`#\a`, `#\(`, `#\"`,
+`#\;`, `#\ `), or, when that character is alphanumeric and more
+alphanumerics follow, a name matched case-insensitively from `Space`,
+`Newline`, `Linefeed`, `Tab`, `Return`, `Page`, `Backspace`, `Escape`,
+`Rubout`, `Nul`, `Null`. Any other alphanumeric run (`#\ab`) is a parse
+error, as is a character above U+00FF. Chars always print as `'x'`.
 
 **Record literals**, `#S(TypeName field...)` (also `#s`). No whitespace is
 permitted between `#S` and `(`. The head of the inner list must be a
