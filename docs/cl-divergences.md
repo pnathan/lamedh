@@ -20,10 +20,13 @@ interpreter; when in doubt, probe (`lamedh -s '<expr>'`).
    for a float. Mixed int/float arithmetic contaminates to float, like CL.
    There is no `float`/`coerce`; multiply by `1.0` or divide to convert.
 
-3. **Character literals are `'a'`, not `#\a`.** C-style, single quotes,
-   with `\n \t \\ \'` escapes; a char is a byte (0–255), so multibyte
-   characters must be strings. `#\a` is a parse error. Note the reader
-   subtlety: `'a'` is the char, `'a` is the quoted symbol.
+3. **Character literals are `'a'`; `#\a` is accepted too.** The canonical
+   spelling is C-style, single quotes, with `\n \t \\ \'` escapes, and
+   chars always *print* that way. CL's `#\a`, `#\(` and named `#\Space`,
+   `#\Newline`, `#\Tab`, ... read as the same value (`(eq #\a 'a')`).
+   A char is a byte (0–255), so multibyte characters must be strings.
+   Note the reader subtlety: `'a'` is the char, `'a` is the quoted
+   symbol. `string->list` yields one-character *strings*, not chars.
 
 4. **`sort`, `rplaca`, and `rplacd` do not mutate.** `sort` returns a new
    list and leaves its argument untouched (CL's is destructive);
@@ -47,14 +50,22 @@ interpreter; when in doubt, probe (`lamedh -s '<expr>'`).
 | `defstruct` | removed in 0.3 | `defrecord` (branded, row-subsumable, checker-native) |
 | Packages (`defpackage`, `in-package`) | absent | one global namespace; `defmodule` for grouping |
 | Multiple values (`values`, `multiple-value-bind`) | absent | return a list or a record; `destructuring-bind` exists |
-| `labels` | absent | `flet` and `macrolet` exist; mutual local recursion needs top-level `defun` |
-| `eql`, `equalp` | absent | `eq` compares numbers/chars by value; `equal` is structural; `string=` for strings |
+| `equalp` | absent | `eq`/`eql` compare numbers/chars by value; `equal` is structural; `string=` for strings |
 | `define-condition`, `signal` | absent | errors are first-class values; raise with `error`, catch with `handler-case`/`handler-bind`/`restart-case` (all present), or Lisp 1.5 `errorset` (takes a **quoted** form) |
 | `#(1 2 3)` vector literals | absent | `(make-array n init)` / `(array ...)`; `aref`/`fetch`/`store` work |
 | Two-argument `floor`/`truncate` | absent | `(floor x)` is one-argument; `mod`/`rem` exist |
-| `type-of` | absent | `see-type` (checker verdicts), predicates (`stringp`, `floatp`, …), `record-brand` |
 
 ## Same words, different behavior
+
+- **`eql` is `eq`.** Lamedh's `eq` already compares numbers (by type and
+  value) and characters by value, so equal strings are `eql` too.
+- **`type-of`** returns a symbol (`integer`, `cons`, `character`, a
+  record's brand, ...), never a compound type specifier.
+- **`parse-integer`** returns `nil` on a miss instead of signalling, takes
+  only `:junk-allowed`, and returns no second (index) value.
+- **`labels`** is `let` + `setq` over lambdas: the local names are
+  ordinary variables in a Lisp-1, so a local name cannot shadow a special
+  form such as `go`.
 
 - **`defvar` declares a dynamic variable** (alias of `defdynamic`) and
   earmuffed `let` bindings rebind it dynamically, like CL specials —

@@ -46,7 +46,9 @@
 ;;; ---- string <-> list of chars --------------------------------------------
 
 (defun string->list (s)
-  "Return the characters of S as a list of one-character strings."
+  "Return the characters of S as a list of one-character STRINGS -- not char
+values: (string->list \"ab\") is (\"a\" \"b\"), never ('a' 'b'). Use
+CHAR->CODE on an element when a code point is wanted."
   (string->list* s))
 
 (defun list->string (chars)
@@ -59,6 +61,11 @@
   "Concatenate zero or more strings. Alias for CONCAT, named for the STRING-
 family; (string-concat) is \"\"."
   (apply #'concat strs))
+
+(defun string-length (s)
+  "Number of characters (not bytes) in string S. An alias of the kernel
+primitive STRING-LENGTH*; the generic LENGTH also accepts strings."
+  (string-length* s))
 
 (defun string-empty-p (s)
   "True if S has length zero."
@@ -183,14 +190,45 @@ family."
 
 ;;; ---- number parsing ------------------------------------------------------
 
-(defun parse-integer (s)
-  "Parse string S as an integer, returning the integer, or NIL if S does not
-denote an integer. Surrounding whitespace is ignored (via STRING->NUMBER); a
-value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
+(defun $parse-integer-whole (s)
+  "The strict reading: S as a whole denotes an integer, else NIL."
   (let ((n (string->number s)))
     (if (and (numberp n) (not (floatp n)))
         n
         nil)))
+
+(defun $parse-integer-scan (s i n pred)
+  "Index of the first character of S at or after I (S has length N) that
+does not satisfy PRED, or N."
+  (if (and (< i n) (funcall pred (substring s i (+ i 1))))
+      ($parse-integer-scan s (+ i 1) n pred)
+      i))
+
+(defun $parse-integer-prefix (s)
+  "The :JUNK-ALLOWED reading: the integer spelled by S's leading
+[whitespace][sign]digits, ignoring whatever follows; NIL if no digit."
+  (let* ((n (string-length* s))
+         (start ($parse-integer-scan s 0 n #'whitespace-p))
+         (sign (and (< start n) (substring s start (+ start 1))))
+         (digits (if (or (equal sign "+") (equal sign "-")) (+ start 1) start))
+         (end ($parse-integer-scan s digits n #'digit-p)))
+    ;; A "+" is dropped rather than handed to STRING->NUMBER, which not
+    ;; every host accepts with a sign.
+    (if (> end digits)
+        ($parse-integer-whole
+         (substring s (if (equal sign "+") digits start) end))
+        nil)))
+
+(defun parse-integer (s &key junk-allowed)
+  "Parse string S as an integer, returning the integer, or NIL if S does not
+denote an integer. Surrounding whitespace is ignored (via STRING->NUMBER); a
+value with a fractional part (e.g. \"3.14\") is rejected and yields NIL.
+With :JUNK-ALLOWED true, parse the leading [sign]digits and ignore the rest:
+(parse-integer \"12x\" :junk-allowed t) is 12. Unlike CL, a miss is NIL
+rather than an error, and there is no second (index) value."
+  (if junk-allowed
+      ($parse-integer-prefix s)
+      ($parse-integer-whole s)))
 
 ;;; ---- comparison ----------------------------------------------------------
 
