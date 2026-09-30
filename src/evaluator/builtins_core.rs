@@ -622,6 +622,47 @@ pub(super) fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, L
     }
 }
 
+/// (char-alphabetic-p* n), (char-numeric-p* n), (char-uppercase-p* n),
+/// (char-lowercase-p* n) — Unicode character classes of the code point N,
+/// via Rust's `char` methods (issue #519). Kernel-only for the same reason
+/// as STRING-CASEFOLD*: Unicode property tables are Rust's domain. On ASCII
+/// they agree exactly with the old A-Z/a-z/0-9 range checks. A non-scalar
+/// code point (a surrogate, or beyond U+10FFFF) is in no class: NIL.
+pub(super) fn apply_char_class(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    let (name, test): (&str, fn(char) -> bool) = match op {
+        BuiltinFunc::CharAlphabetic => ("char-alphabetic-p*", char::is_alphabetic),
+        BuiltinFunc::CharNumeric => ("char-numeric-p*", char::is_numeric),
+        BuiltinFunc::CharUppercase => ("char-uppercase-p*", char::is_uppercase),
+        BuiltinFunc::CharLowercase => ("char-lowercase-p*", char::is_lowercase),
+        _ => unreachable!("apply_char_class called with {:?}", op),
+    };
+    match args {
+        [LispVal::Number(n)] => {
+            let hit = u32::try_from(*n)
+                .ok()
+                .and_then(char::from_u32)
+                .is_some_and(test);
+            Ok(if hit {
+                LispVal::Symbol(env.intern_symbol("T"))
+            } else {
+                LispVal::Nil
+            })
+        }
+        [other] => Err(LispError::Generic(format!(
+            "{}: expected an integer code point, got {}",
+            name.to_uppercase(),
+            err_val(other)
+        ))),
+        _ => Err(LispError::Generic(format!(
+            "{name} requires exactly one argument"
+        ))),
+    }
+}
+
 /// String-operation kernel primitives (issue #147). These cannot be expressed
 /// in pure Lisp; the convenience layer (split/join/trim/upcase/...) is built on
 /// top of them in `lib/`.
@@ -777,6 +818,21 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
             // tables are Rust's domain, not the Lisp layer's.
             require_one("string-casefold*")?;
             let s = get_str(0, "string-casefold*")?;
+            Ok(LispVal::String(s.to_lowercase()))
+        }
+        BuiltinFunc::StringUpcase => {
+            // (string-upcase* s) — Unicode full uppercase mapping of S
+            // (issue #519): may lengthen the string ("straße" ->
+            // "STRASSE"). Identical to ASCII uppercasing on ASCII input.
+            require_one("string-upcase*")?;
+            let s = get_str(0, "string-upcase*")?;
+            Ok(LispVal::String(s.to_uppercase()))
+        }
+        BuiltinFunc::StringDowncase => {
+            // (string-downcase* s) — Unicode full lowercase mapping of S
+            // (issue #519), including the context-sensitive final sigma.
+            require_one("string-downcase*")?;
+            let s = get_str(0, "string-downcase*")?;
             Ok(LispVal::String(s.to_lowercase()))
         }
         BuiltinFunc::StringToList => {

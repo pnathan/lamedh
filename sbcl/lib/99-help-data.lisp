@@ -1913,7 +1913,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(string-capitalize s)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Returns s with its first character uppercased (ASCII) and the rest lowercased.")
+    (cons 'DESCRIPTION "Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).")
     (cons 'EXAMPLES '(((string-capitalize "hELLO world") "Hello World")))
     (cons 'SEE-ALSO '(string-upcase string-downcase))))
 
