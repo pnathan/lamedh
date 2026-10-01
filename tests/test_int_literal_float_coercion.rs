@@ -144,3 +144,48 @@ fn portable_checker_mirrors_the_literal_coercion() {
         assert!(v.contains("integer literal is not coerced"), "{v}");
     });
 }
+
+/// `quotient` is the evaluator's name for `/` (BinOp::Div natively), so an
+/// int literal beside a float64 operand coerces at arity 2 in the portable
+/// gate exactly as it does for `/` — the typed island, the native checker
+/// and the interpreter agree on both operand orders.
+#[test]
+fn quotient_coerces_int_literals_like_divide() {
+    lamedh::with_large_stack(|| {
+        let e = Environment::with_stdlib();
+        let bodies = ["(quotient (+ x 0.5) 2)", "(quotient 2 (+ x 0.5))"];
+        let inputs = ["0.5", "-2.5", "1.0", "0.0"];
+        for (i, body) in bodies.iter().enumerate() {
+            // Portable codegen-mode gate.
+            let g = format!("g530q{i}");
+            ev(&e, &format!("(defun {g} (x) {body})"));
+            assert_eq!(
+                ev(
+                    &e,
+                    &format!("(mapcar #'cadr (cdr (assoc 'members (typed-island '({g})))))")
+                ),
+                "((-> (FLOAT64) FLOAT64))",
+                "{body}"
+            );
+            assert_eq!(
+                ev(
+                    &e,
+                    &format!("(cdr (assoc 'rejected (typed-island '({g}))))")
+                ),
+                "()",
+                "{body}"
+            );
+            // Native checker compiles the same body.
+            let n = format!("n530q{i}");
+            let def = format!("(defun-typed ({n} float64) ((x float64)) {body})");
+            let r = ev(&e, &def);
+            assert!(!r.starts_with("ERR"), "{def} => {r}");
+            assert_eq!(ev(&e, &format!("(compiled-p '{n})")), "NATIVE", "{def}");
+            for x in inputs {
+                let want = ev(&e, &format!("(let ((x {x})) {body})"));
+                assert_eq!(ev(&e, &format!("({n} {x})")), want, "{body} at x = {x}");
+                assert_eq!(ev(&e, &format!("({g} {x})")), want, "{body} at x = {x}");
+            }
+        }
+    });
+}

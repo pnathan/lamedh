@@ -1056,11 +1056,12 @@ too; `-` needs at least one operand. Mirrors Cx::elab_bin's checking path."
          (t ta))))
     ;; #530: an integer LITERAL meeting a float64 operand types as float64
     ;; (the evaluator promotes it with `as f64`); `+`/`*` at any arity, `-`
-    ;; and `/` only at arity 2, `mod` never. LITS is T while every operand so
+    ;; and `/` (alias `quotient`, BinOp::Div natively) only at arity 2, `mod`
+    ;; never. LITS is T while every operand so
     ;; far is an int literal, so a later float64 operand re-types that prefix.
     (t (let ((ty (hm-elab state tyenv (car args)))
              (coerces (or (member op '(+ *))
-                          (and (member op '(- /)) (= (length args) 2))))
+                          (and (member op '(- / quotient)) (= (length args) 2))))
              (lits (hm-int-literal-p (car args))))
          (hm-reject-boxed! state ty)
          (mapc (lambda (a)
