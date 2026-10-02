@@ -412,8 +412,8 @@ T'
             fail=$((fail+1))
         fi
     }
-    err_case undefined_function 1 "1" "lamedhc: unhandled error: not a function: LENGTH" \
-        '(PRINT 1) (LENGTH (LIST 1 2))'
+    err_case undefined_function 1 "1" "lamedhc: unhandled error: not a function: NO-SUCH-FUNCTION" \
+        '(PRINT 1) (NO-SUCH-FUNCTION (LIST 1 2))'
     err_case arity_too_few 1 "" "wrong number of arguments (got . expected): (1 . 2)" \
         '(DEFUN F2 (A B) (LIST A B)) (PRINT (F2 1))'
     err_case arity_too_many 1 "" "wrong number of arguments (got . expected): (3 . 1)" \
