@@ -31,6 +31,8 @@ extern emit_mov_rr
 extern emit_add_rr
 extern emit_sub_rr
 extern emit_cmp_rr
+extern emit_or_rr
+extern emit_test_reg8_imm8
 extern emit_imul_rr
 extern emit_sar_imm8
 extern emit_push_reg
@@ -81,6 +83,7 @@ extern fixp_tagged
 extern floatp_tagged
 extern arrayp_tagged
 extern charp_tagged
+extern generic_binop
 extern float_sqrt
 extern float_sin
 extern float_cos
@@ -3369,8 +3372,15 @@ emit_coerce_char_in_rax:
     mov edi, IMM_CHAR_BASE
     call emit_sub_rax_imm32                             ; target: rax -= 256
 
+    ; not emit_cmp_rax_imm64: that loads its immediate through rcx,
+    ; which holds the original operand the restore stub below needs
+    ; (a non-Char immediate such as NIL was "restored" as fixnum 0).
     mov rsi, 0
-    call emit_cmp_rax_imm64                               ; target: cmp rax, 0
+    mov dil, REG_RDX
+    call emit_mov_reg_imm64                               ; target: rdx = 0
+    mov dil, REG_RAX
+    mov sil, REG_RDX
+    call emit_cmp_rr                                        ; target: cmp rax, rdx
     call emit_jl                                            ; rax<0 -> skip (index was <256)
     mov r12, rax                                              ; [site: below_range]
 
@@ -3399,13 +3409,19 @@ emit_coerce_char_in_rax:
     call emit_jmp32
     mov r14, rax                     ; [site: success, over the restore stub]
 
+    ; patch_rel32 returns field+4 in rax, not the target — re-read the
+    ; (unchanged) position for each patch. Reusing rax sent both range
+    ; checks' jl backward into the check itself: any non-Char immediate
+    ; operand (`(+ 1 NIL)`, `(< T 2)`) spun forever.
     call codegen_here
     mov rdi, rbx
     mov rsi, rax
     call patch_rel32                    ; not_immediate -> restore stub
+    call codegen_here
     mov rdi, r12
     mov rsi, rax
     call patch_rel32                      ; below_range -> restore stub
+    call codegen_here
     mov rdi, r13
     mov rsi, rax
     call patch_rel32                        ; above_range -> restore stub
@@ -3429,12 +3445,54 @@ emit_coerce_char_in_rax:
 ; compile_binop(rdi=lhs form, rsi=rhs form, dl='+'/'-'/'*'/'<'/'=' as ASCII)
 ; Compiles both operands (lhs pushed across rhs's own compilation, since
 ; rhs may itself contain calls that would otherwise clobber rax), then
-; emits the fixnum-tagged operation. Leaves the result in rax.
+; emits the operation. Leaves the result in rax.
+;
+; The raw add/sub/imul/cmp below are only correct on two tagged
+; fixnums — on a float or any other heapobj they operate on pointer
+; bits and return garbage (#543). So the emitted code is guarded:
+;
+;     mov rcx, rax
+;     or rcx, rbx
+;     test cl, 3          ; both tag bits 00 <=> both fixnums
+;     jne .slow
+;     <inline fixnum op>
+; .done:
+;     ...
+; .slow:                  ; cold: after the enclosing function's ret
+;     mov rsi, rax
+;     mov rdx, rbx
+;     mov rdi, <op>
+;     mov rcx, generic_binop
+;     call rcx            ; float contagion / type error (floats.asm)
+;     jmp .done
+;
+; A fixnum literal operand's tag is known here, so only the other
+; operand is tested (`test al, 3` / `test bl, 3`); two literals get no
+; guard. The slow stub is deferred to the cold region after the
+; enclosing code unit's `ret` (defer_binop_stub / flush_binop_stubs),
+; so the fixnum path is straight-line: the guard plus one not-taken
+; branch. An inline stub would need a taken `jmp` over itself on every
+; fixnum operation: that measured 15-25% slower on a tight fixnum loop,
+; against ~5% for this layout.
 compile_binop:
     push rbx
     push r12
+    push r13
+    push r15
     mov bl, dl                    ; remember which op
     mov r12, rsi                  ; save rhs form (rdi is about to change)
+    ; r15 = which operands are fixnum literals (bit 0 lhs, bit 1 rhs):
+    ; a literal's tag is known at compile time, so the guard below only
+    ; tests the other operand, and two literals need no guard at all.
+    xor r15d, r15d
+    test dil, TAG_MASK
+    jnz .lhs_not_lit
+    or r15d, 1
+.lhs_not_lit:
+    test sil, TAG_MASK
+    jnz .rhs_not_lit
+    or r15d, 2
+.rhs_not_lit:
 
     call compile_form              ; rdi = lhs -> rax
     call emit_coerce_char_in_rax     ; Part V contagion: a Char lhs
@@ -3450,6 +3508,29 @@ compile_binop:
     call emit_mov_rr                   ; rbx = rhs
     mov dil, REG_RAX
     call emit_pop_reg                    ; rax = lhs
+
+    xor r13d, r13d                         ; no guard (both literals)
+    cmp r15d, 3
+    je .guarded
+    mov dil, REG_RBX                       ; lhs literal: test bl, 3
+    cmp r15d, 1
+    je .guard_test
+    mov dil, REG_RAX                       ; rhs literal: test al, 3
+    cmp r15d, 2
+    je .guard_test
+    mov dil, REG_RCX
+    mov sil, REG_RAX
+    call emit_mov_rr                       ; rcx = lhs
+    mov dil, REG_RCX
+    mov sil, REG_RBX
+    call emit_or_rr                          ; rcx |= rhs
+    mov dil, REG_RCX                           ; test cl, 3
+.guard_test:
+    mov sil, TAG_MASK
+    call emit_test_reg8_imm8
+    call emit_jne
+    mov r13, rax                                 ; [site: -> slow path]
+.guarded:
 
     cmp bl, '+'
     jne .not_add
@@ -3497,9 +3578,125 @@ compile_binop:
     mov edi, IMM_NIL
     call emit_add_rax_imm32
 .done:
+    test r13, r13
+    jz .out                                        ; unguarded: no slow path
+    call codegen_here                              ; resume address
+    mov rdi, r13
+    movzx esi, bl
+    mov rdx, rax
+    call defer_binop_stub
+.out:
+    pop r15
+    pop r13
     pop r12
     pop rbx
     ret
+
+%define BINOP_STUB_MAX 4096
+
+; defer_binop_stub(rdi=jne rel32 site, sil=op, rdx=resume address)
+; Records one compile_binop slow path for flush_binop_stubs. If the
+; table is full, the stub is emitted inline right here instead, behind a
+; jmp over itself: correct, only slower, never a silently dropped site.
+defer_binop_stub:
+    mov rax, [binop_stub_count]
+    cmp rax, BINOP_STUB_MAX
+    jae .inline
+    lea rcx, [rax+rax*2]
+    lea r8, [rel binop_stubs]
+    mov [r8+rcx*8], rdi
+    movzx esi, sil
+    mov [r8+rcx*8+8], rsi
+    mov [r8+rcx*8+16], rdx
+    inc qword [binop_stub_count]
+    ret
+.inline:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdi
+    mov r12d, esi
+    call emit_jmp32
+    mov r13, rax                                   ; [site: jmp over stub]
+    mov rdi, rbx
+    mov esi, r12d
+    call emit_binop_stub
+    call codegen_here
+    mov rdi, r13
+    mov rsi, rax
+    call patch_rel32
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; flush_binop_stubs() — emits every pending compile_binop slow stub at
+; the current position and empties the table. Called only right after a
+; code unit's final `ret` (compile_lambda, compile_thunk), inside the
+; region those already jump over, so ordinary fallthrough never reaches
+; a stub. Entries recorded by an enclosing function still being compiled
+; are flushed here too: any position fallthrough cannot reach will do,
+; and every JIT-to-JIT rel32 stays within the one code heap.
+flush_binop_stubs:
+    push rbx
+    push r12
+    xor r12d, r12d
+.loop:
+    cmp r12, [binop_stub_count]
+    jae .done
+    lea rbx, [r12+r12*2]
+    lea rax, [rel binop_stubs]
+    lea rbx, [rax+rbx*8]
+    mov rdi, [rbx]
+    mov rsi, [rbx+8]
+    call emit_binop_stub
+    call emit_jmp32
+    mov rdi, rax
+    mov rsi, [rbx+16]
+    call patch_rel32                               ; stub -> resume
+    inc r12
+    jmp .loop
+.done:
+    mov qword [binop_stub_count], 0
+    pop r12
+    pop rbx
+    ret
+
+; emit_binop_stub(rdi=jne rel32 site, sil=op) — patches the guard's jne
+; to land here and emits the call into generic_binop (operands in
+; target rax/rbx, result in rax). The caller emits the way back.
+emit_binop_stub:
+    push rbx
+    push r12
+    mov rbx, rdi
+    movzx r12d, sil
+    call codegen_here
+    mov rdi, rbx
+    mov rsi, rax
+    call patch_rel32                               ; jne -> here
+    mov dil, REG_RSI
+    mov sil, REG_RAX
+    call emit_mov_rr                                 ; rsi = lhs
+    mov dil, REG_RDX
+    mov sil, REG_RBX
+    call emit_mov_rr                                   ; rdx = rhs
+    mov rsi, r12
+    mov dil, REG_RDI
+    call emit_mov_reg_imm64                              ; rdi = op
+    lea rsi, [rel generic_binop]
+    mov dil, REG_RCX
+    call emit_mov_reg_imm64
+    mov dil, REG_RCX
+    call emit_call_reg                                     ; call generic_binop
+    pop r12
+    pop rbx
+    ret
+
+section .bss
+align 8
+binop_stub_count: resq 1
+binop_stubs: resq 3*BINOP_STUB_MAX     ; [jne site, op, resume] per entry
+section .text
 
 ; compile_progn(rdi = forms list, rsi = tail) — emits code evaluating
 ; each form in order; target rax holds the last one's value, or NIL for
@@ -4999,6 +5196,7 @@ compile_lambda:
 
     call emit_leave
     call emit_ret
+    call flush_binop_stubs                           ; cold, inside the jump-over
 
     call codegen_here
     mov rdi, [rsp+16]                                ; jmp_over_site
@@ -10216,6 +10414,7 @@ compile_thunk:
     call compile_form
     call emit_leave
     call emit_ret
+    call flush_binop_stubs           ; cold, inside the jump-over
 
     pop rdi                          ; sub_field
     mov rax, [max_frame_depth]

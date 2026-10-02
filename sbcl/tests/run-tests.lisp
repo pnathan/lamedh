@@ -15,7 +15,7 @@
   '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
     "60-special-forms" "65-loops" "70-hash-and-plist" "90-bitwise"
-    "95-stdlib-batteries" "96-format-and-io" "97-common-forms"
+    "95-stdlib-batteries" "96-format-and-io" "97-common-forms" "97-no-ratios"
     "97-port-regressions"))
 
 (dolist (name *test-files*)
@@ -23,6 +23,8 @@
                                 (merge-pathnames "./" *load-pathname*))))
     (format t "~&; loading ~A~%" name)
     (run-string (uiop:read-file-string path))))
+
+(load (merge-pathnames "host-regressions.lisp" *load-pathname*))
 
 ;; Shell-level CLI exit-status check (#535): runs the documented script
 ;; invocation in child SBCL processes and checks their exit codes.
@@ -48,6 +50,7 @@
     ok))
 
 (let ((ok (leval (lread "(run-tests)") *global-env*))
+      (host-ok (run-host-regressions))
       (cli-ok (run-cli-exit-status-test))
       (factory-ok (run-factory-bound-test)))
-  (uiop:quit (if (and (eq ok *t-sym*) cli-ok factory-ok) 0 1)))
+  (uiop:quit (if (and (eq ok *t-sym*) host-ok cli-ok factory-ok) 0 1)))
