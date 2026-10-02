@@ -119,7 +119,7 @@ layout:
 ```lisp
 (defun hd (xs) (car xs))
 (explain-compile 'hd)
-; => ((TIER . CHECKED) (SCHEME FORALL (A) (-> ((LIST A)) A)) (BLOCKER . "call to unknown function `CAR`"))
+; => ((TIER . CHECKED) (SCHEME FORALL (A) (-> ((LIST A)) A)) (BLOCKER . "builtin `CAR` is not supported in compiled code"))
 ```
 
 A `(declare (no-compile))` pin shows up as its own blocker text, so
@@ -200,7 +200,7 @@ at.
 (compiled-p 'mk)
 ; => ()
 (why-not-typed 'mk)
-; => "call to unknown function `CONS`"
+; => "builtin `CONS` is not supported in compiled code"
 ```
 
 `mk` builds a cons, which has no unboxed layout, so `defun*` silently kept it

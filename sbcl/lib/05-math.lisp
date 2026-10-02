@@ -42,4 +42,6 @@
 
 (defun abs (x)
   "Absolute value"
-  (if (minusp x) (- x) x))
+  ;; `(+ x 0)`, not `x`: -0.0 is not MINUSP, and -0.0 + 0 = +0.0 (#518).
+  ;; For an integer it is the identity.
+  (if (minusp x) (- x) (+ x 0)))

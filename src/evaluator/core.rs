@@ -152,7 +152,7 @@ pub fn kernel_fuel_remaining() -> Option<u64> {
 /// enclosing fence's budget, never free, and it is not regranted until the
 /// counter is next (re)armed by [`set_kernel_fuel`].
 #[inline]
-pub(super) fn charge_kernel_fuel() -> Result<(), LispError> {
+pub(crate) fn charge_kernel_fuel() -> Result<(), LispError> {
     KERNEL_FUEL.with(|f| {
         let v = f.get();
         if v < 0 {
