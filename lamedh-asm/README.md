@@ -68,7 +68,15 @@ instead.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
   and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
-  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound.
+  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. The
+  inline fixnum code runs only after a tag check on both operands
+  (only the non-literal one when the other is a fixnum literal);
+  anything else branches to an out-of-line stub, emitted after the
+  enclosing function's `ret`, that calls `generic_binop`
+  (`floats.asm`): Part V float contagion (`(+ 1 2.0)` is `3.0`,
+  `(= 1 1.0)` is `T`) and a catchable error for a non-number (#543 —
+  these used to add and compare the raw tagged words, pointers
+  included; `tests/cases/070_numeric_contagion.asm`).
 - `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`,
   `BLOCK`/`RETURN-FROM`, `WHILE`, `PROG`/`GO`/`RETURN` (lexical v0 scope
   — see "KERNEL.md conformance" above) as real special forms (Part
@@ -1063,9 +1071,10 @@ concrete reason it landed last of the three features in its spec:
   kernel surface" above. `PRINT` of a float is always fixed
   6-decimal-place formatting (`3.500000`), never scientific notation
   or shortest round-trip output; there is no `FLOAT<`-style family for
-  `<=`/`>`/`>=`/`=` yet, and no mixed fixnum/float arithmetic (`(F+ 1
-  2.0)` does not work — both operands must already be floats; use
-  `FLOAT` to convert first).
+  `<=`/`>`/`>=`/`=` yet, and the `F`-prefixed ops take no mixed
+  operands (`(F+ 1 2.0)` does not work — both operands must already be
+  floats; use `FLOAT` to convert first). The generic `+ - * < =` do
+  mix fixnums and floats (Part V contagion, `generic_binop`).
 - File descriptor I/O is exactly Linux's: `(FD-READ fd n)` returns
   the string one `read(2)` returned (up to `n` bytes, `""` at end of
   input) and `(FD-WRITE fd s)` writes every byte, looping on a short

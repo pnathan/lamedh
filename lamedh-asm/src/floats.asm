@@ -317,6 +317,70 @@ float_arg:
     mov rdx, math_type_msg_len
     call fail_wrong_type                  ; never returns
 
+; generic_binop(rdi='+'/'-'/'*'/'<'/'=' as ASCII, rsi=lhs, rdx=rhs) -> rax
+; The out-of-line slow path of every compiled binary `+ - * < =`
+; (compile_binop, compiler.asm): the inline code there runs only when
+; both tagged operands are fixnums (Chars already coerced to their code
+; points), and calls this for everything else. KERNEL.md Part V
+; contagion: every operand is converted to f64 (float_arg — a fixnum
+; widened, a float unboxed, anything else a HANDLER-CASE-catchable
+; condition whose ERROR-DATA is the culprit) and the operation runs in
+; floating point. + - * return a new float; < and = return
+; IMM_TRUE/IMM_NIL, both NIL when either side is NaN (`=` is exact IEEE
+; `==`, so (= NaN NaN) is NIL — unlike EQ, Part IV).
+;
+; Precondition: at least one operand is not a fixnum. Two fixnums never
+; reach this routine from compiled code; if they did, the result would
+; be a float where Part V requires the integer path.
+global generic_binop
+generic_binop:
+    push rbx
+    push r12
+    sub rsp, 8                     ; spill slot for the lhs double
+    mov rbx, rdi                   ; op
+    mov r12, rdx                   ; rhs
+    mov rdi, rsi
+    call float_arg                   ; xmm0 = lhs (or signals)
+    movsd [rsp], xmm0
+    mov rdi, r12
+    call float_arg                     ; xmm0 = rhs (or signals)
+    movsd xmm1, xmm0                     ; xmm1 = rhs
+    movsd xmm0, [rsp]                      ; xmm0 = lhs
+    movzx ecx, bl                            ; op, freed of rbx
+    add rsp, 8
+    pop r12
+    pop rbx
+    cmp cl, '+'
+    jne .not_add
+    addsd xmm0, xmm1
+    jmp make_float
+.not_add:
+    cmp cl, '-'
+    jne .not_sub
+    subsd xmm0, xmm1
+    jmp make_float
+.not_sub:
+    cmp cl, '*'
+    jne .not_mul
+    mulsd xmm0, xmm1
+    jmp make_float
+.not_mul:
+    cmp cl, '<'
+    jne .not_lt
+    comisd xmm1, xmm0                ; rhs <=> lhs
+    seta al                            ; lhs < rhs; unordered sets CF -> 0
+    jmp .bool_from_al
+.not_lt:
+    ; '='
+    ucomisd xmm0, xmm1
+    sete al                              ; ZF: equal, or unordered
+    setnp cl                               ; PF clear: ordered
+    and al, cl
+.bool_from_al:
+    movzx eax, al
+    lea eax, [rax*4 + IMM_NIL]           ; 0 -> IMM_NIL, 1 -> IMM_TRUE
+    ret
+
 global float_sqrt
 float_sqrt:
     call float_arg
