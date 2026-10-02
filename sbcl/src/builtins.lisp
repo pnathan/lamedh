@@ -258,15 +258,51 @@ without evaluating it further."
 
 (defun numify (x) (if (characterp x) (char-code x) x))
 
+(defmacro with-ieee-floats (&body body)
+  "Run BODY with SBCL's float traps masked, so float arithmetic yields the
+IEEE-754 results KERNEL §V and the reference implementation specify
+(inf, -inf, NaN) instead of signalling CL arithmetic conditions. Integer
+division by zero is a software check, unaffected by the masking."
+  `(sb-int:with-float-traps-masked (:divide-by-zero :invalid :overflow) ,@body))
+
+(defvar *nan*
+  (sb-int:with-float-traps-masked (:invalid)
+    (- sb-ext:double-float-positive-infinity sb-ext:double-float-positive-infinity)))
+
+(defun real-or-nan (x)
+  "CL returns a complex where IEEE (and Rust's f64) yields NaN."
+  (if (complexp x) *nan* x))
+
+(defun ln (x)
+  "Natural log with IEEE semantics: a negative argument is NaN, not a CL
+complex; zero is -inf."
+  (with-ieee-floats
+    (let ((d (coerce x 'double-float)))
+      (if (minusp d) *nan* (log d)))))
+
+(defun saturating-round (fn x y)
+  "Apply the CL rounding FN (FLOOR/CEILING/TRUNCATE) to X/Y. When a float is
+involved and the quotient is NaN or outside the i64 range, saturate the way
+Rust's float-to-int `as` cast does: NaN -> 0, +/-inf and overflow clamp to
+the i64 bounds."
+  (with-ieee-floats
+    (let ((q (if (or (floatp x) (floatp y)) (/ x y) nil)))
+      (cond ((null q) (values (funcall fn x y)))
+            ((sb-ext:float-nan-p q) 0)
+            ((>= q 9.223372036854775808d18) (1- (expt 2 63)))
+            ((< q -9.223372036854775808d18) (- (expt 2 63)))
+            (t (values (funcall fn x y)))))))
+
 ;;; Two fixnum arguments -- the overwhelmingly common call -- skip the
-;;; &rest MAPCAR/APPLY round trip; NUMIFY is the identity on them, so the
-;;; result is the same (#542).
+;;; &rest MAPCAR/APPLY round trip; NUMIFY is the identity on them and no
+;;; float trap can fire, so the result is the same (#542). Everything else
+;;; runs with float traps masked (IEEE results, #534).
 (macrolet ((wrap (name fn)
              `(defbuiltin ,name (&rest args)
                 (if (and (consp args) (consp (cdr args)) (null (cddr args))
                          (typep (car args) 'fixnum) (typep (cadr args) 'fixnum))
                     (,fn (car args) (cadr args))
-                    (apply #',fn (mapcar #'numify args))))))
+                    (with-ieee-floats (apply #',fn (mapcar #'numify args)))))))
   (wrap "+" +) (wrap "-" -) (wrap "*" *)
   (wrap "PLUS" +) (wrap "TIMES" *)
   (wrap "=" =) (wrap "<" <) (wrap ">" >)
@@ -277,12 +313,13 @@ without evaluating it further."
 (defun lamedh-divide (a b)
   "Integer / -- truncating (C/Rust-style integer division), not CL's exact
 rational result -- when both arguments are integers; ordinary float
-division otherwise. Exactly two arguments, as in the reference: no
+division otherwise, with IEEE-754 results (inf, -inf, NaN) for a zero
+float divisor. Exactly two arguments, as in the reference: no
 single-argument reciprocal, so no CL ratio can ever be produced."
   (let ((a (numify a)) (b (numify b)))
     (if (and (integerp a) (integerp b))
         (values (truncate a b))
-        (/ a b))))
+        (with-ieee-floats (/ a b)))))
 (defbuiltin "/" (&rest args)
   (unless (= (length args) 2)
     (lamedh-error "/ requires exactly two arguments"))
@@ -299,13 +336,16 @@ single-argument reciprocal, so no CL ratio can ever be produced."
       (if (minusp r) (+ r (abs b)) r))))
 (defbuiltin "REMAINDER" (a b) (rem (numify a) (numify b)))
 (defun lamedh-expt (a b)
-  "EXPT without CL ratios: an integer base raised to a negative integer
-exponent is computed in double-float, as the reference does (so 3^-2 is
-0.1111111111111111, not 1/9, and 0^-1 is inf, not DIVISION-BY-ZERO)."
-  (if (and (integerp b) (minusp b) (or (integerp a) (floatp a)))
-      (sb-int:with-float-traps-masked (:divide-by-zero :overflow :underflow :inexact)
-        (expt (coerce a 'double-float) b))
-      (expt a b)))
+  "EXPT without CL ratios or complexes, with IEEE-754 results: an integer
+base raised to a negative integer exponent is computed in double-float, as
+the reference does (so 3^-2 is 0.1111111111111111, not 1/9, and 0^-1 is
+inf, not DIVISION-BY-ZERO); overflow is inf, and a result CL would make
+complex, such as (expt -8 0.5), is NaN."
+  (with-ieee-floats
+    (real-or-nan
+     (if (and (integerp b) (minusp b) (or (integerp a) (floatp a)))
+         (expt (coerce a 'double-float) b)
+         (expt a b)))))
 (defbuiltin "EXPT" (a b) (lamedh-expt (numify a) (numify b)))
 (defbuiltin "ZEROP" (x)
   ;; KERNEL: ZEROP accepts only a fixnum -- (zerop 0.0) is an error.
@@ -319,7 +359,9 @@ exponent is computed in double-float, as the reference does (so 3^-2 is
 (defbuiltin "SUB1" (x) (- (numify x) 1))
 (env-set-local *global-env* (lsym "1+") (lambda (x) (+ (numify x) 1)))
 (env-set-local *global-env* (lsym "1-") (lambda (x) (- (numify x) 1)))
-(defbuiltin "SQRT" (x) (sqrt (coerce x 'double-float)))
+(defbuiltin "SQRT" (x)
+  (with-ieee-floats
+    (let ((d (coerce x 'double-float))) (if (minusp d) *nan* (sqrt d)))))
 (defbuiltin "ISQRT" (x) (isqrt x))
 
 (defvar *lamedh-random-state* (make-random-state t)
@@ -339,20 +381,25 @@ code sharing this Lisp image.")
   ;; a Monte Carlo estimate converges), never on the exact sequence.
   (setf *lamedh-random-state* (sb-ext:seed-random-state n))
   n)
-(defbuiltin "SIN" (x) (sin (coerce x 'double-float)))
-(defbuiltin "COS" (x) (cos (coerce x 'double-float)))
-(defbuiltin "TAN" (x) (tan (coerce x 'double-float)))
-(defbuiltin "LOG" (x &optional base) (if base (log (coerce x 'double-float) (coerce base 'double-float)) (log (coerce x 'double-float))))
-(defbuiltin "EXP" (x) (exp (coerce x 'double-float)))
-(defbuiltin "FLOOR" (x &optional (y 1)) (values (floor x y)))
-(defbuiltin "CEILING" (x &optional (y 1)) (values (ceiling x y)))
+(defbuiltin "SIN" (x) (with-ieee-floats (sin (coerce x 'double-float))))
+(defbuiltin "COS" (x) (with-ieee-floats (cos (coerce x 'double-float))))
+(defbuiltin "TAN" (x) (with-ieee-floats (tan (coerce x 'double-float))))
+(defbuiltin "LOG" (x &optional base)
+  "ln(x), or ln(x)/ln(base) -- Rust's f64::log."
+  (if base (with-ieee-floats (/ (ln x) (ln base))) (ln x)))
+(defbuiltin "EXP" (x) (with-ieee-floats (exp (coerce x 'double-float))))
+(defbuiltin "FLOOR" (x &optional (y 1)) (saturating-round #'floor x y))
+(defbuiltin "CEILING" (x &optional (y 1)) (saturating-round #'ceiling x y))
 (defbuiltin "ROUND" (x &optional (y 1))
   "Round half AWAY FROM ZERO (C/Rust f64::round convention), not CL's
 round-half-to-even."
-  (let ((q (/ x y)))
-    (if (minusp q) (- (floor (+ (- q) 1/2))) (floor (+ q 1/2)))))
-(defbuiltin "TRUNCATE" (x &optional (y 1)) (values (truncate x y)))
-(defbuiltin "SIGNUM" (x) (let ((s (signum x))) (if (floatp x) s (truncate s))))
+  (saturating-round
+   (lambda (x y)
+     (let ((q (/ x y)))
+       (if (minusp q) (- (floor (+ (- q) 1/2))) (floor (+ q 1/2)))))
+   x y))
+(defbuiltin "TRUNCATE" (x &optional (y 1)) (saturating-round #'truncate x y))
+(defbuiltin "SIGNUM" (x) (with-ieee-floats (let ((s (signum x))) (if (floatp x) s (truncate s)))))
 (defbuiltin "FLOAT" (x) (coerce x 'double-float))
 
 ;;; ---- strings ------------------------------------------------------------------
