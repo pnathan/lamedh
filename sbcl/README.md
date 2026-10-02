@@ -63,9 +63,9 @@ sbcl --non-interactive --load tests/run-tests.lisp
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
 port-only files with no verbatim `tests/lisp/` counterpart
-(`97-no-ratios.lisp`, `97-port-regressions.lisp`) — and runs
+(`11-mod-euclidean.lisp`, `97-no-ratios.lisp`, `97-port-regressions.lisp`) — and runs
 them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **655 assertions** across
+At the time of writing this passes all **677 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
