@@ -12,6 +12,11 @@ pub const DEFAULT_EVAL_DEPTH_LIMIT: usize = 10_000;
 thread_local! {
     static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) };
     static EVAL_DEPTH_LIMIT: Cell<usize> = const { Cell::new(DEFAULT_EVAL_DEPTH_LIMIT) };
+    /// The most Lisp code may raise the limit to with `SET-EVAL-DEPTH-LIMIT!`
+    /// (issue #520): whatever the host last set via [`set_eval_depth_limit`].
+    /// Only the host knows how big the native stack is, so Lisp — possibly
+    /// sandboxed — may lower the limit and restore it, never exceed this.
+    static EVAL_DEPTH_CEILING: Cell<usize> = const { Cell::new(DEFAULT_EVAL_DEPTH_LIMIT) };
 }
 
 thread_local! {
@@ -147,7 +152,7 @@ pub fn kernel_fuel_remaining() -> Option<u64> {
 /// enclosing fence's budget, never free, and it is not regranted until the
 /// counter is next (re)armed by [`set_kernel_fuel`].
 #[inline]
-pub(super) fn charge_kernel_fuel() -> Result<(), LispError> {
+pub(crate) fn charge_kernel_fuel() -> Result<(), LispError> {
     KERNEL_FUEL.with(|f| {
         let v = f.get();
         if v < 0 {
@@ -273,23 +278,56 @@ pub(crate) fn bt_capture(
     base: usize,
     env: &crate::Shared<crate::environment::Environment>,
 ) -> Vec<String> {
-    let names = BT_STACK.with(|s| {
+    bt_capture_runs(base, env)
+        .into_iter()
+        .flat_map(|(name, n)| std::iter::repeat_n(name, n))
+        .take(64)
+        .collect()
+}
+
+/// [`bt_capture`], with runs of identical adjacent frames collapsed into
+/// `(name, count)` (issue #520: runaway recursion is one `F (×9998)` entry,
+/// not a wall of `F ← F ← …`). Counts span the whole stack; at most 64 runs
+/// are kept. LAST-BACKTRACE still gets the first 64 frames, uncollapsed.
+pub(crate) fn bt_capture_runs(
+    base: usize,
+    env: &crate::Shared<crate::environment::Environment>,
+) -> Vec<(String, usize)> {
+    let runs = BT_STACK.with(|s| {
         let mut s = s.borrow_mut();
-        let names: Vec<String> = s[base.min(s.len())..]
-            .iter()
-            .rev()
-            .take(64)
-            .filter_map(|id| env.symbol_by_id(*id).map(|sym| sym.borrow().name.clone()))
-            .collect();
+        let mut runs: Vec<(u32, usize)> = Vec::new();
+        for &id in s[base.min(s.len())..].iter().rev() {
+            if let Some((last, n)) = runs.last_mut()
+                && *last == id
+            {
+                *n += 1;
+            } else if runs.len() == 64 {
+                break;
+            } else {
+                runs.push((id, 1));
+            }
+        }
         s.truncate(base);
-        names
+        runs
     });
     BT_CTL.with(|c| {
         let v = c.get();
         c.set(ctl_pack(base.min(ctl_len(v)), ctl_base(v)));
     });
-    BT_LAST.with(|l| *l.borrow_mut() = names.clone());
-    names
+    let runs: Vec<(String, usize)> = runs
+        .into_iter()
+        .filter_map(|(id, n)| {
+            env.symbol_by_id(id)
+                .map(|sym| (sym.borrow().name.clone(), n))
+        })
+        .collect();
+    let names: Vec<String> = runs
+        .iter()
+        .flat_map(|(name, n)| std::iter::repeat_n(name.clone(), *n))
+        .take(64)
+        .collect();
+    BT_LAST.with(|l| *l.borrow_mut() = names);
+    runs
 }
 
 /// The most recently captured backtrace (innermost frame first).
@@ -297,9 +335,29 @@ pub(crate) fn bt_last() -> Vec<String> {
     BT_LAST.with(|l| l.borrow().clone())
 }
 
-/// Set the maximum `eval` recursion depth for the current thread.
+/// Set the maximum `eval` recursion depth for the current thread. This is
+/// also the ceiling Lisp code may raise the limit back up to with
+/// `(set-eval-depth-limit! n)`.
 pub fn set_eval_depth_limit(limit: usize) {
     EVAL_DEPTH_LIMIT.with(|l| l.set(limit));
+    EVAL_DEPTH_CEILING.with(|c| c.set(limit));
+}
+
+/// The Lisp-level setter behind `(set-eval-depth-limit! n)`: set the current
+/// thread's limit to `limit`, which must be in `1..=` the host ceiling.
+/// Returns the previous limit.
+pub(crate) fn set_eval_depth_limit_from_lisp(limit: i64) -> Result<usize, LispError> {
+    let ceiling = EVAL_DEPTH_CEILING.with(|c| c.get());
+    let Some(limit) = usize::try_from(limit)
+        .ok()
+        .filter(|&l| l >= 1 && l <= ceiling)
+    else {
+        return Err(LispError::Generic(format!(
+            "SET-EVAL-DEPTH-LIMIT!: limit must be between 1 and {ceiling} (the host's \
+             ceiling; raise it with `lamedh --max-depth N`), got {limit}"
+        )));
+    };
+    Ok(EVAL_DEPTH_LIMIT.with(|l| l.replace(limit)))
 }
 
 /// Get the current thread's maximum `eval` recursion depth.
@@ -319,7 +377,7 @@ impl DepthGuard {
             if next > limit {
                 Err(LispError::Generic(format!(
                     "recursion limit exceeded ({limit} eval frames); \
-                     rewrite iteratively or raise it with set_eval_depth_limit"
+                     rewrite iteratively or raise it with `lamedh --max-depth N`"
                 )))
             } else {
                 depth.set(next);

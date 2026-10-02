@@ -40,6 +40,10 @@ the recursion-depth guard fires. Two options:
 - **Alternative**: lower the recursion limit with
   `lamedh::set_eval_depth_limit(n)` so the guard fires earlier.
 
+The value passed to `set_eval_depth_limit` is also the ceiling for Lisp's
+`(set-eval-depth-limit! n)`: scripts may lower the limit and restore it, but
+never raise it past what the host set.
+
 `LispVal` and `Environment` are `!Send`, so you must create the environment
 *inside* the closure passed to `with_large_stack`.
 

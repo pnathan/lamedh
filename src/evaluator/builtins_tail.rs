@@ -96,7 +96,9 @@ pub(super) fn apply_string_symbol_ops(
                 ));
             }
             let name = match &args[0] {
-                LispVal::String(s) => s.to_uppercase(),
+                // The name is taken verbatim: the reader's case fold belongs
+                // to the reader, not to INTERN (issue #523).
+                LispVal::String(s) => s.clone(),
                 LispVal::Symbol(s) => s.borrow().name.clone(),
                 _ => {
                     return Err(LispError::Generic(format!(
@@ -152,22 +154,29 @@ pub(super) fn apply_new_bitwise_ops(
                 if *shift == 0 {
                     Ok(LispVal::Number(*n))
                 } else if *shift < 0 {
-                    // Right shift: if -shift >= 64, sign-extend to 0 or -1
-                    let rshift = -*shift;
+                    // Right shift: if -shift >= 64, sign-extend to 0 or -1.
+                    // `-i64::MIN` does not exist; saturate it (#514).
+                    let rshift = shift.checked_neg().unwrap_or(i64::MAX);
                     if rshift >= 64 {
                         Ok(LispVal::Number(if *n < 0 { -1 } else { 0 }))
                     } else {
                         Ok(LispVal::Number(n >> (rshift as u32)))
                     }
                 } else {
-                    // Left shift: guard against shift >= 64
-                    if *shift >= 64 {
-                        env.set_flag("OVERFLOW");
-                        Ok(LispVal::Number(0))
+                    // Left shift: the result wraps (0 past 63 bits), and
+                    // OVERFLOW is set exactly when bits are lost — i.e. the
+                    // arithmetic shift back does not recover `n` (#514).
+                    let (result, lost) = if *shift >= 64 {
+                        (0, *n != 0)
                     } else {
-                        // shift is in [0, 63]; wrapping_shl never panics here
-                        Ok(LispVal::Number(n.wrapping_shl(*shift as u32)))
+                        // shift is in [1, 63]; wrapping_shl never panics here
+                        let r = n.wrapping_shl(*shift as u32);
+                        (r, (r >> (*shift as u32)) != *n)
+                    };
+                    if lost {
+                        env.set_flag("OVERFLOW");
                     }
+                    Ok(LispVal::Number(result))
                 }
             } else {
                 Err(LispError::Generic(format!(

@@ -13,8 +13,22 @@
   "Bind NAME (a string) in the global environment to a native function."
   `(env-set-local *global-env* (lsym ,name) (lambda ,lambda-list ,@body)))
 
+(defun lresolve-fn (fn)
+  "A symbol in function position (`(funcall 'car ...)`) names its binding in
+the calling environment, resolved once -- matching the reference
+implementation's FUNCALL/APPLY, including its `Function not found: NAME`
+error when unbound. T is bound to itself there, so it resolves to T (and
+then fails as not a function); NIL is the empty list, never a name."
+  (cond
+    ((or (null fn) (not (symbolp fn)) (eq fn *t-sym*)) fn)
+    (t (let ((env (or *current-env* *global-env*)))
+         (if (env-boundp env fn)
+             (env-resolve env fn)
+             (lamedh-error (format nil "Function not found: ~A" (symbol-name fn))))))))
+
 (defun lapply-fn (fn args)
   "The one calling convention every FUNCALL/APPLY/HOF callback goes through."
+  (setf fn (lresolve-fn fn))
   (cond
     ((functionp fn) (apply fn args))
     ((lambda-obj-p fn)
@@ -52,15 +66,15 @@ EQ itself never does (see LAMEDH-EQ)."
 immutable atomic types (numbers, characters, strings) and DEEP structural
 equality for records/structs (recursing into every field, cons cells
 included) -- matching the reference implementation's derived LispVal
-PartialEq exactly, including its one asymmetry: a cons cell is never EQ
-to anything, not even itself by identity (Lisp 1.5 manual: EQ is defined
-only for atoms), while a Struct field that happens to hold a cons still
-gets compared structurally as part of the struct's own deep equality."
+PartialEq exactly, including its one asymmetry: a cons cell is EQ only
+to itself, by identity (issue #454), while a Struct field that happens to
+hold a cons still gets compared structurally as part of the struct's own
+deep equality."
   (cond
     ((and (numberp a) (numberp b)) (eql a b))
     ((and (characterp a) (characterp b)) (char= a b))
     ((and (stringp a) (stringp b)) (string= a b))
-    ((or (consp a) (consp b)) nil)
+    ((or (consp a) (consp b)) (eq a b))
     ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
     (t (eq a b))))
 
@@ -113,6 +127,11 @@ gets compared structurally as part of the struct's own deep equality."
 (defbuiltin "FUNCTIONP" (x) (bool (callable-p x)))
 (defbuiltin "ARRAYP" (x) (bool (simple-vector-p x)))
 (defbuiltin "HASH-TABLE-P" (x) (bool (hash-table-p x)))
+(defbuiltin "MACROP" (x) (bool (macro-obj-p x)))
+;; This host has no typed arrays or host extension values; the predicates
+;; exist so portable code (TYPE-OF, lib/21-cl-compat.lisp) can ask.
+(defbuiltin "TYPED-ARRAY-P" (x) (declare (ignore x)) nil)
+(defbuiltin "EXTENSION-P" (x) (declare (ignore x)) nil)
 (defbuiltin "BOUNDP" (sym) (bool (env-boundp (or *current-env* *global-env*) sym)))
 (defbuiltin "GETP" (sym key) (getp sym key))
 (defbuiltin "PUTP" (sym key val) (putp sym key val))
@@ -267,6 +286,46 @@ round-half-to-even."
             (if (and ok (cur-eof-p c)) v nil))))))
 (defbuiltin "NUMBER->STRING" (n) (lprint-to-string n nil))
 (defbuiltin "STRING-CASEFOLD*" (s) (string-downcase (->str s)))
+;; Unicode full case mapping and code-point classes (issue #519), mirroring
+;; the reference kernel's Rust `str::to_uppercase`/`char::is_alphabetic` &c.
+(defbuiltin "STRING-UPCASE*" (s) (sb-unicode:uppercase (->str s)))
+(defbuiltin "STRING-DOWNCASE*" (s) (sb-unicode:lowercase (->str s)))
+(defun scalar-char (n)
+  "The character for code point N, or NIL for a surrogate or out-of-range N."
+  (let ((n (numify n)))
+    (unless (integerp n)
+      (lamedh-error (format nil "expected an integer code point, got ~A" (lprint-to-string n))))
+    (and (<= 0 n #x10FFFF) (not (<= #xD800 n #xDFFF)) (code-char n))))
+(defbuiltin "CHAR-ALPHABETIC-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:alphabetic-p c)))))
+(defbuiltin "CHAR-NUMERIC-P*" (n)
+  (let ((c (scalar-char n)))
+    (bool (and c (member (sb-unicode:general-category c) '(:nd :nl :no))))))
+(defbuiltin "CHAR-UPPERCASE-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:uppercase-p c)))))
+(defbuiltin "CHAR-LOWERCASE-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:lowercase-p c)))))
+;; One-pass walks backing STRING->LIST, STRING-SPLIT and STRING-JOIN in
+;; lib/14-strings.lisp (issue #510).
+(defbuiltin "STRING->LIST*" (s) (map 'list #'string (->str s)))
+(defbuiltin "STRING-SPLIT*" (s delim)
+  (let ((s (->str s)) (delim (->str delim)))
+    (if (zerop (length delim))
+        (list s)
+        (loop with m = (length delim)
+              for start = 0 then (+ idx m)
+              for idx = (search delim s :start2 start)
+              collect (subseq s start idx)
+              while idx))))
+(defbuiltin "STRING-JOIN*" (strs sep)
+  (let ((sep (->str sep)))
+    (with-output-to-string (out)
+      (loop for (x . more) on strs
+            do (unless (stringp x)
+                 (lamedh-error (format nil "STRING-JOIN*: expected a list of strings, got element ~A"
+                                       (lprint-to-string x))))
+               (write-string x out)
+               (when more (write-string sep out))))))
 (defbuiltin "PRIN1-TO-STRING" (x) (lprint-to-string x t))
 (defbuiltin "PRINC-TO-STRING" (x) (lprint-to-string x nil))
 

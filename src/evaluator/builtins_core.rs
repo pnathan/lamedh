@@ -622,6 +622,47 @@ pub(super) fn get_char_array_bytes(v: &LispVal, name: &str) -> Result<Vec<u8>, L
     }
 }
 
+/// (char-alphabetic-p* n), (char-numeric-p* n), (char-uppercase-p* n),
+/// (char-lowercase-p* n) — Unicode character classes of the code point N,
+/// via Rust's `char` methods (issue #519). Kernel-only for the same reason
+/// as STRING-CASEFOLD*: Unicode property tables are Rust's domain. On ASCII
+/// they agree exactly with the old A-Z/a-z/0-9 range checks. A non-scalar
+/// code point (a surrogate, or beyond U+10FFFF) is in no class: NIL.
+pub(super) fn apply_char_class(
+    op: &BuiltinFunc,
+    args: &[LispVal],
+    env: &Shared<Environment>,
+) -> Result<LispVal, LispError> {
+    let (name, test): (&str, fn(char) -> bool) = match op {
+        BuiltinFunc::CharAlphabetic => ("char-alphabetic-p*", char::is_alphabetic),
+        BuiltinFunc::CharNumeric => ("char-numeric-p*", char::is_numeric),
+        BuiltinFunc::CharUppercase => ("char-uppercase-p*", char::is_uppercase),
+        BuiltinFunc::CharLowercase => ("char-lowercase-p*", char::is_lowercase),
+        _ => unreachable!("apply_char_class called with {:?}", op),
+    };
+    match args {
+        [LispVal::Number(n)] => {
+            let hit = u32::try_from(*n)
+                .ok()
+                .and_then(char::from_u32)
+                .is_some_and(test);
+            Ok(if hit {
+                LispVal::Symbol(env.intern_symbol("T"))
+            } else {
+                LispVal::Nil
+            })
+        }
+        [other] => Err(LispError::Generic(format!(
+            "{}: expected an integer code point, got {}",
+            name.to_uppercase(),
+            err_val(other)
+        ))),
+        _ => Err(LispError::Generic(format!(
+            "{name} requires exactly one argument"
+        ))),
+    }
+}
+
 /// String-operation kernel primitives (issue #147). These cannot be expressed
 /// in pure Lisp; the convenience layer (split/join/trim/upcase/...) is built on
 /// top of them in `lib/`.
@@ -779,6 +820,72 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
             let s = get_str(0, "string-casefold*")?;
             Ok(LispVal::String(s.to_lowercase()))
         }
+        BuiltinFunc::StringUpcase => {
+            // (string-upcase* s) — Unicode full uppercase mapping of S
+            // (issue #519): may lengthen the string ("straße" ->
+            // "STRASSE"). Identical to ASCII uppercasing on ASCII input.
+            require_one("string-upcase*")?;
+            let s = get_str(0, "string-upcase*")?;
+            Ok(LispVal::String(s.to_uppercase()))
+        }
+        BuiltinFunc::StringDowncase => {
+            // (string-downcase* s) — Unicode full lowercase mapping of S
+            // (issue #519), including the context-sensitive final sigma.
+            require_one("string-downcase*")?;
+            let s = get_str(0, "string-downcase*")?;
+            Ok(LispVal::String(s.to_lowercase()))
+        }
+        BuiltinFunc::StringToList => {
+            // (string->list* s) — the characters of S as a list of
+            // one-character strings, in one pass (issue #510).
+            require_one("string->list*")?;
+            let s = get_str(0, "string->list*")?;
+            Ok(vec_to_list(
+                s.chars().map(|c| LispVal::String(c.to_string())).collect(),
+            ))
+        }
+        BuiltinFunc::StringSplit => {
+            // (string-split* s delim) — the fields of S between
+            // non-overlapping, left-to-right occurrences of DELIM, empty
+            // fields kept; an empty DELIM yields (S) (issue #510).
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "string-split* requires exactly two arguments".to_string(),
+                ));
+            }
+            let s = get_str(0, "string-split*")?;
+            let delim = get_str(1, "string-split*")?;
+            if delim.is_empty() {
+                return Ok(vec_to_list(vec![LispVal::String(s)]));
+            }
+            Ok(vec_to_list(
+                s.split(delim.as_str())
+                    .map(|field| LispVal::String(field.to_string()))
+                    .collect(),
+            ))
+        }
+        BuiltinFunc::StringJoin => {
+            // (string-join* strs sep) — the strings of the list STRS joined
+            // with SEP, in one pass (issue #510).
+            if args.len() != 2 {
+                return Err(LispError::Generic(
+                    "string-join* requires exactly two arguments".to_string(),
+                ));
+            }
+            let sep = get_str(1, "string-join*")?;
+            let items = list_to_vec_ctx(&args[0], "string-join*")?;
+            let strs = items
+                .iter()
+                .map(|item| match item {
+                    LispVal::String(s) => Ok(s.as_str()),
+                    other => Err(LispError::Generic(format!(
+                        "STRING-JOIN*: expected a list of strings, got element {}",
+                        err_val(other)
+                    ))),
+                })
+                .collect::<Result<Vec<&str>, LispError>>()?;
+            Ok(LispVal::String(strs.join(sep.as_str())))
+        }
         BuiltinFunc::StringToUtf8 => {
             // (string->utf8* s) — exact UTF-8 bytes of S as an Array<Char>
             // (issue #254 / epic #253: Array<Char> is the language-level
@@ -830,7 +937,7 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
                 // Human representation: a top-level string yields its raw contents,
                 // mirroring PRINC; everything else uses the printer.
                 Some(LispVal::String(s)) => Ok(LispVal::String(s.clone())),
-                Some(v) => Ok(LispVal::String(crate::printer::print(v))),
+                Some(v) => Ok(LispVal::String(crate::printer::print_plain_symbols(v))),
                 None => unreachable!("arity checked above"),
             }
         }
@@ -1067,7 +1174,7 @@ pub(super) fn apply_numeric_primitives(
                 (LispVal::Number(base), LispVal::Number(exp)) => {
                     if *exp < 0 {
                         // negative integer exponent → float result
-                        return Ok(LispVal::Float((*base as f64).powi(*exp as i32)));
+                        return Ok(LispVal::Float(crate::jit::float_powi(*base as f64, *exp)));
                     }
                     if *exp > u32::MAX as i64 {
                         return Err(LispError::Generic("exponent too large".to_string()));
@@ -1077,7 +1184,7 @@ pub(super) fn apply_numeric_primitives(
                         .ok_or_else(|| LispError::Generic("exponentiation overflow".to_string()))
                 }
                 (LispVal::Float(base), LispVal::Number(exp)) => {
-                    Ok(LispVal::Float(base.powi(*exp as i32)))
+                    Ok(LispVal::Float(crate::jit::float_powi(*base, *exp)))
                 }
                 (LispVal::Number(base), LispVal::Float(exp)) => {
                     Ok(LispVal::Float((*base as f64).powf(*exp)))

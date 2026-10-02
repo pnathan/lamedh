@@ -59,14 +59,29 @@
         ((equal x (caar y)) (car y))
         (t (sassoc x (cdr y) fn))))
 
+(defun $mapc-aux (fn tail)
+  (cond ((null tail) nil)
+        (t (funcall fn (car tail))
+           ($mapc-aux fn (cdr tail)))))
+
 (defun mapc (fn list)
   "Apply FN to each element of LIST for side effects; return LIST."
-  (cond ((null list) list)
-        (t (funcall fn (car list))
-           (mapc fn (cdr list))
-           list)))
+  ($mapc-aux fn list)
+  list)
+
+;; NCONC the reversed result lists RS right to left in constant stack: the
+;; same NCONC calls, in the same order, as the nested
+;; (nconc r1 (nconc r2 ... (nconc rn nil))) form performs.
+(defun $nconc-reversed-aux (rs acc)
+  (if (null rs)
+      acc
+      ($nconc-reversed-aux (cdr rs) (nconc (car rs) acc))))
+
+(defun $mapcon-aux (fn tail rs)
+  (if (null tail)
+      ($nconc-reversed-aux rs nil)
+      ($mapcon-aux fn (cdr tail) (cons (funcall fn tail) rs))))
 
 (defun mapcon (fn list)
   "Apply FN to successive tails of LIST and NCONC the results."
-  (cond ((null list) nil)
-        (t (nconc (funcall fn list) (mapcon fn (cdr list))))))
+  ($mapcon-aux fn list nil))
