@@ -193,105 +193,104 @@ float_eq_exact:
 ; float_print(rdi=tagged float) -> writes a fixed 6-decimal-place
 ; representation to stdout (no scientific notation, no shortest
 ; round-trip formatting — see README roadmap). The FLOAT-printing half
-; of print_value's runtime dispatch (strings.asm). A magnitude of 2^61
-; or more — beyond both the fixnum print_fixnum takes and, from 2^63,
-; cvttsd2si itself — prints its exact integral value through
-; print_big_integral instead (issue #550: out-of-fixnum-range integer
-; literals read as floats, so they must print as themselves); infinities
-; and NaN print as the reference's own `inf`/`-inf`/`NaN`.
+; of print_value's runtime dispatch (strings.asm).
+;
+; The sign comes from the sign bit, not a compare, so -0.0 prints as
+; "-0.000000" (a compare treats it as equal to 0.0 and lost the sign).
+; The six decimals are the fraction rounded to nearest, ties to even
+; (cvtsd2si under the default MXCSR rounding), carrying into the
+; integer part — 3.14159265 is "3.141593" and 0.9999999 is "1.000000",
+; not the truncated "3.141592"/"0.999999". Infinities and NaN print as
+; the reference prints them: "inf", "-inf", "NaN". A magnitude of 2^61
+; or more — beyond the fixnum range, and from 2^63 beyond cvttsd2si
+; itself — prints its exact integral value through print_big_integral
+; (issue #550: out-of-fixnum-range integer literals read as floats, so
+; they must print as themselves); such a float has no fractional bits
+; worth rounding, so the fraction is a literal ".000000".
 global float_print
 float_print:
     push rbx
     push r12
-    mov rbx, rdi
+    push r13
     call float_val                    ; xmm0 = value
 
-    ucomisd xmm0, xmm0
-    jp .nan                             ; unordered with itself: NaN
+    movq rax, xmm0
     xor r12, r12                        ; sign flag
-    pxor xmm1, xmm1
-    comisd xmm0, xmm1
-    jae .nonneg
+    btr rax, 63                           ; rax = |value|'s bits, CF = sign
+    jnc .sign_done
     mov r12, 1
-    mov rax, 0x8000000000000000           ; sign-bit mask
-    movq xmm2, rax
-    xorpd xmm0, xmm2                        ; xmm0 = |value|
-.nonneg:
+.sign_done:
+    mov rcx, 0x7FF0000000000000             ; exponent all ones:
+    cmp rax, rcx                              ; = inf, > NaN
+    ja .nan
+    je .inf
+    mov rbx, rax                                ; rbx = |value|'s bits
+    mov rcx, 0x43C0000000000000                  ; 2^61 as f64; positive
+    cmp rax, rcx                                   ; doubles order as integers
+    jae .big
+    movq xmm0, rax                              ; xmm0 = |value|
+    roundsd xmm1, xmm0, 3                         ; xmm1 = trunc(|value|) < 2^61
+    subsd xmm0, xmm1                                ; fraction (exact)
+    mulsd xmm0, [rel float_1e6]
+    cvtsd2si r13, xmm0                                ; round, ties to even
+    cvttsd2si rbx, xmm1
+    cmp r13, 1000000
+    jb .emit
+    sub r13, 1000000                                      ; x.9999996 -> x+1
+    inc rbx
+.emit:
+    ; every value lives in rbx/r12/r13 (callee-saved) from here on:
+    ; write_buf clobbers rax (the stdout path leaves the syscall's byte
+    ; count in it; the capture path used by PRINC-TO-STRING leaves a
+    ; buffer address there, which once printed 2.5 as "2.775808").
     test r12, r12
-    jz .print_int_part
+    jz .int_part
     mov rsi, minus_buf
     mov rdx, 1
     call write_buf
-.print_int_part:
-    mov rax, 0x43C0000000000000            ; 2^61 as f64
-    movq xmm1, rax
-    comisd xmm0, xmm1
-    jae .big
-    cvttsd2si rax, xmm0                    ; truncate toward zero -> int part
-    mov rbx, rax                              ; keep the raw value for the
-                                               ; fractional-part math below —
-                                               ; print_fixnum wants a *tagged*
-                                               ; fixnum (it untags on entry),
-                                               ; so only a tagged copy goes in
-    mov rdi, rax
-    TO_FIXNUM rdi
-    call print_fixnum
-    mov rax, rbx
-
+.int_part:
+    mov rdi, rbx
+    call print_u64
     mov rsi, dot_buf
     mov rdx, 1
     call write_buf
-
-    ; fractional part: (|value| - int_part) * 10^6, truncated, zero-padded
-    ; int_part is reloaded from rbx HERE, after the write: write_buf
-    ; clobbers rax (the stdout path leaves the syscall's byte count, 1,
-    ; in it — which made the fraction come out right by arithmetic
-    ; accident, since (v-1)*10^6 and (v-int)*10^6 share their last six
-    ; digits; the capture path used by PRINC-TO-STRING leaves a buffer
-    ; address there, which printed 2.5 as "2.775808").
-    mov rax, rbx
-    cvtsi2sd xmm1, rax
-    subsd xmm0, xmm1
-    mov rax, 1000000
-    cvtsi2sd xmm1, rax
-    mulsd xmm0, xmm1
-    cvttsd2si rax, xmm0
-    test rax, rax
-    jns .frac_nonneg
-    neg rax
-.frac_nonneg:
-    mov rdi, rax
+    mov rdi, r13
     call print_fixnum6
-    pop r12
-    pop rbx
-    ret
+    jmp .out
 .big:
-    movq rdi, xmm0                         ; |value|'s bits: sign clear
-    mov rax, rdi
-    shr rax, 52
-    cmp rax, 0x7ff
-    je .inf
-    call print_big_integral
-    mov rsi, zero_frac_buf                    ; an f64 >= 2^53 has no
-    mov rdx, zero_frac_buf_len                  ; fractional bits at all
+    test r12, r12
+    jz .big_digits
+    mov rsi, minus_buf
+    mov rdx, 1
     call write_buf
-    pop r12
-    pop rbx
-    ret
+.big_digits:
+    mov rdi, rbx                              ; |value|'s bits: sign clear, finite
+    call print_big_integral
+    mov rsi, zero_frac_buf
+    mov rdx, zero_frac_buf_len
+    call write_buf
+    jmp .out
 .inf:
+    test r12, r12
+    jz .inf_text
+    mov rsi, minus_buf
+    mov rdx, 1
+    call write_buf
+.inf_text:
     mov rsi, inf_buf
     mov rdx, 3
     call write_buf
-    pop r12
-    pop rbx
-    ret
+    jmp .out
 .nan:
     mov rsi, nan_buf
     mov rdx, 3
     call write_buf
+.out:
+    pop r13
     pop r12
     pop rbx
     ret
+
 
 ; print_big_integral(rdi=bits of a finite f64 >= 2^61) -> writes its
 ; exact decimal integer value. value = m * 2^e with m the 53-bit
@@ -380,6 +379,30 @@ print_big_integral:
     pop rbx
     ret
 
+; print_u64(rdi=raw unsigned int) -> writes its decimal digits
+; (float_print's integer part, which can exceed the fixnum range
+; print_fixnum takes).
+print_u64:
+    push rbx
+    sub rsp, 32
+    mov rax, rdi
+    mov r9, 10
+    lea rsi, [rsp+31]
+.loop:
+    xor rdx, rdx
+    div r9
+    add dl, '0'
+    dec rsi
+    mov [rsi], dl
+    test rax, rax
+    jnz .loop
+    lea rdx, [rsp+31]
+    sub rdx, rsi
+    call write_buf
+    add rsp, 32
+    pop rbx
+    ret
+
 ; print_fixnum6(rdi=raw int, 0..999999) -> writes exactly 6 digits,
 ; zero-padded (float_print's fractional part).
 print_fixnum6:
@@ -412,6 +435,8 @@ zero_frac_buf: db ".000000"
 zero_frac_buf_len equ $ - zero_frac_buf
 inf_buf: db "inf"
 nan_buf: db "NaN"
+align 8
+float_1e6: dq 1.0e6
 
 ; ---------------------------------------------------------------------
 ; Math library (the reference's SQRT/SIN/COS/TAN/EXP/LOG/FLOOR/CEILING/

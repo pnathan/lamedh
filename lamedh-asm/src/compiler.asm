@@ -221,6 +221,8 @@ bad_rest_err_msg: db "LAMBDA: &REST must be followed by exactly one parameter na
 bad_rest_err_msg_len: equ $ - bad_rest_err_msg
 nary_arity_err_msg: db "requires at least one operand"
 nary_arity_err_msg_len: equ $ - nary_arity_err_msg
+if_arity_err_msg: db "if takes exactly three arguments"
+if_arity_err_msg_len: equ $ - if_arity_err_msg
 nary_t_name: db "T"
 unbound_var_err_msg: db "unbound variable"
 unbound_var_err_msg_len: equ $ - unbound_var_err_msg
@@ -4481,6 +4483,13 @@ compile_if:
     push r15
     mov r15, rsi                     ; saved tail flag
     mov r14, rdi                     ; whole form
+    ; KERNEL.md Part VI: IF takes exactly three operands. A two- or
+    ; four-operand IF is an error, not a missing-NIL else or an ignored
+    ; extra form (cadddr alone silently read (IF NIL 1 2 3) as 2).
+    call list_length
+    cmp rax, 4
+    jne .bad_arity
+    mov rdi, r14
     call cadr
     mov r12, rax                        ; test form
     mov rdi, r14
@@ -4523,6 +4532,11 @@ compile_if:
     pop r12
     pop rbx
     ret
+.bad_arity:
+    mov rdi, r14
+    mov rsi, if_arity_err_msg
+    mov rdx, if_arity_err_msg_len
+    call fail_wrong_type                                      ; never returns
 
 ; compile_setq(rdi = the full (SETQ var1 val1 var2 val2 ...) form)
 ; Each pair is processed left to right: the val is compiled and

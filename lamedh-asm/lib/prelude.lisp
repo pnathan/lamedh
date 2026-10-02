@@ -285,11 +285,50 @@
 ; examples/factorial/main.lisp's own usage) had nothing to resolve to.
 ; #'+ (FUNCTION, compiler.asm) then just reads this ordinary global
 ; value, the same as referencing +/-/*/</= as a bare variable would.
-(DEFUN + (A B) (+ A B))
-(DEFUN - (A B) (- A B))
-(DEFUN * (A B) (* A B))
-(DEFUN < (A B) (< A B))
-(DEFUN = (A B) (= A B))
+; Each takes any number of arguments, as the reference's builtins do
+; ((FUNCALL #'+ 1 2 3) is 6, (APPLY #'* ()) is 1): a WHILE fold over the
+; &REST list, constant native stack for any length, over the inline
+; 2-operand form. - with one argument negates; < and = chain.
+(DEFUN + (&REST XS)
+  (LET ((ACC 0))
+    (WHILE XS (PROGN (SETQ ACC (+ ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN * (&REST XS)
+  (LET ((ACC 1))
+    (WHILE XS (PROGN (SETQ ACC (* ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN - (X &REST XS)
+  (IF (NULL XS)
+      (- X)
+      (PROGN (WHILE XS (PROGN (SETQ X (- X (CAR XS))) (SETQ XS (CDR XS))))
+             X)))
+(DEFUN < (X &REST XS)
+  (LET ((OK T))
+    (WHILE (IF OK XS (QUOTE ()))
+      (PROGN (SETQ OK (< X (CAR XS))) (SETQ X (CAR XS)) (SETQ XS (CDR XS))))
+    OK))
+(DEFUN = (X &REST XS)
+  (LET ((OK T))
+    (WHILE (IF OK XS (QUOTE ()))
+      (PROGN (SETQ OK (= X (CAR XS))) (SETQ X (CAR XS)) (SETQ XS (CDR XS))))
+    OK))
+
+; LOGAND/LOGIOR/LOGXOR as values, for #'LOGXOR and friends: in operator
+; position they are compiler forms (compiler.asm), so nothing bound the
+; bare symbols. Variadic, with the reference's identities for no
+; arguments: -1 for LOGAND, 0 for LOGIOR/LOGXOR.
+(DEFUN LOGAND (&REST XS)
+  (LET ((ACC -1))
+    (WHILE XS (PROGN (SETQ ACC (LOGAND ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN LOGIOR (&REST XS)
+  (LET ((ACC 0))
+    (WHILE XS (PROGN (SETQ ACC (LOGIOR ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN LOGXOR (&REST XS)
+  (LET ((ACC 0))
+    (WHILE XS (PROGN (SETQ ACC (LOGXOR ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
 
 ; $LENGTH — the reference's own Rust-level builtin (evaluator/builtins_
 ; core.rs) backing lib/01-list.lisp's LENGTH wrapper. No host-
@@ -391,10 +430,12 @@
 ;; may themselves use APPEND/MAPCAR.
 (DEFUN APPEND (A B) (REVERSE-ONTO (REVERSE-ONTO A (QUOTE ())) B))
 
-; IOTA — (iota n start) is the n-element list (start start+1 ... start+n-1).
-(DEFUN IOTA-ONTO (N START ACC)
-  (IF (= N 0) (REVERSE ACC) (IOTA-ONTO (- N 1) (+ START 1) (CONS START ACC))))
-(DEFUN IOTA (N START) (IOTA-ONTO N START (QUOTE ())))
+; IOTA — the reference's (lib/13-functional.lisp): (iota n) is (0 1 ...
+; n-1); (iota n start) and (iota n start step) shift and scale. N below
+; 1 is the empty list, as there, not a countdown that never reaches 0.
+(DEFUN IOTA-ONTO (N START STEP ACC)
+  (IF (< N 1) (REVERSE ACC) (IOTA-ONTO (- N 1) (+ START STEP) STEP (CONS START ACC))))
+(DEFUN IOTA (N &OPTIONAL (START 0) (STEP 1)) (IOTA-ONTO N START STEP (QUOTE ())))
 
 ; REDUCE — a left fold: (reduce fn (a b c) init) is (fn (fn (fn init a) b) c).
 ; FN is an ordinary value here (ordinarily #'some-global), not unevaluated

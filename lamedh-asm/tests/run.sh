@@ -490,7 +490,7 @@ T'
         '(PRINT (LIST (FUNCALL (FUNCTION SQRT) 16) (APPLY (FUNCTION ROUND) (LIST 2.5)) (MAPCAR (LAMBDA (X) (TRUNCATE (SQRT (* X X X X)))) (LIST 1 2 3))))'
     err_case math_type_error 1 "" "expected a number (fixnum or float): x" \
         '(PRINT (SQRT "x"))'
-    err_case exp_log_roundtrip 0 "(2.718281 1.000000 7.389056 20.085536)" "" \
+    err_case exp_log_roundtrip 0 "(2.718282 1.000000 7.389056 20.085537)" "" \
         '(PRINT (LIST (EXP 1) (LOG (EXP 1)) (EXP 2) (EXP 3)))'
     err_case read_eof 1 "" "READ: end of input" \
         '(PRINT (READ))'
