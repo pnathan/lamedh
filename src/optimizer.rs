@@ -256,20 +256,19 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                     // QUASIQUOTE: don't recurse (may contain UNQUOTE)
                     "QUASIQUOTE" => return expr.clone(),
 
-                    // IF: branch elimination on literal condition
+                    // IF: branch elimination on literal condition. Only the
+                    // three-operand form is touched: any other arity is an
+                    // error the evaluator must still raise (#506), so it is
+                    // never folded into a value.
                     "IF" => {
                         if let Some(args) = list_to_vec(rest)
-                            && args.len() >= 2
+                            && args.len() == 3
                         {
                             let cond = optimize(&args[0]);
                             match &cond {
                                 LispVal::Nil => {
-                                    // (if nil then else) -> else (or nil if no else)
-                                    if args.len() >= 3 {
-                                        return optimize(&args[2]);
-                                    } else {
-                                        return LispVal::Nil;
-                                    }
+                                    // (if nil then else) -> else
+                                    return optimize(&args[2]);
                                 }
                                 LispVal::Number(_) | LispVal::String(_) | LispVal::Float(_) => {
                                     // Truthy literal condition: (if <truthy> then else) -> then
@@ -281,19 +280,10 @@ pub fn optimize(expr: &LispVal) -> LispVal {
                                 }
                                 _ => {
                                     // Unknown condition: optimize both branches
-                                    let then_opt = optimize(&args[1]);
-                                    let else_opt = if args.len() >= 3 {
-                                        optimize(&args[2])
-                                    } else {
-                                        LispVal::Nil
-                                    };
-                                    let mut parts = vec![head.as_ref().clone(), cond, then_opt];
-                                    if args.len() >= 3 {
-                                        parts.push(else_opt);
-                                    }
+                                    let parts = vec![cond, optimize(&args[1]), optimize(&args[2])];
                                     return LispVal::Cons {
-                                        car: Shared::new(parts[0].clone()),
-                                        cdr: Shared::new(vec_to_list(parts[1..].to_vec())),
+                                        car: Shared::new(head.as_ref().clone()),
+                                        cdr: Shared::new(vec_to_list(parts)),
                                     };
                                 }
                             }

@@ -1332,6 +1332,30 @@ impl Environment {
             LispVal::Builtin(BuiltinFunc::StringCasefold),
         );
         env.set(
+            "STRING-UPCASE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringUpcase),
+        );
+        env.set(
+            "STRING-DOWNCASE*".to_string(),
+            LispVal::Builtin(BuiltinFunc::StringDowncase),
+        );
+        env.set(
+            "CHAR-ALPHABETIC-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharAlphabetic),
+        );
+        env.set(
+            "CHAR-NUMERIC-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharNumeric),
+        );
+        env.set(
+            "CHAR-UPPERCASE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharUppercase),
+        );
+        env.set(
+            "CHAR-LOWERCASE-P*".to_string(),
+            LispVal::Builtin(BuiltinFunc::CharLowercase),
+        );
+        env.set(
             "STRING->LIST*".to_string(),
             LispVal::Builtin(BuiltinFunc::StringToList),
         );
@@ -2277,10 +2301,11 @@ impl Environment {
         params: &[String],
         body: &[LispVal],
     ) -> Result<(), String> {
+        let resolver = |n: &str| self.checker_lambda_source(n);
         self.shared
             .jit
             .borrow_mut()
-            .compile_reason(name, params, body)
+            .compile_reason(name, params, body, Some(&resolver))
     }
 
     pub fn jit_check_untyped(
@@ -2451,10 +2476,11 @@ impl Environment {
         ret_hint: Option<crate::jit::Ty>,
         body: &[LispVal],
     ) -> Result<(usize, String), String> {
+        let resolver = |n: &str| self.checker_lambda_source(n);
         self.shared
             .jit
             .borrow_mut()
-            .define_partial(name, params, ret_hint, body)
+            .define_partial(name, params, ret_hint, body, Some(&resolver))
     }
 
     /// Whether a registered typed function currently has a compiled edition.

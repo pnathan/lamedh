@@ -15,7 +15,8 @@
   '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
     "60-special-forms" "65-loops" "70-hash-and-plist" "90-bitwise"
-    "95-stdlib-batteries" "96-format-and-io" "97-port-regressions" "97-printer"))
+    "95-stdlib-batteries" "96-format-and-io" "97-common-forms"
+    "97-port-regressions" "97-printer"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
