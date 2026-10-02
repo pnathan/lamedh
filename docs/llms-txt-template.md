@@ -23,8 +23,10 @@ guidance) over prior assumptions about "how Lisp works here."
 - `if` takes **exactly three** arguments — no implicit `nil` else branch.
   Use `cond`/`when`/`unless` for that.
 - Character literals are `'c'` (C-style, single-quoted, `\n \t \\ \'`
-  escapes), **not** `#\c`. A char is a byte (0-255); multibyte text is a
-  string. Reader subtlety: `'a'` is a char, `'a` is a quoted symbol.
+  escapes); CL's `#\c` / `#\Space` read as the same value and print as
+  `'c'`. A char is a byte (0-255); multibyte text is a string. Reader
+  subtlety: `'a'` is a char, `'a` is a quoted symbol. `string->list`
+  returns one-character strings, not chars.
 - Integers are 64-bit and **wrap** (sets the `OVERFLOW` flag; no bignums).
   `(/ 7 2)` truncates to `3`; `(/ 7.0 2)` → `3.5`. No `float`/`coerce` —
   multiply by `1.0` to convert.

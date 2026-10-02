@@ -60,6 +60,10 @@
 %define PORT_OUTPUT     4
 %define PORT_SEEKABLE   8
 
+; fixnum range: 62-bit signed payload, [-2^61, 2^61-1] (issue #550)
+%define FIXNUM_MAX       0x1FFFFFFFFFFFFFFF   ; 2^61 - 1
+%define FIXNUM_NEG_LIMIT 0x2000000000000000   ; |-2^61|, the most negative fixnum's magnitude
+
 ; fixnum <-> machine-integer conversion
 %macro TO_FIXNUM 1        ; reg <- (reg << 2), tag 00 is already 0 after shift
     shl %1, 2

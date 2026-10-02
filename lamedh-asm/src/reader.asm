@@ -10,6 +10,8 @@
 
 %include "src/tags.inc"
 
+%define BIGDEC_MAX_LIMBS 64       ; read_number's bigdec_limbs capacity (see .bss)
+
 extern data_alloc_cons
 extern rc_inc
 extern intern_symbol
@@ -293,10 +295,22 @@ reader_skip_ws:
 ; read_number() -> rax = tagged fixnum or tagged float. Assumes current
 ; char is '-' or a digit. A '.' followed by at least one digit right
 ; after the integer part switches this to a float literal (HDR_FLOAT,
-; see floats.asm); anything else (including a bare trailing '.')
-; leaves it a plain fixnum. An e/E exponent after the digits is read by
+; see floats.asm); anything else (including a bare trailing '.') leaves
+; it a plain integer. An e/E exponent after the digits is read by
 ; read_form's caller side (read_exponent_float), which rescans the
 ; whole token.
+;
+; Integer range (issue #550): a fixnum here is 62 bits wide (tags.inc),
+; so the representable range is [-2^61, 2^61-1], narrower than KERNEL.md
+; Part II's i64. A decimal integer token outside that range reads as a
+; Float — KERNEL.md's own rule for a token outside *its* range, applied
+; at this kernel's narrower width — never as a silently wrapped fixnum.
+; The magnitude is accumulated exactly in a u64 while it fits (mul/add
+; carry detects the spill), then exactly in bigdec_limbs (base 2^32) up
+; to 2048 bits; either way it converts to the correctly rounded double
+; (u64_to_xmm0 / bigdec_to_xmm0). Past 2048 bits (~616 digits) the value
+; exceeds the largest double, so it reads as +/-inf, as the reference's
+; f64 parse does.
 read_number:
     push rbx
     push r12
@@ -309,7 +323,10 @@ read_number:
     mov r12, 1
     inc qword [reader_pos]
 .digits:
-    xor rbx, rbx                   ; accumulator (unsigned magnitude)
+    xor rbx, rbx                   ; exact unsigned magnitude (r13 == 0)
+    xor r13, r13                     ; 1 once the magnitude spilled past
+                                       ; u64 into bigdec_limbs; 2 once it
+                                       ; outgrew those too (reads as inf)
 .loop:
     call reader_peek
     cmp rax, -1
@@ -318,10 +335,35 @@ read_number:
     jb .int_done
     cmp al, '9'
     ja .int_done
-    imul rbx, rbx, 10
-    movzx rax, al
-    sub rax, '0'
-    add rbx, rax
+    movzx r14, al
+    sub r14, '0'                       ; r14 = this digit's value
+    test r13, r13
+    jnz .loop_big
+    mov rax, rbx
+    mov rcx, 10
+    mul rcx                              ; rdx:rax = rbx*10; CF iff rdx != 0
+    jc .spill
+    add rax, r14
+    jc .spill
+    mov rbx, rax
+    jmp .next_digit
+.spill:
+    mov rax, rbx                           ; the magnitude *before* this
+    mov ecx, eax                             ; digit, as two base-2^32
+    mov [rel bigdec_limbs], rcx                ; limbs; the digit itself
+    shr rax, 32                                  ; folds in just below
+    mov [rel bigdec_limbs+8], rax
+    mov qword [rel bigdec_n], 2
+    mov r13, 1
+.loop_big:
+    cmp r13, 2
+    je .next_digit                     ; already past the cap: digits no
+    mov rdi, r14                         ; longer change the (infinite)
+    call bigdec_mul10_add                  ; result
+    test rax, rax
+    jz .next_digit
+    mov r13, 2
+.next_digit:
     inc qword [reader_pos]
     jmp .loop
 .int_done:
@@ -346,10 +388,20 @@ read_number:
     jmp .float_literal
 
 .fixnum_done:
+    test r13, r13
+    jnz .int_as_float
     test r12, r12
     jz .pos
+    mov rax, FIXNUM_NEG_LIMIT
+    cmp rbx, rax                     ; magnitude of -2^61 is the most a
+    ja .int_as_float                   ; negative fixnum can carry
     neg rbx
+    jmp .emit_fixnum
 .pos:
+    mov rax, FIXNUM_MAX
+    cmp rbx, rax
+    ja .int_as_float
+.emit_fixnum:
     mov rax, rbx
     TO_FIXNUM rax
     pop r14
@@ -358,7 +410,33 @@ read_number:
     pop rbx
     ret
 
+.int_as_float:
+    call .int_part_to_xmm3
+    movsd xmm0, xmm3
+    jmp .apply_sign
+
+; xmm3 = the integer part as a correctly rounded f64, from whichever of
+; rbx / bigdec_limbs holds it (r13). Clobbers rax, rcx, rdx, rsi, rdi,
+; r8, r9, xmm0, xmm1.
+.int_part_to_xmm3:
+    cmp r13, 1
+    je .int_part_big
+    ja .int_part_inf
+    mov rdi, rbx
+    call u64_to_xmm0
+    movsd xmm3, xmm0
+    ret
+.int_part_big:
+    call bigdec_to_xmm0
+    movsd xmm3, xmm0
+    ret
+.int_part_inf:
+    mov rax, 0x7FF0000000000000
+    movq xmm3, rax
+    ret
+
 .float_literal:
+    call .int_part_to_xmm3                ; before r13 is reused below
     inc qword [reader_pos]              ; consume '.'
     xor r13, r13                          ; fractional digit accumulator
     xor r14, r14                            ; count of fractional digits
@@ -378,7 +456,7 @@ read_number:
     inc qword [reader_pos]
     jmp .frac_loop
 .frac_done:
-    cvtsi2sd xmm0, rbx                   ; int part
+    movsd xmm0, xmm3                     ; int part
     cvtsi2sd xmm1, r13                      ; fractional numerator
     mov rax, 1
     mov rcx, r14
@@ -392,6 +470,7 @@ read_number:
     cvtsi2sd xmm2, rax                       ; 10^(fractional digit count)
     divsd xmm1, xmm2
     addsd xmm0, xmm1
+.apply_sign:
     test r12, r12
     jz .float_pos
     mov rax, 0x8000000000000000                ; flip sign bit
@@ -405,6 +484,126 @@ read_number:
     pop rbx
     ret
 
+; bigdec_mul10_add(rdi=digit 0..9) -> bigdec := bigdec*10 + digit;
+; rax = 0, or 1 if the result no longer fits BIGDEC_MAX_LIMBS (bigdec
+; is then stale; read_number stops using it). Clobbers rcx, rdx, rsi,
+; r8, r9.
+bigdec_mul10_add:
+    mov r9, rdi                            ; carry in
+    xor rcx, rcx
+    mov r8, [rel bigdec_n]
+    lea rsi, [rel bigdec_limbs]
+.limb:
+    cmp rcx, r8
+    jae .limbs_done
+    mov rax, [rsi+rcx*8]
+    imul rax, rax, 10
+    add rax, r9                              ; < 2^36: no 64-bit overflow
+    mov r9, rax
+    shr r9, 32
+    mov eax, eax                               ; low 32 bits, zero-extended
+    mov [rsi+rcx*8], rax
+    inc rcx
+    jmp .limb
+.limbs_done:
+    test r9, r9
+    jz .fits
+    cmp r8, BIGDEC_MAX_LIMBS
+    jae .full
+    mov [rsi+r8*8], r9
+    inc r8
+    mov [rel bigdec_n], r8
+.fits:
+    xor eax, eax
+    ret
+.full:
+    mov eax, 1
+    ret
+
+; bigdec_to_xmm0() -> xmm0 = bigdec (>= 2^64, so >= 3 limbs, top limb
+; nonzero) as the correctly rounded f64: its top 64 bits, with every
+; lower bit OR'd into bit 0 as a sticky bit, go through u64_to_xmm0
+; (one rounding, to nearest-even), then an exact power-of-two scale
+; (which can only overflow to inf — no second rounding). Clobbers rax,
+; rcx, rdx, rsi, rdi, r8, r9, xmm1.
+bigdec_to_xmm0:
+    push rbx
+    lea rsi, [rel bigdec_limbs]
+    mov r8, [rel bigdec_n]
+    mov rax, [rsi+r8*8-8]                  ; top limb
+    bsr rcx, rax                             ; its highest set bit, 0..31
+    mov r9, 31
+    sub r9, rcx                                ; r9 = leading zeros in it
+    lea rbx, [r8-1]
+    shl rbx, 5
+    lea rbx, [rbx+rcx+1]                         ; rbx = bit length
+    lea rcx, [r9+32]
+    shl rax, cl                                    ; top limb -> bit 63 down
+    mov rdx, [rsi+r8*8-16]
+    mov rcx, r9
+    shl rdx, cl
+    or rax, rdx                                      ; next limb below it
+    mov rdx, [rsi+r8*8-24]
+    mov rdi, rdx
+    mov rcx, 32
+    sub rcx, r9                                        ; 1..32
+    shr rdx, cl
+    or rax, rdx                                          ; third limb's top bits
+    mov rdx, 1
+    shl rdx, cl
+    dec rdx
+    and rdi, rdx                          ; sticky: third limb's dropped bits
+    lea rcx, [r8-4]
+.sticky:
+    test rcx, rcx
+    js .sticky_done
+    or rdi, [rsi+rcx*8]                     ; ...and every limb below it
+    dec rcx
+    jmp .sticky
+.sticky_done:
+    test rdi, rdi
+    jz .no_sticky
+    or rax, 1
+.no_sticky:
+    mov rdi, rax
+    call u64_to_xmm0
+    sub rbx, 64                             ; scale = bit length - 64, >= 1
+.scale:
+    cmp rbx, 1000
+    jle .scale_last
+    mov rax, (1000 + 1023) << 52              ; 2^1000
+    movq xmm1, rax
+    mulsd xmm0, xmm1
+    sub rbx, 1000
+    jmp .scale
+.scale_last:
+    lea rax, [rbx+1023]
+    shl rax, 52                                 ; 2^rbx
+    movq xmm1, rax
+    mulsd xmm0, xmm1
+    pop rbx
+    ret
+
+; u64_to_xmm0(rdi=unsigned 64-bit) -> xmm0 = rdi as f64, correctly
+; rounded. cvtsi2sd is signed-only, so a value with bit 63 set is halved
+; first (keeping the shifted-out bit as a sticky bit, so the final
+; rounding is still correct) and doubled back. Clobbers rax, rcx.
+u64_to_xmm0:
+    test rdi, rdi
+    js .big
+    cvtsi2sd xmm0, rdi
+    ret
+.big:
+    mov rax, rdi
+    mov rcx, rdi
+    shr rax, 1
+    and rcx, 1
+    or rax, rcx
+    cvtsi2sd xmm0, rax
+    addsd xmm0, xmm0
+    ret
+
+section .text
 ; read_exponent_float(rdi = buffer index of a number token that
 ; read_number has just read, and that continues with a valid exponent)
 ; -> rax = the whole token, "-? digits (. digits)? [eE] [+-]? digits",
@@ -558,6 +757,11 @@ pow10_table:
 section .bss
 align 8
 symbuf: resb 256
+; read_number's exact accumulator for integer tokens past u64 (base-2^32
+; limbs, least significant first, one per qword). 64 limbs = 2048 bits,
+; past the largest double (< 2^1024), so the cap never changes a result.
+bigdec_limbs: resq BIGDEC_MAX_LIMBS
+bigdec_n: resq 1
 
 section .text
 
