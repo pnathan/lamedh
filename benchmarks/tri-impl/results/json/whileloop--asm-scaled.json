@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/lamedh-asm/build/lamedhc /home/user/lamedh/benchmarks/tri-impl/build/asm-scaled/whileloop.lisp",
+      "mean": 2.1922137648000004,
+      "stddev": 0.15331316277296717,
+      "median": 2.159034334,
+      "user": 2.157298,
+      "system": 0.0043204,
+      "min": 2.004493475,
+      "max": 2.356196876,
+      "times": [
+        2.099904295,
+        2.341439844,
+        2.356196876,
+        2.159034334,
+        2.004493475
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

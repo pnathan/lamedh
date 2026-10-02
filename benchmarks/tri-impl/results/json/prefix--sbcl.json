@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/prefix.lisp",
+      "mean": 6.967928252200001,
+      "stddev": 0.20982055013259737,
+      "median": 7.015672684,
+      "user": 6.7094774,
+      "system": 0.14321199999999998,
+      "min": 6.621955468,
+      "max": 7.17939701,
+      "times": [
+        6.621955468,
+        6.958207646,
+        7.17939701,
+        7.064408453,
+        7.015672684
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

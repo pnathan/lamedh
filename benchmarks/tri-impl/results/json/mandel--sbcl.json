@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/mandel.lisp",
+      "mean": 7.5534201684,
+      "stddev": 0.11179931773249542,
+      "median": 7.494634185,
+      "user": 7.3069924,
+      "system": 0.12950679999999998,
+      "min": 7.448743164,
+      "max": 7.72225504,
+      "times": [
+        7.610163345,
+        7.448743164,
+        7.72225504,
+        7.491305108,
+        7.494634185
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

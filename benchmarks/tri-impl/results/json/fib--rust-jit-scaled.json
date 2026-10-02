@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-jit-scaled/fib.lisp",
+      "mean": 1.5269411442,
+      "stddev": 0.030790390379861542,
+      "median": 1.536606639,
+      "user": 1.4828274,
+      "system": 0.0191022,
+      "min": 1.482806174,
+      "max": 1.558327674,
+      "times": [
+        1.536606639,
+        1.547989137,
+        1.5089760970000001,
+        1.558327674,
+        1.482806174
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

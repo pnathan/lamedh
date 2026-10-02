@@ -18,15 +18,18 @@ Arrays are fixed-size, mutable, zero-indexed vectors. Create one with
 
 ```
 (array 5)
-; => <array:5>
+; => #(() () () () ())
 
 (let ((a (array 3))) (fetch a 0))
 ; => ()
 ```
 
-There is no array literal syntax in the reader — you always build an array
-with `array` (optionally followed by `store` calls) or convert a list with
-`list->array`.
+Arrays print their contents as `#(e1 e2 ...)`, and the reader accepts the
+same syntax back: `#(1 2 3)` is an array literal. Its elements are read,
+not evaluated, and the array is built once at read time, so do not mutate a
+literal that appears in a function body — build a fresh one with `array` or
+`list->array` instead. Arrays longer than 100 elements print abridged, as
+`#(e0 ... e99 #<...N more>)`; the marker is deliberately unreadable.
 
 Read and write slots with `fetch`/`store`, or their aliases `aref`/`aset`
 (same argument order, `(aref array index)` / `(aset array index value)`):

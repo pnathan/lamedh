@@ -30,9 +30,10 @@ section .text
 
 ; write_buf(rsi = buf, rdx = len) -> writes to stdout, or appends to the
 ; active capture buffer (see princ_to_string) when one is armed,
-; silently truncating past its fixed v0 capacity rather than growing it
-; or erroring. Clobbers rax,rdi,rcx,r11 on the stdout path (unchanged);
-; also rbx,r8,r9 on the capture path.
+; doubling that buffer on the heap whenever an append would overrun it
+; (it used to clamp at a fixed 64 KB, silently truncating PRIN1 and
+; every *-TO-STRING of a large value — #547). Clobbers rax,rdi,rcx,r11
+; on the stdout path (unchanged); also rax,rcx on the capture path.
 global write_buf
 write_buf:
     cmp qword [capture_active], 0
@@ -51,11 +52,10 @@ write_buf:
     push r9
     mov rbx, rsi                      ; src buf
     mov r8, [capture_len]
-    mov r9, [capture_cap]
-    sub r9, r8
-    cmp rdx, r9
+    lea r9, [r8+rdx]                    ; length needed after this append
+    cmp r9, [capture_cap]
     jbe .fits
-    mov rdx, r9                         ; truncate to remaining capacity
+    call capture_grow                   ; r9 = needed; preserves rbx,rdx,r8
 .fits:
     mov rax, [capture_buf]
     add rax, r8
@@ -72,6 +72,44 @@ write_buf:
     pop r9
     pop r8
     pop rbx
+    ret
+
+; capture_grow(r9 = byte count the capture buffer must hold) — replaces
+; capture_buf with a fresh raw buffer of at least that many bytes
+; (doubling capture_cap until it fits, so N appends cost O(N) copying
+; in total), copies the capture_len bytes already captured across, and
+; frees the old one. Raw, not a Lisp object, for the same reason as
+; princ_to_string's initial buffer. Clobbers rax,rcx,r9 only.
+capture_grow:
+    push rdi
+    push rsi
+    push r10
+    push r11
+    mov rdi, [capture_cap]
+.double:
+    shl rdi, 1
+    cmp rdi, r9
+    jb .double
+    mov r10, rdi                        ; new capacity
+    call data_alloc_raw                 ; clobbers rax,rdi
+    mov rsi, [capture_buf]
+    xor rcx, rcx
+.move:
+    cmp rcx, [capture_len]
+    jae .moved
+    mov r11b, [rsi+rcx]
+    mov [rax+rcx], r11b
+    inc rcx
+    jmp .move
+.moved:
+    mov rdi, rsi
+    call data_free                      ; clobbers nothing
+    mov [capture_buf], rax
+    mov [capture_cap], r10
+    pop r11
+    pop r10
+    pop rsi
+    pop rdi
     ret
 
 ; princ_to_string(rdi=tagged value) -> rax = a fresh tagged HDR_STRING

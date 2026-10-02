@@ -407,7 +407,8 @@ pub fn print(val: &LispVal) -> String;
 | `Fexpr` | `<fexpr>` |
 | `Vau` | `<vau>` |
 | `HashTable` | `<hash-table>` |
-| `Array(a)` | `<array:N>` where N is length |
+| `Array(a)` | `#(e1 e2 ...)`, readable; first 100 elements then `#<...N more>` |
+| `TypedArray(a)` | `#<typed-array:int64 e1 e2 ...>` (not readable) |
 | `Native` | `<native>` |
 | `Environment` | `<environment>` |
 | `Extension` | via `LispValExtension::display()` |

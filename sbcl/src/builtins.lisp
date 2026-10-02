@@ -66,15 +66,15 @@ EQ itself never does (see LAMEDH-EQ)."
 immutable atomic types (numbers, characters, strings) and DEEP structural
 equality for records/structs (recursing into every field, cons cells
 included) -- matching the reference implementation's derived LispVal
-PartialEq exactly, including its one asymmetry: a cons cell is never EQ
-to anything, not even itself by identity (Lisp 1.5 manual: EQ is defined
-only for atoms), while a Struct field that happens to hold a cons still
-gets compared structurally as part of the struct's own deep equality."
+PartialEq exactly, including its one asymmetry: a cons cell is EQ only
+to itself, by identity (issue #454), while a Struct field that happens to
+hold a cons still gets compared structurally as part of the struct's own
+deep equality."
   (cond
     ((and (numberp a) (numberp b)) (eql a b))
     ((and (characterp a) (characterp b)) (char= a b))
     ((and (stringp a) (stringp b)) (string= a b))
-    ((or (consp a) (consp b)) nil)
+    ((or (consp a) (consp b)) (eq a b))
     ((and (lamedh-struct-p a) (lamedh-struct-p b)) (lamedh-struct-deep-eq a b))
     (t (eq a b))))
 
@@ -196,6 +196,11 @@ instance on every call (#542). Otherwise it is LAMEDH-EQUAL."
 (defbuiltin "FUNCTIONP" (x) (bool (callable-p x)))
 (defbuiltin "ARRAYP" (x) (bool (lamedh-array-p x)))
 (defbuiltin "HASH-TABLE-P" (x) (bool (hash-table-p x)))
+(defbuiltin "MACROP" (x) (bool (macro-obj-p x)))
+;; This host has no host extension values; the predicate exists so portable
+;; code (TYPE-OF, lib/21-cl-compat.lisp) can ask. TYPED-ARRAY-P is defined
+;; with the typed arrays below.
+(defbuiltin "EXTENSION-P" (x) (declare (ignore x)) nil)
 (defbuiltin "BOUNDP" (sym) (bool (env-boundp (or *current-env* *global-env*) sym)))
 (defbuiltin "GETP" (sym key) (getp sym key))
 (defbuiltin "PUTP" (sym key val) (putp sym key val))
@@ -427,6 +432,25 @@ round-half-to-even."
             (if (and ok (cur-eof-p c)) v nil))))))
 (defbuiltin "NUMBER->STRING" (n) (lprint-to-string n nil))
 (defbuiltin "STRING-CASEFOLD*" (s) (string-downcase (->str s)))
+;; Unicode full case mapping and code-point classes (issue #519), mirroring
+;; the reference kernel's Rust `str::to_uppercase`/`char::is_alphabetic` &c.
+(defbuiltin "STRING-UPCASE*" (s) (sb-unicode:uppercase (->str s)))
+(defbuiltin "STRING-DOWNCASE*" (s) (sb-unicode:lowercase (->str s)))
+(defun scalar-char (n)
+  "The character for code point N, or NIL for a surrogate or out-of-range N."
+  (let ((n (numify n)))
+    (unless (integerp n)
+      (lamedh-error (format nil "expected an integer code point, got ~A" (lprint-to-string n))))
+    (and (<= 0 n #x10FFFF) (not (<= #xD800 n #xDFFF)) (code-char n))))
+(defbuiltin "CHAR-ALPHABETIC-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:alphabetic-p c)))))
+(defbuiltin "CHAR-NUMERIC-P*" (n)
+  (let ((c (scalar-char n)))
+    (bool (and c (member (sb-unicode:general-category c) '(:nd :nl :no))))))
+(defbuiltin "CHAR-UPPERCASE-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:uppercase-p c)))))
+(defbuiltin "CHAR-LOWERCASE-P*" (n)
+  (let ((c (scalar-char n))) (bool (and c (sb-unicode:lowercase-p c)))))
 ;; One-pass walks backing STRING->LIST, STRING-SPLIT and STRING-JOIN in
 ;; lib/14-strings.lisp (issue #510).
 (defbuiltin "STRING->LIST*" (s) (map 'list #'string (->str s)))

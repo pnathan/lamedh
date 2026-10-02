@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-jit/tailsum.lisp",
+      "mean": 0.27378333140000005,
+      "stddev": 0.015240861522488842,
+      "median": 0.282290674,
+      "user": 0.25172039999999996,
+      "system": 0.016451,
+      "min": 0.25314411200000003,
+      "max": 0.28636690000000004,
+      "times": [
+        0.28636690000000004,
+        0.261888403,
+        0.282290674,
+        0.25314411200000003,
+        0.285226568
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

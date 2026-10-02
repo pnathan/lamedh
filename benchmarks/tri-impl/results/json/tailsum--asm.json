@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/lamedh-asm/build/lamedhc /home/user/lamedh/benchmarks/tri-impl/build/asm/tailsum.lisp",
+      "mean": 0.08206704960000001,
+      "stddev": 0.005162165160901511,
+      "median": 0.080948482,
+      "user": 0.07991580000000001,
+      "system": 0.0008069999999999999,
+      "min": 0.077310582,
+      "max": 0.09085409700000001,
+      "times": [
+        0.080948482,
+        0.081406188,
+        0.07981589900000001,
+        0.09085409700000001,
+        0.077310582
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

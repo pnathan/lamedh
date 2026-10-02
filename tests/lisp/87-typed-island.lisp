@@ -38,7 +38,7 @@
 
 (deftest island-gate-rejects-checking-only-heads-as-unknown-calls
   (assert-equal (hm-compile-lambda 'f '(xs) '((car xs)))
-                '(blocked "call to unknown function `CAR`")))
+                '(blocked "builtin `CAR` is not supported in compiled code")))
 
 (deftest island-gate-resolves-only-the-compileable-lattice
   (assert-true (hm-compileable-ty-p 'int64))
@@ -79,7 +79,7 @@
 (deftest island-is-closed-under-calls
   (let ((isl (typed-island '(isl87-mid isl87-bad))))
     (assert-equal (island-members isl) nil)
-    (assert-equal (island-rejection isl 'isl87-bad) "call to unknown function `CAR`")
+    (assert-equal (island-rejection isl 'isl87-bad) "builtin `CAR` is not supported in compiled code")
     (assert-equal (island-rejection isl 'isl87-mid) "call to unknown function `ISL87-BAD`")))
 
 (deftest island-forms-declare-then-define
