@@ -64,16 +64,18 @@ This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
 port-only files with no verbatim `tests/lisp/` counterpart:
 `11-mod-euclidean.lisp`, `80-kernel-conformance.lisp` (pins KERNEL.md
-deviations fixed in this port), `97-no-ratios.lisp`, and
-`97-port-regressions.lisp` — and runs them through the bootstrapped
-`(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **691 assertions** across
+deviations fixed in this port), `97-no-ratios.lisp`, `97-printer.lisp`
+(printer conformance), and `97-port-regressions.lisp` — and runs them
+through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
+At the time of writing this passes all **709 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
-and the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
-`#\c`, ...).
+the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
+`#\c`, ...), and printer output checked against the reference binary
+(`()` for the empty list, `PRINT` framing, opaque
+`<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags).
 It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.

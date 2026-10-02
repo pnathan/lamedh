@@ -17,7 +17,7 @@
     "60-special-forms" "65-loops" "70-hash-and-plist" "80-kernel-conformance"
     "90-bitwise"
     "95-stdlib-batteries" "96-format-and-io" "97-common-forms" "97-no-ratios"
-    "97-port-regressions"))
+    "97-port-regressions" "97-printer"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
@@ -26,6 +26,35 @@
     (run-string (uiop:read-file-string path))))
 
 (load (merge-pathnames "host-regressions.lisp" *load-pathname*))
+
+(defun print-framing-ok ()
+  "PRINT writes the readable value then a newline -- no leading newline,
+no trailing space -- matching the reference implementation (issue #537).
+Checked here because PRINT writes to the host stream, which the Lamedh-level
+WITH-OUTPUT-TO-STRING does not capture."
+  (let* ((cases '(("(print (list nil))" . "(())")
+                  ("(print nil)" . "()")
+                  ("(print \"s\")" . "\"s\"")))
+         (bad (loop for (src . want) in cases
+                    for got = (with-output-to-string (*standard-output*)
+                                (leval (lread src) *global-env*))
+                    unless (string= got (format nil "~A~%" want))
+                      collect (list src got))))
+    (format t "~&; print framing: ~:[OK~;FAILED ~:*~S~]~%" bad)
+    (null bad)))
+
+(defun typed-array-tags-ok ()
+  "Typed arrays print as the reference's <typed-array:elem:n> tag. Built
+host-side, since no Lamedh constructor for them exists without #540."
+  (let* ((cases (list (cons (make-array 3 :element-type '(signed-byte 64) :initial-element 0)
+                            "<typed-array:int64:3>")
+                      (cons (make-array 2 :element-type 'double-float :initial-element 0d0)
+                            "<typed-array:float64:2>")))
+         (bad (loop for (v . want) in cases
+                    for got = (lprint-to-string v)
+                    unless (string= got want) collect (list want got))))
+    (format t "~&; typed-array tags: ~:[OK~;FAILED ~:*~S~]~%" bad)
+    (null bad)))
 
 ;; Shell-level CLI exit-status check (#535): runs the documented script
 ;; invocation in child SBCL processes and checks their exit codes.
@@ -52,6 +81,8 @@
 
 (let ((ok (leval (lread "(run-tests)") *global-env*))
       (host-ok (run-host-regressions))
+      (framing (print-framing-ok))
+      (typed-tags (typed-array-tags-ok))
       (cli-ok (run-cli-exit-status-test))
       (factory-ok (run-factory-bound-test)))
-  (uiop:quit (if (and (eq ok *t-sym*) host-ok cli-ok factory-ok) 0 1)))
+  (uiop:quit (if (and (eq ok *t-sym*) host-ok framing typed-tags cli-ok factory-ok) 0 1)))
