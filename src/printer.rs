@@ -22,8 +22,8 @@
 //! | `Lambda` | `<lambda>` |
 //! | `Builtin` | `<builtin>` |
 //! | `HashTable` | `<hash-table>` |
-//! | `Array(n)` | `<array:n>` |
-//! | `TypedArray(n)` | `<typed-array:elem:n>` |
+//! | `Array` | `#(1 2 3)` (round-trips via the reader's `#(...)` literal) |
+//! | `TypedArray` | `#<typed-array:int64 1 2 3>` (not readable) |
 //! | `Struct` | `#S(TYPE field...)` (round-trips via the reader) |
 //! | `Extension` | via [`crate::LispValExtension::display`] |
 //! | `Port` | `#<port:kind "name" open|closed>` |
@@ -132,12 +132,9 @@ fn write_val(out: &mut String, val: &LispVal, escape: bool) {
         LispVal::Macro(_) => out.push_str("<macro>"),
         LispVal::Vau(_) => out.push_str("<vau>"),
         LispVal::HashTable(_) => out.push_str("<hash-table>"),
-        LispVal::Array(a) => {
-            let _ = write!(out, "<array:{}>", a.borrow().len());
-        }
-        LispVal::TypedArray(a) => {
-            let _ = write!(out, "<typed-array:{}:{}>", a.elem, a.len());
-        }
+        // Contents, not just the length (issue #527). See `print_array`.
+        LispVal::Array(a) => out.push_str(&print_array(a)),
+        LispVal::TypedArray(a) => out.push_str(&print_typed_array(a)),
         // Readable record syntax (issue #308 stage D): field values in
         // declaration order, each printed readably, so the output round-trips
         // through the reader's #S literal (spawn/channel serialization).
@@ -211,6 +208,104 @@ fn write_val(out: &mut String, val: &LispVal, escape: bool) {
             out.push(')');
         }
     }
+}
+
+/// Elements shown before an array is abridged (issue #527). Beyond it the
+/// printer emits a `#<...N more>` marker, which the reader rejects, so an
+/// abridged array can never read back as a silently shorter one.
+pub const ARRAY_PRINT_LIMIT: usize = 100;
+
+thread_local! {
+    /// `None` while inside [`print_unabridged`]; otherwise the element limit.
+    static ARRAY_LIMIT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(Some(ARRAY_PRINT_LIMIT)) };
+    /// Arrays currently being printed on this thread, by address: an array
+    /// that (transitively) contains itself prints `#<circular-array>` at the
+    /// back-reference instead of recursing forever.
+    static ARRAYS_IN_PROGRESS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Like [`print()`], but arrays are never abridged, so every array whose
+/// elements are readable round-trips through the reader. Used where the
+/// printed text is a serialization (channel and spawn payloads) rather than
+/// a display.
+pub fn print_unabridged(val: &LispVal) -> String {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ARRAY_LIMIT.with(|l| l.set(self.0));
+        }
+    }
+    let _restore = Restore(ARRAY_LIMIT.with(|l| l.replace(None)));
+    print(val)
+}
+
+/// Print `len` elements as `open e0 e1 ... close`, abridged per
+/// [`ARRAY_LIMIT`], guarding against an array that contains itself.
+fn print_elements(
+    addr: usize,
+    open: &str,
+    close: char,
+    len: usize,
+    elem: impl Fn(usize) -> Option<LispVal>,
+) -> String {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            ARRAYS_IN_PROGRESS.with(|s| s.borrow_mut().pop());
+        }
+    }
+    if ARRAYS_IN_PROGRESS.with(|s| s.borrow().contains(&addr)) {
+        return "#<circular-array>".to_string();
+    }
+    ARRAYS_IN_PROGRESS.with(|s| s.borrow_mut().push(addr));
+    let _pop = Pop;
+    let shown = ARRAY_LIMIT.with(|l| l.get()).map_or(len, |n| n.min(len));
+    let mut out = open.to_string();
+    for i in 0..shown {
+        // Fetch each element afresh so no borrow is held across the
+        // recursive `print` (an element may be this very array).
+        let Some(v) = elem(i) else { break };
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&print(&v));
+    }
+    if shown < len {
+        if shown > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("#<...{} more>", len - shown));
+    }
+    out.push(close);
+    out
+}
+
+fn print_array(a: &crate::Shared<crate::SharedCell<Vec<LispVal>>>) -> String {
+    let len = a.borrow().len();
+    print_elements(
+        crate::Shared::as_ptr(a) as *const () as usize,
+        "#(",
+        ')',
+        len,
+        |i| a.borrow().get(i).cloned(),
+    )
+}
+
+fn print_typed_array(a: &crate::Shared<crate::TypedArrayObj>) -> String {
+    let open = if a.is_empty() {
+        format!("#<typed-array:{}", a.elem)
+    } else {
+        format!("#<typed-array:{} ", a.elem)
+    };
+    print_elements(
+        crate::Shared::as_ptr(a) as *const () as usize,
+        &open,
+        '>',
+        a.len(),
+        |i| a.get(i),
+    )
 }
 
 #[cfg(test)]
