@@ -90,8 +90,11 @@ instead.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
-  and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
-  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. The
+  and `REMAINDER`; `+`/`-`/`*` set an observable `OVERFLOW` flag
+  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. Fixnums
+  carry 62 bits of payload, so "overflow" means the result left the
+  fixnum range, not the 64-bit machine range; `EXPT` is repeated `*`
+  and sets the flag the same way. The
   inline fixnum code runs only after a tag check on both operands
   (only the non-literal one when the other is a fixnum literal);
   anything else branches to an out-of-line stub, emitted after the
