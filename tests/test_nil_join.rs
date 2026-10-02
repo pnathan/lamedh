@@ -55,11 +55,21 @@ fn cond_guard_idiom_also_checks() {
 #[test]
 fn nil_on_miss_functions_stay_gradual_and_still_run() {
     let e = env_with_stdlib();
-    // `parse-integer` itself: no declared scheme (honesty rule 1), and its
+    // `parse-integer`'s strict body, `(if test n nil)`, lives in
+    // `$parse-integer-whole` since `parse-integer` grew `&key junk-allowed`
+    // (#526). That body: no declared scheme (honesty rule 1), and its
     // on-demand derived scheme is now fully gradual on the result — not
     // `(-> (a) (list b))` (the pre-#336 bug).
-    let out = eval_line("(see-type 'parse-integer)", &e);
+    let out = eval_line("(see-type '$parse-integer-whole)", &e);
     assert!(out.starts_with("(CHECKED"), "got: {out}");
+    assert!(
+        !out.contains("LIST"),
+        "$parse-integer-whole must not be list-typed: {out}"
+    );
+    // `parse-integer` itself is keyword-taking now, so it is gradual
+    // (honesty rule 2) -- and in particular never list-typed.
+    let out = eval_line("(see-type 'parse-integer)", &e);
+    assert!(out.starts_with("(DYNAMIC"), "got: {out}");
     assert!(
         !out.contains("LIST"),
         "parse-integer must not be list-typed: {out}"

@@ -51,7 +51,7 @@ pub(super) fn apply_channel_send(
             )));
         }
     };
-    let serialised = crate::printer::print(&args[1]);
+    let serialised = crate::printer::print_unabridged(&args[1]);
     ch.sender
         .send(serialised)
         .map_err(|e| LispError::Generic(format!("channel-send: receiver disconnected: {e}")))?;
@@ -249,7 +249,7 @@ pub(super) fn apply_spawn(
             }
             let outcome = match crate::reader::read(&body_src, &child) {
                 Ok(form) => match crate::evaluator::eval(&form, &child) {
-                    Ok(v) => format!("(:OK {})", crate::printer::print(&v)),
+                    Ok(v) => format!("(:OK {})", crate::printer::print_unabridged(&v)),
                     Err(e) => format!(
                         "(:ERROR {})",
                         crate::printer::print(&LispVal::String(format!("{e:?}")))

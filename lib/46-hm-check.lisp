@@ -697,7 +697,9 @@ directly consumable by lib/20-condensation.lisp's CONDENSE-VACUOUS-P."
          (names (let ((i -1))
                   (mapcar (lambda (v)
                             (setq i (+ i 1))
-                            (cons v (intern (hm-var-letter i))))
+                            ;; Upcased: the native renderer's letters reach
+                            ;; Lisp through the reader, which folds case.
+                            (cons v (intern (string-upcase (hm-var-letter i)))))
                           vars)))
          (body (hm-render-ty (caddr scheme) names)))
     (if (null vars) body (list 'forall (mapcar #'cdr names) body))))
@@ -887,13 +889,15 @@ type error nested inside one surfaces), discarding the types."
 (defun hm-elab-form-checking (state tyenv head args)
   "Cx::elab's dispatch table under `checking: true`."
   (cond
-    ((member head '(+ - * / mod)) (hm-elab-bin state tyenv head args))
+    ((member head '(+ - * / quotient mod remainder rem))
+     (hm-elab-bin state tyenv head args))
     ((member head '(< > <= >= = /=)) (hm-elab-cmp state tyenv head args))
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (progn (hm-elab-all state tyenv args) 'any))
     ((eq head 'if) (hm-elab-if state tyenv args))
     ;; hm-elab-let binds sequentially: exactly `let*` (#513).
-    ((member head '(let let-typed let*)) (hm-elab-let state tyenv args))
+    ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ((eq head 'let*) (hm-elab-let state tyenv (hm-check-let-star args)))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'char-code) (hm-elab-char-code state tyenv args))
     ((eq head 'code-char) (hm-elab-code-char state tyenv args))
@@ -945,7 +949,9 @@ Cx::elab_stmt."
     ((not (and (hm-codegen-p state) (consp form))) (hm-elab state tyenv form))
     ((member (car form) '(cond when unless case))
      (hm-elab state tyenv (hm-desugar-branch (car form) (cdr form) t)))
-    ((member (car form) '(let let-typed let*)) (hm-elab-let state tyenv (cdr form) t))
+    ((member (car form) '(let let-typed)) (hm-elab-let state tyenv (cdr form) t))
+    ((eq (car form) 'let*)
+     (hm-elab-let state tyenv (hm-check-let-star (cdr form)) t))
     ((eq (car form) 'progn) (hm-elab-body state tyenv (cdr form) t))
     (t (hm-elab state tyenv form))))
 
@@ -1007,14 +1013,29 @@ desugar_branch in src/jit/elaboration.rs."
                  (hm-desugar-branch 'cond clauses stmt)))))
     (t (error "hm-desugar-branch"))))
 
+(defun hm-check-let-star (args)
+  "ARGS of a `let*`, unchanged, once they have the evaluator's shapes (#522): a
+binding list, a body, and every binding a `(name init)` pair -- so `let-typed`'s
+`(name type init)` shape does not leak into `let*`. Mirrors check_let_star in
+src/jit/elaboration.rs."
+  (cond
+    ((or (null (cdr args)) (not (listp (car args))))
+     (error "let* requires a binding list and at least one body form"))
+    ((not (every (lambda (b) (and (consp b) (symbolp (car b))
+                                  (consp (cdr b)) (null (cddr b))))
+                 (car args)))
+     (error "let* binding must be a (name init) pair"))
+    (t args)))
+
 ;;; ---- arithmetic and comparison -------------------------------------------
 
 (defun hm-elab-bin (state tyenv op args)
-  "`+ - * / mod`. `/` and `mod` are strictly BINARY in the evaluator and must
-be rejected at every other arity here too; `-` needs at least one operand.
-Mirrors Cx::elab_bin's checking path."
+  "`+ - * / mod`, plus `quotient` (the evaluator's name for `/`) and
+`remainder`/`rem` (truncated remainder, #522). `/`, `mod` and `remainder` are
+strictly BINARY in the evaluator and must be rejected at every other arity here
+too; `-` needs at least one operand. Mirrors Cx::elab_bin's checking path."
   (cond
-    ((and (member op '(/ mod)) (not (= (length args) 2)))
+    ((and (member op '(/ quotient mod remainder rem)) (not (= (length args) 2)))
      (error (concat "`" (princ-to-string op) "` requires exactly 2 arguments, got "
                     (princ-to-string (length args)))))
     ((and (eq op '-) (null args))
@@ -1033,11 +1054,27 @@ Mirrors Cx::elab_bin's checking path."
                 (error (concat "`-` expects a numeric operand, got "
                                (hm-type-name rt))))))
          (t ta))))
-    (t (let ((ty (hm-elab state tyenv (car args))))
+    ;; #530: an integer LITERAL meeting a float64 operand types as float64
+    ;; (the evaluator promotes it with `as f64`); `+`/`*` at any arity, `-`
+    ;; and `/` (alias `quotient`, BinOp::Div natively) only at arity 2, `mod`
+    ;; never. LITS is T while every operand so
+    ;; far is an int literal, so a later float64 operand re-types that prefix.
+    (t (let ((ty (hm-elab state tyenv (car args)))
+             (coerces (or (member op '(+ *))
+                          (and (member op '(- / quotient)) (= (length args) 2))))
+             (lits (hm-int-literal-p (car args))))
          (hm-reject-boxed! state ty)
          (mapc (lambda (a)
                  (let ((tb (hm-elab state tyenv a)))
                    (hm-reject-boxed! state tb)
+                   (cond
+                     ((not coerces) nil)
+                     ((and (hm-int-literal-p a) (eq (hm-walk state ty) 'float64))
+                      (setq tb 'float64))
+                     ((and lits (eq (hm-walk state tb) 'float64))
+                      (setq ty 'float64)))
+                   (setq lits (and lits (hm-int-literal-p a)
+                                   (not (eq (hm-walk state tb) 'float64))))
                    (if (hm-unifies-p state ty tb)
                        (progn
                          (setq ty (hm-walk state ty))
@@ -1056,6 +1093,8 @@ Mirrors Cx::elab_bin's checking path."
                                                  (hm-type-name rt))))
                                  ((and (eq op 'mod) (not (eq rt 'int64)))
                                   (error "`mod` is int64-only"))
+                                 ((and (member op '(remainder rem)) (not (eq rt 'int64)))
+                                  (error "`remainder` is int64-only"))
                                  (t (setq ty rt))))
                              nil))
                        (error (concat "`" (princ-to-string op)
@@ -1068,6 +1107,11 @@ Mirrors Cx::elab_bin's checking path."
                    (error (concat "`" (princ-to-string op)
                                   "` expects numeric operands, got " (hm-type-name w)))
                    w)))))))
+
+(defun hm-int-literal-p (form)
+  "An integer LITERAL in source (#530): the only int form coerced to float64.
+Mirrors Cx::int_literal -- no general int->float subtyping."
+  (and (numberp form) (not (floatp form))))
 
 (defun hm-unifies-p (state a b)
   "T when A and B unify (extending the substitution); NIL on a clash -- the
@@ -1087,6 +1131,13 @@ non-comparable operand kinds are rejected as the evaluator would at runtime."
                      (princ-to-string (length args))))
       (let ((ta (hm-elab state tyenv (car args)))
             (tb (hm-elab state tyenv (cadr args))))
+        ;; #530: an integer literal compared with a float64 operand is a
+        ;; float64 constant -- the evaluator's own mixed comparison.
+        (cond
+          ((and (hm-int-literal-p (cadr args)) (eq (hm-walk state ta) 'float64))
+           (setq tb 'float64))
+          ((and (hm-int-literal-p (car args)) (eq (hm-walk state tb) 'float64))
+           (setq ta 'float64)))
         ;; #476: refused BEFORE unify, so no comparison is ever typed over a
         ;; handle whose aliasing makes word equality wrong.
         (hm-reject-boxed! state ta)
@@ -2144,13 +2195,15 @@ the portable registry)."
 (defun hm-elab-form-codegen (state tyenv head args)
   "Cx::elab's dispatch table under `checking: false`."
   (cond
-    ((member head '(+ - * / mod)) (hm-elab-bin state tyenv head args))
+    ((member head '(+ - * / quotient mod remainder rem))
+     (hm-elab-bin state tyenv head args))
     ((member head '(< > <= >= = /=)) (hm-elab-cmp state tyenv head args))
     ((eq head 'not) (hm-elab-not state tyenv args))
     ((member head '(and or)) (hm-elab-logic state tyenv head args))
     ((eq head 'if) (hm-elab-if state tyenv args))
     ;; hm-elab-let binds sequentially: exactly `let*` (#513).
-    ((member head '(let let-typed let*)) (hm-elab-let state tyenv args))
+    ((member head '(let let-typed)) (hm-elab-let state tyenv args))
+    ((eq head 'let*) (hm-elab-let state tyenv (hm-check-let-star args)))
     ((eq head 'progn) (hm-elab-body state tyenv args))
     ((eq head 'setq) (hm-elab-setq state tyenv args))
     ((eq head 'while) (hm-elab-while state tyenv args))
@@ -2355,10 +2408,15 @@ argument, reject boxed operands, unify each with the first, resolve."
       (error "compiled min/max needs at least 1 argument")
       (let ((tys (mapcar (lambda (a) (hm-elab state tyenv a)) args)))
         (mapc (lambda (ty) (hm-reject-boxed! state ty)) tys)
+        ;; #530: no literal coercion here -- min/max return the selected
+        ;; argument unchanged ((max 0.5 1) is the integer 1), so say so.
         (mapc (lambda (ty)
-                (if (hm-unifies-p state (car tys) ty)
-                    nil
-                    (error "min/max operands disagree")))
+                (cond
+                  ((hm-unifies-p state (car tys) ty) nil)
+                  ((and (not (every (lambda (a) (not (hm-int-literal-p a))) args))
+                        (not (every (lambda (u) (not (eq (hm-walk state u) 'float64))) tys)))
+                   (error "min/max operands disagree (an integer literal is not coerced to float64 here: min/max return the selected argument unchanged, so write the literal as a float, e.g. 1.0)"))
+                  (t (error "min/max operands disagree"))))
               (cdr tys))
         (let ((rt (hm-resolve-operand state (car tys) "min/max")))
           (if (hm-arith-kind-p rt)
@@ -2496,6 +2554,13 @@ Mirrors Cx::elab_array_dot."
 
 ;;; ---- the closed call rule -------------------------------------------------
 
+;;; Builtins the checking mode types but codegen has no lowering for; the call
+;;; rule names them as unsupported in compiled code, not as unknown functions
+;;; (#512). Mirrors `checking_only_builtin` in src/jit/elaboration.rs.
+(def $hm-checking-only-builtins
+  '(cons car first cdr rest list null null? endp record-ref record-new record-with
+    append concat gcd lcm quote variant-case))
+
 (defun hm-elab-call-codegen (state tyenv name args)
   "Cx::elab_call under `checking: false`: `by_name` first -- here the run's
 REGISTRY (the in-flight group, which shadows the host exactly as the native
@@ -2508,6 +2573,11 @@ else is a known callee. No declared scheme, no protocol, no derived callee."
       (arrow (hm-apply-arrow-codegen state tyenv name arrow args))
       ((member name '(funcall apply))
        (progn (hm-elab-all state tyenv args) 'any))
+      ;; A builtin the checker types but codegen cannot lower is not an
+      ;; unknown function (#512).
+      ((member name $hm-checking-only-builtins)
+       (error (concat "builtin `" (princ-to-string name)
+                      "` is not supported in compiled code")))
       (t (error (concat "call to unknown function `" (princ-to-string name) "`"))))))
 
 (defun hm-apply-arrow-codegen (state tyenv name arrow args)
@@ -2605,37 +2675,41 @@ this from its provisional registry entry; this is the portable equivalent)."
     ((not (every #'symbolp params)) (list 'dynamic "non-symbol parameter"))
     ((exists (lambda (m) (member m params)) '(&rest &optional &key))
      (list 'dynamic "variadic parameter list"))
-    (t (let* ((state (hm-new-state))
-              (ptys (mapcar (lambda (p) (hm-fresh state)) params))
-              (ret (hm-fresh state))
-              (arrow (list '-> ptys ret))
-              (tyenv (mapcar #'cons params ptys)))
-         (progn
-           ;; NAME is the function under check, not merely a callee: the
-           ;; native checker reaches it through a provisional registry entry
-           ;; (see HM-ELAB-DERIVED-CALL's arity arm). An anonymous check
-           ;; (NAME nil) has no such entry and seeds neither.
-           (if name
-               (progn (sethash (gethash state 'assumptions) name arrow)
-                      (sethash state 'self name))
-               nil)
-           ;; This function's own in-flight variables seed the AVOID set so a
-           ;; callee checked on demand never quantifies them.
-           (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
-           (handler-case
-               (let ((bt (hm-elab-body state tyenv body)))
-                 ;; A gradual ANY body is an ANY return (#505): unify(any,
-                 ;; ret) leaves RET free, and generalizing it would claim
-                 ;; FORALL a. ... -> a.
-                 (if (or (and (eq (hm-walk state bt) 'any)
-                              (progn (hm-force-any! state (cadr ret)) t))
-                         (hm-unifies-p state bt ret))
-                     (list 'checked
-                           (hm-render-scheme
-                            (hm-generalize state (list '-> (mapcar (lambda (p) (hm-zonk state p)) ptys)
-                                                       (hm-zonk state ret)))))
-                     (list 'type-error "return type mismatch across branches")))
-             (error (e) (list 'type-error (error-message e)))))))))
+    (t (handler-case
+           (list 'checked (hm-render-scheme (hm-check-scheme name params body)))
+         (error (e) (list 'type-error (error-message e)))))))
+
+(defun hm-check-scheme (name params body)
+  "HM-CHECK-NAMED's generalized scheme in the internal representation
+((FORALL ids arrow)), unrendered; signals the checker's error. PARAMS must
+already be a flat list of bare symbols and BODY non-empty."
+  (let* ((state (hm-new-state))
+         (ptys (mapcar (lambda (p) (hm-fresh state)) params))
+         (ret (hm-fresh state))
+         (arrow (list '-> ptys ret))
+         (tyenv (mapcar #'cons params ptys)))
+    (progn
+      ;; NAME is the function under check, not merely a callee: the
+      ;; native checker reaches it through a provisional registry entry
+      ;; (see HM-ELAB-DERIVED-CALL's arity arm). An anonymous check
+      ;; (NAME nil) has no such entry and seeds neither.
+      (if name
+          (progn (sethash (gethash state 'assumptions) name arrow)
+                 (sethash state 'self name))
+          nil)
+      ;; This function's own in-flight variables seed the AVOID set so a
+      ;; callee checked on demand never quantifies them.
+      (sethash state 'avoid (mapcar #'cadr (cons ret ptys)))
+      (let ((bt (hm-elab-body state tyenv body)))
+        ;; A gradual ANY body is an ANY return (#505): unify(any, ret)
+        ;; leaves RET free, and generalizing it would claim
+        ;; FORALL a. ... -> a.
+        (if (or (and (eq (hm-walk state bt) 'any)
+                     (progn (hm-force-any! state (cadr ret)) t))
+                (hm-unifies-p state bt ret))
+            (hm-generalize state (list '-> (mapcar (lambda (p) (hm-zonk state p)) ptys)
+                                       (hm-zonk state ret)))
+            (error "return type mismatch across branches"))))))
 
 (defun hm-check-expr (expr)
   "Check a single EXPR in an empty environment. Returns (CHECKED scheme) |
@@ -2975,6 +3049,38 @@ Returns (COMPILEABLE (-> (T...) R)) with every type concrete, or (BLOCKED
               (list 'compileable (list '-> ps ret)))))
     (error (e) (list 'blocked (error-message e)))))
 
+(defun hm-mono-pin (name params body)
+  "The checker's own scheme for NAME as a codegen pin (#512): its internal
+arrow when the scheme is monomorphic and every position compileable, else NIL.
+Codegen resolves operand types eagerly, so a body the checker solves only as a
+whole (`fib`'s `(+ (fib ..) (fib ..))`, whose operands are the still-free
+recursive return type) is blocked unpinned; pinned, it compiles -- and codegen
+still elaborates the body strictly against the pin. Mirrors `mono_pins`."
+  (let ((s (handler-case (hm-check-scheme name params body) (error (e) nil))))
+    (if (and s
+             (null (cadr s))
+             (every #'hm-compileable-ty-p (cadr (caddr s)))
+             (hm-compileable-ty-p (caddr (caddr s))))
+        (caddr s)
+        nil)))
+
+(defun hm-seed-arrow (state name pin params body)
+  "The arrow a member is registered under before its body is elaborated:
+PIN (see HM-PIN-ARROW) when there is one, its holes `?` filled from the
+checker's monomorphic scheme (HM-MONO-PIN) where it has one; otherwise that
+scheme; otherwise a provisional arrow. The portable `define_partial`/
+`analyze_untyped` seeding. Signals on a malformed pin."
+  (let ((mono (hm-mono-pin name params body)))
+    (cond
+      ((null pin) (if mono mono (hm-provisional-arrow state params)))
+      ((and mono (eq (car pin) 'annotated))
+       (let ((arrow (hm-pin-arrow state pin params)))
+         (list '->
+               (mapcar (lambda (a p m) (if (eq a '?) m p))
+                       (cadr pin) (cadr arrow) (cadr mono))
+               (if (eq (caddr pin) '?) (caddr mono) (caddr arrow)))))
+      (t (hm-pin-arrow state pin params)))))
+
 (defun hm-compile-lambda (name params body)
   "The codegen-mode verdict for ONE function in isolation: NAME is registered
 provisionally (so it may call itself) and every other callee resolves through
@@ -2985,7 +3091,7 @@ the host's typed registry alone. The portable twin of `Jit::compile_reason`."
     ((exists (lambda (m) (member m params)) '(&rest &optional &key))
      (list 'dynamic "variadic parameter list"))
     (t (let* ((state (hm-codegen-state))
-              (arrow (hm-provisional-arrow state params)))
+              (arrow (hm-seed-arrow state name nil params body)))
          (sethash (gethash state 'registry) name arrow)
          (hm-compile-one state arrow params body)))))
 
@@ -3039,10 +3145,8 @@ round in which every participant compiled."
     (mapc (lambda (m)
             (let ((pin (assoc (car m) pins)))
               (sethash reg (car m)
-                       (if pin
-                           (handler-case (hm-pin-arrow state (cdr pin) (cadr m))
-                             (error (e) (list 'bad-pin (error-message e))))
-                           (hm-provisional-arrow state (cadr m))))))
+                       (handler-case (hm-seed-arrow state (car m) (cdr pin) (cadr m) (cddr m))
+                         (error (e) (list 'bad-pin (error-message e)))))))
           members)
     (mapcar (lambda (m)
               (let ((arrow (gethash reg (car m))))

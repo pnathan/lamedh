@@ -395,6 +395,35 @@
                        ((eq '(1) '(1)) nil)))
     (cons 'SEE-ALSO '(equal =))))
 
+(register-doc 'eql
+  (list
+    (cons 'NAME 'eql)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(eql a b)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "Common Lisp EQL, which is EQ here: EQ already compares numbers by type and value and characters by value. Conses are compared by identity. Unlike CL, equal strings are EQL, because they are EQ.")
+    (cons 'EXAMPLES '(((eql 1 1) t)
+                       ((eql 1 1.0) nil)
+                       ((eql #\a 'a') t)
+                       ((eql (list 1) (list 1)) nil)))
+    (cons 'SEE-ALSO '(eq equal =))))
+
+(register-doc 'type-of
+  (list
+    (cons 'NAME 'type-of)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(type-of x)")
+    (cons 'CATEGORY 'predicates)
+    (cons 'DESCRIPTION "A symbol naming the runtime type of x: NULL, CONS, CHARACTER, FLOAT, INTEGER, STRING, SYMBOL, TYPED-ARRAY, ARRAY, HASH-TABLE, ERROR, MACRO, FUNCTION (lambdas, builtins, fexprs and vau operatives), PORT or EXTENSION. A record yields its brand (a DEFRECORD POINT value gives POINT). Anything else gives T.")
+    (cons 'EXAMPLES '(((type-of 42) integer)
+                       ((type-of 1.5) float)
+                       ((type-of "s") string)
+                       ((type-of #\a) character)
+                       ((type-of nil) null)
+                       ((type-of '(1 2)) cons)
+                       ((type-of #'car) function)))
+    (cons 'SEE-ALSO '(typecase numberp stringp charp consp functionp record-brand))))
+
 (register-doc 'equal
   (list
     (cons 'NAME 'equal)
@@ -751,7 +780,7 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(intern string)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Interns a string as a symbol in the global symbol table.")
+    (cons 'DESCRIPTION "Interns a string as a symbol in the global symbol table. The name is taken verbatim: (intern \"a b\") is the symbol printed |a b|, distinct from A.")
     (cons 'EXAMPLES '(((intern "HELLO") hello)))
     (cons 'SEE-ALSO '(implode gensym))))
 
@@ -910,7 +939,21 @@
     (cons 'CATEGORY 'special-forms)
     (cons 'DESCRIPTION "Locally bind named functions (non-recursive) for the extent of the body. Parallel LET semantics: clauses do not see one another. A local binding shadows a global operator of the same name only within the body.")
     (cons 'EXAMPLES '(((flet ((sq (x) (* x x))) (sq 7)) 49)))
-    (cons 'SEE-ALSO '(let lambda macrolet fexprlet vaulet))))
+    (cons 'SEE-ALSO '(labels let lambda macrolet fexprlet vaulet))))
+
+(register-doc 'labels
+  (list
+    (cons 'NAME 'labels)
+    (cons 'TYPE 'macro)
+    (cons 'SYNTAX "(labels ((name (params...) body...) ...) body...)")
+    (cons 'CATEGORY 'special-forms)
+    (cons 'DESCRIPTION "Locally bind named functions that may call themselves and one another (Common Lisp LABELS) -- the recursive FLET. Expands to a LET binding each name to NIL, a SETQ of each name to its LAMBDA, then the body, so every local closure sees the finished bindings. A name cannot shadow a special form (e.g. GO).")
+    (cons 'EXAMPLES '(((labels ((fact (n) (if (= n 0) 1 (* n (fact (- n 1)))))) (fact 5)) 120)
+                       ((labels ((ev (n) (if (= n 0) t (od (- n 1))))
+                                 (od (n) (if (= n 0) nil (ev (- n 1)))))
+                          (ev 10))
+                        t)))
+    (cons 'SEE-ALSO '(flet let lambda defun))))
 
 (register-doc 'macrolet
   (list
@@ -1585,6 +1628,41 @@ The classic Lisp 1.5 spelling.")
                        ((string-length* "") 0)))
     (cons 'SEE-ALSO '(substring index concat))))
 
+(register-doc 'string-length
+  (list
+    (cons 'NAME 'string-length)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string-length s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "Number of Unicode characters (not bytes) in string s. An alias of STRING-LENGTH*; the generic LENGTH also accepts strings.")
+    (cons 'EXAMPLES '(((string-length "hello") 5)
+                       ((string-length "") 0)))
+    (cons 'SEE-ALSO '(string-length* length substring))))
+
+(register-doc 'string->list
+  (list
+    (cons 'NAME 'string->list)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(string->list s)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "The characters of s as a list of ONE-CHARACTER STRINGS, not char values: (string->list \"ab\") is (\"a\" \"b\"), never ('a' 'b'). Compare elements with EQUAL or STRING=, not against a char literal; use CHAR->CODE for a code point. LIST->STRING is the inverse.")
+    (cons 'EXAMPLES '(((string->list "abc") ("a" "b" "c"))
+                       ((string->list "") nil)))
+    (cons 'SEE-ALSO '(list->string char-at char->code))))
+
+(register-doc 'parse-integer
+  (list
+    (cons 'NAME 'parse-integer)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(parse-integer s &key junk-allowed)")
+    (cons 'CATEGORY 'strings)
+    (cons 'DESCRIPTION "The integer denoted by string s (surrounding whitespace ignored), or NIL when s is not an integer. With :junk-allowed true, parse the leading [whitespace][sign]digits and ignore whatever follows, still NIL when there is no digit. Unlike CL, a miss returns NIL rather than signalling, and there is no second (index) value.")
+    (cons 'EXAMPLES '(((parse-integer "42") 42)
+                       ((parse-integer "12x") nil)
+                       ((parse-integer "12x" :junk-allowed t) 12)
+                       ((parse-integer "  -7 apples" :junk-allowed t) -7)))
+    (cons 'SEE-ALSO '(string->number number->string))))
+
 (register-doc 'substring
   (list
     (cons 'NAME 'substring)
@@ -1625,11 +1703,22 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(charp x)")
     (cons 'CATEGORY 'predicates)
-    (cons 'DESCRIPTION "Returns T if x is a Char value (produced by a char literal like 'a'). NIL for integers, strings, and all other types. Distinct from FIXP, which is NIL for chars.")
+    (cons 'DESCRIPTION "Returns T if x is a Char value (produced by a char literal like 'a' or, CL-style, #\\a, #\\( or #\\Space). NIL for integers, strings, and all other types. Distinct from FIXP, which is NIL for chars.")
     (cons 'EXAMPLES '(((charp 'a') t)
                        ((charp 97) nil)
                        ((charp "a") nil)))
     (cons 'SEE-ALSO '(make-char char-code code-char fixp))))
+
+(register-doc 'make-list
+  (list
+    (cons 'NAME 'make-list)
+    (cons 'TYPE 'function)
+    (cons 'SYNTAX "(make-list n &key initial-element)")
+    (cons 'CATEGORY 'lists)
+    (cons 'DESCRIPTION "A fresh list of n elements, each initial-element (default NIL).")
+    (cons 'EXAMPLES '(((make-list 3 :initial-element 0) (0 0 0))
+                       ((make-list 2) (nil nil))))
+    (cons 'SEE-ALSO '(list make-array make-string))))
 
 (register-doc 'make-char
   (list
@@ -1913,7 +2002,7 @@ The classic Lisp 1.5 spelling.")
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(string-capitalize s)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Returns s with its first character uppercased (ASCII) and the rest lowercased.")
+    (cons 'DESCRIPTION "Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).")
     (cons 'EXAMPLES '(((string-capitalize "hELLO world") "Hello World")))
     (cons 'SEE-ALSO '(string-upcase string-downcase))))
 
@@ -4126,19 +4215,19 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
 (register-category 'predicates
   "Type and value predicates"
   '(zerop plusp minusp evenp oddp < > = atom symbolp numberp fixp floatp
-    charp stringp consp listp null not eq equal functionp boundp macrop
-    arrayp extension-p error-p))
+    charp stringp consp listp null not eq eql equal functionp boundp macrop
+    arrayp extension-p error-p type-of))
 
 (register-category 'lists
   "List manipulation"
   '(car cdr cons list append reverse length nth last member assoc
     mapcar maplist subst pairlis nthcdr efface delete
-    rplaca rplacd sublis sort))
+    rplaca rplacd sublis sort make-list))
 
 (register-category 'strings
   "String operations"
   '(concat index explode implode gensym intern maknam
-    string-length* substring char-code code-char make-char
+    string-length* string-length string->list parse-integer substring char-code code-char make-char
     string->number number->string prin1-to-string princ-to-string
     make-string string-empty-p string-concat char-at
     string< string> string<= string>= string-ne
@@ -4253,7 +4342,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
   '(quote if cond and or def setq let lambda defun defun* defmacro progn prog
     block return-from catch throw unwind-protect while for
     label define defexpr vau $vau
-    macro fexpr flet macrolet fexprlet vaulet))
+    macro fexpr flet labels macrolet fexprlet vaulet))
 
 (register-category 'io
   "Input/Output"
@@ -4386,7 +4475,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'DESCRIPTION "Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the concrete inference-failure reason recorded at the fallback site — e.g. which expression or operand defeated typing — not just a generic \"inference failed\". NIL if the function is currently typed, or was never a DEFUN* candidate. The reason is cleared automatically the next time DEFUN* (re)defines the same name and succeeds.")
     (cons 'ARGS '((sym "A quoted symbol naming a function")))
     (cons 'RETURNS "A reason string, or NIL")
-    (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "call to unknown function `CONS`")))
+    (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "builtin `CONS` is not supported in compiled code")))
     (cons 'SEE-ALSO '(signature compiled-p defun* explain-compile))))
 
 (register-doc 'time

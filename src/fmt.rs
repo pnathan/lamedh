@@ -155,6 +155,10 @@ fn scan_one_line(line: &str, mut state: ScanState, depth: &mut i64) -> ScanState
                     state = ScanState::InBlockComment(1);
                     i += 2;
                 }
+                // A `#\c` char literal (reader::parse_hash_char_literal):
+                // skip the one character so `#\(`, `#\"` or `#\;` carries no
+                // depth, string or comment state.
+                '#' if i + 1 < n && chars[i + 1] == '\\' => i += 3,
                 '"' => {
                     state = ScanState::InString;
                     i += 1;
@@ -219,7 +223,13 @@ fn render_line(line: &Line) -> String {
     }
     let indent = "  ".repeat(line.start_depth);
     if line.end_state == ScanState::Normal {
-        let trimmed = trimmed_start.trim_end_matches([' ', '\t', '\r']);
+        let mut trimmed = trimmed_start.trim_end_matches([' ', '\t', '\r']);
+        // `#\ ` (the space character) at end of line: the trailing space is
+        // the literal's payload, not trailing whitespace. Keep that one char.
+        if trimmed.ends_with("#\\") && trimmed.len() < trimmed_start.len() {
+            let keep = trimmed.len() + 1;
+            trimmed = &trimmed_start[..keep];
+        }
         format!("{indent}{trimmed}")
     } else {
         // This line opens a string/block comment that continues past EOL:
@@ -309,6 +319,15 @@ mod tests {
     fn does_not_touch_parens_inside_string_or_char_literal() {
         let src = "(def x \"(unbalanced\")\n(def y '(')\n";
         assert_eq!(format_source(src), src);
+    }
+
+    #[test]
+    fn does_not_touch_hash_char_literals() {
+        // Issue #526: #\( #\) #\" #\; are characters, not structure.
+        let src = "(def x (list #\\( #\\\" #\\;))\n(def y 1)\n";
+        assert_eq!(format_source(src), src);
+        // A trailing #\<space> keeps its payload space.
+        assert_eq!(format_source("(list #\\ \n)\n"), "(list #\\ \n  )\n");
     }
 
     #[test]
