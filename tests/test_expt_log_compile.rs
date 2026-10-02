@@ -40,12 +40,18 @@ fn log_and_float_expt_compile_and_match_the_evaluator() {
             "ff {b} {x}"
         );
     }
-    // powi takes `n as i32`: huge exponents truncate identically.
+    // Out-of-i32 exponents (#507) saturate identically in both tiers.
     for (b, n) in [
         ("1.5", "-3"),
         ("2.0", "10"),
         ("-2.0", "7"),
         ("2.0", "5000000000"),
+        ("2.0", "4294967296"),
+        ("2.0", "-9223372036854775808"),
+        ("-2.0", "4294967297"),
+        ("-2.0", "-4294967297"),
+        ("-1.0", "9007199254740993"),
+        ("1.0000000001", "4294967296"),
     ] {
         assert_eq!(
             eval_line(&format!("(el-fi {b} {n})"), &e),
@@ -53,6 +59,10 @@ fn log_and_float_expt_compile_and_match_the_evaluator() {
             "fi {b} {n}"
         );
     }
+    // ...and to the IEEE answer, not the pre-#507 truncated `1.0`.
+    assert_eq!(eval_line("(el-fi 2.0 4294967296)", &e), "inf");
+    assert_eq!(eval_line("(el-fi -2.0 4294967297)", &e), "-inf");
+    assert_eq!(eval_line("(el-fi 2.0 -9223372036854775808)", &e), "0.0");
     for (n, x) in [("2", "0.5"), ("-3", "2.0"), ("10", "-1.5")] {
         assert_eq!(
             eval_line(&format!("(el-if {n} {x})"), &e),

@@ -91,6 +91,21 @@ impl Cx<'_> {
         Ok(())
     }
 
+    /// An integer LITERAL in source (issue #530): the only int form that may
+    /// be coerced to `float64`. There is no general int→float subtyping — an
+    /// int-typed variable or expression is never coerced.
+    fn int_literal(form: &LispVal) -> Option<i64> {
+        match form {
+            LispVal::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Is `t` already known to be `float64` under the substitution?
+    fn is_float(&self, t: &Ty) -> bool {
+        matches!(self.walk(t), Ty::Float64)
+    }
+
     /// A resolved operand type the EVALUATOR would reject for arithmetic /
     /// numeric comparison (#322): known non-numerics fail the check early;
     /// variables and Any stay gradual. Char is numeric (byte arithmetic).
@@ -183,7 +198,12 @@ impl Cx<'_> {
                 };
                 let args = &items[1..];
                 match head.as_str() {
-                    "+" | "-" | "*" | "/" | "MOD" => self.elab_bin(&head, args, scope, max),
+                    // `quotient` is the evaluator's classic name for `/` (the
+                    // same builtin); `remainder`/`rem` are its truncated
+                    // remainder (#522).
+                    "+" | "-" | "*" | "/" | "QUOTIENT" | "MOD" | "REMAINDER" | "REM" => {
+                        self.elab_bin(&head, args, scope, max)
+                    }
                     "<" | ">" | "<=" | ">=" | "=" | "/=" => self.elab_cmp(&head, args, scope, max),
                     "NOT" => self.elab_not(args, scope, max),
                     "AND" | "OR" => self.elab_logic(&head, args, scope, max),
@@ -195,8 +215,13 @@ impl Cx<'_> {
                     // tier instead of stalling at CHECKED. `LET-TYPED` stays as the
                     // explicit-annotation spelling; it and `LET` share `elab_let`.
                     // `elab_let` binds sequentially, each init seeing the
-                    // bindings before it: exactly `let*` (#513).
-                    "LET" | "LET-TYPED" | "LET*" => self.elab_let(args, false, scope, max),
+                    // bindings before it: exactly `let*` (#513). `let*` takes
+                    // only the evaluator's shapes (#522); see `check_let_star`.
+                    "LET" | "LET-TYPED" => self.elab_let(args, false, scope, max),
+                    "LET*" => {
+                        check_let_star(args)?;
+                        self.elab_let(args, false, scope, max)
+                    }
                     "PROGN" => self.elab_body(args, scope, max),
                     // `setq`/`while`/`for` compile natively when they only touch
                     // local slots (params/let-bindings) — codegen-only so
@@ -397,7 +422,8 @@ impl Cx<'_> {
         max: &mut usize,
     ) -> Result<(Core, Ty), String> {
         // `+` and `*` support 0–N args; `-` requires at least 1 (unary
-        // negate, or N-ary left-fold). `/` and `MOD` are strictly BINARY in
+        // negate, or N-ary left-fold). `/` (alias `QUOTIENT`), `MOD` and
+        // `REMAINDER` (alias `REM`, #522) are strictly BINARY in
         // the evaluator (`BuiltinFunc::Divide` in `apply_math_op`,
         // `builtins_core.rs`, and `mod` in `builtins_extra.rs` both reject
         // anything but exactly 2 arguments — no unary reciprocal, no
@@ -411,10 +437,11 @@ impl Cx<'_> {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
             "*" => BinOp::Mul,
-            "/" => BinOp::Div,
+            "/" | "QUOTIENT" => BinOp::Div,
+            "REMAINDER" | "REM" => BinOp::Rem,
             _ => BinOp::Mod,
         };
-        if matches!(bop, BinOp::Div | BinOp::Mod) && args.len() != 2 {
+        if matches!(bop, BinOp::Div | BinOp::Mod | BinOp::Rem) && args.len() != 2 {
             return Err(format!(
                 "`{op}` requires exactly 2 arguments, got {}",
                 args.len()
@@ -434,7 +461,7 @@ impl Cx<'_> {
         }
 
         // 1-arg: unary identity — (+ x) = x, (* x) = x, (- x) = (- 0 x).
-        // (`/`/`MOD` can never reach here: pinned to exactly 2 args above.)
+        // (`/`/`MOD`/`REMAINDER` can never reach here: pinned to exactly 2 args above.)
         if args.len() == 1 {
             let (a, ta) = self.elab(&args[0], scope, max)?;
             self.reject_boxed_arith_cmp(&ta)?;
@@ -459,13 +486,53 @@ impl Cx<'_> {
         }
 
         // ≥2 args: elaborate all, unify types pairwise, left-fold into BinOp
-        // tree. For `/`/`MOD` this loop runs exactly once (arity pinned to 2
+        // tree. For `/`/`MOD`/`REMAINDER` this loop runs exactly once (arity pinned to 2
         // above); only `+`/`-`/`*` ever reach a 3+-ary fold here.
+        //
+        // Issue #530: an integer LITERAL meeting a `float64` operand is
+        // elaborated as the float constant `n as f64`. This is exactly what
+        // the evaluator does (`apply_math_op`: any float operand promotes
+        // every argument with `as f64`), so the compiled result is the
+        // interpreter's. `+`/`*` fold left to right in both; the evaluator's
+        // N-ary `-` is `a - (b + c …)`, not the fold, so `-` coerces only
+        // at arity 2. `mod` is int-only and never coerces.
+        let coerces = match bop {
+            BinOp::Add | BinOp::Mul => true,
+            BinOp::Sub | BinOp::Div => args.len() == 2,
+            _ => false,
+        };
         let (mut acc, mut ty) = self.elab(&args[0], scope, max)?;
         self.reject_boxed_arith_cmp(&ty)?;
+        // The operands so far while they are ALL int literals (else `None`):
+        // a later `float64` operand re-elaborates this prefix as floats.
+        let mut lit_prefix: Option<Vec<i64>> = Self::int_literal(&args[0]).map(|n| vec![n]);
         for arg in &args[1..] {
-            let (b, tb) = self.elab(arg, scope, max)?;
+            let (mut b, mut tb) = self.elab(arg, scope, max)?;
             self.reject_boxed_arith_cmp(&tb)?;
+            let lit = Self::int_literal(arg);
+            if coerces
+                && self.is_float(&ty)
+                && let Some(n) = lit
+            {
+                (b, tb) = (Core::LitF(n as f64), Ty::Float64);
+            } else if coerces
+                && self.is_float(&tb)
+                && let Some(ns) = lit_prefix.take()
+            {
+                let f = |n: i64| Box::new(Core::LitF(n as f64));
+                acc = Core::LitF(ns[0] as f64);
+                for n in &ns[1..] {
+                    acc = Core::Bin(NumKind::F, bop, Box::new(acc), f(*n));
+                }
+                ty = Ty::Float64;
+            }
+            lit_prefix = match (lit_prefix.take(), lit) {
+                (Some(mut ns), Some(n)) if !self.is_float(&tb) => {
+                    ns.push(n);
+                    Some(ns)
+                }
+                _ => None,
+            };
             if self.unify(&ty, &tb).is_err() {
                 return Err(format!(
                     "`{op}` operands disagree: {:?} vs {:?}",
@@ -487,6 +554,9 @@ impl Cx<'_> {
                 .ok_or_else(|| format!("`{op}` expects numeric operands, got {rt:?}"))?;
             if matches!(bop, BinOp::Mod) && !matches!(num, NumTy::I) {
                 return Err("`mod` is int64-only".to_string());
+            }
+            if matches!(bop, BinOp::Rem) && !matches!(num, NumTy::I) {
+                return Err("`remainder` is int64-only".to_string());
             }
             ty = rt.clone();
             acc = Core::Bin(num.into(), bop, Box::new(acc), Box::new(b));
@@ -516,8 +586,20 @@ impl Cx<'_> {
         if args.len() != 2 {
             return Err(format!("`{op}` expects 2 args, got {}", args.len()));
         }
-        let (a, ta) = self.elab(&args[0], scope, max)?;
-        let (b, tb) = self.elab(&args[1], scope, max)?;
+        let (mut a, mut ta) = self.elab(&args[0], scope, max)?;
+        let (mut b, mut tb) = self.elab(&args[1], scope, max)?;
+        // Issue #530: an integer literal compared with a `float64` operand is
+        // the float constant `n as f64` — the evaluator's own mixed-operand
+        // comparison (`as_f64` on both sides), so the result is unchanged.
+        if let Some(n) = Self::int_literal(&args[1])
+            && self.is_float(&ta)
+        {
+            (b, tb) = (Core::LitF(n as f64), Ty::Float64);
+        } else if let Some(n) = Self::int_literal(&args[0])
+            && self.is_float(&tb)
+        {
+            (a, ta) = (Core::LitF(n as f64), Ty::Float64);
+        }
         // #476: reject before unify/resolve so no `Core::Cmp` is ever built
         // over a boxed operand — two distinct handles can alias the same
         // object, so comparing handle words would be silently wrong, not
@@ -1480,6 +1562,13 @@ impl Cx<'_> {
                     self.elab(a, scope, max)?;
                 }
                 return Ok((Core::LitI(0), Ty::Any));
+            }
+            // A builtin the checker types but codegen has no lowering for is
+            // not an unknown function (#512): say what it is.
+            None if checking_only_builtin(name) => {
+                return Err(format!(
+                    "builtin `{name}` is not supported in compiled code"
+                ));
             }
             None => return Err(format!("call to unknown function `{name}`")),
         };
@@ -2619,7 +2708,7 @@ impl Cx<'_> {
 
     /// `(expt b e)` (#398) over concrete operand kinds, each combination
     /// mirroring one arm of the evaluator's `BuiltinFunc::Expt`:
-    /// float^float = `powf`, float^int = `powi(e as i32)`, int^float =
+    /// float^float = `powf`, float^int = `float_powi(b, e)` (#507), int^float =
     /// `(b as f64).powf(e)` — all `float64`, via the `jit_ftrans2` libm
     /// trampoline. int^int is not compiled: the evaluator returns an integer
     /// (or a float for a negative exponent) and raises on overflow.
@@ -2759,8 +2848,9 @@ impl Cx<'_> {
 
     /// `(abs x)` → `(if (< x 0) (- x) x)` over `int64`/`float64`, as compilable
     /// Core. `Core::LitI(0)` is the zero for both kinds (all-zero bits bitcast
-    /// to `+0.0`). Comparison-select, so `(abs -0.0)` = `-0.0` and `(abs NaN)`
-    /// = `NaN` unchanged, matching the evaluator (unlike an `fabs` instruction).
+    /// to `+0.0`). Comparison-select, so `(abs NaN)` = `NaN` unchanged,
+    /// matching the evaluator. The float else-branch is `x + 0`, as in
+    /// lib/05-math.lisp, so `(abs -0.0)` = `+0.0` (#518).
     /// `x` is evaluated once into a temp slot (#397), so a compound argument
     /// (or one with a side effect, e.g. a `setq`) runs exactly once.
     fn elab_abs(
@@ -2787,7 +2877,11 @@ impl Cx<'_> {
         let x = || Box::new(Core::Var(slot));
         let cond = Core::Cmp(k, CmpOp::Lt, x(), Box::new(Core::LitI(0)));
         let neg = Core::Bin(k, BinOp::Sub, Box::new(Core::LitI(0)), x());
-        let sel = Core::If(Box::new(cond), Box::new(neg), x());
+        let pos = match k {
+            NumKind::I => x(),
+            NumKind::F => Box::new(Core::Bin(k, BinOp::Add, x(), Box::new(Core::LitI(0)))),
+        };
+        let sel = Core::If(Box::new(cond), Box::new(neg), pos);
         Ok((Core::Let(slot, Box::new(xc), Box::new(sel)), rt))
     }
 
@@ -2839,10 +2933,25 @@ impl Cx<'_> {
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
+        // Issue #530: unlike `+`/`<`, an integer literal is NOT coerced here.
+        // `min`/`max` return the selected argument itself, so the evaluator's
+        // `(max 0.5 1)` is the integer `1`; a float constant would change the
+        // observable result. Say so, instead of a bare unify clash.
+        let lit_hint = |e: String| {
+            let lit = args.iter().any(|a| Self::int_literal(a).is_some());
+            if lit && elabs.iter().any(|(_, t)| self.is_float(t)) {
+                format!(
+                    "min/max operands disagree: {e} (an integer literal is not \
+                     coerced to float64 here: min/max return the selected argument \
+                     unchanged, so write the literal as a float, e.g. 1.0)"
+                )
+            } else {
+                format!("min/max operands disagree: {e}")
+            }
+        };
         let ta = elabs[0].1.clone();
         for (_, t) in &elabs[1..] {
-            self.unify(&ta, t)
-                .map_err(|e| format!("min/max operands disagree: {e}"))?;
+            self.unify(&ta, t).map_err(lit_hint)?;
         }
         let rt = self
             .resolve(&ta)
@@ -2897,6 +3006,9 @@ impl Cx<'_> {
                         return self.elab(&d, scope, max);
                     }
                     "LET" | "LET-TYPED" | "LET*" => {
+                        if head == "LET*" {
+                            check_let_star(&items[1..])?;
+                        }
                         return self.elab_let(&items[1..], true, scope, max);
                     }
                     "PROGN" => return self.elab_body_mode(&items[1..], true, scope, max),
@@ -3094,4 +3206,51 @@ fn desugar_branch(head: &str, args: &[LispVal], stmt: bool) -> Result<LispVal, S
         }
         _ => unreachable!("desugar_branch: {head}"),
     }
+}
+
+/// The builtins [`Cx::elab`] types only in checking mode (#162) — list/pair,
+/// record, variant and string forms with no codegen lowering. In codegen mode
+/// they fall through to the call rule, which reports them as unsupported in
+/// compiled code rather than as unknown functions (#512). Heads with a codegen
+/// arm of their own (`MIN`, `LOGAND`, `COND`, ...) never get here.
+/// `lib/46-hm-check.lisp`'s `$hm-checking-only-builtins` is the portable twin.
+pub(super) fn checking_only_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "CONS"
+            | "CAR"
+            | "FIRST"
+            | "CDR"
+            | "REST"
+            | "LIST"
+            | "NULL"
+            | "NULL?"
+            | "ENDP"
+            | "RECORD-REF"
+            | "RECORD-NEW"
+            | "RECORD-WITH"
+            | "APPEND"
+            | "CONCAT"
+            | "GCD"
+            | "LCM"
+            | "QUOTE"
+            | "VARIANT-CASE"
+    )
+}
+
+/// Rejects `let*` shapes the evaluator's LET* does not accept (#522): it
+/// needs a binding list and a body, and every binding is a `(name init)` pair,
+/// so the typed `(name type init)` shape of `let-typed` does not leak into
+/// `let*` (`elab_let`, which `let*` shares, accepts both).
+/// Mirrored by `hm-check-let-star` in lib/46-hm-check.lisp.
+fn check_let_star(args: &[LispVal]) -> Result<(), String> {
+    if args.len() < 2 || !matches!(args[0], LispVal::Nil | LispVal::Cons { .. }) {
+        return Err("let* requires a binding list and at least one body form".to_string());
+    }
+    for b in list_to_vec(&args[0]) {
+        if !matches!(list_to_vec(&b).as_slice(), [LispVal::Symbol(_), _]) {
+            return Err("let* binding must be a (name init) pair".to_string());
+        }
+    }
+    Ok(())
 }

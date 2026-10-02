@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-jit-scaled/mandel.lisp",
+      "mean": 0.43971331640000005,
+      "stddev": 0.034355007042579294,
+      "median": 0.427591162,
+      "user": 0.4184799999999999,
+      "system": 0.013413600000000001,
+      "min": 0.40249408600000003,
+      "max": 0.48918086800000005,
+      "times": [
+        0.427591162,
+        0.42039144700000003,
+        0.45890901900000003,
+        0.48918086800000005,
+        0.40249408600000003
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

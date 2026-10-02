@@ -220,6 +220,21 @@ Foo     ; Read as FOO
 FOO     ; Read as FOO
 ```
 
+`|...|` reads a name verbatim — no case fold, and spaces, parentheses,
+quotes and digits are part of the name; inside the bars `\|` stands for
+`|` and `\\` for `\`:
+
+```lisp
+|foo|   ; the symbol named "foo", distinct from FOO
+|a b|   ; one symbol, named "a b"
+|12|    ; a symbol, not a number
+|NIL|   ; the symbol named "NIL", not the empty list
+```
+
+The printer uses this form for any symbol whose bare name would not read
+back as itself; ordinary symbols print bare. `intern` does not fold
+case: `(intern "foo")` is `|foo|`.
+
 ### 4.5.3 Number Parsing
 
 Numbers are parsed in this order:

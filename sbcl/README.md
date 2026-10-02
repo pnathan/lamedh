@@ -62,18 +62,21 @@ sbcl --non-interactive --load tests/run-tests.lisp
 
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
-port-only files with no verbatim `tests/lisp/` counterpart (the
-printer-conformance file `97-printer.lisp`, `97-ieee-floats.lisp`,
-`97-no-ratios.lisp`, `97-port-regressions.lisp` and
-`97-reference-builtins.lisp`) — and runs
-them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **655 assertions** across
+port-only files with no verbatim `tests/lisp/` counterpart:
+`11-mod-euclidean.lisp`, `80-kernel-conformance.lisp` (pins KERNEL.md
+deviations fixed in this port), `97-ieee-floats.lisp`, `97-no-ratios.lisp`,
+`97-printer.lisp` (printer conformance), `97-port-regressions.lisp` and
+`97-reference-builtins.lisp` — and runs them through the bootstrapped
+`(run-tests)` (from `lib/10-testing.lisp`).
+At the time of writing this passes all **805 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
-and printer output checked against the reference binary (`()` for the
-empty list, `PRINT` framing, opaque `<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags).
+the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
+`#\c`, ...), and printer output checked against the reference binary
+(`()` for the empty list, `PRINT` framing, opaque
+`<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags).
 It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.
@@ -124,7 +127,8 @@ work — `sandbox-fuel` (real `SPAWN` threads, `WITH-CAPABILITIES` denial),
 - `reader.lisp` — a hand-written recursive-descent reader matching the
   reference grammar: Lisp-1.5 octal `177Q` and assembly-style hex `0FFh`
   literals, CL-style `#x`/`#b`/`#o` radix literals, the `'c'` character
-  literal (disambiguated from the quote reader macro), earmuff (`*name*`)
+  literal (disambiguated from the quote reader macro) and its CL spelling
+  `#\c` / `#\Space`, earmuff (`*name*`)
   and keyword (`:name`) symbol classes, `` ` ``/`,`/`,@`/`#'` reader macros,
   the `#S(brand v1 v2 ...)` record literal, line and nesting `#| |#` block
   comments, and shebang stripping.
