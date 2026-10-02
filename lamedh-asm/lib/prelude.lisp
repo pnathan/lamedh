@@ -1485,12 +1485,19 @@
 ;;; as native builtins (issue #510) and ../lib/14-strings.lisp calls them
 ;;; directly, so this host supplies them here. All three are tail-recursive,
 ;;; so they run in constant stack on long strings and lists.
-(DEFUN $STRING->LIST-AUX (S I ACC)
-  (IF (< I 0)
-      ACC
-      ($STRING->LIST-AUX S (- I 1) (CONS (SUBSTRING S I (+ I 1)) ACC))))
+; STRING->LIST*: characters, not bytes. This kernel stores raw UTF-8, so
+; walk from the end, skipping back over continuation bytes (10xxxxxx) to
+; each character's start; the list is built in order with no reversal and
+; no recursion, so it runs in constant stack on long strings.
 (DEFUN STRING->LIST* (S)
-  ($STRING->LIST-AUX S (- (STRING-LENGTH* S) 1) (QUOTE ())))
+  (LET ((I (STRING-LENGTH S)) (J 0) (ACC (QUOTE ())))
+    (WHILE (< 0 I)
+      (PROGN (SETQ J (- I 1))
+             (WHILE (IF (< 0 J) (EQ (LOGAND (STRING-REF S J) 192) 128) (QUOTE ()))
+               (SETQ J (- J 1)))
+             (SETQ ACC (CONS (SUBSTRING S J I) ACC))
+             (SETQ I J)))
+    ACC))
 (DEFUN $STRING-SPLIT-AUX (S DELIM ACC)
   (LET ((IDX (STRING-INDEX-OF S DELIM)))
     (IF (OR (NULL IDX) (= (STRING-LENGTH* DELIM) 0))
