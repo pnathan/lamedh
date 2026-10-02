@@ -72,8 +72,9 @@ untouched at column 0 and excluded from every rule above.
 
 * String literal contents (`"..."`), including embedded parens, semicolons,
   and newlines.
-* Character literals (`'c'`, `'\n'`, `'('`, `')'`, …) — a paren inside a
-  character literal is not counted toward indentation depth.
+* Character literals (`'c'`, `'\n'`, `'('`, `')'`, `#\(`, `#\"`, …) — a
+  paren inside a character literal is not counted toward indentation
+  depth. A trailing `#\ ` keeps its payload space.
 * Line comment (`;`) and block comment (`#| … |#`, nesting) text.
 * Token order and content: `--fmt` only ever edits *runs of whitespace*
   between/around tokens, never a token itself.

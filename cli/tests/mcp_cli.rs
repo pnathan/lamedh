@@ -257,6 +257,26 @@ fn while_loop_terminates_with_fuel_error() {
 }
 
 #[test]
+fn typed_function_runaway_loop_terminates_with_fuel_error() {
+    // Issue #502: a compiled typed function's internal loop is metered too.
+    let responses = mcp_session(
+        &["--fuel", "500000"],
+        &[
+            eval_req(
+                1,
+                "(defun* issue502-inf ((n int64)) (let ((s 0)) (while (> n 0) (setq s (+ s 1))) s))",
+            ),
+            eval_req(2, "(issue502-inf 1)"),
+            eval_req(3, "(+ 1 2)"),
+        ],
+    );
+    let resp = by_id(&responses, 2);
+    assert!(is_error(resp), "{resp:?}");
+    assert!(call_text(resp).contains("fuel"), "{}", call_text(resp));
+    assert_eq!(call_text(by_id(&responses, 3)), "3");
+}
+
+#[test]
 fn shell_capability_denied_by_default() {
     // MCP mode is sandboxed by default: SHELL is off, so (shell ...) errors.
     let responses = mcp_session(&[], &[eval_req(1, "(shell \"echo hi\")")]);

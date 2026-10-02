@@ -1374,7 +1374,7 @@ impl Emitter<'_, '_, '_> {
                 self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, of);
                 result
             }
-            BinOp::Div | BinOp::Mod => {
+            BinOp::Div | BinOp::Mod | BinOp::Rem => {
                 let zero = self.iconst(0);
                 let one = self.iconst(1);
                 let neg_one = self.iconst(-1);
@@ -1387,15 +1387,20 @@ impl Emitter<'_, '_, '_> {
                 let is_unsafe = self.b.ins().bor(is_zero, is_overflow);
                 // Set flags on Ctx. MOD does NOT flag MIN%-1: its Euclidean
                 // value is exactly 0, matching the evaluator's MOD (#280) —
-                // only DIV's MIN/-1 is a genuine wrapped result.
+                // only DIV's MIN/-1 is a genuine wrapped result. REMAINDER
+                // does flag it (value 0), as the evaluator's REMAINDER does.
                 self.set_ctx_flag(Ctx::DIV_BY_ZERO_OFFSET, is_zero);
-                if matches!(op, BinOp::Div) {
+                if matches!(op, BinOp::Div | BinOp::Rem) {
                     self.set_ctx_flag(Ctx::OVERFLOW_OFFSET, is_overflow);
                 }
                 // Use safe_y=1 to avoid hardware trap
                 let safe_y = self.b.ins().select(is_unsafe, one, y);
                 let result = if matches!(op, BinOp::Div) {
                     self.b.ins().sdiv(x, safe_y)
+                } else if matches!(op, BinOp::Rem) {
+                    // Truncated remainder (#522). In the unsafe cases srem
+                    // runs against safe_y = 1, so MIN rem -1 yields 0.
+                    self.b.ins().srem(x, safe_y)
                 } else {
                     // Euclidean modulo (#280), matching Rust's rem_euclid
                     // (and therefore the evaluator's MOD): the result is
@@ -1414,7 +1419,7 @@ impl Emitter<'_, '_, '_> {
                     let adjusted = self.b.ins().select(y_neg, r_minus_y, r_plus_y);
                     self.b.ins().select(r_neg, adjusted, r)
                 };
-                // div-by-zero → 0; MIN/-1 → wrapping MIN for div, exact 0 for mod
+                // div-by-zero → 0; MIN/-1 → wrapping MIN for div, 0 for mod/rem
                 self.b.ins().select(is_zero, zero, result)
             }
             BinOp::BitAnd => self.b.ins().band(x, y),
@@ -1455,7 +1460,8 @@ impl Emitter<'_, '_, '_> {
             BinOp::Sub => self.b.ins().fsub(xf, yf),
             BinOp::Mul => self.b.ins().fmul(xf, yf),
             BinOp::Div => self.b.ins().fdiv(xf, yf),
-            BinOp::Mod => self.b.ins().fdiv(xf, yf), // unreachable: float mod is rejected
+            // unreachable: float mod/remainder is rejected
+            BinOp::Mod | BinOp::Rem => self.b.ins().fdiv(xf, yf),
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::AShr => {
                 unreachable!("bitwise/shift ops are int64-only")
             }

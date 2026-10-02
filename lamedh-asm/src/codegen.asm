@@ -145,6 +145,36 @@ emit_sub_rr:
     mov dil, 0x29
     jmp emit_rr
 
+; emit_or_rr(dil=dst, sil=src)
+global emit_or_rr
+emit_or_rr:
+    mov dl, sil
+    mov sil, dil
+    mov dil, 0x09
+    jmp emit_rr
+
+; emit_test_reg8_imm8(dil=reg 0..3, sil=imm8) — F6 /0 ib: TEST r8,imm8
+; on the low byte of rax/rcx/rdx/rbx (al/cl/dl/bl — encodings 0..3 need
+; no REX prefix; 4..7 would name ah/ch/dh/bh instead, so callers must
+; not pass them). compile_binop's both-fixnum guard is `test cl, 3`.
+global emit_test_reg8_imm8
+emit_test_reg8_imm8:
+    push rbx
+    push r12
+    mov bl, sil                    ; imm8
+    mov r12b, dil                   ; reg — saved before emit8 clobbers dil
+    mov rdi, 0xF6
+    call emit8
+    mov al, 0xC0                     ; mod11 reg=000(/0) rm=reg
+    or al, r12b
+    movzx rdi, al
+    call emit8
+    movzx rdi, bl
+    call emit8
+    pop r12
+    pop rbx
+    ret
+
 ; emit_cmp_rr(dil=dst, sil=src)
 global emit_cmp_rr
 emit_cmp_rr:

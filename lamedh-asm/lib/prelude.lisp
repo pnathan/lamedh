@@ -957,9 +957,17 @@
 (DEFUN SIGNUM (X) (IF (< X 0) -1 (IF (< 0 X) 1 0)))
 (DEFUN LAST (L) (IF (NULL L) (QUOTE ()) (IF (NULL (CDR L)) L (LAST (CDR L)))))
 (DEFUN NTHCDR (N L) (IF (EQ N 0) L (NTHCDR (- N 1) (CDR L))))
+; A negative exponent yields a float (KERNEL.md Part V). The reference
+; computes it as f64::powi, i.e. compiler-rt's __powidf2: square-and-
+; multiply over |E| in f64, then one reciprocal. $EXPT-POWI is that exact
+; operation order, so the result matches bit-for-bit. F*/F/ rather than
+; generic */ since those are the float primitives here.
+(DEFUN $EXPT-POWI (A N R)
+  (LET ((R (IF (EQ (REMAINDER N 2) 1) (F* R A) R)) (N (ASH N -1)))
+    (IF (EQ N 0) R ($EXPT-POWI (F* A A) N R))))
 (DEFUN EXPT (B E)
   (IF (< E 0)
-      (ERROR "EXPT: negative exponent is not supported for fixnums" E)
+      (F/ 1.0 ($EXPT-POWI (IF (FLOATP B) B (FLOAT B)) (- 0 E) 1.0))
       (IF (EQ E 0) 1 (* B (EXPT B (- E 1))))))
 (DEFUN GCD (A B)
   (LET ((A (IF (< A 0) (- 0 A) A)) (B (IF (< B 0) (- 0 B) B)))
@@ -1282,18 +1290,28 @@
                 (SYSCALL SYS-WAIT4 PID STATUS 0 NIL)
                 (LIST (LOGAND (ASH ($LE32 STATUS 0) -8) 255) OUT ERR))))))))
 
-; STRING->LIST* — the reference's one-pass builtin (#510,
-; evaluator/builtins_core.rs) behind lib/14-strings.lisp's STRING->LIST:
-; the characters of S as one-character strings. Walks the UTF-8 bytes
-; from the end, so each character's start is found by skipping back
-; over continuation bytes and the list is built in order with no
-; reversal; SUBSTRING here is byte-indexed.
+;;; STRING->LIST* / STRING-SPLIT* / STRING-JOIN*: the reference provides these
+;;; as native builtins (issue #510) and ../lib/14-strings.lisp calls them
+;;; directly, so this host supplies them here. All three are tail-recursive,
+;;; so they run in constant stack on long strings and lists.
+(DEFUN $STRING->LIST-AUX (S I ACC)
+  (IF (< I 0)
+      ACC
+      ($STRING->LIST-AUX S (- I 1) (CONS (SUBSTRING S I (+ I 1)) ACC))))
 (DEFUN STRING->LIST* (S)
-  (LET ((I (STRING-LENGTH S)) (J 0) (ACC (QUOTE ())))
-    (WHILE (< 0 I)
-      (PROGN (SETQ J (- I 1))
-             (WHILE (IF (< 0 J) (EQ (LOGAND (STRING-REF S J) 192) 128) (QUOTE ()))
-               (SETQ J (- J 1)))
-             (SETQ ACC (CONS (SUBSTRING S J I) ACC))
-             (SETQ I J)))
-    ACC))
+  ($STRING->LIST-AUX S (- (STRING-LENGTH* S) 1) (QUOTE ())))
+(DEFUN $STRING-SPLIT-AUX (S DELIM ACC)
+  (LET ((IDX (STRING-INDEX-OF S DELIM)))
+    (IF (OR (NULL IDX) (= (STRING-LENGTH* DELIM) 0))
+        (REVERSE (CONS S ACC))
+        ($STRING-SPLIT-AUX
+         (SUBSTRING S (+ IDX (STRING-LENGTH* DELIM)) (STRING-LENGTH* S))
+         DELIM
+         (CONS (SUBSTRING S 0 IDX) ACC)))))
+(DEFUN STRING-SPLIT* (S DELIM) ($STRING-SPLIT-AUX S DELIM (QUOTE ())))
+(DEFUN $STRING-JOIN-AUX (LST SEP ACC)
+  (IF (NULL LST)
+      ACC
+      ($STRING-JOIN-AUX (CDR LST) SEP (CONCAT ACC SEP (CAR LST)))))
+(DEFUN STRING-JOIN* (LST SEP)
+  (IF (NULL LST) "" ($STRING-JOIN-AUX (CDR LST) SEP (CAR LST))))
