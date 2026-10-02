@@ -6,9 +6,11 @@
   "Evaluate every top-level form in SOURCE, returning the last value.
 Grants no capabilities of its own -- the library/embedding default (see
 ENABLE-FEATURE); the CLI entry points below grant capabilities themselves
-before calling this."
+before calling this. Forms are read and evaluated one at a time, so a parse
+error in a late form is reported only after every earlier form has run."
   (let ((result nil))
-    (dolist (form (lread-all source) result) (setf result (leval form *global-env*)))))
+    (lread-each source (lambda (form) (setf result (leval form *global-env*))))
+    result))
 
 (defun run-file (path)
   (run-string (uiop:read-file-string path)))
