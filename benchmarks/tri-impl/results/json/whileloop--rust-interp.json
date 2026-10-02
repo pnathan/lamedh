@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-interp/whileloop.lisp",
+      "mean": 7.3104905626,
+      "stddev": 0.22161247381557692,
+      "median": 7.278838102,
+      "user": 7.173406,
+      "system": 0.0148042,
+      "min": 7.10900504,
+      "max": 7.667511072,
+      "times": [
+        7.149269453,
+        7.278838102,
+        7.667511072,
+        7.10900504,
+        7.3478291460000005
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+;; Typed-JIT edition of kernels/prefix.lisp.
+(defun-typed (run int64) ((n int64) (reps int64))
+  (let ((a (make-array n)) (i 0) (r 0) (tot 0))
+    (while (< r reps)
+      (setq i 0)
+      (while (< i n) (aset a i (mod (* (+ i r) 7) 13)) (setq i (+ i 1)))
+      (setq i 1)
+      (while (< i n) (aset a i (+ (aref a i) (aref a (- i 1)))) (setq i (+ i 1)))
+      (setq tot (+ tot (aref a (- n 1))))
+      (setq r (+ r 1)))
+    tot))
+(if (eq (compiled-p 'run) 'native) nil (error "run: not NATIVE"))
+(print (run 1000000 3))

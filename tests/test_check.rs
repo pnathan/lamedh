@@ -87,6 +87,13 @@ fn program_groups() -> Vec<(String, Vec<String>)> {
         if f.contains("/sbcl/") {
             continue;
         }
+        // tri-impl kernels are templates written in the asm port's operator
+        // names (F+, STRING-APPEND, …); run.sh rewrites them per host, so as
+        // checked-in sources they are not Lamedh programs the Rust checker
+        // can resolve.
+        if f.contains("/benchmarks/tri-impl/kernels/") {
+            continue;
+        }
         groups.push((f.clone(), vec![f]));
     }
 

@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-jit-scaled/whileloop.lisp",
+      "mean": 0.7406812192000001,
+      "stddev": 0.020817744163485176,
+      "median": 0.7392993680000001,
+      "user": 0.7169589999999999,
+      "system": 0.015941,
+      "min": 0.714023778,
+      "max": 0.7632674070000001,
+      "times": [
+        0.7632674070000001,
+        0.7591554880000001,
+        0.7392993680000001,
+        0.714023778,
+        0.7276600550000001
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

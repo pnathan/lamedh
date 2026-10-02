@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-jit-scaled/sieve.lisp",
+      "mean": 0.8138219344,
+      "stddev": 0.034476603081198806,
+      "median": 0.803652653,
+      "user": 0.6737882,
+      "system": 0.13328500000000001,
+      "min": 0.7905132770000001,
+      "max": 0.8741030590000001,
+      "times": [
+        0.8079971970000001,
+        0.803652653,
+        0.7928434860000001,
+        0.8741030590000001,
+        0.7905132770000001
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
