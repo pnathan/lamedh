@@ -40,7 +40,7 @@ first, one order (0.3 regularity)."
          ;; Accessor convention: (setf (point-x p) v) -> (set-point-x! p v).
          ;; Matches the mutators defstruct generates; an unknown accessor
          ;; surfaces as an unbound SET-...! error at the call site.
-         (t (cons (intern (concat "SET-" (prin1-to-string head) "!"))
+         (t (cons (intern (concat "SET-" (princ-to-string head) "!"))
                   (list (cadr place) value))))))
     (t (error "setf: unsupported place"))))
 

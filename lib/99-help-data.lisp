@@ -780,7 +780,7 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(intern string)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Interns a string as a symbol in the global symbol table.")
+    (cons 'DESCRIPTION "Interns a string as a symbol in the global symbol table. The name is taken verbatim: (intern \"a b\") is the symbol printed |a b|, distinct from A.")
     (cons 'EXAMPLES '(((intern "HELLO") hello)))
     (cons 'SEE-ALSO '(implode gensym))))
 

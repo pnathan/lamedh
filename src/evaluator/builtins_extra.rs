@@ -153,7 +153,7 @@ pub(super) fn apply_io_op(
             }
             let output = match &args[0] {
                 LispVal::String(s) => s.clone(),
-                other => crate::printer::print(other),
+                other => crate::printer::print_plain_symbols(other),
             };
             print!("{}", output);
             use std::io::{self, Write};
