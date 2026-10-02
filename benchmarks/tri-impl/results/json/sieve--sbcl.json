@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/sieve.lisp",
+      "mean": 8.852431744799999,
+      "stddev": 0.3817242361397182,
+      "median": 8.675824919,
+      "user": 8.536815200000001,
+      "system": 0.1664792,
+      "min": 8.466854569,
+      "max": 9.373988206,
+      "times": [
+        8.675824919,
+        9.373988206,
+        8.617650043,
+        9.127840987,
+        8.466854569
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

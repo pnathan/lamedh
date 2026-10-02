@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/tailsum.lisp",
+      "mean": 9.473872772,
+      "stddev": 0.5007275607854867,
+      "median": 9.293437235,
+      "user": 9.157709999999998,
+      "system": 0.143399,
+      "min": 8.880615145,
+      "max": 10.059144415,
+      "times": [
+        9.927323379,
+        9.293437235,
+        9.208843686,
+        10.059144415,
+        8.880615145
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

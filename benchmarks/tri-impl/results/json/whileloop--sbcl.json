@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/whileloop.lisp",
+      "mean": 5.246828841600001,
+      "stddev": 0.1985697771186604,
+      "median": 5.296148082,
+      "user": 5.0555158,
+      "system": 0.10492499999999998,
+      "min": 4.962434219,
+      "max": 5.432508481,
+      "times": [
+        5.41064939,
+        5.132404036,
+        5.296148082,
+        5.432508481,
+        4.962434219
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

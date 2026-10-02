@@ -1,0 +1,11 @@
+date:      2026-09-28T21:41:02Z
+commit:    be3a14be68e75873af07c36c9166edb5f7bd7f26
+cpu:       Intel(R) Xeon(R) Processor @ 2.80GHz
+nproc:     4
+kernel:    6.18.44-fc-v49
+rustc:     rustc 1.94.1 (e408947bf 2026-03-25)
+lamedh:    lamedh-cli 0.4.0
+sbcl:      SBCL 2.2.9.debian
+nasm:      NASM version 2.16.01
+hyperfine: hyperfine 1.18.0
+runs:      5 timed + 1 warmup per cell

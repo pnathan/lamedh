@@ -285,11 +285,50 @@
 ; examples/factorial/main.lisp's own usage) had nothing to resolve to.
 ; #'+ (FUNCTION, compiler.asm) then just reads this ordinary global
 ; value, the same as referencing +/-/*/</= as a bare variable would.
-(DEFUN + (A B) (+ A B))
-(DEFUN - (A B) (- A B))
-(DEFUN * (A B) (* A B))
-(DEFUN < (A B) (< A B))
-(DEFUN = (A B) (= A B))
+; Each takes any number of arguments, as the reference's builtins do
+; ((FUNCALL #'+ 1 2 3) is 6, (APPLY #'* ()) is 1): a WHILE fold over the
+; &REST list, constant native stack for any length, over the inline
+; 2-operand form. - with one argument negates; < and = chain.
+(DEFUN + (&REST XS)
+  (LET ((ACC 0))
+    (WHILE XS (PROGN (SETQ ACC (+ ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN * (&REST XS)
+  (LET ((ACC 1))
+    (WHILE XS (PROGN (SETQ ACC (* ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN - (X &REST XS)
+  (IF (NULL XS)
+      (- X)
+      (PROGN (WHILE XS (PROGN (SETQ X (- X (CAR XS))) (SETQ XS (CDR XS))))
+             X)))
+(DEFUN < (X &REST XS)
+  (LET ((OK T))
+    (WHILE (IF OK XS (QUOTE ()))
+      (PROGN (SETQ OK (< X (CAR XS))) (SETQ X (CAR XS)) (SETQ XS (CDR XS))))
+    OK))
+(DEFUN = (X &REST XS)
+  (LET ((OK T))
+    (WHILE (IF OK XS (QUOTE ()))
+      (PROGN (SETQ OK (= X (CAR XS))) (SETQ X (CAR XS)) (SETQ XS (CDR XS))))
+    OK))
+
+; LOGAND/LOGIOR/LOGXOR as values, for #'LOGXOR and friends: in operator
+; position they are compiler forms (compiler.asm), so nothing bound the
+; bare symbols. Variadic, with the reference's identities for no
+; arguments: -1 for LOGAND, 0 for LOGIOR/LOGXOR.
+(DEFUN LOGAND (&REST XS)
+  (LET ((ACC -1))
+    (WHILE XS (PROGN (SETQ ACC (LOGAND ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN LOGIOR (&REST XS)
+  (LET ((ACC 0))
+    (WHILE XS (PROGN (SETQ ACC (LOGIOR ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
+(DEFUN LOGXOR (&REST XS)
+  (LET ((ACC 0))
+    (WHILE XS (PROGN (SETQ ACC (LOGXOR ACC (CAR XS))) (SETQ XS (CDR XS))))
+    ACC))
 
 ; $LENGTH — the reference's own Rust-level builtin (evaluator/builtins_
 ; core.rs) backing lib/01-list.lisp's LENGTH wrapper. No host-
@@ -391,10 +430,12 @@
 ;; may themselves use APPEND/MAPCAR.
 (DEFUN APPEND (A B) (REVERSE-ONTO (REVERSE-ONTO A (QUOTE ())) B))
 
-; IOTA — (iota n start) is the n-element list (start start+1 ... start+n-1).
-(DEFUN IOTA-ONTO (N START ACC)
-  (IF (= N 0) (REVERSE ACC) (IOTA-ONTO (- N 1) (+ START 1) (CONS START ACC))))
-(DEFUN IOTA (N START) (IOTA-ONTO N START (QUOTE ())))
+; IOTA — the reference's (lib/13-functional.lisp): (iota n) is (0 1 ...
+; n-1); (iota n start) and (iota n start step) shift and scale. N below
+; 1 is the empty list, as there, not a countdown that never reaches 0.
+(DEFUN IOTA-ONTO (N START STEP ACC)
+  (IF (< N 1) (REVERSE ACC) (IOTA-ONTO (- N 1) (+ START STEP) STEP (CONS START ACC))))
+(DEFUN IOTA (N &OPTIONAL (START 0) (STEP 1)) (IOTA-ONTO N START STEP (QUOTE ())))
 
 ; REDUCE — a left fold: (reduce fn (a b c) init) is (fn (fn (fn init a) b) c).
 ; FN is an ordinary value here (ordinarily #'some-global), not unevaluated
@@ -957,9 +998,17 @@
 (DEFUN SIGNUM (X) (IF (< X 0) -1 (IF (< 0 X) 1 0)))
 (DEFUN LAST (L) (IF (NULL L) (QUOTE ()) (IF (NULL (CDR L)) L (LAST (CDR L)))))
 (DEFUN NTHCDR (N L) (IF (EQ N 0) L (NTHCDR (- N 1) (CDR L))))
+; A negative exponent yields a float (KERNEL.md Part V). The reference
+; computes it as f64::powi, i.e. compiler-rt's __powidf2: square-and-
+; multiply over |E| in f64, then one reciprocal. $EXPT-POWI is that exact
+; operation order, so the result matches bit-for-bit. F*/F/ rather than
+; generic */ since those are the float primitives here.
+(DEFUN $EXPT-POWI (A N R)
+  (LET ((R (IF (EQ (REMAINDER N 2) 1) (F* R A) R)) (N (ASH N -1)))
+    (IF (EQ N 0) R ($EXPT-POWI (F* A A) N R))))
 (DEFUN EXPT (B E)
   (IF (< E 0)
-      (ERROR "EXPT: negative exponent is not supported for fixnums" E)
+      (F/ 1.0 ($EXPT-POWI (IF (FLOATP B) B (FLOAT B)) (- 0 E) 1.0))
       (IF (EQ E 0) 1 (* B (EXPT B (- E 1))))))
 (DEFUN GCD (A B)
   (LET ((A (IF (< A 0) (- 0 A) A)) (B (IF (< B 0) (- 0 B) B)))
@@ -1282,16 +1331,214 @@
                 (SYSCALL SYS-WAIT4 PID STATUS 0 NIL)
                 (LIST (LOGAND (ASH ($LE32 STATUS 0) -8) 255) OUT ERR))))))))
 
+; --- Portability basics (#552) ---------------------------------------
+; The staples a program written for the reference reaches for without
+; thinking, each of which previously needed a shim before it would run
+; here. All Lisp over existing kernel primitives. Every loop is a
+; WHILE, never recursion over the input, so a long list or array costs
+; no native stack. Semantics follow the reference (lib/01-list.lisp,
+; 05-math.lisp, 12-control.lisp, 14-strings.lisp, 17-arrays.lisp,
+; 21-cl-compat.lisp, and the $LENGTH/LIST->ARRAY/ARRAY->LIST builtins in
+; evaluator/apply.rs); the loaded reference stdlib redefines any of
+; these it also defines.
+
+; CONSP — the reference's own definition.
+(DEFUN CONSP (X) (NOT (ATOM X)))
+
+; $PROPER-LENGTH — the number of cons cells in a proper list; an
+; improper tail is an error, as in the reference's proper_list_len.
+(DEFUN $PROPER-LENGTH (LST)
+  (LET ((N 0) (L LST))
+    (WHILE (CONSP L)
+      (PROGN (SETQ N (+ N 1)) (SETQ L (CDR L))))
+    (IF (NULL L) N (ERROR "length: argument must be a proper list, got tail" L))))
+
+; $UTF8-LENGTH — a string's length in characters, not bytes: this
+; kernel stores raw UTF-8 (STRING-REF returns a byte), so count every
+; byte that is not a continuation byte (10xxxxxx).
+(DEFUN $UTF8-LENGTH (S)
+  (LET ((I 0) (N 0) (END (STRING-LENGTH S)))
+    (WHILE (< I END)
+      (PROGN (IF (EQ (LOGAND (STRING-REF S I) 192) 128) (QUOTE ()) (SETQ N (+ N 1)))
+             (SETQ I (+ I 1))))
+    N))
+
+; LENGTH — the reference's polymorphic length: proper lists, strings
+; (in characters), arrays, and hash tables (entry count). HASH-TABLE-P
+; is tested before ARRAYP because a hash table here is an array.
+(DEFUN LENGTH (X)
+  (COND ((STRINGP X) ($UTF8-LENGTH X))
+        ((HASH-TABLE-P X) ($PROPER-LENGTH (KEYS X)))
+        ((ARRAYP X) (ARRAY-LENGTH* X))
+        (T ($PROPER-LENGTH X))))
+
+; ABS — fixnum or float. The float branch uses F-/F< so it never mixes
+; a float into the fixnum operators; (ABS -0.0) is -0.0, as in the
+; reference (whose ABS tests MINUSP).
+(DEFUN ABS (X)
+  (COND ((FIXP X) (IF (< X 0) (- 0 X) X))
+        ((FLOATP X) (IF (F< X 0.0) (F- 0.0 X) X))
+        (T (ERROR "ABS: expected a number" X))))
+
+; MEMBER — the tail of LST starting at the first element EQUAL to ITEM,
+; else NIL.
+(DEFUN MEMBER (ITEM LST)
+  (LET ((L LST))
+    (WHILE (IF (NULL L) (QUOTE ()) (NOT (EQUAL ITEM (CAR L))))
+      (SETQ L (CDR L)))
+    L))
+
+; DOLIST — (dolist (var list [result]) body...). LIST is evaluated
+; once; VAR gets a fresh binding per element; RESULT, when given, is
+; evaluated with VAR bound to NIL, as in the reference; otherwise NIL.
+(DEFMACRO DOLIST (SPEC &REST BODY)
+  (LET ((VAR (CAR SPEC))
+        (TAIL (GENSYM))
+        (RESULT (CDR (CDR SPEC))))
+    (LIST (QUOTE LET)
+          (LIST (LIST TAIL (CAR (CDR SPEC))))
+          (LIST (QUOTE WHILE) TAIL
+                (LIST (QUOTE PROGN)
+                      (CONS (QUOTE LET)
+                            (CONS (LIST (LIST VAR (LIST (QUOTE CAR) TAIL))) BODY))
+                      (LIST (QUOTE SETQ) TAIL (LIST (QUOTE CDR) TAIL))))
+          (IF RESULT
+              (LIST (QUOTE LET) (LIST (LIST VAR (QUOTE ()))) (CAR RESULT))
+              (QUOTE ())))))
+
+; Arrays — names over the kernel's ARRAY/FETCH/ARRAY-LENGTH* primitives.
+; MAKE-ARRAY and AREF are the reference's own aliases; ARRAY-LENGTH is
+; the Common Lisp spelling (the reference has only ARRAY-LENGTH*).
+(DEFUN MAKE-ARRAY (N) (ARRAY N))
+(DEFUN AREF (A I) (FETCH A I))
+(DEFUN ARRAY-LENGTH (A) (ARRAY-LENGTH* A))
+(DEFUN LIST->ARRAY (LST)
+  (LET ((ARR (ARRAY ($PROPER-LENGTH LST))) (I 0) (L LST))
+    (WHILE L
+      (PROGN (STORE ARR I (CAR L)) (SETQ I (+ I 1)) (SETQ L (CDR L))))
+    ARR))
+(DEFUN ARRAY->LIST (ARR)
+  (LET ((I (ARRAY-LENGTH* ARR)) (ACC (QUOTE ())))
+    (WHILE (< 0 I)
+      (PROGN (SETQ I (- I 1)) (SETQ ACC (CONS (FETCH ARR I) ACC))))
+    ACC))
+
+; STRING= — the reference's own definition (EQUAL, which is value
+; equality on strings here).
+(DEFUN STRING= (A B) (EQUAL A B))
+
+; SYMBOL-NAME — a symbol's name as a string (the reference has no such
+; builtin; this is the Common Lisp function). PRINC-TO-STRING already
+; renders a symbol as its bare name; NIL prints as () here, so it is
+; named explicitly.
+(DEFUN SYMBOL-NAME (S)
+  (IF (NULL S)
+      "NIL"
+      (IF (SYMBOLP S) (PRINC-TO-STRING S) (ERROR "SYMBOL-NAME: expected a symbol" S))))
+
+; SETF / PUSH / INCF — the reference's lib/21-cl-compat.lisp places,
+; minus the defstruct-accessor convention (no SET-name! mutators here):
+; a symbol, (GETHASH table key), and (FETCH|AREF|ELT array i). As in
+; the reference, PUSH/INCF mention PLACE twice, so its subforms must be
+; side-effect-free. Each form returns the value stored.
+(DEFUN $SETF-HASH-STORE (TABLE KEY VALUE) (SETHASH TABLE KEY VALUE) VALUE)
+(DEFUN $SETF-EXPAND-1 (PLACE VALUE)
+  (COND ((SYMBOLP PLACE) (LIST (QUOTE SETQ) PLACE VALUE))
+        ((CONSP PLACE)
+         (COND ((EQ (CAR PLACE) (QUOTE GETHASH))
+                (LIST (QUOTE $SETF-HASH-STORE) (CAR (CDR PLACE)) (CAR (CDR (CDR PLACE))) VALUE))
+               ((IF (EQ (CAR PLACE) (QUOTE FETCH)) T
+                    (IF (EQ (CAR PLACE) (QUOTE AREF)) T (EQ (CAR PLACE) (QUOTE ELT))))
+                (LIST (QUOTE STORE) (CAR (CDR PLACE)) (CAR (CDR (CDR PLACE))) VALUE))
+               (T (ERROR "setf: unsupported place" PLACE))))
+        (T (ERROR "setf: unsupported place" PLACE))))
+(DEFUN $SETF-EXPAND (PAIRS)
+  (LET ((FORMS (QUOTE ())) (P PAIRS))
+    (WHILE P
+      (PROGN (IF (NULL (CDR P)) (ERROR "setf: odd number of arguments") (QUOTE ()))
+             (SETQ FORMS (CONS ($SETF-EXPAND-1 (CAR P) (CAR (CDR P))) FORMS))
+             (SETQ P (CDR (CDR P)))))
+    (IF (NULL FORMS)
+        (QUOTE ())
+        (IF (NULL (CDR FORMS)) (CAR FORMS) (CONS (QUOTE PROGN) (REVERSE FORMS))))))
+(DEFMACRO SETF (&REST PAIRS) ($SETF-EXPAND PAIRS))
+(DEFMACRO PUSH (ITEM PLACE)
+  ($SETF-EXPAND-1 PLACE (LIST (QUOTE CONS) ITEM PLACE)))
+(DEFMACRO INCF (PLACE &REST DELTA)
+  ($SETF-EXPAND-1 PLACE (LIST (QUOTE +) PLACE (IF DELTA (CAR DELTA) 1))))
+
+; FLET — the reference's definition: LET over LAMBDAs, so clauses are
+; parallel and do not see one another. Each clause is
+; (name (params...) body...).
+(DEFMACRO FLET (BINDINGS &REST BODY)
+  (CONS (QUOTE LET)
+        (CONS (MAPCAR (LAMBDA (B) (LIST (CAR B) (CONS (QUOTE LAMBDA) (CDR B)))) BINDINGS)
+              BODY)))
+
+; LABELS — like FLET, but every clause sees every clause (and itself),
+; so local functions may recurse and call one another (the reference
+; does not define LABELS). Closures here capture variables by value, so
+; LET-then-SETQ cannot tie the knot: a closure made before the SETQ
+; would still see the old NIL. Instead the closures live in one
+; mutable array (the box) and each one rebinds its siblings from the
+; box when called; the body does the same once the box is filled. A
+; sibling a clause's own parameter shadows is left out of its rebinding.
+(DEFUN $LABELS-PARAM-NAMES (PARAMS)
+  (LET ((NAMES (QUOTE ())) (P PARAMS))
+    (WHILE (CONSP P)
+      (PROGN (SETQ NAMES (CONS (IF (CONSP (CAR P)) (CAR (CAR P)) (CAR P)) NAMES))
+             (SETQ P (CDR P))))
+    NAMES))
+(DEFUN $LABELS-REBIND (BOX NAMES SHADOWED)
+  (LET ((I 0) (N NAMES) (ACC (QUOTE ())))
+    (WHILE N
+      (PROGN (IF (MEMBER (CAR N) SHADOWED)
+                 (QUOTE ())
+                 (SETQ ACC (CONS (LIST (CAR N) (LIST (QUOTE FETCH) BOX I)) ACC)))
+             (SETQ I (+ I 1))
+             (SETQ N (CDR N))))
+    (REVERSE ACC)))
+(DEFMACRO LABELS (BINDINGS &REST BODY)
+  (LET ((BOX (GENSYM))
+        (NAMES (MAPCAR (LAMBDA (B) (CAR B)) BINDINGS))
+        (STORES (QUOTE ()))
+        (I 0)
+        (B BINDINGS))
+    (WHILE B
+      (PROGN
+        (SETQ STORES
+              (CONS (LIST (QUOTE STORE) BOX I
+                          (LIST (QUOTE LAMBDA) (CAR (CDR (CAR B)))
+                                (CONS (QUOTE LET)
+                                      (CONS ($LABELS-REBIND BOX NAMES
+                                                            ($LABELS-PARAM-NAMES (CAR (CDR (CAR B)))))
+                                            (CDR (CDR (CAR B)))))))
+                    STORES))
+        (SETQ I (+ I 1))
+        (SETQ B (CDR B))))
+    (CONS (QUOTE LET)
+          (CONS (LIST (LIST BOX (LIST (QUOTE ARRAY) I)))
+                (APPEND (REVERSE STORES)
+                        (LIST (CONS (QUOTE LET)
+                                    (CONS ($LABELS-REBIND BOX NAMES (QUOTE ())) BODY))))))))
+
 ;;; STRING->LIST* / STRING-SPLIT* / STRING-JOIN*: the reference provides these
 ;;; as native builtins (issue #510) and ../lib/14-strings.lisp calls them
 ;;; directly, so this host supplies them here. All three are tail-recursive,
 ;;; so they run in constant stack on long strings and lists.
-(DEFUN $STRING->LIST-AUX (S I ACC)
-  (IF (< I 0)
-      ACC
-      ($STRING->LIST-AUX S (- I 1) (CONS (SUBSTRING S I (+ I 1)) ACC))))
+; STRING->LIST*: characters, not bytes. This kernel stores raw UTF-8, so
+; walk from the end, skipping back over continuation bytes (10xxxxxx) to
+; each character's start; the list is built in order with no reversal and
+; no recursion, so it runs in constant stack on long strings.
 (DEFUN STRING->LIST* (S)
-  ($STRING->LIST-AUX S (- (STRING-LENGTH* S) 1) (QUOTE ())))
+  (LET ((I (STRING-LENGTH S)) (J 0) (ACC (QUOTE ())))
+    (WHILE (< 0 I)
+      (PROGN (SETQ J (- I 1))
+             (WHILE (IF (< 0 J) (EQ (LOGAND (STRING-REF S J) 192) 128) (QUOTE ()))
+               (SETQ J (- J 1)))
+             (SETQ ACC (CONS (SUBSTRING S J I) ACC))
+             (SETQ I J)))
+    ACC))
 (DEFUN $STRING-SPLIT-AUX (S DELIM ACC)
   (LET ((IDX (STRING-INDEX-OF S DELIM)))
     (IF (OR (NULL IDX) (= (STRING-LENGTH* DELIM) 0))

@@ -1,0 +1,10 @@
+;; Allocation/GC-heavy: build a 10^6-element list and reverse it, 3 times.
+(defun build (n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
+(defun rev (l acc) (if (null l) acc (rev (cdr l) (cons (car l) acc))))
+(defun run (reps)
+  (let ((r 0) (tot 0))
+    (while (< r reps)
+      (setq tot (+ tot (car (rev (build 1000000 '()) '()))))
+      (setq r (+ r 1)))
+    tot))
+(print (run 3))

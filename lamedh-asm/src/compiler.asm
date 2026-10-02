@@ -221,6 +221,8 @@ bad_rest_err_msg: db "LAMBDA: &REST must be followed by exactly one parameter na
 bad_rest_err_msg_len: equ $ - bad_rest_err_msg
 nary_arity_err_msg: db "requires at least one operand"
 nary_arity_err_msg_len: equ $ - nary_arity_err_msg
+if_arity_err_msg: db "if takes exactly three arguments"
+if_arity_err_msg_len: equ $ - if_arity_err_msg
 nary_t_name: db "T"
 unbound_var_err_msg: db "unbound variable"
 unbound_var_err_msg_len: equ $ - unbound_var_err_msg
@@ -3291,7 +3293,7 @@ compile_newline_form:
     ret
 
 ; compile_binop_overflow_guard() — emits target code testing the hardware
-; overflow flag (OF) left by the +/- instruction compile_binop just
+; overflow flag (OF) left by the +/-/* instruction compile_binop just
 ; emitted, and calling set_overflow_flag (overflow.asm) when it's set:
 ;
 ;     jno .skip
@@ -3305,9 +3307,11 @@ compile_newline_form:
 ; bit-for-bit ordinary 64-bit two's-complement arithmetic on a value
 ; already multiplied by 4 (see overflow.asm's own header), so OF here
 ; already means exactly what KERNEL.md Part V's fixed-width model
-; requires it to mean for this representation. `*` is not wired to this
-; (see overflow.asm) — the same emitted-code technique would report the
-; wrong condition there, not the right one with extra steps.
+; requires it to mean for this representation. `*` gets the same guard
+; because compile_binop untags only the rhs before its `imul`: tagged
+; lhs (4a) times raw rhs (b) is the tagged product 4ab, so OF there is
+; overflow of the represented fixnum product too — i.e. "exceeds the
+; 62-bit fixnum range", not "exceeds 64 bits" (#546).
 compile_binop_overflow_guard:
     push rbx
     call emit_jno                          ; target: jno rel32; rax=patch site
@@ -3550,12 +3554,17 @@ compile_binop:
 .not_sub:
     cmp bl, '*'
     jne .not_mul
+    ; Untag rhs *before* the multiply rather than correcting the product
+    ; after it: 4a * b = 4ab is already the tagged result, so imul's OF
+    ; means exactly "ab exceeds the 62-bit fixnum range" — the same
+    ; condition compile_binop_overflow_guard reports for +/- (#546).
+    mov dil, REG_RBX
+    mov sil, 2
+    call emit_sar_imm8                     ; rbx = untagged rhs
     mov dil, REG_RAX
     mov sil, REG_RBX
-    call emit_imul_rr
-    mov dil, REG_RAX
-    mov sil, 2
-    call emit_sar_imm8                     ; correct the <<4 back to <<2
+    call emit_imul_rr                        ; rax = tagged lhs * rhs
+    call compile_binop_overflow_guard
     jmp .done
 .not_mul:
     cmp bl, '<'
@@ -4474,6 +4483,13 @@ compile_if:
     push r15
     mov r15, rsi                     ; saved tail flag
     mov r14, rdi                     ; whole form
+    ; KERNEL.md Part VI: IF takes exactly three operands. A two- or
+    ; four-operand IF is an error, not a missing-NIL else or an ignored
+    ; extra form (cadddr alone silently read (IF NIL 1 2 3) as 2).
+    call list_length
+    cmp rax, 4
+    jne .bad_arity
+    mov rdi, r14
     call cadr
     mov r12, rax                        ; test form
     mov rdi, r14
@@ -4516,6 +4532,11 @@ compile_if:
     pop r12
     pop rbx
     ret
+.bad_arity:
+    mov rdi, r14
+    mov rsi, if_arity_err_msg
+    mov rdx, if_arity_err_msg_len
+    call fail_wrong_type                                      ; never returns
 
 ; compile_setq(rdi = the full (SETQ var1 val1 var2 val2 ...) form)
 ; Each pair is processed left to right: the val is compiled and
@@ -5343,9 +5364,11 @@ compile_lambda:
 ; target rax, per the ordinary compiled-code calling convention every
 ; compile_call site also honors) to decide which register-argument
 ; slots hold real REST data. This version handles any number of
-; call-site operands (capped at MAX_MACRO_ARGS, matching this
-; project's own "generous fixed size, not an unbounded general answer"
-; v0 sizing elsewhere — see README): the first 3 go in rsi/rdx/rcx as
+; call-site operands — no cap: the list is walked once to count it
+; and the scratch array below is sized to fit on the host stack (an
+; earlier fixed 32-slot array silently dropped every operand past the
+; 32nd, which APPLY — the other caller — exposed as a wrong answer,
+; issue #545): the first 3 go in rsi/rdx/rcx as
 ; before, and any beyond that are pushed onto the *real* host stack
 ; immediately before the call, in the same order compile_call_args'
 ; own target-code convention produces (operand index 3 ends up closest
@@ -5354,7 +5377,6 @@ compile_lambda:
 ; at exactly the offsets build_param_frame already expects — the exact
 ; layout an ordinary compiled call site would produce, just assembled
 ; by hand here instead of emitted.
-%define MAX_MACRO_ARGS 32
 global invoke_macro
 invoke_macro:
     push rbx
@@ -5402,24 +5424,42 @@ invoke_macro:
     call fail_wrong_type                  ; never returns
 .callable:
 
-    sub rsp, MAX_MACRO_ARGS*8           ; scratch array, host-stack-resident
+    ; Pass 1: count the list, so the scratch array can hold all of it.
+    xor r15, r15                        ; n
+    mov r14, r13
+.count:
+    cmp r14, IMM_NIL
+    je .counted
+    mov rdi, r14
+    call cdr
+    mov r14, rax
+    inc r15
+    jmp .count
+.counted:
+    ; Scratch array, host-stack-resident, n slots rounded up to an even
+    ; count so rsp keeps the 16-byte alignment the old fixed 32-slot
+    ; array preserved.
+    lea rbx, [r15+1]
+    and rbx, -2
+    shl rbx, 3
+    sub rsp, rbx
     mov r14, rsp                          ; scratch array base
-    xor r15, r15                            ; count so far
+
+    ; Pass 2: collect.
+    xor rbx, rbx                            ; index so far
 .collect:
-    cmp r13, IMM_NIL
-    je .collected
-    cmp r15, MAX_MACRO_ARGS
+    cmp rbx, r15
     jae .collected
     mov rdi, r13
     call car
-    mov [r14+r15*8], rax
+    mov [r14+rbx*8], rax
     mov rdi, r13
     call cdr
     mov r13, rax
-    inc r15
+    inc rbx
     jmp .collect
 .collected:
-    ; r15 = n, capped. Registers first.
+    ; r15 = n. Registers first.
     xor rsi, rsi
     xor rdx, rdx
     xor rcx, rcx
@@ -5466,7 +5506,9 @@ invoke_macro:
                                                 ; operands this call
                                                 ; itself pushed
 .no_extra_cleanup:
-    add rsp, MAX_MACRO_ARGS*8                    ; discard scratch array
+    lea rbx, [r15+1]
+    and rbx, -2
+    lea rsp, [rsp + rbx*8]                       ; discard scratch array
 
     pop r15
     pop r14
