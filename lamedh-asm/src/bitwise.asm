@@ -95,7 +95,9 @@ lognot_tagged:
 ; A shift magnitude at or beyond this kernel's 62-bit fixnum width
 ; behaves the same way this kernel's existing +/- overflow already
 ; does: a left shift past the width sets the shared OVERFLOW flag
-; (overflow.asm, "KERNEL.md conformance" above) and yields 0; a right
+; (overflow.asm, "KERNEL.md conformance" above) and yields 0. A shorter
+; left shift whose result leaves the fixnum range ((ash 1 61), issue
+; #550) wraps to the low 62 bits and likewise sets OVERFLOW; a right
 ; shift past the width sign-extends to 0 or -1, exactly like the
 ; reference's own >=64 case scaled down to this kernel's own 62 usable
 ; bits.
@@ -148,7 +150,21 @@ ash_tagged:
     xor rax, rax
     jmp .done
 .do_left:
-    shl rax, cl
+    ; Shift straight into tagged position (shift+2 <= 63), then shift
+    ; back arithmetically: getting n back iff no significant bit (or
+    ; the sign) was lost, i.e. iff the result fits in 62 bits.
+    mov rdx, rax                   ; n
+    add rcx, 2
+    shl rax, cl                      ; tagged, wrapped to 62 bits
+    mov r8, rax
+    sar r8, cl
+    cmp r8, rdx
+    je .tagged_done
+    call set_overflow_flag             ; touches only its flag word
+.tagged_done:
+    pop r12
+    pop rbx
+    ret
 .done:
     TO_FIXNUM rax
     pop r12
