@@ -57,7 +57,7 @@ fn the_gate_reports_the_kernels_own_blocker_on_single_functions() {
     // A checking-only head is an unknown call to codegen.
     assert_eq!(
         ev(&e, "(hm-compile-verdict 'isl-greet)"),
-        "(BLOCKED \"call to unknown function `CONCAT`\")"
+        "(BLOCKED \"builtin `CONCAT` is not supported in compiled code\")"
     );
     assert_eq!(
         ev(&e, "(cdr (assoc 'blocker (explain-compile 'isl-greet)))"),
@@ -308,7 +308,7 @@ fn the_island_is_closed_under_calls_and_names_the_reason() {
     assert_eq!(ev(&e, "(island-member-names isl)"), "(ISL-LEAF)");
     assert_eq!(
         ev(&e, "(island-rejection isl 'isl-bad)"),
-        "\"call to unknown function `CAR`\""
+        "\"builtin `CAR` is not supported in compiled code\""
     );
     // Discovery admitted MID and TOP against BAD's provisional arrow; the
     // clean round, with BAD gone, drops them for the honest reason.
@@ -449,7 +449,7 @@ fn a_guarded_install_never_turns_an_answer_into_a_membrane_error() {
     ev(&e, "(def isl-cnt (lambda (s) (concat s \"!\")))");
     assert_eq!(
         ev(&e, "(island-rejection (typed-island '(isl-cnt)) 'isl-cnt)"),
-        "\"call to unknown function `CONCAT`\""
+        "\"builtin `CONCAT` is not supported in compiled code\""
     );
 }
 

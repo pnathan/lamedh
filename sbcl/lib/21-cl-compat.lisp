@@ -40,7 +40,7 @@ first, one order (0.3 regularity)."
          ;; Accessor convention: (setf (point-x p) v) -> (set-point-x! p v).
          ;; Matches the mutators defstruct generates; an unknown accessor
          ;; surfaces as an unbound SET-...! error at the call site.
-         (t (cons (intern (concat "SET-" (prin1-to-string head) "!"))
+         (t (cons (intern (concat "SET-" (princ-to-string head) "!"))
                   (list (cadr place) value))))))
     (t (error "setf: unsupported place"))))
 
@@ -141,6 +141,49 @@ default: end of SEQ)."
 (defun rest (lst) "CL alias for CDR." (cdr lst))
 (defun second (lst) "CL alias for CADR." (cadr lst))
 (defun third (lst) "CL alias for CADDR." (caddr lst))
+
+;; --- construction ----------------------------------------------------------------
+
+(defun $make-list-aux (n x acc)
+  (if (<= n 0) acc ($make-list-aux (- n 1) x (cons x acc))))
+
+(defun make-list (n &key initial-element)
+  "CL MAKE-LIST: a fresh list of N elements, each INITIAL-ELEMENT (default
+NIL). (make-list 3 :initial-element 0) is (0 0 0)."
+  ($make-list-aux n initial-element nil))
+
+;; --- identity and types --------------------------------------------------------
+
+(defun eql (a b)
+  "CL EQL. Lamedh's EQ already compares numbers by type and value (so
+(eq 1 1) is T and (eq 1 1.0) is NIL) and characters by value, which is
+exactly what EQL adds over CL's EQ -- so EQL is EQ. One divergence from CL
+is inherited from EQ: equal strings are EQ here."
+  (eq a b))
+
+(defun type-of (x)
+  "CL TYPE-OF: a symbol naming X's runtime type. NULL, CONS, CHARACTER,
+FLOAT, INTEGER, STRING, SYMBOL, TYPED-ARRAY, ARRAY, HASH-TABLE, ERROR,
+MACRO, FUNCTION (lambdas, builtins, fexprs and vau operatives), PORT or
+EXTENSION; a record yields its brand, e.g. POINT for a DEFRECORD POINT.
+Anything else is T."
+  (cond ((null x) 'null)
+        ((consp x) 'cons)
+        ((charp x) 'character)
+        ((floatp x) 'float)
+        ((numberp x) 'integer)
+        ((stringp x) 'string)
+        ((symbolp x) 'symbol)
+        ((record-brand x) (record-brand x))
+        ((typed-array-p x) 'typed-array)
+        ((arrayp x) 'array)
+        ((hash-table-p x) 'hash-table)
+        ((error-p x) 'error)
+        ((macrop x) 'macro)
+        ((functionp x) 'function)
+        ((port-p* x) 'port)
+        ((extension-p x) 'extension)
+        (t t)))
 
 ;; --- numbers -------------------------------------------------------------------
 

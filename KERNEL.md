@@ -87,14 +87,14 @@ whitespace and are a parse error wherever they appear outside a string
 **Dispatch order.** After skipping `ws`, the productions are tried in this
 order (`parse_expr`); the first match wins:
 
-1. *atom*: `1+`/`1-` literal symbols, then numeric literals (float,
-   radix-prefixed, hex-suffixed, octal-suffixed, decimal — in that order),
-   then earmuff symbol, plus-earmuff symbol, keyword symbol, general
-   symbol, operator symbol;
+1. *atom*: `|...|` escaped symbol, `1+`/`1-` literal symbols, then
+   numeric literals (float, radix-prefixed, hex-suffixed, octal-suffixed,
+   decimal — in that order), then earmuff symbol, plus-earmuff symbol,
+   keyword symbol, general symbol, operator symbol;
 2. string literal;
 3. `#S(` record literal;
 4. `(` list;
-5. `'x'` character literal;
+5. `'x'` character literal, then `#\x` character literal;
 6. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
    `#'` function shorthand.
 
@@ -104,11 +104,20 @@ If none matches, the text is a parse error at that position. In particular
 `|`, `S`, `s`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
 carry a 1-based line and column; the message text is not portable.
 
-**Symbols.** Four productions, all producing an ordinary interned
+**Symbols.** Five productions, all producing an ordinary interned
 `Symbol`. Constituent classes are **ASCII only**: *letter* is `A`–`Z` /
 `a`–`z`, *digit* is `0`–`9`; a non-ASCII character such as `é` is not a
 constituent of anything and is a parse error outside strings.
 
+- *Escaped*: `|`, then any characters, then `|` (issue #523), where a
+  `\` keeps the next character from ending it. The name is the
+  text between the bars **verbatim** — no case folding, and whitespace,
+  parentheses, quotes, digits and non-ASCII are ordinary characters;
+  inside the bars `\|` stands for `|` and `\\` for `\`, and any other
+  backslash is kept as written. `|a b|` is the symbol named `a b`,
+  `|FOO|` is `FOO`, `||` is the symbol with the empty name, and `|NIL|`
+  is the symbol named `NIL` (not `Nil`). An unterminated escape is a hard
+  parse failure. `|` begins nothing else outside a block comment.
 - *`1+`/`1-`*: the two-character sequences `1+` and `1-` read as the
   symbols `1+` and `1-`. It is tried **before** numbers and carries the
   numeric token boundary (see *Integer literals*), so `1+x` and `1-5` are
@@ -136,7 +145,8 @@ constituent of anything and is a parse error outside strings.
   non-initially (`MODULE:SYMBOL` is one symbol; `A:` is one symbol). `.`,
   `\`, `|`, `/`, `~`, `#`, `,`, `'`, `` ` ``, `"`, and parentheses are
   never constituents: `a.b` reads as `A`, `.`, `B` (a dotted pair inside a
-  list, an error at top level), `a\b` and `|a b|` are parse errors,
+  list, an error at top level), `a\b` is a parse error, `a|b|` reads as
+  `A` then the escaped symbol `b`,
   `foo(bar)` reads as `FOO` then `(BAR)`.
 - *Operator*: one or more characters from `+ - * / = < > ! ~`, e.g. `+`,
   `>=`, `/=`, `->`, `<=>`, `!~`. A lone `-` or `+` followed by a space is
@@ -146,7 +156,11 @@ constituent of anything and is a parse error outside strings.
 - **Case folding is unconditional**: every earmuff, keyword, and general
   symbol is uppercased before interning; `foo`, `Foo`, `FOO` are the same
   symbol. Operator symbols contain no letters and are unaffected. There is
-  no case-sensitivity mode and no escaped-symbol syntax.
+  no case-sensitivity mode; the escaped production is the only way to
+  read a name containing lower-case letters. `INTERN` does **not** fold:
+  `(intern "foo")` is the symbol `|foo|`, distinct from `FOO`. (It
+  upcased its string before issue #523; code that relied on that must now
+  write `(intern (string-upcase s))`.)
 - `T` (after uppercasing) reads as the ordinary interned symbol `T`.
   `NIL` (after uppercasing) does **not** read as a symbol — it reads as
   the same `Nil` value that `()` reads as. This special-casing happens
@@ -230,6 +244,14 @@ character `a` while `'a` followed by a delimiter is `(QUOTE A)`; `'(1)`
 is `(QUOTE (1))` because `(` is followed by `1`, not `'`, but `'('` is the
 character `(`.
 
+**`#\` character literals** (issue #526) are a second spelling of the same
+`Char`: `#\` followed by one character of any kind (`#\a`, `#\(`, `#\"`,
+`#\;`, `#\ `), or, when that character is alphanumeric and more
+alphanumerics follow, a name matched case-insensitively from `Space`,
+`Newline`, `Linefeed`, `Tab`, `Return`, `Page`, `Backspace`, `Escape`,
+`Rubout`, `Nul`, `Null`. Any other alphanumeric run (`#\ab`) is a parse
+error, as is a character above U+00FF. Chars always print as `'x'`.
+
 **Record literals**, `#S(TypeName field...)` (also `#s`). No whitespace is
 permitted between `#S` and `(`. The head of the inner list must be a
 symbol (read and uppercased by the general production — it names the
@@ -257,7 +279,7 @@ exhausting its native stack. The reference's default limit is 512 levels
 50,000; the exact number is a host detail, not part of the language.
 
 **Every production in this grammar is required, not layered.** Decimal
-integers, symbols (all four productions), strings, proper and dotted
+integers, symbols (all five productions), strings, proper and dotted
 lists, `NIL`/`T`, and the quote family are what a bare `lib/*.lisp`-running
 host cannot do without; octal/hex-suffix and radix-prefix integers,
 floats, block comments, character literals, and `#S(...)` records are no
@@ -278,9 +300,15 @@ rules:
 
 - `Nil` prints as `()`. No code path ever prints the text `NIL` for this
   value.
-- A symbol prints as its stored (uppercased) name, verbatim, ignoring its
-  property list. `T` prints as `T`; a keyword prints with its colon
-  (`:FOO`).
+- A symbol prints as its stored name, verbatim, ignoring its property
+  list, when that name read bare by Part II's grammar yields this same
+  symbol: it matches one of the earmuff, plus-earmuff, keyword, general,
+  operator or `1+`/`1-` productions in full, contains no lower-case
+  letter, and is not `NIL`. `T` prints as `T`; a keyword prints with its
+  colon (`:FOO`). Any other name prints in the escaped form, `|` name `|`
+  with each `|` and `\` in it preceded by `\`: `|a b|`, `|foo|`,
+  `|12|`, `|NIL|`, `||` (issue #523). `PRINC` and `PRINC-TO-STRING`
+  write the bare name regardless.
 - A `Number` prints as a plain decimal integer with a leading `-` when
   negative — never with a radix marker, regardless of how it was read.
 - A `Float` prints via the host's shortest-round-trip decimal conversion

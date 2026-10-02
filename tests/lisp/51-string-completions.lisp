@@ -89,3 +89,75 @@
   (assert-equal (string-capitalize "") "")
   (assert-equal (string-reverse "hello") "olleh")
   (assert-equal (string-reverse "") ""))
+
+;;; ---- Unicode case mapping and character classes (issue #519) -------------
+
+(deftest str519-char-case-unicode
+  (assert-equal (char-downcase "É") "é")
+  (assert-equal (char-upcase "é") "É")
+  (assert-equal (char-upcase "λ") "Λ")
+  (assert-equal (char-downcase "Σ") "σ")
+  (assert-equal (char-upcase (char-code "é")) "É")
+  ;; One-to-one mapping only: no one-character uppercase for sharp s.
+  (assert-equal (char-upcase "ß") "ß")
+  ;; Uncased characters pass through.
+  (assert-equal (char-upcase "漢") "漢")
+  (assert-equal (char-downcase "7") "7"))
+
+(deftest str519-string-case-unicode
+  (assert-equal (string-upcase "straße") "STRASSE")
+  (assert-equal (string-upcase "café") "CAFÉ")
+  (assert-equal (string-downcase "CAFÉ") "café")
+  (assert-equal (string-upcase "αβγ") "ΑΒΓ")
+  ;; Full mapping: word-final capital sigma lowercases to final sigma.
+  (assert-equal (string-downcase "ΟΔΟΣ") "οδος")
+  (assert-equal (string-upcase "漢字 ok") "漢字 OK")
+  (assert-equal (string-upcase "") "")
+  (assert-equal (string-capitalize "élan vital") "Élan Vital")
+  (assert-equal (string-capitalize "ÉTÉ été") "Été Été"))
+
+(deftest str519-char-classes-unicode
+  (assert-true  (alpha-p "é"))
+  (assert-true  (alpha-p "Λ"))
+  (assert-true  (alpha-p "漢"))
+  (assert-true  (alphanumeric-p "é"))
+  (assert-true  (alphanumeric-p "ß"))
+  (assert-true  (alphanumeric-p "٣"))
+  (assert-false (alphanumeric-p "—"))
+  (assert-false (alpha-p "٣"))
+  (assert-true  (char-upper-p "É"))
+  (assert-false (char-upper-p "é"))
+  (assert-true  (char-lower-p "ß"))
+  (assert-true  (char-lower-p "σ"))
+  (assert-false (char-upper-p "漢"))
+  (assert-false (char-lower-p "漢"))
+  ;; DIGIT-P stays ASCII: parsers rely on it.
+  (assert-false (digit-p "٣")))
+
+(deftest str519-ascii-unchanged
+  ;; Every ASCII code point classifies and case-maps exactly as the old
+  ;; A-Z / a-z / 0-9 range checks did.
+  (assert-true
+   (every (lambda (code)
+            (let ((up (and (>= code 65) (<= code 90)))
+                  (lo (and (>= code 97) (<= code 122)))
+                  (dg (and (>= code 48) (<= code 57))))
+              (and (eq (not (alpha-p code)) (not (or up lo)))
+                   (eq (not (alphanumeric-p code)) (not (or up lo dg)))
+                   (eq (not (char-upper-p code)) (not up))
+                   (eq (not (char-lower-p code)) (not lo))
+                   (equal (char-upcase code)
+                          (code-char (if lo (- code 32) code)))
+                   (equal (char-downcase code)
+                          (code-char (if up (+ code 32) code))))))
+          (iota 128)))
+  (assert-equal (string-upcase "Hello, World! 123") "HELLO, WORLD! 123")
+  (assert-equal (string-downcase "Hello, World! 123") "hello, world! 123"))
+
+(deftest str519-kernel-primitives
+  ;; Non-scalar code points (surrogates, beyond U+10FFFF) are in no class.
+  (assert-false (char-alphabetic-p* 55296))
+  (assert-false (char-alphabetic-p* 1114112))
+  (assert-false (char-alphabetic-p* -1))
+  (assert-nil (errorset '(char-alphabetic-p* "a")))
+  (assert-nil (errorset '(string-upcase* 1))))

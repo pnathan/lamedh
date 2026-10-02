@@ -23,8 +23,10 @@ guidance) over prior assumptions about "how Lisp works here."
 - `if` takes **exactly three** arguments — no implicit `nil` else branch.
   Use `cond`/`when`/`unless` for that.
 - Character literals are `'c'` (C-style, single-quoted, `\n \t \\ \'`
-  escapes), **not** `#\c`. A char is a byte (0-255); multibyte text is a
-  string. Reader subtlety: `'a'` is a char, `'a` is a quoted symbol.
+  escapes); CL's `#\c` / `#\Space` read as the same value and print as
+  `'c'`. A char is a byte (0-255); multibyte text is a string. Reader
+  subtlety: `'a'` is a char, `'a` is a quoted symbol. `string->list`
+  returns one-character strings, not chars.
 - Integers are 64-bit and **wrap** (sets the `OVERFLOW` flag; no bignums).
   `(/ 7 2)` truncates to `3`; `(/ 7.0 2)` → `3.5`. No `float`/`coerce` —
   multiply by `1.0` to convert.
@@ -558,7 +560,7 @@ NUMBER->STRING [f] (number->string n) -- Converts number n to its decimal string
 PRIN1-TO-STRING [f] (prin1-to-string object) -- Returns the readable printed representation of object as a string, exactly as PRIN1 would print it to stdou...
 PRINC-TO-STRING [f] (princ-to-string object) -- Returns the human-readable printed representation of object as a string, exactly as PRINC would print it to...
 STRING->NUMBER [f] (string->number s) -- Parses string s as a number. Tries integer first, then float. Returns the parsed number on success, or NIL ...
-STRING-CAPITALIZE [f] (string-capitalize s) -- Returns s with its first character uppercased (ASCII) and the rest lowercased.
+STRING-CAPITALIZE [f] (string-capitalize s) -- Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).
 STRING-CI-NE [f] (string-ci-ne a b) -- True if a and b do NOT have the same contents under Unicode case folding.
 STRING-CI< [f] (string-ci< a b) -- True if a is lexicographically before b under Unicode case folding.
 STRING-CI<= [f] (string-ci<= a b) -- Non-strict case-insensitive ordering: true unless a comes after b under Unicode case folding.
