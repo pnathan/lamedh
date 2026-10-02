@@ -10,18 +10,16 @@
 ; requires of the fixed-width model is that the wrap be *observable*.
 ;
 ; This file supplies that observability: one global flag, set by target
-; code compile_binop now emits right after a compiled `+`/`-` whose
+; code compile_binop emits right after a compiled `+`/`-`/`*` whose
 ; native OF flag comes back set, queried with FLAG-SET-P and cleared with
 ; CLEAR-FLAG/CLEAR-ALL-FLAGS — the exact three names Part V's own prose
 ; gives (`(flag-set-p 'OVERFLOW)`, `(clear-flag 'OVERFLOW)`,
-; `(clear-all-flags)`). `*` is deliberately not wired to this yet: its
-; compiled form runs `imul` on the tagged (already-shifted) operands and
-; then corrects with a `sar` (see compile_binop), so the hardware OF from
-; the `imul` itself reflects overflow of the pre-correction, extra-shifted
-; product, not of the represented fixnum multiplication — reusing it here
-; would just be a different bug wearing this feature's name, not the same
-; fix `+`/`-` get. That gap is tracked as a follow-up, not silently
-; dropped.
+; `(clear-all-flags)`). `*` untags its rhs before the `imul` (tagged lhs
+; 4a times raw b is already the tagged product 4ab), so its OF means the
+; same thing as for `+`/`-`: the result left the 62-bit fixnum range.
+; Fixnums are narrower than 64 bits, so that — not i64 overflow — is what
+; OVERFLOW reports on this kernel, for all three operators. EXPT
+; (lib/prelude.lisp) is repeated `*` and inherits the check (#546).
 
 %include "src/tags.inc"
 
@@ -33,7 +31,7 @@ overflow_flag: resq 1
 section .text
 
 ; set_overflow_flag() — called from *compiled* target code, right after
-; an emitted +/- whose native OF flag came back set (compile_binop).
+; an emitted +/-/* whose native OF flag came back set (compile_binop).
 ; No arguments and no meaningful return value: every general-purpose
 ; register is caller-saved in this ABI, so the emitted call site saves
 ; and restores its own result register (rax) around this call itself;

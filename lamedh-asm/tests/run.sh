@@ -412,8 +412,8 @@ T'
             fail=$((fail+1))
         fi
     }
-    err_case undefined_function 1 "1" "lamedhc: unhandled error: not a function: LENGTH" \
-        '(PRINT 1) (LENGTH (LIST 1 2))'
+    err_case undefined_function 1 "1" "lamedhc: unhandled error: not a function: NO-SUCH-FUNCTION" \
+        '(PRINT 1) (NO-SUCH-FUNCTION (LIST 1 2))'
     err_case arity_too_few 1 "" "wrong number of arguments (got . expected): (1 . 2)" \
         '(DEFUN F2 (A B) (LIST A B)) (PRINT (F2 1))'
     err_case arity_too_many 1 "" "wrong number of arguments (got . expected): (3 . 1)" \
@@ -490,7 +490,7 @@ T'
         '(PRINT (LIST (FUNCALL (FUNCTION SQRT) 16) (APPLY (FUNCTION ROUND) (LIST 2.5)) (MAPCAR (LAMBDA (X) (TRUNCATE (SQRT (* X X X X)))) (LIST 1 2 3))))'
     err_case math_type_error 1 "" "expected a number (fixnum or float): x" \
         '(PRINT (SQRT "x"))'
-    err_case exp_log_roundtrip 0 "(2.718281 1.000000 7.389056 20.085536)" "" \
+    err_case exp_log_roundtrip 0 "(2.718282 1.000000 7.389056 20.085537)" "" \
         '(PRINT (LIST (EXP 1) (LOG (EXP 1)) (EXP 2) (EXP 3)))'
     err_case read_eof 1 "" "READ: end of input" \
         '(PRINT (READ))'
@@ -506,6 +506,12 @@ T'
         '(SYSCALL 39 1.5)'
     err_case file_p 0 "(T () ())" "" \
         '(PRINT (LIST (FILE-P "/etc/passwd") (FILE-P "/etc") (FILE-P "/nonexistent")))'
+    # EXPT with a negative exponent is a float (issue #550; it used to
+    # be an error), bit-for-bit the reference's f64::powi: 7^22 by
+    # square-and-multiply is 3909821048582988288, by naive repeated
+    # multiplication 3909821048582987776 — only the former may match.
+    err_case expt_negative_exponent 0 "(T () 0.500000 0.250000 0.010000 inf 1024)" "" \
+        '(PRINT (LIST (EQ (EXPT 7 -22) (F/ 1.0 3909821048582988288)) (EQ (EXPT 7 -22) (F/ 1.0 3909821048582987776)) (EXPT 2 -1) (EXPT 2.0 -2) (EXPT 10 -2) (EXPT 0 -1) (EXPT 2 10)))'
     # SHELL returns (code stdout stderr) like the reference; printed
     # readably so the strings show their quotes and newlines. A
     # one-argument SHELL goes through sh -c (so a missing program is
@@ -629,6 +635,22 @@ a b&c
         pass=$((pass+1))
     else
         echo "FAIL  stdlib_conformance  stdout: got [$stdlib_got] want [$stdlib_want] exit: got $stdlib_exit"
+        fail=$((fail+1))
+    fi
+
+    # #547: PRIN1 is the prelude's (PRINT (PRIN1-TO-STRING X)), whose
+    # capture buffer used to clamp at 64 KB — a 40 000-element list
+    # (80 001 bytes) came out as exactly 65 536 bytes with no closing
+    # paren. tests/cases/070_capture_growth covers the kernel side.
+    prin1_prog="$BUILD/file_runner_prin1_large.lisp"
+    printf '(def l nil) (dotimes (i 40000) (setq l (cons 7 l))) (prin1 l)\n' > "$prin1_prog"
+    prin1_bytes=$("$runner_bin" "$prin1_prog" | wc -c)
+    prin1_tail=$("$runner_bin" "$prin1_prog" | tail -c 4)
+    if [ "$prin1_bytes" = "80001" ] && [ "$prin1_tail" = "7 7)" ]; then
+        echo "ok    file_runner_prin1_large"
+        pass=$((pass+1))
+    else
+        echo "FAIL  file_runner_prin1_large  bytes: got $prin1_bytes want 80001  tail: got [$prin1_tail]"
         fail=$((fail+1))
     fi
 fi

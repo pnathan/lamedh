@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/msort.lisp",
+      "mean": 6.734258527399999,
+      "stddev": 0.22007557699029393,
+      "median": 6.652244702,
+      "user": 6.353427999999999,
+      "system": 0.24699900000000002,
+      "min": 6.505953555,
+      "max": 7.067054977,
+      "times": [
+        6.613755089,
+        6.505953555,
+        7.067054977,
+        6.832284314,
+        6.652244702
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

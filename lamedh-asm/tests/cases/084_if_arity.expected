@@ -1,0 +1,5 @@
+(if takes exactly three arguments (IF () 1 2 3))
+(if takes exactly three arguments (IF () 1))
+(if takes exactly three arguments (IF))
+(if takes exactly three arguments (IF X 1))
+(2 1 3)

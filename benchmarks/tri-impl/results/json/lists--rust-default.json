@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-default/lists.lisp",
+      "mean": 9.1162747822,
+      "stddev": 0.6707644119392879,
+      "median": 9.062371953,
+      "user": 8.825142799999998,
+      "system": 0.12496399999999999,
+      "min": 8.440078522,
+      "max": 9.970263598,
+      "times": [
+        9.603229481,
+        8.440078522,
+        9.062371953,
+        8.505430357,
+        9.970263598
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
