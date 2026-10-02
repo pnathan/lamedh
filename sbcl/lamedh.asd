@@ -5,6 +5,7 @@
   :author "Lamedh contributors"
   :license "AGPL-3.0"
   :pathname "src"
+  :depends-on ((:require "sb-md5"))
   :serial t
   :components ((:file "package")
                (:file "reader")

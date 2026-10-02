@@ -90,8 +90,11 @@ instead.
   reference or store compiles to one absolute-address load/store — no
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
-  and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
-  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. The
+  and `REMAINDER`; `+`/`-`/`*` set an observable `OVERFLOW` flag
+  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. Fixnums
+  carry 62 bits of payload, so "overflow" means the result left the
+  fixnum range, not the 64-bit machine range; `EXPT` is repeated `*`
+  and sets the flag the same way. The
   inline fixnum code runs only after a tag check on both operands
   (only the non-literal one when the other is a fixnum literal);
   anything else branches to an out-of-line stub, emitted after the
@@ -1086,18 +1089,25 @@ concrete reason it landed last of the three features in its spec:
   neither argument mutated, matching every other value's immutability
   here. All three are byte-indexed, not Unicode-scalar-indexed — Part
   IV's own indexing rule remains unmet, tracked as ongoing work below.
-  Escapes are limited to `\n`, `\t`, `\"`, `\\` (anything else after a
-  backslash is copied through literally); a literal longer than the
-  reader's 4KB scratch buffer is silently truncated.
+  Escapes are the reference's: `\n`, `\t`, `\r`, `\0`, `\"`, `\\`
+  decode, and any other backslash-prefixed character keeps its
+  backslash (`"\a"` is two characters, as in the reference — #551); a
+  literal longer than the reader's 4KB scratch buffer is silently
+  truncated.
 - Float arithmetic (`F+`/`F-`/`F*`/`F/`/`F<`) is a real host-routine
   call per operation, not an inlined target instruction — see "The
   kernel surface" above. `PRINT` of a float is always fixed
   6-decimal-place formatting (`3.500000`), never scientific notation
-  or shortest round-trip output; there is no `FLOAT<`-style family for
-  `<=`/`>`/`>=`/`=` yet, and the `F`-prefixed ops take no mixed
-  operands (`(F+ 1 2.0)` does not work — both operands must already be
-  floats; use `FLOAT` to convert first). The generic `+ - * < =` do
-  mix fixnums and floats (Part V contagion, `generic_binop`).
+  or shortest round-trip output: the six decimals are rounded to
+  nearest (ties to even), the sign of `-0.0` is kept, and infinities
+  and NaN print as the reference's `inf`/`-inf`/`NaN` (#551); a
+  magnitude of 2^61 or more prints its exact integral value (#550). A
+  float literal may carry an `e`/`E` exponent (`1.5e2`, `1e5`, `-2E-3`).
+  There is no `FLOAT<`-style family for `<=`/`>`/`>=`/`=` yet, and the
+  `F`-prefixed ops take no mixed operands (`(F+ 1 2.0)` does not work —
+  both operands must already be floats; use `FLOAT` to convert first).
+  The generic `+ - * < =` do mix fixnums and floats (Part V contagion,
+  `generic_binop`).
 - File descriptor I/O is exactly Linux's: `(FD-READ fd n)` returns
   the string one `read(2)` returned (up to `n` bytes, `""` at end of
   input) and `(FD-WRITE fd s)` writes every byte, looping on a short
@@ -1409,13 +1419,18 @@ literal datum in this compiler is, and runs through the identical
 does, just from an in-memory buffer instead of an mmap'd file.
 
 It currently defines `DEFUN`, `NOT`, `WHEN`, `UNLESS`, `LIST`,
-`REVERSE`, `FORMAT`, `1+`/`1-`, real global closures for
-`+`/`-`/`*`/`</`=`, `APPEND`, `IOTA`, `REDUCE`, `DOTIMES`, `EQUAL`,
+`REVERSE`, `FORMAT`, `1+`/`1-`, real (variadic) global closures for
+`+`/`-`/`*`/`</`=` and `LOGAND`/`LOGIOR`/`LOGXOR`, `APPEND`, `IOTA`,
+`REDUCE`, `DOTIMES`, `EQUAL`,
 `MAPCAR`, `NUMBER->STRING`, `GETP`, `PUTP`, `RPLACA`, `RPLACD`, `DEF`,
 `FUNCALL`, `>`/`>=`/`<=`, `MAX`/`MIN`, `FOR-EACH`, `FILTER`, `SOME`,
 `EVERY`, `MAKE-HASH-TABLE`, `SETHASH`, `GETHASH`, `REMHASH`, `KEYS`,
 `QUASIQUOTE` (with its own `UNQUOTE`/`UNQUOTE-SPLICING` reader
-support), and `FOR` — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
+support), `FOR`, and the portability basics of #552 (`CONSP`, `LENGTH`,
+`ABS`, `MEMBER`, `DOLIST`, `MAKE-ARRAY`/`AREF`/`ARRAY-LENGTH`,
+`LIST->ARRAY`/`ARRAY->LIST`, `STRING=`, `SYMBOL-NAME`, `SETF`/`PUSH`/`INCF`,
+`FLET`, `LABELS` — all `WHILE` loops, so no per-element native stack;
+`tests/cases/075_prelude_basics.asm`) — nearly all of these are an ordinary `DEFMACRO`/`DEFUN`
 over kernel primitives, no compiler change needed (see
 `lib/prelude.lisp`'s own comments for exactly why; `DOTIMES` is
 derived from `LET`/`WHILE`/`SETQ`, per KERNEL.md Part XII axis 3's

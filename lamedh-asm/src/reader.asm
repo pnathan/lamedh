@@ -2,10 +2,11 @@
 ; cons-cell primitives every later stage (compiler, printer extensions)
 ; builds on.
 ;
-; v0 grammar: integers (optional leading '-'), symbols (uppercased on
-; intern, per the Rust reader's convention), proper lists "( form* )",
-; and 'x quote sugar. No dotted pairs, floats, strings, or radix
-; literals yet — see README roadmap.
+; Grammar: integers (optional leading '-'), floats (a '.' fraction
+; and/or an e/E exponent), strings, char literals, symbols (uppercased
+; on intern, per the Rust reader's convention), lists "( form* )" with
+; an optional dotted tail "( form+ . form )", and the quote/backquote/
+; #' sugars. No radix literals yet — see README roadmap.
 
 %include "src/tags.inc"
 
@@ -29,6 +30,14 @@ global reader_end
 reader_buf: resq 1
 reader_pos: resq 1
 reader_end: resq 1
+; rfs_saved: 0, or the address of the innermost active
+; read_from_string_tagged's saved [prev rfs_saved][end][pos][buf] frame
+; on the native stack. A read error (reader_fail) throws straight past
+; that frame's own restore code, so reader_fail restores the caller's
+; reader position from here first — otherwise a READ-FROM-STRING parse
+; error caught by HANDLER-CASE inside a file would leave the file's own
+; top-level read loop reading the string's bytes.
+rfs_saved: resq 1
 
 section .text
 
@@ -181,6 +190,8 @@ read_from_string_tagged:
     push r12
     mov r12, [reader_end]
     push r12                            ; [saved_end, saved_pos, saved_buf]
+    push qword [rfs_saved]
+    mov [rfs_saved], rsp                  ; reader_fail restores from here
 
     mov rdi, rbx
     call string_bytes
@@ -195,6 +206,7 @@ read_from_string_tagged:
     mov rbx, rax                          ; result (rbx: source string is
                                            ; dead by now)
 
+    pop qword [rfs_saved]
     pop r12
     mov [reader_end], r12
     pop r12
@@ -283,9 +295,10 @@ reader_skip_ws:
 ; read_number() -> rax = tagged fixnum or tagged float. Assumes current
 ; char is '-' or a digit. A '.' followed by at least one digit right
 ; after the integer part switches this to a float literal (HDR_FLOAT,
-; see floats.asm); anything else (including a bare trailing '.', not
-; used by this project's grammar — no dotted pairs yet) leaves it a
-; plain integer.
+; see floats.asm); anything else (including a bare trailing '.') leaves
+; it a plain integer. An e/E exponent after the digits is read by
+; read_form's caller side (read_exponent_float), which rescans the
+; whole token.
 ;
 ; Integer range (issue #550): a fixnum here is 62 bits wide (tags.inc),
 ; so the representable range is [-2^61, 2^61-1], narrower than KERNEL.md
@@ -590,6 +603,157 @@ u64_to_xmm0:
     addsd xmm0, xmm0
     ret
 
+section .text
+; read_exponent_float(rdi = buffer index of a number token that
+; read_number has just read, and that continues with a valid exponent)
+; -> rax = the whole token, "-? digits (. digits)? [eE] [+-]? digits",
+; as a tagged float; reader_pos is left just past the exponent. The
+; token is rescanned from its start so every digit takes part: the
+; significand's digits become one integer M and the value is
+; M * 10^(exp - fraction digits). When M <= 2^53 and that power of ten
+; is within 10^22 both are exact doubles, so the one multiply or divide
+; rounds correctly (Clinger's fast path) — "1.5e2" is exactly 150.0 and
+; "1.5e-3" the double nearest 0.0015. Outside that range the scaling is
+; repeated by 10^22 steps, which can be off in the last place (the
+; fraction reader above has the same limit; a correctly rounded
+; general path needs big-integer arithmetic). Significand digits past
+; the 18th are dropped (an integer digit still scales the exponent).
+read_exponent_float:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r8, [reader_buf]
+    mov rcx, rdi                        ; scan index
+    xor r12, r12                          ; sign: 1 if negative
+    xor rbx, rbx                            ; M
+    xor r13, r13                              ; 1 once M stopped growing
+    xor r14, r14                                ; decimal exponent adjust
+    cmp byte [r8+rcx], '-'
+    jne .int_digits
+    mov r12, 1
+    inc rcx
+.int_digits:
+    movzx eax, byte [r8+rcx]
+    sub eax, '0'
+    cmp eax, 9
+    ja .int_done
+    inc rcx
+    test r13, r13
+    jnz .int_dropped
+    mov rdx, 100000000000000000         ; 10^17: M*10+9 stays below 2^63
+    cmp rbx, rdx
+    jae .int_full
+    imul rbx, rbx, 10
+    add rbx, rax
+    jmp .int_digits
+.int_full:
+    mov r13, 1
+.int_dropped:
+    inc r14                               ; a dropped integer digit: x10
+    jmp .int_digits
+.int_done:
+    cmp byte [r8+rcx], '.'
+    jne .exponent
+    inc rcx
+.frac_digits:
+    movzx eax, byte [r8+rcx]
+    sub eax, '0'
+    cmp eax, 9
+    ja .exponent
+    inc rcx
+    test r13, r13
+    jnz .frac_digits                      ; a dropped fraction digit
+    mov rdx, 100000000000000000
+    cmp rbx, rdx
+    jae .frac_full
+    imul rbx, rbx, 10
+    add rbx, rax
+    dec r14
+    jmp .frac_digits
+.frac_full:
+    mov r13, 1
+    jmp .frac_digits
+.exponent:
+    inc rcx                               ; the 'e' / 'E' (caller checked)
+    xor r15, r15                            ; exponent sign: 1 if negative
+    movzx eax, byte [r8+rcx]
+    cmp al, '+'
+    je .exp_sign_done
+    cmp al, '-'
+    jne .exp_digits_start
+    mov r15, 1
+.exp_sign_done:
+    inc rcx
+.exp_digits_start:
+    xor r9, r9                               ; exponent magnitude
+.exp_digits:
+    cmp rcx, [reader_end]
+    jae .exp_done
+    movzx eax, byte [r8+rcx]
+    sub eax, '0'
+    cmp eax, 9
+    ja .exp_done
+    inc rcx
+    cmp r9, 100000                             ; far past any double's
+    jae .exp_digits                              ; range: stop growing
+    imul r9, r9, 10
+    add r9, rax
+    jmp .exp_digits
+.exp_done:
+    mov [reader_pos], rcx
+    test r15, r15
+    jz .exp_pos
+    neg r9
+.exp_pos:
+    add r14, r9                              ; r14 = total power of ten
+    cvtsi2sd xmm0, rbx                         ; exact while M <= 2^53
+.scale_up:
+    cmp r14, 22
+    jle .scale_down
+    mulsd xmm0, [rel pow10_table + 22*8]
+    sub r14, 22
+    jmp .scale_up
+.scale_down:
+    cmp r14, -22
+    jge .scale_last
+    divsd xmm0, [rel pow10_table + 22*8]
+    add r14, 22
+    jmp .scale_down
+.scale_last:
+    test r14, r14
+    js .scale_div
+    lea rax, [rel pow10_table]
+    mulsd xmm0, [rax + r14*8]
+    jmp .signed
+.scale_div:
+    neg r14
+    lea rax, [rel pow10_table]
+    divsd xmm0, [rax + r14*8]
+.signed:
+    test r12, r12
+    jz .make
+    mov rax, 0x8000000000000000                  ; flip the sign bit, so
+    movq xmm1, rax                                 ; "-0e5" is -0.0
+    xorpd xmm0, xmm1
+.make:
+    call make_float
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+section .rodata
+align 8
+; 10^0 .. 10^22: every one exactly representable as a double.
+pow10_table:
+    dq 1.0e0, 1.0e1, 1.0e2, 1.0e3, 1.0e4, 1.0e5, 1.0e6, 1.0e7
+    dq 1.0e8, 1.0e9, 1.0e10, 1.0e11, 1.0e12, 1.0e13, 1.0e14, 1.0e15
+    dq 1.0e16, 1.0e17, 1.0e18, 1.0e19, 1.0e20, 1.0e21, 1.0e22
+
 section .bss
 align 8
 symbuf: resb 256
@@ -665,8 +829,10 @@ one_plus_minus_buf: resb 2
 section .text
 
 ; read_string() -> rax = tagged HDR_STRING heapobj. Assumes the current
-; char is the opening '"'. Minimal escapes only: \n \t \" \\; anything
-; else after a backslash is copied through literally. Unterminated
+; char is the opening '"'. Escapes are the reference's (reader.rs
+; parse_string): \n \t \r \0 \" and a doubled backslash decode; any
+; other backslash-prefixed character keeps its backslash ("\a" is the two
+; characters backslash, a), rather than silently dropping it. Unterminated
 ; input or a literal longer than the scratch buffer simply stops early
 ; (v0 — no reader error reporting yet, see README roadmap).
 read_string:
@@ -696,7 +862,34 @@ read_string:
     je .esc_n
     cmp al, 't'
     je .esc_t
-    mov [strbuf + rbx], al                ; \" \\ and anything else: literal
+    cmp al, 'r'
+    je .esc_r
+    cmp al, '0'
+    je .esc_0
+    cmp al, '"'
+    je .esc_literal
+    cmp al, 92                            ; a doubled backslash
+    je .esc_literal
+    mov byte [strbuf + rbx], 92           ; unknown escape: keep the
+    inc rbx                                 ; backslash, then the char
+    cmp rbx, 4095
+    jae .done
+.esc_literal:
+    mov [strbuf + rbx], al
+    inc rbx
+    inc qword [reader_pos]
+    cmp rbx, 4095
+    jae .done
+    jmp .loop
+.esc_r:
+    mov byte [strbuf + rbx], 13
+    inc rbx
+    inc qword [reader_pos]
+    cmp rbx, 4095
+    jae .done
+    jmp .loop
+.esc_0:
+    mov byte [strbuf + rbx], 0
     inc rbx
     inc qword [reader_pos]
     cmp rbx, 4095
@@ -725,12 +918,19 @@ read_string:
     pop rbx
     ret
 
-; read_list() -> rax = tagged proper list, consuming up to and including
-; the closing ')'. Caller has already consumed the opening '('.
+; read_list() -> rax = tagged list, consuming up to and including the
+; closing ')'. Caller has already consumed the opening '('. A dotted
+; tail follows the reference (reader.rs parse_list_contents): a '.' at
+; the start of an element, after at least one element, is the dot — the
+; next form is the list's final cdr and must be followed by ')'. So
+; (A . B) is a pair, (A . (B C)) is (A B C), and (. A), (A .), (A . B C)
+; and (A . B . C) are read errors, as is input ending inside a list.
 read_list:
     push r12
     call reader_skip_ws
     call reader_peek
+    cmp rax, -1
+    je read_fail_unterminated
     cmp al, ')'
     jne .have_first
     inc qword [reader_pos]
@@ -738,15 +938,96 @@ read_list:
     pop r12
     ret
 .have_first:
+    cmp al, '.'
+    je read_fail_dot                ; "(. x)": no element before the dot
     call read_form
     mov r12, rax                    ; save first
-    call reader_skip_ws
-    call read_list                  ; recursive: rest of the list
+    call read_list_rest             ; the rest, after >= 1 element
     mov rsi, rax                     ; cdr = rest
     mov rdi, r12                     ; car = first
     call cons
     pop r12
     ret
+
+; read_list_rest() -> rax = the rest of a list at least one element of
+; which has been read: NIL at ')', a dotted tail's datum, or the next
+; element consed onto the rest. Recursive, like read_list.
+read_list_rest:
+    push r12
+    call reader_skip_ws
+    call reader_peek
+    cmp rax, -1
+    je read_fail_unterminated
+    cmp al, ')'
+    je .close
+    cmp al, '.'
+    je .dot
+    call read_form
+    mov r12, rax
+    call read_list_rest
+    mov rsi, rax
+    mov rdi, r12
+    call cons
+    pop r12
+    ret
+.close:
+    inc qword [reader_pos]
+    mov rax, IMM_NIL
+    pop r12
+    ret
+.dot:
+    inc qword [reader_pos]          ; consume '.'
+    call reader_skip_ws
+    call reader_peek
+    cmp rax, -1
+    je read_fail_unterminated
+    cmp al, ')'
+    je read_fail_dot                ; "(a .)": nothing after the dot
+    cmp al, '.'
+    je read_fail_dot                ; "(a . . b)"
+    call read_form
+    mov r12, rax                    ; the tail datum
+    call reader_skip_ws
+    call reader_peek
+    cmp rax, -1
+    je read_fail_unterminated
+    cmp al, ')'
+    jne read_fail_dot               ; "(a . b c)" / "(a . b . c)"
+    inc qword [reader_pos]          ; consume ')'
+    mov rax, r12
+    pop r12
+    ret
+
+; reader_fail(rsi=message, rdx=length) — never returns. Signals a READ
+; error as an ordinary catchable condition (fail_wrong_type), after
+; restoring an enclosing read_from_string_tagged's caller's reader
+; position (see rfs_saved). Jumped to (never called) from read_list/
+; read_list_rest with exactly their own `push r12` outstanding; popping
+; it leaves rsp as at their entry, the same alignment car's own
+; `jmp fail_wrong_type` has.
+read_fail_dot:
+    mov rsi, read_dot_err_msg
+    mov rdx, read_dot_err_msg_len
+    jmp reader_fail
+read_fail_unterminated:
+    mov rsi, read_eof_err_msg
+    mov rdx, read_eof_err_msg_len
+reader_fail:
+    mov rax, [rfs_saved]
+    test rax, rax
+    jz .signal
+    mov rcx, [rax]                  ; prev rfs_saved
+    mov [rfs_saved], rcx
+    mov rcx, [rax+8]
+    mov [reader_end], rcx
+    mov rcx, [rax+16]
+    mov [reader_pos], rcx
+    mov rcx, [rax+24]
+    mov [reader_buf], rcx
+.signal:
+    pop r12
+    mov rdi, IMM_NIL
+    jmp fail_wrong_type
 
 ; read_form() -> rax = next tagged value, or IMM_EOF if input is exhausted.
 global read_form
@@ -919,7 +1200,40 @@ read_form:
     jmp .number
 
 .number:
+    mov r12, [reader_pos]              ; token start, for an exponent rescan
     call read_number
+    ; An e/E exponent ([+-]? digit+) right after the number makes the
+    ; whole token one float ("1.5e2", "1e5", "-2E-3"), as the
+    ; reference's parse_float reads it — never a number followed by a
+    ; symbol E2. Anything else after the digits is left as before.
+    mov rcx, [reader_pos]
+    mov rdx, [reader_buf]
+    cmp rcx, [reader_end]
+    jae .out
+    movzx r8d, byte [rdx+rcx]
+    or r8b, 0x20                        ; E -> e
+    cmp r8b, 'e'
+    jne .out
+    lea r9, [rcx+1]
+    cmp r9, [reader_end]
+    jae .out
+    movzx r8d, byte [rdx+r9]
+    cmp r8b, '+'
+    je .exp_signed
+    cmp r8b, '-'
+    jne .exp_digit
+.exp_signed:
+    inc r9
+    cmp r9, [reader_end]
+    jae .out
+    movzx r8d, byte [rdx+r9]
+.exp_digit:
+    cmp r8b, '0'
+    jb .out
+    cmp r8b, '9'
+    ja .out
+    mov rdi, r12
+    call read_exponent_float
     jmp .out
 
 .symbol:
@@ -1013,4 +1327,8 @@ car_err_msg: db "CAR: expected a cons or NIL"
 car_err_msg_len: equ $ - car_err_msg
 cdr_err_msg: db "CDR: expected a cons or NIL"
 cdr_err_msg_len: equ $ - cdr_err_msg
+read_dot_err_msg: db "READ: malformed dotted list"
+read_dot_err_msg_len: equ $ - read_dot_err_msg
+read_eof_err_msg: db "READ: end of input inside a list"
+read_eof_err_msg_len: equ $ - read_eof_err_msg
 

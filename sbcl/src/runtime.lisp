@@ -29,8 +29,13 @@
 ;;; variable machinery (shallow binding, correct unwind on non-local exit)
 ;;; instead of reimplementing it.
 
-(defstruct (lenv (:constructor %make-lenv (parent rootp)))
-  (table (make-hash-table :test 'eq) :type hash-table)
+(defstruct (lenv (:constructor %make-lenv (parent rootp &aux (table (and rootp (make-hash-table :test 'eq))))))
+  "A lexical frame. A root frame keeps its (large, global) namespace in
+TABLE; every other frame keeps its (few) bindings in VARS, an alist of
+(sym . val) -- allocating and probing a hash table per LET/lambda call
+frame dominated array-heavy loops (#542)."
+  (table nil :type (or null hash-table))
+  (vars nil :type list)
   parent
   (rootp nil))
 
@@ -38,7 +43,8 @@
   "Process-wide: which Lamedh symbols are dynamic (DEFDYNAMIC/DEFVAR).
 Deliberately not per-environment -- see MAKE-ENVIRONMENT's docstring below
 on why dynamic-variable identity stays process-wide even across isolated
-worlds.")
+worlds. MARK-DYNAMIC mirrors each entry onto the symbol's own plist (see
+DYNAMIC-SYM-P), which is what the evaluator's hot path reads.")
 (defvar *global-env* (%make-lenv nil t)
   "The process's default global (root) environment -- what the CLI, REPL,
 and bootstrap/test files use. MAKE-ENVIRONMENT (below) creates additional,
@@ -47,24 +53,67 @@ its own global namespace), not a child of this one.")
 
 (defun make-global-environment () *global-env*)
 
-(declaim (inline dynamic-sym-p))
-(defun dynamic-sym-p (sym) (gethash sym *dynamic-syms*))
+;;; Per-symbol flags the evaluator reads on every step -- "is this symbol
+;;; dynamic?", "is it a special form, and whose handler?" -- live in SYMTABs:
+;;; a fixed vector of buckets indexed by the symbol's own stable hash
+;;; (SXHASH of a symbol is its precomputed name hash), each bucket a short
+;;; (sym . value) alist. A probe is a few inline instructions; both an EQ
+;;; hash table and CL:GET's out-of-line plist walk were measurable in LEVAL's
+;;; profile (#542). Writers are rare (DEFDYNAMIC, special-form registration)
+;;; and serialize on a lock; a reader sees either the old or the new bucket.
 
-(defun mark-dynamic (sym) (setf (gethash sym *dynamic-syms*) t))
+(defconstant +symtab-size+ 1024)
+
+(deftype symtab () '(simple-vector 1024))
+
+(defun make-symtab () (make-array +symtab-size+ :initial-element nil))
+
+(defvar *symtab-lock* (sb-thread:make-mutex :name "lamedh symtab"))
+
+(declaim (inline symtab-get))
+(defun symtab-get (tab sym)
+  (declare (type symtab tab) (symbol sym))
+  (loop for cell in (svref tab (logand (sxhash sym) (1- +symtab-size+)))
+        when (eq (car (the cons cell)) sym) return (cdr cell)))
+
+(defun symtab-put (tab sym val)
+  (declare (type symtab tab) (symbol sym))
+  (sb-thread:with-mutex (*symtab-lock*)
+    (let ((i (logand (sxhash sym) (1- +symtab-size+))))
+      (setf (svref tab i)
+            (acons sym val (remove sym (svref tab i) :key #'car :test #'eq)))))
+  val)
+
+(sb-ext:defglobal **dynamic-flags** (make-array +symtab-size+ :initial-element nil))
+
+(declaim (inline dynamic-sym-p))
+(defun dynamic-sym-p (sym)
+  (symtab-get **dynamic-flags** sym))
+
+(defun mark-dynamic (sym)
+  (symtab-put **dynamic-flags** sym t)
+  (setf (gethash sym *dynamic-syms*) t))
 
 (define-condition lamedh-unbound-variable (error)
   ((name :initarg :name :reader lamedh-unbound-variable-name))
   (:report (lambda (c s) (format s "Unbound variable: ~A" (lamedh-unbound-variable-name c)))))
+
+(declaim (inline frame-cell))
+(defun frame-cell (sym e)
+  "SYM's (sym . val) binding cell in non-root frame E, or NIL."
+  (loop for cell in (lenv-vars e)
+        when (eq (car (the cons cell)) sym) return cell))
 
 (defun env-boundp (env sym)
   (if (dynamic-sym-p sym)
       (boundp sym)
       (loop for e = env then (lenv-parent e)
             while e
-            do (multiple-value-bind (v present) (gethash sym (lenv-table e))
-                 (declare (ignore v))
-                 (when present (return-from env-boundp t)))
-               (when (lenv-rootp e) (return-from env-boundp nil))
+            do (if (lenv-rootp e)
+                   (multiple-value-bind (v present) (gethash sym (lenv-table e))
+                     (declare (ignore v))
+                     (return-from env-boundp present))
+                   (when (frame-cell sym e) (return-from env-boundp t)))
             finally (return nil))))
 
 (defun env-resolve (env sym)
@@ -77,17 +126,25 @@ special-cased global storage. Signals LAMEDH-UNBOUND-VARIABLE if unbound."
           (error 'lamedh-unbound-variable :name sym))
       (loop for e = env then (lenv-parent e)
             while e
-            do (multiple-value-bind (v present) (gethash sym (lenv-table e))
-                 (when present (return v)))
-               (when (and (lenv-rootp e) (not (lenv-parent e)))
-                 (error 'lamedh-unbound-variable :name sym))
+            do (if (lenv-rootp e)
+                   (multiple-value-bind (v present) (gethash sym (lenv-table e))
+                     (when present (return v))
+                     (unless (lenv-parent e)
+                       (error 'lamedh-unbound-variable :name sym)))
+                   (let ((cell (frame-cell sym e)))
+                     (when cell (return (cdr cell)))))
             finally (error 'lamedh-unbound-variable :name sym))))
 
 (defun env-set-local (env sym val)
   "Bind SYM to VAL in ENV's own frame -- for a root frame, that frame's
 TABLE is its global namespace. Used by DEF, lambda/fexpr/macro/vau
 parameter binding, and LET/LET* bindings for non-dynamic variables."
-  (setf (gethash sym (lenv-table env)) val))
+  (if (lenv-rootp env)
+      (setf (gethash sym (lenv-table env)) val)
+      (let ((cell (frame-cell sym env)))
+        (if cell
+            (setf (cdr cell) val)
+            (progn (push (cons sym val) (lenv-vars env)) val)))))
 
 (defun env-update (env sym val)
   "SETQ semantics: mutate the nearest existing binding for SYM, or create
@@ -97,11 +154,11 @@ reference implementation's SETQ, which is intentionally permissive)."
     (return-from env-update (setf (symbol-value sym) val)))
   (loop for e = env then (lenv-parent e)
         while e
-        do (multiple-value-bind (v present) (gethash sym (lenv-table e))
-             (declare (ignore v))
-             (when present (return-from env-update (setf (gethash sym (lenv-table e)) val))))
-           (when (lenv-rootp e) (return-from env-update (setf (gethash sym (lenv-table e)) val))))
-  (setf (gethash sym (lenv-table env)) val))
+        do (if (lenv-rootp e)
+               (return-from env-update (setf (gethash sym (lenv-table e)) val))
+               (let ((cell (frame-cell sym e)))
+                 (when cell (return-from env-update (setf (cdr cell) val))))))
+  (env-set-local env sym val))
 
 (defun make-child-env (parent) (%make-lenv parent nil))
 
@@ -166,6 +223,11 @@ correct, never merely a fallback for something broken.")
 ;;; ============================================================================
 
 (defun lsym (name) (intern-lamedh name))
+(define-compiler-macro lsym (&whole whole name)
+  "A literal NAME interns once, at load time, not on every call: LEVAL's
+special forms (LAMBDA's &REST check, WRAP-PROGN, ...) run per evaluation,
+and the package lookup + FIND-SYMBOL showed in its profile (#542)."
+  (if (stringp name) `(load-time-value (intern-lamedh ,name) t) whole))
 (defvar *t-sym* (lsym "T"))
 
 (defun lamedh-truthy-p (v) (not (null v)))
@@ -177,6 +239,7 @@ that env-sensitive primitives (BOUNDP) can see the caller's lexical scope,
 matching the reference implementation's builtins, which all receive the
 calling environment explicitly.")
 
+(declaim (inline self-evaluating-symbol-p))
 (defun self-evaluating-symbol-p (sym)
   "T when SYM (already known to be a symbol, not NIL) evaluates to itself:
 the truth constant T, or a keyword-style symbol (its print name starts
@@ -210,6 +273,18 @@ with ':')."
 
 (defvar *special-forms* (make-hash-table :test 'eq))
 
+(sb-ext:defglobal **special-form-handlers** (make-array +symtab-size+ :initial-element nil))
+
+(defun register-special-form (sym fn)
+  "Register FN as SYM's special-form handler: in *SPECIAL-FORMS* (the
+registry) and in the SYMTAB LEVAL's per-form dispatch probes."
+  (symtab-put **special-form-handlers** sym fn)
+  (setf (gethash sym *special-forms*) fn))
+
+(declaim (inline special-form-handler))
+(defun special-form-handler (op)
+  (and (symbolp op) (symtab-get **special-form-handlers** op)))
+
 (defmacro defspecial (name (args-var env-var whole-var) &body body)
   "Register a special-form handler under NAME (a string). The handler
 returns (VALUES :done RESULT) for a final value, or (VALUES :tail NEW-FORM
@@ -219,7 +294,7 @@ NEW-ENV) to continue the trampoline in tail position."
        (defun ,fn-name (,args-var ,env-var ,whole-var)
          (declare (ignorable ,args-var ,env-var ,whole-var))
          ,@body)
-       (setf (gethash (lsym ,name) *special-forms*) #',fn-name))))
+       (register-special-form (lsym ,name) #',fn-name))))
 
 (defun done (v) (values :done v))
 (defun tail (form env) (values :tail form env))
@@ -367,7 +442,7 @@ bound; the caller wraps the body evaluation in PROGV for those."
     (setf (symbol-value name) (leval val-form env))
     (when doc (putp name "docstring" doc))
     (done name)))
-(setf (gethash (lsym "DEFVAR") *special-forms*) (gethash (lsym "DEFDYNAMIC") *special-forms*))
+(register-special-form (lsym "DEFVAR") (gethash (lsym "DEFDYNAMIC") *special-forms*))
 
 ;;; ---- LAMBDA / FUNCTION / LABEL ------------------------------------------------
 
@@ -460,7 +535,7 @@ constructors -- returns (values name params doc body)."
   (declare (ignore whole))
   (destructuring-bind (ops-sym env-sym) (car args)
     (done (make-vau-obj :operands-sym ops-sym :env-sym env-sym :env env :body (wrap-progn (cdr args))))))
-(setf (gethash (lsym "$VAU") *special-forms*) (gethash (lsym "VAU") *special-forms*))
+(register-special-form (lsym "$VAU") (gethash (lsym "VAU") *special-forms*))
 
 (defvar *capability-mask* :all
   "The keyword :ALL (unmasked -- every host-granted capability is
@@ -823,7 +898,7 @@ its shallow-bound value), then evaluate BODY."
       ((not (consp form)) (return form))
       (t
        (let ((op (car form)) (rest (cdr form)))
-         (let ((sf (and (symbolp op) (gethash op *special-forms*))))
+         (let ((sf (special-form-handler op)))
            (if sf
                (multiple-value-bind (kind a b) (funcall sf rest env form)
                  (if (eq kind :tail)
@@ -853,7 +928,7 @@ its shallow-bound value), then evaluate BODY."
                                (return (with-dyn-pairs dyn (leval (fexpr-obj-body fn) new-env)))
                                (setf form (fexpr-obj-body fn) env new-env)))))))
                    (t
-                    (let ((eval-args (mapcar (lambda (a) (leval a env)) rest)))
+                    (let ((eval-args (loop for a in rest collect (leval a env))))
                       (cond
                         ((lambda-obj-p fn)
                          (if (and (lambda-obj-compiled fn) (lc-arity-ok-p fn eval-args))
