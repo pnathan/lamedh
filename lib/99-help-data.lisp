@@ -4475,7 +4475,7 @@ Grant the capability: --capability SHELL on the CLI, or (env.enable_feature \"SH
     (cons 'DESCRIPTION "Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the concrete inference-failure reason recorded at the fallback site — e.g. which expression or operand defeated typing — not just a generic \"inference failed\". NIL if the function is currently typed, or was never a DEFUN* candidate. The reason is cleared automatically the next time DEFUN* (re)defines the same name and succeeds.")
     (cons 'ARGS '((sym "A quoted symbol naming a function")))
     (cons 'RETURNS "A reason string, or NIL")
-    (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "call to unknown function `CONS`")))
+    (cons 'EXAMPLES '(((progn (defun* mk (a b) (cons a b)) (why-not-typed 'mk)) "builtin `CONS` is not supported in compiled code")))
     (cons 'SEE-ALSO '(signature compiled-p defun* explain-compile))))
 
 (register-doc 'time

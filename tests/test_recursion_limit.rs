@@ -50,8 +50,12 @@ fn depth_limit_is_configurable() {
         set_eval_depth_limit(50);
         // Naive fibonacci has non-tail recursive calls, so it will still hit the
         // depth limit even with TCO. fib(200) requires ~200 levels of recursion.
+        // The eval depth limit is the INTERPRETER's guard; since #512 naive fib
+        // compiles natively (bounded by the typed call cap instead, see
+        // `native_deep_recursion_*` below), so pin it to the interpreter.
         eval_line(
-            "(defun fib-cfg (n) (if (< n 2) n (+ (fib-cfg (- n 1)) (fib-cfg (- n 2)))))",
+            "(defun fib-cfg (n) (declare (no-compile)) \
+               (if (< n 2) n (+ (fib-cfg (- n 1)) (fib-cfg (- n 2)))))",
             &env,
         );
         // 200 requires far more than 50 nested non-tail frames -> clean error.
@@ -135,5 +139,44 @@ fn lisp_cannot_raise_the_limit_past_the_host_ceiling() {
         set_eval_depth_limit(20_000);
         assert_eq!(eval_line("(set-eval-depth-limit! 100)", &env), "20000");
         assert_eq!(eval_line("(set-eval-depth-limit! 20000)", &env), "100");
+    });
+}
+
+// Since #512 an un-annotated naive fib compiles natively. Past the typed call
+// cap the native edition must stop promptly: before, frames below the cap kept
+// calling after the error was pending (exponential work, OOM-killed).
+
+#[test]
+fn native_deep_recursion_errors_promptly_for_defun_typed() {
+    with_large_stack(|| {
+        let env = env_with_stdlib();
+        eval_line(
+            "(defun-typed (fib-typed int64) ((n int64)) \
+               (if (< n 2) n (+ (fib-typed (- n 1)) (fib-typed (- n 2)))))",
+            &env,
+        );
+        let out = eval_line("(fib-typed 100000)", &env);
+        assert!(out.contains("recursion limit"), "got: {out}");
+        // The function still works afterwards.
+        assert_eq!(eval_line("(fib-typed 20)", &env), "6765");
+    });
+}
+
+#[test]
+fn native_deep_recursion_errors_promptly_for_auto_compiled_defun() {
+    with_large_stack(|| {
+        let env = env_with_stdlib();
+        eval_line(
+            "(defun fib-auto (n) (if (< n 2) n (+ (fib-auto (- n 1)) (fib-auto (- n 2)))))",
+            &env,
+        );
+        assert_eq!(
+            eval_line("(explain-compile 'fib-auto)", &env),
+            "((TIER . COMPILED) (SIGNATURE -> (INT64) INT64))"
+        );
+        let out = eval_line("(fib-auto 100000)", &env);
+        assert!(out.contains("recursion limit"), "got: {out}");
+        // The failed-native fallback does not leave native disabled.
+        assert_eq!(eval_line("(fib-auto 20)", &env), "6765");
     });
 }

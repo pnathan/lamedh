@@ -187,7 +187,7 @@ Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the conc
 
 **Examples:**
 ```lisp
-(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "call to unknown function `CONS`"
+(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "builtin `CONS` is not supported in compiled code"
 ```
 
 **See also:** SIGNATURE, COMPILED-P, DEFUN*, EXPLAIN-COMPILE

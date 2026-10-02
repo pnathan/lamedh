@@ -2301,10 +2301,11 @@ impl Environment {
         params: &[String],
         body: &[LispVal],
     ) -> Result<(), String> {
+        let resolver = |n: &str| self.checker_lambda_source(n);
         self.shared
             .jit
             .borrow_mut()
-            .compile_reason(name, params, body)
+            .compile_reason(name, params, body, Some(&resolver))
     }
 
     pub fn jit_check_untyped(
@@ -2475,10 +2476,11 @@ impl Environment {
         ret_hint: Option<crate::jit::Ty>,
         body: &[LispVal],
     ) -> Result<(usize, String), String> {
+        let resolver = |n: &str| self.checker_lambda_source(n);
         self.shared
             .jit
             .borrow_mut()
-            .define_partial(name, params, ret_hint, body)
+            .define_partial(name, params, ret_hint, body, Some(&resolver))
     }
 
     /// Whether a registered typed function currently has a compiled edition.
