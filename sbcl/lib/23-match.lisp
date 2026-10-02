@@ -1,6 +1,7 @@
 ;;; Structural pattern language: one matcher, three surfaces.
 ;;;
 ;;;   MATCH               — pattern-matching control form with guards
+;;;   EMATCH              — strict MATCH: no matching clause is an error
 ;;;   DESTRUCTURING-BIND  — single-pattern binding form
 ;;;   SGREP               — structural search over code-as-data (issue #171)
 ;;;   REWRITE             — structural transformation with templates
@@ -196,25 +197,52 @@ of increasing length until the remainder matches (backtracking)."
 ;;;
 ;;; EXPR is evaluated once in the caller's environment; clauses are tried
 ;;; in order. Pattern variables are lexically bound in the guard and body.
-;;; With no matching clause, MATCH returns NIL.
+;;; Only ?-prefixed symbols are variables: a bare symbol is a literal, so
+;;; (FOO X) matches exactly the list (FOO X), unlike CL/Racket/Clojure.
+;;; With no matching clause, MATCH returns NIL (existing callers rely on
+;;; this fall-through); EMATCH is the strict variant and signals a
+;;; MATCH-FAILURE condition instead (issue #529).
 
 (defvau match (x e)
   "(MATCH expr (pattern [:when guard] body...)...) — evaluate EXPR, try each
 clause's PATTERN in order, and evaluate the first matching clause's body
-with the pattern's variables lexically bound. A clause may carry a :WHEN
-guard, evaluated under the same bindings; a falsy guard moves on to the
-next clause. Use ?_ as the final pattern for a default clause. Returns NIL
-when no clause matches."
+with the pattern's variables lexically bound.
+PATTERN VARIABLES MUST START WITH ?: ?X binds, ??XS binds a segment, ?_ is
+a wildcard. A bare symbol is a LITERAL — (add x y) matches only the list
+(ADD X Y); write (add ?x ?y) to bind. A clause may carry a :WHEN guard,
+evaluated under the same bindings; a falsy guard moves on to the next
+clause. Use ?_ as the final pattern for a default clause. Returns NIL when
+no clause matches; use EMATCH to signal a MATCH-FAILURE condition instead."
   (let ((datum (eval (car x) e)))
-    ($match-clauses (cdr x) datum e)))
+    ($match-clauses (cdr x) datum e nil)))
 
-(defun $match-clauses (clauses datum e)
+(defvau ematch (x e)
+  "(EMATCH expr (pattern [:when guard] body...)...) — strict MATCH: same
+clauses, same ?-prefixed pattern variables (a bare symbol is a literal),
+but when no clause matches it signals an error whose ERROR-DATA is
+(MATCH-FAILURE datum) instead of returning NIL. Test a caught condition
+with MATCH-FAILURE-P."
+  (let ((datum (eval (car x) e)))
+    ($match-clauses (cdr x) datum e t)))
+
+(defun match-failure-p (c)
+  "T when C is the MATCH-FAILURE condition EMATCH signals."
+  (and (error-p c)
+       (consp (error-data c))
+       (eq (car (error-data c)) 'match-failure)))
+
+(defun $match-clauses (clauses datum e strict)
   (cond
-    ((null clauses) nil)
+    ((null clauses)
+     (if strict
+         (error (concat "ematch: no clause matches "
+                        (prin1-to-string datum))
+                (list 'match-failure datum))
+         nil))
     (t (let* ((clause (car clauses))
               (bindings (pat-match (car clause) datum)))
          (if (match-fail-p bindings)
-             ($match-clauses (cdr clauses) datum e)
+             ($match-clauses (cdr clauses) datum e strict)
              (let* ((guardedp (eq (car (cdr clause)) ':when))
                     (guard (and guardedp (car (cdr (cdr clause)))))
                     (body (if guardedp
@@ -222,7 +250,7 @@ when no clause matches."
                               (cdr clause))))
                (if (and guardedp
                         (null (eval ($match-body-env-form (list guard) bindings) e)))
-                   ($match-clauses (cdr clauses) datum e)
+                   ($match-clauses (cdr clauses) datum e strict)
                    (eval ($match-body-env-form body bindings) e))))))))
 
 (defvau destructuring-bind (x e)
@@ -279,8 +307,8 @@ segment variables (??XS) splice their sublists into the enclosing list."
 ;;; (structural transformation) — are namespaced under the MATCH module
 ;;; (issue #56): call them MATCH:SGREP, MATCH:SGREP-FN, MATCH:SGREP-SOURCE,
 ;;; MATCH:SGREP-FILE, MATCH:REWRITE. The matcher ENGINE above (PAT-MATCH,
-;;; MATCH, DESTRUCTURING-BIND, INSTANTIATE, MATCH-FAIL-P) stays flat — MATCH
-;;; and DESTRUCTURING-BIND are language forms, and the rest are engine
+;;; MATCH, EMATCH, DESTRUCTURING-BIND, INSTANTIATE, MATCH-FAIL-P) stays flat — MATCH,
+;;; EMATCH and DESTRUCTURING-BIND are language forms, and the rest are engine
 ;;; primitives other code builds on directly. Those flat names are not
 ;;; module-local, so WITH-MODULE leaves the calls to them below untouched.
 

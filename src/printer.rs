@@ -11,6 +11,7 @@
 //! | Value | Output |
 //! |-------|--------|
 //! | `Symbol("FOO")` | `FOO` |
+//! | `Symbol("a b")` | `\|a b\|` (any name that would not read back bare; issue #523) |
 //! | `Number(42)` | `42` |
 //! | `Char(97)` | `'a'` (same escapes as the reader: `\n \t \r \\ \' \0`) |
 //! | `Float(3.0)` | `3.0` (always includes `.`) |
@@ -21,21 +22,15 @@
 //! | `Lambda` | `<lambda>` |
 //! | `Builtin` | `<builtin>` |
 //! | `HashTable` | `<hash-table>` |
-//! | `Array(n)` | `<array:n>` |
-//! | `TypedArray(n)` | `<typed-array:elem:n>` |
+//! | `Array` | `#(1 2 3)` (round-trips via the reader's `#(...)` literal) |
+//! | `TypedArray` | `#<typed-array:int64 1 2 3>` (not readable) |
 //! | `Struct` | `#S(TYPE field...)` (round-trips via the reader) |
 //! | `Extension` | via [`crate::LispValExtension::display`] |
 //! | `Port` | `#<port:kind "name" open|closed>` |
 
-use crate::LispVal;
+use std::fmt::Write;
 
-fn print_list_contents(cdr: &LispVal) -> String {
-    match cdr {
-        LispVal::Cons { car, cdr } => format!(" {}", print(car)) + &print_list_contents(cdr),
-        LispVal::Nil => "".to_string(),
-        _ => format!(" . {}", print(cdr)),
-    }
-}
+use crate::LispVal;
 
 /// Format `val` as readable Lisp text.
 ///
@@ -44,36 +39,79 @@ fn print_list_contents(cdr: &LispVal) -> String {
 /// output round-trips through [`crate::reader::read`]; opaque types emit
 /// non-readable tags like `<lambda>`.
 pub fn print(val: &LispVal) -> String {
-    match val {
-        LispVal::Symbol(s) => {
-            // Always print just the symbol name, regardless of plist
-            s.borrow().name.clone()
+    let mut out = String::new();
+    write_val(&mut out, val, true);
+    out
+}
+
+/// [`print()`] with every symbol written as its bare name, never
+/// `|...|`-escaped — the `PRINC` view of a symbol, whose name is text for a
+/// human rather than for the reader. Everything else prints as [`print()`]
+/// does.
+pub fn print_plain_symbols(val: &LispVal) -> String {
+    let mut out = String::new();
+    write_val(&mut out, val, false);
+    out
+}
+
+/// Appends a symbol name as readable text: bare when it reads back as
+/// itself, otherwise wrapped in the reader's `|...|` escape with `|` and `\`
+/// backslashed (issue #523).
+fn write_symbol_name(out: &mut String, name: &str) {
+    if crate::reader::symbol_reads_bare(name) {
+        out.push_str(name);
+        return;
+    }
+    out.reserve(name.len() + 2);
+    out.push('|');
+    for c in name.chars() {
+        if c == '|' || c == '\\' {
+            out.push('\\');
         }
-        LispVal::Number(n) => n.to_string(),
+        out.push(c);
+    }
+    out.push('|');
+}
+
+// Appends `val` to `out`.  Everything is written into the one buffer, so
+// printing is linear in the output size; a list's spine is walked in a loop
+// and only `car`s recurse, so a long list costs no Rust stack (issue #509).
+// Writing to a `String` cannot fail, so `write!` results are discarded.
+// `escape` selects readable symbol names ([`print`]) over bare ones
+// ([`print_plain_symbols`]).
+fn write_val(out: &mut String, val: &LispVal, escape: bool) {
+    match val {
+        // Just the symbol name, regardless of plist.
+        LispVal::Symbol(s) if escape => write_symbol_name(out, &s.borrow().name),
+        LispVal::Symbol(s) => out.push_str(&s.borrow().name),
+        LispVal::Number(n) => {
+            let _ = write!(out, "{}", n);
+        }
         LispVal::Char(b) => match b {
-            b'\n' => "'\\n'".to_string(),
-            b'\t' => "'\\t'".to_string(),
-            b'\r' => "'\\r'".to_string(),
-            b'\\' => "'\\\\'".to_string(),
-            b'\'' => "'\\''".to_string(),
-            b'\0' => "'\\0'".to_string(),
-            _ => format!("'{}'", *b as char),
+            b'\n' => out.push_str("'\\n'"),
+            b'\t' => out.push_str("'\\t'"),
+            b'\r' => out.push_str("'\\r'"),
+            b'\\' => out.push_str("'\\\\'"),
+            b'\'' => out.push_str("'\\''"),
+            b'\0' => out.push_str("'\\0'"),
+            _ => {
+                let _ = write!(out, "'{}'", *b as char);
+            }
         },
         LispVal::Float(f) => {
             let s = f.to_string();
-            if s.contains('.')
+            out.push_str(&s);
+            if !(s.contains('.')
                 || s.contains('e')
                 || s.contains('E')
                 || s.contains("inf")
-                || s.contains("NaN")
+                || s.contains("NaN"))
             {
-                s
-            } else {
-                format!("{}.0", s)
+                out.push_str(".0");
             }
         }
         LispVal::String(s) => {
-            let mut out = String::with_capacity(s.len() + 2);
+            out.reserve(s.len() + 2);
             out.push('"');
             for c in s.chars() {
                 match c {
@@ -87,62 +125,187 @@ pub fn print(val: &LispVal) -> String {
                 }
             }
             out.push('"');
-            out
         }
-        LispVal::Builtin(_) => "<builtin>".to_string(),
-        LispVal::Lambda(_) => "<lambda>".to_string(),
-        LispVal::Fexpr(_) => "<fexpr>".to_string(),
-        LispVal::Macro(_) => "<macro>".to_string(),
-        LispVal::Vau(_) => "<vau>".to_string(),
-        LispVal::HashTable(_) => "<hash-table>".to_string(),
-        LispVal::Array(a) => format!("<array:{}>", a.borrow().len()),
-        LispVal::TypedArray(a) => format!("<typed-array:{}:{}>", a.elem, a.len()),
+        LispVal::Builtin(_) => out.push_str("<builtin>"),
+        LispVal::Lambda(_) => out.push_str("<lambda>"),
+        LispVal::Fexpr(_) => out.push_str("<fexpr>"),
+        LispVal::Macro(_) => out.push_str("<macro>"),
+        LispVal::Vau(_) => out.push_str("<vau>"),
+        LispVal::HashTable(_) => out.push_str("<hash-table>"),
+        // Contents, not just the length (issue #527). See `print_array`.
+        LispVal::Array(a) => out.push_str(&print_array(a)),
+        LispVal::TypedArray(a) => out.push_str(&print_typed_array(a)),
         // Readable record syntax (issue #308 stage D): field values in
         // declaration order, each printed readably, so the output round-trips
         // through the reader's #S literal (spawn/channel serialization).
         LispVal::Struct(s) => {
-            let mut out = format!("#S({}", s.type_name);
+            let _ = write!(out, "#S({}", s.type_name);
             for f in &s.fields {
                 out.push(' ');
-                out.push_str(&print(f));
+                write_val(out, f, escape);
             }
             out.push(')');
-            out
         }
-        LispVal::Extension(e) => e.display(),
+        LispVal::Extension(e) => out.push_str(&e.display()),
         LispVal::Error(e) => {
-            if e.data == LispVal::Nil {
-                format!("#<error {:?}>", e.message)
-            } else {
-                format!("#<error {:?} {}>", e.message, print(&e.data))
+            let _ = write!(out, "#<error {:?}", e.message);
+            if e.data != LispVal::Nil {
+                out.push(' ');
+                write_val(out, &e.data, escape);
             }
+            out.push('>');
         }
-        LispVal::Native(_) => "<native>".to_string(),
-        LispVal::Environment(_) => "<environment>".to_string(),
-        LispVal::Port(p) => format!(
-            "#<port:{} {:?} {}>",
-            p.kind,
-            p.name,
-            if p.is_open() { "open" } else { "closed" }
-        ),
-        LispVal::NetHandle(h) => format!(
-            "#<net:{} {:?} {}>",
-            h.kind,
-            h.name,
-            if h.is_open() { "open" } else { "closed" }
-        ),
-        LispVal::OsChild(c) => format!(
-            "#<process {:?} {}>",
-            c.name,
-            if c.is_open() { "running" } else { "reaped" }
-        ),
+        LispVal::Native(_) => out.push_str("<native>"),
+        LispVal::Environment(_) => out.push_str("<environment>"),
+        LispVal::Port(p) => {
+            let _ = write!(
+                out,
+                "#<port:{} {:?} {}>",
+                p.kind,
+                p.name,
+                if p.is_open() { "open" } else { "closed" }
+            );
+        }
+        LispVal::NetHandle(h) => {
+            let _ = write!(
+                out,
+                "#<net:{} {:?} {}>",
+                h.kind,
+                h.name,
+                if h.is_open() { "open" } else { "closed" }
+            );
+        }
+        LispVal::OsChild(c) => {
+            let _ = write!(
+                out,
+                "#<process {:?} {}>",
+                c.name,
+                if c.is_open() { "running" } else { "reaped" }
+            );
+        }
         #[cfg(feature = "concurrency")]
-        LispVal::Channel(_) => "<channel>".to_string(),
-        LispVal::Nil => "()".to_string(),
+        LispVal::Channel(_) => out.push_str("<channel>"),
+        LispVal::Nil => out.push_str("()"),
         LispVal::Cons { car, cdr } => {
-            format!("({}{})", print(car), print_list_contents(cdr))
+            out.push('(');
+            write_val(out, car, escape);
+            let mut rest: &LispVal = cdr;
+            loop {
+                match rest {
+                    LispVal::Cons { car, cdr } => {
+                        out.push(' ');
+                        write_val(out, car, escape);
+                        rest = cdr;
+                    }
+                    LispVal::Nil => break,
+                    tail => {
+                        out.push_str(" . ");
+                        write_val(out, tail, escape);
+                        break;
+                    }
+                }
+            }
+            out.push(')');
         }
     }
+}
+
+/// Elements shown before an array is abridged (issue #527). Beyond it the
+/// printer emits a `#<...N more>` marker, which the reader rejects, so an
+/// abridged array can never read back as a silently shorter one.
+pub const ARRAY_PRINT_LIMIT: usize = 100;
+
+thread_local! {
+    /// `None` while inside [`print_unabridged`]; otherwise the element limit.
+    static ARRAY_LIMIT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(Some(ARRAY_PRINT_LIMIT)) };
+    /// Arrays currently being printed on this thread, by address: an array
+    /// that (transitively) contains itself prints `#<circular-array>` at the
+    /// back-reference instead of recursing forever.
+    static ARRAYS_IN_PROGRESS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Like [`print()`], but arrays are never abridged, so every array whose
+/// elements are readable round-trips through the reader. Used where the
+/// printed text is a serialization (channel and spawn payloads) rather than
+/// a display.
+pub fn print_unabridged(val: &LispVal) -> String {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ARRAY_LIMIT.with(|l| l.set(self.0));
+        }
+    }
+    let _restore = Restore(ARRAY_LIMIT.with(|l| l.replace(None)));
+    print(val)
+}
+
+/// Print `len` elements as `open e0 e1 ... close`, abridged per
+/// [`ARRAY_LIMIT`], guarding against an array that contains itself.
+fn print_elements(
+    addr: usize,
+    open: &str,
+    close: char,
+    len: usize,
+    elem: impl Fn(usize) -> Option<LispVal>,
+) -> String {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            ARRAYS_IN_PROGRESS.with(|s| s.borrow_mut().pop());
+        }
+    }
+    if ARRAYS_IN_PROGRESS.with(|s| s.borrow().contains(&addr)) {
+        return "#<circular-array>".to_string();
+    }
+    ARRAYS_IN_PROGRESS.with(|s| s.borrow_mut().push(addr));
+    let _pop = Pop;
+    let shown = ARRAY_LIMIT.with(|l| l.get()).map_or(len, |n| n.min(len));
+    let mut out = open.to_string();
+    for i in 0..shown {
+        // Fetch each element afresh so no borrow is held across the
+        // recursive `print` (an element may be this very array).
+        let Some(v) = elem(i) else { break };
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&print(&v));
+    }
+    if shown < len {
+        if shown > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("#<...{} more>", len - shown));
+    }
+    out.push(close);
+    out
+}
+
+fn print_array(a: &crate::Shared<crate::SharedCell<Vec<LispVal>>>) -> String {
+    let len = a.borrow().len();
+    print_elements(
+        crate::Shared::as_ptr(a) as *const () as usize,
+        "#(",
+        ')',
+        len,
+        |i| a.borrow().get(i).cloned(),
+    )
+}
+
+fn print_typed_array(a: &crate::Shared<crate::TypedArrayObj>) -> String {
+    let open = if a.is_empty() {
+        format!("#<typed-array:{}", a.elem)
+    } else {
+        format!("#<typed-array:{} ", a.elem)
+    };
+    print_elements(
+        crate::Shared::as_ptr(a) as *const () as usize,
+        &open,
+        '>',
+        a.len(),
+        |i| a.get(i),
+    )
 }
 
 #[cfg(test)]
@@ -194,18 +357,18 @@ mod tests {
     #[test]
     fn test_print_dotted_list() {
         let mut env = Environment::new();
-        let list = cons(symbol("a", &mut env), symbol("b", &mut env));
-        assert_eq!(print(&list), "(a . b)");
+        let list = cons(symbol("A", &mut env), symbol("B", &mut env));
+        assert_eq!(print(&list), "(A . B)");
     }
 
     #[test]
     fn test_print_complex_dotted_list() {
         let mut env = Environment::new();
         let list = cons(
-            symbol("a", &mut env),
-            cons(symbol("b", &mut env), symbol("c", &mut env)),
+            symbol("A", &mut env),
+            cons(symbol("B", &mut env), symbol("C", &mut env)),
         );
-        assert_eq!(print(&list), "(a b . c)");
+        assert_eq!(print(&list), "(A B . C)");
     }
 
     #[test]
@@ -216,12 +379,12 @@ mod tests {
     #[test]
     fn test_print_symbol_with_plist() {
         let env = Environment::new();
-        let s = env.intern_symbol("a");
+        let s = env.intern_symbol("A");
         s.borrow_mut()
             .plist
             .insert("key".to_string(), LispVal::String("value".to_string()));
         let lisp_val = LispVal::Symbol(s);
         // Symbols always print as just their name, regardless of plist
-        assert_eq!(print(&lisp_val), "a");
+        assert_eq!(print(&lisp_val), "A");
     }
 }

@@ -11,12 +11,14 @@
 //! | Input | Parsed as |
 //! |-------|-----------|
 //! | `123`, `-456` | `LispVal::Number(i64)` |
-//! | `3.14`, `-1e5` | `LispVal::Float(f64)` |
-//! | `177Q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
+//! | `3.14`, `-1e5`, `1.5E-3` | `LispVal::Float(f64)` |
+//! | `177Q`, `177q` | Octal literal (`177₈ = 127₁₀`) — Lisp 1.5 notation |
 //! | `0FFh` | Hex literal (digit-leading, assembly-style `H` suffix) |
 //! | `'c'` | Character literal → `LispVal::Char` (byte 0–255; escapes `\n \t \r \\ \' \0`) |
+//! | `#\a`, `#\(`, `#\Space` | CL-style character literal → the same `LispVal::Char` (issue #526) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
+//! | `\|a b\|` | `LispVal::Symbol` named verbatim — case kept; `\\|` and `\\` escape (issue #523) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
 //! | `(a . b)` | Dotted pair |
 //! | `'e` | `(QUOTE e)` |
@@ -24,6 +26,7 @@
 //! | `,e` | `(UNQUOTE e)` |
 //! | `,@e` | `(UNQUOTE-SPLICING e)` |
 //! | `#'f` | `(FUNCTION f)` |
+//! | `#(a b c)` | `LispVal::Array` literal; elements unevaluated (issue #527) |
 //! | `#x1F`, `#b101`, `#o17` | Radix literals (hex, binary, octal) |
 //! | `; comment` | Ignored to end of line |
 //! | `#\| comment \|#` | Block comment (nests) |
@@ -32,6 +35,13 @@
 //! | `#-feature form` | The complement of `#+` |
 //!
 //! Parse errors are reported with 1-based line/column positions (issue #238).
+//!
+//! A numeric literal must end at a delimiter (end of input, space, tab, CR,
+//! LF, `(`, `)`, `"`, `'`, `` ` ``, `,`, `;`). A token that starts like a
+//! number but is not a complete one (`123abc`, `1.5x`, `2.0.3`, `1-2`, `8Q`) is a parse
+//! error, never a number followed by a symbol; `1+` and `1-` alone are
+//! symbols. A Q/H/radix literal outside the i64 range is also a parse error
+//! (issue #503). An oversized decimal integer still reads as a float.
 //!
 //! ## Reader `#+`/`#-` conditionals (issue #459)
 //!
@@ -75,7 +85,7 @@ use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, take_while, take_while1},
     character::complete::{alpha1, alphanumeric1, char, digit1, hex_digit1, multispace1, one_of},
-    combinator::{cut, map, map_res, opt, recognize},
+    combinator::{cut, map, opt, recognize},
     multi::many0,
     sequence::{delimited, pair, preceded, tuple},
 };
@@ -139,10 +149,12 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
                 // #S(...) before plain lists so the dispatch never treats
                 // the payload list as a form.
                 parse_struct_literal(env.clone(), remaining),
+                parse_array_literal(env.clone(), remaining),
                 parse_list(env.clone(), remaining),
                 // Char literal 'c' before the quote reader macro: 'a' is a char,
                 // 'a (no closing quote) stays (quote a).
                 parse_char_literal,
+                parse_hash_char_literal,
                 parse_quoted(env.clone(), remaining),
                 parse_quasiquoted(env.clone(), remaining),
                 // ,@ before , : `,@e` is splicing, `,e` is plain unquote.
@@ -354,34 +366,74 @@ fn ws(input: &str) -> IResult<&str, &str> {
     ))))(input)
 }
 
+// End-of-token check shared by every number parser (issue #503). A numeric
+// literal is complete only when the next char is a delimiter (end of input,
+// `ws` whitespace, a paren, or the start of a string/quote/quasiquote/unquote/
+// comment). Anything else (`123abc`, `1.5x`, `2.0.3`, `1-2`) means the token
+// only STARTS like a number: the parser rejects it rather than half-consume
+// it, and since no symbol production accepts a leading digit, such a token
+// is a parse error -- never a number followed by a stray symbol.
+fn is_delimiter(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '\t' | '\r' | '\n' | '(' | ')' | '"' | '\'' | '`' | ',' | ';'
+    )
+}
+
+fn at_token_end(rest: &str) -> bool {
+    rest.chars().next().is_none_or(is_delimiter)
+}
+
+fn number_error(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+}
+
+/// `nom::error::ErrorKind` used as a sentinel for a complete Q/H/radix
+/// literal whose value is not an i64 (overflow, or a non-octal digit in
+/// `8Q`), so [`read_next_with_depth_limit`] can render a dedicated message.
+/// Not otherwise produced by this module.
+const BAD_NUMBER_KIND: nom::error::ErrorKind = nom::error::ErrorKind::MapRes;
+
+// A hard Failure: falling through would let another number parser re-read
+// the same digits in a different base (issue #503).
+fn number_overflow(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Failure(nom::error::Error::new(input, BAD_NUMBER_KIND))
+}
+
 fn parse_float(input: &str) -> ParseResult<'_> {
-    map(
-        map_res(
-            recognize(tuple((
-                opt(tag("-")),
-                digit1,
-                tag("."),
-                digit1,
-                opt(tuple((one_of("Ee"), opt(one_of("+-")), digit1))),
-            ))),
-            |s: &str| s.parse::<f64>(),
-        ),
-        LispVal::Float,
-    )(input)
+    // `1.5`, `1.5e3`, and exponent-only `1e5` / `-2E-3`.
+    let exponent = || recognize(tuple((one_of("Ee"), opt(one_of("+-")), digit1)));
+    let (rest, s) = recognize(tuple((
+        opt(tag("-")),
+        digit1,
+        alt((
+            recognize(tuple((tag("."), digit1, opt(exponent())))),
+            exponent(),
+        )),
+    )))(input)?;
+    if !at_token_end(rest) {
+        return Err(number_error(input));
+    }
+    match s.parse::<f64>() {
+        Ok(f) => Ok((rest, LispVal::Float(f))),
+        Err(_) => Err(number_error(input)),
+    }
 }
 
 fn parse_octal_integer(input: &str) -> ParseResult<'_> {
-    // Lisp 1.5: digits followed by Q means octal, e.g. 177Q = 127
+    // Lisp 1.5: digits followed by Q means octal, e.g. 177Q = 127. The suffix
+    // is case-insensitive, like hex's H.
     let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
-    let (rest, _) = tag("Q")(rest)?;
-    let negative = s.starts_with('-');
-    let digits = if negative { &s[1..] } else { s };
-    match i64::from_str_radix(digits, 8) {
-        Ok(n) => Ok((rest, LispVal::Number(if negative { -n } else { n }))),
-        Err(_) => Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Digit,
-        ))),
+    let (rest, _) = one_of("qQ")(rest)?;
+    if !at_token_end(rest) {
+        return Err(number_error(input));
+    }
+    // Parse with the sign attached so i64::MIN is representable. A failure
+    // here is an overflow or a non-octal digit (`8Q`): either way the token
+    // is a complete, malformed octal literal.
+    match i64::from_str_radix(s, 8) {
+        Ok(n) => Ok((rest, LispVal::Number(n))),
+        Err(_) => Err(number_overflow(input)),
     }
 }
 
@@ -392,46 +444,39 @@ fn parse_hex_integer(input: &str) -> ParseResult<'_> {
     // START WITH A DECIMAL DIGIT (the assembly convention) — so short
     // letters-then-h names like `ch`, `each`, `fh` are ordinary symbols.
     // Write 0FFh (or #xFF) where you meant FFh.
-    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
     let (rest, s) = recognize(pair(opt(tag("-")), hex_digit1))(input)?;
     let digits_start = s.trim_start_matches('-');
     if !digits_start.starts_with(|c: char| c.is_ascii_digit()) {
-        return Err(err());
+        return Err(number_error(input));
     }
     let (rest, _) = one_of("hH")(rest)?;
-    // Boundary guard: a following identifier char means this was a symbol, not a
-    // hex literal (so `ffhello` stays a symbol rather than 255 + "ello").
-    if let Some(c) = rest.chars().next()
-        && (c.is_alphanumeric() || c == '-')
-    {
-        return Err(err());
+    if !at_token_end(rest) {
+        return Err(number_error(input));
     }
-    let negative = s.starts_with('-');
-    let digits = if negative { &s[1..] } else { s };
-    match i64::from_str_radix(digits, 16) {
-        Ok(n) => Ok((rest, LispVal::Number(if negative { -n } else { n }))),
-        Err(_) => Err(err()),
+    // Sign attached, so -8000000000000000H is i64::MIN.
+    match i64::from_str_radix(s, 16) {
+        Ok(n) => Ok((rest, LispVal::Number(n))),
+        Err(_) => Err(number_overflow(input)),
     }
 }
 
 fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
     let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
+    if !at_token_end(rest) {
+        return Err(number_error(input));
+    }
     if let Ok(n) = s.parse::<i64>() {
         Ok((rest, LispVal::Number(n)))
     } else if let Ok(f) = s.parse::<f64>() {
         Ok((rest, LispVal::Float(f)))
     } else {
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Digit,
-        )))
+        Err(number_error(input))
     }
 }
 
 // CL-style radix literals: #x1F / #X1f (hex), #b101 (binary), #o17 (octal),
 // with an optional sign after the marker (issue #248).
 fn parse_radix_literal(input: &str) -> ParseResult<'_> {
-    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit));
     let (rest, _) = tag("#")(input)?;
     let (rest, marker) = one_of("xXbBoO")(rest)?;
     let radix = match marker {
@@ -441,16 +486,20 @@ fn parse_radix_literal(input: &str) -> ParseResult<'_> {
     };
     let (rest, neg) = opt(tag("-"))(rest)?;
     let (rest, digits) = take_while1(|c: char| c.is_digit(radix))(rest)?;
-    // Boundary guard: a trailing identifier char means this was malformed
+    // Boundary guard: a trailing constituent means this was malformed
     // (e.g. #b102 or #xFG) — fail rather than half-consume.
-    if let Some(c) = rest.chars().next()
-        && (c.is_alphanumeric() || c == '-')
-    {
-        return Err(err());
+    if !at_token_end(rest) {
+        return Err(number_error(input));
     }
-    match i64::from_str_radix(digits, radix) {
-        Ok(n) => Ok((rest, LispVal::Number(if neg.is_some() { -n } else { n }))),
-        Err(_) => Err(err()),
+    // Sign attached, so #x-8000000000000000 is i64::MIN.
+    let signed = if neg.is_some() {
+        format!("-{digits}")
+    } else {
+        digits.to_string()
+    };
+    match i64::from_str_radix(&signed, radix) {
+        Ok(n) => Ok((rest, LispVal::Number(n))),
+        Err(_) => Err(number_overflow(input)),
     }
 }
 
@@ -502,9 +551,62 @@ fn parse_char_literal(input: &str) -> ParseResult<'_> {
     Ok((rest2, LispVal::Char(code as u8)))
 }
 
+/// Named characters accepted after `#\\` (matched case-insensitively), per
+/// the Common Lisp standard and semi-standard names.
+const CHAR_NAMES: &[(&str, u8)] = &[
+    ("SPACE", b' '),
+    ("NEWLINE", b'\n'),
+    ("LINEFEED", b'\n'),
+    ("TAB", b'\t'),
+    ("RETURN", b'\r'),
+    ("PAGE", 12),
+    ("BACKSPACE", 8),
+    ("ESCAPE", 27),
+    ("RUBOUT", 127),
+    ("NUL", 0),
+    ("NULL", 0),
+];
+
+/// Common Lisp character syntax (issue #526): `#\a` reads as the same
+/// `LispVal::Char` that `'a'` does. It is a second spelling of the one char
+/// value, not a new type, so `(eq #\a 'a')` holds.
+///
+/// After `#\` comes either a single character of any kind (`#\(`, `#\;`,
+/// `#\"`, `#\ `), or, when that character is alphanumeric and more
+/// alphanumerics follow, a character NAME from [`CHAR_NAMES`] (`#\Space`,
+/// `#\newline`). An alphanumeric run that is not a known name (`#\ab`) is an
+/// error rather than a character followed by a symbol. As with `'c'`, the
+/// code point must fit in a byte.
+fn parse_hash_char_literal(input: &str) -> ParseResult<'_> {
+    let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
+    let (rest, _) = tag("#\\")(input)?;
+    let c0 = rest.chars().next().ok_or_else(err)?;
+    let token_len = if c0.is_alphanumeric() {
+        rest.find(|c: char| !c.is_alphanumeric())
+            .unwrap_or(rest.len())
+    } else {
+        c0.len_utf8()
+    };
+    let token = &rest[..token_len];
+    let code = if token.len() == c0.len_utf8() {
+        u8::try_from(c0 as u32).map_err(|_| err())?
+    } else {
+        CHAR_NAMES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(token))
+            .map(|&(_, code)| code)
+            .ok_or_else(err)?
+    };
+    Ok((&rest[token_len..], LispVal::Char(code)))
+}
+
 fn parse_one_plus_minus(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (rest, sym) = alt((tag("1+"), tag("1-")))(input)?;
+        // `1-2` is not `1-` followed by `2` (issue #503).
+        if !at_token_end(rest) {
+            return Err(number_error(input));
+        }
         Ok((rest, LispVal::Symbol(env.intern_symbol(sym))))
     }
 }
@@ -542,9 +644,91 @@ fn is_operator_char(c: char) -> bool {
     matches!(c, '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '~')
 }
 
+/// `|...|` symbol escape (issue #523): the name between the bars, taken
+/// verbatim — no case folding, and whitespace, parens, quotes and digits are
+/// all ordinary constituents. Inside the bars `\|` stands for `|` and `\\`
+/// for `\`; any other backslash is kept as written. `|NIL|` is the symbol
+/// named `NIL`, not the empty list. This is the syntax the printer emits for
+/// a symbol whose bare name would not read back as itself
+/// ([`symbol_reads_bare`]). `|` had no meaning outside `#|...|#` before, so
+/// no existing program changes meaning.
+fn parse_bar_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, _) = char('|')(input)?;
+        let mut name = String::new();
+        let mut chars = rest.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '|' => {
+                    return Ok((&rest[i + 1..], LispVal::Symbol(env.intern_symbol(&name))));
+                }
+                '\\' => match chars.next() {
+                    Some((_, e @ ('|' | '\\'))) => name.push(e),
+                    Some((_, e)) => {
+                        name.push('\\');
+                        name.push(e);
+                    }
+                    None => break,
+                },
+                _ => name.push(c),
+            }
+        }
+        // Once `|` is consumed no other production applies: an unterminated
+        // escape is a hard failure, like an unterminated string.
+        Err(nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )))
+    }
+}
+
+/// Whether `name` printed bare reads back as the symbol named `name`
+/// (issue #523). The printer's readable mode wraps every other name in
+/// `|...|`. Mirrors [`parse_atom`]'s symbol productions — the token must
+/// match one of them *in full* (else it splits or reads as something else)
+/// and must not be caught by an earlier number production — and the
+/// reader's case fold, so the name must already be upper case. `NIL` is
+/// excluded (it reads as the empty list). ASCII only, like nom's
+/// `alpha1`/`alphanumeric1`.
+pub(crate) fn symbol_reads_bare(name: &str) -> bool {
+    let b = name.as_bytes();
+    if b.is_empty() || name == "NIL" || b.iter().any(|&c| !c.is_ascii() || c.is_ascii_lowercase()) {
+        return false;
+    }
+    let tail = |s: &[u8], extra: &[u8]| {
+        s.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || b"-*?!+=<>_".contains(&c) || extra.contains(&c))
+    };
+    let earmuffed = |m: u8| {
+        b.len() >= 3
+            && b[0] == m
+            && b[b.len() - 1] == m
+            && b[1].is_ascii_alphabetic()
+            && b[2..b.len() - 1]
+                .iter()
+                .all(|&c| c.is_ascii_alphanumeric() || c == b'-')
+    };
+    match b[0] {
+        // `1+` / `1-` are the only digit-led symbols; any other digit start
+        // is claimed by a number production or splits.
+        b'0'..=b'9' => name == "1+" || name == "1-",
+        c if c.is_ascii_alphabetic() || matches!(c, b'&' | b'$' | b'?') => tail(&b[1..], b":"),
+        b':' => {
+            b.len() >= 2
+                && (b[1].is_ascii_alphabetic() || matches!(b[1], b'&' | b'$'))
+                && tail(&b[2..], b"")
+        }
+        // An earmuffed name, else an operator run — which must cover the
+        // whole name (`*A` would split into `*` and `A`).
+        b'*' | b'+' if earmuffed(b[0]) => true,
+        _ => name.chars().all(is_operator_char),
+    }
+}
+
 fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
+            parse_bar_symbol(env.clone()),
             // Parse special numeric symbols like 1+ and 1- BEFORE numbers
             parse_one_plus_minus(env.clone()),
             parse_number,
@@ -767,6 +951,41 @@ fn parse_struct_literal(
     }
 }
 
+// Readable array literal (issue #527): `#(e1 ... en)` reads as a fresh
+// `LispVal::Array` of the elements, unevaluated -- the inverse of the
+// printer's array form. Like `#S`, the literal is built once at read time,
+// so a quoted or self-evaluating literal in a function body is one shared
+// array across calls. A dotted tail is rejected.
+fn parse_array_literal(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, _) = tag("#")(input)?;
+        // `parse_list` itself counts the nesting level, so pass `remaining`
+        // unchanged (`remaining - 1` would underflow at the limit).
+        let (rest, body) = parse_list(env.clone(), remaining)(rest)?;
+        let mut elems = Vec::new();
+        let mut cur = &body;
+        loop {
+            match cur {
+                LispVal::Nil => break,
+                LispVal::Cons { car, cdr } => {
+                    elems.push(car.as_ref().clone());
+                    cur = cdr.as_ref();
+                }
+                _ => {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Tag,
+                    )));
+                }
+            }
+        }
+        Ok((
+            rest,
+            LispVal::Array(Shared::new(crate::SharedCell::new(elems))),
+        ))
+    }
+}
+
 fn parse_quoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     let quote_symbol = LispVal::Symbol(env.intern_symbol("QUOTE"));
     move |input: &str| {
@@ -944,6 +1163,11 @@ pub fn read_next_with_depth_limit<'a>(
             nom::Err::Error(e) | nom::Err::Failure(e) => {
                 let detail = if e.code == TOO_DEEP_KIND {
                     format!("nesting too deep (limit {depth_limit})")
+                } else if e.code == BAD_NUMBER_KIND {
+                    format!(
+                        "number literal out of range or with an invalid digit near '{}'",
+                        e.input.split(is_delimiter).next().unwrap_or("")
+                    )
                 } else {
                     error_detail(e.input)
                 };
@@ -1005,6 +1229,31 @@ pub fn is_incomplete(input: &str) -> bool {
             b'#' if i + 1 < n && bytes[i + 1] == b'|' => {
                 block_depth = 1;
                 i += 2;
+            }
+            b'#' if i + 1 < n && bytes[i + 1] == b'\\' => {
+                // Skip a `#\c` char literal so `#\(` or `#\"` does not skew
+                // the depth count or open a string.
+                i += 2 + input[i + 2..].chars().next().map_or(0, char::len_utf8);
+            }
+            b'|' => {
+                // A `|...|` symbol escape (issue #523): skip it so a `(` in
+                // the name does not skew the depth count.
+                i += 1;
+                let mut closed = false;
+                while i < n {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'|' => {
+                            closed = true;
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if !closed {
+                    return true;
+                }
             }
             b'"' => {
                 i += 1;
@@ -1227,6 +1476,67 @@ mod tests {
         assert_eq!(parse_char_literal("'\\\\'"), Ok(("", LispVal::Char(92))));
         // trailing input is left for the next parser
         assert_eq!(parse_char_literal("'a'b"), Ok(("b", LispVal::Char(97))));
+    }
+
+    #[test]
+    fn test_parse_hash_char_literal() {
+        // Issue #526: #\c is the same Char value as 'c'.
+        let ok = |src: &str, rest: &str, code: u8| {
+            assert_eq!(
+                parse_hash_char_literal(src),
+                Ok((rest, LispVal::Char(code))),
+                "{src}"
+            );
+        };
+        ok("#\\a", "", b'a');
+        ok("#\\A", "", b'A');
+        ok("#\\0", "", b'0');
+        // Any single non-alphanumeric character, including delimiters.
+        ok("#\\(", "", b'(');
+        ok("#\\)", "", b')');
+        ok("#\\\"", "", b'"');
+        ok("#\\;", "", b';');
+        ok("#\\ ", "", b' ');
+        ok("#\\\\", "", b'\\');
+        // Names, case-insensitive.
+        ok("#\\Space", "", b' ');
+        ok("#\\NEWLINE", "", b'\n');
+        ok("#\\tab", "", b'\t');
+        ok("#\\Nul", "", 0);
+        // A delimiter ends the token.
+        ok("#\\a)", ")", b'a');
+        ok("#\\Space)", ")", b' ');
+        ok("#\\x y", " y", b'x');
+        // An unknown multi-character name is an error, as is a code point
+        // that does not fit the byte-wide char.
+        assert!(parse_hash_char_literal("#\\ab").is_err());
+        assert!(parse_hash_char_literal("#\\Spaces").is_err());
+        assert!(parse_hash_char_literal("#\\").is_err());
+        assert!(parse_hash_char_literal("#\\\u{3bb}").is_err());
+    }
+
+    #[test]
+    fn test_hash_char_literal_in_forms() {
+        let env = Shared::new(Environment::new());
+        assert_eq!(
+            read("(#\\a #\\( #\\) #\\\" #\\Space 'b')", &env).unwrap(),
+            read("('a' '(' ')' '\"' ' ' 'b')", &env).unwrap()
+        );
+        // #\ is not the #' / #x / #| dispatch.
+        assert_eq!(read("#x1F", &env).unwrap(), LispVal::Number(31));
+        // The REPL continuation check must not count a #\( or #\" as open.
+        assert!(!is_incomplete("(list #\\( #\\\")"));
+        assert!(!is_incomplete("#\\("));
+        assert!(is_incomplete("(list #\\)"));
+        // A named char is complete input; only its first character is
+        // skipped, the rest of the name is inert letters.
+        assert!(!is_incomplete("(list #\\Space)"));
+        assert!(!is_incomplete("#\\Space"));
+        // `#\|` is a char, not the start of a `#|` block comment.
+        assert!(!is_incomplete("(list #\\| 1)"));
+        // `#\Space(` is the char followed by an unclosed list: genuinely
+        // incomplete, exactly as the reader sees it.
+        assert!(is_incomplete("#\\Space("));
     }
 
     #[test]
@@ -1464,5 +1774,80 @@ mod tests {
     fn test_read_t() {
         let env = Shared::new(Environment::new());
         assert_eq!(read("T", &env), Ok(symbol("T", &env)));
+    }
+
+    /// `symbol_reads_bare(n)` is true exactly when reading `n` yields the
+    /// symbol named `n` (issue #523). Pins the hand-written predicate to the
+    /// reader, over every symbol a stdlib world interns plus names at the
+    /// edges of each production.
+    fn assert_bare_matches_reader(name: &str, env: &Shared<Environment>) {
+        let reads_back = matches!(
+            read(name, env),
+            Ok(LispVal::Symbol(ref s)) if s.borrow().name == name
+        );
+        assert_eq!(
+            symbol_reads_bare(name),
+            reads_back,
+            "symbol_reads_bare({name:?}) disagrees with the reader"
+        );
+    }
+
+    #[test]
+    fn test_symbol_reads_bare_agrees_with_reader() {
+        crate::with_large_stack(|| {
+            let env = Environment::with_stdlib();
+            let names: Vec<String> = env
+                .all_symbols()
+                .iter()
+                .map(|s| s.borrow().name.clone())
+                .collect();
+            assert!(names.len() > 1000);
+            for name in &names {
+                assert_bare_matches_reader(name, &env);
+            }
+            for name in [
+                // Earmuff tails admit only letters, digits and `-`.
+                "*FOO*",
+                "*A-B1*",
+                "*FOO?*",
+                "*A_B*",
+                "*A",
+                "*A*B*",
+                "+HOST+",
+                "+A_B+",
+                "+FOO",
+                // `@` and `/` are not general-symbol constituents
+                // (protocol impl names are `$NAME@TYPE`).
+                "$SHOW@INT",
+                "FOO@BAR",
+                "@",
+                "A/B",
+                "/",
+                "/=",
+                "->",
+                // Keywords, the general production, digits and the rest.
+                ":KEY",
+                ":A:B",
+                ":?X",
+                "?X",
+                "A:",
+                "MOD:SYM",
+                "1+",
+                "1-",
+                "1+X",
+                "12",
+                "0FFH",
+                "177Q",
+                "NIL",
+                "T",
+                "",
+                "A.B",
+                ".",
+                "foo",
+                "É",
+            ] {
+                assert_bare_matches_reader(name, &env);
+            }
+        });
     }
 }

@@ -56,7 +56,8 @@ whitespace and comments, then tries a fixed, ordered list of productions
 and commits to the first one that matches, consuming exactly what that
 production matched. Except where a production is stated below to carry a
 boundary guard, **nothing requires the character after a matched
-production to be a delimiter** — the next production simply starts there.
+production to be a delimiter** (every numeric production, and `1+`/`1-`,
+carries one: see *Integer literals*) — the next production simply starts there.
 Several concrete consequences of this rule are listed under each
 production; a conforming reader must reproduce them.
 
@@ -86,32 +87,43 @@ whitespace and are a parse error wherever they appear outside a string
 **Dispatch order.** After skipping `ws`, the productions are tried in this
 order (`parse_expr`); the first match wins:
 
-1. *atom*: `1+`/`1-` literal symbols, then numeric literals (float,
-   radix-prefixed, hex-suffixed, octal-suffixed, decimal — in that order),
-   then earmuff symbol, plus-earmuff symbol, keyword symbol, general
-   symbol, operator symbol;
+1. *atom*: `|...|` escaped symbol, `1+`/`1-` literal symbols, then
+   numeric literals (float, radix-prefixed, hex-suffixed, octal-suffixed,
+   decimal — in that order), then earmuff symbol, plus-earmuff symbol,
+   keyword symbol, general symbol, operator symbol;
 2. string literal;
 3. `#S(` record literal;
-4. `(` list;
-5. `'x'` character literal;
-6. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
+4. `#(` array literal;
+5. `(` list;
+6. `'x'` character literal, then `#\x` character literal;
+7. `'` quote, `` ` `` quasiquote, `,@` unquote-splicing, `,` unquote,
    `#'` function shorthand.
 
 If none matches, the text is a parse error at that position. In particular
 `.` never begins a form (it is only the dotted-pair marker inside a list),
 `)` outside a list is an error, and `#` followed by anything other than
-`|`, `S`, `s`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
+`|`, `S`, `s`, `(`, `\`, `'`, `x`, `X`, `b`, `B`, `o`, `O` is an error. Parse errors
 carry a 1-based line and column; the message text is not portable.
 
-**Symbols.** Four productions, all producing an ordinary interned
+**Symbols.** Five productions, all producing an ordinary interned
 `Symbol`. Constituent classes are **ASCII only**: *letter* is `A`–`Z` /
 `a`–`z`, *digit* is `0`–`9`; a non-ASCII character such as `é` is not a
 constituent of anything and is a parse error outside strings.
 
+- *Escaped*: `|`, then any characters, then `|` (issue #523), where a
+  `\` keeps the next character from ending it. The name is the
+  text between the bars **verbatim** — no case folding, and whitespace,
+  parentheses, quotes, digits and non-ASCII are ordinary characters;
+  inside the bars `\|` stands for `|` and `\\` for `\`, and any other
+  backslash is kept as written. `|a b|` is the symbol named `a b`,
+  `|FOO|` is `FOO`, `||` is the symbol with the empty name, and `|NIL|`
+  is the symbol named `NIL` (not `Nil`). An unterminated escape is a hard
+  parse failure. `|` begins nothing else outside a block comment.
 - *`1+`/`1-`*: the two-character sequences `1+` and `1-` read as the
-  symbols `1+` and `1-`. This is a prefix match with no boundary guard
-  and it is tried **before** numbers, so `1+x` reads as `1+` then `X`,
-  and `1-5` reads as `1-` then `5`. No other digit-leading symbol exists.
+  symbols `1+` and `1-`. It is tried **before** numbers and carries the
+  numeric token boundary (see *Integer literals*), so `1+x` and `1-5` are
+  parse errors, not `1+` then `X` or `1-` then `5`. No other digit-leading
+  symbol exists.
 - *Earmuff*: `* letter (letter | digit | -)* *`. Tried before the keyword
   and general productions. The tail admits **only** letters, digits, and
   `-`: `*foo*` and `*a-b1*` are earmuff symbols, but `*foo?*` is not —
@@ -134,7 +146,8 @@ constituent of anything and is a parse error outside strings.
   non-initially (`MODULE:SYMBOL` is one symbol; `A:` is one symbol). `.`,
   `\`, `|`, `/`, `~`, `#`, `,`, `'`, `` ` ``, `"`, and parentheses are
   never constituents: `a.b` reads as `A`, `.`, `B` (a dotted pair inside a
-  list, an error at top level), `a\b` and `|a b|` are parse errors,
+  list, an error at top level), `a\b` is a parse error, `a|b|` reads as
+  `A` then the escaped symbol `b`,
   `foo(bar)` reads as `FOO` then `(BAR)`.
 - *Operator*: one or more characters from `+ - * / = < > ! ~`, e.g. `+`,
   `>=`, `/=`, `->`, `<=>`, `!~`. A lone `-` or `+` followed by a space is
@@ -144,7 +157,11 @@ constituent of anything and is a parse error outside strings.
 - **Case folding is unconditional**: every earmuff, keyword, and general
   symbol is uppercased before interning; `foo`, `Foo`, `FOO` are the same
   symbol. Operator symbols contain no letters and are unaffected. There is
-  no case-sensitivity mode and no escaped-symbol syntax.
+  no case-sensitivity mode; the escaped production is the only way to
+  read a name containing lower-case letters. `INTERN` does **not** fold:
+  `(intern "foo")` is the symbol `|foo|`, distinct from `FOO`. (It
+  upcased its string before issue #523; code that relied on that must now
+  write `(intern (string-upcase s))`.)
 - `T` (after uppercasing) reads as the ordinary interned symbol `T`.
   `NIL` (after uppercasing) does **not** read as a symbol — it reads as
   the same `Nil` value that `()` reads as. This special-casing happens
@@ -161,45 +178,50 @@ constituent of anything and is a parse error outside strings.
 
 **Integer literals.** A `Number` is a 64-bit two's-complement signed
 integer (Part V). Five productions, tried in the order given under
-*Dispatch order*:
+*Dispatch order*.
 
-- *Decimal*: `-? digit+`. No `+` sign, leading zeros allowed. **No
-  boundary guard**: `12abc` reads as `12` then `ABC`; `5.` reads as `5`
-  followed by a dotted-pair marker. If the digits do not fit in `i64`, the
-  token instead reads as a `Float` (`9223372036854775808` reads as the
-  float `9223372036854775808.0`; `-9223372036854775808` fits and is a
-  `Number`). It never errors and never becomes a bignum on any host
-  (Part XII, axis 1, is about arithmetic results, not literals).
-- *Octal, `Q` suffix*: `-? digit+ Q` (uppercase `Q` only). No boundary
-  guard: `17Qx` is `15` then `X`. If a digit is not octal (`8Q`) or the
-  value overflows `i64`, the production fails and the reader falls
-  through to the decimal production (`8Q` reads as `8` then the symbol
-  `Q`; an overflowing `777…7Q` reads as a float then `Q`). Portable
-  programs must not write such tokens.
+**Token boundary (every numeric production, issue #503).** A numeric
+literal is complete only when the character after it is a *delimiter*:
+end of input, a *space* character (defined above), `(`, `)`, `"`, `'`, `` ` ``, `,` or `;`. A
+production whose match is followed by anything else fails, so a token
+that merely *starts* like a number (`12abc`, `1.5x`, `2.0.3`, `5.`,
+`1-2`, `17Qx`, `1Ahx`) is matched by no production and is a **parse
+error** — never a number followed by a symbol. The `1+`/`1-` symbols obey
+the same boundary: `(1+ x)` reads the symbol `1+`, `1+2` is a parse error.
+
+- *Decimal*: `-? digit+`. No `+` sign, leading zeros allowed. If the
+  digits do not fit in `i64`, the token instead reads as a `Float`
+  (`9223372036854775808` reads as the float `9223372036854775808.0`;
+  `-9223372036854775808` fits and is a `Number`). It never becomes a
+  bignum on any host (Part XII, axis 1, is about arithmetic results, not
+  literals).
+- *Octal, `Q`/`q` suffix*: `-? digit+ [Qq]`. The sign is part of the
+  parsed value, so `-1000000000000000000000Q` is `i64::MIN`. A complete
+  token with a non-octal digit (`8Q`) or a value outside `i64` is a parse
+  error; the reader never falls through to re-read the digits as decimal.
 - *Hexadecimal, `H`/`h` suffix*: `-? digit hex-digit* [Hh]`, hex digits
   in either case. The digit run **must start with a decimal digit**: `FFh`
-  is the symbol `FFH`; write `0FFh`. **Boundary guard**: if the character
-  after the suffix is alphanumeric or `-`, the production fails
-  (`ffhello` is a symbol; `1Ahx` falls through to read `1` then `AHX`).
-  Overflow fails the production and falls through as for octal.
-- *Radix-prefixed*: `# [xXbBoO] -? digit-in-radix+`. **Boundary guard**:
-  an alphanumeric or `-` immediately after the digits fails the whole
-  production, and because no other production accepts `#x`, the result is
-  a parse error (`#b102` and `#xFG` are parse errors, not `#b10` `2`).
-  Overflow is likewise a parse error. There is no `#d` prefix.
-- *`i64::MIN`* can be written in decimal (`-9223372036854775808`) but not
-  via any suffixed or prefixed form (those parse the magnitude first).
+  is the symbol `FFH`; write `0FFh`. Signed like octal
+  (`-8000000000000000H` is `i64::MIN`); a value outside `i64` is a parse
+  error.
+- *Radix-prefixed*: `# [xXbBoO] -? digit-in-radix+`. A non-delimiter
+  after the digits is a parse error (`#b102` and `#xFG` are parse errors,
+  not `#b10` `2`). Signed like octal (`#x-8000000000000000` is
+  `i64::MIN`); a value outside `i64` is a parse error. There is no `#d`
+  prefix.
 
-**Float literals.** `-? digit+ "." digit+ (("e"|"E") ("+"|"-")? digit+)?`.
-Both the integer part and the fractional part require at least one digit,
-and the exponent is legal **only after a fractional part**: `1.5`,
-`-2.0e-3`, `1.0E10` are floats; `.5`, `5.`, and `1e5` are **not**. `1e5`
-reads as the number `1` followed by the symbol `E5`. Inside a list, `.`
-is the dotted-pair marker, so `(a .5)` reads as `(A . 5)`, `(5. a)` reads
-as `(5 . A)`, and `(.5)` is a parse error. At top level a stray `.` is a
-parse error. No boundary guard: `1.5x` reads as `1.5` then `X`. A literal
-whose magnitude exceeds `f64` range reads as the corresponding infinity
-(`1.0e999` is `+inf`), never an error.
+**Float literals.** `-? digit+ ( "." digit+ exponent? | exponent )`,
+where `exponent` is `("e"|"E") ("+"|"-")? digit+`. The integer part
+requires at least one digit, and a `.` requires at least one fractional
+digit: `1.5`, `-2.0e-3`, `1.0E10`, `1e5`, `-2E-3` are floats; `.5` and
+`5.` are **not**. Because the float production is tried first, a
+digit-leading token ending in `H` that also contains an `e` is still hex
+when the float's boundary check fails (`1e5h` is `485`). Inside a list,
+`.` is the dotted-pair marker, so `(a .5)` reads as `(A . 5)` and `(.5)`
+is a parse error; `(5. a)` is a parse error by the boundary rule. At top
+level a stray `.` is a parse error. A literal whose magnitude exceeds
+`f64` range reads as the corresponding infinity (`1.0e999` and `1e400`
+are `+inf`), never an error.
 
 **String literals**, delimited by `"`, may span lines (a raw LF inside a
 string is part of the string). Recognized escapes: `\n` `\t` `\r` `\\`
@@ -223,6 +245,14 @@ character `a` while `'a` followed by a delimiter is `(QUOTE A)`; `'(1)`
 is `(QUOTE (1))` because `(` is followed by `1`, not `'`, but `'('` is the
 character `(`.
 
+**`#\` character literals** (issue #526) are a second spelling of the same
+`Char`: `#\` followed by one character of any kind (`#\a`, `#\(`, `#\"`,
+`#\;`, `#\ `), or, when that character is alphanumeric and more
+alphanumerics follow, a name matched case-insensitively from `Space`,
+`Newline`, `Linefeed`, `Tab`, `Return`, `Page`, `Backspace`, `Escape`,
+`Rubout`, `Nul`, `Null`. Any other alphanumeric run (`#\ab`) is a parse
+error, as is a character above U+00FF. Chars always print as `'x'`.
+
 **Record literals**, `#S(TypeName field...)` (also `#s`). No whitespace is
 permitted between `#S` and `(`. The head of the inner list must be a
 symbol (read and uppercased by the general production — it names the
@@ -230,6 +260,12 @@ record's brand); the rest must be a proper list of field values in
 declaration order. A dotted tail, a non-symbol head, or an empty `#S()`
 is a hard parse failure. Reading is purely structural — no type registry
 is consulted, so a literal for an undeclared brand still reads.
+
+**Array literals**, `#(e1 ... en)` (issue #527). No whitespace is
+permitted between `#` and `(`. The elements are read by these same rules
+and **not evaluated**; the result is a fresh array of them, built once at
+read time (so a literal in a function body is one array shared across
+calls). `#()` is the empty array. A dotted tail is a hard parse failure.
 
 **Lists.** `( ws (expr ws)* ( "." ws expr ws )? ")"`. `()` reads as `Nil`.
 The dotted tail requires at least one preceding element (`( . x)` is an
@@ -250,10 +286,11 @@ exhausting its native stack. The reference's default limit is 512 levels
 50,000; the exact number is a host detail, not part of the language.
 
 **Every production in this grammar is required, not layered.** Decimal
-integers, symbols (all four productions), strings, proper and dotted
+integers, symbols (all five productions), strings, proper and dotted
 lists, `NIL`/`T`, and the quote family are what a bare `lib/*.lisp`-running
 host cannot do without; octal/hex-suffix and radix-prefix integers,
-floats, block comments, character literals, and `#S(...)` records are no
+floats, block comments, character literals, `#S(...)` records, and
+`#(...)` arrays are no
 longer optional latitude either — a conformant host implements all of
 them, with exactly the meaning stated above. There is no
 partial-conformance status for a host still missing one of these: it is
@@ -271,9 +308,15 @@ rules:
 
 - `Nil` prints as `()`. No code path ever prints the text `NIL` for this
   value.
-- A symbol prints as its stored (uppercased) name, verbatim, ignoring its
-  property list. `T` prints as `T`; a keyword prints with its colon
-  (`:FOO`).
+- A symbol prints as its stored name, verbatim, ignoring its property
+  list, when that name read bare by Part II's grammar yields this same
+  symbol: it matches one of the earmuff, plus-earmuff, keyword, general,
+  operator or `1+`/`1-` productions in full, contains no lower-case
+  letter, and is not `NIL`. `T` prints as `T`; a keyword prints with its
+  colon (`:FOO`). Any other name prints in the escaped form, `|` name `|`
+  with each `|` and `\` in it preceded by `\`: `|a b|`, `|foo|`,
+  `|12|`, `|NIL|`, `||` (issue #523). `PRINC` and `PRINC-TO-STRING`
+  write the bare name regardless.
 - A `Number` prints as a plain decimal integer with a leading `-` when
   negative — never with a radix marker, regardless of how it was read.
 - A `Float` prints via the host's shortest-round-trip decimal conversion
@@ -309,11 +352,19 @@ rules:
 - `#S(TYPENAME f1 f2 ...)` prints the brand followed by each field printed
   by these same rules, in declaration order — the exact inverse of the
   reader's record production.
+- An array prints as `#(e1 e2 ...)`, each element printed by these same
+  rules — the inverse of the reader's array production. A host may abridge
+  a long array for display; the reference shows the first 100 elements and
+  then a `#<...N more>` marker, which is not readable, so an abridged array
+  can never read back as a shorter one. Serialization paths (channel and
+  spawn payloads) print unabridged. An array that contains itself prints
+  `#<circular-array>` at the back-reference. A typed array prints as the
+  non-readable `#<typed-array:int64 e1 e2 ...>` /
+  `#<typed-array:float64 ...>`, abridged the same way.
 - **Opaque values print as non-readable tags**, and a host must print
   *something* non-readable for them (the exact text is not portable):
   `<builtin>`, `<lambda>`, `<fexpr>`, `<macro>`, `<vau>`, `<native>`,
-  `<hash-table>`, `<array:N>` (N the length), `<typed-array:int64:N>` /
-  `<typed-array:float64:N>`, `<environment>`, and for a condition value
+  `<hash-table>`, `<environment>`, and for a condition value
   `#<error "message">` or `#<error "message" data>` (message rendered as
   a debug-escaped string, data printed by these rules). Ports, network
   handles, and process handles print as `#<port:...>`, `#<net:...>`,

@@ -276,6 +276,20 @@ runaway-code backstop, not a security boundary — see Chapter 7 for the
 narrow-only `WITH-FUEL` fence and the MCP server (below) for the
 hardened, per-tool-call variant.
 
+Deep *non-tail* recursion is bounded separately, by a depth limit:
+10,000 nested `eval` frames by default, after which the call fails with
+a catchable error whose backtrace collapses the repeated frames:
+
+```bash
+$ lamedh -s "(dolist (x (iota 20000)) x)"
+Error: recursion limit exceeded (10000 eval frames); rewrite iteratively or raise it with `lamedh --max-depth N`
+  in: MAPC (×9997)
+```
+
+`--max-depth N` raises (or lowers) that limit for the whole process.
+Compiled code has its own, higher limit; section 9.5 covers both and the
+Lisp-level `set-eval-depth-limit!`.
+
 The Model Context Protocol server, [`lamedh --mcp`](../mcp.md), builds on
 both `--fuel` and the capability model: it starts fully sandboxed and
 meters every tool call, so an agent can drive a live interpreter over
@@ -320,6 +334,25 @@ SQUARE
 `defun` prints the symbol it just defined — uppercase, because that's
 how it's stored — even though you can keep typing it in whatever case is
 comfortable.
+
+The fold belongs to the reader only. `|...|` reads a name verbatim, and
+`intern` takes its string as given, so a name with lower-case letters,
+spaces or parentheses is a distinct symbol. The printer writes such a
+symbol with bars, so it reads back as itself:
+
+```bash
+$ lamedh -s '(intern "a b")' -s "(eq '|FOO| 'foo)" -s "(eq (intern \"foo\") 'foo)"
+|a b|
+T
+()
+```
+
+**Migrating code that relied on `intern` upcasing** (it did before issue
+#523): `(intern "foo")` is now the symbol `|foo|`, not `FOO`. Where the
+upcased symbol is wanted, say so — `(intern (string-upcase s))`.
+`princ` and `princ-to-string` still write a symbol's bare name, so names
+built from them (`(intern (concat "MAKE-" (princ-to-string name)))`) are
+unaffected.
 
 One related gotcha: if a function body is a single string with nothing
 after it, that string is read as the docstring, not the return value:

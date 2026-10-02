@@ -187,7 +187,7 @@ Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the conc
 
 **Examples:**
 ```lisp
-(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "call to unknown function `CONS`"
+(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "builtin `CONS` is not supported in compiled code"
 ```
 
 **See also:** SIGNATURE, COMPILED-P, DEFUN*, EXPLAIN-COMPILE
@@ -4922,7 +4922,7 @@ Removes trailing whitespace from s.
 
 **Syntax:** `(string-capitalize s)`
 
-Returns s with its first character uppercased (ASCII) and the rest lowercased.
+Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).
 
 **Examples:**
 ```lisp
@@ -5257,11 +5257,12 @@ Returns a new list with the first occurrence of item (tested by EQUAL) removed. 
 
 **Syntax:** `(rplaca cons new-car)`
 
-Destructively replaces the CAR of a cons cell with new-car. Returns the modified cons cell. This is a mutating operation — use with care as it modifies shared structure. Classic Lisp 1.5 primitive.
+Returns a NEW cons cell whose CAR is new-car and whose CDR is the CDR of cons. The argument is not modified: Lamedh cons cells are immutable, so unlike Lisp 1.5's destructive RPLACA this cannot alter shared structure. Use the return value. See the Lamedh manual (Lisp 1.5 differences).
 
 **Examples:**
 ```lisp
-(LET ((X (CONS 1 2))) (RPLACA X 99) X)  ; => (99 . 2)
+(RPLACA (CONS 1 2) 99)  ; => (99 . 2)
+(LET ((X (CONS 1 2))) (RPLACA X 99) X)  ; => (1 . 2)
 ```
 
 **See also:** RPLACD, CAR, CONS
@@ -5274,11 +5275,12 @@ Destructively replaces the CAR of a cons cell with new-car. Returns the modified
 
 **Syntax:** `(rplacd cons new-cdr)`
 
-Destructively replaces the CDR of a cons cell with new-cdr. Returns the modified cons cell. This is a mutating operation — use with care as it can create circular structure. Classic Lisp 1.5 primitive.
+Returns a NEW cons cell whose CAR is the CAR of cons and whose CDR is new-cdr. The argument is not modified: Lamedh cons cells are immutable, so unlike Lisp 1.5's destructive RPLACD this cannot create circular structure. Use the return value. See the Lamedh manual (Lisp 1.5 differences).
 
 **Examples:**
 ```lisp
-(LET ((X (CONS 1 2))) (RPLACD X 99) X)  ; => (1 . 99)
+(RPLACD (CONS 1 2) 99)  ; => (1 . 99)
+(LET ((X (LIST 1 2))) (RPLACD X (LIST 9)) X)  ; => (1 2)
 ```
 
 **See also:** RPLACA, CDR, CONS
@@ -5937,12 +5939,16 @@ Returns the remainder of integer division.
 
 **Syntax:** `(mod x y)`
 
-Returns x modulo y. Result has same sign as divisor.
+Returns the Euclidean remainder of x divided by y: always 0 <= r < |y|, whatever the signs of x and y. Differs from Common Lisp's floored MOD when y is negative.
 
 **Examples:**
 ```lisp
 (MOD 10 3)  ; => 1
 (MOD -10 3)  ; => 2
+(MOD -7 3)  ; => 2
+(MOD 7 -2)  ; => 1
+(MOD 5 -3)  ; => 2
+(MOD -7 -3)  ; => 2
 ```
 
 **See also:** REMAINDER, /

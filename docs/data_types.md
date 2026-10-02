@@ -427,8 +427,10 @@ type with `ARRAYP`.
 (arrayp (array 2))        ; => T
 ```
 
-Out-of-bounds access signals an error rather than returning `NIL`. There is
-no array literal in the reader; build arrays with `ARRAY` or `LIST->ARRAY`.
+Out-of-bounds access signals an error rather than returning `NIL`. Arrays
+print their contents as `#(e1 e2 ...)` (abridged with an unreadable
+`#<...N more>` marker past 100 elements), and the reader accepts `#(...)`
+back as an array literal whose elements are read, not evaluated.
 `defstruct-typed`/`defrecord` instances (`STRUCT`) are arrays internally, so
 `ARRAYP` is also `T` for them.
 
@@ -438,7 +440,7 @@ no array literal in the reader; build arrays with `ARRAY` or `LIST->ARRAY`.
 rather than a vector of boxed values:
 
 ```lisp
-(typed-array 4 'int64)          ; => <typed-array:int64:4>
+(typed-array 4 'int64)          ; => #<typed-array:int64 0 0 0 0>
 (typed-array-p (typed-array 3 'float64))  ; => T
 ```
 

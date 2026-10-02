@@ -201,6 +201,11 @@ fn int_bin_condition_flags_agree_across_editions() {
         ("divv", [10, 3], false, false),
         ("modd", [10, 3], false, false),
         ("modd", [-7, 3], false, false), // Euclidean: 2, not -1 (#280)
+        // #522: REMAINDER is truncated; MIN rem -1 is 0 WITH the flag, as
+        // the evaluator's REMAINDER sets it.
+        ("remd", [i64::MIN, -1], true, false),
+        ("remd", [10, 0], false, true),
+        ("remd", [-7, 3], false, false),
     ];
     let j = build(&[
         "(defun-typed (add int64) ((a int64) (b int64)) (+ a b))",
@@ -208,6 +213,7 @@ fn int_bin_condition_flags_agree_across_editions() {
         "(defun-typed (mul int64) ((a int64) (b int64)) (* a b))",
         "(defun-typed (divv int64) ((a int64) (b int64)) (/ a b))",
         "(defun-typed (modd int64) ((a int64) (b int64)) (mod a b))",
+        "(defun-typed (remd int64) ((a int64) (b int64)) (remainder a b))",
     ]);
 
     let flags_of = |j: &Jit, name: &str, args: &[i64; 2]| -> JitFlags {
@@ -235,6 +241,44 @@ fn int_bin_condition_flags_agree_across_editions() {
             (native.overflow, native.div_by_zero),
             (*want_ovf, *want_dbz),
             "unexpected flags for {name}{args:?}",
+        );
+    }
+}
+
+/// Issue #514: a compiled left shift sets OVERFLOW exactly when bits are
+/// lost, identically in the native and reference editions; right shifts never
+/// set it.
+#[test]
+fn ash_constant_shift_flags_agree_across_editions() {
+    // (name, arg, expected value, expect_overflow)
+    let cases: &[(&str, i64, i64, bool)] = &[
+        ("shl63", 3, i64::MIN, true),
+        ("shl63", 1, i64::MIN, true),
+        ("shl63", -1, i64::MIN, false),
+        ("shl63", 0, 0, false),
+        ("shl1", i64::MAX, -2, true),
+        ("shl1", i64::MIN, 0, true),
+        ("shl1", -(1 << 62), i64::MIN, false),
+        ("shl1", 5, 10, false),
+        ("shr63", i64::MIN, -1, false),
+        ("shr63", i64::MAX, 0, false),
+    ];
+    let j = build(&[
+        "(defun-typed (shl63 int64) ((a int64)) (ash a 63))",
+        "(defun-typed (shl1 int64) ((a int64)) (ash a 1))",
+        "(defun-typed (shr63 int64) ((a int64)) (ash a -63))",
+    ]);
+    for &(name, arg, want, want_ovf) in cases {
+        j.compile_all();
+        let (native_v, _, native) = j.call_with_array_writeback(name, &[i(arg)]).unwrap();
+        j.deoptimize_all();
+        let (reference_v, _, reference) = j.call_with_array_writeback(name, &[i(arg)]).unwrap();
+        assert_eq!(native_v, i(want), "native value for {name}({arg})");
+        assert_eq!(reference_v, i(want), "reference value for {name}({arg})");
+        assert_eq!(native.overflow, want_ovf, "native flag for {name}({arg})");
+        assert_eq!(
+            reference.overflow, want_ovf,
+            "reference flag for {name}({arg})"
         );
     }
 }
@@ -1410,7 +1454,8 @@ fn membrane_rejects_wrong_arity() {
 
 #[test]
 fn reject_mixed_numeric_operands() {
-    let err = def_err("(defun-typed (bad float64) ((x float64)) (+ x 1))");
+    // An int LITERAL beside a float coerces (#530); an int64 variable never does.
+    let err = def_err("(defun-typed (bad float64) ((x float64) (n int64)) (+ x n))");
     assert!(err.contains("operands disagree"), "got: {err}");
 }
 

@@ -66,7 +66,26 @@ pub struct Ctx<'a> {
     /// and aliasing contract. Dropped with the rest of `Ctx` when the
     /// top-level membrane call returns.
     pub(super) boxed: RefCell<Vec<LispVal>>,
+    /// Whether this call runs under an armed kernel fuel budget (issue
+    /// #502), sampled when the `Ctx` is built. A metered call never enters
+    /// a native or closure edition — their internal loops never return to
+    /// any metering point — and instead runs the reference interpreter
+    /// ([`eval_core`]), which charges one kernel fuel step per loop
+    /// iteration, self tail call and function entry (see
+    /// [`Ctx::charge_fuel`]).
+    pub(super) metered: bool,
+    /// Set once a metered call has spent the budget: every loop and call
+    /// then unwinds promptly, and the membrane reports
+    /// [`FUEL_EXHAUSTED`] in place of the result.
+    pub(super) fuel_out: Cell<bool>,
 }
+
+/// The pending-error message a metered typed call records when the kernel
+/// fuel budget runs out (issue #502). The evaluator's typed membrane maps it
+/// back to `LispError::FuelExhausted`, so the owning `WITH-FUEL` fence (or
+/// the `--fuel`/`--mcp` toplevel) sees exactly the signal the tree-walker
+/// raises.
+pub const FUEL_EXHAUSTED: &str = "fuel exhausted (kernel step budget)";
 
 impl Ctx<'_> {
     /// Byte offset of the `overflow` field from the start of `Ctx`.
@@ -117,9 +136,17 @@ impl Ctx<'_> {
     /// [`Ctx::MAX_CALL_DEPTH`]. Returns `true` on success; a successful
     /// `enter_call` must be paired with exactly one [`Ctx::exit_call`] once
     /// the call returns.
+    ///
+    /// Once any error is pending, every further call is refused too: the
+    /// result is already discarded (the membrane raises the error instead and
+    /// skips write-back), and the tree-walker would have stopped at the first
+    /// error. Without this, frames below the cap keep calling — naive `fib`
+    /// past the cap is exponential work that never finishes (#512).
     pub(super) fn enter_call(&self) -> bool {
         let d = self.depth.get();
-        if d >= Self::MAX_CALL_DEPTH {
+        if self.pending_error.borrow().is_some() {
+            false
+        } else if d >= Self::MAX_CALL_DEPTH {
             self.set_pending_error(format!(
                 "recursion limit exceeded ({} non-tail typed calls); rewrite as a tail call or iteratively",
                 Self::MAX_CALL_DEPTH
@@ -129,6 +156,28 @@ impl Ctx<'_> {
             self.depth.set(d + 1);
             true
         }
+    }
+
+    /// Charge one kernel fuel step for a metered call (issue #502); always
+    /// `true` for an unmetered one. Returns `false` once the budget is
+    /// spent, after recording [`FUEL_EXHAUSTED`] as the pending error — it
+    /// overrides any earlier pending error, because exhaustion is a
+    /// control-flow signal the owning fence must see, not an ordinary
+    /// condition. Callers stop looping / return a memory-safe substitute.
+    #[inline]
+    pub(super) fn charge_fuel(&self) -> bool {
+        if !self.metered {
+            return true;
+        }
+        if self.fuel_out.get() {
+            return false;
+        }
+        if crate::evaluator::core::charge_kernel_fuel().is_err() {
+            self.fuel_out.set(true);
+            *self.pending_error.borrow_mut() = Some(FUEL_EXHAUSTED.to_string());
+            return false;
+        }
+        true
     }
 
     /// Leave a non-tail call entered via [`Ctx::enter_call`].
@@ -389,6 +438,9 @@ impl Ctx<'_> {
             depth: Cell::new(0),
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
+            // Raw entries are documented as unmetered (see `entry.rs`).
+            metered: false,
+            fuel_out: Cell::new(false),
         }
     }
 
@@ -618,14 +670,35 @@ pub(super) fn int_bin(op: BinOp, x: i64, y: i64, ctx: &Ctx) -> i64 {
                 x.checked_rem_euclid(y).unwrap_or(0)
             }
         }
+        // Truncated remainder, matching the evaluator's REMAINDER (#522):
+        // MIN rem -1 is 0 and, unlike MOD, sets OVERFLOW there.
+        BinOp::Rem => {
+            if y == 0 {
+                ctx.div_by_zero.set(true);
+                0
+            } else if x == i64::MIN && y == -1 {
+                ctx.overflow.set(true);
+                x.wrapping_rem(y)
+            } else {
+                x % y
+            }
+        }
         // Pure bitwise: exact match to the evaluator's i64 ops, no flags.
         BinOp::BitAnd => x & y,
         BinOp::BitOr => x | y,
         BinOp::BitXor => x ^ y,
         // Shifts: `y` is a compile-time constant in 1..=63 (the elaborator only
-        // emits these for a literal in-range `ash`), so neither masks nor
-        // overflows, matching the evaluator's in-range `ash`.
-        BinOp::Shl => x.wrapping_shl(y as u32),
+        // emits these for a literal in-range `ash`), so the amount never
+        // masks. A left shift sets OVERFLOW exactly when bits are lost (the
+        // shift back does not recover `x`), matching the evaluator's `ash`
+        // (#514).
+        BinOp::Shl => {
+            let v = x.wrapping_shl(y as u32);
+            if (v >> (y as u32)) != x {
+                ctx.overflow.set(true);
+            }
+            v
+        }
         BinOp::AShr => x >> (y as u32),
     }
 }
@@ -636,7 +709,7 @@ pub(super) fn float_bin(op: BinOp, x: f64, y: f64) -> f64 {
         BinOp::Sub => x - y,
         BinOp::Mul => x * y,
         BinOp::Div => x / y,
-        BinOp::Mod => x % y,
+        BinOp::Mod | BinOp::Rem => x % y,
         BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::AShr => {
             unreachable!("bitwise/shift ops are int64-only")
         }
@@ -900,7 +973,9 @@ unsafe fn array_map2(op: BinOp, kind: NumKind, base_out: u64, base_a: u64, base_
 }
 
 /// Shared scalar reference implementation of [`Core::ArrayOp`] (#394), the
-/// one every executor calls (native code through [`jit_array_op`]). `w` holds
+/// one the interpreting tiers call; the native backend emits the same
+/// per-element arithmetic as a SIMD loop (#525,
+/// `native.rs::Emitter::emit_array_op`). `w` holds
 /// the operand words, `out` first; array operands are buffer pointers and
 /// the `Scale` scalar is a raw int64/float64 word. Iterates `min(len)` of the
 /// array operands; each element depends only on its own index, so `out` may
@@ -940,26 +1015,6 @@ pub(super) unsafe fn array_op(op: ArrOp, kind: NumKind, w: &[u64]) -> u64 {
         unsafe { *po.add(i + 1) = r };
     }
     w[0]
-}
-
-/// Host trampoline for [`Core::ArrayOp`] (#394): `op`/`kind` are the
-/// [`ArrOp`] opcode and `0` (int64) / `1` (float64); `a`..`d` the operand
-/// words (unused trailing ones ignored). Calls [`array_op`], exactly what the
-/// Core interpreter and the closure tier call.
-///
-/// # Safety
-/// Called only from Cranelift-generated code with live buffer pointers.
-#[cfg(feature = "jit")]
-pub(crate) unsafe extern "C" fn jit_array_op(
-    op: u64,
-    kind: u64,
-    a: u64,
-    b: u64,
-    c: u64,
-    d: u64,
-) -> u64 {
-    let kind = if kind == 0 { NumKind::I } else { NumKind::F };
-    unsafe { array_op(ArrOp::from_opcode(op), kind, &[a, b, c, d]) }
 }
 
 /// Shared scalar reference implementation of [`Core::ArraySum`], returning
@@ -1086,6 +1141,9 @@ pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize)
                     .map(|a| eval_core_nontail(a, env, ctx))
                     .collect();
                 env[..vals.len()].copy_from_slice(&vals);
+                if !ctx.charge_fuel() {
+                    return ctx.alloc_buffer(0) as u64;
+                }
                 current = top;
             }
             Core::Call(id, args) => {
@@ -1281,6 +1339,9 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
         }
         Core::While(test, body) => {
             while eval_core_nontail(test, env, ctx) != 0 {
+                if !ctx.charge_fuel() {
+                    break;
+                }
                 eval_core_nontail(body, env, ctx);
             }
             0
@@ -1307,6 +1368,9 @@ fn eval_core_nontail(core: &Core, env: &mut [u64], ctx: &Ctx) -> u64 {
             loop {
                 // Inclusive bound; direction depends on the sign of step.
                 if (st > 0 && i > e) || (st < 0 && i < e) {
+                    break;
+                }
+                if !ctx.charge_fuel() {
                     break;
                 }
                 env[*slot] = from_i(i);

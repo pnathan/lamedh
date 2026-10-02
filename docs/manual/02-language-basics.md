@@ -204,7 +204,8 @@ Don't reach for `0` or `""` as a false sentinel — only `()` works.
 
 ### `if` and `cond`
 
-`if` takes a test, a then-branch, and an optional else-branch. `cond` chains
+`if` takes exactly three operands: a test, a then-branch, and an else-branch
+(a one-armed `(if test then)` is an error; use `when`). `cond` chains
 test/body clauses, running the body of the first truthy test; a `t` clause is
 a catch-all default:
 

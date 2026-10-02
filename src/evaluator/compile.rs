@@ -225,7 +225,10 @@ fn compile_cons(car: &Shared<LispVal>, rest: &Shared<LispVal>, form: &LispVal) -
     }
 }
 
-/// Compile `(if cond then [else])`.
+/// Compile `(if cond then else)`.
+///
+/// `IF` takes exactly three operands (KERNEL.md); a one-armed `(if c t)` is
+/// an error on every path, not an implicit `NIL` else (#506).
 fn compile_if(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     use crate::Code;
     let forms = match safe_list_to_vec(rest) {
@@ -233,12 +236,6 @@ fn compile_if(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
         None => return Code::Interp(form.clone()),
     };
     match forms.len() {
-        2 => {
-            let cond = compile(&forms[0]);
-            let then = compile(&forms[1]);
-            let els = Shared::new(Code::Const(LispVal::Nil));
-            Code::If(cond, then, els)
-        }
         3 => {
             let cond = compile(&forms[0]);
             let then = compile(&forms[1]);
@@ -769,7 +766,8 @@ pub(super) fn exec_step(
                 match v {
                     LispVal::Number(n) => Ok(*n),
                     other => Err(LispError::Generic(format!(
-                        "for {who} must be an integer, got {other:?}"
+                        "for {who} must be an integer, got {}",
+                        err_val(other)
                     ))),
                 }
             };
