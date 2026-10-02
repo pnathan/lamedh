@@ -52,7 +52,30 @@ One 64-bit word per value; the low 2 bits are a tag (`src/tags.inc`):
 
 Fixnum arithmetic runs directly on the tagged (shifted-left-by-2)
 representation: `ADD`/`SUB` need no untag/retag at all, since the tag
-bits cancel; only `IMUL` needs a post-shift correction. Cons cells,
+bits cancel; only `IMUL` needs a post-shift correction.
+
+**Integer range: `[-2^61, 2^61-1]`, narrower than KERNEL.md's `i64`.**
+There is no boxed integer, so the top two octaves of `i64` are not
+representable as integers here (issue #550). The consequences are
+fixed and observable, never silent:
+
+- *Literals.* A decimal integer token outside the fixnum range reads as
+  a `Float` — KERNEL.md Part II's own rule for a token outside the
+  integer range, applied at this width — correctly rounded (exact
+  u64/multi-limb accumulation, one rounding) and printed exactly:
+  `2305843009213693952` (2^61) reads as `2305843009213693952.000000`,
+  `9223372036854775807` as `9223372036854775808.000000`,
+  `99999999999999999999` as `100000000000000000000.000000`; a token
+  beyond the largest double reads as `inf`/`-inf`. So a literal in
+  `[2^61, 2^63)` (or `[-2^63, -2^61)`) that the reference reads as a
+  `Number` is a `Float` here; portable programs should keep integer
+  literals within 62 bits.
+- *Arithmetic.* `+`/`-` and `ASH` wrap modulo 2^62 and set `OVERFLOW`
+  (KERNEL.md Part V's fixed-width model at this width): `(ash 1 61)`
+  is `-2^61` with the flag set. `*` does not set it yet (see the
+  `overflow.asm` header).
+
+Cons cells,
 symbols, and closures are allocated on a single `mmap`'d data heap,
 reclaimed by a **deferred reference-counting collector** (`gc.asm` —
 see "Garbage collection" below): a per-16-byte-granule side table holds

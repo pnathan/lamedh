@@ -193,7 +193,12 @@ float_eq_exact:
 ; float_print(rdi=tagged float) -> writes a fixed 6-decimal-place
 ; representation to stdout (no scientific notation, no shortest
 ; round-trip formatting — see README roadmap). The FLOAT-printing half
-; of print_value's runtime dispatch (strings.asm).
+; of print_value's runtime dispatch (strings.asm). A magnitude of 2^61
+; or more — beyond both the fixnum print_fixnum takes and, from 2^63,
+; cvttsd2si itself — prints its exact integral value through
+; print_big_integral instead (issue #550: out-of-fixnum-range integer
+; literals read as floats, so they must print as themselves); infinities
+; and NaN print as the reference's own `inf`/`-inf`/`NaN`.
 global float_print
 float_print:
     push rbx
@@ -201,6 +206,8 @@ float_print:
     mov rbx, rdi
     call float_val                    ; xmm0 = value
 
+    ucomisd xmm0, xmm0
+    jp .nan                             ; unordered with itself: NaN
     xor r12, r12                        ; sign flag
     pxor xmm1, xmm1
     comisd xmm0, xmm1
@@ -216,6 +223,10 @@ float_print:
     mov rdx, 1
     call write_buf
 .print_int_part:
+    mov rax, 0x43C0000000000000            ; 2^61 as f64
+    movq xmm1, rax
+    comisd xmm0, xmm1
+    jae .big
     cvttsd2si rax, xmm0                    ; truncate toward zero -> int part
     mov rbx, rax                              ; keep the raw value for the
                                                ; fractional-part math below —
@@ -254,6 +265,120 @@ float_print:
     pop r12
     pop rbx
     ret
+.big:
+    movq rdi, xmm0                         ; |value|'s bits: sign clear
+    mov rax, rdi
+    shr rax, 52
+    cmp rax, 0x7ff
+    je .inf
+    call print_big_integral
+    mov rsi, zero_frac_buf                    ; an f64 >= 2^53 has no
+    mov rdx, zero_frac_buf_len                  ; fractional bits at all
+    call write_buf
+    pop r12
+    pop rbx
+    ret
+.inf:
+    mov rsi, inf_buf
+    mov rdx, 3
+    call write_buf
+    pop r12
+    pop rbx
+    ret
+.nan:
+    mov rsi, nan_buf
+    mov rdx, 3
+    call write_buf
+    pop r12
+    pop rbx
+    ret
+
+; print_big_integral(rdi=bits of a finite f64 >= 2^61) -> writes its
+; exact decimal integer value. value = m * 2^e with m the 53-bit
+; significand and e = biased exponent - 1075 >= 9, so the exact digits
+; come from m in base-10^9 limbs doubled e times (at most 971 doublings
+; over at most 35 limbs: 1.8e308 has 309 digits). Clobbers rax, rcx,
+; rdx, rsi, rdi, r8, r9, r11.
+print_big_integral:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 336                     ; [rsp, +320): 40 limbs; [+320, +336): digits
+    mov rax, rdi
+    mov r12, rax
+    shr r12, 52
+    sub r12, 1075                      ; r12 = doublings still to apply
+    mov rdx, 0xFFFFFFFFFFFFF
+    and rax, rdx
+    bts rax, 52                          ; rax = m, 2^52 <= m < 2^53
+    mov r8, 1000000000
+    xor rdx, rdx
+    div r8
+    mov [rsp], rdx                         ; low limb
+    mov [rsp+8], rax                         ; m < 1e18: high limb, nonzero
+    mov r13, 2                                 ; limb count
+.dbl:
+    test r12, r12
+    jz .emit
+    xor rcx, rcx
+    xor r9, r9                                   ; carry
+.dbl_limb:
+    cmp rcx, r13
+    jae .dbl_end
+    mov rax, [rsp+rcx*8]
+    add rax, rax
+    add rax, r9
+    xor r9, r9
+    cmp rax, r8
+    jb .dbl_store
+    sub rax, r8
+    mov r9, 1
+.dbl_store:
+    mov [rsp+rcx*8], rax
+    inc rcx
+    jmp .dbl_limb
+.dbl_end:
+    test r9, r9
+    jz .dbl_next
+    mov qword [rsp+r13*8], 1
+    inc r13
+.dbl_next:
+    dec r12
+    jmp .dbl
+.emit:
+    lea r14, [r13-1]                 ; most significant limb first
+    xor r15, r15                       ; its zero-pad width: none
+.emit_limb:
+    mov rax, [rsp+r14*8]
+    lea rsi, [rsp+336]
+    xor rcx, rcx
+    mov r8, 10
+.digit:
+    xor rdx, rdx
+    div r8
+    add dl, '0'
+    dec rsi
+    mov [rsi], dl
+    inc rcx
+    test rax, rax
+    jnz .digit
+    cmp rcx, r15
+    jb .digit                            ; rax is 0 now: pads with '0'
+    lea rdx, [rsp+336]
+    sub rdx, rsi
+    call write_buf
+    mov r15, 9                             ; every later limb: 9 digits
+    dec r14
+    jns .emit_limb
+    add rsp, 336
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
 
 ; print_fixnum6(rdi=raw int, 0..999999) -> writes exactly 6 digits,
 ; zero-padded (float_print's fractional part).
@@ -283,6 +408,10 @@ print_fixnum6:
 section .rodata
 minus_buf: db "-"
 dot_buf: db "."
+zero_frac_buf: db ".000000"
+zero_frac_buf_len equ $ - zero_frac_buf
+inf_buf: db "inf"
+nan_buf: db "NaN"
 
 ; ---------------------------------------------------------------------
 ; Math library (the reference's SQRT/SIN/COS/TAN/EXP/LOG/FLOOR/CEILING/
