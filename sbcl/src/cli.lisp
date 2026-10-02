@@ -27,7 +27,7 @@ error in a late form is reported only after every earlier form has run."
             (format t "~A~%" (lprint-to-string (leval form *global-env*) t)))
         (lamedh-unbound-variable (c) (format t "~&error: ~A~%" c))
         (lamedh-condition (c) (format t "~&error: ~A~%" (lamedh-condition-value-string c)))
-        (error (c) (format t "~&error: ~A~%" c))))))
+        ((or error storage-condition) (c) (format t "~&error: ~A~%" c))))))
 
 ;;; ---- argv parsing: --sandbox / --capability NAME / a script path -----------
 ;;;
@@ -57,5 +57,6 @@ error in a late form is reported only after every earlier form has run."
         (t (enable-all-features)))
       (handler-case
           (if script (run-file script) (run-repl))
-        (error (c) (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit 1)))))
+        ((or error storage-condition) (c)
+          (format *error-output* "~&lamedh: ~A~%" c) (uiop:quit 1)))))
   (uiop:quit 0))

@@ -33,7 +33,7 @@ own Rust kernel and its Lisp-layer stdlib.
 
 ```sh
 cd sbcl
-sbcl --non-interactive \
+sbcl --control-stack-size 512MB --non-interactive \
   --eval '(require :asdf)' \
   --eval '(asdf:load-asd (truename "lamedh.asd"))' \
   --eval '(asdf:load-system :lamedh)' \
@@ -43,11 +43,30 @@ sbcl --non-interactive \
 or, for a REPL:
 
 ```sh
-sbcl --non-interactive --eval '(require :asdf)' \
+sbcl --control-stack-size 512MB --non-interactive --eval '(require :asdf)' \
   --eval '(asdf:load-asd (truename "lamedh.asd"))' \
   --eval '(asdf:load-system :lamedh)' \
   --eval '(lamedh-rt:run-repl)'
 ```
+
+`--control-stack-size 512MB` is required, not a tuning knob, and must come
+before any other option (it is an SBCL *runtime* option). Runaway non-tail
+recursion is stopped by an eval-depth guard: more than 10,000 nested `LEVAL`
+frames on compound forms (an atom evaluates without recursing, so it is not
+counted; `*EVAL-DEPTH-LIMIT*`, the reference implementation's
+`DEFAULT_EVAL_DEPTH_LIMIT`) signals the catchable Lamedh error
+`recursion limit exceeded (10000 eval frames); ...` -- but only if the
+control stack can hold 10,000 frames first. SBCL's default stack (2 MB) holds
+a few thousand, and overflowing it can kill the process outright ("Control
+stack exhausted while pseudo-atomic") rather than raise a condition. 512 MB
+mirrors the reference implementation's `with_large_stack` (the worst call
+path measured, recursion through a dynamic-variable parameter, needs between
+32 and 64 MB); it is reserved, not committed, so it costs nothing until used.
+Every `SB-THREAD` thread (`SPAWN`) gets the same size. As a backstop, a
+control-stack or heap exhaustion that does occur (a `STORAGE-CONDITION`, which
+is not an `ERROR` in CL) is mapped to a Lamedh error by `HANDLER-CASE` and by
+the CLI/REPL boundary. Hosts embedding `run-file`/`run-string` need the same
+flag.
 
 `(lamedh-rt:run-file "path/to/script.lisp")` and `(lamedh-rt:run-string
 "(+ 1 2)")` are the embedding entry points — analogous to the reference
@@ -60,15 +79,18 @@ cd sbcl
 sbcl --non-interactive --load tests/run-tests.lisp
 ```
 
+(When started without it, `run-tests.lisp` re-runs itself under
+`--control-stack-size 512MB`; see "Running it" above.)
+
 This loads `sbcl/tests/*.lisp` — byte-for-byte copies of the reference
 implementation's `tests/lisp/*.lisp` language-level fixtures, plus
 port-only files with no verbatim `tests/lisp/` counterpart:
 `11-mod-euclidean.lisp`, `80-kernel-conformance.lisp` (pins KERNEL.md
 deviations fixed in this port), `97-ieee-floats.lisp`, `97-no-ratios.lisp`,
-`97-printer.lisp` (printer conformance), `97-port-regressions.lisp` and
-`97-reference-builtins.lisp` — and runs them through the bootstrapped
-`(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **805 assertions** across
+`97-printer.lisp` (printer conformance), `97-port-regressions.lisp`,
+`97-recursion-limit.lisp` and `97-reference-builtins.lisp` — and runs them
+through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
+At the time of writing this passes all **811 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
@@ -76,7 +98,10 @@ FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
 the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
 `#\c`, ...), and printer output checked against the reference binary
 (`()` for the empty list, `PRINT` framing, opaque
-`<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags).
+`<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags),
+plus two CLI host-boundary checks (uncaught deep
+recursion and stack exhaustion exit with status 1 and a message, not a
+crash).
 It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.
@@ -137,7 +162,10 @@ work — `sandbox-fuel` (real `SPAWN` threads, `WITH-CAPABILITIES` denial),
   `PROGV`/`SYMBOL-VALUE` machinery rather than reimplementing shallow
   binding) and the evaluator: a trampolined `LEVAL` giving proper tail-call
   elimination through `PROGN`/`IF`/`COND`/`LET`/`LET*`/lambda application
-  (verified to 200,000 stack frames deep in one call in ad hoc testing),
+  (a self-tail-call loop of 200,000 iterations runs in constant stack --
+  tail calls are trampoline iterations, not nested frames, so they never
+  count toward the 10,000-frame eval-depth guard; `97-recursion-limit.lisp`
+  checks this),
   every special form in the reference implementation's core set (`QUOTE`,
   `QUASIQUOTE`/`UNQUOTE`/`UNQUOTE-SPLICING`, `IF`, `COND`, `AND`, `OR`,
   `PROGN`, `SETQ`, `DEF`, `DEFDYNAMIC`/`DEFVAR`, `LAMBDA`, `FUNCTION`,
