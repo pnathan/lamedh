@@ -658,6 +658,54 @@ TRY-COMPILE-LAMBDA and the README's \"Ahead-of-time compilation\" section."
   (declare (ignore env whole))
   (done (car args)))
 
+;;; DEFUN* -- the reference implementation's inferring definition form: it
+;;; tries HM inference + typed compilation and, when that fails, silently
+;;; falls back to a plain untyped function. With no checker here, that
+;;; fallback is the only outcome, so DEFUN* parses the reference grammar
+;;; (optional docstring; a classic arglist, or flat bare/`(p ty)` params;
+;;; an optional return-type annotation; a non-empty body), discards the
+;;; type annotations, and defines the function exactly as DEFUN would.
+
+(defun defun*-type-p (form)
+  "try_parse_ty_simple: a scalar type keyword, or (ARRAY <type>)."
+  (cond ((and form (symbolp form))
+         (member (symbol-name form) '("INT64" "FLOAT64" "BOOL" "CHAR" "U8" "BYTE" "BOXED") :test #'string=))
+        ((consp form)
+         (and (symbolp (car form)) (string= (symbol-name (car form)) "ARRAY")
+              (consp (cdr form)) (null (cddr form)) (defun*-type-p (cadr form))))))
+
+(defun defun*-flat-param (item)
+  "The parameter name of a flat-style `p`, `(p)` or `(p ty)`, else NIL."
+  (cond ((null item) nil)
+        ((symbolp item) (and (not (defun*-type-p item)) item))
+        ((and (consp item) (car item) (symbolp (car item))
+              (or (null (cdr item))
+                  (and (consp (cdr item)) (null (cddr item)) (defun*-type-p (cadr item)))))
+         (car item))))
+
+(defun defun*-classic-param (item)
+  (cond ((and item (symbolp item)) item)
+        ((and (consp item) (car item) (symbolp (car item))) (car item))
+        ((consp item) (lamedh-error "defun*: parameter name must be a symbol"))
+        (t (lamedh-error "defun*: malformed parameter"))))
+
+(defspecial "DEFUN*" (args env whole)
+  (declare (ignore whole))
+  (when (null args) (lamedh-error "defun*: missing name"))
+  (let ((name (car args)) (items (cdr args)) (doc nil) (params '()))
+    (unless (and name (symbolp name)) (lamedh-error "defun*: name must be a symbol"))
+    (when (stringp (car items)) (setf doc (pop items)))
+    (let ((first (car items)))
+      (cond ((and items (null first)) (pop items))
+            ((and (consp first) (not (defun*-flat-param first)))
+             (setf params (mapcar #'defun*-classic-param (pop items))))
+            (t (loop for p = (and items (defun*-flat-param (car items)))
+                     while p do (push p params) (pop items))
+               (setf params (nreverse params)))))
+    (when (and items (defun*-type-p (car items))) (pop items))
+    (when (null items) (lamedh-error (format nil "defun*: ~A: no body forms" (symbol-name name))))
+    (tail (list* (lsym "DEFUN") name params (if doc (cons doc items) items)) env)))
+
 (defspecial "DEFUN-TYPED" (args env whole)
   "DEFUN-TYPED is the reference implementation's HM-checker/typed-JIT
 entry point (SpecialForm::DefunTyped: elaborates a typed signature, then

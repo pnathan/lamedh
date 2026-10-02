@@ -140,6 +140,15 @@ instance on every call (#542). Otherwise it is LAMEDH-EQUAL."
 (defbuiltin "CAR" (x) (if (consp x) (car x) (if (null x) nil (lamedh-error (format nil "CAR: not a list: ~A" (lprint-to-string x))))))
 (defbuiltin "CDR" (x) (if (consp x) (cdr x) (if (null x) nil (lamedh-error (format nil "CDR: not a list: ~A" (lprint-to-string x))))))
 (defbuiltin "CONS" (a b) (cons a b))
+;; RPLACA/RPLACD are NON-mutating, as in the reference implementation
+;; (#508): each returns a NEW cell sharing the untouched half, so no
+;; circular list can be built and the original cell is left intact.
+(defbuiltin "RPLACA" (x new-car)
+  (if (consp x) (cons new-car (cdr x))
+      (lamedh-error (format nil "RPLACA: expected a cons cell as its first argument, got ~A" (lprint-to-string x)))))
+(defbuiltin "RPLACD" (x new-cdr)
+  (if (consp x) (cons (car x) new-cdr)
+      (lamedh-error (format nil "RPLACD: expected a cons cell as its first argument, got ~A" (lprint-to-string x)))))
 (defbuiltin "ATOM" (x) (bool (not (consp x))))
 (defbuiltin "EQ" (a b) (bool (lamedh-eq a b)))
 (defbuiltin "NOT" (x) (bool (null x)))
@@ -185,12 +194,12 @@ instance on every call (#542). Otherwise it is LAMEDH-EQUAL."
 (defbuiltin "SYMBOLP" (x) (bool (or (null x) (symbolp x))))
 (defbuiltin "CHARP" (x) (bool (characterp x)))
 (defbuiltin "FUNCTIONP" (x) (bool (callable-p x)))
-(defbuiltin "ARRAYP" (x) (bool (simple-vector-p x)))
+(defbuiltin "ARRAYP" (x) (bool (lamedh-array-p x)))
 (defbuiltin "HASH-TABLE-P" (x) (bool (hash-table-p x)))
 (defbuiltin "MACROP" (x) (bool (macro-obj-p x)))
-;; This host has no typed arrays or host extension values; the predicates
-;; exist so portable code (TYPE-OF, lib/21-cl-compat.lisp) can ask.
-(defbuiltin "TYPED-ARRAY-P" (x) (declare (ignore x)) nil)
+;; This host has no host extension values; the predicate exists so portable
+;; code (TYPE-OF, lib/21-cl-compat.lisp) can ask. TYPED-ARRAY-P is defined
+;; with the typed arrays below.
 (defbuiltin "EXTENSION-P" (x) (declare (ignore x)) nil)
 (defbuiltin "BOUNDP" (sym) (bool (env-boundp (or *current-env* *global-env*) sym)))
 (defbuiltin "GETP" (sym key) (getp sym key))
@@ -294,9 +303,9 @@ the i64 bounds."
             (t (values (funcall fn x y)))))))
 
 ;;; Two fixnum arguments -- the overwhelmingly common call -- skip the
-;;; &rest MAPCAR/APPLY round trip; NUMIFY is the identity on them and no
-;;; float trap can fire, so the result is the same (#542). Everything else
-;;; runs with float traps masked (IEEE results, #534).
+;;; &rest MAPCAR/APPLY round trip and the float-trap masking; NUMIFY is the
+;;; identity on them and fixnum arithmetic cannot trap, so the result is the
+;;; same (#542). Every other call runs WITH-IEEE-FLOATS (#534).
 (macrolet ((wrap (name fn)
              `(defbuiltin ,name (&rest args)
                 (if (and (consp args) (consp (cdr args)) (null (cddr args))
@@ -500,15 +509,115 @@ round-half-to-even."
 
 ;;; ---- arrays ---------------------------------------------------------------------
 
-(defbuiltin "ARRAY" (n) (make-array n :initial-element nil))
+(defconstant +max-array+ (* 16 1024 1024)
+  "The reference implementation's MakeArray/MakeTypedArray size cap (16 M elements).")
+
+(defun check-array-size (n what)
+  (cond ((not (and (integerp n) (>= n 0)))
+         (lamedh-error (format nil "~:@(~A~): size must be a non-negative integer, got ~A" what (lprint-to-string n))))
+        ((> n +max-array+)
+         (lamedh-error (format nil "~(~A~): size ~D exceeds maximum of ~D" what n +max-array+)))
+        (t n)))
+
+(defun make-lamedh-array (n) (make-array (check-array-size n "array") :initial-element nil))
+(defbuiltin "ARRAY" (n) (make-lamedh-array n))
+(defbuiltin "MAKE-ARRAY" (n) (make-lamedh-array n))
+
+;;; Flat typed arrays, `(typed-array n 'int64|'float64)`: the reference
+;;; implementation's zero-copy JIT membrane array (TypedArrayObj). Here they
+;;; are SBCL's own specialized vectors, zero-initialized; FETCH/STORE/AREF/
+;;; ASET/ARRAY-LENGTH*/ARRAYP/$ARRAY->LIST accept them alongside a plain array.
+(deftype int64-array () '(simple-array (signed-byte 64) (*)))
+(deftype float64-array () '(simple-array double-float (*)))
+(defun typed-array-p (x) (or (typep x 'int64-array) (typep x 'float64-array)))
+(defun lamedh-array-p (x) (or (simple-vector-p x) (typed-array-p x)))
+(defun typed-array-elem-name (arr) (if (typep arr 'int64-array) "int64" "float64"))
+
+(defbuiltin "TYPED-ARRAY" (n elem)
+  (check-array-size n "typed-array")
+  (cond ((not (and elem (symbolp elem)))
+         (lamedh-error (format nil "TYPED-ARRAY: element type must be a symbol, got ~A" (lprint-to-string elem))))
+        ((string= (symbol-name elem) "INT64") (make-array n :element-type '(signed-byte 64) :initial-element 0))
+        ((string= (symbol-name elem) "FLOAT64") (make-array n :element-type 'double-float :initial-element 0d0))
+        (t (lamedh-error (format nil "TYPED-ARRAY: unknown element type '~A, expected 'int64 or 'float64" (symbol-name elem))))))
+(defbuiltin "TYPED-ARRAY-P" (x) (bool (typed-array-p x)))
+
+(defun typed-array-store (arr i val)
+  "TypedArrayObj::set: an int64 array takes only integers, a float64 array
+floats or integers (widened); anything else is refused, never coerced."
+  (let ((word (cond ((typep arr 'int64-array)
+                     (and (integerp val) (typep val '(signed-byte 64)) val))
+                    ((floatp val) (coerce val 'double-float))
+                    ((integerp val) (coerce val 'double-float)))))
+    (cond ((null word)
+           (lamedh-error (format nil "typed array of ~A: cannot store ~A" (typed-array-elem-name arr) (lprint-to-string val))))
+          ((not (and (integerp i) (>= i 0) (< i (length arr))))
+           (lamedh-error (format nil "typed array: index ~A out of bounds (length ~D)" (lprint-to-string i) (length arr))))
+          (t (setf (aref arr i) word) val))))
+
+;;; ARRAY-SUM / ARRAY-DOT: int64 reductions wrap (two's complement); float64
+;;; reductions follow Fortran's SUM -- a processor-dependent approximation
+;;; with an unspecified order of additions (#392). The float shape below is
+;;; the reference implementation's (f64_reduce_by: 8 strided lanes, a
+;;; balanced combine, then the tail in order), so the two agree bit for bit
+;;; today; that agreement is an implementation property, not the contract.
+
+(defun wrap-int64 (n)
+  (let ((m (ldb (byte 64 0) n))) (if (logbitp 63 m) (- m (ash 1 64)) m)))
+
+(defun f64-reduce-by (n get)
+  (sb-int:with-float-traps-masked (:overflow :invalid :inexact :divide-by-zero)
+    (let* ((l (make-array 8 :element-type 'double-float :initial-element 0d0))
+           (body (- n (mod n 8))))
+      (loop for i from 0 below body by 8
+            do (dotimes (j 8) (incf (aref l j) (funcall get (+ i j)))))
+      (let ((acc (+ (+ (+ (aref l 0) (aref l 2)) (+ (aref l 4) (aref l 6)))
+                    (+ (+ (aref l 1) (aref l 3)) (+ (aref l 5) (aref l 7))))))
+        (loop for k from body below n do (incf acc (funcall get k)))
+        acc))))
+
+(defun reduce-operand (name v)
+  "(VALUES elements :int|:float) -- the reference implementation's
+reduce_operand: an all-integer plain array or an int64 typed array reduces
+as int64; a plain array mixing integers and floats reduces as float64."
+  (cond ((typep v 'int64-array) (values v :int))
+        ((typep v 'float64-array) (values v :float))
+        ((simple-vector-p v)
+         (if (every #'integerp v)
+             (values v :int)
+             (values (map 'vector
+                          (lambda (x)
+                            (if (or (integerp x) (floatp x))
+                                (coerce x 'double-float)
+                                (lamedh-error (format nil "~A: elements must be int64 or float64, got ~A" name (lprint-to-string x)))))
+                          v)
+                     :float)))
+        (t (lamedh-error (format nil "~A: argument must be an array, got ~A" name (lprint-to-string v))))))
+
+(defbuiltin "ARRAY-SUM" (arr)
+  (multiple-value-bind (v kind) (reduce-operand "array-sum" arr)
+    (if (eq kind :int)
+        (wrap-int64 (reduce #'+ v))
+        (f64-reduce-by (length v) (lambda (i) (aref v i))))))
+
+(defbuiltin "ARRAY-DOT" (a b)
+  (multiple-value-bind (x kx) (reduce-operand "array-dot" a)
+    (multiple-value-bind (y ky) (reduce-operand "array-dot" b)
+      (let ((n (min (length x) (length y))))
+        (if (and (eq kx :int) (eq ky :int))
+            (wrap-int64 (loop for i below n sum (* (aref x i) (aref y i))))
+            (f64-reduce-by n (lambda (i) (* (coerce (aref x i) 'double-float)
+                                            (coerce (aref y i) 'double-float)))))))))
 ;;; FETCH/STORE: an in-bounds fixnum index into a SIMPLE-VECTOR (what ARRAY
-;;; makes) goes straight to SVREF; anything else takes the generic path.
+;;; makes) goes straight to SVREF; anything else -- a typed array included --
+;;; takes the generic path.
 (defbuiltin "FETCH" (arr i)
   (cond ((and (simple-vector-p arr) (typep i 'fixnum) (< -1 i (length arr))) (svref arr i))
         ((and (>= i 0) (< i (length arr))) (aref arr i))
         (t (lamedh-error (format nil "FETCH: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "STORE" (arr i val)
   (cond ((and (simple-vector-p arr) (typep i 'fixnum) (< -1 i (length arr))) (setf (svref arr i) val))
+        ((typed-array-p arr) (typed-array-store arr i val))
         ((and (>= i 0) (< i (length arr))) (setf (aref arr i) val))
         (t (lamedh-error (format nil "STORE: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "ARRAY-LENGTH*" (arr) (length arr))
@@ -516,9 +625,11 @@ round-half-to-even."
   (if (and (>= i 0) (< i (length arr))) (aref arr i)
       (lamedh-error (format nil "AREF: index ~D out of bounds for array of length ~D" i (length arr)))))
 (defbuiltin "ASET" (arr i val)
-  (if (and (>= i 0) (< i (length arr)))
-      (setf (aref arr i) val)
-      (lamedh-error (format nil "ASET: index ~D out of bounds for array of length ~D" i (length arr)))))
+  (cond
+    ((typed-array-p arr) (typed-array-store arr i val))
+    ((and (>= i 0) (< i (length arr)))
+     (setf (aref arr i) val))
+    (t (lamedh-error (format nil "ASET: index ~D out of bounds for array of length ~D" i (length arr))))))
 (defbuiltin "$ARRAY->LIST" (arr) (coerce arr 'list))
 (defbuiltin "$LIST->ARRAY" (lst) (coerce lst 'simple-vector))
 

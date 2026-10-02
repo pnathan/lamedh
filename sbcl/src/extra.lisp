@@ -55,6 +55,13 @@ reports NIL: honest, not a lie, since there is no performance distinction
 to report as true."
   (declare (ignore name))
   nil)
+(defbuiltin "COMPILED-P" (name)
+  "The reference implementation reports whether NAME's current definition
+is typed-JIT-compiled native code. This port has no typed JIT (see
+sbcl/README.md's \"The type checker\"), so no definition ever is: the
+answer is always (), after the same symbol check the reference makes."
+  (if (and name (symbolp name)) nil
+      (lamedh-error (format nil "compiled-p requires a symbol, got ~A" (lprint-to-string name)))))
 (defbuiltin "VARIANT-DECLARE" (name ctor-names) (putp name "variant-ctors" ctor-names) name)
 
 ;;; ---- the approximated type-checker surface --------------------------------

@@ -3,8 +3,9 @@
 (in-package #:lamedh-rt)
 
 (defun float-repr (f)
-  ;; Non-finite values print as the reference does (Rust's f64 Display):
-  ;; inf, -inf, NaN.
+  ;; Non-finite values -- from IEEE float arithmetic (#534) or the
+  ;; trap-masked ARRAY-SUM/ARRAY-DOT reductions -- print as the reference
+  ;; does (Rust's f64 Display): inf, -inf, NaN.
   (cond ((sb-ext:float-nan-p f) (return-from float-repr "NaN"))
         ((sb-ext:float-infinity-p f) (return-from float-repr (if (plusp f) "inf" "-inf"))))
   (let ((s (let ((*read-default-float-format* 'double-float)) (prin1-to-string f))))
@@ -57,9 +58,7 @@
     ;; Opaque tags match the reference printer (src/printer.rs).
     ((hash-table-p v) (write-string "<hash-table>" stream))
     ((simple-vector-p v) (format stream "<array:~D>" (length v)))
-    ;; Typed arrays are specialized vectors (#540): <typed-array:elem:n>.
-    ((typep v '(simple-array (signed-byte 64) (*))) (format stream "<typed-array:int64:~D>" (length v)))
-    ((typep v '(simple-array double-float (*))) (format stream "<typed-array:float64:~D>" (length v)))
+    ((typed-array-p v) (format stream "<typed-array:~A:~D>" (typed-array-elem-name v) (length v)))
     ((lambda-obj-p v) (format stream "#<LAMBDA~@[ ~A~]>" (lambda-obj-name v)))
     ((macro-obj-p v) (write-string "#<MACRO>" stream))
     ((fexpr-obj-p v) (write-string "#<FEXPR>" stream))

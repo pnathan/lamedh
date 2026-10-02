@@ -65,9 +65,10 @@ implementation's `tests/lisp/*.lisp` language-level fixtures, plus
 port-only files with no verbatim `tests/lisp/` counterpart:
 `11-mod-euclidean.lisp`, `80-kernel-conformance.lisp` (pins KERNEL.md
 deviations fixed in this port), `97-ieee-floats.lisp`, `97-no-ratios.lisp`,
-`97-printer.lisp` (printer conformance), and `97-port-regressions.lisp` — and
-runs them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **752 assertions** across
+`97-printer.lisp` (printer conformance), `97-port-regressions.lisp` and
+`97-reference-builtins.lisp` — and runs them through the bootstrapped
+`(run-tests)` (from `lib/10-testing.lisp`).
+At the time of writing this passes all **805 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
@@ -89,6 +90,10 @@ expected value in it is the reference implementation's own output.
 regressions where Common Lisp's numeric tower leaked through (issue #536:
 `/` takes exactly two arguments; integer `expt` with a negative exponent
 returns a float). Every assertion in it also holds on the reference.
+`97-reference-builtins.lisp` pins the builtins added for #540 (`RPLACA`/
+`RPLACD`, `MAKE-ARRAY`, `TYPED-ARRAY`, `ARRAY-SUM`/`ARRAY-DOT`, `DEFUN*`,
+`COMPILED-P`) to the reference implementation's semantics, and passes
+unmodified on both implementations.
 
 ### Running the `examples/` programs
 
@@ -205,8 +210,14 @@ happened (an honest dynamic approximation — see its docstring in
 instance error is reformatted to match the checker's own backtick-quoted
 message convention, since that specific fact — "no instance for this
 type" — is equally true whether discovered statically or dynamically).
-`defun*`/HM inference and the typed JIT are consequently also not
-ported; `JIT-OPTIMIZE` is a no-op special form so `defun`'s expansion
+HM inference and the typed JIT are consequently also not ported, but
+the surface that degrades gracefully in the reference implementation does
+so here too: `DEFUN*` parses the reference grammar (docstring, classic or
+flat `(p type)` parameters, optional return-type annotation), discards the
+annotations, and defines the function exactly as `DEFUN` would, which is
+the reference's own documented fallback when inference fails;
+`COMPILED-P` always returns `()`, since no definition is ever typed-JIT
+compiled here. `JIT-OPTIMIZE` is a no-op special form so `defun`'s expansion
 (which calls it on every definition) still loads unmodified, and
 `DEFUN-TYPED` itself — the reference implementation's typed-definition
 entry point — signals a clear, named "not supported in this port" error
@@ -300,6 +311,19 @@ ever saves calls to `compile`.
 - **Integers are CL bignums**, not wrapping 64-bit integers; the reference
   implementation's `OVERFLOW` flag and float-promotion-on-overflow behavior
   is not reproduced.
+  The exceptions are the explicitly int64 operations: `ARRAY-SUM`/
+  `ARRAY-DOT` wrap in two's complement exactly as the reference does, and
+  an `(typed-array n 'int64)` refuses a value outside the int64 range.
+  Their float64 forms follow Fortran's `SUM` (#392): the order of the
+  additions is unspecified; this port happens to use the reference's
+  8-lane shape, so the two agree bit for bit, but callers may not rely on
+  that.
+- **`RPLACA`/`RPLACD` do not mutate**, matching the reference (#508): each
+  returns a new cell sharing the untouched half, so no circular list can be
+  built.
+- **Typed arrays** are SBCL specialized vectors (`(signed-byte 64)` /
+  `double-float`); they print exactly as the reference does,
+  `<typed-array:int64:3>`.
 - **`EQ`** is identity for symbols and callables, but *value* equality for
   the immutable atomic types (numbers, characters, strings) and *deep
   structural* equality for records/structs — recursing into every field,

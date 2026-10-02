@@ -18,7 +18,7 @@
     "90-bitwise"
     "95-stdlib-batteries" "96-format-and-io" "97-common-forms"
     "97-ieee-floats" "97-no-ratios"
-    "97-port-regressions" "97-printer"))
+    "97-port-regressions" "97-printer" "97-reference-builtins"))
 
 (dolist (name *test-files*)
   (let ((path (merge-pathnames (concatenate 'string name ".lisp")
@@ -45,8 +45,7 @@ WITH-OUTPUT-TO-STRING does not capture."
     (null bad)))
 
 (defun typed-array-tags-ok ()
-  "Typed arrays print as the reference's <typed-array:elem:n> tag. Built
-host-side, since no Lamedh constructor for them exists without #540."
+  "Typed arrays print as the reference's <typed-array:elem:n> tag."
   (let* ((cases (list (cons (make-array 3 :element-type '(signed-byte 64) :initial-element 0)
                             "<typed-array:int64:3>")
                       (cons (make-array 2 :element-type 'double-float :initial-element 0d0)
