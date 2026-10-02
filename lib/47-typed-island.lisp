@@ -372,18 +372,17 @@ carries an author's annotation (ISLAND-SOURCE-PIN)."
 (defun island-discover (members annotations)
   "(PINS . REASONS) after elaborating MEMBERS in one shared codegen state until
 the compiling set stops growing. An annotated member (ANNOTATIONS: NAME ->
-surface pin) is registered under its annotation, holes fresh; the rest under
-a provisional arrow. PINS are the resolved arrows of the members that
+surface pin) is registered under its annotation, the rest under a
+provisional arrow -- either way seeded from the checker's own monomorphic
+scheme where it has one (HM-SEED-ARROW). PINS are the resolved arrows of the members that
 compiled; REASONS the last pass's blocker for each of the rest."
   (let* ((state (hm-codegen-state))
          (reg (gethash state 'registry)))
     (mapc (lambda (m)
             (let ((pin (assoc (car m) annotations)))
               (sethash reg (car m)
-                       (if pin
-                           (handler-case (hm-pin-arrow state (cdr pin) (cadr m))
-                             (error (e) (list 'bad-pin (error-message e))))
-                           (hm-provisional-arrow state (cadr m))))))
+                       (handler-case (hm-seed-arrow state (car m) (cdr pin) (cadr m) (cddr m))
+                         (error (e) (list 'bad-pin (error-message e)))))))
           members)
     (island-discover-passes state reg members -1 (+ (length members) 1))))
 

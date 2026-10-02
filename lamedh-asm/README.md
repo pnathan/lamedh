@@ -68,7 +68,15 @@ instead.
   runtime name resolution, ever).
 - Binary `+ - * < =` operating on unboxed tagged fixnums, plus `MOD`
   and `REMAINDER`; `+`/`-` set an observable `OVERFLOW` flag
-  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound.
+  (`FLAG-SET-P`/`CLEAR-FLAG`/`CLEAR-ALL-FLAGS`) on wraparound. The
+  inline fixnum code runs only after a tag check on both operands
+  (only the non-literal one when the other is a fixnum literal);
+  anything else branches to an out-of-line stub, emitted after the
+  enclosing function's `ret`, that calls `generic_binop`
+  (`floats.asm`): Part V float contagion (`(+ 1 2.0)` is `3.0`,
+  `(= 1 1.0)` is `T`) and a catchable error for a non-number (#543 —
+  these used to add and compare the raw tagged words, pointers
+  included; `tests/cases/070_numeric_contagion.asm`).
 - `PROGN`, `COND`, `AND`, `OR`, `LET`, `LET*`, `SETQ`, `HANDLER-CASE`,
   `BLOCK`/`RETURN-FROM`, `WHILE`, `PROG`/`GO`/`RETURN` (lexical v0 scope
   — see "KERNEL.md conformance" above) as real special forms (Part
@@ -916,6 +924,23 @@ objects and are not counted at all: `data_alloc_raw` + an explicit
 removed a documented 64 KB-per-call leak that could exhaust the whole
 arena inside one heavy `WITH-MODULE` body.
 
+**Free space** (issue #548). A freed run goes on one of 30 doubly
+linked size-class bins, threaded through the run's own first two words:
+classes 1–8 are exact granule counts, and above that there is one class
+per power of two. A free run is coalesced with free neighbours on both
+sides as soon as it is freed. The run above is found through the side
+table, and the run below through a boundary tag (`GF_FREE_TAIL`) in the
+entry of that run's last granule. An allocation takes an exact small
+class, or first fit within its own large class, or else the head of the
+smallest non-empty class above it (a bitmap keeps that lookup to one
+`bsf`). A longer run is split and the remainder goes back on a bin.
+Only then does it bump. Splitting and coalescing never touch a live
+run's entry, so the collector cannot see either of them. Before this,
+the free lists were exact-fit only, and growing a string 4 bytes at a
+time 12,000 times exhausted the 256 MiB arena while almost all of it
+was free. `tests/cases/070_alloc_split_coalesce.asm` and
+`071_gc_split_coalesce_stress.asm` cover this.
+
 **Observability, and how this is tested.** `(HEAP-BYTES-USED)`,
 `(HEAP-BYTES-LIVE)`, `(GC-COLLECT)`, `(REFCOUNT x)` and — the
 important one — **`(GC-VERIFY)`**, which walks the whole heap
@@ -1046,9 +1071,10 @@ concrete reason it landed last of the three features in its spec:
   kernel surface" above. `PRINT` of a float is always fixed
   6-decimal-place formatting (`3.500000`), never scientific notation
   or shortest round-trip output; there is no `FLOAT<`-style family for
-  `<=`/`>`/`>=`/`=` yet, and no mixed fixnum/float arithmetic (`(F+ 1
-  2.0)` does not work — both operands must already be floats; use
-  `FLOAT` to convert first).
+  `<=`/`>`/`>=`/`=` yet, and the `F`-prefixed ops take no mixed
+  operands (`(F+ 1 2.0)` does not work — both operands must already be
+  floats; use `FLOAT` to convert first). The generic `+ - * < =` do
+  mix fixnums and floats (Part V contagion, `generic_binop`).
 - File descriptor I/O is exactly Linux's: `(FD-READ fd n)` returns
   the string one `read(2)` returned (up to `n` bytes, `""` at end of
   input) and `(FD-WRITE fd s)` writes every byte, looping on a short

@@ -66,11 +66,13 @@ port-only files with no verbatim `tests/lisp/` counterpart:
 `80-kernel-conformance.lisp`, which pins KERNEL.md deviations fixed in
 this port, and `97-port-regressions.lisp`, for other port regressions — and
 runs them through the bootstrapped `(run-tests)` (from `lib/10-testing.lisp`).
-At the time of writing this passes all **538 assertions** across
+At the time of writing this passes all **652 assertions** across
 arithmetic, lists, predicates, list-processing, strings/symbols and string
 completions, the TEXT UTF-8 boundary, every core special form, loops, hash
 tables/plists, bitwise operations, and the broader stdlib-battery and
-FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`).
+FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
+and the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
+`#\c`, ...).
 It then runs `tests/cli-exit-status.sh`, which drives the documented
 `--eval '(lamedh-rt:toplevel)'` script invocation in child SBCL processes and
 checks that a clean script exits 0 and an erroring one exits 1.
@@ -107,7 +109,8 @@ work — `sandbox-fuel` (real `SPAWN` threads, `WITH-CAPABILITIES` denial),
 - `reader.lisp` — a hand-written recursive-descent reader matching the
   reference grammar: Lisp-1.5 octal `177Q` and assembly-style hex `0FFh`
   literals, CL-style `#x`/`#b`/`#o` radix literals, the `'c'` character
-  literal (disambiguated from the quote reader macro), earmuff (`*name*`)
+  literal (disambiguated from the quote reader macro) and its CL spelling
+  `#\c` / `#\Space`, earmuff (`*name*`)
   and keyword (`:name`) symbol classes, `` ` ``/`,`/`,@`/`#'` reader macros,
   the `#S(brand v1 v2 ...)` record literal, line and nesting `#| |#` block
   comments, and shebang stripping.

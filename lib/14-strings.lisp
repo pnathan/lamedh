@@ -7,7 +7,12 @@
 ;;; STRING-JOIN* (issue #510: SUBSTRING indexes by character, so a Lisp loop
 ;;; over it rescans the UTF-8 string each step and is quadratic).
 ;;; STRING-CASEFOLD* is Unicode-aware and locale-independent (Rust's default
-;;; case fold); it backs the STRING-CI= family below. The
+;;; case fold); it backs the STRING-CI= family below.
+;;; STRING-UPCASE*/STRING-DOWNCASE* (Unicode full case mapping) and the
+;;; CHAR-ALPHABETIC-P*/CHAR-NUMERIC-P*/CHAR-UPPERCASE-P*/CHAR-LOWERCASE-P*
+;;; code-point classes back the case and class helpers (issue #519); on ASCII
+;;; they agree exactly with the old A-Z/a-z/0-9 range checks. DIGIT-P and
+;;; WHITESPACE-P stay ASCII: parsers and trimmers rely on their exact sets. The
 ;;; explicit UTF-8 <-> Array<Char> boundary (STRING->UTF8, UTF8->STRING,
 ;;; UTF8->STRING-LOSSY) lives in the TEXT module, lib/30-text.lisp — see its
 ;;; header for why that surface is namespaced instead of flat.
@@ -33,12 +38,17 @@
 ;;; Functions in this layer accept EITHER a one-character string OR an integer
 ;;; code point — use CHAR->CODE to coerce. So (alpha-p 'a') and (alpha-p "a")
 ;;; both work. Case operations (CHAR-UPCASE, CHAR-DOWNCASE) always return a
-;;; one-character string regardless of which form was given.
+;;; one-character string regardless of which form was given, so they use the
+;;; simple (one-to-one) case mapping: a character whose full mapping is
+;;; several characters ("ß" -> "SS") is returned unchanged, as in CL. The
+;;; string operations (STRING-UPCASE, STRING-DOWNCASE) use the full mapping.
 
 ;;; ---- string <-> list of chars --------------------------------------------
 
 (defun string->list (s)
-  "Return the characters of S as a list of one-character strings."
+  "Return the characters of S as a list of one-character STRINGS -- not char
+values: (string->list \"ab\") is (\"a\" \"b\"), never ('a' 'b'). Use
+CHAR->CODE on an element when a code point is wanted."
   (string->list* s))
 
 (defun list->string (chars)
@@ -51,6 +61,11 @@
   "Concatenate zero or more strings. Alias for CONCAT, named for the STRING-
 family; (string-concat) is \"\"."
   (apply #'concat strs))
+
+(defun string-length (s)
+  "Number of characters (not bytes) in string S. An alias of the kernel
+primitive STRING-LENGTH*; the generic LENGTH also accepts strings."
+  (string-length* s))
 
 (defun string-empty-p (s)
   "True if S has length zero."
@@ -88,22 +103,25 @@ of range, rather than clamping."
   (let ((code (char->code c))) (and (>= code 48) (<= code 57))))
 
 (defun alpha-p (c)
-  "True if C (one-character string or code point) is an ASCII letter A-Z or a-z."
-  (let ((code (char->code c)))
-    (or (and (>= code 65) (<= code 90))
-        (and (>= code 97) (<= code 122)))))
+  "True if C (one-character string or code point) is a Unicode alphabetic
+character (A-Z and a-z on ASCII; also e.g. \"é\", \"λ\", \"漢\")."
+  (char-alphabetic-p* (char->code c)))
 
 (defun alphanumeric-p (c)
-  "True if C (one-character string or code point) is an ASCII letter or digit."
-  (or (alpha-p c) (digit-p c)))
+  "True if C (one-character string or code point) is a Unicode alphabetic or
+numeric character (A-Z, a-z and 0-9 on ASCII)."
+  (let ((code (char->code c)))
+    (or (char-alphabetic-p* code) (char-numeric-p* code))))
 
 (defun char-upper-p (c)
-  "True if C (one-character string or code point) is an ASCII uppercase letter A-Z."
-  (let ((code (char->code c))) (and (>= code 65) (<= code 90))))
+  "True if C (one-character string or code point) is a Unicode uppercase
+letter (A-Z on ASCII; also e.g. \"É\", \"Σ\")."
+  (char-uppercase-p* (char->code c)))
 
 (defun char-lower-p (c)
-  "True if C (one-character string or code point) is an ASCII lowercase letter a-z."
-  (let ((code (char->code c))) (and (>= code 97) (<= code 122))))
+  "True if C (one-character string or code point) is a Unicode lowercase
+letter (a-z on ASCII; also e.g. \"é\", \"ß\", \"σ\")."
+  (char-lowercase-p* (char->code c)))
 
 (defun whitespace-p (c)
   "True if C (one-character string or code point) is space, tab, newline, or carriage return."
@@ -112,25 +130,35 @@ of range, rather than clamping."
 
 ;;; ---- char case mapping ---------------------------------------------------
 
+(defun $char-case-simple (ch mapped)
+  "One-to-one case mapping: MAPPED if it is a single character, else CH
+unchanged (a full mapping such as \"ß\" -> \"SS\" has no one-character result)."
+  (if (= (string-length* mapped) 1) mapped ch))
+
 (defun char-upcase (c)
-  "Uppercase C (one-character string or code point). Returns a one-character string."
-  (let ((code (char->code c)))
-    (if (and (>= code 97) (<= code 122)) (code-char (- code 32)) (code-char code))))
+  "Uppercase C (one-character string or code point), Unicode-aware. Returns a
+one-character string; a character with no one-character uppercase (\"ß\") is
+returned unchanged."
+  (let ((ch (code-char (char->code c))))
+    ($char-case-simple ch (string-upcase* ch))))
 
 (defun char-downcase (c)
-  "Lowercase C (one-character string or code point). Returns a one-character string."
-  (let ((code (char->code c)))
-    (if (and (>= code 65) (<= code 90)) (code-char (+ code 32)) (code-char code))))
+  "Lowercase C (one-character string or code point), Unicode-aware. Returns a
+one-character string."
+  (let ((ch (code-char (char->code c))))
+    ($char-case-simple ch (string-downcase* ch))))
 
 ;;; ---- case mapping --------------------------------------------------------
 
 (defun string-upcase (s)
-  "Return S with ASCII letters uppercased."
-  (list->string (mapcar #'char-upcase (string->list s))))
+  "Return S uppercased by the Unicode full case mapping; the result may be
+longer than S (\"straße\" -> \"STRASSE\")."
+  (string-upcase* s))
 
 (defun string-downcase (s)
-  "Return S with ASCII letters lowercased."
-  (list->string (mapcar #'char-downcase (string->list s))))
+  "Return S lowercased by the Unicode full case mapping (a word-final capital
+sigma becomes \"ς\")."
+  (string-downcase* s))
 
 (defun $string-capitalize-aux (chars in-word acc)
   (if (null chars)
@@ -148,9 +176,10 @@ word (a maximal alphanumeric run), lowercase the rest, pass delimiters."
   ($string-capitalize-aux chars in-word nil))
 
 (defun string-capitalize (s)
-  "Return S with the first character of every word uppercased (ASCII) and
-the rest of each word lowercased, per CL: a word is a maximal run of
-alphanumeric characters. (string-capitalize \"\") is \"\"."
+  "Return S with the first character of every word uppercased and the rest
+of each word lowercased (Unicode-aware, one-to-one per CHAR-UPCASE), per CL:
+a word is a maximal run of alphanumeric characters. (string-capitalize \"\")
+is \"\"."
   (list->string ($string-capitalize-walk (string->list s) ())))
 
 (defun string-reverse (s)
@@ -161,14 +190,45 @@ family."
 
 ;;; ---- number parsing ------------------------------------------------------
 
-(defun parse-integer (s)
-  "Parse string S as an integer, returning the integer, or NIL if S does not
-denote an integer. Surrounding whitespace is ignored (via STRING->NUMBER); a
-value with a fractional part (e.g. \"3.14\") is rejected and yields NIL."
+(defun $parse-integer-whole (s)
+  "The strict reading: S as a whole denotes an integer, else NIL."
   (let ((n (string->number s)))
     (if (and (numberp n) (not (floatp n)))
         n
         nil)))
+
+(defun $parse-integer-scan (s i n pred)
+  "Index of the first character of S at or after I (S has length N) that
+does not satisfy PRED, or N."
+  (if (and (< i n) (funcall pred (substring s i (+ i 1))))
+      ($parse-integer-scan s (+ i 1) n pred)
+      i))
+
+(defun $parse-integer-prefix (s)
+  "The :JUNK-ALLOWED reading: the integer spelled by S's leading
+[whitespace][sign]digits, ignoring whatever follows; NIL if no digit."
+  (let* ((n (string-length* s))
+         (start ($parse-integer-scan s 0 n #'whitespace-p))
+         (sign (and (< start n) (substring s start (+ start 1))))
+         (digits (if (or (equal sign "+") (equal sign "-")) (+ start 1) start))
+         (end ($parse-integer-scan s digits n #'digit-p)))
+    ;; A "+" is dropped rather than handed to STRING->NUMBER, which not
+    ;; every host accepts with a sign.
+    (if (> end digits)
+        ($parse-integer-whole
+         (substring s (if (equal sign "+") digits start) end))
+        nil)))
+
+(defun parse-integer (s &key junk-allowed)
+  "Parse string S as an integer, returning the integer, or NIL if S does not
+denote an integer. Surrounding whitespace is ignored (via STRING->NUMBER); a
+value with a fractional part (e.g. \"3.14\") is rejected and yields NIL.
+With :JUNK-ALLOWED true, parse the leading [sign]digits and ignore the rest:
+(parse-integer \"12x\" :junk-allowed t) is 12. Unlike CL, a miss is NIL
+rather than an error, and there is no second (index) value."
+  (if junk-allowed
+      ($parse-integer-prefix s)
+      ($parse-integer-whole s)))
 
 ;;; ---- comparison ----------------------------------------------------------
 

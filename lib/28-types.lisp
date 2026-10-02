@@ -26,6 +26,11 @@
       '(consp numberp stringp symbolp floatp charp atom listp arrayp
         hash-table-p functionp boundp proper-list-p))
 
+;; EQL is EQ (lib/21-cl-compat.lisp); TYPE-OF's cond over the predicates
+;; above would otherwise derive a (list a) argument from its NULL/CONSP arms.
+(declare-type! 'eql '(forall (a b) (-> (a b) bool)))
+(declare-type! 'type-of '(forall (a) (-> (a) symbol)))
+
 ;; Integer-only predicates: the evaluator rejects non-integers, so the
 ;; checker may too (parity in the strict direction).
 (mapc (lambda (p) (declare-type! p '(-> (int64) bool)))
@@ -47,6 +52,7 @@
 ;;; ---- strings and symbols ---------------------------------------------------
 
 (declare-type! 'string-length* '(-> (string) int64))
+(declare-type! 'string-length '(-> (string) int64))
 (declare-type! 'string-repeat '(-> (string int64) string))
 (declare-type! 'string-upcase '(-> (string) string))
 (declare-type! 'string-downcase '(-> (string) string))

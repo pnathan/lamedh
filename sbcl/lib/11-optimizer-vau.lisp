@@ -192,7 +192,9 @@ BOUND is an optional list of locally-bound names that shadow globals."
        (opt-pass-let form bound))
       ((eq (car form) 'progn)
        (opt-pass-progn (cdr form) bound))
-      ((eq (car form) 'if)
+      ;; Only the three-operand IF is rewritten; any other arity is an error
+      ;; the evaluator must still raise (#506), so it takes the general case.
+      ((and (eq (car form) 'if) (= (length form) 4))
        (opt-pass-if form bound))
       ;; General: optimize all sub-expressions
       (t (mapcar (lambda (f) (opt-pass f bound)) form)))))
@@ -288,7 +290,7 @@ BOUND is an optional list of locally-bound names that shadow globals."
     (list 'if
           (opt-pass (cadr form) bound)
           (opt-pass (caddr form) bound)
-          (if (cdddr form) (opt-pass (cadddr form) bound) nil))))
+          (opt-pass (cadddr form) bound))))
 
 ;;; ── COLLAPSE-FRAMES pass ──────────────────────────────────────────────────
 ;;;

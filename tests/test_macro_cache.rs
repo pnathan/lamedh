@@ -156,7 +156,7 @@ fn nested_macro_expansion_caches_each_level_independently() {
     with_large_stack(|| {
         let env = env_with_stdlib();
         eval_line(
-            "(defmacro my-when (test &rest body) (list 'if test (cons 'progn body)))",
+            "(defmacro my-when (test &rest body) (list 'if test (cons 'progn body) nil))",
             &env,
         );
         eval_line(
