@@ -1,0 +1,13 @@
+;; Array work: in-place prefix sums over 10^6 slots, 3 passes.
+(defun run (n reps)
+  (let ((a (ARRAY n)) (i 0) (r 0) (tot 0))
+    (while (< r reps)
+      (setq i 0)
+      (while (< i n) (STORE a i (mod (* (+ i r) 7) 13)) (setq i (+ i 1)))
+      (setq i 1)
+      (while (< i n) (STORE a i (+ (FETCH a i) (FETCH a (- i 1)))) (setq i (+ i 1)))
+      (setq tot (+ tot (FETCH a (- n 1))))
+      (setq r (+ r 1)))
+    tot))
+(print (run 1000000 3))
+;; scaled: (print (run 1000000 30))

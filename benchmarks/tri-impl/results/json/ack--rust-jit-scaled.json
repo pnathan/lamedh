@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-jit-scaled/ack.lisp",
+      "mean": 2.0731332608,
+      "stddev": 0.1351099486068137,
+      "median": 2.047217256,
+      "user": 2.0183969999999998,
+      "system": 0.022182599999999997,
+      "min": 1.945760326,
+      "max": 2.24033898,
+      "times": [
+        1.947708213,
+        2.047217256,
+        2.184641529,
+        1.945760326,
+        2.24033898
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

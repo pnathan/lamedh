@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/lamedh-asm/build/lamedhc /home/user/lamedh/benchmarks/tri-impl/build/asm/sieve.lisp",
+      "mean": 0.17674251940000002,
+      "stddev": 0.024218406126457533,
+      "median": 0.16545224,
+      "user": 0.16348239999999997,
+      "system": 0.011228999999999998,
+      "min": 0.15288009800000002,
+      "max": 0.21340346100000002,
+      "times": [
+        0.15288009800000002,
+        0.16545224,
+        0.188318792,
+        0.21340346100000002,
+        0.16365800600000002
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

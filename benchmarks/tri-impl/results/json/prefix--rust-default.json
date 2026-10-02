@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-default/prefix.lisp",
+      "mean": 0.3121506646,
+      "stddev": 0.0588466964631418,
+      "median": 0.306388447,
+      "user": 0.28497920000000004,
+      "system": 0.0255052,
+      "min": 0.251148128,
+      "max": 0.392486508,
+      "times": [
+        0.392486508,
+        0.347503506,
+        0.251148128,
+        0.306388447,
+        0.263226734
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

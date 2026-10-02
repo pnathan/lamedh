@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/benchmarks/tri-impl/sbcl-run.sh /home/user/lamedh/benchmarks/tri-impl/build/sbcl/fib.lisp",
+      "mean": 5.8931202568000005,
+      "stddev": 0.4546515281141108,
+      "median": 5.784532049,
+      "user": 5.6316264,
+      "system": 0.16853539999999997,
+      "min": 5.307413737,
+      "max": 6.554876621,
+      "times": [
+        6.038883963,
+        5.784532049,
+        5.307413737,
+        5.779894914,
+        6.554876621
+      ],
+      "exit_codes": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}

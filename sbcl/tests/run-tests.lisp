@@ -12,10 +12,11 @@
 (enable-all-features) ; a trusted local test run, like the CLI's default
 
 (defparameter *test-files*
-  '("10-arithmetic" "20-lists" "30-predicates" "40-list-processing"
+  '("10-arithmetic" "11-mod-euclidean" "20-lists" "30-predicates" "40-list-processing"
     "50-strings-symbols" "51-string-completions" "52-text-module"
-    "60-special-forms" "65-loops" "70-hash-and-plist" "90-bitwise"
-    "95-stdlib-batteries" "96-format-and-io" "97-common-forms"
+    "60-special-forms" "65-loops" "70-hash-and-plist" "80-kernel-conformance"
+    "90-bitwise"
+    "95-stdlib-batteries" "96-format-and-io" "97-common-forms" "97-no-ratios"
     "97-port-regressions" "97-printer"))
 
 (dolist (name *test-files*)
@@ -23,6 +24,8 @@
                                 (merge-pathnames "./" *load-pathname*))))
     (format t "~&; loading ~A~%" name)
     (run-string (uiop:read-file-string path))))
+
+(load (merge-pathnames "host-regressions.lisp" *load-pathname*))
 
 (defun print-framing-ok ()
   "PRINT writes the readable value then a newline -- no leading newline,
@@ -62,8 +65,24 @@ host-side, since no Lamedh constructor for them exists without #540."
                                           :output t :error-output t
                                           :ignore-error-status t)))))
 
+;; The user factory table is bounded (#542 review): lambdas EVALed with
+;; fresh numeric literals each make a new factory shape, and must not grow
+;; *LC-FACTORIES* past *LC-FACTORY-LIMIT*.
+(defun run-factory-bound-test ()
+  (format t "~&; checking the compiled-factory table bound~%")
+  (let* ((*lc-factory-limit* 8)
+         (ok (progn
+               (run-string "(dotimes (i 20) (eval (list 'lambda '(x) (list '+ 'x i))))")
+               (and (<= *lc-factory-count* *lc-factory-limit*)
+                    (eql (run-string "(funcall (eval (list 'lambda '(x) (list '+ 'x 41))) 1)")
+                         42)))))
+    (format t "~&; factory table bound ~:[FAIL~;ok~] (~D forms)~%" ok *lc-factory-count*)
+    ok))
+
 (let ((ok (leval (lread "(run-tests)") *global-env*))
+      (host-ok (run-host-regressions))
       (framing (print-framing-ok))
       (typed-tags (typed-array-tags-ok))
-      (cli-ok (run-cli-exit-status-test)))
-  (uiop:quit (if (and (eq ok *t-sym*) framing typed-tags cli-ok) 0 1)))
+      (cli-ok (run-cli-exit-status-test))
+      (factory-ok (run-factory-bound-test)))
+  (uiop:quit (if (and (eq ok *t-sym*) host-ok framing typed-tags cli-ok factory-ok) 0 1)))

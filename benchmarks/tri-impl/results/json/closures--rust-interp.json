@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "command": "/home/user/lamedh/target/release/lamedh /home/user/lamedh/benchmarks/tri-impl/build/rust-interp/closures.lisp",
+      "mean": 8.134012158800001,
+      "stddev": 0.30841935674713067,
+      "median": 8.099645038,
+      "user": 7.9806364,
+      "system": 0.0116456,
+      "min": 7.769242818,
+      "max": 8.619978969,
+      "times": [
+        8.034388746,
+        8.099645038,
+        8.619978969,
+        8.146805223,
+        7.769242818
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
