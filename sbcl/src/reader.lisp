@@ -201,6 +201,33 @@ result, not collapsed to a single value by a short-circuiting OR."
           (progn (cur-advance c) (values (code-char code) t))
           (progn (setf (cursor-pos c) start) (values nil nil))))))
 
+;;; ---- #\c character syntax (issue #526) ---------------------------------------
+
+(defparameter *char-names*
+  '(("SPACE" . 32) ("NEWLINE" . 10) ("LINEFEED" . 10) ("TAB" . 9)
+    ("RETURN" . 13) ("PAGE" . 12) ("BACKSPACE" . 8) ("ESCAPE" . 27)
+    ("RUBOUT" . 127) ("NUL" . 0) ("NULL" . 0))
+  "Names accepted after #\\ (case-insensitively); mirrors CHAR_NAMES in
+src/reader.rs.")
+
+(defun read-hash-char-literal (c)
+  "Read #\\c (cursor at the #): the same char value as 'c'. A single
+character of any kind, or -- when an alphanumeric is followed by more
+alphanumerics -- a name from *CHAR-NAMES*. Mirrors parse_hash_char_literal."
+  (cur-advance c) (cur-advance c) ; #\
+  (when (cur-eof-p c) (reader-error* "#\\ with no character"))
+  (let ((start (cursor-pos c)) (c0 (cur-peek c)))
+    (cur-advance c)
+    (when (alphanumericp c0)
+      (loop while (and (cur-peek c) (alphanumericp (cur-peek c))) do (cur-advance c)))
+    (let* ((token (subseq (cursor-text c) start (cursor-pos c)))
+           (code (if (= (length token) 1)
+                     (char-code c0)
+                     (cdr (assoc token *char-names* :test #'string-equal)))))
+      (unless code (reader-error* "unknown character name: #\\~A" token))
+      (when (> code 255) (reader-error* "#\\ character does not fit a byte"))
+      (code-char code))))
+
 ;;; ---- strings ------------------------------------------------------------------
 
 (defun read-string-literal (c)
@@ -307,6 +334,7 @@ result, not collapsed to a single value by a short-circuiting OR."
        (let ((body (read-list c)))
          (unless (consp body) (reader-error* "#S(...) requires a brand and fields"))
          (make-lamedh-struct :type-name (car body) :values (coerce (cdr body) 'simple-vector))))
+      ((and (char= ch #\#) (eql (cur-peek c 1) #\\)) (read-hash-char-literal c))
       ((char= ch #\() (read-list c))
       ((char= ch #\") (read-string-literal c))
       ((char= ch #\')

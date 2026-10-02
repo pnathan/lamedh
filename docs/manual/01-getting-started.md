@@ -335,6 +335,25 @@ SQUARE
 how it's stored — even though you can keep typing it in whatever case is
 comfortable.
 
+The fold belongs to the reader only. `|...|` reads a name verbatim, and
+`intern` takes its string as given, so a name with lower-case letters,
+spaces or parentheses is a distinct symbol. The printer writes such a
+symbol with bars, so it reads back as itself:
+
+```bash
+$ lamedh -s '(intern "a b")' -s "(eq '|FOO| 'foo)" -s "(eq (intern \"foo\") 'foo)"
+|a b|
+T
+()
+```
+
+**Migrating code that relied on `intern` upcasing** (it did before issue
+#523): `(intern "foo")` is now the symbol `|foo|`, not `FOO`. Where the
+upcased symbol is wanted, say so — `(intern (string-upcase s))`.
+`princ` and `princ-to-string` still write a symbol's bare name, so names
+built from them (`(intern (concat "MAKE-" (princ-to-string name)))`) are
+unaffected.
+
 One related gotcha: if a function body is a single string with nothing
 after it, that string is read as the docstring, not the return value:
 
