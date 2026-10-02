@@ -411,13 +411,15 @@ fn test_explode_symbol() {
 
 #[test]
 fn test_explode_string() {
-    // String explode preserves case (doesn't uppercase like symbols)
-    assert_eq!(eval("(explode \"hello\")"), "(h e l l o)");
+    // String explode preserves case (doesn't uppercase like symbols); the
+    // lower-case names print escaped so they read back (issue #523).
+    assert_eq!(eval("(explode \"hello\")"), "(|h| |e| |l| |l| |o|)");
 }
 
 #[test]
 fn test_explode_number() {
-    assert_eq!(eval("(explode 123)"), "(1 2 3)");
+    // Symbols named by digits, escaped so they don't read back as numbers.
+    assert_eq!(eval("(explode 123)"), "(|1| |2| |3|)");
 }
 
 #[test]
@@ -437,7 +439,8 @@ fn test_implode_single() {
 
 #[test]
 fn test_implode_empty() {
-    assert_eq!(eval("(implode '())"), "");
+    // The symbol with the empty name (issue #523).
+    assert_eq!(eval("(implode '())"), "||");
 }
 
 #[test]
@@ -466,7 +469,8 @@ fn test_gensym_format() {
 
 #[test]
 fn test_intern_string() {
-    assert_eq!(eval("(intern \"hello\")"), "HELLO");
+    // INTERN preserves case (issue #523); the name prints escaped.
+    assert_eq!(eval("(intern \"hello\")"), "|hello|");
 }
 
 #[test]

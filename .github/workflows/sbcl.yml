@@ -1,0 +1,31 @@
+name: sbcl
+
+# The SBCL port (sbcl/) has its own test suite, which the Rust gauntlet does
+# not run. sbcl/lib holds byte copies of lib/, so shared-stdlib changes can
+# break it too.
+
+on:
+  push:
+    branches: ["main", "plurality"]
+    paths:
+      - "sbcl/**"
+      - "lib/**"
+      - ".github/workflows/sbcl.yml"
+  pull_request:
+    branches: ["main", "plurality"]
+    paths:
+      - "sbcl/**"
+      - "lib/**"
+      - ".github/workflows/sbcl.yml"
+
+jobs:
+  test:
+    name: sbcl port test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sbcl
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - name: run-tests
+        working-directory: sbcl
+        run: sbcl --non-interactive --load tests/run-tests.lisp

@@ -187,7 +187,7 @@ Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the conc
 
 **Examples:**
 ```lisp
-(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "call to unknown function `CONS`"
+(PROGN (DEFUN* MK (A B) (CONS A B)) (WHY-NOT-TYPED (QUOTE MK)))  ; => "builtin `CONS` is not supported in compiled code"
 ```
 
 **See also:** SIGNATURE, COMPILED-P, DEFUN*, EXPLAIN-COMPILE
@@ -4922,7 +4922,7 @@ Removes trailing whitespace from s.
 
 **Syntax:** `(string-capitalize s)`
 
-Returns s with its first character uppercased (ASCII) and the rest lowercased.
+Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).
 
 **Examples:**
 ```lisp
