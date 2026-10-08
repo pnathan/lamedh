@@ -626,17 +626,20 @@ under `=` is exact IEEE `==` (so `(= NaN NaN)` is `NIL` — unlike `EQ`,
 Part IV).
 
 *Mixed fixnum/float comparison — normative rule (clarification, #553).*
-The `f64` conversion is call-wide, exactly as in the contagion rule above:
-if any operand of one call is a `Float`, **every** operand of that call is
-converted to `f64` before any pair is compared. So `(= 9007199254740993
-9007199254740992.0)` is `T`, `(< 9007199254740992.0 9007199254740993)` is
-`NIL`, and `(= 9007199254740993 9007199254740992 9007199254740992.0)` is
-`T` (the two fixnums are only equal because the float in the call forces
-both through `f64`). A call whose operands are all fixnums/characters never
-touches `f64` and is exact. A host must not substitute an exact
-int-versus-float comparison. Whether this rule should change to exact
-comparison is an open owner decision (#516, #553); until `KERNEL.md` is
-amended, `f64` is the specification and the tiers must agree on it.
+Unlike `+ - * /`, a comparison chain is evaluated over **adjacent pairs**,
+left to right, stopping at the first pair that fails. Each pair is decided
+on its own: two fixnums compare exactly as integers, two characters by
+code point, and any other numeric pair — in particular any pair involving
+a `Float` — is converted to `f64` and compared there. So `(= 9007199254740993
+9007199254740992.0)` is `T` and `(< 9007199254740992.0 9007199254740993)`
+is `NIL`, but `(= 9007199254740993 9007199254740992 9007199254740992.0)`
+is `NIL` (its first pair is two fixnums, compared exactly). Because the
+chain stops at the first false pair, a later non-numeric operand is never
+examined: `(< 2 1 'a)` is `NIL`, while `(< 1 2 'a)` is an error. A host
+must not substitute an exact int-versus-float comparison. Whether this rule
+should change to exact comparison is an open owner decision (#516, #553);
+until `KERNEL.md` is amended, `f64` is the specification and every tier
+must agree on it.
 
 **Other numeric primitives the corpus relies on**, with their exact
 result types: `(float x)` converts a fixnum or char to `Float` (identity

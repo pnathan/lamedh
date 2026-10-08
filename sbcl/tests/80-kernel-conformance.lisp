@@ -34,9 +34,10 @@
   (assert-nil (errorset '(kc-if2 t)))
   (assert-nil (errorset '(kc-if4 nil))))
 
-;; #539: KERNEL Part V -- if ANY operand of a comparison is a float, EVERY
-;; operand is converted to f64 (call-wide), so a fixnum above 2^53 compares
-;; equal to the float it rounds to. Two fixnums still compare exactly.
+;; #539: KERNEL Part V -- any comparison pair involving a float is compared
+;; as f64, so a fixnum above 2^53 compares equal to the float it rounds to.
+;; Pairs of integers stay exact. The chain is over ADJACENT pairs and stops
+;; at the first false pair, exactly like the Rust reference.
 ;; (#516 asks the Rust core to make this exact instead; until KERNEL.md is
 ;; changed, f64 is the spec.)
 (deftest kernel-mixed-compare-via-f64
@@ -46,21 +47,45 @@
   (assert-nil (> 9007199254740993 9007199254740992.0))
   (assert-nil (lessp 9007199254740992.0 9007199254740993))
   (assert-nil (greaterp 9007199254740993 9007199254740992.0))
-  ;; call-wide, not pairwise: the two fixnums are only equal once the float
-  ;; in the call forces them both through f64.
-  (assert-equal (= 9007199254740993 9007199254740992 9007199254740992.0) t)
-  ;; two fixnums: exact
+  (assert-equal (<= 9007199254740992.0 9007199254740993) t)
+  ;; pairwise: the integer pair is exact (unequal), as in Rust
+  (assert-nil (= 9007199254740993 9007199254740992 9007199254740992.0))
+  (assert-equal (= 9007199254740992 9007199254740992.0 9007199254740993) t)
+  ;; two integers: exact
   (assert-nil (= 9007199254740993 9007199254740992))
   (assert-equal (< 9007199254740992 9007199254740993) t)
-  ;; characters join the float path as code points
+  ;; characters
   (assert-equal (= #\a 97.0) t)
+  (assert-equal (= #\a 97) t)
   (assert-equal (= 5 5.0) t)
   (assert-equal (< 1 2.5 3) t)
   (assert-nil (= 1.0 1.5))
-  ;; NaN is never equal to itself
+  ;; the result is the Lamedh T, not the host's
+  (assert-equal (eq (< 1 2) t) t)
+  (assert-equal (eq (= 1 1.0) t) t))
+
+;; NaN / infinity in mixed pairs
+(deftest kernel-mixed-compare-nan-inf
   (assert-nil (= (/ 0.0 0.0) (/ 0.0 0.0)))
-  ;; non-numbers remain errors
-  (assert-nil (errorset '(= 1 2.0 'a))))
+  (assert-nil (< 1 (/ 0.0 0.0)))
+  (assert-nil (> 1 (/ 0.0 0.0)))
+  (assert-equal (< 9223372036854775807 (/ 1.0 0.0)) t)
+  (assert-equal (> 9223372036854775807 (/ -1.0 0.0)) t))
+
+;; Arity and operand errors (KERNEL: two or more operands, non-numbers error)
+(deftest kernel-compare-arity-and-operands
+  (assert-nil (errorset '(=)))
+  (assert-nil (errorset '(= 1)))
+  (assert-nil (errorset '(<)))
+  (assert-nil (errorset '(< 1)))
+  (assert-nil (errorset '(> 1)))
+  (assert-nil (errorset '(lessp 1)))
+  (assert-nil (errorset '(greaterp 1)))
+  (assert-nil (errorset '(= 1 1.0 'a)))
+  (assert-nil (errorset '(= 1 'a)))
+  (assert-nil (errorset '(< 1.0 "a")))
+  ;; short-circuit: the chain stops at the first false pair (as in Rust)
+  (assert-equal (errorset '(< 2 1 'a)) '(nil)))
 
 ;; compiled bodies take the same path
 (deftest kernel-mixed-compare-via-f64-compiled
@@ -68,3 +93,12 @@
   (defun kc-lt (a b) (< a b))
   (assert-equal (kc-eq 9007199254740993 9007199254740992.0) t)
   (assert-nil (kc-lt 9007199254740992.0 9007199254740993)))
+
+;; IF arity in nested positions of compiled bodies
+(deftest kernel-if-arity-nested-compiled
+  (defun kc-nest2 (x) (let ((y 1)) (if x y)))
+  (defun kc-nest4 (x) (cond (x (if x 1 2 3)) (t 0)))
+  (defun kc-lam (x) ((lambda (y) (if y 1)) x))
+  (assert-nil (errorset '(kc-nest2 t)))
+  (assert-nil (errorset '(kc-nest4 t)))
+  (assert-nil (errorset '(kc-lam t))))
