@@ -29,7 +29,21 @@
 
 %include "src/syscalls.inc"
 %include "src/tags.inc"
-%define ZCT_TRIGGER      65536            ; used by rc_collect above the safe-point section, so defined up here
+; ZCT capacity, in entries. Overflow is not a correctness problem (it
+; sets zct_overflowed, and the collector's linear sweep picks up what
+; the table could not hold) — only a performance one.
+%ifndef ZCT_CAPACITY
+%define ZCT_CAPACITY (1024 * 1024)
+%endif
+; used by rc_collect above the safe-point section, so defined up here. A
+; table smaller than the trigger could never reach it (the count trigger
+; would be dead and only the byte trigger would collect), so a small
+; ZCT_CAPACITY lowers it to half the table.
+%if ZCT_CAPACITY / 2 < 65536
+%define ZCT_TRIGGER      (ZCT_CAPACITY / 2)
+%else
+%define ZCT_TRIGGER      65536
+%endif
 
 ; --- granule entry flag bits (byte 4 of an entry) ---
 %define GF_HEAD    1      ; this granule begins a live allocation
@@ -40,12 +54,9 @@
 %define GF_CONS    32     ; a bare 16-byte [car|cdr] cell: no header word to read
 %define GF_FREE_TAIL 64   ; last granule of a free run of >= 2 granules (see free_run)
 
-; ZCT capacity, in entries. Overflow is not a correctness problem (it
-; sets zct_overflowed, and the collector's linear sweep picks up what
-; the table could not hold) — only a performance one.
-%ifndef ZCT_CAPACITY
-%define ZCT_CAPACITY (1024 * 1024)
-%endif
+; zct_drain compacts its consumed prefix when fewer than this many
+; slots remain at the tail (and the prefix is at least half the table).
+%define ZCT_COMPACT_SLACK 64
 %define PIN_STACK_CAPACITY 65536
 
 extern data_heap_base
@@ -1356,6 +1367,31 @@ zct_drain:
     xor r12, r12
     xor r13, r13
 .loop:
+    ; Reclaim the consumed front of the table once it is both nearly
+    ; full at the tail and has a large dead prefix, so cascades keep
+    ; appending instead of overflowing (#602). Appends are checked
+    ; against the tail count, so the gap [r13, r12) is otherwise unusable.
+    mov rax, [zct_count]
+    cmp rax, ZCT_CAPACITY - ZCT_COMPACT_SLACK
+    jb .no_compact
+    mov rcx, r12
+    sub rcx, r13                          ; rcx = dead prefix length
+    cmp rcx, ZCT_CAPACITY / 2
+    jb .no_compact
+    mov rdx, r13                          ; dst
+    mov rsi, r12                          ; src
+.compact:
+    cmp rsi, rax
+    jae .compact_done
+    mov rdi, [zct + rsi*8]
+    mov [zct + rdx*8], rdi
+    inc rsi
+    inc rdx
+    jmp .compact
+.compact_done:
+    mov [zct_count], rdx
+    mov r12, r13                          ; unread entries now start at r13
+.no_compact:
     cmp r12, [zct_count]
     jae .done
     mov rbx, [zct + r12*8]
@@ -1421,9 +1457,12 @@ rc_collect:
     ; and free the ones the drain would have freed had it seen them.
     cmp qword [zct_overflowed], 0
     je .no_sweep
+    ; Clear BEFORE sweeping: a candidate dropped by an overflow during the
+    ; sweep or its drain re-sets the flag, so the next collection sweeps
+    ; again instead of leaking it (#602).
+    mov qword [zct_overflowed], 0
     call rc_sweep
     call zct_drain                        ; the sweep's own decrements
-    mov qword [zct_overflowed], 0
 .no_sweep:
     mov rdi, rbx
     xor rsi, rsi
