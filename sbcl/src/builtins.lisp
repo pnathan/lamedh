@@ -314,10 +314,30 @@ the i64 bounds."
                     (with-ieee-floats (apply #',fn (mapcar #'numify args)))))))
   (wrap "+" +) (wrap "-" -) (wrap "*" *)
   (wrap "PLUS" +) (wrap "TIMES" *)
-  (wrap "=" =) (wrap "<" <) (wrap ">" >)
   (wrap "MAX" max) (wrap "MIN" min)
-  (wrap "GCD" gcd) (wrap "LCM" lcm)
-  (wrap "LESSP" <) (wrap "GREATERP" >))
+  (wrap "GCD" gcd) (wrap "LCM" lcm))
+
+(defun f64-contagion (args)
+  "KERNEL Part V contagion for comparisons: if ANY operand is a float, every
+operand is converted to f64 -- call-wide, not pairwise -- so a fixnum above
+2^53 compares equal to the float it rounds to. All-integer calls stay exact.
+ARGS are already NUMIFYed."
+  (if (some #'floatp args)
+      (mapcar (lambda (x) (coerce x 'double-float)) args)
+      args))
+
+;;; Comparisons: a monotone chain over two or more operands, returning the
+;;; Lamedh boolean (*T-SYM*), not the host's T. Two fixnums skip the generic
+;;; path, as above.
+(macrolet ((wrap-compare (name fn)
+             `(defbuiltin ,name (&rest args)
+                (if (and (consp args) (consp (cdr args)) (null (cddr args))
+                         (typep (car args) 'fixnum) (typep (cadr args) 'fixnum))
+                    (bool (,fn (car args) (cadr args)))
+                    (bool (with-ieee-floats
+                            (apply #',fn (f64-contagion (mapcar #'numify args)))))))))
+  (wrap-compare "=" =) (wrap-compare "<" <) (wrap-compare ">" >)
+  (wrap-compare "LESSP" <) (wrap-compare "GREATERP" >))
 
 (defun lamedh-divide (a b)
   "Integer / -- truncating (C/Rust-style integer division), not CL's exact
