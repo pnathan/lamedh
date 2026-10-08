@@ -565,8 +565,8 @@ fp_digits:
 
 ; ---- fixed-size little-endian bignums (NL 64-bit limbs) ----------------
 ; All take the bignum in rdi (and a second operand in rsi) and preserve
-; rdi and rsi unless noted; they clobber rax, rcx, rdx and r8 (bn_shl
-; also r10, r11). Values never outgrow NL limbs (see FP_* above), so
+; rdi; they clobber rax, rcx, rdx and r8. All but bn_shl preserve rsi;
+; bn_shl also clobbers rsi, r10 and r11. Values never outgrow NL limbs (see FP_* above), so
 ; carries out of the top limb are dropped.
 
 ; bn_zero(rdi)
