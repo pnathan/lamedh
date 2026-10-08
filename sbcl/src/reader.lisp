@@ -334,6 +334,14 @@ alphanumerics -- a name from *CHAR-NAMES*. Mirrors parse_hash_char_literal."
        (let ((body (read-list c)))
          (unless (consp body) (reader-error* "#S(...) requires a brand and fields"))
          (make-lamedh-struct :type-name (car body) :values (coerce (cdr body) 'simple-vector))))
+      ;; #(e1 ... en): array literal (KERNEL Part II). Elements are read, not
+      ;; evaluated. `#` must abut `(`; a dotted tail is a hard parse error.
+      ((and (char= ch #\#) (eql (cur-peek c 1) #\())
+       (cur-advance c)
+       (let ((body (read-list c)))
+         (unless (null (cdr (last body)))
+           (reader-error* "#(...) array literal cannot have a dotted tail"))
+         (coerce body 'simple-vector)))
       ((and (char= ch #\#) (eql (cur-peek c 1) #\\)) (read-hash-char-literal c))
       ((char= ch #\() (read-list c))
       ((char= ch #\") (read-string-literal c))

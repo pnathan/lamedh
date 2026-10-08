@@ -122,11 +122,11 @@ WITH-OUTPUT-TO-STRING does not capture."
     (null bad)))
 
 (defun typed-array-tags-ok ()
-  "Typed arrays print as the reference's <typed-array:elem:n> tag."
+  "Typed arrays print as the reference's #<typed-array:elem e1 ...> tag."
   (let* ((cases (list (cons (make-array 3 :element-type '(signed-byte 64) :initial-element 0)
-                            "<typed-array:int64:3>")
+                            "#<typed-array:int64 0 0 0>")
                       (cons (make-array 2 :element-type 'double-float :initial-element 0d0)
-                            "<typed-array:float64:2>")))
+                            "#<typed-array:float64 0.0 0.0>")))
          (bad (loop for (v . want) in cases
                     for got = (lprint-to-string v)
                     unless (string= got want) collect (list want got))))

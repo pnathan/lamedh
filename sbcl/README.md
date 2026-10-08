@@ -97,8 +97,9 @@ tables/plists, bitwise operations, and the broader stdlib-battery and
 FORMAT/port suites (`95-stdlib-batteries.lisp`, `96-format-and-io.lisp`),
 the CL staples of `97-common-forms.lisp` (`labels`, `eql`, `type-of`,
 `#\c`, ...), and printer output checked against the reference binary
-(`()` for the empty list, `PRINT` framing, opaque
-`<array:N>`/`<typed-array:int64:N>`/`<hash-table>` tags),
+(`()` for the empty list, `PRINT` framing, `#(e1 ...)` arrays with the
+100-element abridgement and `#<circular-array>`, `#<typed-array:int64 e1 ...>`,
+and the opaque `<hash-table>` tag),
 plus two CLI host-boundary checks (uncaught deep
 recursion and stack exhaustion exit with status 1 and a message, not a
 crash).
@@ -351,7 +352,8 @@ ever saves calls to `compile`.
   built.
 - **Typed arrays** are SBCL specialized vectors (`(signed-byte 64)` /
   `double-float`); they print exactly as the reference does,
-  `<typed-array:int64:3>`.
+  `#<typed-array:int64 0 0 0>` (abridged after 100 elements). Plain arrays
+  print as `#(e1 ...)` and the reader accepts the `#(...)` literal.
 - **`EQ`** is identity for symbols and callables, but *value* equality for
   the immutable atomic types (numbers, characters, strings) and *deep
   structural* equality for records/structs — recursing into every field,
