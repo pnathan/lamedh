@@ -84,6 +84,14 @@
   (assert-nil (errorset '(= 1 1.0 'a)))
   (assert-nil (errorset '(= 1 'a)))
   (assert-nil (errorset '(< 1.0 "a")))
+  ;; a Nil operand is a non-number, in any position the chain reaches
+  (assert-nil (errorset '(< 1 nil)))
+  (assert-nil (errorset '(< 1 2 nil)))
+  (assert-nil (errorset '(= 1 1 nil)))
+  (assert-nil (errorset '(= nil 1)))
+  (assert-nil (errorset '(> 2 1 nil)))
+  ;; ... but is never examined after a false pair
+  (assert-equal (errorset '(= 1 2.0 nil)) '(nil))
   ;; short-circuit: the chain stops at the first false pair (as in Rust)
   (assert-equal (errorset '(< 2 1 'a)) '(nil)))
 

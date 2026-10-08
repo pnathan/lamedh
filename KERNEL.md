@@ -629,8 +629,9 @@ Part IV).
 Unlike `+ - * /`, a comparison chain is evaluated over **adjacent pairs**,
 left to right, stopping at the first pair that fails. Each pair is decided
 on its own: two fixnums compare exactly as integers, two characters by
-code point, and any other numeric pair — in particular any pair involving
-a `Float` — is converted to `f64` and compared there. So `(= 9007199254740993
+code point (for `=`, any fixnum/character mix is likewise exact), and any
+other numeric pair — in particular any pair involving a `Float` — is
+converted to `f64` and compared there. So `(= 9007199254740993
 9007199254740992.0)` is `T` and `(< 9007199254740992.0 9007199254740993)`
 is `NIL`, but `(= 9007199254740993 9007199254740992 9007199254740992.0)`
 is `NIL` (its first pair is two fixnums, compared exactly). Because the

@@ -339,7 +339,8 @@ MIXED-EXACT-P is true for `=`, whose integer/character pairs are exact."
   (flet ((check (x)
            (unless (or (numberp x) (characterp x))
              (lamedh-error (format nil "~A: expected a number, got ~A" name (lprint-to-string x))))))
-    (loop for (a b) on args while b
+    (loop for tail on args while (consp (cdr tail))
+          for a = (car tail) for b = (cadr tail)
           do (check a) (check b)
              (unless (cond ((and (integerp a) (integerp b)) (funcall fn a b))
                            ((and (characterp a) (characterp b)) (funcall fn (char-code a) (char-code b)))
