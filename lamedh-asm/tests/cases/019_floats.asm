@@ -12,7 +12,7 @@ extern compile_thunk
 extern print_newline
 
 section .rodata
-; PRINT of a float literal, fixed 6-decimal-place formatting.
+; PRINT of a float literal, shortest round-trip formatting.
 e1: db "(PRINT 3.5)"
 e1_len: equ $ - e1
 

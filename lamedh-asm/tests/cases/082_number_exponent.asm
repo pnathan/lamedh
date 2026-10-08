@@ -20,13 +20,13 @@ prelude_end:
 prelude_len: equ prelude_end - prelude_start
 
 prog_start:
-    db `(PRINT (LIST 1.5e2 1e5 1.5E2 1.5e+2 -2E-3 1.5e-3))`, 10  ; (150.000000 100000.000000 150.000000 150.000000 -0.002000 0.001500)
+    db `(PRINT (LIST 1.5e2 1e5 1.5E2 1.5e+2 -2E-3 1.5e-3))`, 10  ; (150.0 100000.0 150.0 150.0 -0.002 0.0015)
     db "(NEWLINE)", 10
     db `(PRINT (LIST (EQUAL 1.5e2 150.0) (EQUAL 1.5e-3 0.0015) (EQUAL 1e5 100000.0) (EQUAL 25e-1 2.5) (EQUAL 1.5e2 150.00001)))`, 10  ; (T T T T ())
     db "(NEWLINE)", 10
-    db `(PRINT (LIST (QUOTE (1e2 . 3)) ($LENGTH (QUOTE (1.5e2 X)))))`, 10  ; ((100.000000 . 3) 2)
+    db `(PRINT (LIST (QUOTE (1e2 . 3)) ($LENGTH (QUOTE (1.5e2 X)))))`, 10  ; ((100.0 . 3) 2)
     db "(NEWLINE)", 10
-    db `(PRINT (LIST 12345678901234567890e-10 -0e5 1e400))`, 10  ; (1234567890.123457 -0.000000 inf)
+    db `(PRINT (LIST 12345678901234567890e-10 -0e5 1e400))`, 10  ; (1234567890.123457 -0.0 inf)
 prog_end:
 prog_len: equ prog_end - prog_start
 
