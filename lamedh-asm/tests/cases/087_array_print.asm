@@ -60,6 +60,16 @@ prog_start:
     db "(NEWLINE)", 10
     db `(PRINT (HANDLER-CASE (READ-FROM-STRING "# (1 2)") (E (X) (QUOTE CAUGHT))))`, 10
     db "(NEWLINE)", 10
+    db `(PRINT (HANDLER-CASE (READ-FROM-STRING "#<x>") (E (X) (QUOTE CAUGHT))))`, 10
+    db "(NEWLINE)", 10
+    db `(PRINT (HANDLER-CASE (READ-FROM-STRING "#") (E (X) (QUOTE CAUGHT))))`, 10
+    db "(NEWLINE)", 10
+    db `(PRINT (PRINC-TO-STRING (LIST->ARRAY (LIST "a" (QUOTE B)))))`, 10
+    db "(NEWLINE)", 10
+    db `(PRINT (READ-FROM-STRING "(1 #(2 (3 #(4))) 5)"))`, 10
+    db "(NEWLINE)", 10
+    db `(PRINT (LIST->ARRAY (IOTA 99)))`, 10
+    db "(NEWLINE)", 10
     db `(PRINT (LIST->ARRAY (IOTA 150)))`, 10
     db "(NEWLINE)", 10
     db `(PRINT (LIST->ARRAY (IOTA 100)))`, 10
