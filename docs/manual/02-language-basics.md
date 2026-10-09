@@ -438,7 +438,8 @@ representations (section 2.6).
 ### Integer overflow
 
 Integers are 64-bit and wrap on overflow rather than promoting to a bignum.
-At the top level, an overflowing operation prints a warning and sets the
+At the top level, an overflowing operation (or an integer literal too large for
+`i64`, which reads as a float) prints a warning and sets the
 `OVERFLOW` flag, which you check and clear from Lisp with `flag-set-p` and
 `clear-flag` — there is no `OVERFLOW` *variable*:
 
@@ -446,7 +447,7 @@ At the top level, an overflowing operation prints a warning and sets the
 (+ 9223372036854775807 1)
 ```
 ```
-warning: integer overflow — a result wrapped around (check (flag-set-p 'overflow); reset with (clear-flag 'overflow))
+warning: integer overflow — a result wrapped around or an integer literal exceeded i64 and read as a float (check (flag-set-p 'overflow); reset with (clear-flag 'overflow))
 ; => -9223372036854775808
 ```
 

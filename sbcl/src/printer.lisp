@@ -15,6 +15,35 @@
     (let ((pos (position #\d s)))
       (if pos (concatenate 'string (subseq s 0 pos) (subseq s (1+ pos))) s))))
 
+;;; Arrays (KERNEL Part III): `#(e1 ... en)`, abridged after +ARRAY-PRINT-LIMIT+
+;;; elements with the unreadable marker `#<...N more>`; a back-reference to an
+;;; array already being printed is `#<circular-array>`. Typed arrays print
+;;; `#<typed-array:TYPE e1 ... en>`. Mirrors printer::print_elements (src/printer.rs).
+(defconstant +array-print-limit+ 100)
+(defvar *array-print-limit* +array-print-limit+
+  "Elements shown before abridging; NIL means print every element.")
+(defvar *arrays-in-progress* nil
+  "Arrays currently being printed on this thread (by identity), for cycle detection.")
+
+(declaim (ftype function lprint-1))
+(defun print-array-elements (arr stream open close)
+  (when (member arr *arrays-in-progress* :test #'eq)
+    (write-string "#<circular-array>" stream)
+    (return-from print-array-elements))
+  (let* ((len (length arr))
+         (shown (if *array-print-limit* (min *array-print-limit* len) len))
+         (*arrays-in-progress* (cons arr *arrays-in-progress*)))
+    (write-string open stream)
+    (dotimes (i shown)
+      (when (> i 0) (write-char #\Space stream))
+      ;; Elements always print readably, even under PRINC (printer::print_elements
+      ;; calls print() per element).
+      (lprint-1 (aref arr i) stream t))
+    (when (< shown len)
+      (when (> shown 0) (write-char #\Space stream))
+      (format stream "#<...~D more>" (- len shown)))
+    (write-char close stream)))
+
 (defun lprint-1 (v stream readably)
   (cond
     ;; The empty list prints as () everywhere, never NIL (KERNEL Part III).
@@ -57,8 +86,11 @@
      (write-char #\) stream))
     ;; Opaque tags match the reference printer (src/printer.rs).
     ((hash-table-p v) (write-string "<hash-table>" stream))
-    ((simple-vector-p v) (format stream "<array:~D>" (length v)))
-    ((typed-array-p v) (format stream "<typed-array:~A:~D>" (typed-array-elem-name v) (length v)))
+    ((simple-vector-p v) (print-array-elements v stream "#(" #\)))
+    ((typed-array-p v)
+     (print-array-elements v stream
+                           (format nil "#<typed-array:~A~:[ ~;~]" (typed-array-elem-name v) (zerop (length v)))
+                           #\>))
     ((lambda-obj-p v) (format stream "#<LAMBDA~@[ ~A~]>" (lambda-obj-name v)))
     ((macro-obj-p v) (write-string "#<MACRO>" stream))
     ((fexpr-obj-p v) (write-string "#<FEXPR>" stream))

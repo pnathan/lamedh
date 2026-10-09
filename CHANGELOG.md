@@ -1,5 +1,15 @@
 # v0.4.1 — unreleased
 
+## Oversized decimal literals set `OVERFLOW` (#515)
+
+A decimal integer literal outside `i64` (`9223372036854775808`) still reads
+as a float (KERNEL.md Part II), but the silent precision loss is now
+observable: the reader sets the global `OVERFLOW` flag, so the CLI prints its
+overflow warning and `(flag-set-p 'OVERFLOW)` is true. Explicit floats,
+in-range integers, and forms skipped by `#+`/`#-` set nothing. Q/H/radix
+overflow remains a parse error. The CLI warning text now also mentions
+literals.
+
 ## `cond`/`when`/`unless`/`case` compile natively (#404)
 
 These forms were checker-only placeholders in the typed elaborator, so any

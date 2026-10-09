@@ -737,9 +737,9 @@ into conformance incrementally, tracked honestly rather than silently:
   the nearest `f64`, and also rejects a `Char` — deliberately *not*
   coerced to its code point here, unlike Part V's own arithmetic
   contagion. Slots are zero-initialized (`0`/`0.0`, the same raw bit
-  pattern either way). `PRINT` emits the spec's own distinct opaque
-  tag, `<typed-array:int64:N>` / `<typed-array:float64:N>`, not
-  reusing plain `ARRAY`'s `<array:N>`. **v0 scope**: no bounds
+  pattern either way). `PRINT` emits the spec's own non-readable
+  `#<typed-array:int64 e1 ... en>` / `#<typed-array:float64 ...>` form
+  (Part III, #607; abridged after 100 elements like a plain array). **v0 scope**: no bounds
   checking — the same divergence plain `ARRAY` already has (see v0
   limits below), not a new one. **Symbol
   property lists (`GETP`/`PUTP`) now exist**
@@ -804,10 +804,12 @@ into conformance incrementally, tracked honestly rather than silently:
   leaves `pair` itself printing unchanged — proof it really is
   non-destructive, not merely undocumented). The printer has no
   cycle detection (unreachable anyway — cons cells are immutable here).
-  `PRINT` now emits Part III's required opaque, non-readable tags for
-  the two compound types this kernel has: `<lambda>` for a closure and
-  `<array:N>` for an array (`tests/cases/030_print_opaque.asm`) — before
-  this, either fell through to `print_fixnum`, which reinterprets a
+  `PRINT` emits Part III's opaque `<lambda>` tag for a closure
+  (`tests/cases/030_print_opaque.asm`); arrays are not opaque any more
+  (#527/#594/#607) but print as `#(e1 ... en)` (`#<...N more>` after 100
+  elements, `#<circular-array>` at a back-reference; the reader accepts
+  the `#(...)` literal, and rejects `#<` and `# ` —
+  `tests/cases/087_array_print.asm`). Before any tag existed, a closure or array fell through to `print_fixnum`, which reinterprets a
   tagged heapobj pointer's raw bits as a signed fixnum and printed
   meaningless garbage instead of a tag; there is still no hash table
   primitive to tag (`<hash-table>`), since hash tables here are library

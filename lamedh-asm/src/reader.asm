@@ -21,6 +21,8 @@ extern string_bytes
 extern string_len
 extern fail_wrong_type
 extern tag_char
+extern make_array
+extern array_set
 
 section .bss
 align 8
@@ -998,6 +1000,15 @@ read_list_rest:
     pop r12
     ret
 
+; "#<" and "#" followed by whitespace or end of input are read errors, as
+; in the reference (reader.rs): the abridgement marker "#<...N more>" and
+; "# (1 2)" (whitespace between '#' and '(') must not read back as a
+; symbol and silently yield a different value. Other #-prefixed tokens
+; (e.g. "#\a") are untouched by this change.
+read_fail_hash:
+    mov rsi, read_hash_err_msg
+    mov rdx, read_hash_err_msg_len
+    jmp reader_fail
 ; reader_fail(rsi=message, rdx=length) — never returns. Signals a READ
 ; error as an ordinary catchable condition (fail_wrong_type), after
 ; restoring an enclosing read_from_string_tagged's caller's reader
@@ -1132,14 +1143,84 @@ read_form:
     mov rcx, [reader_buf]
     inc rax
     cmp rax, [reader_end]
-    jae .not_sharp_quote
+    jae read_fail_hash                  ; lone trailing '#'
     movzx rax, byte [rcx+rax]
+    cmp al, '('                         ; #( : array literal
+    je .array_literal
     cmp al, 39                          ; '
-    jne .not_sharp_quote
+    je .sharp_function
+    ; "#<" (the unreadable abridgement marker / non-readable tags) and
+    ; "# " (whitespace after '#') are read errors; every other #-prefixed
+    ; token still reads as it always has (e.g. the `#\a` char spelling,
+    ; which this host reads as a plain symbol).
+    cmp al, '<'
+    je read_fail_hash
+    cmp al, ' '
+    je read_fail_hash
+    cmp al, 9
+    je read_fail_hash
+    cmp al, 10
+    je read_fail_hash
+    cmp al, 13
+    je read_fail_hash
+    jmp .not_sharp_quote
+.sharp_function:
     add qword [reader_pos], 2             ; consume '#' and '\''
     call read_form
     mov r12, rax                            ; #'-quoted datum
     jmp .function_fixed
+
+.array_literal:
+    ; #(e1 ... en) (KERNEL.md Part II, #527/#607): the elements are read,
+    ; not evaluated, and the array is built once here at read time. The
+    ; body is an ordinary list read (so `#(` nests like `(`), but it must
+    ; be a proper list: a dotted tail is a read error, as in
+    ; read_list's own dot rules. `#` must abut `(`; "# (1 2)" never
+    ; reaches this branch.
+    add qword [reader_pos], 2             ; consume '#' and '('
+    call read_list
+    mov r12, rax                            ; the element list
+    xor r8, r8                                ; element count
+    mov rdx, rax
+.alit_count:
+    cmp rdx, IMM_NIL
+    je .alit_counted
+    mov rax, rdx
+    and rax, TAG_MASK
+    cmp rax, TAG_CONS
+    jne read_fail_dot                        ; improper list: "#(1 . 2)"
+    UNTAG_PTR rdx
+    mov rdx, [rdx+8]                          ; cdr
+    inc r8
+    jmp .alit_count
+.alit_counted:
+    push rbx
+    push r13
+    push r12                                   ; keeps the list reachable (GC) while filling
+    mov rdi, r8
+    TO_FIXNUM rdi
+    call make_array
+    mov rbx, rax
+    xor r13, r13
+.alit_fill:
+    cmp r12, IMM_NIL
+    je .alit_filled
+    mov rax, r12
+    UNTAG_PTR rax
+    mov rdx, [rax]                             ; car
+    mov r12, [rax+8]                           ; cdr
+    mov rdi, rbx
+    mov rsi, r13
+    TO_FIXNUM rsi
+    call array_set
+    inc r13
+    jmp .alit_fill
+.alit_filled:
+    mov rax, rbx
+    pop r12
+    pop r13
+    pop rbx
+    jmp .out
 
 .not_sharp_quote:
     cmp al, '"'
@@ -1331,4 +1412,6 @@ read_dot_err_msg: db "READ: malformed dotted list"
 read_dot_err_msg_len: equ $ - read_dot_err_msg
 read_eof_err_msg: db "READ: end of input inside a list"
 read_eof_err_msg_len: equ $ - read_eof_err_msg
+read_hash_err_msg: db "READ: unexpected input after '#'"
+read_hash_err_msg_len: equ $ - read_hash_err_msg
 

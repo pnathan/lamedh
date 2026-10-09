@@ -1,12 +1,12 @@
-<typed-array:int64:5>
+#<typed-array:int64 0 0 0 0 0>
 42
 -7
 0
 5
-<typed-array:float64:3>
+#<typed-array:float64 0.0 0.0 0.0>
 3.5
 7.0
 CAUGHT
 CAUGHT
 CAUGHT
-<array:3>
+#(() () ())

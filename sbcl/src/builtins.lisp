@@ -314,10 +314,52 @@ the i64 bounds."
                     (with-ieee-floats (apply #',fn (mapcar #'numify args)))))))
   (wrap "+" +) (wrap "-" -) (wrap "*" *)
   (wrap "PLUS" +) (wrap "TIMES" *)
-  (wrap "=" =) (wrap "<" <) (wrap ">" >)
   (wrap "MAX" max) (wrap "MIN" min)
-  (wrap "GCD" gcd) (wrap "LCM" lcm)
-  (wrap "LESSP" <) (wrap "GREATERP" >))
+  (wrap "GCD" gcd) (wrap "LCM" lcm))
+
+(defun ->f64 (x)
+  "X as an f64. An integer beyond double range (a bignum -- an allowed host
+extension above the fixnum range, Part XII axis 1) saturates to the
+matching infinity instead of leaking a host overflow condition."
+  (handler-case (coerce x 'double-float)
+    (error ()
+      (if (plusp x) sb-ext:double-float-positive-infinity
+          sb-ext:double-float-negative-infinity))))
+
+(defun compare-chain (name fn args mixed-exact-p)
+  "KERNEL Part V comparison: two or more operands, a monotone chain over
+ADJACENT pairs that stops at the first false pair (so a later bad operand is
+never reached, as in the reference). A pair of integers is compared exactly;
+a pair of characters by code point; any other numeric pair -- in particular
+any pair involving a float -- is compared as f64. (#516 asks the Rust core
+to make the float case exact; until KERNEL.md changes, f64 is the spec.)
+MIXED-EXACT-P is true for `=`, whose integer/character pairs are exact."
+  (unless (and (consp args) (consp (cdr args)))
+    (lamedh-error (format nil "~A requires at least two arguments" name)))
+  (flet ((check (x)
+           (unless (or (numberp x) (characterp x))
+             (lamedh-error (format nil "~A: expected a number, got ~A" name (lprint-to-string x))))))
+    (loop for tail on args while (consp (cdr tail))
+          for a = (car tail) for b = (cadr tail)
+          do (check a) (check b)
+             (unless (cond ((and (integerp a) (integerp b)) (funcall fn a b))
+                           ((and (characterp a) (characterp b)) (funcall fn (char-code a) (char-code b)))
+                           ((and mixed-exact-p (not (floatp a)) (not (floatp b)))
+                            (funcall fn (numify a) (numify b)))
+                           (t (with-ieee-floats
+                                (funcall fn (->f64 (numify a)) (->f64 (numify b))))))
+               (return-from compare-chain nil)))
+    t))
+
+(macrolet ((wrap-compare (name fn mixed-exact-p)
+             `(defbuiltin ,name (&rest args)
+                ;; Two fixnums -- the common call -- skip the generic chain (#542).
+                (if (and (consp args) (consp (cdr args)) (null (cddr args))
+                         (typep (car args) 'fixnum) (typep (cadr args) 'fixnum))
+                    (bool (,fn (car args) (cadr args)))
+                    (bool (compare-chain ,name #',fn args ,mixed-exact-p))))))
+  (wrap-compare "=" = t) (wrap-compare "<" < nil) (wrap-compare ">" > nil)
+  (wrap-compare "LESSP" < nil) (wrap-compare "GREATERP" > nil))
 
 (defun lamedh-divide (a b)
   "Integer / -- truncating (C/Rust-style integer division), not CL's exact

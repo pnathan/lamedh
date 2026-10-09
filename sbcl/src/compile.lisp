@@ -172,10 +172,14 @@ lambda's closed-over environment."
        (cond
          ((eq op *lc-quote*) (lc-quote (car args)))
          ((eq op *lc-if*)
-          (destructuring-bind (c th &optional el) args
+          ;; KERNEL: exactly three operands. Anything else is left to the
+          ;; evaluator, which raises the arity error when the body runs.
+          (unless (and (consp args) (consp (cdr args)) (consp (cddr args)) (null (cdddr args)))
+            (cbail "IF takes exactly three operands"))
+          (destructuring-bind (c th el) args
             (list 'if (list 'lamedh-truthy-p (lc-compile-form c bound env))
                   (lc-compile-form th bound env)
-                  (if el (lc-compile-form el bound env) nil))))
+                  (lc-compile-form el bound env))))
          ((eq op *lc-progn*) (cons 'progn (mapcar (lambda (f) (lc-compile-form f bound env)) args)))
          ((eq op *lc-and*) (lc-compile-and args bound env))
          ((eq op *lc-or*) (lc-compile-or args bound env))

@@ -194,7 +194,14 @@ the same boundary: `(1+ x)` reads the symbol `1+`, `1+2` is a parse error.
   (`9223372036854775808` reads as the float `9223372036854775808.0`;
   `-9223372036854775808` fits and is a `Number`). It never becomes a
   bignum on any host (Part XII, axis 1, is about arithmetic results, not
-  literals).
+  literals). **The lost precision is signalled (issue #515):** reading
+  such a token sets the global `OVERFLOW` flag, the same flag integer
+  arithmetic overflow sets (Part V), so `(flag-set-p 'OVERFLOW)` observes
+  it. An explicit float literal (`9223372036854775808.0`, `1e30`) is
+  exactly what was written and sets nothing; neither does a form the
+  reader discards (`#+`/`#-` skip). The signal is "an oversized token was lexed": it is not undone if the enclosing read later fails. Q/H/radix literals are unaffected
+  (they remain parse errors). A host with no `OVERFLOW` flag may omit the
+  signal; the float value is mandatory on every host.
 - *Octal, `Q`/`q` suffix*: `-? digit+ [Qq]`. The sign is part of the
   parsed value, so `-1000000000000000000000Q` is `i64::MIN`. A complete
   token with a non-octal digit (`8Q`) or a value outside `i64` is a parse
@@ -625,6 +632,23 @@ symbol, `Nil`) is an error, never a permissive `NIL`. Equality of floats
 under `=` is exact IEEE `==` (so `(= NaN NaN)` is `NIL` — unlike `EQ`,
 Part IV).
 
+*Mixed fixnum/float comparison — normative rule (clarification, #553).*
+Unlike `+ - * /`, a comparison chain is evaluated over **adjacent pairs**,
+left to right, stopping at the first pair that fails. Each pair is decided
+on its own: two fixnums compare exactly as integers, two characters by
+code point (for `=`, any fixnum/character mix is likewise exact), and any
+other numeric pair — in particular any pair involving a `Float` — is
+converted to `f64` and compared there. So `(= 9007199254740993
+9007199254740992.0)` is `T` and `(< 9007199254740992.0 9007199254740993)`
+is `NIL`, but `(= 9007199254740993 9007199254740992 9007199254740992.0)`
+is `NIL` (its first pair is two fixnums, compared exactly). Because the
+chain stops at the first false pair, a later non-numeric operand is never
+examined: `(< 2 1 'a)` is `NIL`, while `(< 1 2 'a)` is an error. A host
+must not substitute an exact int-versus-float comparison. Whether this rule
+should change to exact comparison is an open owner decision (#516, #553);
+until `KERNEL.md` is amended, `f64` is the specification and every tier
+must agree on it.
+
 **Other numeric primitives the corpus relies on**, with their exact
 result types: `(float x)` converts a fixnum or char to `Float` (identity
 on a float). `(floor x)`, `(ceiling x)`, `(round x)`, `(truncate x)`
@@ -639,7 +663,9 @@ exponent yields a float; any float operand yields a float. `sqrt`, `sin`,
 `(gcd ...)` and `(lcm ...)` are variadic over fixnums with `(gcd)` = `0`,
 `(lcm)` = `1`. `(plusp x)` and `(minusp x)` accept a fixnum or a float;
 `(zerop x)` accepts **only a fixnum** — `(zerop 0.0)` is an error — and
-all three error on a non-number.
+all three error on a non-number. (Clarification, #553: `zerop` rejects
+every `Float` — `0.0`, `-0.0`, `NaN`, `inf` — not only a nonzero one; use
+`(= x 0)` for a float-tolerant test.)
 
 **Within 64-bit signed range, every arithmetic result must match the
 Rust reference bit-for-bit** — including float results, which are
@@ -681,8 +707,12 @@ arity mismatch.
 **`IF` takes exactly three operands**: `(if test then else)`. A
 two-operand `(if test then)` or a four-operand form is an **error**, not
 an implicit `NIL` else — `WHEN`/`UNLESS` (library macros in
-`lib/12-control.lisp`) exist for the one-armed case. The test is evaluated
-(non-tail); then exactly the selected branch is evaluated, in tail
+`lib/12-control.lisp`) exist for the one-armed case. The arity rule holds
+in every position and every tier: a two-operand `if` inside a function
+body, or in a body a host compiles ahead of time, is the same error as one
+at top level, and a host may not accept one or four operands as an
+extension (clarification, #553). The test is evaluated (non-tail); then
+exactly the selected branch is evaluated, in tail
 position; the other branch is never touched.
 
 **`COND`**: `(cond clause...)`. Each clause must be a non-empty proper

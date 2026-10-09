@@ -55,7 +55,7 @@
     (assert-equal (array->list a) '(7 0 -3))
     (assert-equal (err-msg (store a 0 1.5)) "typed array of int64: cannot store 1.5")
     (assert-equal (err-msg (store a 5 1)) "typed array: index 5 out of bounds (length 3)")
-    (assert-equal (prin1-to-string a) "<typed-array:int64:3>")))
+    (assert-equal (prin1-to-string a) "#<typed-array:int64 7 0 -3>")))
 
 (deftest ref-typed-array-float64
   (let ((a (typed-array 2 'float64)))
@@ -63,7 +63,7 @@
     (store a 0 2.5)
     (store a 1 3)
     (assert-equal (array->list a) '(2.5 3.0))
-    (assert-equal (prin1-to-string a) "<typed-array:float64:2>")))
+    (assert-equal (prin1-to-string a) "#<typed-array:float64 2.5 3.0>")))
 
 (deftest ref-typed-array-errors
   (assert-equal (err-msg (typed-array 3 'int32))
