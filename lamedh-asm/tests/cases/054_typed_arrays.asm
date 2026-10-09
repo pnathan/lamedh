@@ -38,7 +38,7 @@ e5_len: equ $ - e5
 
 d4: db "(DEFINE B (TYPED-ARRAY 3 (QUOTE FLOAT64)))"
 d4_len: equ $ - d4
-e6: db "(PRINT B)"                                                               ; #<typed-array:float64 0.000000 0.000000 0.000000>
+e6: db "(PRINT B)"                                                               ; #<typed-array:float64 0.0 0.0 0.0>
 e6_len: equ $ - e6
 d5: db "(STORE B 0 3.5)"
 d5_len: equ $ - d5
@@ -116,7 +116,7 @@ lamedh_main:
     mov rdi, e6
     mov rsi, e6_len
     call run_thunk_discard
-    call print_newline               ; #<typed-array:float64 0.000000 0.000000 0.000000>
+    call print_newline               ; #<typed-array:float64 0.0 0.0 0.0>
 
     mov rdi, d5
     mov rsi, d5_len

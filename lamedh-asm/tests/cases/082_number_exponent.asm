@@ -26,7 +26,7 @@ prog_start:
     db "(NEWLINE)", 10
     db `(PRINT (LIST (QUOTE (1e2 . 3)) ($LENGTH (QUOTE (1.5e2 X)))))`, 10  ; ((100.0 . 3) 2)
     db "(NEWLINE)", 10
-    db `(PRINT (LIST 12345678901234567890e-10 -0e5 1e400))`, 10  ; (1234567890.123457 -0.0 inf)
+    db `(PRINT (LIST 12345678901234567890e-10 -0e5 1e400))`, 10  ; (1234567890.1234567 -0.0 inf)
 prog_end:
 prog_len: equ prog_end - prog_start
 
