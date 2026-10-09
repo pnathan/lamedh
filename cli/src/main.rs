@@ -325,8 +325,8 @@ fn load_path(path: &str, env: &Shared<Environment>) -> bool {
 fn warn_on_overflow(env: &Environment, had_overflow: bool) {
     if !had_overflow && env.flag_set("OVERFLOW") {
         eprintln!(
-            "warning: integer overflow — a result wrapped around \
-             (check (flag-set-p 'overflow); reset with (clear-flag 'overflow))"
+            "warning: integer overflow — a result wrapped around or an integer \
+             literal exceeded i64 and read as a float (check (flag-set-p 'overflow); reset with (clear-flag 'overflow))"
         );
     }
 }

@@ -194,7 +194,14 @@ the same boundary: `(1+ x)` reads the symbol `1+`, `1+2` is a parse error.
   (`9223372036854775808` reads as the float `9223372036854775808.0`;
   `-9223372036854775808` fits and is a `Number`). It never becomes a
   bignum on any host (Part XII, axis 1, is about arithmetic results, not
-  literals).
+  literals). **The lost precision is signalled (issue #515):** reading
+  such a token sets the global `OVERFLOW` flag, the same flag integer
+  arithmetic overflow sets (Part V), so `(flag-set-p 'OVERFLOW)` observes
+  it. An explicit float literal (`9223372036854775808.0`, `1e30`) is
+  exactly what was written and sets nothing; neither does a form the
+  reader discards (`#+`/`#-` skip). The signal is "an oversized token was lexed": it is not undone if the enclosing read later fails. Q/H/radix literals are unaffected
+  (they remain parse errors). A host with no `OVERFLOW` flag may omit the
+  signal; the float value is mandatory on every host.
 - *Octal, `Q`/`q` suffix*: `-? digit+ [Qq]`. The sign is part of the
   parsed value, so `-1000000000000000000000Q` is `i64::MIN`. A complete
   token with a non-octal digit (`8Q`) or a value outside `i64` is a parse

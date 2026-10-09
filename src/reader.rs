@@ -219,11 +219,18 @@ fn skip_ws_and_conditionals(
                         current = rest2;
                     } else {
                         // Read the guarded form structurally, then discard it.
-                        let (rest3, _) = preceded(
+                        // A discarded form is never read, so an oversized
+                        // decimal literal inside it must not leave `OVERFLOW`
+                        // set (issue #515).
+                        let had_overflow = env.flag_set("OVERFLOW");
+                        let skipped = preceded(
                             ws,
                             parse_expr(env.clone(), remaining.saturating_sub(1)),
-                        )(rest2)?;
-                        current = rest3;
+                        )(rest2);
+                        if !had_overflow {
+                            env.clear_flag("OVERFLOW");
+                        }
+                        current = skipped?.0;
                     }
                 }
                 Err(nom::Err::Error(_)) => return Ok((rest, ())),
@@ -513,6 +520,24 @@ fn parse_number(input: &str) -> ParseResult<'_> {
     ))(input)
 }
 
+/// [`parse_number`], plus the issue #515 side effect: a decimal integer token
+/// that did not fit `i64` reads as a float (KERNEL.md Part II) and loses
+/// precision, so set the global `OVERFLOW` flag like overflowing arithmetic.
+/// An explicit float (`.`/exponent) is exactly what was written and sets
+/// nothing.
+fn parse_number_flagging(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
+    move |input: &str| {
+        let (rest, val) = parse_number(input)?;
+        if matches!(val, LispVal::Float(_)) {
+            let token = &input[..input.len() - rest.len()];
+            if token.bytes().all(|b| b == b'-' || b.is_ascii_digit()) {
+                env.set_flag("OVERFLOW");
+            }
+        }
+        Ok((rest, val))
+    }
+}
+
 /// Character literal: `'c'` denotes the character `c`, read as its integer code
 /// point (a `LispVal::Number`). lamedh has no char value type, so a character is
 /// its code point — the same number `char-code` yields and `code-char` consumes,
@@ -731,7 +756,7 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
             parse_bar_symbol(env.clone()),
             // Parse special numeric symbols like 1+ and 1- BEFORE numbers
             parse_one_plus_minus(env.clone()),
-            parse_number,
+            parse_number_flagging(env.clone()),
             // Parse earmuff symbols (*name*) - dynamic variable naming convention
             // Must come before regular symbols and operators
             parse_earmuff_symbol(env.clone()),
