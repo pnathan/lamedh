@@ -1,7 +1,7 @@
 (0 3 5 4 0)
 2
 (length: argument must be a proper list, got tail 2)
-(5 5 0 1.500000 2.500000)
+(5 5 0 1.5 2.5)
 T
 ABS: expected a number
 ((2 3) ((1) 2) () ())

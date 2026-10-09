@@ -38,15 +38,15 @@ e5_len: equ $ - e5
 
 d4: db "(DEFINE B (TYPED-ARRAY 3 (QUOTE FLOAT64)))"
 d4_len: equ $ - d4
-e6: db "(PRINT B)"                                                               ; #<typed-array:float64 0.000000 0.000000 0.000000>
+e6: db "(PRINT B)"                                                               ; #<typed-array:float64 0.0 0.0 0.0>
 e6_len: equ $ - e6
 d5: db "(STORE B 0 3.5)"
 d5_len: equ $ - d5
 d6: db "(STORE B 1 7)"                                                             ; fixnum -> f64
 d6_len: equ $ - d6
-e7: db "(PRINT (FETCH B 0))"                                                         ; 3.500000
+e7: db "(PRINT (FETCH B 0))"                                                         ; 3.5
 e7_len: equ $ - e7
-e8: db "(PRINT (FETCH B 1))"                                                           ; 7.000000
+e8: db "(PRINT (FETCH B 1))"                                                           ; 7.0
 e8_len: equ $ - e8
 
 ; type-check errors, all genuinely catchable.
@@ -116,7 +116,7 @@ lamedh_main:
     mov rdi, e6
     mov rsi, e6_len
     call run_thunk_discard
-    call print_newline               ; #<typed-array:float64 0.000000 0.000000 0.000000>
+    call print_newline               ; #<typed-array:float64 0.0 0.0 0.0>
 
     mov rdi, d5
     mov rsi, d5_len
@@ -128,12 +128,12 @@ lamedh_main:
     mov rdi, e7
     mov rsi, e7_len
     call run_thunk_discard
-    call print_newline               ; 3.500000
+    call print_newline               ; 3.5
 
     mov rdi, e8
     mov rsi, e8_len
     call run_thunk_discard
-    call print_newline               ; 7.000000
+    call print_newline               ; 7.0
 
     mov rdi, e9
     mov rsi, e9_len

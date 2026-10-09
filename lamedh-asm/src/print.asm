@@ -44,9 +44,10 @@ write_buf:
     ret
 .capture:
     ; The capture path must clobber no more than the stdout path does:
-    ; float_print keeps its own digit state in r8/r9 across its several
-    ; write_buf calls, so clobbering them here made PRINC-TO-STRING of
-    ; 2.5 read "2.775808" while PRINT of the same float was correct.
+    ; callers (float_print among them) may keep state in r8/r9 across
+    ; several write_buf calls, and clobbering them here once made
+    ; PRINC-TO-STRING of 2.5 read "2.775808" while PRINT of the same
+    ; float was correct.
     push rbx
     push r8
     push r9

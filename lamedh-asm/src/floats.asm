@@ -190,88 +190,330 @@ float_eq_exact:
     pop rbx
     ret
 
-; float_print(rdi=tagged float) -> writes a fixed 6-decimal-place
-; representation to stdout (no scientific notation, no shortest
-; round-trip formatting — see README roadmap). The FLOAT-printing half
-; of print_value's runtime dispatch (strings.asm).
+; float_print(rdi=tagged float) -> writes the float's shortest
+; round-trip decimal form to stdout (or the capture buffer), exactly as
+; KERNEL.md Part I specifies and Rust's f64::to_string produces it:
+; the fewest significant digits that read back to the same double (the
+; closest such string when several exist), laid out positionally with no
+; exponent, ".0" appended when no fraction results, the sign taken from
+; the sign bit ("-0.0"), and "inf" / "-inf" / "NaN" for the non-finite
+; values. The FLOAT-printing half of print_value's runtime dispatch
+; (strings.asm).
 ;
-; The sign comes from the sign bit, not a compare, so -0.0 prints as
-; "-0.000000" (a compare treats it as equal to 0.0 and lost the sign).
-; The six decimals are the fraction rounded to nearest, ties to even
-; (cvtsd2si under the default MXCSR rounding), carrying into the
-; integer part — 3.14159265 is "3.141593" and 0.9999999 is "1.000000",
-; not the truncated "3.141592"/"0.999999". Infinities and NaN print as
-; the reference prints them: "inf", "-inf", "NaN". A magnitude of 2^61
-; or more — beyond the fixnum range, and from 2^63 beyond cvttsd2si
-; itself — prints its exact integral value through print_big_integral
-; (issue #550: out-of-fixnum-range integer literals read as floats, so
-; they must print as themselves); such a float has no fractional bits
-; worth rounding, so the fraction is a literal ".000000".
+; Digit generation is Steele & White / Burger & Dybvig free-format
+; printing (Dragon4) over fixed-size bignums: value = f * 2^e is held as
+; the exact ratio R/S with the half-gaps M+ / M- to the neighbouring
+; doubles, S is scaled by 10 until the first digit sits just below the
+; point, and digits are shaken out by repeated subtraction until the
+; remainder falls within a half-gap (inclusive when f is even, as the
+; reader's round-to-nearest-even makes the boundary itself read back).
+; Every intermediate is exact, so the output is correct for all doubles
+; including denormals and the unequal gap below a power of two.
+;
+; Frame (rbp-relative): the bignums R, S, M+, M-, a scratch T, the
+; digit string, two decision flags, and the output text.
+NL      equ 24                  ; limbs per bignum: 1536 bits > the ~1135 needed
+BN      equ NL*8
+FP_R    equ 0
+FP_S    equ BN
+FP_MP   equ 2*BN
+FP_MM   equ 3*BN
+FP_T    equ 4*BN
+FP_DIG  equ 5*BN                ; 32 bytes: at most 17 digits are produced
+FP_TC   equ FP_DIG+32           ; tc1 (dword), tc2 (dword)
+FP_OUT  equ FP_TC+8             ; 400 bytes: "-0." + 323 zeros + 17 digits < 400
+FP_FRAME equ FP_OUT+400
+
+%macro BN_MUL10 1               ; multiply bignum at [rbp+%1] by 10
+    lea rdi, [rbp+%1]
+    mov esi, 10
+    call bn_mul_small
+%endmacro
+
 global float_print
 float_print:
     push rbx
+    push rbp
     push r12
     push r13
-    call float_val                    ; xmm0 = value
+    push r14
+    push r15
+    sub rsp, FP_FRAME
+    mov rbp, rsp
+    call float_val                      ; xmm0 = value
 
     movq rax, xmm0
-    xor r12, r12                        ; sign flag
-    btr rax, 63                           ; rax = |value|'s bits, CF = sign
+    xor r12d, r12d                      ; sign flag, from the sign bit
+    btr rax, 63                         ; rax = |value|'s bits, CF = sign
     jnc .sign_done
-    mov r12, 1
+    mov r12d, 1
 .sign_done:
-    mov rcx, 0x7FF0000000000000             ; exponent all ones:
-    cmp rax, rcx                              ; = inf, > NaN
+    mov rcx, 0x7FF0000000000000         ; exponent all ones:
+    cmp rax, rcx                        ; = inf, > NaN
     ja .nan
     je .inf
-    mov rbx, rax                                ; rbx = |value|'s bits
-    mov rcx, 0x43C0000000000000                  ; 2^61 as f64; positive
-    cmp rax, rcx                                   ; doubles order as integers
-    jae .big
-    movq xmm0, rax                              ; xmm0 = |value|
-    roundsd xmm1, xmm0, 3                         ; xmm1 = trunc(|value|) < 2^61
-    subsd xmm0, xmm1                                ; fraction (exact)
-    mulsd xmm0, [rel float_1e6]
-    cvtsd2si r13, xmm0                                ; round, ties to even
-    cvttsd2si rbx, xmm1
-    cmp r13, 1000000
-    jb .emit
-    sub r13, 1000000                                      ; x.9999996 -> x+1
+    test rax, rax
+    jz .zero
+
+    mov rcx, rax
+    shr rcx, 52                         ; rcx = biased exponent
+    mov rdx, 0xFFFFFFFFFFFFF
+    and rax, rdx                        ; rax = 52-bit fraction
+    xor r15d, r15d                      ; r15 = 1 when the gap below is half the gap above
+    test rcx, rcx
+    jz .denormal
+    test rax, rax
+    jnz .normal_f
+    cmp rcx, 1
+    jbe .normal_f                       ; smallest normal: both gaps equal
+    mov r15d, 1                         ; a power of two above the smallest normal
+.normal_f:
+    bts rax, 52                         ; implicit leading bit
+    lea rbx, [rcx-1075]                 ; e
+    jmp .have_fe
+.denormal:
+    mov rbx, -1074
+.have_fe:
+    mov r14, rax                        ; f
+    mov r13d, r14d
+    and r13d, 1
+    xor r13d, 1                         ; r13 = 1 when f is even (boundaries inclusive)
+
+    test rbx, rbx
+    js .e_neg
+    ; e >= 0: R = f << (e+1+asym), S = 2 (4), M+ = 1 << (e+asym), M- = 1 << e
+    lea rdi, [rbp+FP_R]
+    mov rsi, r14
+    call bn_set
+    lea rdi, [rbp+FP_R]
+    lea rsi, [rbx+r15+1]
+    call bn_shl
+    lea rdi, [rbp+FP_S]
+    lea rsi, [r15*2+2]
+    call bn_set
+    lea rdi, [rbp+FP_MP]
+    mov esi, 1
+    call bn_set
+    lea rdi, [rbp+FP_MP]
+    lea rsi, [rbx+r15]
+    call bn_shl
+    lea rdi, [rbp+FP_MM]
+    mov esi, 1
+    call bn_set
+    lea rdi, [rbp+FP_MM]
+    mov rsi, rbx
+    call bn_shl
+    jmp .scale
+.e_neg:
+    ; e < 0: R = f << (1+asym), S = 1 << (1-e+asym), M+ = 1 (2), M- = 1
+    lea rdi, [rbp+FP_R]
+    mov rsi, r14
+    call bn_set
+    lea rdi, [rbp+FP_R]
+    lea rsi, [r15+1]
+    call bn_shl
+    lea rdi, [rbp+FP_S]
+    mov esi, 1
+    call bn_set
+    lea rdi, [rbp+FP_S]
+    lea rsi, [r15+1]
+    sub rsi, rbx
+    call bn_shl
+    lea rdi, [rbp+FP_MP]
+    lea rsi, [r15+1]
+    call bn_set
+    lea rdi, [rbp+FP_MM]
+    mov esi, 1
+    call bn_set
+
+.scale:
+    xor ebx, ebx                        ; rbx = k: value = 0.DIGITS * 10^k
+.up:                                    ; raise k while R+M+ reaches S
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_R]
+    call bn_copy
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_MP]
+    call bn_add
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_S]
+    call bn_cmp
+    test r13d, r13d
+    jz .up_odd
+    test eax, eax
+    js .down                            ; even: stop when R+M+ < S
+    jmp .up_step
+.up_odd:
+    test eax, eax
+    jle .down                           ; odd: stop when R+M+ <= S
+.up_step:
+    BN_MUL10 FP_S
     inc rbx
+    jmp .up
+.down:                                  ; lower k while (R+M+)*10 stays under S
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_R]
+    call bn_copy
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_MP]
+    call bn_add
+    BN_MUL10 FP_T
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_S]
+    call bn_cmp
+    test r13d, r13d
+    jz .down_odd
+    test eax, eax
+    jns .gen                            ; even: stop when (R+M+)*10 >= S
+    jmp .down_step
+.down_odd:
+    test eax, eax
+    jg .gen                             ; odd: stop when (R+M+)*10 > S
+.down_step:
+    BN_MUL10 FP_R
+    BN_MUL10 FP_MP
+    BN_MUL10 FP_MM
+    dec rbx
+    jmp .down
+
+.gen:
+    xor r14d, r14d                      ; r14 = digits produced
+.gen_loop:
+    BN_MUL10 FP_R
+    BN_MUL10 FP_MP
+    BN_MUL10 FP_MM
+    xor r15d, r15d                      ; r15 = the digit: floor(R/S), R < 10*S
+.dsub:
+    lea rdi, [rbp+FP_R]
+    lea rsi, [rbp+FP_S]
+    call bn_cmp
+    test eax, eax
+    js .dsub_done
+    lea rdi, [rbp+FP_R]
+    lea rsi, [rbp+FP_S]
+    call bn_sub
+    inc r15d
+    jmp .dsub
+.dsub_done:
+    ; tc1: R within M- of zero (R <= M- when even, R < M- when odd)
+    lea rdi, [rbp+FP_R]
+    lea rsi, [rbp+FP_MM]
+    call bn_cmp
+    mov edx, 1
+    sub edx, r13d
+    add edx, eax                        ; c + (1-even) <= 0
+    xor ecx, ecx
+    test edx, edx
+    setle cl
+    mov [rbp+FP_TC], ecx
+    ; tc2: R + M+ reaches S (>= when even, > when odd)
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_R]
+    call bn_copy
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_MP]
+    call bn_add
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_S]
+    call bn_cmp
+    lea edx, [rax+r13-1]                ; c - (1-even) >= 0
+    xor ecx, ecx
+    test edx, edx
+    setns cl
+    mov [rbp+FP_TC+4], ecx
+
+    mov eax, [rbp+FP_TC]
+    mov edx, [rbp+FP_TC+4]
+    test eax, eax
+    jz .no_tc1
+    test edx, edx
+    jz .last_d                          ; only tc1: round down
+    lea rdi, [rbp+FP_T]                 ; both: nearer of d and d+1, tie up
+    lea rsi, [rbp+FP_R]
+    call bn_copy
+    lea rdi, [rbp+FP_T]
+    mov esi, 2
+    call bn_mul_small
+    lea rdi, [rbp+FP_T]
+    lea rsi, [rbp+FP_S]
+    call bn_cmp
+    test eax, eax
+    js .last_d
+    jmp .last_d1
+.no_tc1:
+    test edx, edx
+    jnz .last_d1                        ; only tc2: round up
+    lea rax, [r15+'0']                  ; neither: emit d, keep going
+    mov [rbp+FP_DIG+r14], al
+    inc r14d
+    jmp .gen_loop
+.last_d1:
+    inc r15d
+.last_d:
+    lea rax, [r15+'0']
+    mov [rbp+FP_DIG+r14], al
+    inc r14d
+
+    ; Layout: n = r14 digits, value = 0.DIGITS * 10^k (k = rbx)
+    lea r15, [rbp+FP_OUT]
+    test r12d, r12d
+    jz .lay
+    mov byte [r15], '-'
+    inc r15
+.lay:
+    test rbx, rbx
+    jg .k_pos
+    mov byte [r15], '0'                 ; k <= 0: 0.000DIGITS
+    mov byte [r15+1], '.'
+    add r15, 2
+    mov rcx, rbx
+    neg rcx
+    call fp_zeros
+    xor ecx, ecx
+    mov rdx, r14
+    call fp_digits
+    jmp .emit
+.k_pos:
+    cmp rbx, r14
+    jl .point_inside
+    xor ecx, ecx                        ; k >= n: DIGITS000.0
+    mov rdx, r14
+    call fp_digits
+    mov rcx, rbx
+    sub rcx, r14
+    call fp_zeros
+    mov byte [r15], '.'
+    mov byte [r15+1], '0'
+    add r15, 2
+    jmp .emit
+.point_inside:                          ; 0 < k < n: DIG.ITS
+    xor ecx, ecx
+    mov rdx, rbx
+    call fp_digits
+    mov byte [r15], '.'
+    inc r15
+    mov rcx, rbx
+    mov rdx, r14
+    call fp_digits
 .emit:
-    ; every value lives in rbx/r12/r13 (callee-saved) from here on:
-    ; write_buf clobbers rax (the stdout path leaves the syscall's byte
-    ; count in it; the capture path used by PRINC-TO-STRING leaves a
-    ; buffer address there, which once printed 2.5 as "2.775808").
-    test r12, r12
-    jz .int_part
-    mov rsi, minus_buf
-    mov rdx, 1
+    lea rsi, [rbp+FP_OUT]
+    mov rdx, r15
+    sub rdx, rsi
     call write_buf
-.int_part:
-    mov rdi, rbx
-    call print_u64
-    mov rsi, dot_buf
-    mov rdx, 1
-    call write_buf
-    mov rdi, r13
-    call print_fixnum6
     jmp .out
-.big:
-    test r12, r12
-    jz .big_digits
+.zero:
+    test r12d, r12d
+    jz .zero_text
     mov rsi, minus_buf
     mov rdx, 1
     call write_buf
-.big_digits:
-    mov rdi, rbx                              ; |value|'s bits: sign clear, finite
-    call print_big_integral
-    mov rsi, zero_frac_buf
-    mov rdx, zero_frac_buf_len
+.zero_text:
+    mov rsi, zero_buf
+    mov rdx, 3
     call write_buf
     jmp .out
 .inf:
-    test r12, r12
+    test r12d, r12d
     jz .inf_text
     mov rsi, minus_buf
     mov rdx, 1
@@ -286,157 +528,171 @@ float_print:
     mov rdx, 3
     call write_buf
 .out:
-    pop r13
-    pop r12
-    pop rbx
-    ret
-
-
-; print_big_integral(rdi=bits of a finite f64 >= 2^61) -> writes its
-; exact decimal integer value. value = m * 2^e with m the 53-bit
-; significand and e = biased exponent - 1075 >= 9, so the exact digits
-; come from m in base-10^9 limbs doubled e times (at most 971 doublings
-; over at most 35 limbs: 1.8e308 has 309 digits). Clobbers rax, rcx,
-; rdx, rsi, rdi, r8, r9, r11.
-print_big_integral:
-    push rbx
-    push r12
-    push r13
-    push r14
-    push r15
-    sub rsp, 336                     ; [rsp, +320): 40 limbs; [+320, +336): digits
-    mov rax, rdi
-    mov r12, rax
-    shr r12, 52
-    sub r12, 1075                      ; r12 = doublings still to apply
-    mov rdx, 0xFFFFFFFFFFFFF
-    and rax, rdx
-    bts rax, 52                          ; rax = m, 2^52 <= m < 2^53
-    mov r8, 1000000000
-    xor rdx, rdx
-    div r8
-    mov [rsp], rdx                         ; low limb
-    mov [rsp+8], rax                         ; m < 1e18: high limb, nonzero
-    mov r13, 2                                 ; limb count
-.dbl:
-    test r12, r12
-    jz .emit
-    xor rcx, rcx
-    xor r9, r9                                   ; carry
-.dbl_limb:
-    cmp rcx, r13
-    jae .dbl_end
-    mov rax, [rsp+rcx*8]
-    add rax, rax
-    add rax, r9
-    xor r9, r9
-    cmp rax, r8
-    jb .dbl_store
-    sub rax, r8
-    mov r9, 1
-.dbl_store:
-    mov [rsp+rcx*8], rax
-    inc rcx
-    jmp .dbl_limb
-.dbl_end:
-    test r9, r9
-    jz .dbl_next
-    mov qword [rsp+r13*8], 1
-    inc r13
-.dbl_next:
-    dec r12
-    jmp .dbl
-.emit:
-    lea r14, [r13-1]                 ; most significant limb first
-    xor r15, r15                       ; its zero-pad width: none
-.emit_limb:
-    mov rax, [rsp+r14*8]
-    lea rsi, [rsp+336]
-    xor rcx, rcx
-    mov r8, 10
-.digit:
-    xor rdx, rdx
-    div r8
-    add dl, '0'
-    dec rsi
-    mov [rsi], dl
-    inc rcx
-    test rax, rax
-    jnz .digit
-    cmp rcx, r15
-    jb .digit                            ; rax is 0 now: pads with '0'
-    lea rdx, [rsp+336]
-    sub rdx, rsi
-    call write_buf
-    mov r15, 9                             ; every later limb: 9 digits
-    dec r14
-    jns .emit_limb
-    add rsp, 336
+    add rsp, FP_FRAME
     pop r15
     pop r14
     pop r13
     pop r12
+    pop rbp
     pop rbx
     ret
 
-; print_u64(rdi=raw unsigned int) -> writes its decimal digits
-; (float_print's integer part, which can exceed the fixnum range
-; print_fixnum takes).
-print_u64:
-    push rbx
-    sub rsp, 32
-    mov rax, rdi
-    mov r9, 10
-    lea rsi, [rsp+31]
+; fp_zeros(rcx=count, r15=out) -> writes rcx '0' bytes at r15, advancing it.
+fp_zeros:
+    test rcx, rcx
+    jz .done
 .loop:
-    xor rdx, rdx
-    div r9
-    add dl, '0'
-    dec rsi
-    mov [rsi], dl
-    test rax, rax
-    jnz .loop
-    lea rdx, [rsp+31]
-    sub rdx, rsi
-    call write_buf
-    add rsp, 32
-    pop rbx
-    ret
-
-; print_fixnum6(rdi=raw int, 0..999999) -> writes exactly 6 digits,
-; zero-padded (float_print's fractional part).
-print_fixnum6:
-    push rbx
-    sub rsp, 16
-    mov rax, rdi
-    mov r9, 10
-    lea rsi, [rsp+15]
-    mov byte [rsi], 0
-    mov rcx, 6
-.loop:
-    xor rdx, rdx
-    div r9
-    add dl, '0'
-    dec rsi
-    mov [rsi], dl
+    mov byte [r15], '0'
+    inc r15
     dec rcx
     jnz .loop
-    lea rdx, [rsp+15]
-    sub rdx, rsi
-    call write_buf
-    add rsp, 16
-    pop rbx
+.done:
+    ret
+
+; fp_digits(rcx=start, rdx=end, rbp=frame, r15=out) -> copies digits
+; [start, end) to r15, advancing it.
+fp_digits:
+.loop:
+    cmp rcx, rdx
+    jae .done
+    mov al, [rbp+FP_DIG+rcx]
+    mov [r15], al
+    inc r15
+    inc rcx
+    jmp .loop
+.done:
+    ret
+
+; ---- fixed-size little-endian bignums (NL 64-bit limbs) ----------------
+; All take the bignum in rdi (and a second operand in rsi) and preserve
+; rdi; they clobber rax, rcx, rdx and r8. All but bn_shl preserve rsi;
+; bn_shl also clobbers rsi, r10 and r11. Values never outgrow NL limbs (see FP_* above), so
+; carries out of the top limb are dropped.
+
+; bn_zero(rdi)
+bn_zero:
+    xor eax, eax
+    xor ecx, ecx
+.loop:
+    mov [rdi+rcx*8], rax
+    inc ecx
+    cmp ecx, NL
+    jb .loop
+    ret
+
+; bn_set(rdi, rsi=u64) -> bignum = rsi
+bn_set:
+    call bn_zero
+    mov [rdi], rsi
+    ret
+
+; bn_copy(rdi=dst, rsi=src)
+bn_copy:
+    xor ecx, ecx
+.loop:
+    mov rax, [rsi+rcx*8]
+    mov [rdi+rcx*8], rax
+    inc ecx
+    cmp ecx, NL
+    jb .loop
+    ret
+
+; bn_mul_small(rdi, rsi=u64 multiplier) -> bignum *= rsi
+bn_mul_small:
+    xor ecx, ecx
+    xor r8d, r8d                        ; carry
+.loop:
+    mov rax, [rdi+rcx*8]
+    mul rsi
+    add rax, r8
+    adc rdx, 0
+    mov [rdi+rcx*8], rax
+    mov r8, rdx
+    inc ecx
+    cmp ecx, NL
+    jb .loop
+    ret
+
+; bn_shl(rdi, rsi=bit count) -> bignum <<= rsi, in chunks of at most 60 bits
+bn_shl:
+    mov r10, rsi
+.chunk:
+    test r10, r10
+    jz .done
+    mov r11, r10
+    cmp r11, 60
+    jbe .take
+    mov r11d, 60
+.take:
+    mov ecx, r11d
+    mov esi, 1
+    shl rsi, cl
+    sub r10, r11
+    call bn_mul_small
+    jmp .chunk
+.done:
+    ret
+
+; bn_add(rdi, rsi) -> bignum += [rsi]
+bn_add:
+    xor ecx, ecx
+    xor r8d, r8d                        ; carry
+.loop:
+    mov rax, [rdi+rcx*8]
+    xor edx, edx
+    add rax, [rsi+rcx*8]
+    adc edx, 0
+    add rax, r8
+    adc edx, 0
+    mov [rdi+rcx*8], rax
+    mov r8, rdx
+    inc ecx
+    cmp ecx, NL
+    jb .loop
+    ret
+
+; bn_sub(rdi, rsi) -> bignum -= [rsi] (caller guarantees no underflow)
+bn_sub:
+    xor ecx, ecx
+    xor r8d, r8d                        ; borrow
+.loop:
+    mov rax, [rdi+rcx*8]
+    xor edx, edx
+    sub rax, [rsi+rcx*8]
+    adc edx, 0
+    sub rax, r8
+    adc edx, 0
+    mov [rdi+rcx*8], rax
+    mov r8, rdx
+    inc ecx
+    cmp ecx, NL
+    jb .loop
+    ret
+
+; bn_cmp(rdi, rsi) -> eax = -1, 0 or 1 as [rdi] <, ==, > [rsi]
+bn_cmp:
+    mov ecx, NL-1
+.loop:
+    mov rax, [rdi+rcx*8]
+    cmp rax, [rsi+rcx*8]
+    ja .gt
+    jb .lt
+    dec ecx
+    jns .loop
+    xor eax, eax
+    ret
+.gt:
+    mov eax, 1
+    ret
+.lt:
+    mov eax, -1
     ret
 
 section .rodata
 minus_buf: db "-"
-dot_buf: db "."
-zero_frac_buf: db ".000000"
-zero_frac_buf_len equ $ - zero_frac_buf
+zero_buf: db "0.0"
 inf_buf: db "inf"
 nan_buf: db "NaN"
-align 8
-float_1e6: dq 1.0e6
 
 ; ---------------------------------------------------------------------
 ; Math library (the reference's SQRT/SIN/COS/TAN/EXP/LOG/FLOOR/CEILING/

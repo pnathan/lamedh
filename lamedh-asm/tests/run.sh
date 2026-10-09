@@ -484,13 +484,13 @@ T'
         '(DEFUN S (N) (IF (EQ N 0) 0 (+ 1 (S (- N 1))))) (PRINT (S 50000000))'
     err_case deep_rest_recursion_fast 0 "(1 2 3 4)" "" \
         '(DEFUN R (N &REST XS) (IF (EQ N 0) XS (R (- N 1) 1 2 3 4))) (PRINT (R 100000))'
-    err_case math_library 0 "(4.000000 1.500000 2 -3 3 3 -3 2 -2 1.000000 0.000000 3.000000 0.000000 1.000000 0.000000 2 1 1 -2305843009213693952 2)" "" \
+    err_case math_library 0 "(4.0 1.5 2 -3 3 3 -3 2 -2 1.0 0.0 3.0 0.0 1.0 0.0 2 1 1 -2305843009213693952 2)" "" \
         '(PRINT (LIST (SQRT 16) (SQRT 2.25) (FLOOR 2.5) (FLOOR -2.5) (CEILING 2.1) (ROUND 2.5) (ROUND -2.5) (ROUND 2.4) (TRUNCATE -2.7) (EXP 0) (LOG 1) (LOG 8 2) (SIN 0) (COS 0) (TAN 0) (ROT 1 1) (ROT 2 -1) (ROT 1 62) (ROT 1 -1) (ROT (ROT 2 -1) 1)))'
-    err_case math_as_values 0 "(4.000000 3 (1 4 9))" "" \
+    err_case math_as_values 0 "(4.0 3 (1 4 9))" "" \
         '(PRINT (LIST (FUNCALL (FUNCTION SQRT) 16) (APPLY (FUNCTION ROUND) (LIST 2.5)) (MAPCAR (LAMBDA (X) (TRUNCATE (SQRT (* X X X X)))) (LIST 1 2 3))))'
     err_case math_type_error 1 "" "expected a number (fixnum or float): x" \
         '(PRINT (SQRT "x"))'
-    err_case exp_log_roundtrip 0 "(2.718282 1.000000 7.389056 20.085537)" "" \
+    err_case exp_log_roundtrip 0 "(2.718281828459045 1.0 7.38905609893065 20.085536923187668)" "" \
         '(PRINT (LIST (EXP 1) (LOG (EXP 1)) (EXP 2) (EXP 3)))'
     err_case read_eof 1 "" "READ: end of input" \
         '(PRINT (READ))'
@@ -502,7 +502,7 @@ T'
         '(FD-WRITE 999 "x")'
     err_case syscall_raw 0 "(T 3 -2 T)" "" \
         '(PRINT (LIST (< 0 (SYSCALL SYS-GETPID)) (SYSCALL SYS-WRITE 1 "abc" 3) (SYSCALL SYS-OPEN "/nonexistent/x" 0 0) (EQ (SYSCALL 1 1 "hello" 5) 5)))'
-    err_case syscall_bad_arg 1 "" "SYSCALL: argument must be a fixnum, string, NIL, or list of strings: 1.500000" \
+    err_case syscall_bad_arg 1 "" "SYSCALL: argument must be a fixnum, string, NIL, or list of strings: 1.5" \
         '(SYSCALL 39 1.5)'
     err_case file_p 0 "(T () ())" "" \
         '(PRINT (LIST (FILE-P "/etc/passwd") (FILE-P "/etc") (FILE-P "/nonexistent")))'
@@ -510,7 +510,7 @@ T'
     # be an error), bit-for-bit the reference's f64::powi: 7^22 by
     # square-and-multiply is 3909821048582988288, by naive repeated
     # multiplication 3909821048582987776 — only the former may match.
-    err_case expt_negative_exponent 0 "(T () 0.500000 0.250000 0.010000 inf 1024)" "" \
+    err_case expt_negative_exponent 0 "(T () 0.5 0.25 0.01 inf 1024)" "" \
         '(PRINT (LIST (EQ (EXPT 7 -22) (F/ 1.0 3909821048582988288)) (EQ (EXPT 7 -22) (F/ 1.0 3909821048582987776)) (EXPT 2 -1) (EXPT 2.0 -2) (EXPT 10 -2) (EXPT 0 -1) (EXPT 2 10)))'
     # SHELL returns (code stdout stderr) like the reference; printed
     # readably so the strings show their quotes and newlines. A
@@ -615,7 +615,7 @@ LISP
     stdlib_want='3
 (1 4 9)
 #S(SOME 42)
-((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.500000 2.500000) 4.000000) ((+) 0)) (SEE-ALSO - * /))
+((NAME . +) (TYPE . FUNCTION) (SYNTAX . (+ number...)) (CATEGORY . ARITHMETIC) (DESCRIPTION . Returns the sum of all arguments. With no arguments, returns 0.) (ARGS (NUMBERS Zero or more numbers to add)) (RETURNS . Sum of arguments (float if any argument is float)) (EXAMPLES ((+ 1 2 3) 6) ((+ 1.5 2.5) 4.0) ((+) 0)) (SEE-ALSO - * /))
 ab
 T
 T
@@ -626,8 +626,8 @@ hi
 a%20b%26c
 a b&c
 ((TYPE . text) (SUBTYPE . html) (PARAMETERS (charset . utf-8)))
-{"k":[1,2.500000,"s",true,null]}
-(2 3 "a\"b" (1 2 3) 2.500000)'
+{"k":[1,2.5,"s",true,null]}
+(2 3 "a\"b" (1 2 3) 2.5)'
     stdlib_got=$("$runner_bin" "$stdlib_prog")
     stdlib_exit=$?
     if [ "$stdlib_got" = "$stdlib_want" ] && [ "$stdlib_exit" = "0" ]; then

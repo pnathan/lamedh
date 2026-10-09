@@ -62,10 +62,11 @@ fixed and observable, never silent:
 - *Literals.* A decimal integer token outside the fixnum range reads as
   a `Float` — KERNEL.md Part II's own rule for a token outside the
   integer range, applied at this width — correctly rounded (exact
-  u64/multi-limb accumulation, one rounding) and printed exactly:
-  `2305843009213693952` (2^61) reads as `2305843009213693952.000000`,
-  `9223372036854775807` as `9223372036854775808.000000`,
-  `99999999999999999999` as `100000000000000000000.000000`; a token
+  u64/multi-limb accumulation, one rounding) and printed shortest-
+  round-trip: `2305843009213693952` (2^61) reads as
+  `2305843009213694000.0`, `9223372036854775807` as
+  `9223372036854776000.0`, `99999999999999999999` as
+  `100000000000000000000.0`; a token
   beyond the largest double reads as `inf`/`-inf`. So a literal in
   `[2^61, 2^63)` (or `[-2^63, -2^61)`) that the reference reads as a
   `Number` is a `Float` here; portable programs should keep integer
@@ -1098,12 +1099,14 @@ concrete reason it landed last of the three features in its spec:
   truncated.
 - Float arithmetic (`F+`/`F-`/`F*`/`F/`/`F<`) is a real host-routine
   call per operation, not an inlined target instruction — see "The
-  kernel surface" above. `PRINT` of a float is always fixed
-  6-decimal-place formatting (`3.500000`), never scientific notation
-  or shortest round-trip output: the six decimals are rounded to
-  nearest (ties to even), the sign of `-0.0` is kept, and infinities
-  and NaN print as the reference's `inf`/`-inf`/`NaN` (#551); a
-  magnitude of 2^61 or more prints its exact integral value (#550). A
+  kernel surface" above. `PRINT` of a float is the shortest decimal
+  that reads back to the same double, as KERNEL.md Part I and the
+  reference's `f64::to_string` specify (`3.5`, `0.1`, `1.4142135623730951`,
+  `1000000000000000000.0`): never scientific notation, `.0` appended to
+  an integral value, the sign of `-0.0` kept, and infinities and NaN
+  printed as `inf`/`-inf`/`NaN` (#551). The digits come from
+  Steele-White/Burger-Dybvig free-format printing over fixed-size
+  bignums (`floats.asm`). A
   float literal may carry an `e`/`E` exponent (`1.5e2`, `1e5`, `-2E-3`).
   There is no `FLOAT<`-style family for `<=`/`>`/`>=`/`=` yet, and the
   `F`-prefixed ops take no mixed operands (`(F+ 1 2.0)` does not work —
@@ -2496,8 +2499,7 @@ bugs no existing test had exercised:
 - XMM support in `codegen.asm`, so float arithmetic can be inlined as
   target SSE2 instructions instead of a host-routine call per
   operation; mixed fixnum/float arithmetic; `FLOAT<=`/`FLOAT>`/
-  `FLOAT>=`/`FLOAT=`; a real (shortest round-trip or scientific-
-  notation) float printer instead of fixed 6-decimal-place formatting.
+  `FLOAT>=`/`FLOAT=`; scientific-notation float output.
 - Bignums — the rest of the Lisp 1.5 + extensions surface the Rust
   interpreter (`../src`) already implements. `$VAU`/`DEFDYNAMIC`
   existing means the entire reference Prelude tier (`00-core.lisp`
