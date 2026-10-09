@@ -321,6 +321,9 @@ substring:
 section .bss
 global print_readably
 print_readably: resq 1
+; Head of the chain of arrays currently being printed (print_array_value);
+; 0 when none. Frames live on the machine stack.
+array_print_top: resq 1
 section .rodata
 dquote_buf: db '"'
 esc_dquote: db '\"'
@@ -489,6 +492,131 @@ print_list:
     pop rbx
     ret
 
+; print_array_value(rdi=tagged array or typed array, rsi=1 if typed)
+; — KERNEL.md Part III, mirroring printer::print_elements (src/printer.rs):
+; a plain array prints "#(e1 ... en)" ("#()" when empty), a typed array
+; the non-readable "#<typed-array:TYPE e1 ... en>"; each element prints
+; by print_value's own rules. After ARRAY_PRINT_LIMIT (100) elements the
+; rest is replaced by the unreadable marker " #<...N more>", so an
+; abridged array can never read back as a shorter one. An array reached
+; again while it is still being printed (STORE can make an array contain
+; itself) prints "#<circular-array>" at the back-reference: the
+; in-progress arrays form a chain of two-word frames on the machine
+; stack, [array][prev frame], headed by array_print_top. Typed-array
+; elements are fetched through array_ref (re-tagged / re-boxed per read,
+; as FETCH does).
+%define ARRAY_PRINT_LIMIT 100
+extern array_ref
+print_array_value:
+    push rbx
+    push r12
+    push r13
+    push r14
+    mov rbx, rdi
+    mov r14, rsi
+    mov rax, [array_print_top]
+.scan:
+    test rax, rax
+    jz .fresh
+    cmp [rax], rbx
+    je .circular
+    mov rax, [rax+8]
+    jmp .scan
+.circular:
+    mov rsi, circular_tag
+    mov rdx, circular_tag_len
+    call write_buf
+    jmp .ret
+.fresh:
+    push qword [array_print_top]
+    push rbx
+    mov [array_print_top], rsp
+    test r14, r14
+    jnz .open_typed
+    mov rsi, array_open
+    mov rdx, 2
+    call write_buf
+    jmp .opened
+.open_typed:
+    mov rsi, typed_array_tag_open
+    mov rdx, typed_array_tag_open_len
+    call write_buf
+    mov rax, rbx
+    UNTAG_PTR rax
+    cmp qword [rax+16], 0                 ; elem_type: 0=INT64
+    jne .typed_float_name
+    mov rsi, int64_tag
+    mov rdx, int64_tag_len
+    jmp .typed_name_out
+.typed_float_name:
+    mov rsi, float64_tag
+    mov rdx, float64_tag_len
+.typed_name_out:
+    call write_buf
+.opened:
+    mov rdi, rbx
+    call array_length_tagged
+    mov r12, rax
+    sar r12, 2                            ; raw length
+    xor r13, r13
+.elems:
+    cmp r13, r12
+    jae .closing
+    cmp r13, ARRAY_PRINT_LIMIT
+    jae .abridged
+    test r13, r13
+    jnz .sep
+    test r14, r14                         ; a typed array's header has no space of its own
+    jz .no_sep
+.sep:
+    mov rsi, space_buf
+    mov rdx, 1
+    call write_buf
+.no_sep:
+    mov rdi, rbx
+    mov rsi, r13
+    TO_FIXNUM rsi
+    call array_ref
+    mov rdi, rax
+    ; Elements always print readably (strings quoted), even under PRINC --
+    ; printer::print_elements calls print() per element.
+    push qword [print_readably]
+    mov qword [print_readably], 1
+    call print_value
+    pop qword [print_readably]
+    inc r13
+    jmp .elems
+.abridged:
+    mov rsi, more_open
+    mov rdx, more_open_len
+    call write_buf
+    mov rax, r12
+    sub rax, r13
+    TO_FIXNUM rax
+    mov rdi, rax
+    call print_fixnum
+    mov rsi, more_close
+    mov rdx, more_close_len
+    call write_buf
+.closing:
+    test r14, r14
+    jnz .close_typed
+    mov rsi, rparen_buf
+    jmp .close_out
+.close_typed:
+    mov rsi, array_tag_close
+.close_out:
+    mov rdx, 1
+    call write_buf
+    pop rax                               ; this array's frame
+    pop qword [array_print_top]
+.ret:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 ; print_value(rdi=tagged value) -> writes the PRIN1-style readable
 ; representation of any value this kernel has (KERNEL.md Part III):
 ; NIL as "()", T as "T", a symbol as its name, a cons as a recursively
@@ -572,48 +700,18 @@ print_value:
     call is_array
     test rax, rax
     jz .not_array
-    mov rsi, array_tag_open
-    mov rdx, array_tag_open_len
-    call write_buf
     mov rdi, rbx
-    call array_length_tagged
-    mov rdi, rax
-    call print_fixnum
-    mov rsi, array_tag_close
-    mov rdx, 1
-    call write_buf
+    xor esi, esi                          ; plain array
+    call print_array_value
     jmp .out
 .not_array:
     mov rdi, rbx
     call is_typed_array
     test rax, rax
     jz .not_typed_array
-    mov rsi, typed_array_tag_open
-    mov rdx, typed_array_tag_open_len
-    call write_buf
-    mov rax, rbx
-    UNTAG_PTR rax
-    cmp qword [rax+16], 0                 ; elem_type: 0=INT64
-    jne .typed_array_float_tag
-    mov rsi, int64_tag
-    mov rdx, int64_tag_len
-    call write_buf
-    jmp .typed_array_tag_done
-.typed_array_float_tag:
-    mov rsi, float64_tag
-    mov rdx, float64_tag_len
-    call write_buf
-.typed_array_tag_done:
-    mov rsi, colon_buf
-    mov rdx, 1
-    call write_buf
     mov rdi, rbx
-    call array_length_tagged
-    mov rdi, rax
-    call print_fixnum
-    mov rsi, array_tag_close
-    mov rdx, 1
-    call write_buf
+    mov esi, 1                            ; typed array
+    call print_array_value
     jmp .out
 .not_typed_array:
     mov rax, rbx
@@ -692,16 +790,20 @@ lparen_buf: db "("
 rparen_buf: db ")"
 space_buf:  db " "
 dot_buf:    db " . "
-array_tag_open:     db "<array:"
-array_tag_open_len: equ $ - array_tag_open
+array_open:         db "#("
 array_tag_close:    db ">"
-typed_array_tag_open:     db "<typed-array:"
+circular_tag:       db "#<circular-array>"
+circular_tag_len:   equ $ - circular_tag
+more_open:          db " #<..."
+more_open_len:      equ $ - more_open
+more_close:         db " more>"
+more_close_len:     equ $ - more_close
+typed_array_tag_open:     db "#<typed-array:"
 typed_array_tag_open_len: equ $ - typed_array_tag_open
 int64_tag:     db "int64"
 int64_tag_len: equ $ - int64_tag
 float64_tag:     db "float64"
 float64_tag_len: equ $ - float64_tag
-colon_buf: db ":"
 lambda_tag:     db "<lambda>"
 lambda_tag_len: equ $ - lambda_tag
 record_tag_open:     db "#S("

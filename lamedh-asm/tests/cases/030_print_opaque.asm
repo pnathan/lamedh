@@ -1,6 +1,8 @@
 ; 030_print_opaque — KERNEL.md Part III requires an opaque, non-readable
-; tag for value types with no literal syntax: "<lambda>" for closures,
-; "<array:N>" for arrays. Before this, PRINT of either fell through to
+; tag for value types with no literal syntax: "<lambda>" for closures.
+; Arrays are no longer opaque (#527/#594/#607): they print their elements
+; as "#(e1 ... en)" (see 087_array_print). Before this, PRINT of either
+; fell through to
 ; print_fixnum, which reinterprets a tagged heapobj pointer's raw bits
 ; as a signed fixnum and prints meaningless garbage instead of a tag.
 
@@ -12,9 +14,9 @@ extern compile_thunk
 extern print_newline
 
 section .rodata
-e1: db "(PRINT (ARRAY 3))"                    ; <array:3>
+e1: db "(PRINT (ARRAY 3))"                    ; #(() () ())
 e1_len: equ $ - e1
-e2: db "(PRINT (ARRAY 0))"                    ; <array:0>
+e2: db "(PRINT (ARRAY 0))"                    ; #()
 e2_len: equ $ - e2
 e3: db "(PRINT (LAMBDA (X) X))"               ; <lambda>
 e3_len: equ $ - e3

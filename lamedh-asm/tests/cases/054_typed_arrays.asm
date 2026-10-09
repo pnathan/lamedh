@@ -21,7 +21,7 @@ extern print_newline
 section .rodata
 d1: db "(DEFINE A (TYPED-ARRAY 5 (QUOTE INT64)))"
 d1_len: equ $ - d1
-e1: db "(PRINT A)"                                                     ; <typed-array:int64:5>
+e1: db "(PRINT A)"                                                     ; #<typed-array:int64 0 0 0 0 0>
 e1_len: equ $ - e1
 d2: db "(STORE A 0 42)"
 d2_len: equ $ - d2
@@ -38,7 +38,7 @@ e5_len: equ $ - e5
 
 d4: db "(DEFINE B (TYPED-ARRAY 3 (QUOTE FLOAT64)))"
 d4_len: equ $ - d4
-e6: db "(PRINT B)"                                                               ; <typed-array:float64:3>
+e6: db "(PRINT B)"                                                               ; #<typed-array:float64 0.000000 0.000000 0.000000>
 e6_len: equ $ - e6
 d5: db "(STORE B 0 3.5)"
 d5_len: equ $ - d5
@@ -57,8 +57,8 @@ e10_len: equ $ - e10
 e11: db "(PRINT (HANDLER-CASE (TYPED-ARRAY 3 (QUOTE BOGUS)) (E (X) (QUOTE CAUGHT))))"        ; CAUGHT
 e11_len: equ $ - e11
 
-; a plain ARRAY is unaffected — still prints its own tag, not typed.
-e12: db "(PRINT (ARRAY 3))"                                                                    ; <array:3>
+; a plain ARRAY is unaffected — prints as #(...), not as a typed array.
+e12: db "(PRINT (ARRAY 3))"                                                                    ; #(() () ())
 e12_len: equ $ - e12
 
 section .text
@@ -81,7 +81,7 @@ lamedh_main:
     mov rdi, e1
     mov rsi, e1_len
     call run_thunk_discard
-    call print_newline               ; <typed-array:int64:5>
+    call print_newline               ; #<typed-array:int64 0 0 0 0 0>
 
     mov rdi, d2
     mov rsi, d2_len
@@ -116,7 +116,7 @@ lamedh_main:
     mov rdi, e6
     mov rsi, e6_len
     call run_thunk_discard
-    call print_newline               ; <typed-array:float64:3>
+    call print_newline               ; #<typed-array:float64 0.000000 0.000000 0.000000>
 
     mov rdi, d5
     mov rsi, d5_len
@@ -153,7 +153,7 @@ lamedh_main:
     mov rdi, e12
     mov rsi, e12_len
     call run_thunk_discard
-    call print_newline               ; <array:3>
+    call print_newline               ; #(() () ())
 
     xor rax, rax
     ret
