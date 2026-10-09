@@ -702,5 +702,54 @@ for case_asm in tests/cases/*.asm; do
     fi
 done
 
+# #602: garbage found while the ZCT is full must be freed in the same
+# collection, not left until the next overflow. Needs a tiny ZCT to force
+# overflow, so build a second lamedhc with -DZCT_CAPACITY=512 and run the
+# issue's probe: a 10000-cell list built by (cons n acc) lies at descending
+# addresses, the worst case for the collector's upward sweep. Dropping it
+# must give back (nearly) all 160000 bytes after ONE (gc-collect); before
+# the fix only ~16000 came back.
+zdir="$BUILD/zct_small"
+mkdir -p "$zdir"
+zobjs=""
+zok=1
+for f in src/boot.asm $CORE_SRCS src/file_runner.asm; do
+    obj="$zdir/$(basename "${f%.asm}").o"
+    if ! $AS $ASFLAGS -DZCT_CAPACITY=512 "$f" -o "$obj" 2>"$BUILD/asm.err"; then
+        echo "FAIL  zct_overflow_release  (assemble $f)"
+        cat "$BUILD/asm.err"
+        zok=0
+        break
+    fi
+    zobjs="$zobjs $obj"
+done
+if [ "$zok" = 1 ] && ! $LD -static -nostdlib -o "$zdir/lamedhc" $zobjs 2>"$BUILD/ld.err"; then
+    echo "FAIL  zct_overflow_release  (link)"
+    cat "$BUILD/ld.err"
+    zok=0
+fi
+if [ "$zok" = 1 ]; then
+    zprog="$zdir/probe.lisp"
+    cat > "$zprog" <<'LISP'
+(DEFINE SPIN (LAMBDA (N) (IF (= N 0) 0 (PROGN (CONS N NIL) (SPIN (- N 1))))))
+(DEFINE MKLIST (LAMBDA (N ACC) (IF (= N 0) ACC (MKLIST (- N 1) (CONS N ACC)))))
+(SPIN 200000) (GC-COLLECT)
+(DEFINE BIG (MKLIST 10000 NIL)) (SPIN 100000) (GC-COLLECT)
+(DEFINE L0 (HEAP-BYTES-LIVE))
+(SETQ BIG NIL) (GC-COLLECT)
+(PRINT (> (- L0 (HEAP-BYTES-LIVE)) 150000))
+LISP
+    got_out=$("$zdir/lamedhc" "$zprog")
+    if [ "$got_out" = "T" ]; then
+        echo "ok    zct_overflow_release"
+        pass=$((pass+1))
+    else
+        echo "FAIL  zct_overflow_release  stdout: got [$got_out] want [T]"
+        fail=$((fail+1))
+    fi
+else
+    fail=$((fail+1))
+fi
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
