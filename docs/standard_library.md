@@ -348,11 +348,12 @@ Returns x - 1.
 
 **Syntax:** `(max number...)`
 
-Returns the largest argument.
+Returns the largest argument. `max` is `a -> a -> a` over one numeric type: if any argument is a float the result is a float.
 
 ```lisp
 (max 1 5 3)      ; => 5
 (max -1 -5 -3)   ; => -1
+(max 0.5 1)      ; => 1.0
 ```
 
 ---
@@ -361,11 +362,12 @@ Returns the largest argument.
 
 **Syntax:** `(min number...)`
 
-Returns the smallest argument.
+Returns the smallest argument. `min` is `a -> a -> a` over one numeric type: if any argument is a float the result is a float.
 
 ```lisp
 (min 1 5 3)      ; => 1
 (min -1 -5 -3)   ; => -5
+(min 2.5 1)      ; => 1.0
 ```
 
 ---

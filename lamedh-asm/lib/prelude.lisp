@@ -717,11 +717,17 @@
 ; over the 2-argument core below is exactly the same idiom REDUCE
 ; already establishes for a variadic reference builtin over a fixed
 ; binary primitive.
-(DEFUN $MAX2 (A B) (IF (< A B) B A))
+;
+; MAX/MIN are a -> a -> a over one numeric type (#530): a float argument
+; makes the result a float, so `(max 0.5 1)` is `1.0`. A selected float is
+; returned untouched (`(+ -0.0 0.0)` would lose the sign).
+(DEFUN $NUM-PROMOTE (R A B)
+  (IF (FLOATP R) R (IF (OR (FLOATP A) (FLOATP B)) (FLOAT R) R)))
+(DEFUN $MAX2 (A B) ($NUM-PROMOTE (IF (< A B) B A) A B))
 (DEFUN $MAX-FOLD (ACC REST)
   (IF (NULL REST) ACC ($MAX-FOLD ($MAX2 ACC (CAR REST)) (CDR REST))))
 (DEFUN MAX (FIRST &REST REST) ($MAX-FOLD FIRST REST))
-(DEFUN $MIN2 (A B) (IF (< A B) A B))
+(DEFUN $MIN2 (A B) ($NUM-PROMOTE (IF (< A B) A B) A B))
 (DEFUN $MIN-FOLD (ACC REST)
   (IF (NULL REST) ACC ($MIN-FOLD ($MIN2 ACC (CAR REST)) (CDR REST))))
 (DEFUN MIN (FIRST &REST REST) ($MIN-FOLD FIRST REST))

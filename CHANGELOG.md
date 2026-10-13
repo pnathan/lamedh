@@ -1,5 +1,18 @@
 # v0.4.1 — unreleased
 
+## `min`/`max` are `a -> a -> a`; int literals coerce beside float64 (#530)
+
+`min`/`max` now return a float whenever any argument is a float
+(`(max 0.5 1)` is `1.0`, was `1`); all-fixnum calls are unchanged. With
+that, typed code accepts an integer *literal* beside a `float64` operand —
+`(defun-typed (f float64) ((x float64)) (max x 1))` compiles — in the native
+elaborator and the portable checker alike. Coercion stays literal-only (a
+bare integer literal, not an expression like `(+ 1 2)`): an int64 variable
+or expression beside a float64 is still a type error. As for `+`, whether an
+operand is float64 is read when the form is elaborated, so a not-yet-inferred
+variable is not retroactively treated as float. Ported to the SBCL
+library and `lamedh-asm`.
+
 ## Oversized decimal literals set `OVERFLOW` (#515)
 
 A decimal integer literal outside `i64` (`9223372036854775808`) still reads

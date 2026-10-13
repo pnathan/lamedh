@@ -1481,24 +1481,40 @@ recursion."
           args)
     ty))
 
+(defun hm-min-max-coerce-literals (state args tys)
+  "#530: `min`/`max` are `a -> a -> a`; the evaluator returns a float when any
+argument is one, so once any operand is float64 every int LITERAL operand
+types as float64. Returns the operand types. Mirrors
+Cx::coerce_min_max_literals (order-independent, literal-only)."
+  (if (not (every (lambda (ty) (not (eq (hm-walk state ty) 'float64))) tys))
+      (let ((out nil))
+        (while args
+          (setq out (cons (if (hm-int-literal-p (car args)) 'float64 (car tys)) out))
+          (setq args (cdr args) tys (cdr tys)))
+        (reverse out))
+      tys))
+
 (defun hm-elab-min-max (state tyenv args)
   "`(min a b ...)` / `(max ...)`: a numeric chain like `+`."
   (if (null args)
       (error "`min`/`max` require at least one argument")
-      (let ((ty (hm-elab state tyenv (car args))))
-        (hm-reject-boxed! state ty)
-        (mapc (lambda (a)
-                (let ((tb (hm-elab state tyenv a)))
-                  (hm-reject-boxed! state tb)
+      (let ((tys (mapcar (lambda (a)
+                           (let ((tb (hm-elab state tyenv a)))
+                             (hm-reject-boxed! state tb)
+                             tb))
+                         args)))
+        (setq tys (hm-min-max-coerce-literals state args tys))
+        (let ((ty (car tys)))
+          (mapc (lambda (tb)
                   (if (hm-unifies-p state ty tb)
                       (setq ty (hm-walk state ty))
-                      (error "`min`/`max`: operands disagree"))))
-              (cdr args))
-        (let ((w (hm-walk state ty)))
-          (if (hm-known-non-numeric w)
-              (error (concat "`min`/`max` expect numeric operands, got "
-                             (hm-type-name w)))
-              w)))))
+                      (error "`min`/`max`: operands disagree")))
+                (cdr tys))
+          (let ((w (hm-walk state ty)))
+            (if (hm-known-non-numeric w)
+                (error (concat "`min`/`max` expect numeric operands, got "
+                               (hm-type-name w)))
+                w))))))
 
 ;;; ---- array rules ----------------------------------------------------------
 
@@ -2408,15 +2424,12 @@ argument, reject boxed operands, unify each with the first, resolve."
       (error "compiled min/max needs at least 1 argument")
       (let ((tys (mapcar (lambda (a) (hm-elab state tyenv a)) args)))
         (mapc (lambda (ty) (hm-reject-boxed! state ty)) tys)
-        ;; #530: no literal coercion here -- min/max return the selected
-        ;; argument unchanged ((max 0.5 1) is the integer 1), so say so.
+        ;; #530: an int literal beside a float64 operand types as float64.
+        (setq tys (hm-min-max-coerce-literals state args tys))
         (mapc (lambda (ty)
-                (cond
-                  ((hm-unifies-p state (car tys) ty) nil)
-                  ((and (not (every (lambda (a) (not (hm-int-literal-p a))) args))
-                        (not (every (lambda (u) (not (eq (hm-walk state u) 'float64))) tys)))
-                   (error "min/max operands disagree (an integer literal is not coerced to float64 here: min/max return the selected argument unchanged, so write the literal as a float, e.g. 1.0)"))
-                  (t (error "min/max operands disagree"))))
+                (if (hm-unifies-p state (car tys) ty)
+                    nil
+                    (error "min/max operands disagree")))
               (cdr tys))
         (let ((rt (hm-resolve-operand state (car tys) "min/max")))
           (if (hm-arith-kind-p rt)

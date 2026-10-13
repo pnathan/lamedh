@@ -143,9 +143,10 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(max number...)")
     (cons 'CATEGORY 'arithmetic)
-    (cons 'DESCRIPTION "Returns the largest of its arguments.")
+    (cons 'DESCRIPTION "Returns the largest of its arguments; a float if any argument is a float.")
     (cons 'EXAMPLES '(((max 1 5 3) 5)
-                       ((max -1 -5) -1)))
+                       ((max -1 -5) -1)
+                       ((max 0.5 1) 1.0)))
     (cons 'SEE-ALSO '(min))))
 
 (register-doc 'min
@@ -154,8 +155,9 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(min number...)")
     (cons 'CATEGORY 'arithmetic)
-    (cons 'DESCRIPTION "Returns the smallest of its arguments.")
-    (cons 'EXAMPLES '(((min 1 5 3) 1)))
+    (cons 'DESCRIPTION "Returns the smallest of its arguments; a float if any argument is a float.")
+    (cons 'EXAMPLES '(((min 1 5 3) 1)
+                       ((min 2.5 1) 1.0)))
     (cons 'SEE-ALSO '(max))))
 
 (register-doc 'random

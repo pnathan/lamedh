@@ -22,23 +22,31 @@
   "Test if x is negative"
   (< x 0))
 
+(defun $num-promote (r a b)
+  "R, the value selected from A and B, as a float when either of them is one
+(`min`/`max` are a -> a -> a over one numeric type, #530). A float R is
+returned untouched: `(+ -0.0 0.0)` would turn -0.0 into 0.0."
+  (if (floatp r) r (if (or (floatp a) (floatp b)) (+ r 0.0) r)))
+
 (defun max (&rest numbers)
   "Return maximum of numbers"
   (cond ((null numbers) (error "MAX requires at least one argument"))
         ((null (cdr numbers)) (car numbers))
         (t (let ((max-rest (apply #'max (cdr numbers))))
-             (if (> (car numbers) max-rest)
-                 (car numbers)
-                 max-rest)))))
+             ($num-promote (if (> (car numbers) max-rest)
+                               (car numbers)
+                               max-rest)
+                           (car numbers) max-rest)))))
 
 (defun min (&rest numbers)
   "Return minimum of numbers"
   (cond ((null numbers) (error "MIN requires at least one argument"))
         ((null (cdr numbers)) (car numbers))
         (t (let ((min-rest (apply #'min (cdr numbers))))
-             (if (< (car numbers) min-rest)
-                 (car numbers)
-                 min-rest)))))
+             ($num-promote (if (< (car numbers) min-rest)
+                               (car numbers)
+                               min-rest)
+                           (car numbers) min-rest)))))
 
 (defun abs (x)
   "Absolute value"

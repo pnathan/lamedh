@@ -6,10 +6,9 @@
 //! The coercion is taken only where it is invisible: the evaluator's mixed
 //! arithmetic (`apply_math_op`) and comparison (`as_f64`) promote every int
 //! operand with `as f64`, so a compiled `(+ x 1)` is bit-for-bit the
-//! interpreter's. `min`/`max` are NOT such a position: they return the
-//! selected argument itself, so the interpreter's `(max 0.5 1)` is the
-//! integer `1`; a float constant would change the observable result, so the
-//! literal stays int64 there and the clash says why.
+//! interpreter's. `min`/`max` are `a -> a -> a` over one numeric `a`: the
+//! interpreter returns a float whenever any argument is a float (`(max 0.5 1)`
+//! is `1.0`), so the coercion is invisible there too.
 #![cfg(feature = "jit")]
 
 use lamedh::environment::Environment;
@@ -86,25 +85,75 @@ fn coercion_is_literal_only_and_only_where_it_is_invisible() {
     });
 }
 
-/// `(max x 1)`: the interpreter returns the integer literal itself whenever
-/// it is the larger, so coercing it would change the result. It stays a
-/// clash, and the message says why and what to write instead.
+/// `min`/`max` are `a -> a -> a` over one numeric `a`: when any argument is a
+/// float the result is a float, so an int literal beside a float64 is
+/// coerced (as for `+`) and the compiled result is the interpreter's.
 #[test]
-fn min_max_do_not_coerce_because_the_interpreter_returns_the_int() {
+fn min_max_promote_to_float_and_coerce_int_literals() {
     lamedh::with_large_stack(|| {
         let e = Environment::with_stdlib();
-        assert_eq!(ev(&e, "(max 0.5 1)"), "1");
-        assert_eq!(ev(&e, "(min 2.5 1)"), "1");
-        let r = ev(&e, "(defun-typed (m530 float64) ((x float64)) (max x 1))");
-        assert!(r.starts_with("ERR"), "{r}");
-        assert!(r.contains("integer literal is not coerced"), "{r}");
-        // The float spelling compiles.
-        ev(
-            &e,
-            "(defun-typed (m530b float64) ((x float64)) (max x 1.0))",
-        );
-        assert_eq!(ev(&e, "(compiled-p 'm530b)"), "NATIVE");
-        assert_eq!(ev(&e, "(m530b 0.5)"), "1.0");
+        // Interpreter: the result type is the common numeric type.
+        assert_eq!(ev(&e, "(max 0.5 1)"), "1.0");
+        assert_eq!(ev(&e, "(min 2.5 1)"), "1.0");
+        assert_eq!(ev(&e, "(max 1 0.5)"), "1.0");
+        assert_eq!(ev(&e, "(max 0.5 -1)"), "0.5");
+        assert_eq!(ev(&e, "(min 3 2 1.5)"), "1.5");
+        assert_eq!(ev(&e, "(max 3 2 1.5)"), "3.0");
+        assert_eq!(ev(&e, "(max 1 1.0)"), "1.0");
+        // All-int stays int; all-float stays float (incl. -0.0).
+        assert_eq!(ev(&e, "(min 1 1.0)"), "1.0");
+        assert_eq!(ev(&e, "(max 1.0 1)"), "1.0");
+        assert_eq!(ev(&e, "(max 1 2)"), "2");
+        assert_eq!(ev(&e, "(min 7)"), "7");
+        assert_eq!(ev(&e, "(max -0.0 -0.0)"), "-0.0");
+        // Compiled == interpreted, both literal positions and variadic.
+        let bodies = [
+            "(max x 1)",
+            "(min x 1)",
+            "(max 1 x)",
+            "(min 1 x)",
+            "(max x 1 2)",
+            "(min 3 x 2)",
+            "(max (+ x 0.5) 1)",
+            "(max x 9007199254740993)",
+            "(min x 0)",
+            "(max x (max 1 2.5))",
+        ];
+        let inputs = [
+            "0.5",
+            "-2.5",
+            "1.0",
+            "0.0",
+            "-0.0",
+            "7.25",
+            "9007199254740992.0",
+        ];
+        for (i, body) in bodies.iter().enumerate() {
+            let n = format!("m530_{i}");
+            let def = format!("(defun-typed ({n} float64) ((x float64)) {body})");
+            let r = ev(&e, &def);
+            assert!(!r.starts_with("ERR"), "{def} => {r}");
+            assert_eq!(ev(&e, &format!("(compiled-p '{n})")), "NATIVE", "{def}");
+            for x in inputs {
+                let want = ev(&e, &format!("(let ((x {x})) {body})"));
+                assert_eq!(ev(&e, &format!("({n} {x})")), want, "{body} at x = {x}");
+            }
+        }
+        assert_eq!(ev(&e, "(m530_0 0.5)"), "1.0");
+        // Still literal-only: an int VARIABLE beside a float64 is a clash.
+        for def in [
+            "(defun-typed (bad530a float64) ((x float64) (n int64)) (max x n))",
+            "(defun-typed (bad530b float64) ((x float64) (n int64)) (min n x))",
+            "(defun-typed (bad530c float64) ((x float64) (n int64)) (max x 1 n))",
+            // only a bare literal is coerced, not an int expression
+            "(defun-typed (bad530d float64) ((x float64)) (max x (+ 1 2)))",
+        ] {
+            let r = ev(&e, def);
+            assert!(r.starts_with("ERR"), "{def} should stay rejected, got {r}");
+        }
+        // Int-only min/max is untouched.
+        ev(&e, "(defun-typed (i530 int64) ((n int64)) (max n 1))");
+        assert_eq!(ev(&e, "(i530 -5)"), "1");
     });
 }
 
@@ -137,11 +186,30 @@ fn portable_checker_mirrors_the_literal_coercion() {
             ev(&e, "(cdr (assoc 'rejected (typed-island '(p530 q530))))"),
             "()"
         );
-        // min/max: blocked in the gate too, with the reason.
+        // min/max: the same coercion, in checking mode and in the gate.
+        assert_eq!(ev(&e, "(hm-check-expr '(max 1.5 1))"), "(CHECKED FLOAT64)");
+        assert_eq!(
+            ev(&e, "(hm-check-expr '(min 1 2 2.5))"),
+            "(CHECKED FLOAT64)"
+        );
+        assert_eq!(ev(&e, "(hm-check-expr '(max 1 2))"), "(CHECKED INT64)");
         ev(&e, "(defun r530 (x) (max (+ x 0.5) 1))");
-        let v = ev(&e, "(hm-compile-verdict 'r530)");
-        assert!(v.starts_with("(BLOCKED"), "{v}");
-        assert!(v.contains("integer literal is not coerced"), "{v}");
+        ev(&e, "(defun t530 (x) (min 1 x))");
+        assert_eq!(
+            ev(
+                &e,
+                "(mapcar #'cadr (cdr (assoc 'members (typed-island '(r530)))))"
+            ),
+            "((-> (FLOAT64) FLOAT64))"
+        );
+        // With nothing pinning x to float64, the literal is just an int.
+        assert_eq!(
+            ev(
+                &e,
+                "(mapcar #'cadr (cdr (assoc 'members (typed-island '(t530)))))"
+            ),
+            "((-> (INT64) INT64))"
+        );
     });
 }
 

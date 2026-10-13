@@ -101,6 +101,22 @@ impl Cx<'_> {
         }
     }
 
+    /// #530: `min`/`max` are `a -> a -> a` over one numeric `a`, and the
+    /// evaluator returns a float whenever any argument is one (`(max 0.5 1)`
+    /// is `1.0`). So once any operand is `float64`, every int LITERAL operand
+    /// is the float constant `n as f64` — the same `as f64` the evaluator's
+    /// mixed comparison applies — and the selected value is bit-identical.
+    /// Order-independent; int-typed variables are never coerced.
+    fn coerce_min_max_literals(&self, args: &[LispVal], tys: &mut [Ty]) {
+        if tys.iter().any(|t| self.is_float(t)) {
+            for (a, t) in args.iter().zip(tys.iter_mut()) {
+                if Self::int_literal(a).is_some() {
+                    *t = Ty::Float64;
+                }
+            }
+        }
+    }
+
     /// Is `t` already known to be `float64` under the substitution?
     fn is_float(&self, t: &Ty) -> bool {
         matches!(self.walk(t), Ty::Float64)
@@ -1235,12 +1251,19 @@ impl Cx<'_> {
         if args.is_empty() {
             return Err("`min`/`max` require at least one argument".to_string());
         }
-        let (_, mut ty) = self.elab(&args[0], scope, max)?;
-        self.reject_boxed_arith_cmp(&ty)?;
-        for a in &args[1..] {
-            let (_, tb) = self.elab(a, scope, max)?;
-            self.reject_boxed_arith_cmp(&tb)?;
-            self.unify(&ty, &tb)
+        let mut tys = Vec::with_capacity(args.len());
+        for a in args {
+            let (_, t) = self.elab(a, scope, max)?;
+            self.reject_boxed_arith_cmp(&t)?;
+            tys.push(t);
+        }
+        // #530: `min`/`max` are `a -> a -> a`; the evaluator returns a float
+        // when any argument is one, so an int LITERAL beside a float64 types
+        // as float64 (see `coerce_min_max_literals`).
+        self.coerce_min_max_literals(args, &mut tys);
+        let mut ty = tys[0].clone();
+        for tb in &tys[1..] {
+            self.unify(&ty, tb)
                 .map_err(|e| format!("`min`/`max`: {e}"))?;
             ty = self.walk(&ty);
         }
@@ -2933,25 +2956,22 @@ impl Cx<'_> {
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
-        // Issue #530: unlike `+`/`<`, an integer literal is NOT coerced here.
-        // `min`/`max` return the selected argument itself, so the evaluator's
-        // `(max 0.5 1)` is the integer `1`; a float constant would change the
-        // observable result. Say so, instead of a bare unify clash.
-        let lit_hint = |e: String| {
-            let lit = args.iter().any(|a| Self::int_literal(a).is_some());
-            if lit && elabs.iter().any(|(_, t)| self.is_float(t)) {
-                format!(
-                    "min/max operands disagree: {e} (an integer literal is not \
-                     coerced to float64 here: min/max return the selected argument \
-                     unchanged, so write the literal as a float, e.g. 1.0)"
-                )
-            } else {
-                format!("min/max operands disagree: {e}")
+        // Issue #530: an int literal beside a float64 operand is the float
+        // constant `n as f64` (see `coerce_min_max_literals`); the Core for
+        // that operand is replaced too, so the select returns a float.
+        let mut tys: Vec<Ty> = elabs.iter().map(|(_, t)| t.clone()).collect();
+        self.coerce_min_max_literals(args, &mut tys);
+        for (i, a) in args.iter().enumerate() {
+            if let Some(nn) = Self::int_literal(a)
+                && matches!(tys[i], Ty::Float64)
+            {
+                elabs[i] = (Core::LitF(nn as f64), Ty::Float64);
             }
-        };
+        }
         let ta = elabs[0].1.clone();
         for (_, t) in &elabs[1..] {
-            self.unify(&ta, t).map_err(lit_hint)?;
+            self.unify(&ta, t)
+                .map_err(|e| format!("min/max operands disagree: {e}"))?;
         }
         let rt = self
             .resolve(&ta)
