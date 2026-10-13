@@ -260,11 +260,7 @@ impl TypedFn {
         // Issue #212: a self tail loop in an all-scalar function reclaims its
         // per-iteration arena buffers. Only worth the bookkeeping when the
         // body actually calls itself.
-        let reclaim = self.reclaim_sig() && {
-            let mut calls = HashSet::new();
-            inline_call_ids(&core, &mut calls);
-            calls.contains(&self.id)
-        };
+        let reclaim = self.reclaim_sig() && has_self_tail_call(&core, self.id);
         *self.compiled.borrow_mut() = Some(compile_with_tco(&core, self.id, reclaim));
         // With the `jit` feature, also build a native edition. If Cranelift
         // codegen fails for any reason, fall back to the closure edition
@@ -1849,6 +1845,7 @@ impl Jit {
                 let ret = f.ret.borrow();
                 drop(params);
                 let w = f.invoke(&words[..args.len()], &ctx);
+                publish_arena_peak(ctx.arena_peak.get());
                 if let Some(msg) = ctx.pending_error.borrow_mut().take() {
                     return Err(msg);
                 }
@@ -2541,6 +2538,19 @@ fn seed_signature(
             params.iter().map(|p| (p.clone(), infer.fresh())).collect(),
             infer.fresh(),
         ),
+    }
+}
+
+/// Does `core` contain a self call in tail position (the only place a
+/// self-loop edge, and so a reclaim, can occur)? Mirrors the tail-propagating
+/// constructs of `eval_core`/`compile_tail`.
+fn has_self_tail_call(core: &Core, id: usize) -> bool {
+    match core {
+        Core::Call(c, _) => *c == id,
+        Core::If(_, t, e) => has_self_tail_call(t, id) || has_self_tail_call(e, id),
+        Core::Let(_, _, b) | Core::And(_, b) | Core::Or(_, b) => has_self_tail_call(b, id),
+        Core::Seq(items) => items.last().is_some_and(|l| has_self_tail_call(l, id)),
+        _ => false,
     }
 }
 

@@ -236,6 +236,12 @@ impl Ctx<'_> {
         let mut arena = self.arena.borrow_mut();
         if arena.len() > mark {
             let freed: usize = arena[mark..].iter().map(|b| b.len()).sum();
+            // Debug aid: poison freed words so a use-after-free in a test
+            // reads 0xDEAD.. instead of plausible stale data.
+            #[cfg(test)]
+            for b in arena[mark..].iter_mut() {
+                b.fill(0xDEAD_DEAD_DEAD_DEAD);
+            }
             arena.truncate(mark);
             self.arena_live.set(self.arena_live.get() - freed);
         }

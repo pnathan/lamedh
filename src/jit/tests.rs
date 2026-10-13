@@ -2654,3 +2654,59 @@ fn arena_mixed_scalar_and_compound_tail_chain_is_correct() {
     }
     assert_eq!(agree(&j, "scal", &[i(100_000)]), i(7));
 }
+
+/// Reviewer-found guard for the Tier 2a mark re-base in `TypedFn::invoke`: a
+/// non-scalar hop (`q`) links a fresh buffer into an OLDER one (`old`), then
+/// hands off to an all-scalar mutual pair (`r`/`s`). Without re-basing the
+/// mark above `q`'s allocations, the first scalar hop would free that buffer
+/// and `top` would read poisoned memory through `old`.
+#[test]
+fn arena_rebase_after_nonscalar_hop_keeps_linked_buffer_alive() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    let arr2 = Ty::Array(Box::new(Ty::Array(Box::new(Ty::Int64))));
+    j.declare("Q", &[("N", Ty::Int64), ("OLD", arr2)], Ty::Int64);
+    j.declare("R", &[("N", Ty::Int64)], Ty::Int64);
+    j.declare("S", &[("N", Ty::Int64)], Ty::Int64);
+    for src in [
+        "(defun-typed (q int64) ((n int64) (old (array (array int64)))) \
+           (let-typed ((fresh (array 4))) \
+             (store fresh 0 4242) (store old 0 fresh) (r n)))",
+        "(defun-typed (r int64) ((n int64)) \
+           (let-typed ((t1 (array 8))) (store t1 0 n) \
+             (if (= n 0) 0 (s (- n 1)))))",
+        "(defun-typed (s int64) ((n int64)) \
+           (let-typed ((t1 (array 8))) (store t1 0 n) \
+             (if (= n 0) 0 (r (- n 1)))))",
+        "(defun-typed (top int64) ((n int64)) \
+           (let-typed ((old (array 1))) \
+             (q n old) (fetch (fetch old 0) 0)))",
+    ] {
+        j.define(&read(src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(agree(&j, "top", &[i(1000)]), i(4242));
+}
+
+/// A float64 all-scalar loop reclaims too, and a non-tail caller's older
+/// buffer survives an all-scalar self-loop callee (nested-frame mark check).
+#[test]
+fn arena_float_loop_reclaims_and_outer_buffer_survives() {
+    let j = build(&[
+        "(defun-typed (headf float64) ((a (array float64))) (fetch a 0))",
+        "(defun-typed (floop float64) ((n int64) (acc float64)) \
+           (let-typed ((tmp (array 4))) \
+             (store tmp 0 1.5) \
+             (if (= n 0) acc (floop (- n 1) (+ acc (headf tmp))))))",
+        "(defun-typed (outer float64) ((n int64)) \
+           (let-typed ((keep (array 4))) \
+             (store keep 0 2.0) \
+             (+ (floop n 0.0) (headf keep))))",
+    ]);
+    assert_arena_bounded(
+        &j,
+        "floop",
+        &[i(ARENA_ITERS), fl(0.0)],
+        fl(1.5 * ARENA_ITERS as f64),
+    );
+    assert_eq!(agree(&j, "outer", &[i(1000)]), fl(1500.0 + 2.0));
+}
