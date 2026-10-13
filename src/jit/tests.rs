@@ -2531,3 +2531,126 @@ fn boxed_array_ops_on_non_array_handle_record_type_error() {
         "got: {err}"
     );
 }
+
+// --- issue #212: call-arena growth in allocating tail loops ----------------
+
+/// Words of arena a loop of `ITERS` iterations would root if nothing were
+/// ever reclaimed (11 words per `(array 10)`), vs the bound a reclaiming loop
+/// must stay under.
+const ARENA_ITERS: i64 = 200_000;
+const ARENA_BOUND_WORDS: usize = 4_096;
+
+fn arena_peak_after(j: &Jit, name: &str, args: &[Value]) -> (Value, usize) {
+    let v = j.call(name, args).unwrap();
+    (v, last_call_arena_peak_words())
+}
+
+/// Run `name(args)` on every edition (native/closure, then interpreter) and
+/// assert the result and that the arena stayed bounded.
+fn assert_arena_bounded(j: &Jit, name: &str, args: &[Value], expect: Value) {
+    j.compile_all();
+    let (v, peak) = arena_peak_after(j, name, args);
+    assert_eq!(v, expect, "compiled result");
+    assert!(
+        peak < ARENA_BOUND_WORDS,
+        "compiled: arena peaked at {peak} words (bound {ARENA_BOUND_WORDS})"
+    );
+    j.deoptimize_all();
+    let (v, peak) = arena_peak_after(j, name, args);
+    assert_eq!(v, expect, "interpreted result");
+    assert!(
+        peak < ARENA_BOUND_WORDS,
+        "interpreted: arena peaked at {peak} words (bound {ARENA_BOUND_WORDS})"
+    );
+    j.compile_all();
+}
+
+/// Tier 1: the per-iteration buffer is passed to a helper call, so escape
+/// analysis cannot stack-allocate it and it lands in the call arena.
+#[test]
+fn arena_self_tail_loop_reclaims_per_iteration_buffers() {
+    let j = build(&[
+        "(defun-typed (head int64) ((a (array int64))) (fetch a 0))",
+        "(defun-typed (aloop int64) ((n int64) (acc int64)) \
+           (let-typed ((tmp (array 10))) \
+             (store tmp 0 n) \
+             (if (= n 0) acc (aloop (- n 1) (+ acc (head tmp))))))",
+    ]);
+    // sum 0..=ITERS
+    assert_arena_bounded(
+        &j,
+        "aloop",
+        &[i(ARENA_ITERS), i(0)],
+        i(ARENA_ITERS * (ARENA_ITERS + 1) / 2),
+    );
+}
+
+/// Tier 2a: the same shape through a mutual tail cycle.
+#[test]
+fn arena_mutual_tail_loop_reclaims_per_hop_buffers() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("PING", &[("N", Ty::Int64), ("ACC", Ty::Int64)], Ty::Int64);
+    j.declare("PONG", &[("N", Ty::Int64), ("ACC", Ty::Int64)], Ty::Int64);
+    for src in [
+        "(defun-typed (head2 int64) ((a (array int64))) (fetch a 0))",
+        "(defun-typed (ping int64) ((n int64) (acc int64)) \
+           (let-typed ((tmp (array 10))) \
+             (store tmp 0 n) \
+             (if (= n 0) acc (pong (- n 1) (+ acc (head2 tmp))))))",
+        "(defun-typed (pong int64) ((n int64) (acc int64)) \
+           (let-typed ((tmp (array 10))) \
+             (store tmp 0 n) \
+             (if (= n 0) acc (ping (- n 1) (+ acc (head2 tmp))))))",
+    ] {
+        j.define(&read(src, &env).unwrap()).unwrap();
+    }
+    assert_arena_bounded(
+        &j,
+        "ping",
+        &[i(ARENA_ITERS), i(0)],
+        i(ARENA_ITERS * (ARENA_ITERS + 1) / 2),
+    );
+}
+
+/// Soundness guard for #212: a loop that threads a freshly allocated array
+/// into the next iteration has a compound parameter, so it must NOT reclaim —
+/// the previous iteration's buffer is the live argument.
+#[test]
+fn arena_loop_carrying_a_buffer_is_not_reclaimed() {
+    let j = build(
+        &["(defun-typed (carry int64) ((n int64) (a (array int64))) \
+           (let-typed ((b (array 4))) \
+             (store b 0 (+ (fetch a 0) 1)) \
+             (if (= n 0) (fetch a 0) (carry (- n 1) b))))"],
+    );
+    let n = 50_000;
+    assert_eq!(agree(&j, "carry", &[i(n), ints(&[0, 0, 0, 0])]), i(n));
+}
+
+/// Soundness guard for #212, Tier 2a: a tail chain through a function with a
+/// compound parameter (`comp`) must keep the buffer it is handed live across
+/// the hop, while still returning the right answer on every edition.
+#[test]
+fn arena_mixed_scalar_and_compound_tail_chain_is_correct() {
+    let env = Environment::new_with_builtins();
+    let mut j = Jit::new();
+    j.declare("SCAL", &[("N", Ty::Int64)], Ty::Int64);
+    j.declare(
+        "COMP",
+        &[("N", Ty::Int64), ("A", Ty::Array(Box::new(Ty::Int64)))],
+        Ty::Int64,
+    );
+    for src in [
+        "(defun-typed (scal int64) ((n int64)) \
+           (let-typed ((t1 (array 8))) \
+             (store t1 0 n) \
+             (if (= n 0) 7 (comp (- n 1) t1))))",
+        // Reads the hop's array argument *after* the hop, then tail-calls back.
+        "(defun-typed (comp int64) ((n int64) (a (array int64))) \
+           (if (= (fetch a 0) (+ n 1)) (scal n) -1))",
+    ] {
+        j.define(&read(src, &env).unwrap()).unwrap();
+    }
+    assert_eq!(agree(&j, "scal", &[i(100_000)]), i(7));
+}

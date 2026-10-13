@@ -13,6 +13,12 @@ use super::*;
 pub struct Ctx<'a> {
     pub(super) funcs: &'a [Rc<TypedFn>],
     pub(super) arena: RefCell<Vec<Box<[u64]>>>,
+    /// Live words currently rooted in `arena` (headers included), and the
+    /// high-water mark of that count over the call (issue #212). The peak is
+    /// published to [`last_call_arena_peak_words`] when a membrane call
+    /// returns, so tests can observe — and bound — per-call arena growth.
+    pub(super) arena_live: Cell<usize>,
+    pub(super) arena_peak: Cell<usize>,
     /// Set by a compiled/interpreted body, instead of performing the call
     /// itself, when it reaches a *cross-function* tail call (issue #133
     /// Tier 2a). `TypedFn::invoke`'s dispatch loop checks this immediately
@@ -199,6 +205,42 @@ impl Ctx<'_> {
         r
     }
 
+    /// Root `buf` in the arena, keeping the live/peak word accounting current.
+    fn root_buffer(&self, buf: Box<[u64]>) {
+        let live = self.arena_live.get() + buf.len();
+        self.arena_live.set(live);
+        if live > self.arena_peak.get() {
+            self.arena_peak.set(live);
+        }
+        self.arena.borrow_mut().push(buf);
+    }
+
+    /// The arena's current length: a *mark* to hand back to
+    /// [`Ctx::arena_reclaim`] (issue #212).
+    pub(super) fn arena_mark(&self) -> usize {
+        self.arena.borrow().len()
+    }
+
+    /// Free every buffer rooted after `mark` (issue #212).
+    ///
+    /// # Soundness contract
+    ///
+    /// The caller must guarantee that no live value — a local, an argument
+    /// word, a pending tail-call argument, or a cell of any buffer rooted at
+    /// or before `mark` — holds a pointer into a buffer rooted after `mark`.
+    /// The tail-loop edges establish that only for functions whose parameters
+    /// and return are all scalar ([`Ty::is_reclaim_scalar`]): a scalar word
+    /// is never an arena pointer, and with no compound parameter there is no
+    /// older buffer a fresh buffer could be stored into.
+    pub(super) fn arena_reclaim(&self, mark: usize) {
+        let mut arena = self.arena.borrow_mut();
+        if arena.len() > mark {
+            let freed: usize = arena[mark..].iter().map(|b| b.len()).sum();
+            arena.truncate(mark);
+            self.arena_live.set(self.arena_live.get() - freed);
+        }
+    }
+
     /// Allocate an `n`-element buffer `[n, 0, 0, …]` in the arena and return a
     /// raw pointer to its header word. The arena owns the `Box`, keeping the
     /// data pointer valid (and stable) until the call returns.
@@ -222,7 +264,7 @@ impl Ctx<'_> {
         let mut buf = vec![0u64; n + 1].into_boxed_slice();
         buf[0] = n as u64;
         let ptr = buf.as_mut_ptr();
-        self.arena.borrow_mut().push(buf);
+        self.root_buffer(buf);
         ptr
     }
 
@@ -276,7 +318,7 @@ impl Ctx<'_> {
         let mut buf = vec![0u64; total_words].into_boxed_slice();
         buf[0] = n as u64;
         let ptr = buf.as_mut_ptr();
-        self.arena.borrow_mut().push(buf);
+        self.root_buffer(buf);
         ptr
     }
 
@@ -432,6 +474,8 @@ impl Ctx<'_> {
         Ctx {
             funcs: &[],
             arena: RefCell::new(Vec::new()),
+            arena_live: Cell::new(0),
+            arena_peak: Cell::new(0),
             pending_tail: RefCell::new(None),
             overflow: Cell::new(false),
             div_by_zero: Cell::new(false),
@@ -464,6 +508,38 @@ impl Ctx<'_> {
         }
         None
     }
+}
+
+thread_local! {
+    static LAST_CALL_ARENA_PEAK_WORDS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Peak number of `u64` words simultaneously rooted in the call arena during
+/// the most recent top-level membrane call on this thread (issue #212).
+/// Stack-allocated buffers and the boxed-handle table are not counted.
+pub fn last_call_arena_peak_words() -> usize {
+    LAST_CALL_ARENA_PEAK_WORDS.with(Cell::get)
+}
+
+pub(super) fn publish_arena_peak(words: usize) {
+    LAST_CALL_ARENA_PEAK_WORDS.with(|c| c.set(words));
+}
+
+/// Host helpers for the native self-tail-call edge (issue #212): capture the
+/// arena length at function entry, and free everything rooted after it.
+///
+/// # Safety: as [`jit_alloc`].
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_arena_mark(ctx: *const core::ffi::c_void) -> u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.arena_mark() as u64
+}
+
+/// # Safety: as [`jit_alloc`]; the [`Ctx::arena_reclaim`] contract applies.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_arena_reclaim(ctx: *const core::ffi::c_void, mark: u64) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.arena_reclaim(mark as usize);
 }
 
 /// Host trampoline for in-native array/struct allocation: allocate an
@@ -1093,8 +1169,18 @@ unsafe fn array_dot(kind: NumKind, base_a: u64, base_b: u64) -> u64 {
 /// sub-expression is evaluated via [`eval_core_nontail`], which always
 /// performs an ordinary (depth-bounded) call through the registry, even for
 /// a self-referencing id.
-pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize) -> u64 {
+pub(super) fn eval_core(
+    core: &Core,
+    env: &mut [u64],
+    ctx: &Ctx,
+    self_id: usize,
+    reclaim: bool,
+) -> u64 {
     let top = core;
+    // Issue #212: arena length at entry. When `reclaim` (the caller proved
+    // the signature all-scalar), a self tail call frees everything rooted
+    // since — see `Ctx::arena_reclaim` for the contract.
+    let mark = ctx.arena_mark();
     let mut current = core;
     loop {
         match current {
@@ -1141,6 +1227,9 @@ pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize)
                     .map(|a| eval_core_nontail(a, env, ctx))
                     .collect();
                 env[..vals.len()].copy_from_slice(&vals);
+                if reclaim {
+                    ctx.arena_reclaim(mark);
+                }
                 if !ctx.charge_fuel() {
                     return ctx.alloc_buffer(0) as u64;
                 }
@@ -2270,13 +2359,22 @@ pub(super) type CompiledTail = Rc<dyn Fn(&mut [u64], &Ctx) -> TailStep>;
 /// arbitrarily deep tail-recursive typed function, mirroring [`eval_core`]'s
 /// discipline for the closure backend that `TypedFn::compile_now` actually
 /// installs as the default-build hot path.
-pub fn compile_with_tco(core: &Core, self_id: usize) -> Compiled {
+///
+/// `reclaim` (issue #212) frees the iteration's arena buffers on each loop
+/// edge; the caller may pass `true` only for an all-scalar signature (see
+/// [`Ctx::arena_reclaim`]).
+pub fn compile_with_tco(core: &Core, self_id: usize, reclaim: bool) -> Compiled {
     let tail = compile_tail(core, self_id);
     Rc::new(move |env, ctx| {
+        let mark = ctx.arena_mark();
         loop {
             match tail(env, ctx) {
                 TailStep::Done(v) => return v,
-                TailStep::Loop => {}
+                TailStep::Loop => {
+                    if reclaim {
+                        ctx.arena_reclaim(mark);
+                    }
+                }
             }
         }
     })
