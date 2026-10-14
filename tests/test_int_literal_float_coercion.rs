@@ -257,3 +257,44 @@ fn quotient_coerces_int_literals_like_divide() {
         }
     });
 }
+
+/// `defun*` infers the signature: the float use of `x` pins it to float64
+/// before the `max`, so the literal coerces and the body compiles. The
+/// reverse order (int use first, then a float use) is order-dependent: the
+/// int pin makes the float clash, and `defun*` falls back silently to the
+/// dynamic lambda with the same value.
+#[test]
+fn defun_star_coerces_the_literal_when_the_float_use_comes_first() {
+    lamedh::with_large_stack(|| {
+        let e = Environment::with_stdlib();
+        ev(&e, "(defun* f530 (x) (max (* x 1.0) 1))");
+        assert_eq!(ev(&e, "(cadr (see-type 'f530))"), "(-> (FLOAT64) FLOAT64)");
+        assert_eq!(ev(&e, "(car (see-type 'f530))"), "TYPED");
+        for x in ["0.5", "-2.5", "0.0"] {
+            let want = ev(&e, &format!("(let ((x {x})) (max (* x 1.0) 1))"));
+            assert_eq!(ev(&e, &format!("(f530 {x})")), want, "x = {x}");
+        }
+        // Order-dependent fallback: the value is still the interpreter's.
+        ev(&e, "(defun* h530 (x) (+ (max x 1) (* x 0.5)))");
+        assert_ne!(ev(&e, "(car (see-type 'h530))"), "TYPED");
+        assert_eq!(ev(&e, "(h530 0.5)"), "1.25");
+    });
+}
+
+/// The typed island takes the coerced min/max bodies whole, and the kernel
+/// reads back the same signature for every member (AGREE, nothing disputed).
+#[test]
+fn island_install_agrees_with_the_kernel_on_coerced_min_max() {
+    lamedh::with_large_stack(|| {
+        let e = Environment::with_stdlib();
+        ev(&e, "(defun i530a (x) (max (+ x 0.5) 1))");
+        ev(&e, "(defun i530b (x) (min 1 (* x 2.0)))");
+        ev(&e, "(def isl530 (typed-island '(i530a i530b)))");
+        ev(&e, "(def rep530 (island-install! isl530 'strict))");
+        assert_eq!(ev(&e, "(island-agreement rep530)"), "((I530A I530B))");
+        assert_eq!(ev(&e, "(cdr (island-agreement rep530))"), "()");
+        assert_eq!(ev(&e, "(car (see-type 'i530a))"), "TYPED");
+        assert_eq!(ev(&e, "(i530a 0.5)"), "1.0");
+        assert_eq!(ev(&e, "(i530b 0.25)"), "0.5");
+    });
+}
