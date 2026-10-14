@@ -1399,6 +1399,12 @@ pub(super) fn apply(
                         )));
                     }
                 };
+                if prefix.contains(['/', '\\', '\0']) || prefix.contains("..") {
+                    return Err(LispError::Generic(
+                        "temp prefix must be a plain name without path separators or '..'"
+                            .to_string(),
+                    ));
+                }
                 let path = make_temp_path(&prefix, "");
                 // Create the file atomically; fail if it somehow already exists.
                 std::fs::OpenOptions::new()
@@ -1421,6 +1427,12 @@ pub(super) fn apply(
                         )));
                     }
                 };
+                if prefix.contains(['/', '\\', '\0']) || prefix.contains("..") {
+                    return Err(LispError::Generic(
+                        "temp prefix must be a plain name without path separators or '..'"
+                            .to_string(),
+                    ));
+                }
                 let path = make_temp_path(&prefix, "");
                 std::fs::create_dir(&path)
                     .map_err(|e| LispError::Generic(format!("make-temp-directory: {e}")))?;
