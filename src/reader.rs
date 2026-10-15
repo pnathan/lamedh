@@ -962,6 +962,11 @@ fn parse_struct_literal(
 ) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (rest, _) = alt((tag("#S"), tag("#s")))(input)?;
+        // The literal costs one level and `parse_list` another, so fewer than
+        // two remaining would underflow: report the depth limit instead.
+        if remaining < 2 {
+            return Err(too_deep_error(input));
+        }
         let (rest, body) = parse_list(env.clone(), remaining - 1)(rest)?;
         let err = || nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Tag));
         let LispVal::Cons {

@@ -22,23 +22,34 @@
   "Test if x is negative"
   (< x 0))
 
+(defun $max-loop (best rest)
+  "Tail-recursive MAX reduction (constant stack depth)."
+  (if (null rest)
+      best
+      ($max-loop (if (> (car rest) best) (car rest) best) (cdr rest))))
+
+(defun $min-loop (best rest)
+  "Tail-recursive MIN reduction (constant stack depth)."
+  (if (null rest)
+      best
+      ($min-loop (if (< (car rest) best) (car rest) best) (cdr rest))))
+
+; The reduction runs over the reversed list so that ties resolve as the
+; original right fold did (the rightmost of equal values wins, which is
+; observable for signed zeros).
 (defun max (&rest numbers)
   "Return maximum of numbers"
   (cond ((null numbers) (error "MAX requires at least one argument"))
         ((null (cdr numbers)) (car numbers))
-        (t (let ((max-rest (apply #'max (cdr numbers))))
-             (if (> (car numbers) max-rest)
-                 (car numbers)
-                 max-rest)))))
+        (t (let ((rev (reverse numbers)))
+             ($max-loop (car rev) (cdr rev))))))
 
 (defun min (&rest numbers)
   "Return minimum of numbers"
   (cond ((null numbers) (error "MIN requires at least one argument"))
         ((null (cdr numbers)) (car numbers))
-        (t (let ((min-rest (apply #'min (cdr numbers))))
-             (if (< (car numbers) min-rest)
-                 (car numbers)
-                 min-rest)))))
+        (t (let ((rev (reverse numbers)))
+             ($min-loop (car rev) (cdr rev))))))
 
 (defun abs (x)
   "Absolute value"

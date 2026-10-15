@@ -306,6 +306,27 @@ fn io_os_error(
     os_error(env, operation, category, &e.to_string(), extra)
 }
 
+/// `std::env::{set_var, remove_var}` panic on empty names, names containing
+/// `=` or NUL; reject those as structured errors before calling std.
+fn check_env_name(env: &Shared<Environment>, operation: &str, name: &str) -> Result<(), LispError> {
+    let why = if name.is_empty() {
+        "environment variable name is empty"
+    } else if name.contains('=') {
+        "environment variable name contains '='"
+    } else if name.contains('\0') {
+        "environment variable name contains NUL"
+    } else {
+        return Ok(());
+    };
+    Err(os_error(
+        env,
+        operation,
+        "INVALID-ARGUMENT",
+        why,
+        &[(":NAME", LispVal::String(name.to_string()))],
+    ))
+}
+
 fn closed_child_error(env: &Shared<Environment>, operation: &str, name: &str) -> LispError {
     os_error(
         env,
@@ -469,6 +490,16 @@ pub(super) fn apply_os_op(
             }
             let name = expect_string(args, 0, "os-env-set*")?;
             let value = expect_string(args, 1, "os-env-set*")?;
+            check_env_name(env, "env-set", &name)?;
+            if value.contains('\0') {
+                return Err(os_error(
+                    env,
+                    "env-set",
+                    "INVALID-ARGUMENT",
+                    "environment variable value contains NUL",
+                    &[(":NAME", LispVal::String(name))],
+                ));
+            }
             // SAFETY: `set_var` is only unsound if another thread reads the
             // environment concurrently without synchronization (POSIX
             // setenv is not thread-safe). This kernel does not spawn
@@ -491,6 +522,7 @@ pub(super) fn apply_os_op(
                 ));
             }
             let name = expect_string(args, 0, "os-env-unset*")?;
+            check_env_name(env, "env-unset", &name)?;
             // SAFETY: see OS-ENV-SET* above.
             unsafe {
                 std::env::remove_var(&name);
@@ -725,6 +757,15 @@ pub(super) fn apply_os_op(
                 ));
             }
             let pid = expect_i64(args, 0, "os-signal*")?;
+            if pid <= 0 || pid > i64::from(i32::MAX) {
+                return Err(os_error(
+                    env,
+                    "signal",
+                    "INVALID-ARGUMENT",
+                    &format!("pid {pid} out of range (must be 1..={})", i32::MAX),
+                    &[(":PID", LispVal::Number(pid))],
+                ));
+            }
             let signal_name = expect_string(args, 1, "os-signal*")?;
             let signal = crate::signal_by_name(&signal_name).ok_or_else(|| {
                 os_error(
