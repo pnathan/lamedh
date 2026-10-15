@@ -197,3 +197,25 @@ fn typed_literal_vs_float_agrees_with_interpreter() {
         assert!(!t("(jit-lt516 9007199254740992.0)"));
     });
 }
+
+#[test]
+fn portable_checker_agrees_with_native_on_literal_bound() {
+    lamedh::with_large_stack(|| {
+        let env = Environment::with_stdlib();
+        let run = |s: &str| {
+            let e = read(s, &env).unwrap();
+            eval(&e, &env).map(|v| lamedh::printer::print(&v))
+        };
+        // Within 2^53 the literal is coerced to float64 and the island
+        // compiles; beyond it the operands disagree, as in the native checker.
+        run("(defun h516a (x) (< (+ x 0.5) 9007199254740992))").unwrap();
+        run("(defun h516b (x) (< (+ x 0.5) 9007199254740993))").unwrap();
+        let ok = run("(typed-island '(h516a))").unwrap();
+        let bad = run("(typed-island '(h516b))").unwrap();
+        assert!(ok.contains("MEMBERS (H516A"), "{ok}");
+        assert!(
+            bad.contains("REJECTED (H516B") && bad.contains("operands disagree"),
+            "{bad}"
+        );
+    });
+}

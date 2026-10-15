@@ -1123,6 +1123,10 @@ reports a type error immediately afterwards."
   (handler-case (progn (hm-unify! state a b) t)
     (error (e) nil)))
 
+(defun hm-exact-f64-literal-p (n)
+  "True when integer literal N converts to float64 exactly (|N| <= 2^53)."
+  (and (<= n 9007199254740992) (>= n -9007199254740992)))
+
 (defun hm-elab-cmp (state tyenv op args)
   "`< > <= >= = /=`: exactly two operands that unify; result BOOL. Known
 non-comparable operand kinds are rejected as the evaluator would at runtime."
@@ -1132,11 +1136,15 @@ non-comparable operand kinds are rejected as the evaluator would at runtime."
       (let ((ta (hm-elab state tyenv (car args)))
             (tb (hm-elab state tyenv (cadr args))))
         ;; #530: an integer literal compared with a float64 operand is a
-        ;; float64 constant -- the evaluator's own mixed comparison.
+        ;; float64 constant -- the evaluator's own mixed comparison -- only
+        ;; when the conversion is exact (|n| <= 2^53, #516; mirrors the native
+        ;; `elab_cmp`).
         (cond
-          ((and (hm-int-literal-p (cadr args)) (eq (hm-walk state ta) 'float64))
+          ((and (hm-int-literal-p (cadr args)) (hm-exact-f64-literal-p (cadr args))
+                (eq (hm-walk state ta) 'float64))
            (setq tb 'float64))
-          ((and (hm-int-literal-p (car args)) (eq (hm-walk state tb) 'float64))
+          ((and (hm-int-literal-p (car args)) (hm-exact-f64-literal-p (car args))
+                (eq (hm-walk state tb) 'float64))
            (setq ta 'float64)))
         ;; #476: refused BEFORE unify, so no comparison is ever typed over a
         ;; handle whose aliasing makes word equality wrong.
