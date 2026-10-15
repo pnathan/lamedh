@@ -239,13 +239,15 @@ evaluator's recursion limit."
                   (cons h nil)))))
       (let ((i (string-last-index-of hp ":")))
         (if (null i)
-            (cons (if (string-empty-p hp) nil hp) nil)
+            (cons hp nil)
             (cons (substring hp 0 i) ($url-parse-port (substring hp (+ i 1) (string-length* hp))))))))
 
 (defun parse (s)
   "Parse URL string S into an alist with keys SCHEME, USERINFO, HOST, PORT,
 PATH, QUERY, FRAGMENT. All are NIL when absent except PATH (always a
-string, possibly \"\"). QUERY/FRAGMENT are the raw text after \"?\"/\"#\"
+string, possibly \"\"). An authority that is present but empty
+(\"file:///etc/passwd\") has HOST \"\", not NIL, so BUILD restores the
+\"//\". QUERY/FRAGMENT are the raw text after \"?\"/\"#\"
 (no leading delimiter); PATH/USERINFO are likewise raw/still-encoded — see
 the file header. No regular expressions are used: this is a small explicit
 state machine splitting on \"#\", \"?\", the first valid \"scheme:\",
