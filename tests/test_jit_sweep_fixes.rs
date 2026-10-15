@@ -78,3 +78,71 @@ fn rejected_arity_changing_redefinition_keeps_the_previous_definition() {
         "(TYPED (-> (INT64) INT64) COMPILED)"
     );
 }
+/// Redefining a typed function with the same arity but different parameter or
+/// return *types* leaves compiled callers holding the old ABI: a caller built
+/// against `inl : int64 -> int64` read the new `float64` result word as an
+/// integer (`(use 3)` printed 9218868437227405312). Callers of a function
+/// whose signature changed must stop running instead (docs/typed-jit-design.md
+/// §3.5); redefining the caller against the new signature revives it.
+#[test]
+fn return_type_change_invalidates_compiled_callers() {
+    let e = env();
+    eval_line("(defun-typed (inl int64) ((x int64)) (+ x 1))", &e);
+    eval_line("(defun-typed (use int64) ((x int64)) (* (inl x) 2))", &e);
+    eval_line("(defun-typed (top int64) ((x int64)) (+ (use x) 1))", &e);
+    assert_eq!(eval_line("(use 3)", &e), "8");
+    assert_eq!(eval_line("(top 3)", &e), "9");
+
+    eval_line("(defun-typed (inl float64) ((x int64)) 1.5)", &e);
+    let stale = eval_line("(use 3)", &e);
+    assert!(is_error(&stale), "stale caller must error, got: {stale}");
+    assert!(
+        stale.contains("INL") && stale.contains("signature"),
+        "error should name the redefined callee: {stale}"
+    );
+    let stale_top = eval_line("(top 3)", &e);
+    assert!(is_error(&stale_top), "transitive caller: {stale_top}");
+    assert_eq!(eval_line("(inl 3)", &e), "1.5");
+
+    eval_line(
+        "(defun-typed (use float64) ((x int64)) (* (inl x) 2.0))",
+        &e,
+    );
+    assert_eq!(eval_line("(use 3)", &e), "3.0");
+}
+
+#[test]
+fn parameter_type_change_invalidates_compiled_callers() {
+    let e = env();
+    eval_line("(defun-typed (inl int64) ((x int64)) (+ x 1))", &e);
+    eval_line("(defun-typed (use int64) ((x int64)) (inl x))", &e);
+    assert_eq!(eval_line("(use 41)", &e), "42");
+
+    eval_line("(defun-typed (inl int64) ((x float64)) 7)", &e);
+    let stale = eval_line("(use 41)", &e);
+    assert!(is_error(&stale), "stale caller must error, got: {stale}");
+    assert_eq!(eval_line("(inl 1.5)", &e), "7");
+}
+
+/// A redefinition that keeps the signature leaves callers valid and live.
+#[test]
+fn same_signature_redefinition_keeps_callers() {
+    let e = env();
+    eval_line("(defun-typed (inl int64) ((x int64)) (+ x 1))", &e);
+    eval_line("(defun-typed (use int64) ((x int64)) (* (inl x) 2))", &e);
+    eval_line("(defun-typed (inl int64) ((x int64)) (+ x 100))", &e);
+    assert_eq!(eval_line("(use 3)", &e), "206");
+}
+
+/// An unannotated `defun` that was compiled against the old callee signature
+/// keeps working: its auto-typed membrane declines and the dynamic closure
+/// runs against the callee's new behavior.
+#[test]
+fn auto_typed_caller_falls_back_to_its_dynamic_closure() {
+    let e = env();
+    eval_line("(defun-typed (inl int64) ((x int64)) (+ x 1))", &e);
+    eval_line("(defun auto (x) (* (inl x) 2))", &e);
+    assert_eq!(eval_line("(auto 3)", &e), "8");
+    eval_line("(defun-typed (inl float64) ((x int64)) 1.5)", &e);
+    assert_eq!(eval_line("(auto 3)", &e), "3.0");
+}

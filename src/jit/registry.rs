@@ -32,6 +32,11 @@ pub struct TypedFn {
     /// `Jit::recompile_inline_dependents`.
     pub(super) inlined_from: RefCell<HashSet<usize>>,
     pub(super) slots: Cell<usize>,
+    /// Why this function's body was dropped, when it was invalidated because
+    /// a callee it was compiled against changed signature (see
+    /// `Jit::invalidate_callers`); `None` for every other function. Such a
+    /// function has no `core`, so it reads as undefined until redefined.
+    pub(super) stale: RefCell<Option<String>>,
     pub(super) compiled: RefCell<Option<Compiled>>,
     /// Native (Cranelift) edition. Like `compiled`, a call pins (`Arc`-clones)
     /// it, so a redefinition that swaps it out keeps the old code mapped until
@@ -79,6 +84,7 @@ impl TypedFn {
             may_mutate: RefCell::new(Vec::new()),
             inlined_from: RefCell::new(HashSet::new()),
             slots: Cell::new(slots),
+            stale: RefCell::new(None),
             compiled: RefCell::new(None),
             #[cfg(feature = "jit")]
             native: RefCell::new(None),
@@ -111,6 +117,16 @@ impl TypedFn {
     pub fn has_native(&self) -> bool {
         self.native.borrow().is_some()
     }
+    /// The error for a call to a function with no body: a stale caller names
+    /// the callee whose redefinition invalidated it; anything else was only
+    /// ever declared.
+    fn undefined_message(&self) -> String {
+        match self.stale.borrow().as_ref() {
+            Some(why) => format!("{}: stale: {why}", self.name),
+            None => format!("{}: declared but not defined", self.name),
+        }
+    }
+
     pub fn is_defined(&self) -> bool {
         self.core.borrow().is_some()
     }
@@ -385,10 +401,13 @@ impl TypedFn {
                         // guards this with `is_defined()`, but an internal
                         // `ctx.call` from another typed function's body has
                         // no such check.
-                        ctx.set_pending_error(format!(
-                            "typed function `{}` called before it was defined",
-                            self.name
-                        ));
+                        ctx.set_pending_error(match self.stale.borrow().as_ref() {
+                            Some(why) => format!("typed function `{}` is stale: {why}", self.name),
+                            None => format!(
+                                "typed function `{}` called before it was defined",
+                                self.name
+                            ),
+                        });
                         ctx.alloc_buffer(0) as u64
                     }
                 }
@@ -484,6 +503,7 @@ impl Jit {
                     may_mutate: RefCell::new(f.may_mutate.borrow().clone()),
                     inlined_from: RefCell::new(f.inlined_from.borrow().clone()),
                     slots: Cell::new(f.slots.get()),
+                    stale: RefCell::new(f.stale.borrow().clone()),
                     compiled: RefCell::new(f.compiled.borrow().clone()),
                     #[cfg(feature = "jit")]
                     native: RefCell::new(None),
@@ -860,6 +880,45 @@ impl Jit {
         }
     }
 
+    /// `id` was redefined with the same arity but different parameter or
+    /// return *types*. A compiled caller's `Core` was elaborated against the
+    /// old ABI (`Bin(I, ..)` over a call that now returns a `float64` word, an
+    /// `int64` argument handed to a `float64` parameter), and cannot be
+    /// re-elaborated: no source is kept. Running it would reinterpret words,
+    /// so drop each direct caller's body instead (docs/typed-jit-design.md
+    /// §3.5): it reads as stale, a strict membrane call errors naming `id`,
+    /// an auto-typed entry declines to its dynamic closure, and redefining
+    /// the caller revives it. Functions that spliced a dropped caller's body
+    /// in are rebuilt so they stop doing so; their own calls to it then fail
+    /// as stale at run time. Callers of the callee's *callers* need nothing:
+    /// those signatures did not change.
+    fn invalidate_callers(&self, id: usize) {
+        let funcs: Vec<Rc<TypedFn>> = self.funcs.to_vec();
+        let mut dropped = Vec::new();
+        for f in &funcs {
+            if f.id == id {
+                continue;
+            }
+            let calls_id = f.core.borrow().as_ref().is_some_and(|core| {
+                let mut callees = HashSet::new();
+                inline_call_ids(core, &mut callees);
+                callees.contains(&id)
+            });
+            if calls_id {
+                *f.stale.borrow_mut() = Some(format!(
+                    "its callee `{}` was redefined with a different signature; redefine `{}`",
+                    funcs[id].name, f.name
+                ));
+                *f.core.borrow_mut() = None;
+                f.deoptimize();
+                dropped.push(f.id);
+            }
+        }
+        for dropped_id in dropped {
+            self.recompile_inline_dependents(dropped_id);
+        }
+    }
+
     /// Recompile every function whose compiled editions previously spliced
     /// `id`'s body in via Core-level inlining (jit/core-loops): after `id` is
     /// redefined (same arity, so `recompile_all_except` was not already
@@ -1129,10 +1188,19 @@ impl Jit {
         // Bake the resolved (concrete) signature so the membrane and callers see
         // monomorphic types, never variables.
         let f = self.funcs[id].clone();
+        let types_changed = !arity_changed
+            && prior.is_some_and(|(old_params, old_ret)| {
+                old_ret != resolved_ret
+                    || old_params
+                        .iter()
+                        .zip(&resolved_params)
+                        .any(|((_, old), (_, new))| old != new)
+            });
         *f.params.borrow_mut() = resolved_params;
         *f.ret.borrow_mut() = resolved_ret;
         f.slots.set(max_slots);
         *f.core.borrow_mut() = Some(core);
+        *f.stale.borrow_mut() = None;
         f.recompute_may_mutate();
         f.compile_now(&self.funcs);
         // If the arity changed on redefinition, every other compiled function may
@@ -1141,6 +1209,8 @@ impl Jit {
         // correctly-sized buffers (and correct direct-native entry pointers).
         if arity_changed {
             self.recompile_all_except(id);
+        } else if types_changed {
+            self.invalidate_callers(id);
         } else {
             // Same-arity redefinition: `recompile_all_except` above already
             // covers every other function in the arity-changed case, but
@@ -1818,7 +1888,7 @@ impl Jit {
             .get(id)
             .ok_or_else(|| format!("unknown typed function id {id}"))?;
         if !f.is_defined() {
-            return Err(format!("{}: declared but not defined", f.name));
+            return Err(f.undefined_message());
         }
         {
             let params = f.params.borrow();
@@ -1930,7 +2000,7 @@ impl Jit {
         };
         let f = &self.funcs[id];
         if !f.is_defined() {
-            return JitEntry::Declined(format!("{name}: declared but not defined"));
+            return JitEntry::Declined(f.undefined_message());
         }
         let params = f.params.borrow();
         if args.len() != params.len() {
