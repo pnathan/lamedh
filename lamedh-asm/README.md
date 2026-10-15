@@ -119,6 +119,8 @@ instead.
   fixnum literal — no compiler change was needed for that part, since
   the data heap never relocates and a heapobj's absolute address bakes
   as a code immediate the same way any other literal datum does.
+  Float literals convert decimal-to-double correctly rounded (round-half-even, denormals,
+  overflow to `inf`) via an exact big-decimal scaling in `reader.asm` (`dec_to_double`, #614).
 - `LAMBDA` with real closure conversion: a free-variable scan
   (`scan_free_vars`) decides what a nested lambda must capture *before*
   a single byte of its body is emitted; captured values are copied by

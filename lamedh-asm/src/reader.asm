@@ -298,9 +298,10 @@ reader_skip_ws:
 ; char is '-' or a digit. A '.' followed by at least one digit right
 ; after the integer part switches this to a float literal (HDR_FLOAT,
 ; see floats.asm); anything else (including a bare trailing '.') leaves
-; it a plain integer. An e/E exponent after the digits is read by
+; it a plain integer. A float literal is converted by dec_to_double
+; (correctly rounded, #614); an e/E exponent after the digits is read by
 ; read_form's caller side (read_exponent_float), which rescans the
-; whole token.
+; whole token through the same conversion.
 ;
 ; Integer range (issue #550): a fixnum here is 62 bits wide (tags.inc),
 ; so the representable range is [-2^61, 2^61-1], narrower than KERNEL.md
@@ -314,6 +315,8 @@ reader_skip_ws:
 ; exceeds the largest double, so it reads as +/-inf, as the reference's
 ; f64 parse does.
 read_number:
+    mov rax, [reader_pos]
+    mov [rel num_tok_start], rax       ; token start, for dec_to_double
     push rbx
     push r12
     push r13
@@ -438,40 +441,10 @@ read_number:
     ret
 
 .float_literal:
-    call .int_part_to_xmm3                ; before r13 is reused below
-    inc qword [reader_pos]              ; consume '.'
-    xor r13, r13                          ; fractional digit accumulator
-    xor r14, r14                            ; count of fractional digits
-.frac_loop:
-    call reader_peek
-    cmp rax, -1
-    je .frac_done
-    cmp al, '0'
-    jb .frac_done
-    cmp al, '9'
-    ja .frac_done
-    imul r13, r13, 10
-    movzx rax, al
-    sub rax, '0'
-    add r13, rax
-    inc r14
-    inc qword [reader_pos]
-    jmp .frac_loop
-.frac_done:
-    movsd xmm0, xmm3                     ; int part
-    cvtsi2sd xmm1, r13                      ; fractional numerator
-    mov rax, 1
-    mov rcx, r14
-.pow_loop:
-    test rcx, rcx
-    jz .pow_done
-    imul rax, rax, 10
-    dec rcx
-    jmp .pow_loop
-.pow_done:
-    cvtsi2sd xmm2, rax                       ; 10^(fractional digit count)
-    divsd xmm1, xmm2
-    addsd xmm0, xmm1
+    mov rdi, [rel num_tok_start]
+    call dec_to_double          ; whole token, correctly rounded; sign included
+    jmp .float_pos
+
 .apply_sign:
     test r12, r12
     jz .float_pos
@@ -606,141 +579,499 @@ u64_to_xmm0:
     ret
 
 section .text
-; read_exponent_float(rdi = buffer index of a number token that
-; read_number has just read, and that continues with a valid exponent)
-; -> rax = the whole token, "-? digits (. digits)? [eE] [+-]? digits",
-; as a tagged float; reader_pos is left just past the exponent. The
-; token is rescanned from its start so every digit takes part: the
-; significand's digits become one integer M and the value is
-; M * 10^(exp - fraction digits). When M <= 2^53 and that power of ten
-; is within 10^22 both are exact doubles, so the one multiply or divide
-; rounds correctly (Clinger's fast path) — "1.5e2" is exactly 150.0 and
-; "1.5e-3" the double nearest 0.0015. Outside that range the scaling is
-; repeated by 10^22 steps, which can be off in the last place (the
-; fraction reader above has the same limit; a correctly rounded
-; general path needs big-integer arithmetic). Significand digits past
-; the 18th are dropped (an integer digit still scales the exponent).
-read_exponent_float:
+; ---------------------------------------------------------------------
+; Correctly rounded decimal -> binary64 (issue #614).
+;
+; A float token ("-? digits (. digits)? ([eE] [+-]? digits)?") is held
+; as an arbitrary-precision decimal — dec_d[0..dec_nd) base-10 digit
+; values, no leading or trailing zero, value = 0.d0d1d2... * 10^dec_dp —
+; and converted by exact scaling with powers of two (shifts of the
+; decimal digit string) until it sits in [2^52, 2^53), then rounded to
+; an integer half-to-even. This is the algorithm of Go's strconv
+; (decimal.go / atof.go `floatBits`): no approximation anywhere, so
+; every literal — 17+ significant digits, denormals, f64::MAX, exact
+; halfway points, huge exponents — reads as the double nearest to it,
+; ties to even, and a magnitude of 2^1024 - 2^970 or more reads as inf.
+;
+; At most DEC_MAXD (800) digits are kept; 767 are enough to decide any
+; double, and dec_trunc records that a nonzero digit was dropped (the
+; value is then strictly above the kept digits, which breaks ties up).
+; ---------------------------------------------------------------------
+%define DEC_MAXD 800
+
+; dec_trim: drop trailing zero digits; an empty number has dp 0.
+; Clobbers rax, rsi.
+dec_trim:
+    mov rax, [rel dec_nd]
+    lea rsi, [rel dec_d]
+.next:
+    test rax, rax
+    jz .empty
+    cmp byte [rsi+rax-1], 0
+    jne .done
+    dec rax
+    jmp .next
+.empty:
+    mov qword [rel dec_dp], 0
+.done:
+    mov [rel dec_nd], rax
+    ret
+
+; dec_shift_left(edi = k, 1..60): decimal := decimal * 2^k. The product
+; is generated least significant digit first into dec_tmp, then copied
+; back reversed. Clobbers rax, rcx, rdx, rsi, r8-r11.
+dec_shift_left:
+    mov ecx, edi
+    lea rsi, [rel dec_d]
+    lea r10, [rel dec_tmp]
+    mov r8, [rel dec_nd]                  ; read index, counts down
+    xor eax, eax                            ; running carry n
+    xor r9d, r9d                              ; digits generated
+    mov r11d, 10
+.digit:
+    test r8, r8
+    jz .carry
+    dec r8
+    movzx edx, byte [rsi+r8]
+    shl rdx, cl                              ; digit * 2^k <= 9 * 2^60
+    add rax, rdx
+    xor edx, edx
+    div r11
+    mov [r10+r9], dl
+    inc r9
+    jmp .digit
+.carry:
+    test rax, rax
+    jz .generated
+    xor edx, edx
+    div r11
+    mov [r10+r9], dl
+    inc r9
+    jmp .carry
+.generated:
+    mov rax, [rel dec_nd]
+    sub rax, r9
+    sub [rel dec_dp], rax                    ; dp += generated - old nd
+    mov rcx, r9
+    cmp rcx, DEC_MAXD
+    jbe .copy
+    mov rcx, DEC_MAXD
+    mov rdx, r9
+    sub rdx, rcx                               ; low digits being dropped
+    xor r8d, r8d
+.dropped:
+    cmp r8, rdx
+    jae .copy
+    cmp byte [r10+r8], 0
+    je .dropped_next
+    mov qword [rel dec_trunc], 1
+.dropped_next:
+    inc r8
+    jmp .dropped
+.copy:
+    mov [rel dec_nd], rcx
+    lea r8, [r10+r9-1]                        ; most significant digit
+    xor edx, edx
+.copy_loop:
+    cmp rdx, rcx
+    jae .copied
+    mov al, [r8]
+    mov [rsi+rdx], al
+    dec r8
+    inc rdx
+    jmp .copy_loop
+.copied:
+    jmp dec_trim
+
+; dec_shift_right(edi = k, 1..60): decimal := decimal / 2^k, in place,
+; digit by digit with a running remainder. Clobbers rax, rcx, rdx, rsi,
+; r8-r11.
+dec_shift_right:
+    mov ecx, edi
+    lea rsi, [rel dec_d]
+    mov r10, [rel dec_nd]
+    xor r8d, r8d                              ; read index
+    xor eax, eax                                ; n: running remainder
+.skip:                                          ; read until n >= 2^k
+    mov rdx, rax
+    shr rdx, cl
+    test rdx, rdx
+    jnz .skip_done
+    cmp r8, r10
+    jae .exhausted
+    lea rax, [rax+rax*4]
+    add rax, rax
+    movzx edx, byte [rsi+r8]
+    add rax, rdx
+    inc r8
+    jmp .skip
+.exhausted:
+    test rax, rax
+    jnz .pad
+    mov qword [rel dec_nd], 0
+    ret
+.pad:
+    mov rdx, rax
+    shr rdx, cl
+    test rdx, rdx
+    jnz .skip_done
+    lea rax, [rax+rax*4]
+    add rax, rax
+    inc r8
+    jmp .pad
+.skip_done:
+    mov rdx, r8
+    dec rdx
+    sub [rel dec_dp], rdx                     ; dp -= r - 1
+    mov r11, 1
+    shl r11, cl
+    dec r11                                    ; mask = 2^k - 1
+    xor r9d, r9d                                 ; write index
+.body:
+    cmp r8, r10
+    jae .tail
+    mov rdx, rax
+    shr rdx, cl                                  ; next quotient digit
+    and rax, r11
+    mov [rsi+r9], dl
+    inc r9
+    lea rax, [rax+rax*4]
+    add rax, rax
+    movzx edx, byte [rsi+r8]
+    add rax, rdx
+    inc r8
+    jmp .body
+.tail:
+    test rax, rax
+    jz .finish
+    mov rdx, rax
+    shr rdx, cl
+    and rax, r11
+    cmp r9, DEC_MAXD
+    jae .tail_full
+    mov [rsi+r9], dl
+    inc r9
+    jmp .tail_next
+.tail_full:
+    test rdx, rdx
+    jz .tail_next
+    mov qword [rel dec_trunc], 1
+.tail_next:
+    lea rax, [rax+rax*4]
+    add rax, rax
+    jmp .tail
+.finish:
+    mov [rel dec_nd], r9
+    jmp dec_trim
+
+; dec_shift(edi = signed k): decimal := decimal * 2^k, in steps of at
+; most 60 bits. Clobbers like the shifts above.
+dec_shift:
+    cmp qword [rel dec_nd], 0
+    je .ret
+    push rbx
+    movsxd rbx, edi
+    test rbx, rbx
+    jz .out
+    js .neg
+.left:
+    cmp rbx, 60
+    jle .left_last
+    mov edi, 60
+    call dec_shift_left
+    sub rbx, 60
+    jmp .left
+.left_last:
+    mov edi, ebx
+    call dec_shift_left
+    jmp .out
+.neg:
+    neg rbx
+.right:
+    cmp rbx, 60
+    jle .right_last
+    mov edi, 60
+    call dec_shift_right
+    sub rbx, 60
+    jmp .right
+.right_last:
+    mov edi, ebx
+    call dec_shift_right
+.out:
+    pop rbx
+.ret:
+    ret
+
+; dec_rounded() -> rax = the integer part of the decimal, rounded half
+; to even (a truncated tail counts as "a little more"). Expects the
+; value scaled into [2^52, 2^53), so dp is about 16.
+dec_rounded:
+    mov r8, [rel dec_dp]
+    cmp r8, 20
+    jle .go
+    mov rax, -1
+    ret
+.go:
+    mov r9, [rel dec_nd]
+    lea rsi, [rel dec_d]
+    xor eax, eax
+    xor ecx, ecx
+.digits:
+    cmp rcx, r8
+    jge .zeros
+    cmp rcx, r9
+    jge .zeros
+    lea rax, [rax+rax*4]
+    add rax, rax
+    movzx edx, byte [rsi+rcx]
+    add rax, rdx
+    inc rcx
+    jmp .digits
+.zeros:
+    cmp rcx, r8
+    jge .round
+    lea rax, [rax+rax*4]
+    add rax, rax
+    inc rcx
+    jmp .zeros
+.round:
+    test r8, r8
+    js .done
+    cmp r8, r9
+    jge .done
+    movzx edx, byte [rsi+r8]                    ; first dropped digit
+    cmp edx, 5
+    jne .not_half
+    lea rcx, [r8+1]
+    cmp rcx, r9
+    jne .not_half                                  ; digits follow the 5
+    cmp qword [rel dec_trunc], 0
+    jne .up
+    test r8, r8
+    jz .done
+    test byte [rsi+r8-1], 1                        ; exactly half: to even
+    jz .done
+    jmp .up
+.not_half:
+    cmp edx, 5
+    jb .done
+.up:
+    inc rax
+.done:
+    ret
+
+; dec_float_bits() -> rax = the IEEE-754 bit pattern (sign clear) of the
+; magnitude held in dec_d / dec_nd / dec_dp.
+dec_float_bits:
+    cmp qword [rel dec_nd], 0
+    je .zero
+    mov rax, [rel dec_dp]
+    cmp rax, 310
+    jg .inf                                      ; >= 10^310: far past max
+    cmp rax, -330
+    jl .zero                                      ; < 10^-331: far below min
+    mov qword [rel dec_exp], 0
+.down:                                             ; scale into [0.5, 1)
+    mov rax, [rel dec_dp]
+    test rax, rax
+    jle .up
+    mov edi, 27
+    cmp rax, 9
+    jae .down_n
+    lea rcx, [rel dec_powtab]
+    movzx edi, byte [rcx+rax]
+.down_n:
+    add [rel dec_exp], rdi
+    neg edi
+    call dec_shift
+    jmp .down
+.up:
+    mov rax, [rel dec_dp]
+    test rax, rax
+    jg .scaled
+    jl .up_step
+    lea rcx, [rel dec_d]
+    cmp byte [rcx], 5
+    jae .scaled
+.up_step:
+    neg rax
+    mov edi, 27
+    cmp rax, 9
+    jae .up_n
+    lea rcx, [rel dec_powtab]
+    movzx edi, byte [rcx+rax]
+.up_n:
+    sub [rel dec_exp], rdi
+    call dec_shift
+    jmp .up
+.scaled:
+    dec qword [rel dec_exp]                        ; [0.5,1) -> [1,2)
+    mov rax, [rel dec_exp]
+    cmp rax, -1022
+    jge .normal_range
+    mov rdi, -1022                                   ; denormal: pin the
+    sub rdi, rax                                       ; exponent at the
+    add [rel dec_exp], rdi                               ; minimum, shift
+    neg edi                                                ; the mantissa down
+    call dec_shift
+.normal_range:
+    cmp qword [rel dec_exp], 1024
+    jge .inf
+    mov edi, 53
+    call dec_shift
+    call dec_rounded
+    mov rcx, 0x0020000000000000                      ; rounding carried to 2^53
+    cmp rax, rcx
+    jne .assemble
+    shr rax, 1
+    inc qword [rel dec_exp]
+    cmp qword [rel dec_exp], 1024
+    jge .inf
+.assemble:
+    mov rcx, [rel dec_exp]
+    bt rax, 52
+    jc .biased
+    mov rcx, -1023                                    ; denormal (or zero)
+.biased:
+    add rcx, 1023
+    and ecx, 0x7FF
+    shl rcx, 52
+    mov rdx, 0x000FFFFFFFFFFFFF
+    and rax, rdx
+    or rax, rcx
+    ret
+.inf:
+    mov rax, 0x7FF0000000000000
+    ret
+.zero:
+    xor eax, eax
+    ret
+
+; dec_to_double(rdi = buffer index of the first character of a float
+; token) -> xmm0 = the correctly rounded double, sign applied;
+; reader_pos is left just past the token. The token is
+; "-? digits (. digits)? ([eE] [+-]? digits)?": a '.' is taken once, an
+; exponent only when at least one digit follows its e/E (otherwise the
+; e is left unread). Exponent digits stop accumulating past 100000,
+; which is far outside any double's range either way.
+dec_to_double:
     push rbx
     push r12
     push r13
     push r14
     push r15
     mov r8, [reader_buf]
-    mov rcx, rdi                        ; scan index
-    xor r12, r12                          ; sign: 1 if negative
-    xor rbx, rbx                            ; M
-    xor r13, r13                              ; 1 once M stopped growing
-    xor r14, r14                                ; decimal exponent adjust
+    mov r9, [reader_end]
+    mov rcx, rdi
+    xor r12d, r12d                         ; sign: 1 if negative
+    xor r13d, r13d                           ; significant digits seen
+    xor r14d, r14d                             ; dp
+    xor r15d, r15d                               ; 1 once '.' was seen
+    mov qword [rel dec_nd], 0
+    mov qword [rel dec_trunc], 0
+    lea r10, [rel dec_d]
+    cmp rcx, r9
+    jae .mant_done
     cmp byte [r8+rcx], '-'
-    jne .int_digits
-    mov r12, 1
+    jne .mant
+    mov r12d, 1
     inc rcx
-.int_digits:
+.mant:
+    cmp rcx, r9
+    jae .mant_done
     movzx eax, byte [r8+rcx]
+    cmp al, '.'
+    jne .not_dot
+    test r15, r15
+    jnz .mant_done
+    mov r15d, 1
+    mov r14, r13                                ; dp = digits before '.'
+    inc rcx
+    jmp .mant
+.not_dot:
     sub eax, '0'
     cmp eax, 9
-    ja .int_done
+    ja .mant_done
     inc rcx
+    test eax, eax
+    jnz .significant
     test r13, r13
-    jnz .int_dropped
-    mov rdx, 100000000000000000         ; 10^17: M*10+9 stays below 2^63
-    cmp rbx, rdx
-    jae .int_full
-    imul rbx, rbx, 10
-    add rbx, rax
-    jmp .int_digits
-.int_full:
-    mov r13, 1
-.int_dropped:
-    inc r14                               ; a dropped integer digit: x10
-    jmp .int_digits
-.int_done:
-    cmp byte [r8+rcx], '.'
-    jne .exponent
-    inc rcx
-.frac_digits:
-    movzx eax, byte [r8+rcx]
-    sub eax, '0'
-    cmp eax, 9
-    ja .exponent
-    inc rcx
-    test r13, r13
-    jnz .frac_digits                      ; a dropped fraction digit
-    mov rdx, 100000000000000000
-    cmp rbx, rdx
-    jae .frac_full
-    imul rbx, rbx, 10
-    add rbx, rax
-    dec r14
-    jmp .frac_digits
-.frac_full:
-    mov r13, 1
-    jmp .frac_digits
+    jnz .significant
+    dec r14                                      ; leading zero
+    jmp .mant
+.significant:
+    inc r13
+    mov rdx, [rel dec_nd]
+    cmp rdx, DEC_MAXD
+    jae .too_many
+    mov [r10+rdx], al
+    inc rdx
+    mov [rel dec_nd], rdx
+    jmp .mant
+.too_many:
+    test eax, eax
+    jz .mant
+    mov qword [rel dec_trunc], 1
+    jmp .mant
+.mant_done:
+    test r15, r15
+    jnz .exponent
+    mov r14, r13                                  ; no '.': dp = all digits
 .exponent:
-    inc rcx                               ; the 'e' / 'E' (caller checked)
-    xor r15, r15                            ; exponent sign: 1 if negative
+    cmp rcx, r9
+    jae .finish
     movzx eax, byte [r8+rcx]
+    or al, 0x20
+    cmp al, 'e'
+    jne .finish
+    lea rdx, [rcx+1]
+    xor r15d, r15d                                  ; exponent sign
+    cmp rdx, r9
+    jae .finish
+    movzx eax, byte [r8+rdx]
     cmp al, '+'
-    je .exp_sign_done
+    je .exp_sign
     cmp al, '-'
-    jne .exp_digits_start
-    mov r15, 1
-.exp_sign_done:
-    inc rcx
-.exp_digits_start:
-    xor r9, r9                               ; exponent magnitude
+    jne .exp_first
+    mov r15d, 1
+.exp_sign:
+    inc rdx
+    cmp rdx, r9
+    jae .finish
+    movzx eax, byte [r8+rdx]
+.exp_first:
+    sub eax, '0'
+    cmp eax, 9
+    ja .finish                                       ; no digit: e not ours
+    xor esi, esi
 .exp_digits:
-    cmp rcx, [reader_end]
+    cmp rdx, r9
     jae .exp_done
-    movzx eax, byte [r8+rcx]
+    movzx eax, byte [r8+rdx]
     sub eax, '0'
     cmp eax, 9
     ja .exp_done
-    inc rcx
-    cmp r9, 100000                             ; far past any double's
-    jae .exp_digits                              ; range: stop growing
-    imul r9, r9, 10
-    add r9, rax
+    inc rdx
+    cmp rsi, 100000
+    jae .exp_digits
+    imul rsi, rsi, 10
+    add rsi, rax
     jmp .exp_digits
 .exp_done:
-    mov [reader_pos], rcx
+    mov rcx, rdx
     test r15, r15
-    jz .exp_pos
-    neg r9
-.exp_pos:
-    add r14, r9                              ; r14 = total power of ten
-    cvtsi2sd xmm0, rbx                         ; exact while M <= 2^53
-.scale_up:
-    cmp r14, 22
-    jle .scale_down
-    mulsd xmm0, [rel pow10_table + 22*8]
-    sub r14, 22
-    jmp .scale_up
-.scale_down:
-    cmp r14, -22
-    jge .scale_last
-    divsd xmm0, [rel pow10_table + 22*8]
-    add r14, 22
-    jmp .scale_down
-.scale_last:
-    test r14, r14
-    js .scale_div
-    lea rax, [rel pow10_table]
-    mulsd xmm0, [rax + r14*8]
-    jmp .signed
-.scale_div:
-    neg r14
-    lea rax, [rel pow10_table]
-    divsd xmm0, [rax + r14*8]
-.signed:
-    test r12, r12
-    jz .make
-    mov rax, 0x8000000000000000                  ; flip the sign bit, so
-    movq xmm1, rax                                 ; "-0e5" is -0.0
-    xorpd xmm0, xmm1
-.make:
-    call make_float
+    jz .exp_add
+    neg rsi
+.exp_add:
+    add r14, rsi
+.finish:
+    mov [reader_pos], rcx
+    mov [rel dec_dp], r14
+    call dec_trim
+    call dec_float_bits
+    shl r12, 63
+    or rax, r12
+    movq xmm0, rax
     pop r15
     pop r14
     pop r13
@@ -748,13 +1079,29 @@ read_exponent_float:
     pop rbx
     ret
 
+; read_exponent_float(rdi = buffer index of a number token that
+; read_number has just read, and that continues with a valid exponent)
+; -> rax = the whole token, "-? digits (. digits)? [eE] [+-]? digits",
+; as a tagged float; reader_pos is left just past the exponent. The
+; token is rescanned from its start by dec_to_double, so every digit
+; takes part in one correctly rounded conversion.
+read_exponent_float:
+    call dec_to_double
+    jmp make_float
+
 section .rodata
+; Shift sizes (bits) that bring a decimal with the given dp near [0.5,1).
+dec_powtab: db 1, 3, 6, 9, 13, 16, 19, 23, 26
+
+section .bss
 align 8
-; 10^0 .. 10^22: every one exactly representable as a double.
-pow10_table:
-    dq 1.0e0, 1.0e1, 1.0e2, 1.0e3, 1.0e4, 1.0e5, 1.0e6, 1.0e7
-    dq 1.0e8, 1.0e9, 1.0e10, 1.0e11, 1.0e12, 1.0e13, 1.0e14, 1.0e15
-    dq 1.0e16, 1.0e17, 1.0e18, 1.0e19, 1.0e20, 1.0e21, 1.0e22
+dec_d: resb DEC_MAXD                   ; digit values 0..9, most significant first
+dec_tmp: resb DEC_MAXD + 32              ; dec_shift_left's reversed product
+dec_nd: resq 1                             ; digits in use
+dec_dp: resq 1                               ; decimal point position (signed)
+dec_trunc: resq 1                              ; 1 if a nonzero digit was dropped
+dec_exp: resq 1                                  ; binary exponent being built
+num_tok_start: resq 1                              ; read_number's token start
 
 section .bss
 align 8
