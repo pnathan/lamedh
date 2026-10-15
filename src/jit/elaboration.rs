@@ -469,15 +469,22 @@ impl Cx<'_> {
                 return Ok((Core::LitI(0), self.walk(&ta)));
             }
             if matches!(bop, BinOp::Sub) {
-                // negate: (- x) => (0 - x)
+                // negate: (- x) => (zero - x), where `zero` is `0` for int64
+                // and `-0.0` for float64. `-0.0 - x` is IEEE negation for
+                // every x (`0.0 - 0.0` would turn `(- 0.0)` into `+0.0`; the
+                // evaluator gives `-0.0`).
                 let rt = self
                     .resolve(&ta)
                     .map_err(|_| format!("`{op}`: cannot infer operand type"))?;
                 let num = rt
                     .as_num()
                     .ok_or_else(|| format!("`{op}` expects a numeric operand, got {rt:?}"))?;
+                let zero = match num {
+                    NumTy::F => Core::LitF(-0.0),
+                    _ => Core::LitI(0),
+                };
                 return Ok((
-                    Core::Bin(num.into(), BinOp::Sub, Box::new(Core::LitI(0)), Box::new(a)),
+                    Core::Bin(num.into(), BinOp::Sub, Box::new(zero), Box::new(a)),
                     rt,
                 ));
             }
