@@ -814,6 +814,32 @@ impl Jit {
         }
     }
 
+    /// The registered signature of `name`, if any, for [`Self::restore_signature`].
+    fn signature_snapshot(&self, name: &str) -> Option<(Vec<(String, Ty)>, Ty)> {
+        let f = &self.funcs[*self.by_name.get(name)?];
+        Some((f.params.borrow().clone(), f.ret.borrow().clone()))
+    }
+
+    /// Undo [`Self::intern`]'s signature overwrite after a redefinition was
+    /// rejected: the old body is still installed, so the old signature must
+    /// be too (the membrane and every compiled caller read it). A brand-new
+    /// name has nothing to restore. `arity_changed` made `intern` deoptimize
+    /// the function; its editions are rebuilt against the restored signature.
+    fn restore_signature(
+        &self,
+        id: usize,
+        prior: Option<(Vec<(String, Ty)>, Ty)>,
+        arity_changed: bool,
+    ) {
+        let Some((params, ret)) = prior else { return };
+        let f = &self.funcs[id];
+        *f.params.borrow_mut() = params;
+        *f.ret.borrow_mut() = ret;
+        if arity_changed && f.core.borrow().is_some() {
+            f.compile_now(&self.funcs);
+        }
+    }
+
     /// Deopt and recompile every typed function except `skip_id`.
     ///
     /// Called when `skip_id`'s arity changed on redefinition.  Every other compiled
@@ -1045,11 +1071,13 @@ impl Jit {
         let mut scope: Scope = params.clone();
 
         // Register the signature *before* elaborating the body so a function can
-        // call itself (and any already-declared peer).
+        // call itself (and any already-declared peer). The previous signature
+        // is kept so a rejected redefinition can put it back.
+        let prior = self.signature_snapshot(&name);
         let (id, arity_changed) = self.intern(&name, params.clone(), ret.clone());
 
         let mut max_slots = scope.len();
-        let (core, resolved_params, resolved_ret) = {
+        let elaborated = (|| -> Result<_, String> {
             let cx = Cx {
                 declared: &self.declared,
                 funcs: &self.funcs,
@@ -1088,7 +1116,14 @@ impl Jit {
                     .map_err(|e| format!("{name} parameter `{pn}`: {e}"))?;
                 resolved_params.push((pn.clone(), rt));
             }
-            (core, resolved_params, resolved_ret)
+            Ok((core, resolved_params, resolved_ret))
+        })();
+        let (core, resolved_params, resolved_ret) = match elaborated {
+            Ok(v) => v,
+            Err(e) => {
+                self.restore_signature(id, prior, arity_changed);
+                return Err(e);
+            }
         };
 
         // Bake the resolved (concrete) signature so the membrane and callers see
