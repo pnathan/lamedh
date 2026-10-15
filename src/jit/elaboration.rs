@@ -589,14 +589,18 @@ impl Cx<'_> {
         let (mut a, mut ta) = self.elab(&args[0], scope, max)?;
         let (mut b, mut tb) = self.elab(&args[1], scope, max)?;
         // Issue #530: an integer literal compared with a `float64` operand is
-        // the float constant `n as f64` — the evaluator's own mixed-operand
-        // comparison (`as_f64` on both sides), so the result is unchanged.
+        // the float constant `n as f64`, which is the evaluator's mixed-operand
+        // comparison only when the conversion is exact (issue #516: the
+        // evaluator compares exactly). Beyond 2^53 the literal stays an
+        // `int64`, the operands disagree, and the form is rejected.
         if let Some(n) = Self::int_literal(&args[1])
             && self.is_float(&ta)
+            && n.unsigned_abs() <= 1 << 53
         {
             (b, tb) = (Core::LitF(n as f64), Ty::Float64);
         } else if let Some(n) = Self::int_literal(&args[0])
             && self.is_float(&tb)
+            && n.unsigned_abs() <= 1 << 53
         {
             (a, ta) = (Core::LitF(n as f64), Ty::Float64);
         }

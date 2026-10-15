@@ -42,7 +42,9 @@ fn int_literals_in_float_arithmetic_and_comparison_compile_and_match_the_interpr
             ("float64", "(+ x 9007199254740993)"),
             ("bool", "(< x 1)"),
             ("bool", "(>= 0 x)"),
-            ("bool", "(= x 9007199254740993)"),
+            // Beyond 2^53 a literal is no longer coerced (#516); see
+            // test_exact_mixed_compare.rs. 2^53 itself is exact.
+            ("bool", "(= x 9007199254740992)"),
             ("bool", "(/= 1 x)"),
         ];
         let inputs = ["0.5", "-2.5", "1.0", "0.0", "9007199254740992.0"];
