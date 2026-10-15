@@ -299,18 +299,16 @@ pub(super) fn apply_regex_op(
             let re = coerce_regex(&args[0], "regex-find*")?;
             let s = expect_string(args, 1, "regex-find*")?;
             let start_char = optional_start_char(args, 2, "regex-find*")?;
-            // Slice at the byte position of start-char, search within the
-            // slice, then add start_char back onto the returned character
-            // positions (the slice starts exactly at a char boundary, so
-            // byte_to_char_index on the slice gives an offset relative to
-            // start_char, not to the start of the whole string).
+            // Search from the byte position of start-char with FIND_AT, not
+            // on a slice of S: the regex still sees the text before the
+            // start, so `^`, `\b` and `\B` keep their meaning relative to S.
+            // Match offsets are already relative to the whole string.
             let byte_start = char_index_to_byte(&s, start_char);
-            let slice = &s[byte_start..];
-            match re.find(slice) {
+            match re.find_at(&s, byte_start) {
                 Some(m) => {
                     let text = m.as_str();
-                    let start = start_char as i64 + byte_to_char_index(slice, m.start());
-                    let end = start_char as i64 + byte_to_char_index(slice, m.end());
+                    let start = byte_to_char_index(&s, m.start());
+                    let end = byte_to_char_index(&s, m.end());
                     Ok(match_triple(text, start, end))
                 }
                 None => Ok(LispVal::Nil),
