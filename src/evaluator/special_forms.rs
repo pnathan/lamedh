@@ -986,6 +986,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let expr_val = &args[1];
 
                         if let LispVal::Symbol(name_sym) = name_val {
+                            if let Err(e) = check_bindable(&name_sym.borrow().name, "LABEL") {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             // Check for pathological case: (LABEL x x)
                             if let LispVal::Symbol(expr_sym) = expr_val
                                 && name_sym.borrow().name == expr_sym.borrow().name
@@ -1055,6 +1058,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             }
                             if let LispVal::Symbol(s) = &def_pair[0] {
                                 let name = s.borrow().name.clone();
+                                if let Err(e) = check_bindable(&name, "DEFINE") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                                 let v = eval(&def_pair[1], env)?;
                                 env.set(name.clone(), v.clone());
                                 // Also set EXPR on the symbol's plist (Lisp 1.5: define = deflist[x;EXPR])
@@ -1079,6 +1085,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             )))));
                         }
                         if let LispVal::Symbol(name_sym) = &args[0] {
+                            if let Err(e) = check_bindable(&name_sym.borrow().name, form_name) {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             let params = &args[1];
                             let mut body_idx = 2;
                             if args.len() == 4 {
