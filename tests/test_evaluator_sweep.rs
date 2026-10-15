@@ -102,3 +102,60 @@ fn definition_forms_still_accept_ordinary_names() {
         "0"
     );
 }
+
+// ---------------------------------------------------------------------------
+// LET binds in parallel even when some bound names are dynamic
+// (KERNEL.md: "every init is evaluated in the outer environment ... before
+// the body sees any new binding")
+// ---------------------------------------------------------------------------
+
+#[test]
+fn let_inits_do_not_see_earlier_dynamic_bindings() {
+    let env = env_with_stdlib();
+    eval_line("(defdynamic *lx* 1)", &env);
+    eval_line("(defdynamic *ly* 10)", &env);
+    eval_line("(defun lx-now () *lx*)", &env);
+    // A later init reads the OUTER value, directly or through a callee.
+    assert_eq!(eval_line("(let ((*lx* 2) (y *lx*)) y)", &env), "1");
+    assert_eq!(eval_line("(let ((*lx* 2) (y (lx-now))) y)", &env), "1");
+    // Swap: both inits see the outer values.
+    assert_eq!(
+        eval_line("(let ((*lx* *ly*) (*ly* *lx*)) (list *lx* *ly*))", &env),
+        "(10 1)"
+    );
+    // The body sees the new bindings; they are restored afterwards.
+    assert_eq!(
+        eval_line("(let ((*lx* 2) (y 3)) (list *lx* y))", &env),
+        "(2 3)"
+    );
+    assert_eq!(eval_line("(list *lx* *ly*)", &env), "(1 10)");
+}
+
+#[test]
+fn let_with_dynamic_binding_is_parallel_inside_a_function_body() {
+    let env = env_with_stdlib();
+    eval_line("(defdynamic *lz* 1)", &env);
+    // `no-compile` keeps this on the interpreter's LET (the typed JIT path is a
+    // separate component with its own handling of dynamic names).
+    eval_line(
+        "(defun lz-probe () (declare (no-compile)) (let ((*lz* 2) (y *lz*)) y))",
+        &env,
+    );
+    assert_eq!(eval_line("(lz-probe)", &env), "1");
+}
+
+#[test]
+fn let_dynamic_restored_when_a_later_init_fails() {
+    let env = env_with_stdlib();
+    eval_line("(defdynamic *la* 1)", &env);
+    eval_line("(defdynamic *lb* 1)", &env);
+    eval_line("(errorset '(let ((*la* 2) (*lb* (car 5))) 1))", &env);
+    assert_eq!(eval_line("(list *la* *lb*)", &env), "(1 1)");
+}
+
+#[test]
+fn let_star_still_sees_earlier_dynamic_bindings() {
+    let env = env_with_stdlib();
+    eval_line("(defdynamic *ls* 1)", &env);
+    assert_eq!(eval_line("(let* ((*ls* 2) (y *ls*)) y)", &env), "2");
+}
