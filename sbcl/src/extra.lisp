@@ -148,7 +148,15 @@ as a verified type."
 ;;; ---- instrumentation / guard fences (lib/22,26) ---------------------------
 
 (defbuiltin "KERNEL-FUEL-REMAINING" () *kernel-fuel*)
-(defbuiltin "KERNEL-FUEL-SET!" (n) (setf *kernel-fuel* n))
+(defbuiltin "KERNEL-FUEL-SET!" (n)
+  ;; Narrow-only while armed inside a WITH-FUEL fence (as the reference's
+  ;; kernel-fuel-set!): lowering is allowed, raising or disarming is not.
+  ;; NIL inside a fence means exhausted (charge-kernel-fuel disarms it), so
+  ;; it counts as 0 remaining: only n <= 0 passes.
+  (when (and *fuel-fenced*
+             (not (and n (<= n (or *kernel-fuel* 0)))))
+    (lamedh-error "kernel-fuel-set!: cannot widen or disarm inside a fuel fence"))
+  (setf *kernel-fuel* n))
 (defbuiltin "MONOTONIC-MICROS" () (round (* (get-internal-real-time) (/ 1000000 internal-time-units-per-second))))
 (defbuiltin "FEATURE-ENABLED-P" (name) (bool (feature-active-p name)))
 (defbuiltin "CAPABILITY-MASK-ALLOWS-P" (name) (bool (capability-mask-allows-p name)))

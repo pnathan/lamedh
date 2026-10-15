@@ -611,13 +611,27 @@ and not masked out). Called at the top of every gated builtin (io.lisp)."
 once per LEVAL trampoline iteration -- the same unit WITH-FUEL/STEP-COUNT
 (lib/22-guard.lisp, lib/26-instrument.lisp) measure and bound.")
 
+(defvar *fuel-fenced* nil
+  "True inside the dynamic extent of a WITH-FUEL fence. Bound only by the
+WITH-FUEL special form; KERNEL-FUEL-SET! is narrow-only while it is true.")
+
 (defspecial "WITH-FUEL" (args env whole)
   (declare (ignore whole))
   (destructuring-bind (n-form &rest body) args
-    (let ((n (leval n-form env)) (prev *kernel-fuel*))
-      (done (let ((*kernel-fuel* (if *kernel-fuel* (min n *kernel-fuel*) n)))
-              (unwind-protect (progn-eval body env)
-                (setf *kernel-fuel* prev)))))))
+    (let* ((n (leval n-form env))
+           (prev *kernel-fuel*)
+           (armed (if prev (min n prev) n))
+           (left 0))
+      ;; The inner binding dies with the LET, so the leftover is captured
+      ;; before it does and the enclosing budget is debited by what the fence
+      ;; spent. NIL leftover = exhausted (everything armed counts as spent).
+      ;; Runs on every exit path (normal, non-local, error).
+      (done (unwind-protect
+                (let ((*kernel-fuel* armed) (*fuel-fenced* t))
+                  (unwind-protect (progn-eval body env)
+                    (setf left (min armed (or *kernel-fuel* 0)))))
+              (when prev
+                (setf *kernel-fuel* (max 0 (- prev (max 0 (- armed left)))))))))))
 
 (defspecial "WITH-CAPABILITIES" (args env whole)
   (declare (ignore whole))
