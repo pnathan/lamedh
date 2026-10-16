@@ -73,8 +73,16 @@
                 (error (e2) (error-message e2)))))))
       "cannot widen or disarm inside a fuel fence")))
 
+;; The inner fence asks for more than the outer budget, so it is clamped to
+;; 1000 and spends all of it. The debit leaves the outer budget at 0, so the
+;; next outer step must error. Reading the remainder directly would itself
+;; be a step at 0 fuel, so the error is the observable.
 (deftest ff-inner-larger-than-outer-is-clamped-and-debited
   (assert-true
-    (with-fuel 1000
-      (handler-case (with-fuel 1000000 (ff-spin 0)) (error (e) nil))
-      (<= (or (fuel-remaining) 0) 0))))
+    (handler-case
+      (progn
+        (with-fuel 1000
+          (handler-case (with-fuel 1000000 (ff-spin 0)) (error (e) nil))
+          nil)
+        nil)
+      (error (e) t))))
