@@ -1,5 +1,21 @@
 # v0.4.1 — unreleased
 
+## Typed JIT: tail loops reclaim their per-iteration arena buffers (#212, partial)
+
+An allocating tail loop (Tier 1 self-call or Tier 2a mutual/general tail
+call) used to root every array/struct buffer it allocated in the call arena
+until the top-level call returned: O(iterations) memory under O(1) stack. Now,
+when a function's parameters **and** return type are all `int64`/`float64`/
+`bool`/`char`, each self-tail edge (native, closure and interpreter editions)
+and each cross-function tail hop between two such functions frees every buffer
+rooted since the iteration began. Such a function cannot carry a buffer across
+the edge, nor store a fresh one into an older buffer, so nothing freed is
+reachable. Loops with a compound or `boxed` parameter/return keep the old
+behavior (the next iteration may legitimately use the previous buffer); they
+are not covered and #212 stays open for them (needs escape/region analysis,
+`docs/typed-region-design.md`). `jit::last_call_arena_peak_words()` exposes the
+per-call arena high-water mark for tests.
+
 ## Oversized decimal literals set `OVERFLOW` (#515)
 
 A decimal integer literal outside `i64` (`9223372036854775808`) still reads
