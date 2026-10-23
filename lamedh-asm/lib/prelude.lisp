@@ -718,19 +718,40 @@
 ; already establishes for a variadic reference builtin over a fixed
 ; binary primitive.
 ;
-; MAX/MIN are a -> a -> a over one numeric type (#530): a float argument
-; makes the result a float, so `(max 0.5 1)` is `1.0`. A selected float is
-; returned untouched (`(+ -0.0 0.0)` would lose the sign).
-(DEFUN $NUM-PROMOTE (R A B)
-  (IF (FLOATP R) R (IF (OR (FLOATP A) (FLOATP B)) (FLOAT R) R)))
-(DEFUN $MAX2 (A B) ($NUM-PROMOTE (IF (< A B) B A) A B))
+; MIN/MAX follow IEEE 754-2019 maximum/minimum for floats (#530): a NaN
+; argument makes the result NaN, and -0.0 orders below +0.0. Untyped calls
+; keep float contagion: if any argument is a float the result is a float
+; (`(MAX 0.5 1)` is `1.0`), applied once to the selected value so a selected
+; -0.0 keeps its sign. NaN is the one value unequal to itself, so it is
+; detected as (NOT (= X X)); -0.0 as a zero whose reciprocal is negative
+; (this kernel has no FLOAT-SIGN). /= is not defined here, hence NOT =.
+(DEFUN $NAN-P (X) (NOT (= X X)))
+(DEFUN $NEG-ZERO-P (X)
+  (IF (FLOATP X) (IF (= X 0) (< (/ 1.0 X) 0) NIL) NIL))
+(DEFUN $MAX2 (A B)
+  (IF ($NAN-P A) A
+  (IF ($NAN-P B) B
+  (IF (< B A) A
+  (IF (< A B) B
+  (IF ($NEG-ZERO-P A) B A))))))
+(DEFUN $MIN2 (A B)
+  (IF ($NAN-P A) A
+  (IF ($NAN-P B) B
+  (IF (< A B) A
+  (IF (< B A) B
+  (IF ($NEG-ZERO-P A) A B))))))
 (DEFUN $MAX-FOLD (ACC REST)
   (IF (NULL REST) ACC ($MAX-FOLD ($MAX2 ACC (CAR REST)) (CDR REST))))
-(DEFUN MAX (FIRST &REST REST) ($MAX-FOLD FIRST REST))
-(DEFUN $MIN2 (A B) ($NUM-PROMOTE (IF (< A B) A B) A B))
 (DEFUN $MIN-FOLD (ACC REST)
   (IF (NULL REST) ACC ($MIN-FOLD ($MIN2 ACC (CAR REST)) (CDR REST))))
-(DEFUN MIN (FIRST &REST REST) ($MIN-FOLD FIRST REST))
+(DEFUN $ANY-FLOAT-P (XS)
+  (IF (NULL XS) NIL (IF (FLOATP (CAR XS)) T ($ANY-FLOAT-P (CDR XS)))))
+(DEFUN $PROMOTE-FLOAT (R NUMBERS)
+  (IF (FLOATP R) R (IF ($ANY-FLOAT-P NUMBERS) (FLOAT R) R)))
+(DEFUN MAX (FIRST &REST REST)
+  ($PROMOTE-FLOAT ($MAX-FOLD FIRST REST) (CONS FIRST REST)))
+(DEFUN MIN (FIRST &REST REST)
+  ($PROMOTE-FLOAT ($MIN-FOLD FIRST REST) (CONS FIRST REST)))
 
 ; DEF — the reference's own alternate top-level binding form
 ; (evaluator/special_forms.rs's SpecialForm::Def): like DEFINE, but

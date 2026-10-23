@@ -101,22 +101,6 @@ impl Cx<'_> {
         }
     }
 
-    /// #530: `min`/`max` are `a -> a -> a` over one numeric `a`, and the
-    /// evaluator returns a float whenever any argument is one (`(max 0.5 1)`
-    /// is `1.0`). So once any operand is `float64`, every int LITERAL operand
-    /// is the float constant `n as f64` — the same `as f64` the evaluator's
-    /// mixed comparison applies — and the selected value is bit-identical.
-    /// Order-independent; int-typed variables are never coerced.
-    fn coerce_min_max_literals(&self, args: &[LispVal], tys: &mut [Ty]) {
-        if tys.iter().any(|t| self.is_float(t)) {
-            for (a, t) in args.iter().zip(tys.iter_mut()) {
-                if Self::int_literal(a).is_some() {
-                    *t = Ty::Float64;
-                }
-            }
-        }
-    }
-
     /// Is `t` already known to be `float64` under the substitution?
     fn is_float(&self, t: &Ty) -> bool {
         matches!(self.walk(t), Ty::Float64)
@@ -330,14 +314,16 @@ impl Cx<'_> {
                     }
                     "ASH" if !self.checking => self.elab_ash(args, scope, max),
                     // `abs`/`min`/`max` compile by DESUGARING to `if`+comparison
-                    // (already-compilable Core), exactly mirroring their Lisp
-                    // definitions in lib/05-math.lisp — `(abs x)` = `(if (< x 0)
-                    // (- x) x)`, `(max a b)` = `(if (> a b) a b)`, `(min a b)` =
-                    // `(if (< a b) a b)`. This is comparison-select, NOT the FP
-                    // fmin/fmax/fabs instructions, so it matches the evaluator's
-                    // exact -0.0/NaN behaviour (e.g. `(abs -0.0)` stays `-0.0`).
-                    // int64 and float64. min/max take any arity >= 1 (#397);
-                    // every argument is evaluated once into a temp slot.
+                    // (already-compilable Core), mirroring their Lisp definitions
+                    // in lib/05-math.lisp — `(abs x)` = `(if (< x 0) (- x) x)`.
+                    // `min`/`max` on int64 are the comparison select
+                    // `(if (< a b) a b)` / `(if (> a b) a b)`. On float64 they
+                    // implement IEEE 754-2019 `minimum`/`maximum` (NaN
+                    // propagates, -0.0 < +0.0; see `float_min_max_step`), which
+                    // the evaluator matches. `abs` stays a comparison select, so
+                    // `(abs -0.0)` is `+0.0` via `x + 0` (#518). min/max take
+                    // any arity >= 1 (#397); every argument is evaluated once
+                    // into a temp slot.
                     "ABS" if !self.checking => self.elab_abs(args, scope, max),
                     "MIN" if !self.checking => {
                         self.elab_min_max_compiled(CmpOp::Lt, args, scope, max)
@@ -1251,19 +1237,12 @@ impl Cx<'_> {
         if args.is_empty() {
             return Err("`min`/`max` require at least one argument".to_string());
         }
-        let mut tys = Vec::with_capacity(args.len());
-        for a in args {
-            let (_, t) = self.elab(a, scope, max)?;
-            self.reject_boxed_arith_cmp(&t)?;
-            tys.push(t);
-        }
-        // #530: `min`/`max` are `a -> a -> a`; the evaluator returns a float
-        // when any argument is one, so an int LITERAL beside a float64 types
-        // as float64 (see `coerce_min_max_literals`).
-        self.coerce_min_max_literals(args, &mut tys);
-        let mut ty = tys[0].clone();
-        for tb in &tys[1..] {
-            self.unify(&ty, tb)
+        let (_, mut ty) = self.elab(&args[0], scope, max)?;
+        self.reject_boxed_arith_cmp(&ty)?;
+        for a in &args[1..] {
+            let (_, tb) = self.elab(a, scope, max)?;
+            self.reject_boxed_arith_cmp(&tb)?;
+            self.unify(&ty, &tb)
                 .map_err(|e| format!("`min`/`max`: {e}"))?;
             ty = self.walk(&ty);
         }
@@ -2919,14 +2898,71 @@ impl Cx<'_> {
         slot
     }
 
+    /// One fold step of compiled float64 `max`/`min` (#530): IEEE 754-2019
+    /// `maximum`/`minimum` on `a` (the argument) and `m` (the fold of the
+    /// rest), both already in slots. A NaN on either side propagates; otherwise
+    /// the larger (`max`) or smaller (`min`) value wins, and between `-0.0`
+    /// and `+0.0` the sign decides (`-0.0 < +0.0`). The sign test is
+    /// `(1.0 / a) < 0.0`, which is `-inf` exactly for `a = -0.0`; float
+    /// division by zero is IEEE in every edition, so no branch is needed.
+    ///
+    /// ```text
+    /// max: if a != a then a  elif m != m then m  elif a > m then a
+    ///      elif m > a then m  elif 1/a < 0 then m  else a
+    /// min: if a != a then a  elif m != m then m  elif a < m then a
+    ///      elif m < a then m  elif 1/a < 0 then a  else m
+    /// ```
+    fn float_min_max_step(is_max: bool, a: usize, m: usize) -> Core {
+        let var = |s: usize| Box::new(Core::Var(s));
+        let cmp =
+            |op: CmpOp, x: usize, y: usize| Box::new(Core::Cmp(NumKind::F, op, var(x), var(y)));
+        let (strict, neg_zero_pick, other) = if is_max {
+            (CmpOp::Gt, m, a)
+        } else {
+            (CmpOp::Lt, a, m)
+        };
+        let recip = Box::new(Core::Bin(
+            NumKind::F,
+            BinOp::Div,
+            Box::new(Core::LitF(1.0)),
+            var(a),
+        ));
+        let a_is_neg_zero = Box::new(Core::Cmp(
+            NumKind::F,
+            CmpOp::Lt,
+            recip,
+            Box::new(Core::LitF(0.0)),
+        ));
+        Core::If(
+            cmp(CmpOp::Ne, a, a),
+            var(a),
+            Box::new(Core::If(
+                cmp(CmpOp::Ne, m, m),
+                var(m),
+                Box::new(Core::If(
+                    cmp(strict, a, m),
+                    var(a),
+                    Box::new(Core::If(
+                        cmp(strict, m, a),
+                        var(m),
+                        Box::new(Core::If(a_is_neg_zero, var(neg_zero_pick), var(other))),
+                    )),
+                )),
+            )),
+        )
+    }
+
     /// Variadic `(max a b …)` / `(min a b …)` over a shared `int64`/`float64`
     /// type, as compilable Core (`cmp` = `Gt` for max, `Lt` for min). Mirrors
-    /// lib/05-math.lisp exactly: arguments are evaluated once, left to right,
-    /// then folded from the RIGHT, `(max a . rest)` = `(if (> a m) a m)` with
-    /// `m = (max . rest)`; one argument is itself. Comparison-select, so the
-    /// evaluator's `-0.0`/NaN behaviour is matched exactly. Every argument
-    /// and every partial result lives in its own slot (#397), so nothing is
-    /// recomputed.
+    /// the evaluator's `max`/`min` in lib/05-math.lisp: arguments are evaluated
+    /// once, left to right, then folded from the RIGHT, `acc[i] = step(arg[i],
+    /// acc[i+1])`; one argument is itself. On `int64` each step is the plain
+    /// comparison select `(if (cmp a m) a m)`. On `float64` each step is the
+    /// IEEE 754-2019 `maximum`/`minimum` rule of `float_min_max_step`, which
+    /// the evaluator also implements, so NaN and `-0.0`/`+0.0` agree. Every
+    /// argument and every partial result lives in its own slot (#397), so
+    /// nothing is recomputed. The arguments must share one type: an int
+    /// literal beside a float64 operand is a type error, not a coercion (#530).
     fn elab_min_max_compiled(
         &self,
         cmp: CmpOp,
@@ -2956,18 +2992,10 @@ impl Cx<'_> {
         for (_, t) in &elabs {
             self.reject_boxed_arith_cmp(t)?;
         }
-        // Issue #530: an int literal beside a float64 operand is the float
-        // constant `n as f64` (see `coerce_min_max_literals`); the Core for
-        // that operand is replaced too, so the select returns a float.
-        let mut tys: Vec<Ty> = elabs.iter().map(|(_, t)| t.clone()).collect();
-        self.coerce_min_max_literals(args, &mut tys);
-        for (i, a) in args.iter().enumerate() {
-            if let Some(nn) = Self::int_literal(a)
-                && matches!(tys[i], Ty::Float64)
-            {
-                elabs[i] = (Core::LitF(nn as f64), Ty::Float64);
-            }
-        }
+        // Issue #530: an integer literal is NOT coerced beside a float64
+        // operand. The operands must share one type, so `(max x 1)` with
+        // `x: float64` is a type error in typed code (the untyped evaluator's
+        // float contagion, `(max 0.5 1)` = `1.0`, is a separate path).
         let ta = elabs[0].1.clone();
         for (_, t) in &elabs[1..] {
             self.unify(&ta, t)
@@ -2983,12 +3011,20 @@ impl Cx<'_> {
         let arg_slot = |i: usize| base + i;
         let acc_slot = |i: usize| base + n + i;
         // Innermost: fold from the right. acc[n-1] = arg[n-1];
-        // acc[i] = if arg[i] cmp acc[i+1] then arg[i] else acc[i+1].
+        // acc[i] = step(arg[i], acc[i+1]). Int64: the comparison select
+        // `if arg[i] cmp acc[i+1] then arg[i] else acc[i+1]`. Float64: the
+        // IEEE maximum/minimum step (`float_min_max_step`).
+        let is_max = matches!(cmp, CmpOp::Gt);
         let mut body = Core::Var(acc_slot(0));
         for i in 0..n - 1 {
-            let a = || Box::new(Core::Var(arg_slot(i)));
-            let m = || Box::new(Core::Var(acc_slot(i + 1)));
-            let sel = Core::If(Box::new(Core::Cmp(k, cmp, a(), m())), a(), m());
+            let sel = match k {
+                NumKind::I => {
+                    let a = || Box::new(Core::Var(arg_slot(i)));
+                    let m = || Box::new(Core::Var(acc_slot(i + 1)));
+                    Core::If(Box::new(Core::Cmp(k, cmp, a(), m())), a(), m())
+                }
+                NumKind::F => Self::float_min_max_step(is_max, arg_slot(i), acc_slot(i + 1)),
+            };
             body = Core::Let(acc_slot(i), Box::new(sel), Box::new(body));
         }
         body = Core::Let(
