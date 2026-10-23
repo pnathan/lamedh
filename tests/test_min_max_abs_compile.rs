@@ -66,11 +66,11 @@ fn float_min_max_compiled_matches_the_interpreter_ieee() {
         &e,
     );
     for f in ["fmx2", "fmn2", "fmx3", "fmn3"] {
-        assert_eq!(
-            eval_line(&format!("(compiled-p '{f})"), &e),
-            "NATIVE",
-            "{f}"
-        );
+        let tier = eval_line(&format!("(compiled-p '{f})"), &e);
+        #[cfg(feature = "jit")]
+        assert_eq!(tier, "NATIVE", "{f}");
+        #[cfg(not(feature = "jit"))]
+        assert_ne!(tier, "()", "{f}");
     }
     // Signed zeros, ordinary values, and NaN (0.0 / 0.0 at run time).
     let vals = ["0.0", "-0.0", "1.5", "-2.5", "(/ 0.0 0.0)"];
