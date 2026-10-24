@@ -1785,6 +1785,7 @@ impl Jit {
             overflow: Cell::new(false),
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
+            max_depth: typed_call_depth_limit(),
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
             metered: crate::evaluator::core::kernel_fuel_remaining().is_some(),
