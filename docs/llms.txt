@@ -5,7 +5,7 @@ walking evaluator with lexical closures, macros, fexprs, Kernel-style `vau`
 operatives, dynamic variables, capability sandboxing, hash tables, arrays,
 branded records, sum types, typed protocols, conditions/restarts, and an
 optional typed JIT (Cranelift) that compiles scalar/array-typed `defun`/
-`defun*` bodies to native code. Version 0.4.0. Source:
+`defun*` bodies to native code. Version 0.4.1. Source:
 https://github.com/pnathan/lamedh · Docs (mdBook):
 https://pnathan.github.io/lamedh/ · This file:
 https://pnathan.github.io/lamedh/llms.txt (also `llms.txt` at the repo
@@ -154,6 +154,9 @@ llms-txt.sh` re-extracts this table on every regeneration).
 | `35-json.lisp` | optional | `json` | `JSON:PARSE`/`STRINGIFY`: object<->hash table, array<->`Array`, `true`/`false`/`null`<->`T`/`NIL`/`:NULL`, `JSON:NULL-P` |
 | `36-mime.lisp` | optional | `mime` | `MIME:HEADERS-GET`/`GET-ALL`/`ADD`/`SET`/`REMOVE`/`NAMES` (case-insensitive, multi-value-safe), `MIME:PARSE-CONTENT-TYPE`/`BUILD-CONTENT-TYPE` |
 | `44-regex.lisp` | optional | `regex` | `REGEX:COMPILE`/`MATCH-P`/`FIND`/`FIND-ALL`/`GROUPS`/`NAMED-GROUPS`/`REPLACE`/`REPLACE-ALL`/`SPLIT`/`ESCAPE` |
+| `45-hashtable.lisp` | optional | `hashtable` | A hash table built from scratch in pure Lamedh (issue #458): open addressing over `TYPED-ARRAY`/`ARRAY`, not the native `HASH-TABLE` builtin -- `MAKE-LHT`/`LHT-GET`/`LHT-PUT!`/`LHT-REMOVE!`/`LHT-KEYS`/`LHT-EACH` |
+| `46-hm-check.lisp` | core | — | The portable Hindley-Milner checker (issue #451): the type vocabulary, unification with row polymorphism and nominal subsumption, the declaration registry, and the bidirectional elaborator over real Lamedh surface syntax — `HM-SEE-TYPE`, `HM-CHECK-LAMBDA`, `HM-CHECK-EXPR`, `HM-VERDICT`, `HM-AUDIT`. Loads before `20-condensation.lisp` so its declaration-plane wrappers see every `declare-type!`/`record-declare`/`variant-declare`/`declare-instance!` the stdlib makes |
+| `47-typed-island.lisp` | core | — | The typed-island front end: freeze (global macros expanded to a fixpoint), the portable compileable-type gate run over a GROUP, and the hand-off to the host kernel with read-back — `TYPED-ISLAND`, `ISLAND-OPTIMIZE`, `ISLAND-FORMS`, `ISLAND-INSTALL!`, `ISLAND-AGREEMENT` |
 | `97-doc-renderer.lisp` | optional | `doc-renderer` | REPL documentation renderer |
 | `98-help-system.lisp` | optional | `help-system` | `(HELP)`, `(HELP 'fn)`, `(HELP 'categories)` |
 | `99-help-data.lisp` | optional | `help-data` | Structured documentation database for all built-ins |
@@ -317,6 +320,7 @@ DISASSEMBLE [f] (disassemble 'sym) -- Print the typed-core pseudo-assembly of a 
 DOCUMENTATION [f] (documentation symbol) -- Returns the docstring for a symbol.
 SEE-SOURCE [f] (see-source 'sym) or (see-source 'sym t) -- Reconstruct the source form the evaluator registered for an operative (lambda, fexpr, macro, vau). With no ...
 SIGNATURE [f] (signature 'sym) -- Loud type inference (companion to DEFUN*'s silent fallback): the inferred type signature of a typed functio...
+TIME [VAU] (time form...) -- Evaluate FORMs, print the elapsed wall time of their normal execution as (TIME-MS ms), and return the value...
 WHY-NOT-TYPED [f] (why-not-typed 'sym) -- Loud type inference: for a DEFUN* that fell back to an ordinary lambda, the concrete inference-failure reas...
 
 ## IO -- Input/Output
@@ -346,6 +350,7 @@ EFFACE [f] (efface item list) -- Returns a new list with the first occurrence of
 LAST [f] (last list) -- Returns the last cons cell of a list.
 LENGTH [f] (length list) -- Returns the number of elements in a list.
 LIST [f] (list item...) -- Creates a list from its arguments.
+MAKE-LIST [f] (make-list n &key initial-element) -- A fresh list of n elements, each initial-element (default NIL).
 MAPCAR [f] (mapcar function list) -- Applies function to each element of list, returns list of results.
 MAPLIST [f] (maplist function list) -- Applies function to successive tails of list.
 MEMBER [f] (member item list) -- Searches for item in list using EQUAL. Returns tail starting at match.
@@ -483,9 +488,10 @@ PORTS:WRITE-STRING! [f] (ports:write-string! port s) -- Writes string s to port 
 ARRAYP [f] (arrayp x) -- Returns T if x is an array (created with ARRAY or MAKE-ARRAY); returns NIL otherwise. DEFSTRUCT instances a...
 ATOM [f] (atom x) -- Returns T if x is not a cons cell (i.e., is an atom).
 BOUNDP [f] (boundp symbol) -- Returns T if symbol has a value binding.
-CHARP [f] (charp x) -- Returns T if x is a Char value (produced by a char literal like 'a'). NIL for integers, strings, and all ot...
+CHARP [f] (charp x) -- Returns T if x is a Char value (produced by a char literal like 'a' or, CL-style, #, #( or #Space). NIL...
 CONSP [f] (consp x) -- Returns T if x is a cons cell.
 EQ [f] (eq a b) -- Returns T if a and b are the same object (identity test).
+EQL [f] (eql a b) -- Common Lisp EQL, which is EQ here: EQ already compares numbers by type and value and characters by value. C...
 EQUAL [f] (equal a b) -- Returns T if a and b are structurally equivalent (recursive comparison).
 ERROR-P [f] (error-p x) -- Returns T if x is an error condition value (created with MAKE-ERROR or captured by ERRORSET). Returns NIL f...
 EVENP [f] (evenp n) -- Returns T if n is an even integer.
@@ -503,6 +509,7 @@ ODDP [f] (oddp n) -- Returns T if n is an odd integer.
 PLUSP [f] (plusp n) -- Returns T if n is positive (greater than zero).
 STRINGP [f] (stringp x) -- Returns T if x is a string.
 SYMBOLP [f] (symbolp x) -- Returns T if x is a symbol.
+TYPE-OF [f] (type-of x) -- A symbol naming the runtime type of x: NULL, CONS, CHARACTER, FLOAT, INTEGER, STRING, SYMBOL, TYPED-ARRAY, ...
 ZEROP [f] (zerop n) -- Returns T if n is zero.
 
 ## REGEX -- Regular expressions (RE2 semantics; lib/44-regex.lisp)
@@ -531,6 +538,7 @@ FEXPR [s] (fexpr (params...) body...) -- Anonymous fexpr constructor: evaluates 
 FEXPRLET [m] (fexprlet ((name (params...) body...) ...) body...) -- Locally bind fexprs (unevaluated-argument operatives) for the extent of the body. Operands reach the body u...
 FLET [m] (flet ((name (params...) body...) ...) body...) -- Locally bind named functions (non-recursive) for the extent of the body. Parallel LET semantics: clauses do...
 IF [s] (if condition then-form else-form) -- Evaluates condition; if non-NIL, evaluates then-form, otherwise else-form.
+LABELS [m] (labels ((name (params...) body...) ...) body...) -- Locally bind named functions that may call themselves and one another (Common Lisp LABELS) -- the recursive...
 LAMBDA [s] (lambda (params...) body...) -- Creates an anonymous function (closure).
 LET [s] (let ((var val)...) body...) -- Creates local variable bindings for the duration of body.
 MACRO [s] (macro (params...) body...) -- Anonymous macro constructor: evaluates to a macro VALUE (the macro counterpart of LAMBDA). Because operator...
@@ -557,10 +565,12 @@ MAKE-CHAR [f] (make-char n) -- Returns a Char value for integer code point n (0-
 MAKE-STRING [f] (make-string n) or (make-string n char) -- Returns a fresh string of length n, every character char (a one-character string or code point; default spa...
 MAKNAM [f] (maknam char-list) -- Converts a list of character symbols or strings to an interned symbol. Identical to IMPLODE. Lisp 1.5 name ...
 NUMBER->STRING [f] (number->string n) -- Converts number n to its decimal string representation. Integers produce digit strings; floats produce Rust...
+PARSE-INTEGER [f] (parse-integer s &key junk-allowed) -- The integer denoted by string s (surrounding whitespace ignored), or NIL when s is not an integer. With :ju...
 PRIN1-TO-STRING [f] (prin1-to-string object) -- Returns the readable printed representation of object as a string, exactly as PRIN1 would print it to stdou...
 PRINC-TO-STRING [f] (princ-to-string object) -- Returns the human-readable printed representation of object as a string, exactly as PRINC would print it to...
+STRING->LIST [f] (string->list s) -- The characters of s as a list of ONE-CHARACTER STRINGS, not char values: (string->list "ab") is ("a" "b"), ...
 STRING->NUMBER [f] (string->number s) -- Parses string s as a number. Tries integer first, then float. Returns the parsed number on success, or NIL ...
-STRING-CAPITALIZE [f] (string-capitalize s) -- Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word is a maximal alphanumeric run).
+STRING-CAPITALIZE [f] (string-capitalize s) -- Returns s with the first character of every word uppercased and the rest lowercased (Unicode-aware; a word ...
 STRING-CI-NE [f] (string-ci-ne a b) -- True if a and b do NOT have the same contents under Unicode case folding.
 STRING-CI< [f] (string-ci< a b) -- True if a is lexicographically before b under Unicode case folding.
 STRING-CI<= [f] (string-ci<= a b) -- Non-strict case-insensitive ordering: true unless a comes after b under Unicode case folding.
@@ -571,6 +581,7 @@ STRING-CONCAT [f] (string-concat &rest strs) -- Concatenates zero or more string
 STRING-COUNT [f] (string-count s sub) -- Counts non-overlapping occurrences of non-empty sub in s; 0 if sub is empty or does not occur.
 STRING-EMPTY-P [f] (string-empty-p s) -- True if s has length zero.
 STRING-LAST-INDEX-OF [f] (string-last-index-of s sub) -- Returns the index of the LAST (rightmost) occurrence of non-empty sub in s, or NIL if sub does not occur (o...
+STRING-LENGTH [f] (string-length s) -- Number of Unicode characters (not bytes) in string s. An alias of STRING-LENGTH*; the generic LENGTH also a...
 STRING-LENGTH* [f] (string-length* s) -- Returns the number of Unicode characters in string s (not bytes). This is the kernel primitive; the Lisp la...
 STRING-NE [f] (string-ne a b) -- True if strings a and b do NOT have the same contents. Case-sensitive. Named STRING-NE rather than CL's STR...
 STRING-REPLACE-ALL [f] (string-replace-all s old new) -- Replaces every (non-empty) occurrence of old in s with new. Alias for STRING-REPLACE, named to pair explici...
@@ -845,7 +856,7 @@ A minimal session:
 
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"lamedh","version":"0.4.0"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"lamedh","version":"0.4.1"}}}
 → {"jsonrpc":"2.0","method":"notifications/initialized"}
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"eval","arguments":{"source":"(setq x 5)"}}}
 ← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"5"}],"isError":false}}
