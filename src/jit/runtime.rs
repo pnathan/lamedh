@@ -47,9 +47,13 @@ pub struct Ctx<'a> {
     /// `jit_exit_call` trampolines a native edition calls directly (see
     /// `native::compile_native`'s `emit_call`), around the direct
     /// native-to-native `call_indirect` fast path that otherwise never
-    /// touches `Ctx::call` at all. See [`Ctx::MAX_CALL_DEPTH`] for the limit
-    /// and how it was derived.
+    /// touches `Ctx::call` at all. See [`typed_call_depth_limit`] for the limit
+    /// and [`DEFAULT_TYPED_CALL_DEPTH_LIMIT`] for how its default was derived.
     pub(super) depth: Cell<usize>,
+    /// The non-tail call depth at which [`Ctx::enter_call`] refuses, sampled
+    /// from [`typed_call_depth_limit`] when the `Ctx` is built so the guard
+    /// on the call fast path reads a plain field, not a thread-local.
+    pub(super) max_depth: usize,
     /// First reachable-error condition recorded during a call that has no
     /// sensible "keep computing, flag it" resolution the way overflow/div-by-
     /// zero do (issue #271): an oversized array/struct allocation, the
@@ -93,6 +97,59 @@ pub struct Ctx<'a> {
 /// raises.
 pub const FUEL_EXHAUSTED: &str = "fuel exhausted (kernel step budget)";
 
+/// Default non-tail call depth for typed (compiled) code, per thread.
+///
+/// Sized for the 512 MiB `with_large_stack` thread (2 KiB per interpreted or
+/// closure frame, about 100 MiB at the limit; derivation below). A `wasm32`
+/// host runs on a stack it does not own (V8's, roughly 1 MiB), where 50,000
+/// frames overflow it long before the cap can fire and the instance traps, so
+/// the default there is far smaller.
+///
+/// Arithmetic: the evaluator thread runs under [`crate::with_large_stack`],
+/// a 512 MiB stack (`INTERPRETER_STACK_SIZE`). The interpreter/closure
+/// editions reached through [`Ctx::call`] recurse as ordinary Rust calls —
+/// `eval_core`/`eval_core_nontail`'s own frame plus the per-call `Vec<u64>`
+/// argument buffer and the callee's fresh `env` `Vec` — call it a generous
+/// 2 KiB/frame upper bound (smaller than, but the same order of magnitude
+/// as, the tree-walker's own per-`eval`-frame budget behind
+/// `DEFAULT_EVAL_DEPTH_LIMIT`, since typed-core frames do far less
+/// per-node bookkeeping). A native frame guarded via
+/// `jit_enter_call`/`jit_exit_call` is far smaller still (a handful of
+/// 8-byte stack slots), so the same cap is comfortably conservative
+/// there too. `DEFAULT_TYPED_CALL_DEPTH_LIMIT * 2 KiB` ≈ 100 MiB, leaving well over
+/// 400 MiB of headroom in the 512 MiB budget for the rest of the call
+/// chain that led to this typed call (evaluator frames, other typed calls
+/// already on the stack, …) — generous enough not to trip on realistic
+/// recursive typed programs, small enough to trip long before the stack
+/// is actually exhausted.
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_TYPED_CALL_DEPTH_LIMIT: usize = 50_000;
+/// See the non-wasm32 constant of the same name.
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_TYPED_CALL_DEPTH_LIMIT: usize = 400;
+
+thread_local! {
+    static TYPED_CALL_DEPTH_LIMIT: Cell<usize> =
+        const { Cell::new(DEFAULT_TYPED_CALL_DEPTH_LIMIT) };
+}
+
+/// Set the non-tail call depth at which typed (compiled) code signals a
+/// recursion-limit error, for the current thread. It is separate from
+/// [`crate::set_eval_depth_limit`], which bounds the tree-walking evaluator
+/// and does not see calls inside typed code. Calls already running keep the
+/// limit they started with; the new value applies to the next top-level typed
+/// call. A host with a small native stack (wasm32 in a browser) must keep
+/// this below what that stack holds.
+pub fn set_typed_call_depth_limit(limit: usize) {
+    TYPED_CALL_DEPTH_LIMIT.with(|l| l.set(limit));
+}
+
+/// The current thread's typed-call depth limit; see
+/// [`set_typed_call_depth_limit`].
+pub fn typed_call_depth_limit() -> usize {
+    TYPED_CALL_DEPTH_LIMIT.with(|l| l.get())
+}
+
 impl Ctx<'_> {
     /// Byte offset of the `overflow` field from the start of `Ctx`.
     /// Used by native codegen to store the flag without branches — hence
@@ -102,29 +159,6 @@ impl Ctx<'_> {
     /// Byte offset of the `div_by_zero` field from the start of `Ctx`.
     #[cfg(feature = "jit")]
     pub(super) const DIV_BY_ZERO_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, div_by_zero);
-
-    /// Maximum non-tail call depth before a typed call is refused with a
-    /// recursion-limit error instead of growing the call stack further
-    /// (issue #271).
-    ///
-    /// Arithmetic: the evaluator thread runs under [`crate::with_large_stack`],
-    /// a 512 MiB stack (`INTERPRETER_STACK_SIZE`). The interpreter/closure
-    /// editions reached through [`Ctx::call`] recurse as ordinary Rust calls —
-    /// `eval_core`/`eval_core_nontail`'s own frame plus the per-call `Vec<u64>`
-    /// argument buffer and the callee's fresh `env` `Vec` — call it a generous
-    /// 2 KiB/frame upper bound (smaller than, but the same order of magnitude
-    /// as, the tree-walker's own per-`eval`-frame budget behind
-    /// `DEFAULT_EVAL_DEPTH_LIMIT`, since typed-core frames do far less
-    /// per-node bookkeeping). A native frame guarded via
-    /// `jit_enter_call`/`jit_exit_call` is far smaller still (a handful of
-    /// 8-byte stack slots), so the same cap is comfortably conservative
-    /// there too. `MAX_CALL_DEPTH * 2 KiB` ≈ 100 MiB, leaving well over
-    /// 400 MiB of headroom in the 512 MiB budget for the rest of the call
-    /// chain that led to this typed call (evaluator frames, other typed calls
-    /// already on the stack, …) — generous enough not to trip on realistic
-    /// recursive typed programs, small enough to trip long before the stack
-    /// is actually exhausted.
-    pub(super) const MAX_CALL_DEPTH: usize = 50_000;
 
     /// Record `msg` as the pending error for this call, unless one is already
     /// recorded — first error wins, matching the tree-walker's left-to-right
@@ -139,7 +173,7 @@ impl Ctx<'_> {
 
     /// Enter a non-tail call: bump the depth counter, or refuse — recording a
     /// recursion-limit [`pending_error`](Ctx::pending_error) — if already at
-    /// [`Ctx::MAX_CALL_DEPTH`]. Returns `true` on success; a successful
+    /// [`Ctx::max_depth`]. Returns `true` on success; a successful
     /// `enter_call` must be paired with exactly one [`Ctx::exit_call`] once
     /// the call returns.
     ///
@@ -152,10 +186,10 @@ impl Ctx<'_> {
         let d = self.depth.get();
         if self.pending_error.borrow().is_some() {
             false
-        } else if d >= Self::MAX_CALL_DEPTH {
+        } else if d >= self.max_depth {
             self.set_pending_error(format!(
                 "recursion limit exceeded ({} non-tail typed calls); rewrite as a tail call or iteratively",
-                Self::MAX_CALL_DEPTH
+                self.max_depth
             ));
             false
         } else {
@@ -486,6 +520,8 @@ impl Ctx<'_> {
             overflow: Cell::new(false),
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
+            // A leaf never calls across functions, so the cap is moot.
+            max_depth: DEFAULT_TYPED_CALL_DEPTH_LIMIT,
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
             // Raw entries are documented as unmetered (see `entry.rs`).
