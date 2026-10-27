@@ -523,7 +523,17 @@ pub(super) fn apply_math_lib(
         BuiltinFunc::Isqrt => {
             want(1, "isqrt")?;
             match &args[0] {
-                LispVal::Number(n) if *n >= 0 => Ok(LispVal::Number((*n as f64).sqrt() as i64)),
+                LispVal::Number(n) if *n >= 0 => {
+                    // f64 seed, then correct: the conversion rounds above 2^53.
+                    let mut r = (*n as f64).sqrt() as i64;
+                    while r > 0 && r.checked_mul(r).is_none_or(|sq| sq > *n) {
+                        r -= 1;
+                    }
+                    while (r + 1).checked_mul(r + 1).is_some_and(|sq| sq <= *n) {
+                        r += 1;
+                    }
+                    Ok(LispVal::Number(r))
+                }
                 LispVal::Number(_) => Err(LispError::Generic(format!(
                     "ISQRT: expected a non-negative integer, got {}",
                     err_val(&args[0])
@@ -762,7 +772,9 @@ pub(super) fn apply_string_lib(op: &BuiltinFunc, args: &[LispVal]) -> Result<Lis
             // (code-char n) — one-character string for code point n.
             require_one("code-char")?;
             match args.first() {
-                Some(LispVal::Number(n)) if *n >= 0 => char::from_u32(*n as u32)
+                Some(LispVal::Number(n)) if *n >= 0 => u32::try_from(*n)
+                    .ok()
+                    .and_then(char::from_u32)
                     .map(|c| LispVal::String(c.to_string()))
                     .ok_or_else(|| {
                         LispError::Generic(format!("code-char: {n} is not a valid code point"))

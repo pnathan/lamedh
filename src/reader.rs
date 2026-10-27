@@ -209,7 +209,7 @@ fn skip_ws_and_conditionals(
                         // without consuming, and fail the same way the
                         // discard branch's `cut` would on a missing form.
                         let (peek, _) = ws(rest2)?;
-                        if peek.is_empty() {
+                        if peek.is_empty() || peek.starts_with(')') {
                             return Err(nom::Err::Failure(nom::error::Error::new(
                                 rest2,
                                 nom::error::ErrorKind::Eof,
@@ -327,7 +327,7 @@ fn feature_expr_list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, String> {
 
 // A parser for a comment
 fn parse_comment(input: &str) -> IResult<&str, &str> {
-    recognize(pair(tag(";"), is_not("\n\r")))(input)
+    recognize(pair(tag(";"), opt(is_not("\n\r"))))(input)
 }
 
 // A parser for a (nesting) block comment: #| ... |# (issue #248).
@@ -810,7 +810,27 @@ fn parse_string(input: &str) -> ParseResult<'_> {
 
 fn parse_list_contents(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (input, exprs) = many0(preceded(ws, parse_expr(env.clone(), remaining)))(input)?;
+        // Skip whitespace and discarded `#+`/`#-` forms before each element, so
+        // a discarded conditional as the last element does not get
+        // backtracked over by `many0` and leave the closing `)` unreachable.
+        let skip = skip_ws_and_conditionals(env.clone(), remaining);
+        let elem = parse_expr(env.clone(), remaining);
+        let mut exprs = Vec::new();
+        let mut input = input;
+        loop {
+            let (rest, _) = skip(input)?;
+            match elem(rest) {
+                Ok((after, e)) => {
+                    exprs.push(e);
+                    input = after;
+                }
+                Err(nom::Err::Error(_)) => {
+                    input = rest;
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         let (input, tail) = opt(preceded(
             preceded(ws, char('.')),
             preceded(ws, parse_expr(env.clone(), remaining)),
@@ -859,6 +879,11 @@ fn parse_struct_literal(
 ) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (rest, _) = alt((tag("#S"), tag("#s")))(input)?;
+        // The literal costs one level and `parse_list` another, so fewer than
+        // two remaining would underflow: report the depth limit instead.
+        if remaining < 2 {
+            return Err(too_deep_error(input));
+        }
         let (rest, body) = parse_list(env.clone(), remaining - 1)(rest)?;
         let err = || nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Tag));
         let LispVal::Cons {
@@ -1335,6 +1360,18 @@ mod tests {
 
     fn float(f: f64) -> LispVal {
         LispVal::Float(f)
+    }
+
+    #[test]
+    fn test_empty_semicolon_comment_is_skipped() {
+        let env = Environment::new_with_builtins();
+        let all = read_all("(print 1)\n;\n(print 2)", &env).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(read_all("(print 1) ;", &env).unwrap().len(), 1);
+        assert_eq!(
+            read_all("(print 1)\r\n;\r\n(print 2)", &env).unwrap().len(),
+            2
+        );
     }
 
     #[test]
