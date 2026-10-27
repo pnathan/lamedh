@@ -2,3 +2,5 @@ target/
 book/
 *.pdf
 .claude/worktrees/
+.idea/
+*~
