@@ -1,0 +1,61 @@
+# Known divergences of the SBCL port (sbcl/) from conformance/cases.
+# One case ID per line. Lines starting with # are comments.
+# This list may only shrink: run-sbcl.lisp fails on a stale entry.
+
+# Host bignums instead of int64 overflow semantics: (+ 9223372036854775807 1)
+# prints 9223372036854775808, (expt 2 70) returns a bignum, and the reader keeps
+# 9223372036854775808 as an integer instead of a float.
+reader/oversized-decimal-is-float
+num/add-overflow-wraps
+num/expt-overflow-error
+
+# No OVERFLOW flag machinery: (flag-set-p 'OVERFLOW) signals an error.
+num/overflow-sets-flag
+
+# Reader token boundaries: '(1-5) reads as (1 -5) instead of an error;
+# '(a.b) is a reader error instead of (A . B).
+reader/one-minus-token-boundary
+reader/dot-splits-symbol-in-list
+
+# Printer writes a literal newline inside a character literal instead of \n.
+reader/char-literal-escape
+print/char-escape-newline
+
+# Float handling: remainder accepts floats ((remainder 7.0 2) is 1.0), the
+# reader rejects 1e30, and 0.0 and -0.0 are different hash keys.
+num/remainder-float-error
+print/float-large-plain-digits
+hash/zero-and-negative-zero-same-key
+
+# NIL is a symbol here: (symbolp nil) is T.
+nil/not-a-symbol
+
+# make-environment returns an environment that has the stdlib (defun works).
+env/make-environment-has-no-stdlib
+
+# Nested quasiquote leaves the inner unquote unevaluated:
+# `(a `(b ,(+ 1 2))) keeps (UNQUOTE (+ 1 2)) instead of 3.
+quasiquote/no-nesting-level
+
+# Missing form validation: (let ()), (let ((nil 1)) 1) and (lambda (&optional x) x)
+# are accepted instead of signalling an error.
+let/empty-body-error
+let/nil-target-error
+lambda/optional-parameter-rejected
+
+# catch compares tags with EQ, so (catch '(a b) (throw (list 'a 'b) 3)) errors.
+catch/equal-tag-match
+
+# unwind-protect lets an error in the cleanup form escape instead of discarding it.
+unwind/cleanup-error-discarded
+
+# (error) with no arguments reports "invalid number of arguments: 0" instead of "Error".
+error/error-no-arguments-message
+
+# handler-case catches THROW (it is not an error condition in the spec).
+error/throw-not-caught-by-handler
+
+# Fuel fences: exhaustion is caught by an inner handler-case, and a fenced body
+# can widen its own fuel with kernel-fuel-set!.
+fuel/exhaustion-not-caught-inside-fence
+fuel/widen-inside-fence-error

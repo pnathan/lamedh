@@ -1,6 +1,6 @@
-# v0.4.1 — unreleased
+# v0.4.1 — 2026-10-23
 
-## `min`/`max` follow IEEE 754-2019 for floats; int literals are not coerced (#530)
+## **Breaking:** `min`/`max` follow IEEE 754-2019 for floats; int literals are not coerced (#530, #616)
 
 - **Untyped calls** (the interpreter): `min`/`max` are `a -> a -> a` over one
   numeric type. With any float argument the result is a float, so
@@ -21,7 +21,34 @@
   or expression beside a float64 is still a type error). Ported to the SBCL
   library and `lamedh-asm`.
 
-## Typed-call depth cap is configurable; lower defaults on `wasm32`
+## Twelve reader, evaluator, OS and stdlib defects (#617)
+
+Found by a bug bash and confirmed by two independent verifiers; each has a
+regression test.
+
+- **Reader:** an empty `;` comment no longer raises a parse error; a discarded
+  `#+`/`#-` form that ends a list no longer makes the list unreadable; a
+  `#S(...)` literal at the depth limit returns the depth error instead of
+  underflowing.
+- **`make-temp-file`, `make-temp-directory`:** a prefix containing a path
+  separator, NUL or `..` is an error. Under `TEMP-FS` alone these could create
+  paths outside the temp directory. **Code that passed such a prefix now
+  errors.**
+- **Dynamic parameters:** a function with duplicate dynamic parameter names
+  restores the saved values in reverse order, so the original global comes back.
+- **Compiled `COND`:** a fallback to the interpreter evaluates only the
+  remaining clauses; earlier test forms no longer run twice.
+- **`isqrt`** is exact above 2^53. **`code-char`** rejects code points at or
+  above 2^32 instead of truncating them.
+- **`os-env-set*`, `os-env-unset*`** return `:INVALID-ARGUMENT` for names or
+  values that `std::env` rejects (empty or containing `=` or NUL), where they
+  panicked. **`os-signal*`** rejects pids at or below 0 or above `i32::MAX`
+  before the policy check.
+- **Optimizer:** constant folding of `/` declines `i64::MIN / -1`.
+- **`max`, `min`** reduce in constant stack depth (superseded by the IEEE
+  rewrite above, which keeps that property).
+
+## Typed-call depth cap is configurable; lower defaults on `wasm32` (#619, #625)
 
 The non-tail call cap for typed (compiled) code was a hard-coded 50,000,
 sized for the 512 MiB `with_large_stack` thread, and `set_eval_depth_limit`
@@ -31,13 +58,452 @@ instance. The cap is now a per-thread setting:
 
 - `lamedh::set_typed_call_depth_limit(n)` and `lamedh::typed_call_depth_limit()`
   set and read it. The value is sampled when a top-level typed call starts, so
-  the native call path reads a plain field and is no slower.
+  the native call path reads a plain field. A typed `fib 35` showed no
+  measurable slowdown (noisy run on a busy machine).
 - `DEFAULT_TYPED_CALL_DEPTH_LIMIT` is 50,000 natively, so native behavior is
   unchanged.
 - On `wasm32` the defaults are lower: 400 typed calls and, for the tree-walker,
   `DEFAULT_EVAL_DEPTH_LIMIT` of 2,000 instead of 10,000. Measured under node,
   deep recursion now returns a recursion-limit error and the instance keeps
   working. See `docs/embedding.md`.
+
+## `EQ` on cons cells is pointer identity (#454)
+
+`EQ` returned `NIL` whenever either argument was a cons cell, so `(eq x x)` was
+false for a list. It now compares the cells' identity: `(let ((x (list 1))) (eq x x))`
+is `T`, and two separately built cells are still not `EQ`. `EQUAL` and every
+other `EQ` case are unchanged. KERNEL.md Part IV states the rule.
+
+## Reader: `#\c` characters, `#(...)` arrays, `#+`/`#-`, `+NAME+` symbols (#526, #527, #459, #463)
+
+- `#\a`, `#\(`, `#\Space`, `#\Newline`, `#\Tab` read as the existing `Char`
+  value, the same as `'a'` (#526). `--fmt` and the incomplete-input detector
+  skip them.
+- `#(e1 e2 ...)` reads as an array literal. Elements are not evaluated, and the
+  array is built once at read time (#527).
+- `#+feature form` and `#-feature form` are CL-style reader conditionals. A
+  feature expression is a symbol (case-folded, leading `:` optional) or
+  `(and ...)`, `(or ...)`, `(not e)`. A form guarded by an absent feature must
+  still parse, but yields no value at the read site. Each environment carries a
+  reader-feature set, seeded with `RUST`, `READER-FLOATS`, `READER-RADIX` and
+  `READER-BLOCK-COMMENTS`; it is separate from sandbox capabilities. Embedders
+  use `Environment::enable_reader_feature`, `disable_reader_feature`,
+  `reader_feature_enabled` and `reader_features_list` (#459).
+- A leading-`+` symbol such as `+NUMERIC-PRECISION-MODEL+` reads as one token.
+  Before, the `+` operator consumed the first character and stranded the rest
+  (#463).
+
+## Number tokens must end at a delimiter (#503)
+
+A token that starts like a number but is not a complete one was split into a
+number and a symbol: `123abc` read as `123 ABC`, `2.0.3` as the dotted pair
+`2.0 . 3`, `1-2` as `1 -2`. It is now a parse error naming the token. `1+` and
+`1-` alone remain symbols. Also:
+
+- `1e5` (exponent-only float) reads as `100000.0`; before it read as `1 E5`.
+- Octal accepts a lower-case `q` suffix: `177q` is 127.
+- `Q`, `H` and `#x` literals are parsed with the sign attached, so
+  `-8000000000000000H` is `i64::MIN`.
+- An out-of-range or invalid-digit `Q`/`H`/radix literal (`8Q`, `#xFG`,
+  `8000000000000000H`) is a parse error. It no longer falls through to the
+  decimal parser.
+
+## Arrays print their contents (#527)
+
+`(print (list->array '(1 2 3)))` used to print `<array:3>`. It prints `#(1 2 3)`, and
+the reader accepts that back. Arrays longer than 100 elements print the first
+100 followed by an unreadable `#<...N more>` marker, so an abridged array never
+reads back as a shorter one; channel and spawn serialization use the new
+`printer::print_unabridged`, and `printer::ARRAY_PRINT_LIMIT` is 100. An array
+that contains itself prints `#<circular-array>` at the back-reference. Typed
+arrays print as `#<typed-array:int64 1 2 3>`, which is not readable.
+
+## Printing a long list is linear (#509)
+
+List printing rebuilt the tail string at every cons and recursed once per
+spine cell: 400,000 elements took 41 s and 10^6 did not finish. The printer now
+appends into one buffer and walks the spine in a loop. Output is byte-identical.
+(The 41 s figure is from the commit message, not re-measured.)
+
+## Two-operand `if` is an error inside function bodies (#506)
+
+KERNEL.md specifies `IF` with exactly three operands. The tree-walker enforced
+it, but the closure compiler used for function bodies accepted `(if c t)` with
+an implicit `NIL` else, so the same form errored at top level and returned a
+value inside a `defun`. Every path now signals `if takes exactly three
+arguments`. Both optimizers (`optimizer.rs`, `lib/11-optimizer-vau.lisp`) fold
+only the three-operand form; `opt-pass-if` no longer completes `(if c t)` to
+`(if c t nil)`. Use `when`. **Existing code that relied on the implicit else
+now errors.**
+
+## Fuel exhaustion cannot be caught by the fence it exhausts (#457, #502)
+
+- Exhausting the kernel fuel budget disarmed the counter, signalled an ordinary
+  condition, and let guest code wrap `HANDLER-CASE` around it inside the same
+  `WITH-FUEL` fence. A handler that never returned got unlimited fuel. Exhaustion
+  now signals `LispError::FuelExhausted`, a control-flow signal that guest
+  `HANDLER-CASE`/`ERRORSET` do not intercept. Only the owning `WITH-FUEL` form
+  converts it back to a catchable error when it leaves the fence. A fixed,
+  non-renewable grace allowance of 256 steps lets `UNWIND-PROTECT` cleanup and
+  the fence's own bookkeeping run. Each fence gets its own allowance.
+  KERNEL.md Part X/XIII moves from permitted to MUST (#457).
+- Typed (`defun-typed`, compiled `defun*`) loops escaped `with-fuel`, `--fuel`
+  and `--mcp`. When fuel is armed a typed call now runs on the reference
+  interpreter, which charges one step per `while`/`for` iteration, self tail
+  call and function entry. Armed fuel therefore costs the native speedup (#502).
+
+## `dotimes` binds a fresh variable per iteration (#528)
+
+`for` reuses one counter slot, so closures made in a `dotimes` body all saw the
+last value: `(2 2 2)`. Each closure now sees its own iteration's value:
+`(0 1 2)`, as with `dolist`. `dotimes` rebinds only when the macro-expanded
+body can build a closure, so a closure-free body keeps the plain `for` and its
+native compilation.
+
+## `VAU` parameter binding fixes (#461, #462)
+
+- A `VAU` whose parameter name is a dynamic variable (`DEFDYNAMIC`/`DEFVAR`)
+  saw the global value instead of the operand list or calling environment. It
+  now guards the parameter like macros and fexprs do, and restores the prior
+  value on exit (#461).
+- `VAU` construction and `APPLY` on a fexpr or `VAU` bound the parameter name
+  by re-interning it, so a gensym or foreign-table symbol could bind an id the
+  body never resolved. Both paths use the canonical binder id (#462).
+
+## Macro expansion is cached per compiled call site (#460)
+
+A macro call inside a `defun`/`lambda` body expands once, on the first call
+through that site, and the compiled expansion is reused. **Behavior change:** a
+macro body that reads global or dynamic state observes it once per call site,
+not once per call, as in Common Lisp. Redefining the macro invalidates the site.
+Fexprs and `VAU` operatives still run fresh every call. The tree-walker,
+`macroexpand` and `APPLY` on a macro are not cached. `fork_world` resets the
+cache so no prototype-world cells cross the fork. See Rust embedding API for the
+`LispVal::Macro` type change this required.
+
+## Arithmetic edge cases (#514, #518, #507)
+
+- `(ash x n)`: a shift of `i64::MIN` saturated incorrectly (the negation
+  wrapped, and panicked in debug builds). `(ash 1 MIN)` is 0 and `(ash -1 MIN)`
+  is -1. A left shift sets `OVERFLOW` exactly when bits are lost: `(ash 0 100)`
+  no longer flags and `(ash 3 63)` does. Compiled constant-shift `ash` follows
+  the same rule (#514).
+- `(abs -0.0)` returns `0.0`; `-0.0` is not `minusp`, so it came back unchanged
+  in both the interpreter and the typed tier. The integer path, including the
+  wrapping `abs` of `i64::MIN`, is unchanged (#518).
+- `(expt 2.0 4294967296)` returned `1.0`: the `i64` exponent was truncated to
+  `i32`. `jit::float_powi` uses `powi` when the exponent fits in `i32` and
+  `|x|.powf(e)` with the sign restored from the exponent's parity otherwise. The
+  evaluator and the typed JIT share it (#507).
+
+## Errors (#520, #521)
+
+- Non-callable values in "Not a function" and in introspection/`for` type
+  errors printed with Rust `Debug` (`Symbol("COMPILED-P")`, `Number(5)`). They
+  print with the Lisp printer. A quoted symbol that names a function now says
+  `(pass the function it names with #'NAME)`; a macro, fexpr or `VAU` says it
+  cannot be applied (#521).
+- The recursion-limit hint named `set_eval_depth_limit`, a Rust-only API. It now
+  names `lamedh --max-depth N`. Lisp gains `(eval-depth-limit)` and
+  `(set-eval-depth-limit! n)`; the setter can lower and restore the limit but
+  never raise it past the host's ceiling. Toplevel backtraces collapse runs of
+  identical frames: `F (×9998) ← MAIN` instead of `F ← F ← …`. `LAST-BACKTRACE`
+  is unchanged (#520).
+
+## Host-trait globals (#463)
+
+`+HOST-TRAITS+` is an alist of `(AXIS . VALUE)` pairs (KERNEL.md Part XII), bound
+in every environment. `+NUMERIC-PRECISION-MODEL+` is bound directly. This host
+reports `WRAPAROUND-64`. Portable code reads the model instead of probing
+`OVERFLOW`.
+
+## `hash-code` builtin (#474)
+
+`(hash-code v)` returns a fixnum hash that agrees with `EQUAL` (`EQUAL` values
+have equal codes). It covers identity-compared values (arrays, hash tables,
+environments). The underlying `Hash` impl now also hashes closures, macros,
+fexprs and `VAU` operatives through their captured environment's pointer; they
+were unhashable by value before. Rust: `lamedh::hash_code`.
+
+
+## New forms: `labels`, `eql`, `type-of`, `make-list`, `string-length`, `parse-integer :junk-allowed`, `ematch` (#526, #529)
+
+- `labels` (`lib/12-control.lisp`) binds local functions that recurse and
+  mutually recurse. It expands to `let` + `setq` over lambdas.
+- `eql` (an alias of `eq`: numbers compare by type and value, characters by
+  value), `type-of`, and `make-list` (`:initial-element`) are in
+  `lib/21-cl-compat.lisp`. `eql`, `type-of` and `string-length` have declared
+  schemes in `lib/28-types.lisp`.
+- `string-length` aliases `string-length*`.
+- `(parse-integer s :junk-allowed t)` parses the leading `[sign]digits`:
+  `(parse-integer "12x" :junk-allowed t)` is 12.
+- `ematch` takes `match`'s clauses and signals an error whose `ERROR-DATA` is
+  `(MATCH-FAILURE datum)` when no clause matches; `match-failure-p` recognizes
+  it. `match` keeps its `NIL` fall-through. The `match` help now says that bare
+  symbols are literals and only `?`-prefixed symbols bind (#529).
+
+## Unicode-aware case conversion and character classes (#519)
+
+`char-upcase`, `char-downcase`, `string-upcase`, `string-downcase`, `alpha-p`,
+`alphanumeric-p`, `char-upper-p` and `char-lower-p` were ASCII range checks.
+They sit on new kernel primitives backed by Rust's Unicode tables:
+`string-upcase*`/`string-downcase*` (full case mapping: `"straße"` becomes
+`"STRASSE"`) and `char-alphabetic-p*`/`char-numeric-p*`/`char-uppercase-p*`/
+`char-lowercase-p*`. `char-upcase`/`char-downcase` keep their one-character
+contract through the one-to-one mapping, so `ß` is returned unchanged. ASCII
+behavior is identical. `digit-p` and `whitespace-p` stay ASCII; the reader's
+symbol case folding is unchanged.
+
+## Constant-stack and linear-time list and string functions (#504, #510)
+
+- `mapc` returned `LIST` after its recursive call, so `mapc`, `dolist` (which
+  expanded to it) and `alist->hash`/`clrhash` used one eval frame per element
+  and failed at the 10,000-frame limit. `mapc` now walks with a tail-recursive
+  helper; `mapcan` and `mapcon` collect in reverse and `append`/`nconc` right to
+  left, with the same call order and concatenations as the nested form;
+  `dolist` expands to a `while` loop over a gensym tail and binds `VAR` freshly
+  with `let` (#504).
+- `string->list`, `string-split`, `string-join` and `remove-duplicates` were
+  quadratic. The first three wrap new one-pass kernel primitives
+  (`string->list*`, `string-split*`, `string-join*`) and keep the documented edge
+  cases (empty delimiter, single-element join). `remove-duplicates` uses an
+  `EQUAL`-keyed hash set for numbers, strings and symbols and a member scan for
+  other elements (#510).
+
+## `time` measures native execution (#511)
+
+`time` called `step-count`, which arms kernel fuel; armed fuel skips the native
+fast path of auto-compiled functions, so `time` clocked the interpreter. `time`
+now evaluates without arming fuel and prints `(TIME-MS ms)`. Inside an
+already-armed fence it still reports steps (`(TIME-MS ms STEPS n)`). `step-count`
+is unchanged. There is a new `time` help entry.
+
+## `lib/45-hashtable.lisp`: a hash table in pure Lamedh (#458)
+
+An optional `hashtable` module: open addressing with indirection. A
+`typed-array` of `int64` buckets is the probe index; parallel general arrays
+hold keys and values. It grows by doubling before the live-plus-tombstone load
+reaches 0.7. API: `make-lht`, `lht-p`, `lht-get`, `lht-has-key-p`, `lht-put!`,
+`lht-remove!`, `lht-count`, `lht-keys`, `lht-each`, `lht->alist`, `alist->lht`,
+`lht-clear!`. `make-map`, `map-p` and the `map-*` macros pick the native
+`hash-table` or an LHT per host. Key equality follows `EQUAL`: `0.0` and `-0.0`
+hash alike and `NaN` finds `NaN`. It uses only primitives KERNEL.md Part XI
+requires, so it runs on hosts without the native `hash-table`. Tests:
+`tests/lisp/72-lamedh-hashtable.lisp`.
+
+## Help text corrections (#508, #517)
+
+Documentation only, no behavior change. `rplaca`/`rplacd` help claimed Lisp 1.5
+destructive mutation; the builtins return a fresh cons and leave the argument
+unmodified (restoring mutation is tracked in #553). `mod` help claimed a
+divisor-signed result; `mod` is Euclidean (`0 <= r < |y|`), so `(mod 7 -2)` is 1.
+The manual, `docs/functions/arithmetic.md` (its `(mod 10 -3) => -2` example was
+wrong), `docs/generated-reference.md` and `llms.txt` are corrected, and tests
+evaluate each documented example.
+
+
+## Un-annotated `defun`/`defun*` compile under the checker's monomorphic scheme (#512)
+
+Codegen resolves operand types eagerly, so `fib`'s `(+ (fib ...) (fib ...))`
+saw the recursive call's unsolved return type and reported "`+`: cannot infer
+operand type" although the checker had inferred `(-> (INT64) INT64)`. When the
+checker's scheme is monomorphic and compileable it now seeds codegen's
+signature as pins. The portable gate (`hm-compile-lambda`, `hm-compile-group`,
+`island-discover`) seeds the same pins. Checking-only builtins (`CAR`, `NULL`,
+`VARIANT-CASE`, ...) now block with "builtin `X` is not supported in compiled
+code" instead of "call to unknown function", natively and portably. Naive
+recursive `defun`s now compile natively, so two guards were added: after the
+typed call cap, native frames refuse every call once an error is pending (a
+`defun-typed` `fib 100000` was OOM-killed from exponential work), and the
+membrane skips native retries in a fallback taken because native failed.
+
+## More forms compile: `quotient`, `remainder`/`rem`, `let*`; int literals beside `float64` (#522, #530, #513)
+
+- `quotient` is an alias of `/` (same arity, int64 and float64, same flags).
+  `remainder`/`rem` compile to a truncated `BinOp::Rem`, int64-only like the
+  evaluator: division by zero raises `Division by zero`, and `MIN rem -1` is 0
+  and sets `OVERFLOW`. `let*` desugars to nested single-binding `let` and
+  accepts only the `(name init)` pair shape (#522).
+- An integer literal beside a `float64` operand in `+ - * /` or a numeric
+  comparison elaborates as the float constant: `(+ x 1)` compiles with `x`
+  `float64`. Literals only; an `int64` variable is never coerced. N-ary `-` and
+  `mod` do not coerce, and neither do `min`/`max` (see the `min`/`max` entry
+  above). The portable checker also coerces for `quotient` (#530).
+- A `cond`/`when`/`unless`/`case` that ends a `let`, `let*` or `progn` whose
+  value is discarded now desugars in statement mode, so it compiles instead of
+  failing with "`if` branches disagree" (#513).
+
+## Compiled loops return `NIL` in value position (#524)
+
+A compiled `for`/`while`/`dotimes` evaluated to int64 `0` where the
+interpreter returns `NIL`. The elaborator types the loop value `bool` (the word
+is still 0, which native code carries as `false`), so a tail-position loop
+returns `NIL`. Using the value as a number fails to unify and the function
+stays interpreted. Statement-position loops are unchanged.
+
+## Checker: `t`/`nil` functions type as `bool` (#505)
+
+`t` elaborated as the gradual `any`, so a `defun*` returning `t`/`nil` left its
+return variable free and generalized to `forall a`; an arithmetic caller was
+reported `CHECKED` and failed at runtime. In checking mode, in both the native
+and the portable checker: `t` is `bool`; a branch ending in bare `nil` that
+meets `bool` is `bool`; an `any` body forces the return to `any`; an `if` with
+an `any` branch joins to `any`.
+
+## Native-tier correctness fixes (#500, #501, #429)
+
+- The auto-typed membrane treated every native `Err` as "arguments did not fit"
+  and re-ran the dynamic closure, so a body that had stored into a zero-copy
+  typed array and then errored ran its side effects twice, and a
+  recursion-limit error could become a silent wrong answer. `Jit::call_entry_aliased`
+  returns `JitEntry::Declined` for rejections before the body runs and
+  `Entered` once it has; only `Declined` falls back (#500).
+- `elab_min_max_compiled` and `elab_array_alloc` reserved temp slots after
+  elaborating their arguments, so a nested temp user overwrote the outer
+  argument: `(max b (min x 9))` with `b=5, x=1` returned 1, and a Container
+  With Most Water kernel returned 8 instead of 49. Slots are reserved first
+  (#501).
+- Float-touching functions did not compile natively at all (the bitcast carried
+  invalid flags), and a callee's pending cross-function tail call could replace
+  the caller's own result. Both are fixed through `jit_resolve_pending_tail`.
+  Native codegen failures now print the full verifier detail to stderr instead
+  of being swallowed (#428, #429).
+
+## Elementwise array ops are vectorized (#525)
+
+`array-div!`, `array-scale!`, `array-fma!` and `array-neg!` lower to the same
+2-lane Cranelift SIMD loop plus scalar tail as `array-add!`/`-sub!`/`-mul!`,
+replacing the `jit_array_op` trampoline. `array-fma!` uses Cranelift `fma`
+(fused, one rounding), so every tier stays bit-identical.
+
+## Native code speed (#434, #435, #442)
+
+Observable as speed only; results are unchanged. Figures are the ones reported
+in the commit messages and were not re-measured for this release.
+
+- The Cranelift optimizer is on. `JITBuilder::new` defaults to `opt_level=none`,
+  so no optimization pass had run on any native edition. Whole-loop SDF kernel:
+  3.3x to 2.8x of Rust; typed-array dot: 3.9x to 3.0x (#434).
+- Native locals are cranelift-frontend SSA `Variable`s instead of stack slots,
+  and overflow-flag stores are cold. Whole-loop kernels reach 2.0x Rust (#435).
+- `Jit::call_by_id` gives all-scalar signatures a stack word buffer and no
+  write-back machinery. `jit_call` 215 ns to 92 ns; a pinned `JitFnHandle`
+  41.5 ns (Rust floor 2.2 ns) (#442). See Rust embedding API.
+
+## Rust embedding API
+
+- **Breaking:** `LispVal::Macro` holds `Shared<Macro>`, not `Box<Macro>` (#460,
+  7a32b81). `Shared` is `Rc` by default and `Arc` with the `arc-val` feature.
+  Before: `LispVal::Macro(Box::new(m))`. After: `LispVal::Macro(Shared::new(m))`
+  (`lamedh::Shared`). Matching `LispVal::Macro(m)` still reaches fields through
+  deref (`m.params`, `m.body`). Code that moved the macro out of the box
+  (`let mac: Macro = *boxed;`) must clone instead: `(*m).clone()` (`Macro` is
+  `Clone`). `PartialEq` stays structural, so `EQUAL` on macros is unchanged;
+  identity comparison is now available as `Shared::ptr_eq`. `Code::Call` also
+  gained an `expansion: SharedCell<Option<CachedExpansion>>` field; hosts that
+  construct or exhaustively destructure `Code::Call` must add it.
+- **Breaking:** `LispError` gains `FuelExhausted` (#457). An exhaustive `match`
+  on `LispError` needs a new arm. A host that arms fuel directly, outside a Lisp
+  `WITH-FUEL` fence, sees `FuelExhausted` (displayed `Error: fuel exhausted
+  (kernel step budget)`), not a `Generic` error; only the owning `WITH-FUEL`
+  form converts it.
+- **Breaking:** new variants on public enums break exhaustive matches.
+  `BuiltinFunc`: `HashCode`, `EvalDepthLimit`, `SetEvalDepthLimit`,
+  `ArrayDivBang`, `ArrayScaleBang`, `ArrayFmaBang`, `ArrayNegBang`,
+  `StringUpcase`, `StringDowncase`, `CharAlphabetic`, `CharNumeric`,
+  `CharUppercase`, `CharLowercase`, `StringToList`, `StringSplit`, `StringJoin`.
+  `jit::Ty::Boxed`, `jit::Value::Boxed(LispVal)`, `BinOp::Rem`, and new `Core`
+  variants (`FBinary`, `ArrayOp`, `ArraySum`, `ArrayDot`, `BoxedOp`).
+- `lamedh::call_function(name, &[LispVal], &env)` calls a Lisp function with
+  already-evaluated arguments: no reader, no printer, TCO driven to completion
+  (#423). `lamedh::fn_handle(name, &env)` returns a `FnHandle`; `FnHandle::call`
+  re-resolves the name on every call, so redefinition is picked up, and
+  creation fails at once for an unbound name. Macros, fexprs and `VAU` are
+  rejected. About 480-530 ns per trivial call against about 2000 ns for
+  `eval_str`.
+- `lamedh::native_entry(name, &env)` (feature `jit`) extracts a
+  `jit::entry::NativeFnHandle` for a native leaf `defun*` with an
+  `int64`/`float64`/`bool` signature and calls the machine code directly, about
+  11 ns per call from any thread (#424). Rejected: non-scalar signatures and
+  non-leaf bodies (the error names the callees). `NativeFnHandle` is
+  `Send + Sync`, pins one native edition (`generation()`, `params()`, `ret()`;
+  a redefinition does not redirect it), and offers `call_f1`, `call_f3`,
+  `call_i1`, `call_i2` and `call_words`. Raw entries are unmetered and do not
+  set `OVERFLOW`/division-by-zero/index conditions in the Lisp world;
+  `last_error()` reports them per thread. Native edition storage moved from
+  `Rc` to `Arc`. Also `Environment::jit_native_entry` and
+  `Environment::jit_generation`.
+- `Environment::jit_fn_handle(name)` and `Environment::jit_call_handle(&handle, args)`
+  pin a typed function by name with a cached id validated by a registry
+  definitions generation, so steady-state calls skip the hash (#427).
+  `Jit::defs_generation`, `Jit::call_by_id` and `Jit::FAST_ARGS` back it.
+- `jit::JitEntry`, `Environment::jit_call_entry_aliased`,
+  `Environment::jit_call_with_array_writeback_aliased` and `jit::array_alias_map`
+  expose the aliasing-aware membrane paths (#400, #500). `jit::FUEL_EXHAUSTED`,
+  `jit::last_call_arena_peak_words` and `jit::float_powi` are new re-exports.
+- Reader features: `Environment::enable_reader_feature`, `disable_reader_feature`,
+  `reader_feature_enabled`, `reader_features_list` (#459).
+- `lamedh::hash_code(&LispVal) -> i64` backs `(hash-code v)` (#474).
+
+## CLI
+
+- `lamedh --max-depth N` sets the interpreted recursion limit, in nested eval
+  frames (default 10000, `N >= 1`). It is also the ceiling for Lisp's
+  `(set-eval-depth-limit! n)`. The interpreter runs on a 512 MiB stack, so a
+  limit far above the default can exhaust it and abort the process. Compiled
+  code has its own non-tail call limit (#520).
+- The `OVERFLOW` warning text now also mentions integer literals that exceeded
+  `i64` (#515; the reader change itself is in the existing section).
+- `--fuel` and `--mcp` bound compiled typed functions (see Fuel exhaustion). New
+  test: `cli/tests/mcp_cli.rs::typed_function_runaway_loop_terminates_with_fuel_error`
+  (#502).
+
+## Ports and tooling
+
+- **KERNEL.md** (#452, #453) defines the primitive surface every host must
+  provide so the shared `lib/*.lisp` corpus loads unmodified, and audits the
+  Rust reference, the SBCL port and lamedh-asm against it. Parts II (grammar),
+  IV (equality), V (numerics), VI/X (macros, fuel), XI (hash-code) and XII/XIII
+  (host traits, reader features) were updated by the entries above.
+- **Conformance suite** (`conformance/`, `tests/test_conformance.rs`, #621, #622):
+  143 implementation-neutral cases, `(case ID SPEC-REF SOURCE EXPECT)`, derived
+  from KERNEL.md by Part. The Rust runner gives each case a fresh environment and
+  fails any case over 1 s. Cases left out for now are listed in
+  `conformance/PENDING.md`. The SBCL and lamedh-asm ports do not run it yet.
+- **SBCL port** (`sbcl/`, #449, #485): a standalone Common Lisp implementation
+  with its own reader and evaluator that loads the reference `lib/*.lisp` as
+  byte copies. Conformance work since: `/` takes two arguments and no CL ratios
+  leak (#536); `mod` is Euclidean (#538); `zerop` rejects floats and `if` needs
+  three operands (#539); mixed int/float comparison is pairwise through `f64`
+  (#539); IEEE results for division by zero, `log 0`, `sqrt -1` (#534); `()`
+  prints as `()` and `print` frames as the reference (#537); a catchable
+  recursion limit of 10,000 eval frames instead of a stack crash (#532);
+  scripts evaluate form by form so a late parse error keeps earlier output
+  (#541); a quoted symbol resolves as a function in `funcall`/`apply`/HOFs
+  (#533); `uiop:quit` exit code (#535); `rplaca`/`rplacd`, `make-array`,
+  `typed-array`, `array-sum`/`array-dot`, `compiled-p`, `defun*` (#540); a
+  faster evaluator, memoized lambda compilation and a stdlib fasl cache, with
+  `LAMEDH_SBCL_NO_CACHE` to bypass it (#542); `#(...)` arrays print and read as
+  in Rust (#607).
+- **lamedh-asm** (`lamedh-asm/`): `apply` passes every argument instead of
+  truncating at 32 (#545); `*` wrap sets `OVERFLOW` (#546); `PRIN1`/`*-TO-STRING`
+  capture buffer grows (#547); data-heap allocator splits and coalesces free runs
+  (#548); constant-stack prelude list functions and linear `make-string` (#549);
+  out-of-range integer literals read as floats, negative `expt`, `ash` overflow
+  (#550); `+ - * < =` type-check with float contagion and catchable errors
+  (#543); `apply`/`funcall` on a non-function signals a catchable error (#544);
+  prelude basics (`length`, `member`, `dolist`, arrays, `setf`/`push`/`incf`,
+  `flet`/`labels`) (#552); dotted pairs, float print rounding, exponents,
+  escapes, `if` arity, variadic `#'+`, `iota/1` (#551); floats print as the
+  shortest round-trip decimal (#551); free garbage found while the ZCT is full
+  in the same collection (#602); `#(...)` arrays (#607).
+- **CI:** new `.github/workflows/sbcl.yml` and `lamedh-asm.yml`; `rust.yml`
+  changed. Port suites run on `lib/**` changes (#603).
+- **Benchmarks:** embedder call-ladder (`benchmarks/embedder`, #427, #433), Lua
+  5.4 and LuaJIT comparison (#443), tri-implementation harness over Rust, SBCL
+  and asm (#531). `benchmarks/embedder/rust` is excluded from the workspace.
+- `examples/vau_and_fexpr_examples.lisp`: four `defvau` operatives and four
+  `defexpr` fexprs (#470).
 
 ## Typed JIT: tail loops reclaim their per-iteration arena buffers (#212, partial)
 
@@ -151,10 +617,9 @@ arithmetic:
   by the SIMD `!` op.
 
 In typed code the four new `!` ops compile to a new `Core::ArrayOp` node.
-All tiers call one scalar reference implementation (`runtime.rs::array_op`;
-native code calls it through the `jit_array_op` trampoline), so results
-are bit-identical across tiers. Unlike `add!`/`sub!`/`mul!`, these ops
-are not yet hand-vectorized in Cranelift. The portable codegen gate
+All tiers agree bit for bit with one scalar reference implementation
+(`runtime.rs::array_op`). Native code lowers the four ops to Cranelift SIMD
+loops (#525), as `add!`/`sub!`/`mul!` already were. The portable codegen gate
 (`46-hm-check.lisp`) mirrors all seven forms.
 
 ## Same plain array passed twice to a typed function now aliases (#400)
@@ -199,6 +664,8 @@ bit-for-bit. Tests check the contract with a `n·eps·Σ|x|` tolerance against
 a sequential sum and assert tier agreement only as an implementation test.
 
 ## jit: `Ty::Boxed`, an opaque compileable handle to any `LispVal` (#476)
+
+**Breaking for Rust embedders:** `jit::Ty::Boxed` and `jit::Value::Boxed(LispVal)` are new variants of public enums, and `Core` gained variants, so an exhaustive `match` on them needs new arms. None of these enums is `#[non_exhaustive]`.
 
 A new compileable type, surface name `boxed`, lets typed code carry an
 arbitrary, un-narrowed `LispVal` as a native `u64` word — a 1-based index
