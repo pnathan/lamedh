@@ -449,24 +449,6 @@ Observable as speed only; results are unchanged.
 - `examples/vau_and_fexpr_examples.lisp`: four `defvau` operatives and four
   `defexpr` fexprs (#470).
 
-## Typed-call depth cap is configurable; lower defaults on `wasm32`
-
-The non-tail call cap for typed (compiled) code was a hard-coded 50,000,
-sized for the 512 MiB `with_large_stack` thread, and `set_eval_depth_limit`
-did not affect it. A host with a small stack (a browser, via `wasm32`)
-overflowed its stack long before 50,000 and trapped, which kills the WASM
-instance. The cap is now a per-thread setting:
-
-- `lamedh::set_typed_call_depth_limit(n)` and `lamedh::typed_call_depth_limit()`
-  set and read it. The value is sampled when a top-level typed call starts, so
-  the native call path reads a plain field and is no slower.
-- `DEFAULT_TYPED_CALL_DEPTH_LIMIT` is 50,000 natively, so native behavior is
-  unchanged.
-- On `wasm32` the defaults are lower: 400 typed calls and, for the tree-walker,
-  `DEFAULT_EVAL_DEPTH_LIMIT` of 2,000 instead of 10,000. Measured under node,
-  deep recursion now returns a recursion-limit error and the instance keeps
-  working. See `docs/embedding.md`.
-
 ## Typed JIT: tail loops reclaim their per-iteration arena buffers (#212, partial)
 
 An allocating tail loop (Tier 1 self-call or Tier 2a mutual/general tail
