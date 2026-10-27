@@ -1,6 +1,6 @@
 # v0.4.1 — 2026-10-23
 
-## Typed-call depth cap is configurable; lower defaults on `wasm32`
+## Typed-call depth cap is configurable; lower defaults on `wasm32` (#619, #625)
 
 The non-tail call cap for typed (compiled) code was a hard-coded 50,000,
 sized for the 512 MiB `with_large_stack` thread, and `set_eval_depth_limit`
@@ -414,6 +414,11 @@ Observable as speed only; results are unchanged.
   Rust reference, the SBCL port and lamedh-asm against it. Parts II (grammar),
   IV (equality), V (numerics), VI/X (macros, fuel), XI (hash-code) and XII/XIII
   (host traits, reader features) were updated by the entries above.
+- **Conformance suite** (`conformance/`, `tests/test_conformance.rs`, #621, #622):
+  143 implementation-neutral cases, `(case ID SPEC-REF SOURCE EXPECT)`, derived
+  from KERNEL.md by Part. The Rust runner gives each case a fresh environment and
+  fails any case over 1 s. Cases left out for now are listed in
+  `conformance/PENDING.md`. The SBCL and lamedh-asm ports do not run it yet.
 - **SBCL port** (`sbcl/`, #449, #485): a standalone Common Lisp implementation
   with its own reader and evaluator that loads the reference `lib/*.lisp` as
   byte copies. Conformance work since: `/` takes two arguments and no CL ratios

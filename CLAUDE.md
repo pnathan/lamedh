@@ -127,6 +127,10 @@ Prefer the Lisp layer; keep the Rust kernel small. If an optimization can be exp
 
 Kernel/Rust changes are appropriate for hot-path evaluation mechanics that have no Lisp-layer expression, such as argument collection, environment-frame allocation, value representation, stack behavior, or native-code backend integration.
 
+## Changelog Requirement
+
+Every change that alters observable behavior goes in `CHANGELOG.md`, in the same PR that makes the change. This covers Lisp semantics, printer or reader output, builtins and stdlib forms, CLI flags, the Rust embedding API, feature flags, and performance characteristics that users can measure. Add the entry under the topmost (unreleased) version heading, name the issue or PR number, and flag anything breaking for Lisp programs or Rust embedders as **Breaking**. Pure refactors, test-only changes, and CI changes may skip it. A release is cut from the diff against the previous tag: before tagging, check every commit since that tag has an entry or a stated reason to skip.
+
 ## Testing Guidance
 
 Tests live in `tests/` and module-level `#[cfg(test)]` blocks. Integration coverage includes arithmetic, lists, control flow, functions, fexprs/vau, dynamic variables, conditions, sandboxing, optimizer/compile bridge behavior, typed JIT behavior, and Lisp stdlib suites.
