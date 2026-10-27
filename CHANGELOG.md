@@ -1,5 +1,26 @@
 # v0.4.1 — unreleased
 
+## `min`/`max` follow IEEE 754-2019 for floats; int literals are not coerced (#530)
+
+- **Untyped calls** (the interpreter): `min`/`max` are `a -> a -> a` over one
+  numeric type. With any float argument the result is a float, so
+  `(max 0.5 1)` is `1.0` (was `1`). All-fixnum calls are unchanged.
+- **Floats** follow IEEE 754-2019 `maximum`/`minimum`: a NaN argument makes the
+  result NaN, and `-0.0` orders below `+0.0`. So `(max -0.0 0.0)` and
+  `(max 0.0 -0.0)` are both `0.0`, and `(min 0.0 -0.0)` and `(min -0.0 0.0)`
+  are both `-0.0`. Previously the result could depend on argument order and
+  could drop a NaN.
+- **Typed code**: the operands of `min`/`max` must share one type. An integer
+  *literal* beside a `float64` operand is a type error, not a coercion:
+  `(defun-typed (f float64) ((x float64)) (max x 1))` is rejected in the native
+  elaborator and the portable checker alike, as on `main` before #530. Write
+  `1.0`. Compiled float64 `min`/`max` implement the same IEEE rule as the
+  interpreter, so the two agree on NaN and signed zeros.
+- Unchanged: `+`, `-`, `*`, `/`, `quotient` and the comparisons still coerce an
+  integer literal beside a `float64` operand (literal-only; an int64 variable
+  or expression beside a float64 is still a type error). Ported to the SBCL
+  library and `lamedh-asm`.
+
 ## Typed-call depth cap is configurable; lower defaults on `wasm32`
 
 The non-tail call cap for typed (compiled) code was a hard-coded 50,000,

@@ -50,4 +50,42 @@
   (assert-equal (abs 7) 7)
   (assert-equal (max 3 1 4 1 5) 5)
   (assert-equal (min 3 1 4 1 5) 1)
-  (assert-equal (max 42) 42))
+  (assert-equal (max 42) 42)
+  (assert-equal (max 0.5 1) 1.0)
+  (assert-equal (min 3 2 1.5) 1.5)
+  (assert-equal (min 1 1.0) 1.0)
+  (assert-equal (max 1.0 1) 1.0)
+  (assert-equal (max 3 2 1.5) 3.0))
+
+;; MIN/MAX: IEEE 754-2019 maximum/minimum for floats, float contagion for
+;; untyped calls (#530). Sign of zero and NaN are checked directly: `equal`
+;; does not tell 0.0 from -0.0, and NaN is unequal to itself.
+(deftest arith-min-max-ieee
+  ;; Float contagion: any float argument makes the result a float.
+  (assert-equal (max 1 1.0) 1.0)
+  (assert-equal (max 0 -0.0) 0.0)
+  (assert-equal (min 0 -0.0) -0.0)
+  (assert-equal (min 1 2 -0.0) -0.0)
+  ;; All-integer calls return integers.
+  (assert-true (fixp (max 1 2 3)))
+  (assert-true (fixp (min 3 2 1)))
+  (assert-equal (max 2 1 0) 2)
+  ;; Three-argument variadic.
+  (assert-equal (max 1 3 9) 9)
+  (assert-equal (min 5 2 8) 2)
+  ;; Signed zeros: -0.0 orders below +0.0, in both argument orders.
+  (assert-equal (max -0.0 0.0) 0.0)
+  (assert-equal (max 0.0 -0.0) 0.0)
+  (assert-true (> (/ 1.0 (max -0.0 0.0)) 0))
+  (assert-true (> (/ 1.0 (max 0.0 -0.0)) 0))
+  (assert-equal (min 0.0 -0.0) -0.0)
+  (assert-equal (min -0.0 0.0) -0.0)
+  (assert-true (< (/ 1.0 (min 0.0 -0.0)) 0))
+  (assert-true (< (/ 1.0 (min -0.0 0.0)) 0))
+  ;; NaN propagates from the first, middle and last position.
+  (assert-true (/= (max (/ 0.0 0.0) 1 2) (max (/ 0.0 0.0) 1 2)))
+  (assert-true (/= (max 1 (/ 0.0 0.0) 2) (max 1 (/ 0.0 0.0) 2)))
+  (assert-true (/= (max 1 2 (/ 0.0 0.0)) (max 1 2 (/ 0.0 0.0))))
+  (assert-true (/= (min (/ 0.0 0.0) 1 2) (min (/ 0.0 0.0) 1 2)))
+  (assert-true (/= (min 1 (/ 0.0 0.0) 2) (min 1 (/ 0.0 0.0) 2)))
+  (assert-true (/= (min 1 2 (/ 0.0 0.0)) (min 1 2 (/ 0.0 0.0)))))
