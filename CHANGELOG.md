@@ -20,6 +20,37 @@
   integer literal beside a `float64` operand (literal-only; an int64 variable
   or expression beside a float64 is still a type error). Ported to the SBCL
   library and `lamedh-asm`.
+- **Breaking** for Lisp programs: untyped `(max 0.5 1)` returns `1.0` (was
+  `1`); `(max 0.0 -0.0)` returns `0.0` (was `-0.0`); a NaN argument now
+  propagates to the result.
+
+## Bug-bash fixes: reader, evaluator, OS builtins, optimizer (#617)
+
+- Reader: an empty `;` comment (`;` before a newline or end of input) is
+  skipped. It was a parse error.
+- Reader: a discarded `#+`/`#-` form that ends a list, as in `(a #+nope b)`,
+  no longer makes the list unreadable.
+- Reader: `#S(...)` at the nesting-depth limit returns the depth error. It
+  panicked on an integer underflow.
+- Compiled `cond`: a clause that falls back to the interpreter evaluates only
+  the remaining clauses. Earlier test forms ran twice.
+- `isqrt` is exact above 2^53. `(isqrt 9223372030926249000)` returned
+  `3037000499`, not `3037000498`.
+- `code-char` signals an invalid code point at or above 2^32. It truncated
+  the value to 32 bits.
+- `os-env-set*` and `os-env-unset*` signal `:INVALID-ARGUMENT` for an empty
+  name, a name with `=` or NUL, or a value with NUL. They aborted the process.
+- `optimize` does not fold `(/ i64::MIN -1)`. It panicked.
+- `max` and `min` run in constant stack depth. A long argument list overflowed
+  the stack.
+- Duplicate dynamic parameters, as in `((lambda (*x* *x*) ...) 1 2)`, restore
+  the global value on return.
+- **Breaking** for Lisp programs: `make-temp-file` and `make-temp-directory`
+  reject a prefix that contains `/`, `\`, NUL or `..`. Such a prefix created a
+  path outside the temp directory under `TEMP-FS` alone.
+- **Breaking** for Lisp programs: `os-signal*` rejects a PID at or below 0 or
+  above `i32::MAX`. A larger PID was truncated after the policy check, and 0
+  and -1 signalled a process group or every process.
 
 ## Typed-call depth cap is configurable; lower defaults on `wasm32`
 
