@@ -71,10 +71,40 @@ suite wall time.
 Use the same printed form as `KERNEL.md` Part III. Where the host's printer
 differs for an opaque value, the case should not exist (see `PENDING.md`).
 
+## Port runners
+
+`ports/` holds one runner per port. Each runs every non-`99-*` case, prints
+`PASS`, `KNOWN-FAIL`, `FAIL`, or `STALE` per case plus a summary line, and
+prints src/want/got for each `FAIL`.
+
+    sbcl --non-interactive --load conformance/ports/run-sbcl.lisp
+    make -C lamedh-asm lamedhc && python3 conformance/ports/run-asm.py
+
+Run both from the repo root. Each takes a few seconds. Set
+`CONFORMANCE_VERBOSE=1` (SBCL) or pass `--verbose` (asm) to print
+src/want/got for known failures too. The asm runner takes `--bin PATH` to use
+another `lamedhc`. It runs one process per case with the prelude only.
+
+Each port has an allowlist, `ports/sbcl-known-divergences.txt` and
+`ports/asm-known-divergences.txt`: one case ID per line, with a `#` comment
+above each group giving the reason. A listed case is a known divergence of that
+port from `KERNEL.md`. The case stays in the corpus.
+
+The exit status is nonzero when:
+
+- a case fails and is not listed (regression);
+- a listed case now passes, or names no case (stale entry);
+- an ID repeats, or the case count is not 143.
+
+The lists may only shrink. Fix the port, then delete the line the runner flags
+as stale. Never add a line to hide a regression; if the corpus is wrong, handle
+it as in "Adding a case". Adding a case that a port fails means adding it to
+that port's list with a reason, in the same change.
+
 ## Status
 
 - Rust runner: `tests/test_conformance.rs`. Passes against the Rust reference.
   Run with `cargo test --release --test test_conformance`.
 - Cases: 143 in `cases/`, 0 disputed. Files `10` through `60`.
-- `sbcl/` and `lamedh-asm/` runners: not written.
+- `sbcl/` and `lamedh-asm/` runners: `ports/run-sbcl.lisp`, `ports/run-asm.py`. See Port runners.
 - WASM: not built.

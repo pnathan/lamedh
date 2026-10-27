@@ -1188,7 +1188,10 @@ pub(super) fn apply(
                     })
                 }
                 #[cfg(not(unix))]
-                Ok(LispVal::Nil)
+                {
+                    let _ = path;
+                    Ok(LispVal::Nil)
+                }
             }
 
             BuiltinFunc::FileSize => {
@@ -1313,9 +1316,12 @@ pub(super) fn apply(
                     Ok(LispVal::Symbol(env.intern_symbol("T")))
                 }
                 #[cfg(not(unix))]
-                Err(LispError::Generic(
-                    "chmod is only supported on Unix platforms".to_string(),
-                ))
+                {
+                    let _ = (path, mode);
+                    Err(LispError::Generic(
+                        "chmod is only supported on Unix platforms".to_string(),
+                    ))
+                }
             }
 
             BuiltinFunc::CreateDirectory => {

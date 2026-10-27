@@ -31,6 +31,7 @@ This repository is a Cargo workspace with two primary crates:
 - **Ship gate (authoritative)**: `scripts/gauntlet.sh [verdict-file]` — release, default + `--no-default-features` + `--features fuzz` + clippy; a ship needs `DEFAULT-GREEN`/`NDF-GREEN`/`FUZZ-GREEN`/`CLIPPY-GREEN` in the verdict file. This, not a bare `cargo test`, is the merge gate.
 - **Lint**: `cargo clippy --workspace --all-targets --features fuzz -- -D warnings` (warnings are errors, matching CI and the gauntlet; `--features fuzz` so the fuzz battery in `tests/brutal_correctness.rs` is linted too, since that file compiles under no other gate)
 - **Format**: `cargo fmt --all`
+- **Warnings are errors everywhere**: `.cargo/config.toml` sets `-D warnings` for every build, so a plain `cargo build`/`test`/`check` fails on any warning, in every feature and target combination (including `--no-default-features` and `wasm32`). An explicit `RUSTFLAGS` in the environment replaces it.
 - **Benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
 
 Run `cargo fmt --all` and `cargo clippy --workspace --all-targets --features fuzz -- -D warnings` before every commit; clippy warnings are errors — CI and the gauntlet both enforce `-D warnings`.
