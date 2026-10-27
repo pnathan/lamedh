@@ -10,7 +10,8 @@ instance. The cap is now a per-thread setting:
 
 - `lamedh::set_typed_call_depth_limit(n)` and `lamedh::typed_call_depth_limit()`
   set and read it. The value is sampled when a top-level typed call starts, so
-  the native call path reads a plain field and is no slower.
+  the native call path reads a plain field. A typed `fib 35` showed no
+  measurable slowdown (noisy run on a busy machine).
 - `DEFAULT_TYPED_CALL_DEPTH_LIMIT` is 50,000 natively, so native behavior is
   unchanged.
 - On `wasm32` the defaults are lower: 400 typed calls and, for the tree-walker,
@@ -61,7 +62,7 @@ number and a symbol: `123abc` read as `123 ABC`, `2.0.3` as the dotted pair
 
 ## Arrays print their contents (#527)
 
-`(print (array 1 2 3))` used to print `<array:3>`. It prints `#(1 2 3)`, and
+`(print (list->array '(1 2 3)))` used to print `<array:3>`. It prints `#(1 2 3)`, and
 the reader accepts that back. Arrays longer than 100 elements print the first
 100 followed by an unreadable `#<...N more>` marker, so an abridged array never
 reads back as a shorter one; channel and spawn serialization use the new
@@ -74,6 +75,7 @@ arrays print as `#<typed-array:int64 1 2 3>`, which is not readable.
 List printing rebuilt the tail string at every cons and recursed once per
 spine cell: 400,000 elements took 41 s and 10^6 did not finish. The printer now
 appends into one buffer and walks the spine in a loop. Output is byte-identical.
+(The 41 s figure is from the commit message, not re-measured.)
 
 ## Two-operand `if` is an error inside function bodies (#506)
 
@@ -328,7 +330,8 @@ replacing the `jit_array_op` trampoline. `array-fma!` uses Cranelift `fma`
 
 ## Native code speed (#434, #435, #442)
 
-Observable as speed only; results are unchanged.
+Observable as speed only; results are unchanged. Figures are the ones reported
+in the commit messages and were not re-measured for this release.
 
 - The Cranelift optimizer is on. `JITBuilder::new` defaults to `opt_level=none`,
   so no optimization pass had run on any native edition. Whole-loop SDF kernel:
