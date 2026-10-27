@@ -131,6 +131,10 @@ Kernel/Rust changes are appropriate for hot-path evaluation mechanics that have 
 
 Every change that alters observable behavior goes in `CHANGELOG.md`, in the same PR that makes the change. This covers Lisp semantics, printer or reader output, builtins and stdlib forms, CLI flags, the Rust embedding API, feature flags, and performance characteristics that users can measure. Add the entry under the topmost (unreleased) version heading, name the issue or PR number, and flag anything breaking for Lisp programs or Rust embedders as **Breaking**. Pure refactors, test-only changes, and CI changes may skip it. A release is cut from the diff against the previous tag: before tagging, check every commit since that tag has an entry or a stated reason to skip.
 
+## Commit Messages
+
+Use Conventional Commits: `type(scope): description`, with types such as `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `ci`, `chore`, `revert`, and `!` after the type or scope for breaking changes (`feat(math)!: ...`). The commit-msg hook enforces the format. Reference the issue or PR number in the description or body.
+
 ## Testing Guidance
 
 Tests live in `tests/` and module-level `#[cfg(test)]` blocks. Integration coverage includes arithmetic, lists, control flow, functions, fexprs/vau, dynamic variables, conditions, sandboxing, optimizer/compile bridge behavior, typed JIT behavior, and Lisp stdlib suites.
