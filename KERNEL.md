@@ -641,7 +641,7 @@ non-negative fixnum exponent yields a fixnum and **errors on overflow**
 exponent yields a float; any float operand yields a float. `sqrt`, `sin`,
 `cos`, `tan`, `exp`, `log` accept any numeric and return a float.
 `(gcd ...)` and `(lcm ...)` are variadic over fixnums with `(gcd)` = `0`,
-`(lcm)` = `1`. `(plusp x)` and `(minusp x)` accept a fixnum or a float;
+`(lcm)` = `1`. `(max a ...)` and `(min a ...)` are variadic over one numeric type: with any float argument the result is a float, so `(max 0.5 1)` is `1.0`; an all-fixnum call stays a fixnum. Floats follow IEEE 754-2019 `maximum`/`minimum` (#530): a NaN argument makes the result NaN, and `-0.0` orders below `+0.0`, so `(max -0.0 0.0)` is `0.0` and `(min 0.0 -0.0)` is `-0.0`. In typed code the operands must share one type: an integer literal beside a `float64` operand is a type error, not a coercion. `(plusp x)` and `(minusp x)` accept a fixnum or a float;
 `(zerop x)` accepts **only a fixnum** — `(zerop 0.0)` is an error — and
 all three error on a non-number. (Clarification, #553: `zerop` rejects
 every `Float` — `0.0`, `-0.0`, `NaN`, `inf` — not only a nonzero one; use

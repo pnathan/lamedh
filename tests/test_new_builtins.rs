@@ -54,6 +54,18 @@ fn test_single_argument_string_char_helpers_reject_extra_args() {
 }
 
 #[test]
+fn test_code_char_rejects_out_of_u32_range() {
+    for expr in ["(code-char 4294967296)", "(code-char 4294967361)"] {
+        let out = eval(expr);
+        assert!(
+            out.starts_with("Error:"),
+            "expected {expr} to be an error, got: {out}"
+        );
+    }
+    assert_eq!(eval("(code-char 65)"), "\"A\"");
+}
+
+#[test]
 fn test_last_simple() {
     assert_eq!(eval("(last '(1 2 3))"), "(3)");
 }

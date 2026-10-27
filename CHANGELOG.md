@@ -1,5 +1,53 @@
 # v0.4.1 — 2026-10-23
 
+## **Breaking:** `min`/`max` follow IEEE 754-2019 for floats; int literals are not coerced (#530, #616)
+
+- **Untyped calls** (the interpreter): `min`/`max` are `a -> a -> a` over one
+  numeric type. With any float argument the result is a float, so
+  `(max 0.5 1)` is `1.0` (was `1`). All-fixnum calls are unchanged.
+- **Floats** follow IEEE 754-2019 `maximum`/`minimum`: a NaN argument makes the
+  result NaN, and `-0.0` orders below `+0.0`. So `(max -0.0 0.0)` and
+  `(max 0.0 -0.0)` are both `0.0`, and `(min 0.0 -0.0)` and `(min -0.0 0.0)`
+  are both `-0.0`. Previously the result could depend on argument order and
+  could drop a NaN.
+- **Typed code**: the operands of `min`/`max` must share one type. An integer
+  *literal* beside a `float64` operand is a type error, not a coercion:
+  `(defun-typed (f float64) ((x float64)) (max x 1))` is rejected in the native
+  elaborator and the portable checker alike, as on `main` before #530. Write
+  `1.0`. Compiled float64 `min`/`max` implement the same IEEE rule as the
+  interpreter, so the two agree on NaN and signed zeros.
+- Unchanged: `+`, `-`, `*`, `/`, `quotient` and the comparisons still coerce an
+  integer literal beside a `float64` operand (literal-only; an int64 variable
+  or expression beside a float64 is still a type error). Ported to the SBCL
+  library and `lamedh-asm`.
+
+## Twelve reader, evaluator, OS and stdlib defects (#617)
+
+Found by a bug bash and confirmed by two independent verifiers; each has a
+regression test.
+
+- **Reader:** an empty `;` comment no longer raises a parse error; a discarded
+  `#+`/`#-` form that ends a list no longer makes the list unreadable; a
+  `#S(...)` literal at the depth limit returns the depth error instead of
+  underflowing.
+- **`make-temp-file`, `make-temp-directory`:** a prefix containing a path
+  separator, NUL or `..` is an error. Under `TEMP-FS` alone these could create
+  paths outside the temp directory. **Code that passed such a prefix now
+  errors.**
+- **Dynamic parameters:** a function with duplicate dynamic parameter names
+  restores the saved values in reverse order, so the original global comes back.
+- **Compiled `COND`:** a fallback to the interpreter evaluates only the
+  remaining clauses; earlier test forms no longer run twice.
+- **`isqrt`** is exact above 2^53. **`code-char`** rejects code points at or
+  above 2^32 instead of truncating them.
+- **`os-env-set*`, `os-env-unset*`** return `:INVALID-ARGUMENT` for names or
+  values that `std::env` rejects (empty or containing `=` or NUL), where they
+  panicked. **`os-signal*`** rejects pids at or below 0 or above `i32::MAX`
+  before the policy check.
+- **Optimizer:** constant folding of `/` declines `i64::MIN / -1`.
+- **`max`, `min`** reduce in constant stack depth (superseded by the IEEE
+  rewrite above, which keeps that property).
+
 ## Typed-call depth cap is configurable; lower defaults on `wasm32` (#619, #625)
 
 The non-tail call cap for typed (compiled) code was a hard-coded 50,000,
@@ -279,8 +327,8 @@ membrane skips native retries in a fallback taken because native failed.
 - An integer literal beside a `float64` operand in `+ - * /` or a numeric
   comparison elaborates as the float constant: `(+ x 1)` compiles with `x`
   `float64`. Literals only; an `int64` variable is never coerced. N-ary `-` and
-  `mod` do not coerce, and `min`/`max` do not (the interpreter's `(max 0.5 1)`
-  is the integer 1). The portable checker also coerces for `quotient` (#530).
+  `mod` do not coerce, and neither do `min`/`max` (see the `min`/`max` entry
+  above). The portable checker also coerces for `quotient` (#530).
 - A `cond`/`when`/`unless`/`case` that ends a `let`, `let*` or `progn` whose
   value is discarded now desugars in statement mode, so it compiles instead of
   failing with "`if` branches disagree" (#513).
