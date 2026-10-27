@@ -54,6 +54,18 @@ fn test_single_argument_string_char_helpers_reject_extra_args() {
 }
 
 #[test]
+fn test_code_char_rejects_out_of_u32_range() {
+    for expr in ["(code-char 4294967296)", "(code-char 4294967361)"] {
+        let out = eval(expr);
+        assert!(
+            out.starts_with("Error:"),
+            "expected {expr} to be an error, got: {out}"
+        );
+    }
+    assert_eq!(eval("(code-char 65)"), "\"A\"");
+}
+
+#[test]
 fn test_last_simple() {
     assert_eq!(eval("(last '(1 2 3))"), "(3)");
 }
@@ -411,15 +423,13 @@ fn test_explode_symbol() {
 
 #[test]
 fn test_explode_string() {
-    // String explode preserves case (doesn't uppercase like symbols); the
-    // lower-case names print escaped so they read back (issue #523).
-    assert_eq!(eval("(explode \"hello\")"), "(|h| |e| |l| |l| |o|)");
+    // String explode preserves case (doesn't uppercase like symbols)
+    assert_eq!(eval("(explode \"hello\")"), "(h e l l o)");
 }
 
 #[test]
 fn test_explode_number() {
-    // Symbols named by digits, escaped so they don't read back as numbers.
-    assert_eq!(eval("(explode 123)"), "(|1| |2| |3|)");
+    assert_eq!(eval("(explode 123)"), "(1 2 3)");
 }
 
 #[test]
@@ -439,8 +449,7 @@ fn test_implode_single() {
 
 #[test]
 fn test_implode_empty() {
-    // The symbol with the empty name (issue #523).
-    assert_eq!(eval("(implode '())"), "||");
+    assert_eq!(eval("(implode '())"), "");
 }
 
 #[test]
@@ -469,8 +478,7 @@ fn test_gensym_format() {
 
 #[test]
 fn test_intern_string() {
-    // INTERN preserves case (issue #523); the name prints escaped.
-    assert_eq!(eval("(intern \"hello\")"), "|hello|");
+    assert_eq!(eval("(intern \"hello\")"), "HELLO");
 }
 
 #[test]

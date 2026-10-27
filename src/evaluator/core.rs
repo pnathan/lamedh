@@ -7,7 +7,17 @@ use smallvec::SmallVec;
 /// to fit comfortably within the large stack provided by [`crate::with_large_stack`]
 /// (~512 MiB). Hosts that run the interpreter on a smaller stack should lower it
 /// via [`set_eval_depth_limit`]. See issues #61 (this guard) and #62 (TCO).
+///
+/// On `wasm32` the host owns the stack (V8's, roughly 1 MiB) and a `with_large_stack`
+/// thread cannot exist, so the default there is 2,000: measured under node, an
+/// untyped self-recursion overflowed that stack at about 2,150 calls, each of which
+/// is several `eval` frames. Raise it with [`set_eval_depth_limit`] on a host with
+/// a bigger stack. Typed code has its own cap, [`crate::set_typed_call_depth_limit`].
+#[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_EVAL_DEPTH_LIMIT: usize = 10_000;
+/// See the non-wasm32 constant of the same name.
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_EVAL_DEPTH_LIMIT: usize = 2_000;
 
 thread_local! {
     static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) };
