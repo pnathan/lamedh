@@ -48,7 +48,7 @@ rustls-pemfile = { version = "2", optional = true }
 # normal `cargo build`/`cargo install` -- dev-dependencies are excluded from
 # that graph, so this does not affect the net-tls feature's "off by default"
 # story for embedders.
-rcgen = "0.13"
+rcgen = "0.14"
 
 [features]
 default = ["jit", "concurrency"]
