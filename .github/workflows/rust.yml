@@ -3,13 +3,22 @@ name: CI
 # The cloud gauntlet: the same four verdicts as scripts/gauntlet.sh
 # (DEFAULT / NDF / FUZZ / LINT), run as parallel jobs on GitHub-hosted
 # runners so a PR is merge-gated without occupying a laptop. Free on a
-# public repo. `gh pr checks <n> --watch` is the local way to wait on it.
+# public repo. Tests run under nextest, as in scripts/gauntlet.sh (nextest
+# skips doctests, so those run separately). `gh pr checks <n> --watch` is the local way to wait on it.
 
 on:
   push:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the run in flight; main runs always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,8 +33,11 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         key: default
+    - uses: taiki-e/install-action@nextest
     - name: Test (release, default features)
-      run: cargo test --release --workspace
+      run: cargo nextest run --release --workspace --profile ci
+    - name: Doctests
+      run: cargo test --release --workspace --doc
 
   ndf:
     name: Gauntlet NDF (release, no default features)
@@ -36,8 +48,11 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         key: ndf
+    - uses: taiki-e/install-action@nextest
     - name: Test (release, --no-default-features)
-      run: cargo test --release --no-default-features
+      run: cargo nextest run --release --no-default-features --profile ci
+    - name: Doctests
+      run: cargo test --release --no-default-features --doc
 
   fuzz:
     name: Gauntlet FUZZ (release)
@@ -48,8 +63,9 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         key: fuzz
+    - uses: taiki-e/install-action@nextest
     - name: Fuzz battery (release, --features fuzz)
-      run: cargo test --release --features fuzz --test brutal_correctness
+      run: cargo nextest run --release --features fuzz --test brutal_correctness --profile ci
 
   lint:
     name: Gauntlet LINT (fmt + clippy)
@@ -68,3 +84,19 @@ jobs:
       # --features fuzz: lint tests/brutal_correctness.rs too; the feature
       # gates only that test target, so nothing else changes.
       run: cargo clippy --workspace --all-targets --features fuzz -- -D warnings
+
+  wasm:
+    name: wasm32 build (interpreter only)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: wasm
+    # The Cranelift JIT cannot target wasm; the supported configuration is the
+    # interpreter without default features (#618).
+    - name: Check lamedh for wasm32
+      run: cargo check -p lamedh --target wasm32-unknown-unknown --no-default-features

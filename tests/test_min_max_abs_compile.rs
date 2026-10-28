@@ -42,6 +42,80 @@ fn variadic_min_max_compile_and_run_each_argument_once() {
     assert_eq!(eval_line("(mx-once 7)", &e), "1107");
 }
 
+/// #530: compiled float64 `min`/`max` implement IEEE 754-2019
+/// `minimum`/`maximum` (a NaN argument propagates, `-0.0 < +0.0`), and the
+/// interpreter does the same. Every combination of `-0.0`, `+0.0`, ordinary
+/// values and NaN (in every position) must print identically in both tiers.
+#[test]
+fn float_min_max_compiled_matches_the_interpreter_ieee() {
+    let e = env();
+    eval_line(
+        "(defun-typed (fmx2 float64) ((a float64) (b float64)) (max a b))",
+        &e,
+    );
+    eval_line(
+        "(defun-typed (fmn2 float64) ((a float64) (b float64)) (min a b))",
+        &e,
+    );
+    eval_line(
+        "(defun-typed (fmx3 float64) ((a float64) (b float64) (c float64)) (max a b c))",
+        &e,
+    );
+    eval_line(
+        "(defun-typed (fmn3 float64) ((a float64) (b float64) (c float64)) (min a b c))",
+        &e,
+    );
+    for f in ["fmx2", "fmn2", "fmx3", "fmn3"] {
+        let tier = eval_line(&format!("(compiled-p '{f})"), &e);
+        #[cfg(feature = "jit")]
+        assert_eq!(tier, "NATIVE", "{f}");
+        #[cfg(not(feature = "jit"))]
+        assert_ne!(tier, "()", "{f}");
+    }
+    // Signed zeros, ordinary values, and NaN (0.0 / 0.0 at run time).
+    let vals = ["0.0", "-0.0", "1.5", "-2.5", "(/ 0.0 0.0)"];
+    for a in vals {
+        for b in vals {
+            for (f, g) in [("fmx2", "max"), ("fmn2", "min")] {
+                assert_eq!(
+                    eval_line(&format!("({f} {a} {b})"), &e),
+                    eval_line(&format!("(let ((a {a}) (b {b})) ({g} a b))"), &e),
+                    "{f} {a} {b}"
+                );
+            }
+        }
+    }
+    for a in vals {
+        for b in vals {
+            for c in vals {
+                for (f, g) in [("fmx3", "max"), ("fmn3", "min")] {
+                    assert_eq!(
+                        eval_line(&format!("({f} {a} {b} {c})"), &e),
+                        eval_line(&format!("(let ((a {a}) (b {b}) (c {c})) ({g} a b c))"), &e),
+                        "{f} {a} {b} {c}"
+                    );
+                }
+            }
+        }
+    }
+    // The IEEE values themselves, compiled.
+    for (call, want) in [
+        ("(fmx2 -0.0 0.0)", "0.0"),
+        ("(fmx2 0.0 -0.0)", "0.0"),
+        ("(fmn2 0.0 -0.0)", "-0.0"),
+        ("(fmn2 -0.0 0.0)", "-0.0"),
+        ("(fmx2 (/ 0.0 0.0) 1.5)", "NaN"),
+        ("(fmx2 1.5 (/ 0.0 0.0))", "NaN"),
+        ("(fmn3 1.5 (/ 0.0 0.0) -2.5)", "NaN"),
+        ("(fmx3 1.5 -2.5 (/ 0.0 0.0))", "NaN"),
+    ] {
+        assert_eq!(eval_line(call, &e), want, "{call}");
+    }
+    // And the interpreter.
+    assert_eq!(eval_line("(max -0.0 0.0)", &e), "0.0");
+    assert_eq!(eval_line("(min 0.0 -0.0)", &e), "-0.0");
+}
+
 #[test]
 fn variadic_min_max_match_the_interpreter() {
     let e = env();

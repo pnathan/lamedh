@@ -6,17 +6,26 @@ name: sbcl
 
 on:
   push:
-    branches: ["main", "plurality"]
+    branches: ["main"]
     paths:
       - "sbcl/**"
+      - "conformance/**"
       - "lib/**"
       - ".github/workflows/sbcl.yml"
   pull_request:
-    branches: ["main", "plurality"]
+    branches: ["main"]
     paths:
       - "sbcl/**"
+      - "conformance/**"
       - "lib/**"
       - ".github/workflows/sbcl.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -29,3 +38,5 @@ jobs:
       - name: run-tests
         working-directory: sbcl
         run: sbcl --non-interactive --load tests/run-tests.lisp
+      - name: conformance
+        run: sbcl --non-interactive --load conformance/ports/run-sbcl.lisp
