@@ -227,3 +227,15 @@ fn normal_programs_unaffected() {
         );
     });
 }
+
+// `#S(...)` read at the last nesting level must report the depth limit, not
+// underflow `remaining - 1` (panic in debug builds).
+#[test]
+fn struct_literal_at_depth_limit_errors_not_panics() {
+    let env = Shared::new(Environment::new());
+    let depth = lamedh::reader::DEFAULT_READER_DEPTH - 1;
+    let input = "(".repeat(depth) + "#S(A)" + &")".repeat(depth);
+    let result = lamedh::reader::read(&input, &env);
+    let msg = result.expect_err("expected a depth-limit error");
+    assert!(msg.contains("nesting too deep"), "got: {msg}");
+}

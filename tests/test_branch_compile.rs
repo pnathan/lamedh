@@ -120,3 +120,20 @@ fn case_with_integer_keys_is_no_longer_a_false_type_error() {
     assert!(!ex.contains("TYPE-ERROR"), "{ex}");
     assert_eq!(eval_line("(br-c2 3)", &e), "()");
 }
+
+/// A single-form / malformed clause after a side-effecting test must not make
+/// the compiled COND re-evaluate earlier tests.
+#[test]
+fn cond_fallback_does_not_reevaluate_earlier_tests() {
+    let env = env();
+    for src in [
+        "(defvar *cfn* 0)",
+        "(defun cfn-bump () (setq *cfn* (+ *cfn* 1)) nil)",
+        "(defun cfn-f () (cond ((cfn-bump) 'a) (t)))",
+        "(cfn-f)",
+    ] {
+        eval_line(src, &env);
+    }
+    let n = eval_line("*cfn*", &env);
+    assert_eq!(n.trim(), "1");
+}

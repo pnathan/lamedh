@@ -276,6 +276,18 @@ fn compile_cond(rest: &Shared<LispVal>, form: &LispVal) -> crate::Code {
     compile_cond_clauses(&clauses, form)
 }
 
+/// `(COND . clauses)` for only the not-yet-evaluated clauses, so a fallback
+/// never re-runs tests of earlier clauses.
+fn cond_remainder(clauses: &[LispVal], form: &LispVal) -> LispVal {
+    let head = match form {
+        LispVal::Cons { car, .. } => car.as_ref().clone(),
+        _ => return form.clone(),
+    };
+    let mut items = vec![head];
+    items.extend(clauses.iter().cloned());
+    vec_to_list(items)
+}
+
 fn compile_cond_clauses(clauses: &[LispVal], form: &LispVal) -> crate::Code {
     use crate::Code;
     if clauses.is_empty() {
@@ -285,14 +297,14 @@ fn compile_cond_clauses(clauses: &[LispVal], form: &LispVal) -> crate::Code {
 
     let clause_forms = match safe_list_to_vec(&clauses[0]) {
         Some(v) if !v.is_empty() => v,
-        _ => return Code::Interp(form.clone()),
+        _ => return Code::Interp(cond_remainder(clauses, form)),
     };
 
     // Clause `(test)` with no result: return the test value when truthy.
     // We'd have to evaluate the condition twice (once to test, once to return)
     // or introduce a temporary binding; fall back to the tree-walker instead.
     if clause_forms.len() == 1 {
-        return Code::Interp(form.clone());
+        return Code::Interp(cond_remainder(clauses, form));
     }
 
     let cond_code = compile(&clause_forms[0]);
