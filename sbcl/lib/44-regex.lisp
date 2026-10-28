@@ -50,7 +50,8 @@ a full-string match)."
 
   (defun find (re s &optional start)
     "First match of RE in S at or after character index START (default 0).
-Returns (TEXT START END) or NIL."
+Returns (TEXT START END) or NIL, indices relative to S. The whole of S is
+still visible to the pattern, so ^ and \\b refer to S, not to START."
     (if start
         (regex-find* re s start)
         (regex-find* re s)))
