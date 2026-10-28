@@ -465,6 +465,10 @@ in the commit messages and were not re-measured for this release.
   Rust reference, the SBCL port and lamedh-asm against it. Parts II (grammar),
   IV (equality), V (numerics), VI/X (macros, fuel), XI (hash-code) and XII/XIII
   (host traits, reader features) were updated by the entries above.
+- **SBCL port, fuel fences** (#455): `WITH-FUEL` debits the enclosing budget by
+  what the inner fence spent, so a nested fence can no longer restore an
+  exhausted outer budget. `KERNEL-FUEL-SET!` inside a fence only narrows;
+  widening or disarming signals an error, as in the Rust reference.
 - **Conformance suite** (`conformance/`, `tests/test_conformance.rs`, #621, #622):
   143 implementation-neutral cases, `(case ID SPEC-REF SOURCE EXPECT)`, derived
   from KERNEL.md by Part. The Rust runner gives each case a fresh environment and

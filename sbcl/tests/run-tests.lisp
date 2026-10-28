@@ -33,7 +33,7 @@
     "52-text-module" "60-special-forms" "65-loops" "70-hash-and-plist"
     "80-kernel-conformance" "90-bitwise" "95-stdlib-batteries"
     "96-format-and-io" "97-common-forms" "97-ieee-floats" "97-no-ratios"
-    "97-port-regressions" "97-printer" "97-recursion-limit"
+    "97-port-regressions" "97-printer" "97-recursion-limit" "97-fuel-fence"
     "97-reference-builtins"))
 
 (dolist (name *test-files*)

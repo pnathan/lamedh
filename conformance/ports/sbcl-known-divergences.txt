@@ -55,7 +55,5 @@ error/error-no-arguments-message
 # handler-case catches THROW (it is not an error condition in the spec).
 error/throw-not-caught-by-handler
 
-# Fuel fences: exhaustion is caught by an inner handler-case, and a fenced body
-# can widen its own fuel with kernel-fuel-set!.
+# Fuel fences: exhaustion is caught by an inner handler-case.
 fuel/exhaustion-not-caught-inside-fence
-fuel/widen-inside-fence-error
