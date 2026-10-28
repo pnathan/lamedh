@@ -207,6 +207,7 @@ pub fn compile_native(
     n_slots: usize,
     cell_addrs: &[usize],
     param_counts: &[usize],
+    reclaim: bool,
 ) -> Result<NativeEdition, String> {
     // opt_level defaults to "none" — turn on Cranelift's egraph optimizer
     // (measured on the embedder bench: see benchmarks/embedder/README.md).
@@ -218,6 +219,8 @@ pub fn compile_native(
         "jit_resolve_pending_tail",
         jit_resolve_pending_tail as *const u8,
     );
+    jb.symbol("jit_arena_mark", super::jit_arena_mark as *const u8);
+    jb.symbol("jit_arena_reclaim", super::jit_arena_reclaim as *const u8);
     jb.symbol("jit_alloc", super::jit_alloc as *const u8);
     jb.symbol("jit_alloc_stride", super::jit_alloc_stride as *const u8);
     jb.symbol("jit_array_oob", super::jit_array_oob as *const u8);
@@ -266,6 +269,20 @@ pub fn compile_native(
 
     let pending_tail_id = module
         .declare_function("jit_set_pending_tail", Linkage::Import, &ptsig)
+        .map_err(|e| format!("{e:?}"))?;
+
+    // Imported arena mark/reclaim (issue #212): (ctx) -> mark, (ctx, mark) -> ().
+    let mut marksig = module.make_signature();
+    marksig.params.push(AbiParam::new(ptr));
+    marksig.returns.push(AbiParam::new(types::I64));
+    let arena_mark_id = module
+        .declare_function("jit_arena_mark", Linkage::Import, &marksig)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut reclaimsig = module.make_signature();
+    reclaimsig.params.push(AbiParam::new(ptr));
+    reclaimsig.params.push(AbiParam::new(types::I64));
+    let arena_reclaim_id = module
+        .declare_function("jit_arena_reclaim", Linkage::Import, &reclaimsig)
         .map_err(|e| format!("{e:?}"))?;
 
     // Imported allocator: (ctx, n) -> *mut u64, for array/struct allocation.
@@ -441,6 +458,17 @@ pub fn compile_native(
         // header must NOT be sealed until the whole body is emitted (every
         // back-edge predecessor must be known first).
         let header = b.create_block();
+        // Issue #212: arena length at entry, defined in the entry block so it
+        // dominates every back edge. Only emitted for an all-scalar function
+        // that calls itself (`reclaim`); the back edge frees back to it.
+        let arena_mark = if reclaim {
+            let mark_ref = module.declare_func_in_func(arena_mark_id, b.func);
+            let call = b.ins().call(mark_ref, &[ctx_ptr]);
+            Some(b.inst_results(call)[0])
+        } else {
+            None
+        };
+        let arena_reclaim_ref = module.declare_func_in_func(arena_reclaim_id, b.func);
         b.ins().jump(header, &[]);
         b.switch_to_block(header);
 
@@ -467,6 +495,8 @@ pub fn compile_native(
             param_counts,
             self_id,
             header,
+            arena_mark,
+            arena_reclaim_ref,
         };
         match e.emit(core, true) {
             Emitted::Value(result) => {
@@ -565,6 +595,11 @@ struct Emitter<'a, 'b, 'c> {
     /// emitted (every back-edge must be known first, so cranelift-frontend can
     /// insert the loop-carried parameter block params).
     header: cranelift_codegen::ir::Block,
+    /// Issue #212: the arena length captured at function entry, present only
+    /// when this all-scalar function calls itself. A self tail call frees
+    /// back to it via [`jit_arena_reclaim`](super::jit_arena_reclaim).
+    arena_mark: Option<Value>,
+    arena_reclaim_ref: cranelift_codegen::ir::FuncRef,
 }
 
 /// Outcome of emitting one [`Core`] node. Mirrors [`crate::jit::runtime::TailStep`]
@@ -1099,6 +1134,13 @@ impl Emitter<'_, '_, '_> {
     /// instructions to it.
     fn emit_self_tail_call(&mut self, args: &[Core]) -> Emitted {
         let vals: Vec<Value> = args.iter().map(|a| self.emit_value(a)).collect();
+        if let Some(mark) = self.arena_mark {
+            // All new argument words are scalars (the function is
+            // all-scalar), so nothing rooted since entry stays reachable.
+            self.b
+                .ins()
+                .call(self.arena_reclaim_ref, &[self.ctx_ptr, mark]);
+        }
         for (i, v) in vals.iter().enumerate() {
             self.b.def_var(self.vars[i], *v);
         }

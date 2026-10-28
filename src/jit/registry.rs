@@ -257,7 +257,11 @@ impl TypedFn {
         *self.inlined_from.borrow_mut() = inline_ids;
         self.slots.set(n_slots);
 
-        *self.compiled.borrow_mut() = Some(compile_with_tco(&core, self.id));
+        // Issue #212: a self tail loop in an all-scalar function reclaims its
+        // per-iteration arena buffers. Only worth the bookkeeping when the
+        // body actually calls itself.
+        let reclaim = self.reclaim_sig() && has_self_tail_call(&core, self.id);
+        *self.compiled.borrow_mut() = Some(compile_with_tco(&core, self.id, reclaim));
         // With the `jit` feature, also build a native edition. If Cranelift
         // codegen fails for any reason, fall back to the closure edition
         // rather than failing the definition. The entry cell is updated so
@@ -274,6 +278,7 @@ impl TypedFn {
                 self.slots.get(),
                 &cell_addrs,
                 &param_counts,
+                reclaim,
             ) {
                 Ok(ed) => {
                     self.entry.set(ed.entry_addr());
@@ -315,11 +320,41 @@ impl TypedFn {
     /// `Ctx`-level state persists between iterations except the one pending
     /// call being handed off).
     pub(super) fn invoke(&self, args: &[u64], ctx: &Ctx) -> u64 {
+        // Issue #212: between hops, free the arena buffers the finished hop
+        // rooted — but only when both ends of the hop are all-scalar (see
+        // `reclaim_sig`), so the hop's argument words and the chain's final
+        // result cannot be arena pointers and no older buffer is reachable
+        // for a fresh one to have been stored into. A hop that does not
+        // qualify keeps everything and re-bases the mark above it, so a
+        // later qualifying hop can never free a buffer an earlier,
+        // non-qualifying function may have linked into older memory.
+        let mut mark = ctx.arena_mark();
         let mut result = self.invoke_once(args, ctx);
+        let mut cur_ok = self.reclaim_sig();
         while let Some((id, tail_args)) = ctx.take_pending_tail() {
-            result = ctx.funcs[id].invoke_once(&tail_args, ctx);
+            let next = &ctx.funcs[id];
+            let next_ok = next.reclaim_sig();
+            if cur_ok && next_ok {
+                ctx.arena_reclaim(mark);
+            } else {
+                mark = ctx.arena_mark();
+            }
+            result = next.invoke_once(&tail_args, ctx);
+            cur_ok = next_ok;
         }
         result
+    }
+
+    /// Every parameter and the return type are scalar
+    /// ([`Ty::is_reclaim_scalar`]): the precondition for reclaiming arena
+    /// buffers at a tail-call edge ([`Ctx::arena_reclaim`], issue #212).
+    pub(super) fn reclaim_sig(&self) -> bool {
+        self.ret.borrow().is_reclaim_scalar()
+            && self
+                .params
+                .borrow()
+                .iter()
+                .all(|(_, t)| t.is_reclaim_scalar())
     }
 
     /// Run this function's own edition (native/closure/interpreter) exactly
@@ -377,7 +412,7 @@ impl TypedFn {
             _ => {
                 let core = self.core.borrow();
                 match core.as_ref() {
-                    Some(core) => eval_core(core, &mut env, ctx, self.id),
+                    Some(core) => eval_core(core, &mut env, ctx, self.id, self.reclaim_sig()),
                     None => {
                         // Reached only for a `declare-typed`d forward
                         // reference that was never actually defined (issue
@@ -1744,10 +1779,13 @@ impl Jit {
         Ctx {
             funcs: &self.funcs,
             arena: RefCell::new(Vec::new()),
+            arena_live: Cell::new(0),
+            arena_peak: Cell::new(0),
             pending_tail: RefCell::new(None),
             overflow: Cell::new(false),
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
+            max_depth: typed_call_depth_limit(),
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
             metered: crate::evaluator::core::kernel_fuel_remaining().is_some(),
@@ -1808,6 +1846,7 @@ impl Jit {
                 let ret = f.ret.borrow();
                 drop(params);
                 let w = f.invoke(&words[..args.len()], &ctx);
+                publish_arena_peak(ctx.arena_peak.get());
                 if let Some(msg) = ctx.pending_error.borrow_mut().take() {
                     return Err(msg);
                 }
@@ -1927,6 +1966,7 @@ impl Jit {
         let ret = f.ret.borrow().clone();
         drop(params);
         let w = f.invoke(&words, &ctx);
+        publish_arena_peak(ctx.arena_peak.get());
         // A reachable-panic condition (issue #271: oversized allocation,
         // recursion cap, undefined callee, stale-arity call site) takes
         // priority over the ordinary overflow/div-by-zero flags below — it
@@ -2499,6 +2539,19 @@ fn seed_signature(
             params.iter().map(|p| (p.clone(), infer.fresh())).collect(),
             infer.fresh(),
         ),
+    }
+}
+
+/// Does `core` contain a self call in tail position (the only place a
+/// self-loop edge, and so a reclaim, can occur)? Mirrors the tail-propagating
+/// constructs of `eval_core`/`compile_tail`.
+fn has_self_tail_call(core: &Core, id: usize) -> bool {
+    match core {
+        Core::Call(c, _) => *c == id,
+        Core::If(_, t, e) => has_self_tail_call(t, id) || has_self_tail_call(e, id),
+        Core::Let(_, _, b) | Core::And(_, b) | Core::Or(_, b) => has_self_tail_call(b, id),
+        Core::Seq(items) => items.last().is_some_and(|l| has_self_tail_call(l, id)),
+        _ => false,
     }
 }
 

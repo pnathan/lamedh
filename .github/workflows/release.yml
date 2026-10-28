@@ -6,7 +6,27 @@ on:
       - 'v*'
 
 jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag matches versions and changelog
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          root=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          cli=$(grep -m1 '^version' cli/Cargo.toml | cut -d'"' -f2)
+          [ "$v" = "$root" ] || { echo "tag $v != Cargo.toml $root" >&2; exit 1; }
+          [ "$v" = "$cli" ] || { echo "tag $v != cli/Cargo.toml $cli" >&2; exit 1; }
+          grep -q "^# v$v " CHANGELOG.md || { echo "CHANGELOG.md has no '# v$v' heading" >&2; exit 1; }
+      - name: Tagged commit is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "tag is not on main" >&2; exit 1; }
+
   build:
+    needs: verify
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:

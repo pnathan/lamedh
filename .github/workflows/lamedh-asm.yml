@@ -8,17 +8,26 @@ name: lamedh-asm
 
 on:
   push:
-    branches: ["main", "plurality"]
+    branches: ["main"]
     paths:
       - "lamedh-asm/**"
+      - "conformance/**"
       - "lib/**"
       - ".github/workflows/lamedh-asm.yml"
   pull_request:
-    branches: ["main", "plurality"]
+    branches: ["main"]
     paths:
       - "lamedh-asm/**"
+      - "conformance/**"
       - "lib/**"
       - ".github/workflows/lamedh-asm.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -37,3 +46,8 @@ jobs:
       - name: make test
         working-directory: lamedh-asm
         run: make test
+      - name: build lamedhc
+        working-directory: lamedh-asm
+        run: make lamedhc
+      - name: conformance
+        run: python3 conformance/ports/run-asm.py

@@ -75,7 +75,10 @@ use self::runtime::*;
 use self::types::*;
 
 pub use self::registry::{Jit, TypedFn};
-pub use self::runtime::{FUEL_EXHAUSTED, TraceStep, core_node_count, verify_core};
+pub use self::runtime::{
+    DEFAULT_TYPED_CALL_DEPTH_LIMIT, FUEL_EXHAUSTED, TraceStep, core_node_count,
+    last_call_arena_peak_words, set_typed_call_depth_limit, typed_call_depth_limit, verify_core,
+};
 pub use self::types::{
     Analysis, BinOp, CmpOp, Core, JitEntry, JitFlags, NumKind, StructDef, Tier, Ty, Value,
     WritebackResult, elem_ty_matches, float_powi, is_compileable, ty_name,

@@ -348,11 +348,13 @@ Returns x - 1.
 
 **Syntax:** `(max number...)`
 
-Returns the largest argument.
+Returns the largest argument. If any argument is a float, the result is a float (`(max 0.5 1)` is `1.0`). Floats follow IEEE 754-2019 `maximum`: a NaN argument makes the result NaN, and `-0.0` is less than `0.0`. In typed code (`defun-typed`) an integer literal beside a `float64` operand is a type error; write `1.0`.
 
 ```lisp
 (max 1 5 3)      ; => 5
 (max -1 -5 -3)   ; => -1
+(max 0.5 1)      ; => 1.0
+(max -0.0 0.0)   ; => 0.0
 ```
 
 ---
@@ -361,11 +363,13 @@ Returns the largest argument.
 
 **Syntax:** `(min number...)`
 
-Returns the smallest argument.
+Returns the smallest argument. If any argument is a float, the result is a float (`(min 2.5 1)` is `1.0`). Floats follow IEEE 754-2019 `minimum`: a NaN argument makes the result NaN, and `-0.0` is less than `0.0`. In typed code (`defun-typed`) an integer literal beside a `float64` operand is a type error; write `1.0`.
 
 ```lisp
 (min 1 5 3)      ; => 1
 (min -1 -5 -3)   ; => -5
+(min 2.5 1)      ; => 1.0
+(min 0.0 -0.0)   ; => -0.0
 ```
 
 ---

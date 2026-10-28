@@ -147,7 +147,7 @@ else
 (NEWLINE)
 (PRINT (FUNCALL #'LIST 1 2 3 4 5))
 (NEWLINE)
-(PRINT (LIST (> 5 3) (> 3 5) (>= 5 5) (<= 4 5) (MAX 3 9) (MIN 3 9) (MAX 1 3 9) (MIN 5 2 8 1 9)))
+(PRINT (LIST (> 5 3) (> 3 5) (>= 5 5) (<= 4 5) (MAX 3 9) (MIN 3 9) (MAX 1 3 9) (MIN 5 2 8 1 9) (MAX 0.5 1) (MIN 2.5 1) (MAX 1 1.0) (MAX 1 2)))
 (NEWLINE)
 (FOR-EACH (LAMBDA (X) (PRINT X)) (LIST 1 2 3))
 (NEWLINE)
@@ -319,7 +319,7 @@ T
 42
 7
 (1 2 3 4 5)
-(T () T T 9 3 9 1)
+(T () T T 9 3 9 1 1.0 1.0 1.0 2)
 123
 (3 4)
 (() T)
@@ -488,6 +488,16 @@ T'
         '(PRINT (LIST (SQRT 16) (SQRT 2.25) (FLOOR 2.5) (FLOOR -2.5) (CEILING 2.1) (ROUND 2.5) (ROUND -2.5) (ROUND 2.4) (TRUNCATE -2.7) (EXP 0) (LOG 1) (LOG 8 2) (SIN 0) (COS 0) (TAN 0) (ROT 1 1) (ROT 2 -1) (ROT 1 62) (ROT 1 -1) (ROT (ROT 2 -1) 1)))'
     err_case math_as_values 0 "(4.0 3 (1 4 9))" "" \
         '(PRINT (LIST (FUNCALL (FUNCTION SQRT) 16) (APPLY (FUNCTION ROUND) (LIST 2.5)) (MAPCAR (LAMBDA (X) (TRUNCATE (SQRT (* X X X X)))) (LIST 1 2 3))))'
+    # MIN/MAX: IEEE 754-2019 maximum/minimum for floats, float contagion
+    # for untyped calls (#530). Signed zeros and NaN are checked directly.
+    err_case minmax_signed_zero 0 "(0.0 0.0 -0.0 -0.0)" "" \
+        '(PRINT (LIST (MAX -0.0 0.0) (MAX 0.0 -0.0) (MIN 0.0 -0.0) (MIN -0.0 0.0)))'
+    err_case minmax_nan_any_position 0 "(NaN NaN NaN NaN)" "" \
+        '(PRINT (LIST (MAX 1 (/ 0.0 0.0) 3) (MIN (/ 0.0 0.0) 1) (MAX 1 2 (/ 0.0 0.0)) (MIN 1 (/ 0.0 0.0) 2)))'
+    err_case minmax_contagion_and_ints 0 "(1.0 1.0 0.0 -0.0 3 1.5)" "" \
+        '(PRINT (LIST (MAX 0.5 1) (MAX 1 1.0) (MAX 0 -0.0) (MIN 0 -0.0) (MAX 1 2 3) (MIN 3 2 1.5)))'
+    err_case minmax_long_list 0 "199999" "" \
+        '(DEFINE L (IOTA 200000)) (PRINT (APPLY (FUNCTION MAX) L))'
     err_case math_type_error 1 "" "expected a number (fixnum or float): x" \
         '(PRINT (SQRT "x"))'
     err_case exp_log_roundtrip 0 "(2.718281828459045 1.0 7.38905609893065 20.085536923187668)" "" \

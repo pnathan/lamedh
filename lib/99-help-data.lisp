@@ -143,9 +143,11 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(max number...)")
     (cons 'CATEGORY 'arithmetic)
-    (cons 'DESCRIPTION "Returns the largest of its arguments.")
+    (cons 'DESCRIPTION "Returns the largest of its arguments. A float if any argument is a float; floats follow IEEE 754-2019 maximum (a NaN argument gives NaN, and -0.0 is below 0.0). In typed code an int literal beside a float64 is a type error.")
     (cons 'EXAMPLES '(((max 1 5 3) 5)
-                       ((max -1 -5) -1)))
+                       ((max -1 -5) -1)
+                       ((max 0.5 1) 1.0)
+                       ((max -0.0 0.0) 0.0)))
     (cons 'SEE-ALSO '(min))))
 
 (register-doc 'min
@@ -154,8 +156,10 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(min number...)")
     (cons 'CATEGORY 'arithmetic)
-    (cons 'DESCRIPTION "Returns the smallest of its arguments.")
-    (cons 'EXAMPLES '(((min 1 5 3) 1)))
+    (cons 'DESCRIPTION "Returns the smallest of its arguments. A float if any argument is a float; floats follow IEEE 754-2019 minimum (a NaN argument gives NaN, and -0.0 is below 0.0). In typed code an int literal beside a float64 is a type error.")
+    (cons 'EXAMPLES '(((min 1 5 3) 1)
+                       ((min 2.5 1) 1.0)
+                       ((min 0.0 -0.0) -0.0)))
     (cons 'SEE-ALSO '(max))))
 
 (register-doc 'random
@@ -780,7 +784,7 @@
     (cons 'TYPE 'function)
     (cons 'SYNTAX "(intern string)")
     (cons 'CATEGORY 'strings)
-    (cons 'DESCRIPTION "Interns a string as a symbol in the global symbol table. The name is taken verbatim: (intern \"a b\") is the symbol printed |a b|, distinct from A.")
+    (cons 'DESCRIPTION "Interns a string as a symbol in the global symbol table.")
     (cons 'EXAMPLES '(((intern "HELLO") hello)))
     (cons 'SEE-ALSO '(implode gensym))))
 
