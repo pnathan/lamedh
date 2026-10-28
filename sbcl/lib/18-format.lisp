@@ -104,18 +104,51 @@ non-integer argument."
           (concat "-" ($format-radix-acc (- x) base ""))
           ($format-radix-acc x base ""))))
 
+(defun $format-fixed-wide (x dig)
+  "~,DIGf for an X whose value scaled by 10^DIG does not fit an i64 (any
+integer; a float of large magnitude; a digit count past 18). Such a float
+has no fractional digits beyond its printed ones, and the printer never
+emits an exponent, so its printed digits are padded with zeros instead of
+scaled and rounded."
+  (let* ((printed (princ-to-string x))
+         (neg (starts-with-p printed "-"))
+         (body (if neg (substring printed 1 (string-length* printed)) printed))
+         (dot (string-index-of body ".")))
+    (cond
+      ((and (null dot) (not (fixp x))) printed) ; inf / NaN: nothing to pad
+      (t (let* ((whole (if dot (substring body 0 dot) body))
+                (frac0 (if dot (substring body (+ dot 1) (string-length* body)) ""))
+                (extra (- (string-length* frac0) dig))
+                ;; Printed digits past DIG are dropped only when all zero
+                ;; (the ".0" of 1e19 under ~,0f); anything else would need
+                ;; rounding, which the i64 scaling cannot do.
+                (frac (cond ((<= extra 0) frac0)
+                            ((equal (substring frac0 dig (string-length* frac0))
+                                    (string-repeat "0" extra))
+                             (substring frac0 0 dig))
+                            (t (error (concat "FORMAT: ~," (princ-to-string dig)
+                                              "f cannot round " (prin1-to-string x)
+                                              " to that many digits"))))))
+           (concat (if neg "-" "")
+                   whole
+                   (if (> dig 0)
+                       (concat "." frac (string-repeat "0" (- dig (string-length* frac))))
+                       "")))))))
+
 (defun $format-fixed-digits (x dig)
   "Fixed-point rendering of number X to exactly DIG digits after the
 decimal point (DIG a non-negative integer), rounding half away from zero."
   (let* ((neg (< x 0))
-         (ax (if neg (- x) x))
-         (scale (expt 10 dig))
-         (scaled (round (* ax scale)))
-         (whole (/ scaled scale))
-         (frac (mod scaled scale)))
-    (concat (if neg "-" "")
-            (princ-to-string whole)
-            (if (> dig 0) (concat "." (string-pad-left (princ-to-string frac) dig "0")) ""))))
+         (ax (if neg (- x) x)))
+    (if (or (fixp x) (> dig 18) (>= (* ax (expt 10.0 dig)) 4.0e18))
+        ($format-fixed-wide x dig)
+        (let* ((scale (expt 10 dig))
+               (scaled (round (* ax scale)))
+               (whole (/ scaled scale))
+               (frac (mod scaled scale)))
+          (concat (if neg "-" "")
+                  (princ-to-string whole)
+                  (if (> dig 0) (concat "." (string-pad-left (princ-to-string frac) dig "0")) ""))))))
 
 (defun $format-fixed (x dig)
   "Render number X for ~f. DIG is the ~,<n>f digit count, or NIL for bare

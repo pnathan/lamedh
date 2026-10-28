@@ -340,6 +340,20 @@ fn https_url_is_a_clear_structured_error_naming_issue_365() {
 }
 
 #[test]
+fn empty_authority_url_is_a_no_host_error() {
+    // URL:PARSE reports "http:///x" as host "" (present but empty); the
+    // client must still reject it as host-less, not try to connect to "".
+    let env = client_env();
+    let out = eval_line(
+        "(handler-case (http:get \"http:///x\")
+            (error (e) (list (cdr (assoc ':category (error-data e)))
+                             (error-message e))))",
+        &env,
+    );
+    assert_eq!(out, "(:BAD-URL \"HTTP: URL has no host\")", "got: {out}");
+}
+
+#[test]
 fn unsupported_scheme_is_a_clear_error() {
     let env = client_env();
     let out = eval_line(

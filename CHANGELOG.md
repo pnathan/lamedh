@@ -291,6 +291,21 @@ hash alike and `NaN` finds `NaN`. It uses only primitives KERNEL.md Part XI
 requires, so it runs on hosts without the native `hash-table`. Tests:
 `tests/lisp/72-lamedh-hashtable.lisp`.
 
+## Stdlib fixes: `regex:find` START, `url:parse` empty authority, `~,Nf` on large values
+
+- `(regex:find re s start)` searches the whole string from `START`, so `^` and
+  `\b` see the text before it. It sliced `S` at `START`, so `(regex:find
+  (regex:compile "^h") "xhh" 1)` matched at 1 and `\bfoo` matched inside
+  `"afoo"`, unlike `regex:find-all`. Offsets are still relative to `S`.
+- `url:parse` returns `HOST` `""` for an empty authority (`file:///etc/passwd`)
+  and still `NIL` when there is no `//`. `url:build` of that result now
+  round-trips; it returned `file:/etc/passwd`.
+- `(format nil "~,2f" n)` no longer wraps or saturates: `123456789012345678`
+  printed `-61010651724749834.76` and `1e17` printed `92233720368547758.07`.
+  `(format nil "~,20f" 0.5)` raised "exponentiation overflow". Integers, floats
+  whose scaled value exceeds `i64`, and digit counts above 18 take a string
+  path. In-range output is unchanged.
+
 ## Help text corrections (#508, #517)
 
 Documentation only, no behavior change. `rplaca`/`rplacd` help claimed Lisp 1.5

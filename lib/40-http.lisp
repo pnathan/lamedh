@@ -530,7 +530,7 @@ either way)."
 
 (defun $http-send-request! (parsed method hdrs body connect-timeout-ms extra-roots)
   (let ((host (url:host parsed)) (port (if (url:port parsed) (url:port parsed) ($http-default-port parsed))))
-    (if (null host)
+    (if (or (null host) (string-empty-p host))
         (error "HTTP: URL has no host" (list (cons ':category ':bad-url)))
         (let ((tcp-port ($http-open-transport! parsed host port connect-timeout-ms extra-roots)))
           (ports:write-string! tcp-port (concat method " " ($http-target-for parsed) " HTTP/1.1\r\n"))
@@ -610,7 +610,7 @@ supported."
   (let ((loc-parsed (url:parse location)))
     (cond
       ((url:scheme loc-parsed) loc-parsed)
-      ((url:host loc-parsed)
+      ((and (url:host loc-parsed) (not (string-empty-p (url:host loc-parsed))))
        (list (cons 'scheme (url:scheme parsed)) (cons 'userinfo (url:userinfo loc-parsed))
              (cons 'host (url:host loc-parsed)) (cons 'port (url:port loc-parsed))
              (cons 'path (url:path loc-parsed)) (cons 'query (url:query loc-parsed))

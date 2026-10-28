@@ -18,6 +18,23 @@
   ;; CL reads a bare leading digit as WIDTH; unimplemented, so it errors.
   (assert-nil (errorset '(format nil "~4f" 3.14159) nil)))
 
+(deftest format-fixed-large-magnitude
+  ;; Scaling by 10^n must not wrap or saturate in i64: integers and floats
+  ;; past ~9.2e18 / 10^n keep every digit.
+  (assert-equal (format nil "~,2f" 123456789012345678) "123456789012345678.00")
+  (assert-equal (format nil "~,2f" -123456789012345678) "-123456789012345678.00")
+  (assert-equal (format nil "~,0f" 123456789012345678) "123456789012345678")
+  (assert-equal (format nil "~,2f" 1.0e17) "100000000000000000.00")
+  (assert-equal (format nil "~,0f" 1.0e19) "10000000000000000000")
+  (assert-equal (format nil "~,2f" -1.0e22) "-10000000000000000000000.00")
+  ;; A digit count past 10^18 must pad, not overflow EXPT.
+  (assert-equal (format nil "~,20f" 0.5) "0.50000000000000000000")
+  (assert-equal (format nil "~,20f" 0) "0.00000000000000000000")
+  (assert-equal (format nil "~,3f" 0.0) "0.000")
+  ;; Unchanged: in-range values still round half away from zero.
+  (assert-equal (format nil "~,2f" 0.005) "0.01")
+  (assert-equal (format nil "~,2f" 99.999) "100.00"))
+
 (deftest format-fixed-bare
   (assert-equal (format nil "~f" 3.5) "3.5")
   (assert-equal (format nil "~f" 3) "3.0")

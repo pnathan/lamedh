@@ -182,6 +182,38 @@ fn missing_components_are_nil_except_path() {
 }
 
 #[test]
+fn empty_authority_round_trips_through_build() {
+    // "//" with nothing before the path is an authority that is present but
+    // empty (RFC 3986): the host is "" -- not NIL, which means "no
+    // authority" -- so BUILD can restore the "//".
+    let env = env_with_url();
+    for url in [
+        "file:///etc/passwd",
+        "http:///x",
+        "///x",
+        "file://",
+        "http://:80/",
+        "http://u@/x",
+    ] {
+        assert_eq!(
+            eval_line(&format!("(build (parse {url:?}))"), &env),
+            format!("{url:?}"),
+            "round trip of {url}"
+        );
+    }
+    assert_eq!(
+        eval_line("(host (parse \"file:///etc/passwd\"))", &env),
+        "\"\""
+    );
+    // No authority at all stays NIL.
+    assert_eq!(eval_line("(host (parse \"file:/etc/passwd\"))", &env), "()");
+    assert_eq!(
+        eval_line("(build (parse \"file:/etc/passwd\"))", &env),
+        "\"file:/etc/passwd\""
+    );
+}
+
+#[test]
 fn invalid_port_is_an_error() {
     let env = env_with_url();
     let out = eval_line("(parse \"http://example.com:notaport/\")", &env);
