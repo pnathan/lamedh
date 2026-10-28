@@ -152,6 +152,20 @@ now errors.**
   interpreter, which charges one step per `while`/`for` iteration, self tail
   call and function entry. Armed fuel therefore costs the native speedup (#502).
 
+## Evaluator fixes: dynamic `LET`, `T`/keyword binders, long `,@` splices (#237)
+
+- `LET` evaluates every init before installing any dynamic binding. With
+  `*X*` = 1 and `*Y*` = 10, `(let ((*x* *y*) (*y* *x*)) (list *x* *y*))` gave
+  `(10 10)`; it is `(10 1)`, as over lexical names. A failing init leaves no
+  dynamic binding behind.
+- `DEFINE`, `DEFMACRO`, `DEFEXPR` and `LABEL` reject the constant `T` and
+  keywords as names, as `DEF`, `SETQ`, `LET` and lambda lists already did.
+  `(defmacro t ...)` used to overwrite the global `T`. **Code that bound `T` or
+  a keyword with these forms now errors.**
+- Splicing a very long list with `,@` (`` `(0 ,@big) `` over hundreds of
+  thousands of elements) completes; it overflowed the native stack and aborted
+  the process. Splice order, dotted tails and error messages are unchanged.
+
 ## `dotimes` binds a fresh variable per iteration (#528)
 
 `for` reuses one counter slot, so closures made in a `dotimes` body all saw the
