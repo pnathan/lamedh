@@ -986,6 +986,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         let expr_val = &args[1];
 
                         if let LispVal::Symbol(name_sym) = name_val {
+                            if let Err(e) = check_bindable(&name_sym.borrow().name, "LABEL") {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             // Check for pathological case: (LABEL x x)
                             if let LispVal::Symbol(expr_sym) = expr_val
                                 && name_sym.borrow().name == expr_sym.borrow().name
@@ -1055,6 +1058,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             }
                             if let LispVal::Symbol(s) = &def_pair[0] {
                                 let name = s.borrow().name.clone();
+                                if let Err(e) = check_bindable(&name, "DEFINE") {
+                                    return Ok(TcoStep::Done(Err(e)));
+                                }
                                 let v = eval(&def_pair[1], env)?;
                                 env.set(name.clone(), v.clone());
                                 // Also set EXPR on the symbol's plist (Lisp 1.5: define = deflist[x;EXPR])
@@ -1079,6 +1085,9 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                             )))));
                         }
                         if let LispVal::Symbol(name_sym) = &args[0] {
+                            if let Err(e) = check_bindable(&name_sym.borrow().name, form_name) {
+                                return Ok(TcoStep::Done(Err(e)));
+                            }
                             let params = &args[1];
                             let mut body_idx = 2;
                             if args.len() == 4 {
@@ -1638,26 +1647,33 @@ pub(super) fn eval_step(val: &LispVal, env: &Shared<Environment>) -> Result<TcoS
                         // correctly restore the previous dynamic binding.
                         let let_env = Environment::new_child(env);
                         let mut dynamic_guards: Vec<DynamicBinding> = Vec::new();
+                        // LET is parallel: evaluate every init against the outer
+                        // state first, then install the bindings. Installing a
+                        // dynamic binding as we go would let a later init read an
+                        // earlier binding's new value.
+                        let mut bound = Vec::with_capacity(params.len());
                         for (param, arg_expr) in params.iter().zip(arg_exprs.iter()) {
                             if let LispVal::Symbol(s) = param {
                                 if let Err(e) = check_bindable(&s.borrow().name, "LET") {
                                     return Ok(TcoStep::Done(Err(e)));
                                 }
-                                let v = eval(arg_expr, env)?;
-                                let sb = s.borrow();
-                                if sb.is_dynamic {
-                                    // Shallow binding: install value in the symbol cell.
-                                    drop(sb);
-                                    dynamic_guards.push(DynamicBinding::install(s.clone(), v));
-                                } else {
-                                    let id = sb.id;
-                                    drop(sb);
-                                    let_env.set_id(id, v);
-                                }
+                                bound.push((s, eval(arg_expr, env)?));
                             } else {
                                 return Ok(TcoStep::Done(Err(LispError::Generic(
                                     "let binding name must be a symbol".to_string(),
                                 ))));
+                            }
+                        }
+                        for (s, v) in bound {
+                            let sb = s.borrow();
+                            if sb.is_dynamic {
+                                // Shallow binding: install value in the symbol cell.
+                                drop(sb);
+                                dynamic_guards.push(DynamicBinding::install(s.clone(), v));
+                            } else {
+                                let id = sb.id;
+                                drop(sb);
+                                let_env.set_id(id, v);
                             }
                         }
                         if dynamic_guards.is_empty() {
