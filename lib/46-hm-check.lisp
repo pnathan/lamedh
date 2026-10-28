@@ -697,9 +697,7 @@ directly consumable by lib/20-condensation.lisp's CONDENSE-VACUOUS-P."
          (names (let ((i -1))
                   (mapcar (lambda (v)
                             (setq i (+ i 1))
-                            ;; Upcased: the native renderer's letters reach
-                            ;; Lisp through the reader, which folds case.
-                            (cons v (intern (string-upcase (hm-var-letter i)))))
+                            (cons v (intern (hm-var-letter i))))
                           vars)))
          (body (hm-render-ty (caddr scheme) names)))
     (if (null vars) body (list 'forall (mapcar #'cdr names) body))))

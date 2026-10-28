@@ -47,6 +47,27 @@ never raise it past what the host set.
 `LispVal` and `Environment` are `!Send`, so you must create the environment
 *inside* the closure passed to `with_large_stack`.
 
+### Typed code has its own depth limit
+
+`set_eval_depth_limit` bounds the tree-walker and does not see calls made
+inside typed (compiled) code, such as a `defun*` that compiled. Those have a
+separate non-tail call cap, set per thread with
+`lamedh::set_typed_call_depth_limit(n)` (read it with `typed_call_depth_limit()`).
+The default is `DEFAULT_TYPED_CALL_DEPTH_LIMIT`, 50,000, which is sized for the
+512 MiB `with_large_stack` thread. If your stack is smaller, lower both limits.
+
+### WebAssembly (`wasm32`)
+
+A `wasm32` host runs on a stack it does not own (V8's is roughly 1 MiB), so
+there is no `with_large_stack` thread, and a recursion that overflows that stack
+traps and leaves the instance unusable. Call `eval_all`/`eval_str` directly, and
+build with `--no-default-features` (the Cranelift JIT cannot target WASM). On
+`wasm32` the defaults are lower: 2,000 eval frames and 400 typed calls. They were
+measured under node, where the stack held about 2,150 untyped and 1,140 typed
+self-recursive calls, and were set to about a third of those. Set both limits
+after you create the environment, and raise them only after measuring on every
+host you ship to.
+
 ## Creating an environment
 
 ```rust

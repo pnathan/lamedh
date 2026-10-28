@@ -18,7 +18,6 @@
 //! | `#\a`, `#\(`, `#\Space` | CL-style character literal → the same `LispVal::Char` (issue #526) |
 //! | `"hi\n"` | `LispVal::String` (supports `\n \t \r \\ \"`) |
 //! | `FOO`, `+`, `*x*`, `:key` | `LispVal::Symbol` (uppercased, interned) |
-//! | `\|a b\|` | `LispVal::Symbol` named verbatim — case kept; `\\|` and `\\` escape (issue #523) |
 //! | `(a b c)` | Proper list (cons chain ending in Nil) |
 //! | `(a . b)` | Dotted pair |
 //! | `'e` | `(QUOTE e)` |
@@ -210,7 +209,7 @@ fn skip_ws_and_conditionals(
                         // without consuming, and fail the same way the
                         // discard branch's `cut` would on a missing form.
                         let (peek, _) = ws(rest2)?;
-                        if peek.is_empty() {
+                        if peek.is_empty() || peek.starts_with(')') {
                             return Err(nom::Err::Failure(nom::error::Error::new(
                                 rest2,
                                 nom::error::ErrorKind::Eof,
@@ -328,7 +327,7 @@ fn feature_expr_list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, String> {
 
 // A parser for a comment
 fn parse_comment(input: &str) -> IResult<&str, &str> {
-    recognize(pair(tag(";"), is_not("\n\r")))(input)
+    recognize(pair(tag(";"), opt(is_not("\n\r"))))(input)
 }
 
 // A parser for a (nesting) block comment: #| ... |# (issue #248).
@@ -669,91 +668,9 @@ fn is_operator_char(c: char) -> bool {
     matches!(c, '+' | '-' | '*' | '/' | '=' | '<' | '>' | '!' | '~')
 }
 
-/// `|...|` symbol escape (issue #523): the name between the bars, taken
-/// verbatim — no case folding, and whitespace, parens, quotes and digits are
-/// all ordinary constituents. Inside the bars `\|` stands for `|` and `\\`
-/// for `\`; any other backslash is kept as written. `|NIL|` is the symbol
-/// named `NIL`, not the empty list. This is the syntax the printer emits for
-/// a symbol whose bare name would not read back as itself
-/// ([`symbol_reads_bare`]). `|` had no meaning outside `#|...|#` before, so
-/// no existing program changes meaning.
-fn parse_bar_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
-    move |input: &str| {
-        let (rest, _) = char('|')(input)?;
-        let mut name = String::new();
-        let mut chars = rest.char_indices();
-        while let Some((i, c)) = chars.next() {
-            match c {
-                '|' => {
-                    return Ok((&rest[i + 1..], LispVal::Symbol(env.intern_symbol(&name))));
-                }
-                '\\' => match chars.next() {
-                    Some((_, e @ ('|' | '\\'))) => name.push(e),
-                    Some((_, e)) => {
-                        name.push('\\');
-                        name.push(e);
-                    }
-                    None => break,
-                },
-                _ => name.push(c),
-            }
-        }
-        // Once `|` is consumed no other production applies: an unterminated
-        // escape is a hard failure, like an unterminated string.
-        Err(nom::Err::Failure(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Char,
-        )))
-    }
-}
-
-/// Whether `name` printed bare reads back as the symbol named `name`
-/// (issue #523). The printer's readable mode wraps every other name in
-/// `|...|`. Mirrors [`parse_atom`]'s symbol productions — the token must
-/// match one of them *in full* (else it splits or reads as something else)
-/// and must not be caught by an earlier number production — and the
-/// reader's case fold, so the name must already be upper case. `NIL` is
-/// excluded (it reads as the empty list). ASCII only, like nom's
-/// `alpha1`/`alphanumeric1`.
-pub(crate) fn symbol_reads_bare(name: &str) -> bool {
-    let b = name.as_bytes();
-    if b.is_empty() || name == "NIL" || b.iter().any(|&c| !c.is_ascii() || c.is_ascii_lowercase()) {
-        return false;
-    }
-    let tail = |s: &[u8], extra: &[u8]| {
-        s.iter()
-            .all(|&c| c.is_ascii_alphanumeric() || b"-*?!+=<>_".contains(&c) || extra.contains(&c))
-    };
-    let earmuffed = |m: u8| {
-        b.len() >= 3
-            && b[0] == m
-            && b[b.len() - 1] == m
-            && b[1].is_ascii_alphabetic()
-            && b[2..b.len() - 1]
-                .iter()
-                .all(|&c| c.is_ascii_alphanumeric() || c == b'-')
-    };
-    match b[0] {
-        // `1+` / `1-` are the only digit-led symbols; any other digit start
-        // is claimed by a number production or splits.
-        b'0'..=b'9' => name == "1+" || name == "1-",
-        c if c.is_ascii_alphabetic() || matches!(c, b'&' | b'$' | b'?') => tail(&b[1..], b":"),
-        b':' => {
-            b.len() >= 2
-                && (b[1].is_ascii_alphabetic() || matches!(b[1], b'&' | b'$'))
-                && tail(&b[2..], b"")
-        }
-        // An earmuffed name, else an operator run — which must cover the
-        // whole name (`*A` would split into `*` and `A`).
-        b'*' | b'+' if earmuffed(b[0]) => true,
-        _ => name.chars().all(is_operator_char),
-    }
-}
-
 fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         alt((
-            parse_bar_symbol(env.clone()),
             // Parse special numeric symbols like 1+ and 1- BEFORE numbers
             parse_one_plus_minus(env.clone()),
             parse_number_flagging(env.clone()),
@@ -893,7 +810,27 @@ fn parse_string(input: &str) -> ParseResult<'_> {
 
 fn parse_list_contents(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (input, exprs) = many0(preceded(ws, parse_expr(env.clone(), remaining)))(input)?;
+        // Skip whitespace and discarded `#+`/`#-` forms before each element, so
+        // a discarded conditional as the last element does not get
+        // backtracked over by `many0` and leave the closing `)` unreachable.
+        let skip = skip_ws_and_conditionals(env.clone(), remaining);
+        let elem = parse_expr(env.clone(), remaining);
+        let mut exprs = Vec::new();
+        let mut input = input;
+        loop {
+            let (rest, _) = skip(input)?;
+            match elem(rest) {
+                Ok((after, e)) => {
+                    exprs.push(e);
+                    input = after;
+                }
+                Err(nom::Err::Error(_)) => {
+                    input = rest;
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         let (input, tail) = opt(preceded(
             preceded(ws, char('.')),
             preceded(ws, parse_expr(env.clone(), remaining)),
@@ -942,6 +879,11 @@ fn parse_struct_literal(
 ) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         let (rest, _) = alt((tag("#S"), tag("#s")))(input)?;
+        // The literal costs one level and `parse_list` another, so fewer than
+        // two remaining would underflow: report the depth limit instead.
+        if remaining < 2 {
+            return Err(too_deep_error(input));
+        }
         let (rest, body) = parse_list(env.clone(), remaining - 1)(rest)?;
         let err = || nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Tag));
         let LispVal::Cons {
@@ -1260,26 +1202,6 @@ pub fn is_incomplete(input: &str) -> bool {
                 // the depth count or open a string.
                 i += 2 + input[i + 2..].chars().next().map_or(0, char::len_utf8);
             }
-            b'|' => {
-                // A `|...|` symbol escape (issue #523): skip it so a `(` in
-                // the name does not skew the depth count.
-                i += 1;
-                let mut closed = false;
-                while i < n {
-                    match bytes[i] {
-                        b'\\' => i += 2,
-                        b'|' => {
-                            closed = true;
-                            i += 1;
-                            break;
-                        }
-                        _ => i += 1,
-                    }
-                }
-                if !closed {
-                    return true;
-                }
-            }
             b'"' => {
                 i += 1;
                 let mut closed = false;
@@ -1438,6 +1360,18 @@ mod tests {
 
     fn float(f: f64) -> LispVal {
         LispVal::Float(f)
+    }
+
+    #[test]
+    fn test_empty_semicolon_comment_is_skipped() {
+        let env = Environment::new_with_builtins();
+        let all = read_all("(print 1)\n;\n(print 2)", &env).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(read_all("(print 1) ;", &env).unwrap().len(), 1);
+        assert_eq!(
+            read_all("(print 1)\r\n;\r\n(print 2)", &env).unwrap().len(),
+            2
+        );
     }
 
     #[test]
@@ -1799,80 +1733,5 @@ mod tests {
     fn test_read_t() {
         let env = Shared::new(Environment::new());
         assert_eq!(read("T", &env), Ok(symbol("T", &env)));
-    }
-
-    /// `symbol_reads_bare(n)` is true exactly when reading `n` yields the
-    /// symbol named `n` (issue #523). Pins the hand-written predicate to the
-    /// reader, over every symbol a stdlib world interns plus names at the
-    /// edges of each production.
-    fn assert_bare_matches_reader(name: &str, env: &Shared<Environment>) {
-        let reads_back = matches!(
-            read(name, env),
-            Ok(LispVal::Symbol(ref s)) if s.borrow().name == name
-        );
-        assert_eq!(
-            symbol_reads_bare(name),
-            reads_back,
-            "symbol_reads_bare({name:?}) disagrees with the reader"
-        );
-    }
-
-    #[test]
-    fn test_symbol_reads_bare_agrees_with_reader() {
-        crate::with_large_stack(|| {
-            let env = Environment::with_stdlib();
-            let names: Vec<String> = env
-                .all_symbols()
-                .iter()
-                .map(|s| s.borrow().name.clone())
-                .collect();
-            assert!(names.len() > 1000);
-            for name in &names {
-                assert_bare_matches_reader(name, &env);
-            }
-            for name in [
-                // Earmuff tails admit only letters, digits and `-`.
-                "*FOO*",
-                "*A-B1*",
-                "*FOO?*",
-                "*A_B*",
-                "*A",
-                "*A*B*",
-                "+HOST+",
-                "+A_B+",
-                "+FOO",
-                // `@` and `/` are not general-symbol constituents
-                // (protocol impl names are `$NAME@TYPE`).
-                "$SHOW@INT",
-                "FOO@BAR",
-                "@",
-                "A/B",
-                "/",
-                "/=",
-                "->",
-                // Keywords, the general production, digits and the rest.
-                ":KEY",
-                ":A:B",
-                ":?X",
-                "?X",
-                "A:",
-                "MOD:SYM",
-                "1+",
-                "1-",
-                "1+X",
-                "12",
-                "0FFH",
-                "177Q",
-                "NIL",
-                "T",
-                "",
-                "A.B",
-                ".",
-                "foo",
-                "É",
-            ] {
-                assert_bare_matches_reader(name, &env);
-            }
-        });
     }
 }

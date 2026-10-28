@@ -184,3 +184,28 @@ fn test_rename_file_passes_capability_checks_with_both() {
         "should not get a capability error with both granted, got: {out}"
     );
 }
+
+// ---- TEMP-FS prefix must not escape the temp directory ----
+
+#[test]
+fn test_temp_prefix_cannot_escape_temp_dir() {
+    let env = env_with_stdlib();
+    env.enable_feature("TEMP-FS");
+    let victim = std::env::temp_dir().join("lamedh-escape-victim");
+    let _ = std::fs::remove_dir_all(&victim);
+    std::fs::create_dir_all(&victim).unwrap();
+    let abs = format!("{}/evil", victim.display());
+    for form in [
+        format!("(make-temp-file \"{abs}\")"),
+        format!("(make-temp-directory \"{abs}\")"),
+        "(make-temp-file \"../../x\")".to_string(),
+        "(make-temp-directory \"../../x\")".to_string(),
+    ] {
+        let out = eval_line(&form, &env);
+        assert!(out.to_lowercase().contains("prefix"), "{form} -> {out}");
+    }
+    assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&victim);
+    let ok = eval_line("(make-temp-file \"plain\")", &env);
+    assert!(ok.contains("plain-"), "got {ok}");
+}

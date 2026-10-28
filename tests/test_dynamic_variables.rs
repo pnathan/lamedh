@@ -205,3 +205,20 @@ fn test_run_comprehensive_lisp_tests() {
         result
     );
 }
+
+#[test]
+fn test_duplicate_dynamic_params_restore_global_lifo() {
+    let env = env_with_stdlib();
+    eval_line("(defdynamic *dupx* 0)", &env);
+
+    eval_line("((lambda (*dupx* *dupx*) *dupx*) 1 2)", &env);
+    assert_eq!(eval_line("*dupx*", &env), "0");
+
+    // &rest variant of the same shape
+    eval_line("((lambda (*dupx* &rest *dupx*) *dupx*) 1 2)", &env);
+    assert_eq!(eval_line("*dupx*", &env), "0");
+
+    // apply path
+    eval_line("(apply (lambda (*dupx* *dupx*) *dupx*) '(3 4))", &env);
+    assert_eq!(eval_line("*dupx*", &env), "0");
+}
