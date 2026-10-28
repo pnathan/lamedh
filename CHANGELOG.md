@@ -181,6 +181,21 @@ Fexprs and `VAU` operatives still run fresh every call. The tree-walker,
 cache so no prototype-world cells cross the fork. See Rust embedding API for the
 `LispVal::Macro` type change this required.
 
+## Integer/float comparison is exact (#516)
+
+`=`, `<`, `>`, `<=` and `>=` on a mix of integer and float rounded the integer
+through `f64`, so integers above 2^53 compared equal to neighbouring floats:
+`(= 9007199254740993 9007199254740992.0)` was `T`. The comparison is now exact,
+and it is `()` (like Common Lisp). Float-with-float and integer-with-integer
+comparisons are unchanged, and NaN is unordered as before. `<=` and `>=` over
+more than two arguments are `<` or `=` per pair, so a NaN makes them false.
+
+In typed code, an integer literal beside a `float64` operand elaborates as a
+float constant only when `|n| <= 2^53`. A larger literal stays `int64` and the
+mixed comparison is a type error, in the native elaborator and the portable
+checker alike. **Typed code comparing a `float64` with an integer literal above
+2^53 now fails to compile.**
+
 ## Arithmetic edge cases (#514, #518, #507)
 
 - `(ash x n)`: a shift of `i64::MIN` saturated incorrectly (the negation
