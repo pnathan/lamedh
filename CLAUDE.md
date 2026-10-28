@@ -31,6 +31,7 @@ This repository is a Cargo workspace with two primary crates:
 - **Ship gate (authoritative)**: `scripts/gauntlet.sh [verdict-file]` — release, default + `--no-default-features` + `--features fuzz` + clippy; a ship needs `DEFAULT-GREEN`/`NDF-GREEN`/`FUZZ-GREEN`/`CLIPPY-GREEN` in the verdict file. This, not a bare `cargo test`, is the merge gate.
 - **Lint**: `cargo clippy --workspace --all-targets --features fuzz -- -D warnings` (warnings are errors, matching CI and the gauntlet; `--features fuzz` so the fuzz battery in `tests/brutal_correctness.rs` is linted too, since that file compiles under no other gate)
 - **Format**: `cargo fmt --all`
+- **Warnings are errors everywhere**: `.cargo/config.toml` sets `-D warnings` for every build, so a plain `cargo build`/`test`/`check` fails on any warning, in every feature and target combination (including `--no-default-features` and `wasm32`). An explicit `RUSTFLAGS` in the environment replaces it.
 - **Benchmarks**: `cd benchmarks && ./run_benchmarks.sh`
 
 Run `cargo fmt --all` and `cargo clippy --workspace --all-targets --features fuzz -- -D warnings` before every commit; clippy warnings are errors — CI and the gauntlet both enforce `-D warnings`.
@@ -126,6 +127,14 @@ Notable modules:
 Prefer the Lisp layer; keep the Rust kernel small. If an optimization can be expressed as a Lisp-to-Lisp transform, implement it as an optimizer pass in `lib/11-optimizer-vau.lisp` rather than growing the Rust evaluator.
 
 Kernel/Rust changes are appropriate for hot-path evaluation mechanics that have no Lisp-layer expression, such as argument collection, environment-frame allocation, value representation, stack behavior, or native-code backend integration.
+
+## Changelog Requirement
+
+Every change that alters observable behavior goes in `CHANGELOG.md`, in the same PR that makes the change. This covers Lisp semantics, printer or reader output, builtins and stdlib forms, CLI flags, the Rust embedding API, feature flags, and performance characteristics that users can measure. Add the entry under the topmost (unreleased) version heading, name the issue or PR number, and flag anything breaking for Lisp programs or Rust embedders as **Breaking**. Pure refactors, test-only changes, and CI changes may skip it. A release is cut from the diff against the previous tag: before tagging, check every commit since that tag has an entry or a stated reason to skip.
+
+## Commit Messages
+
+Use Conventional Commits: `type(scope): description`, with types such as `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `ci`, `chore`, `revert`, and `!` after the type or scope for breaking changes (`feat(math)!: ...`). The commit-msg hook enforces the format. Reference the issue or PR number in the description or body.
 
 ## Testing Guidance
 

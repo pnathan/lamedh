@@ -19,3 +19,12 @@
 #     cheap even across many parallel test threads.
 [env]
 RUST_MIN_STACK = "134217728"  # 128 MiB
+
+# Warnings are errors for every build, local and CI, so a warning never
+# lands. Clippy and the gauntlet already enforce this; this extends it to
+# plain `cargo build`/`test`/`check` in every feature and target combination
+# (the wasm32 and no-default-features builds included). Registry dependencies
+# are unaffected: cargo caps their lints. An explicit RUSTFLAGS in the
+# environment replaces this setting.
+[build]
+rustflags = ["-D", "warnings"]

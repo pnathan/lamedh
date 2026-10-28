@@ -1188,7 +1188,10 @@ pub(super) fn apply(
                     })
                 }
                 #[cfg(not(unix))]
-                Ok(LispVal::Nil)
+                {
+                    let _ = path;
+                    Ok(LispVal::Nil)
+                }
             }
 
             BuiltinFunc::FileSize => {
@@ -1313,9 +1316,12 @@ pub(super) fn apply(
                     Ok(LispVal::Symbol(env.intern_symbol("T")))
                 }
                 #[cfg(not(unix))]
-                Err(LispError::Generic(
-                    "chmod is only supported on Unix platforms".to_string(),
-                ))
+                {
+                    let _ = (path, mode);
+                    Err(LispError::Generic(
+                        "chmod is only supported on Unix platforms".to_string(),
+                    ))
+                }
             }
 
             BuiltinFunc::CreateDirectory => {
@@ -1399,6 +1405,12 @@ pub(super) fn apply(
                         )));
                     }
                 };
+                if prefix.contains(['/', '\\', '\0']) || prefix.contains("..") {
+                    return Err(LispError::Generic(
+                        "temp prefix must be a plain name without path separators or '..'"
+                            .to_string(),
+                    ));
+                }
                 let path = make_temp_path(&prefix, "");
                 // Create the file atomically; fail if it somehow already exists.
                 std::fs::OpenOptions::new()
@@ -1421,6 +1433,12 @@ pub(super) fn apply(
                         )));
                     }
                 };
+                if prefix.contains(['/', '\\', '\0']) || prefix.contains("..") {
+                    return Err(LispError::Generic(
+                        "temp prefix must be a plain name without path separators or '..'"
+                            .to_string(),
+                    ));
+                }
                 let path = make_temp_path(&prefix, "");
                 std::fs::create_dir(&path)
                     .map_err(|e| LispError::Generic(format!("make-temp-directory: {e}")))?;
@@ -2177,11 +2195,16 @@ pub(super) fn apply(
             }
 
             // Use the compiled body when available; fall back to tree-walker.
-            // guards drops here, restoring any dynamic bindings.
-            match &lambda.compiled {
+            // Restore dynamic bindings in reverse (LIFO) order so duplicate
+            // dynamic parameter names end up back at the original global.
+            let result = match &lambda.compiled {
                 Some(compiled) => exec(compiled, &new_env),
                 None => eval(&lambda.body, &new_env),
+            };
+            while let Some(g) = guards.pop() {
+                drop(g);
             }
+            result
         }
         LispVal::Native(f) => f(args, env),
         _ => Err(not_a_function(func, env)),
@@ -2295,11 +2318,16 @@ pub(super) fn apply_owned(
                 }
             }
             // Use the compiled body when available; fall back to tree-walker.
-            // guards drops here, restoring any dynamic bindings.
-            match &lambda.compiled {
+            // Restore dynamic bindings in reverse (LIFO) order so duplicate
+            // dynamic parameter names end up back at the original global.
+            let result = match &lambda.compiled {
                 Some(compiled) => exec(compiled, &new_env),
                 None => eval(&lambda.body, &new_env),
+            };
+            while let Some(g) = guards.pop() {
+                drop(g);
             }
+            result
         }
         // For all other callables (builtins, natives, fexprs, macros) the
         // existing borrowed-slice path is correct.

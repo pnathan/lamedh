@@ -248,6 +248,7 @@ pub mod teaching_errors;
 pub mod test_runner;
 
 pub use evaluator::{DEFAULT_EVAL_DEPTH_LIMIT, eval_depth_limit, set_eval_depth_limit};
+pub use jit::{DEFAULT_TYPED_CALL_DEPTH_LIMIT, set_typed_call_depth_limit, typed_call_depth_limit};
 
 /// Stack size used by [`with_large_stack`]. The tree-walking interpreter uses
 /// large stack frames, so deep recursion needs substantial headroom (the

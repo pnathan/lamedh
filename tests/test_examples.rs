@@ -16,8 +16,10 @@
 //! `examples_manifest_is_complete` guard fails loudly if a program is added
 //! to examples/ without a matching row.
 
+#[cfg(all(feature = "jit", feature = "concurrency"))]
 mod test_helpers;
 
+#[cfg(all(feature = "jit", feature = "concurrency"))]
 use test_helpers::env_with_stdlib;
 
 /// Run one example program to completion; panic (fail the test) on any error.

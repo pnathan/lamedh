@@ -120,6 +120,20 @@ pub enum Ty {
     Boxed,
 }
 
+impl Ty {
+    /// A type whose runtime word can never be (or lead to) a pointer into the
+    /// call arena: `int64`/`float64`/`bool`/`char`. Gates per-iteration arena
+    /// reclamation at tail-call edges (issue #212, [`Ctx::arena_reclaim`]):
+    /// a function whose every parameter and return type is one of these has
+    /// no way to carry a buffer across a tail hop, nor an older buffer a
+    /// fresh one could be stored into. `Boxed` is excluded on purpose — its
+    /// handle table is a separate, append-only root this change does not
+    /// touch, and keeping it out keeps the proof one line long.
+    pub(super) fn is_reclaim_scalar(&self) -> bool {
+        matches!(self, Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Char)
+    }
+}
+
 /// Which execution tier a registered typed function will actually run on
 /// (the `compiled-p` introspection builtin, "loud type inference"): the best
 /// available edition, since with the default `jit` feature a function that

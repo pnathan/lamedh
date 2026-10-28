@@ -541,6 +541,25 @@ fn policy_hook_can_scope_spawn_to_one_program() {
 }
 
 #[test]
+fn os_signal_rejects_out_of_range_pids_before_policy() {
+    let env = env_with_os();
+    grant(&env, &["OS-SIGNAL"]);
+    // Deny-all policy: an invalid pid must be rejected as INVALID-ARGUMENT
+    // before the policy is consulted (and never reach kill(2)).
+    env.set_os_policy(|_| false);
+    for pid in ["0", "-1", "-4242", "4294971538", "2147483648"] {
+        let out = eval_line(
+            &format!(
+                "(handler-case (os:signal! {pid} ':term)
+                   (error (e) (cdr (assoc ':category (error-data e)))))"
+            ),
+            &env,
+        );
+        assert_eq!(out, ":INVALID-ARGUMENT", "pid {pid} got: {out}");
+    }
+}
+
+#[test]
 fn policy_hook_denies_signal_by_pid() {
     let env = env_with_os();
     grant(&env, &["OS-SIGNAL"]);
@@ -720,4 +739,29 @@ fn os_and_os_linux_are_requireable_from_prelude() {
     assert!(env.is_bound("OS:PID"));
     assert_eq!(eval_line("(require 'os-linux)", &env), "OS-LINUX");
     assert!(env.is_bound("OS-LINUX:STAT"));
+}
+
+#[test]
+fn os_env_set_and_unset_reject_invalid_names_and_values_without_panicking() {
+    let env = env_with_os();
+    grant(&env, &["OS-ENV-WRITE"]);
+    let forms = [
+        "(os-env-set* \"\" \"x\")".to_string(),
+        "(os-env-set* \"A=B\" \"1\")".to_string(),
+        "(os-env-set* \"A\" \"x\0y\")".to_string(),
+        "(os-env-set* \"A\0B\" \"1\")".to_string(),
+        "(os-env-unset* \"\")".to_string(),
+        "(os-env-unset* \"A=B\")".to_string(),
+        "(os-env-unset* \"A\0B\")".to_string(),
+    ];
+    for form in forms {
+        let src =
+            format!("(handler-case {form} (error (e) (cdr (assoc ':category (error-data e)))))");
+        let out = eval_line(&src, &env);
+        assert_eq!(out, ":INVALID-ARGUMENT", "{form:?} got: {out}");
+    }
+    assert_eq!(
+        eval_line("(os-env-set* \"LAMEDH_OK_VAR\" \"v\")", &env),
+        "T"
+    );
 }
