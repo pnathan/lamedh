@@ -497,6 +497,11 @@ in the commit messages and were not re-measured for this release.
   escapes, `if` arity, variadic `#'+`, `iota/1` (#551); floats print as the
   shortest round-trip decimal (#551); free garbage found while the ZCT is full
   in the same collection (#602); `#(...)` arrays (#607).
+- **lamedh-asm float reader** (#614): decimal float literals convert to double
+  correctly rounded (round half to even, denormals, overflow to infinity)
+  through an exact big-decimal scaling. The old fast path was off in the last
+  place for long significands, large exponents and `f64::MAX`. New test
+  `088_float_read_rounding` (1168 literals).
 - **CI:** new `.github/workflows/sbcl.yml` and `lamedh-asm.yml`; `rust.yml`
   changed. Port suites run on `lib/**` changes (#603).
 - **Benchmarks:** embedder call-ladder (`benchmarks/embedder`, #427, #433), Lua
