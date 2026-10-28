@@ -34,23 +34,22 @@
   (assert-nil (errorset '(kc-if2 t)))
   (assert-nil (errorset '(kc-if4 nil))))
 
-;; #539: KERNEL Part V -- any comparison pair involving a float is compared
-;; as f64, so a fixnum above 2^53 compares equal to the float it rounds to.
-;; Pairs of integers stay exact. The chain is over ADJACENT pairs and stops
-;; at the first false pair, exactly like the Rust reference.
-;; (#516 asks the Rust core to make this exact instead; until KERNEL.md is
-;; changed, f64 is the spec.)
-(deftest kernel-mixed-compare-via-f64
-  (assert-equal (= 9007199254740993 9007199254740992.0) t)
-  (assert-equal (= 9007199254740992.0 9007199254740993) t)
-  (assert-nil (< 9007199254740992.0 9007199254740993))
-  (assert-nil (> 9007199254740993 9007199254740992.0))
-  (assert-nil (lessp 9007199254740992.0 9007199254740993))
-  (assert-nil (greaterp 9007199254740993 9007199254740992.0))
+;; #539, #516: KERNEL Part V -- a comparison pair involving a float is compared
+;; exactly by value, never rounded through f64, so a fixnum above 2^53 is not
+;; equal to the float next to it. Pairs of integers stay exact. The chain is
+;; over ADJACENT pairs and stops at the first false pair, like the Rust
+;; reference.
+(deftest kernel-mixed-compare-exact
+  (assert-nil (= 9007199254740993 9007199254740992.0))
+  (assert-nil (= 9007199254740992.0 9007199254740993))
+  (assert-equal (< 9007199254740992.0 9007199254740993) t)
+  (assert-equal (> 9007199254740993 9007199254740992.0) t)
+  (assert-equal (lessp 9007199254740992.0 9007199254740993) t)
+  (assert-equal (greaterp 9007199254740993 9007199254740992.0) t)
   (assert-equal (<= 9007199254740992.0 9007199254740993) t)
-  ;; pairwise: the integer pair is exact (unequal), as in Rust
+  ;; = is transitive: neither pair is equal
   (assert-nil (= 9007199254740993 9007199254740992 9007199254740992.0))
-  (assert-equal (= 9007199254740992 9007199254740992.0 9007199254740993) t)
+  (assert-nil (= 9007199254740992 9007199254740992.0 9007199254740993))
   ;; two integers: exact
   (assert-nil (= 9007199254740993 9007199254740992))
   (assert-equal (< 9007199254740992 9007199254740993) t)
@@ -96,11 +95,11 @@
   (assert-equal (errorset '(< 2 1 'a)) '(nil)))
 
 ;; compiled bodies take the same path
-(deftest kernel-mixed-compare-via-f64-compiled
+(deftest kernel-mixed-compare-exact-compiled
   (defun kc-eq (a b) (= a b))
   (defun kc-lt (a b) (< a b))
-  (assert-equal (kc-eq 9007199254740993 9007199254740992.0) t)
-  (assert-nil (kc-lt 9007199254740992.0 9007199254740993)))
+  (assert-nil (kc-eq 9007199254740993 9007199254740992.0))
+  (assert-equal (kc-lt 9007199254740992.0 9007199254740993) t))
 
 ;; IF arity in nested positions of compiled bodies
 (deftest kernel-if-arity-nested-compiled

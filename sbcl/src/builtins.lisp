@@ -330,10 +330,10 @@ matching infinity instead of leaking a host overflow condition."
   "KERNEL Part V comparison: two or more operands, a monotone chain over
 ADJACENT pairs that stops at the first false pair (so a later bad operand is
 never reached, as in the reference). A pair of integers is compared exactly;
-a pair of characters by code point; any other numeric pair -- in particular
-any pair involving a float -- is compared as f64. (#516 asks the Rust core
-to make the float case exact; until KERNEL.md changes, f64 is the spec.)
-MIXED-EXACT-P is true for `=`, whose integer/character pairs are exact."
+a pair of characters by code point; a pair involving a float is compared
+exactly by mathematical value, never rounded through f64 (#516), and a NaN is
+unordered. MIXED-EXACT-P is true for `=`, whose integer/character pairs are
+compared as integers."
   (unless (and (consp args) (consp (cdr args)))
     (lamedh-error (format nil "~A requires at least two arguments" name)))
   (flet ((check (x)
@@ -346,8 +346,14 @@ MIXED-EXACT-P is true for `=`, whose integer/character pairs are exact."
                            ((and (characterp a) (characterp b)) (funcall fn (char-code a) (char-code b)))
                            ((and mixed-exact-p (not (floatp a)) (not (floatp b)))
                             (funcall fn (numify a) (numify b)))
+                           ;; A NaN is unordered: every comparison with it is false
+                           ;; (SBCL's integer-versus-NaN `>` is not).
+                           ((or (and (floatp a) (sb-ext:float-nan-p a)) (and (floatp b) (sb-ext:float-nan-p b))) nil)
+                           ;; A pair involving a float is compared exactly by value
+                           ;; (#516); CL compares an integer against a float
+                           ;; without rounding.
                            (t (with-ieee-floats
-                                (funcall fn (->f64 (numify a)) (->f64 (numify b))))))
+                                (funcall fn (numify a) (numify b)))))
                (return-from compare-chain nil)))
     t))
 

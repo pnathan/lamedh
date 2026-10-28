@@ -382,6 +382,63 @@ pub(super) fn as_f64(v: &LispVal, ctx: &str) -> Result<f64, LispError> {
     }
 }
 
+/// Exact ordering of an integer against a float (issue #516): no rounding of
+/// the integer through `f64`. `None` when the float is NaN (unordered).
+pub(crate) fn cmp_int_float(i: i64, f: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    if f.is_nan() {
+        None
+    } else if f >= TWO_63 {
+        Some(Ordering::Less)
+    } else if f < -TWO_63 {
+        Some(Ordering::Greater)
+    } else {
+        // In range: the truncation is exact. A nonzero fractional part breaks
+        // a tie on the integer part (`-0.0` has fraction `-0.0 == 0.0`).
+        let t = f.trunc();
+        let frac = f - t;
+        Some(i.cmp(&(t as i64)).then(if frac > 0.0 {
+            Ordering::Less
+        } else if frac < 0.0 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }))
+    }
+}
+
+/// Exact numeric ordering of two values (`Number`, `Char`, `Float`); `None`
+/// when unordered (a NaN is involved). Non-numeric operands are an error
+/// labelled with `ctx`.
+pub(super) fn cmp_numeric(
+    a: &LispVal,
+    b: &LispVal,
+    ctx: &str,
+) -> Result<Option<std::cmp::Ordering>, LispError> {
+    let int = |v: &LispVal| match v {
+        LispVal::Number(n) => Some(*n),
+        LispVal::Char(c) => Some(*c as i64),
+        _ => None,
+    };
+    Ok(match (a, b) {
+        (LispVal::Float(x), LispVal::Float(y)) => x.partial_cmp(y),
+        (LispVal::Float(x), _) => match int(b) {
+            Some(y) => cmp_int_float(y, *x).map(std::cmp::Ordering::reverse),
+            None => return as_f64(b, ctx).map(|_| None),
+        },
+        (_, LispVal::Float(y)) => match int(a) {
+            Some(x) => cmp_int_float(x, *y),
+            None => return as_f64(a, ctx).map(|_| None),
+        },
+        _ => match (int(a), int(b)) {
+            (Some(x), Some(y)) => Some(x.cmp(&y)),
+            (None, _) => return as_f64(a, ctx).map(|_| None),
+            (_, None) => return as_f64(b, ctx).map(|_| None),
+        },
+    })
+}
+
 /// Math library builtins implemented in Rust (issue #148).
 ///
 /// Transcendentals (`sqrt`/`sin`/`cos`/`tan`/`log`/`exp`) accept any number and
@@ -1097,11 +1154,11 @@ pub(super) fn apply_numeric_primitives(
             }
             let mut ok = true;
             for w in args.windows(2) {
-                // Integer fast path; fall back to f64 for any int/float mix.
+                // Integer fast path; exact (non-rounding) compare for any mix.
                 let less = match (&w[0], &w[1]) {
                     (LispVal::Number(x), LispVal::Number(y)) => x < y,
                     (LispVal::Char(x), LispVal::Char(y)) => x < y,
-                    _ => as_f64(&w[0], "lessp")? < as_f64(&w[1], "lessp")?,
+                    _ => cmp_numeric(&w[0], &w[1], "lessp")? == Some(std::cmp::Ordering::Less),
                 };
                 if !less {
                     ok = false;
@@ -1125,7 +1182,9 @@ pub(super) fn apply_numeric_primitives(
                 let greater = match (&w[0], &w[1]) {
                     (LispVal::Number(x), LispVal::Number(y)) => x > y,
                     (LispVal::Char(x), LispVal::Char(y)) => x > y,
-                    _ => as_f64(&w[0], "greaterp")? > as_f64(&w[1], "greaterp")?,
+                    _ => {
+                        cmp_numeric(&w[0], &w[1], "greaterp")? == Some(std::cmp::Ordering::Greater)
+                    }
                 };
                 if !greater {
                     ok = false;
@@ -1277,17 +1336,7 @@ pub(super) fn apply_logical_op(
             // REGULARITY (0.3): variadic — all arguments numerically equal.
             if args.len() > 2 {
                 let eq_pair = |a: &LispVal, b: &LispVal| -> Result<bool, LispError> {
-                    let coerce = |v: &LispVal| -> Option<i64> {
-                        match v {
-                            LispVal::Number(n) => Some(*n),
-                            LispVal::Char(c) => Some(*c as i64),
-                            _ => None,
-                        }
-                    };
-                    match (coerce(a), coerce(b)) {
-                        (Some(x), Some(y)) => Ok(x == y),
-                        _ => Ok(as_f64(a, "=")? == as_f64(b, "=")?),
-                    }
+                    Ok(cmp_numeric(a, b, "=")? == Some(std::cmp::Ordering::Equal))
                 };
                 for w in args.windows(2) {
                     if !eq_pair(&w[0], &w[1])? {
@@ -1312,14 +1361,14 @@ pub(super) fn apply_logical_op(
                     }
                 }
                 _ => {
-                    // Fall back to float for mixed int/float. Exact equality
+                    // Mixed int/float: exact (non-rounding) equality
                     // (like Common Lisp `=`): no epsilon fuzz, so distinct
                     // floats never compare equal.
                     match (&args[0], &args[1]) {
                         (LispVal::Float(_), _) | (_, LispVal::Float(_)) => {
-                            let a = as_f64(&args[0], "=")?;
-                            let b = as_f64(&args[1], "=")?;
-                            Ok(if a == b {
+                            let eq = cmp_numeric(&args[0], &args[1], "=")?
+                                == Some(std::cmp::Ordering::Equal);
+                            Ok(if eq {
                                 LispVal::Symbol(env.intern_symbol("T"))
                             } else {
                                 LispVal::Nil

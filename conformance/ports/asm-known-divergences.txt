@@ -94,3 +94,8 @@ fuel/nested-fence-attenuates
 fuel/nested-spend-debits-outer
 fuel/exhaustion-not-caught-inside-fence
 fuel/lower-inside-fence-allowed
+
+# Mixed int/float comparison: lamedh-asm still compares the pair as f64;
+# KERNEL.md Part V requires an exact comparison (#516).
+num/compare-mixed-pair-exact
+num/compare-mixed-pair-exact-lt

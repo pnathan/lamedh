@@ -2,13 +2,13 @@
   "Monotone non-decreasing chain: (<= a b c) means a <= b and b <= c."
   (if (null more)
       t
-      (and (not (> a (car more))) (apply #'<= more))))
+      (and (or (< a (car more)) (= a (car more))) (apply #'<= more))))
 
 (defun >= (a &rest more)
   "Monotone non-increasing chain: (>= a b c) means a >= b and b >= c."
   (if (null more)
       t
-      (and (not (< a (car more))) (apply #'>= more))))
+      (and (or (> a (car more)) (= a (car more))) (apply #'>= more))))
 
 (defun /= (a b)
   "True if a and b are numerically unequal."
