@@ -94,7 +94,7 @@ The exit status is nonzero when:
 
 - a case fails and is not listed (regression);
 - a listed case now passes, or names no case (stale entry);
-- an ID repeats, or the case count is not 143.
+- an ID repeats, or the case count is not 144.
 
 The lists may only shrink. Fix the port, then delete the line the runner flags
 as stale. Never add a line to hide a regression; if the corpus is wrong, handle
@@ -105,6 +105,6 @@ that port's list with a reason, in the same change.
 
 - Rust runner: `tests/test_conformance.rs`. Passes against the Rust reference.
   Run with `cargo test --release --test test_conformance`.
-- Cases: 143 in `cases/`, 0 disputed. Files `10` through `60`.
+- Cases: 144 in `cases/`, 0 disputed. Files `10` through `60`.
 - `sbcl/` and `lamedh-asm/` runners: `ports/run-sbcl.lisp`, `ports/run-asm.py`. See Port runners.
 - WASM: not built.

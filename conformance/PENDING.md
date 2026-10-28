@@ -33,8 +33,6 @@ The owner is reverting this area, and the expected behavior is in flux.
 
 ## In flux or unspecified
 
-- Mixed fixnum/float comparison: exact versus `f64` (Part V, #516 and #553).
-  The corpus asserts only the `f64` rule that `KERNEL.md` states today.
 - Typed subset: `DEFUN-TYPED`, `DEFUN*`, `DEFSTRUCT-TYPED`, `DECLARE-TYPED`,
   `JIT-OPTIMIZE`, `CHECK-TYPE` (Part VII, "not further specified here").
 - Standard library and library-level forms (`DEFUN`, `WHEN`, `DOLIST`,

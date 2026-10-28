@@ -21,7 +21,7 @@
 (handler-bind ((warning #'muffle-warning)) (asdf:load-system :lamedh))
 (in-package :lamedh-rt)
 
-(defvar *expected-total* 143)
+(defvar *expected-total* 144)
 
 (defun repo-path (rel)
   (merge-pathnames rel cl-user::*repo-root*))

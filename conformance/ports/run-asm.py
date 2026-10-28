@@ -23,7 +23,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
-EXPECTED_TOTAL = 143
+EXPECTED_TOTAL = 144
 TIMEOUT_S = 5
 
 HERE = os.path.dirname(os.path.abspath(__file__))

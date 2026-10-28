@@ -186,7 +186,9 @@ cache so no prototype-world cells cross the fork. See Rust embedding API for the
 `=`, `<`, `>`, `<=` and `>=` on a mix of integer and float rounded the integer
 through `f64`, so integers above 2^53 compared equal to neighbouring floats:
 `(= 9007199254740993 9007199254740992.0)` was `T`. The comparison is now exact,
-and it is `()` (like Common Lisp). Float-with-float and integer-with-integer
+and it is `()` (like Common Lisp). KERNEL.md Part V states the exact rule (it
+had specified `f64`, #553), and the SBCL port follows it; lamedh-asm still
+compares as `f64` (#639). Float-with-float and integer-with-integer
 comparisons are unchanged, and NaN is unordered as before. `<=` and `>=` over
 more than two arguments are `<` or `=` per pair, so a NaN makes them false.
 

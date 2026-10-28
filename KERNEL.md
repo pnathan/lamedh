@@ -604,30 +604,28 @@ zero divisor is an error in both:
 more** operands (one is an error) and is a monotone chain — `(< a b c)`
 is `T` exactly when `a < b` and `b < c`; `(= a b c)` when all are
 numerically equal. Operands may mix fixnum, float, and character freely:
-two fixnums (or two characters) compare exactly as integers; any operand
-pair involving a float is compared as `f64` (so a fixnum above 2^53 may
-compare equal to a float it is not equal to mathematically); `(= 5 5.0)`
-is `T`; `(< 1 'a' 200)` is `T`. Any non-numeric operand (a string, a
+two fixnums (or two characters) compare exactly as integers; a pair
+involving a float is compared exactly by mathematical value, with no
+rounding of the fixnum through `f64` (so a fixnum above 2^53 never compares
+equal to a float it is not equal to); `(= 5 5.0)` is `T`; `(< 1 'a' 200)` is `T`. Any non-numeric operand (a string, a
 symbol, `Nil`) is an error, never a permissive `NIL`. Equality of floats
 under `=` is exact IEEE `==` (so `(= NaN NaN)` is `NIL` — unlike `EQ`,
 Part IV).
 
-*Mixed fixnum/float comparison — normative rule (clarification, #553).*
+*Mixed fixnum/float comparison — normative rule (#516, #553).*
 Unlike `+ - * /`, a comparison chain is evaluated over **adjacent pairs**,
 left to right, stopping at the first pair that fails. Each pair is decided
-on its own: two fixnums compare exactly as integers, two characters by
-code point (for `=`, any fixnum/character mix is likewise exact), and any
-other numeric pair — in particular any pair involving a `Float` — is
-converted to `f64` and compared there. So `(= 9007199254740993
-9007199254740992.0)` is `T` and `(< 9007199254740992.0 9007199254740993)`
-is `NIL`, but `(= 9007199254740993 9007199254740992 9007199254740992.0)`
-is `NIL` (its first pair is two fixnums, compared exactly). Because the
-chain stops at the first false pair, a later non-numeric operand is never
-examined: `(< 2 1 'a)` is `NIL`, while `(< 1 2 'a)` is an error. A host
-must not substitute an exact int-versus-float comparison. Whether this rule
-should change to exact comparison is an open owner decision (#516, #553);
-until `KERNEL.md` is amended, `f64` is the specification and every tier
-must agree on it.
+on its own, **exactly**: two fixnums compare as integers, two characters by
+code point, and a pair involving a `Float` by the mathematical value of
+each operand, so no operand is rounded through `f64`. A NaN is unordered:
+every comparison with a NaN (`=`, `<`, `>`, `<=`, `>=`) is `NIL`. So
+`(= 9007199254740993 9007199254740992.0)` is `NIL`,
+`(< 9007199254740992.0 9007199254740993)` is `T`, and `=` is transitive:
+`(= 9007199254740993 9007199254740992 9007199254740992.0)` is `NIL`. Because
+the chain stops at the first false pair, a later non-numeric operand is
+never examined: `(< 2 1 'a)` is `NIL`, while `(< 1 2 'a)` is an error. A host
+must not substitute an `f64` comparison. A host whose fixnums are wider than
+`f64` can represent (Part XII, axis 1) still compares exactly.
 
 **Other numeric primitives the corpus relies on**, with their exact
 result types: `(float x)` converts a fixnum or char to `Float` (identity
