@@ -67,7 +67,8 @@ fn try_fold_numeric(op: &str, args: &[LispVal]) -> Option<LispVal> {
             .map(LispVal::Number),
         "/" => {
             if nums.len() == 2 && nums[1] != 0 {
-                Some(LispVal::Number(nums[0] / nums[1]))
+                // Decline to fold on overflow (i64::MIN / -1); runtime handles it.
+                nums[0].checked_div(nums[1]).map(LispVal::Number)
             } else {
                 None
             }
@@ -412,6 +413,14 @@ mod tests {
     }
     fn p(v: &LispVal) -> String {
         print(v)
+    }
+
+    #[test]
+    fn test_constant_fold_div_min_by_neg_one_declines() {
+        let env = e();
+        let expr = list(vec![sym("/", &env), num(i64::MIN), num(-1)]);
+        // Must not panic; the overflowing division is left for the runtime.
+        assert_eq!(p(&optimize(&expr)), p(&expr));
     }
 
     #[test]

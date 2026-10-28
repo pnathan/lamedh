@@ -13,6 +13,12 @@ use super::*;
 pub struct Ctx<'a> {
     pub(super) funcs: &'a [Rc<TypedFn>],
     pub(super) arena: RefCell<Vec<Box<[u64]>>>,
+    /// Live words currently rooted in `arena` (headers included), and the
+    /// high-water mark of that count over the call (issue #212). The peak is
+    /// published to [`last_call_arena_peak_words`] when a membrane call
+    /// returns, so tests can observe — and bound — per-call arena growth.
+    pub(super) arena_live: Cell<usize>,
+    pub(super) arena_peak: Cell<usize>,
     /// Set by a compiled/interpreted body, instead of performing the call
     /// itself, when it reaches a *cross-function* tail call (issue #133
     /// Tier 2a). `TypedFn::invoke`'s dispatch loop checks this immediately
@@ -41,9 +47,13 @@ pub struct Ctx<'a> {
     /// `jit_exit_call` trampolines a native edition calls directly (see
     /// `native::compile_native`'s `emit_call`), around the direct
     /// native-to-native `call_indirect` fast path that otherwise never
-    /// touches `Ctx::call` at all. See [`Ctx::MAX_CALL_DEPTH`] for the limit
-    /// and how it was derived.
+    /// touches `Ctx::call` at all. See [`typed_call_depth_limit`] for the limit
+    /// and [`DEFAULT_TYPED_CALL_DEPTH_LIMIT`] for how its default was derived.
     pub(super) depth: Cell<usize>,
+    /// The non-tail call depth at which [`Ctx::enter_call`] refuses, sampled
+    /// from [`typed_call_depth_limit`] when the `Ctx` is built so the guard
+    /// on the call fast path reads a plain field, not a thread-local.
+    pub(super) max_depth: usize,
     /// First reachable-error condition recorded during a call that has no
     /// sensible "keep computing, flag it" resolution the way overflow/div-by-
     /// zero do (issue #271): an oversized array/struct allocation, the
@@ -87,6 +97,59 @@ pub struct Ctx<'a> {
 /// raises.
 pub const FUEL_EXHAUSTED: &str = "fuel exhausted (kernel step budget)";
 
+/// Default non-tail call depth for typed (compiled) code, per thread.
+///
+/// Sized for the 512 MiB `with_large_stack` thread (2 KiB per interpreted or
+/// closure frame, about 100 MiB at the limit; derivation below). A `wasm32`
+/// host runs on a stack it does not own (V8's, roughly 1 MiB), where 50,000
+/// frames overflow it long before the cap can fire and the instance traps, so
+/// the default there is far smaller.
+///
+/// Arithmetic: the evaluator thread runs under [`crate::with_large_stack`],
+/// a 512 MiB stack (`INTERPRETER_STACK_SIZE`). The interpreter/closure
+/// editions reached through [`Ctx::call`] recurse as ordinary Rust calls —
+/// `eval_core`/`eval_core_nontail`'s own frame plus the per-call `Vec<u64>`
+/// argument buffer and the callee's fresh `env` `Vec` — call it a generous
+/// 2 KiB/frame upper bound (smaller than, but the same order of magnitude
+/// as, the tree-walker's own per-`eval`-frame budget behind
+/// `DEFAULT_EVAL_DEPTH_LIMIT`, since typed-core frames do far less
+/// per-node bookkeeping). A native frame guarded via
+/// `jit_enter_call`/`jit_exit_call` is far smaller still (a handful of
+/// 8-byte stack slots), so the same cap is comfortably conservative
+/// there too. `DEFAULT_TYPED_CALL_DEPTH_LIMIT * 2 KiB` ≈ 100 MiB, leaving well over
+/// 400 MiB of headroom in the 512 MiB budget for the rest of the call
+/// chain that led to this typed call (evaluator frames, other typed calls
+/// already on the stack, …) — generous enough not to trip on realistic
+/// recursive typed programs, small enough to trip long before the stack
+/// is actually exhausted.
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_TYPED_CALL_DEPTH_LIMIT: usize = 50_000;
+/// See the non-wasm32 constant of the same name.
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_TYPED_CALL_DEPTH_LIMIT: usize = 400;
+
+thread_local! {
+    static TYPED_CALL_DEPTH_LIMIT: Cell<usize> =
+        const { Cell::new(DEFAULT_TYPED_CALL_DEPTH_LIMIT) };
+}
+
+/// Set the non-tail call depth at which typed (compiled) code signals a
+/// recursion-limit error, for the current thread. It is separate from
+/// [`crate::set_eval_depth_limit`], which bounds the tree-walking evaluator
+/// and does not see calls inside typed code. Calls already running keep the
+/// limit they started with; the new value applies to the next top-level typed
+/// call. A host with a small native stack (wasm32 in a browser) must keep
+/// this below what that stack holds.
+pub fn set_typed_call_depth_limit(limit: usize) {
+    TYPED_CALL_DEPTH_LIMIT.with(|l| l.set(limit));
+}
+
+/// The current thread's typed-call depth limit; see
+/// [`set_typed_call_depth_limit`].
+pub fn typed_call_depth_limit() -> usize {
+    TYPED_CALL_DEPTH_LIMIT.with(|l| l.get())
+}
+
 impl Ctx<'_> {
     /// Byte offset of the `overflow` field from the start of `Ctx`.
     /// Used by native codegen to store the flag without branches — hence
@@ -96,29 +159,6 @@ impl Ctx<'_> {
     /// Byte offset of the `div_by_zero` field from the start of `Ctx`.
     #[cfg(feature = "jit")]
     pub(super) const DIV_BY_ZERO_OFFSET: usize = std::mem::offset_of!(Ctx<'_>, div_by_zero);
-
-    /// Maximum non-tail call depth before a typed call is refused with a
-    /// recursion-limit error instead of growing the call stack further
-    /// (issue #271).
-    ///
-    /// Arithmetic: the evaluator thread runs under [`crate::with_large_stack`],
-    /// a 512 MiB stack (`INTERPRETER_STACK_SIZE`). The interpreter/closure
-    /// editions reached through [`Ctx::call`] recurse as ordinary Rust calls —
-    /// `eval_core`/`eval_core_nontail`'s own frame plus the per-call `Vec<u64>`
-    /// argument buffer and the callee's fresh `env` `Vec` — call it a generous
-    /// 2 KiB/frame upper bound (smaller than, but the same order of magnitude
-    /// as, the tree-walker's own per-`eval`-frame budget behind
-    /// `DEFAULT_EVAL_DEPTH_LIMIT`, since typed-core frames do far less
-    /// per-node bookkeeping). A native frame guarded via
-    /// `jit_enter_call`/`jit_exit_call` is far smaller still (a handful of
-    /// 8-byte stack slots), so the same cap is comfortably conservative
-    /// there too. `MAX_CALL_DEPTH * 2 KiB` ≈ 100 MiB, leaving well over
-    /// 400 MiB of headroom in the 512 MiB budget for the rest of the call
-    /// chain that led to this typed call (evaluator frames, other typed calls
-    /// already on the stack, …) — generous enough not to trip on realistic
-    /// recursive typed programs, small enough to trip long before the stack
-    /// is actually exhausted.
-    pub(super) const MAX_CALL_DEPTH: usize = 50_000;
 
     /// Record `msg` as the pending error for this call, unless one is already
     /// recorded — first error wins, matching the tree-walker's left-to-right
@@ -133,7 +173,7 @@ impl Ctx<'_> {
 
     /// Enter a non-tail call: bump the depth counter, or refuse — recording a
     /// recursion-limit [`pending_error`](Ctx::pending_error) — if already at
-    /// [`Ctx::MAX_CALL_DEPTH`]. Returns `true` on success; a successful
+    /// [`Ctx::max_depth`]. Returns `true` on success; a successful
     /// `enter_call` must be paired with exactly one [`Ctx::exit_call`] once
     /// the call returns.
     ///
@@ -146,10 +186,10 @@ impl Ctx<'_> {
         let d = self.depth.get();
         if self.pending_error.borrow().is_some() {
             false
-        } else if d >= Self::MAX_CALL_DEPTH {
+        } else if d >= self.max_depth {
             self.set_pending_error(format!(
                 "recursion limit exceeded ({} non-tail typed calls); rewrite as a tail call or iteratively",
-                Self::MAX_CALL_DEPTH
+                self.max_depth
             ));
             false
         } else {
@@ -199,6 +239,48 @@ impl Ctx<'_> {
         r
     }
 
+    /// Root `buf` in the arena, keeping the live/peak word accounting current.
+    fn root_buffer(&self, buf: Box<[u64]>) {
+        let live = self.arena_live.get() + buf.len();
+        self.arena_live.set(live);
+        if live > self.arena_peak.get() {
+            self.arena_peak.set(live);
+        }
+        self.arena.borrow_mut().push(buf);
+    }
+
+    /// The arena's current length: a *mark* to hand back to
+    /// [`Ctx::arena_reclaim`] (issue #212).
+    pub(super) fn arena_mark(&self) -> usize {
+        self.arena.borrow().len()
+    }
+
+    /// Free every buffer rooted after `mark` (issue #212).
+    ///
+    /// # Soundness contract
+    ///
+    /// The caller must guarantee that no live value — a local, an argument
+    /// word, a pending tail-call argument, or a cell of any buffer rooted at
+    /// or before `mark` — holds a pointer into a buffer rooted after `mark`.
+    /// The tail-loop edges establish that only for functions whose parameters
+    /// and return are all scalar ([`Ty::is_reclaim_scalar`]): a scalar word
+    /// is never an arena pointer, and with no compound parameter there is no
+    /// older buffer a fresh buffer could be stored into.
+    pub(super) fn arena_reclaim(&self, mark: usize) {
+        let mut arena = self.arena.borrow_mut();
+        if arena.len() > mark {
+            let freed: usize = arena[mark..].iter().map(|b| b.len()).sum();
+            // Debug aid: poison freed words so a use-after-free in a test
+            // reads 0xDEAD.. instead of plausible stale data.
+            #[cfg(test)]
+            for b in arena[mark..].iter_mut() {
+                b.fill(0xDEAD_DEAD_DEAD_DEAD);
+            }
+            arena.truncate(mark);
+            self.arena_live.set(self.arena_live.get() - freed);
+        }
+    }
+
     /// Allocate an `n`-element buffer `[n, 0, 0, …]` in the arena and return a
     /// raw pointer to its header word. The arena owns the `Box`, keeping the
     /// data pointer valid (and stable) until the call returns.
@@ -222,7 +304,7 @@ impl Ctx<'_> {
         let mut buf = vec![0u64; n + 1].into_boxed_slice();
         buf[0] = n as u64;
         let ptr = buf.as_mut_ptr();
-        self.arena.borrow_mut().push(buf);
+        self.root_buffer(buf);
         ptr
     }
 
@@ -276,7 +358,7 @@ impl Ctx<'_> {
         let mut buf = vec![0u64; total_words].into_boxed_slice();
         buf[0] = n as u64;
         let ptr = buf.as_mut_ptr();
-        self.arena.borrow_mut().push(buf);
+        self.root_buffer(buf);
         ptr
     }
 
@@ -432,10 +514,14 @@ impl Ctx<'_> {
         Ctx {
             funcs: &[],
             arena: RefCell::new(Vec::new()),
+            arena_live: Cell::new(0),
+            arena_peak: Cell::new(0),
             pending_tail: RefCell::new(None),
             overflow: Cell::new(false),
             div_by_zero: Cell::new(false),
             depth: Cell::new(0),
+            // A leaf never calls across functions, so the cap is moot.
+            max_depth: DEFAULT_TYPED_CALL_DEPTH_LIMIT,
             pending_error: RefCell::new(None),
             boxed: RefCell::new(Vec::new()),
             // Raw entries are documented as unmetered (see `entry.rs`).
@@ -464,6 +550,38 @@ impl Ctx<'_> {
         }
         None
     }
+}
+
+thread_local! {
+    static LAST_CALL_ARENA_PEAK_WORDS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Peak number of `u64` words simultaneously rooted in the call arena during
+/// the most recent top-level membrane call on this thread (issue #212).
+/// Stack-allocated buffers and the boxed-handle table are not counted.
+pub fn last_call_arena_peak_words() -> usize {
+    LAST_CALL_ARENA_PEAK_WORDS.with(Cell::get)
+}
+
+pub(super) fn publish_arena_peak(words: usize) {
+    LAST_CALL_ARENA_PEAK_WORDS.with(|c| c.set(words));
+}
+
+/// Host helpers for the native self-tail-call edge (issue #212): capture the
+/// arena length at function entry, and free everything rooted after it.
+///
+/// # Safety: as [`jit_alloc`].
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_arena_mark(ctx: *const core::ffi::c_void) -> u64 {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.arena_mark() as u64
+}
+
+/// # Safety: as [`jit_alloc`]; the [`Ctx::arena_reclaim`] contract applies.
+#[cfg(feature = "jit")]
+pub(crate) unsafe extern "C" fn jit_arena_reclaim(ctx: *const core::ffi::c_void, mark: u64) {
+    let ctx = unsafe { &*(ctx as *const Ctx) };
+    ctx.arena_reclaim(mark as usize);
 }
 
 /// Host trampoline for in-native array/struct allocation: allocate an
@@ -1093,8 +1211,18 @@ unsafe fn array_dot(kind: NumKind, base_a: u64, base_b: u64) -> u64 {
 /// sub-expression is evaluated via [`eval_core_nontail`], which always
 /// performs an ordinary (depth-bounded) call through the registry, even for
 /// a self-referencing id.
-pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize) -> u64 {
+pub(super) fn eval_core(
+    core: &Core,
+    env: &mut [u64],
+    ctx: &Ctx,
+    self_id: usize,
+    reclaim: bool,
+) -> u64 {
     let top = core;
+    // Issue #212: arena length at entry. When `reclaim` (the caller proved
+    // the signature all-scalar), a self tail call frees everything rooted
+    // since — see `Ctx::arena_reclaim` for the contract.
+    let mark = ctx.arena_mark();
     let mut current = core;
     loop {
         match current {
@@ -1141,6 +1269,9 @@ pub(super) fn eval_core(core: &Core, env: &mut [u64], ctx: &Ctx, self_id: usize)
                     .map(|a| eval_core_nontail(a, env, ctx))
                     .collect();
                 env[..vals.len()].copy_from_slice(&vals);
+                if reclaim {
+                    ctx.arena_reclaim(mark);
+                }
                 if !ctx.charge_fuel() {
                     return ctx.alloc_buffer(0) as u64;
                 }
@@ -2270,13 +2401,22 @@ pub(super) type CompiledTail = Rc<dyn Fn(&mut [u64], &Ctx) -> TailStep>;
 /// arbitrarily deep tail-recursive typed function, mirroring [`eval_core`]'s
 /// discipline for the closure backend that `TypedFn::compile_now` actually
 /// installs as the default-build hot path.
-pub fn compile_with_tco(core: &Core, self_id: usize) -> Compiled {
+///
+/// `reclaim` (issue #212) frees the iteration's arena buffers on each loop
+/// edge; the caller may pass `true` only for an all-scalar signature (see
+/// [`Ctx::arena_reclaim`]).
+pub fn compile_with_tco(core: &Core, self_id: usize, reclaim: bool) -> Compiled {
     let tail = compile_tail(core, self_id);
     Rc::new(move |env, ctx| {
+        let mark = ctx.arena_mark();
         loop {
             match tail(env, ctx) {
                 TailStep::Done(v) => return v,
-                TailStep::Loop => {}
+                TailStep::Loop => {
+                    if reclaim {
+                        ctx.arena_reclaim(mark);
+                    }
+                }
             }
         }
     })

@@ -286,3 +286,12 @@ fn default_reader_features_include_host_identity_and_capabilities() {
         );
     }
 }
+
+#[test]
+fn discarded_conditional_as_last_list_element() {
+    assert_eq!(read_str("(a #+nonexistent-feature b)"), "(A)");
+    assert_eq!(read_str("(1 #-rust 2)"), "(1)");
+    assert_eq!(read_str("(#+nonexistent-feature b)"), "()");
+    assert_eq!(read_str("#(1 #+nonexistent-feature 2)"), "#(1)");
+    assert_eq!(read_str("(a #+nonexistent-feature b c)"), "(A C)");
+}

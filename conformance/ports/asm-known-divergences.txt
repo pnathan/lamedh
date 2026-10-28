@@ -1,0 +1,96 @@
+# Known divergences of lamedh-asm from conformance/cases (prelude only, one
+# lamedhc process per case). One case ID per line. Lines starting with # are
+# comments. This list may only shrink: run-asm.py fails on a stale entry.
+
+# Reader lacks these syntaxes. lamedhc reads them as symbols and fails with
+# "unbound variable" (#|, Q, FFH, #\SPACE, #S).
+reader/nested-block-comment
+reader/octal-suffix
+reader/hex-suffix
+reader/char-literal-hash-name
+reader/record-literal
+print/record
+equal/record-brand-differs
+
+# Reader token boundaries: '(1-5) reads as (1- 5) instead of an error;
+# '(a.b) reads as the single symbol A.B instead of (A . B).
+reader/one-minus-token-boundary
+reader/dot-splits-symbol-in-list
+
+# Integer overflow: (+ 9223372036854775807 1) promotes to the float
+# 9223372036854776000.0 instead of wrapping, (expt 2 70) returns 0, and
+# (flag-set-p 'OVERFLOW) is () afterwards.
+num/add-overflow-wraps
+num/overflow-sets-flag
+num/expt-overflow-error
+
+# Float arguments accepted where the spec requires an error: (zerop 0.0) is (),
+# (remainder 7.0 2) is 0. (round NaN) gives -1 instead of 0.
+num/zerop-float-error
+num/remainder-float-error
+num/round-nan-is-zero
+
+# gcd takes exactly 2 arguments ("wrong number of arguments (got . expected): (3 . 2)").
+num/gcd-variadic
+
+# Hash tables compare cons keys by identity: the (cons 1 2) lookup returns ().
+hash/cons-key-by-structure
+
+# Array reads are unchecked: (fetch (array 2) 2) returns 0 instead of an error.
+array/out-of-range-error
+
+# make-environment has no isolation. The new environment sees the capability
+# flags (feature-enabled-p 'READ-FS is T) and the stdlib (defun works), and a
+# child environment does not see its parent's binding (unbound variable: X).
+env/make-environment-has-no-capabilities
+env/make-environment-has-no-stdlib
+env/child-sees-parent-binding
+
+# (let ()) is accepted and returns () instead of an error.
+let/empty-body-error
+
+# defdynamic is not retroactive: a closure made before (defdynamic x 99) still
+# returns 10.
+dynamic/declaration-is-retroactive
+
+# vau: operand-list parameter is unbound ("unbound variable: O") with a
+# two-parameter vau.
+vau/operand-list-and-caller-env
+
+# defexpr with one parameter binds the first operand instead of the operand list.
+fexpr/single-parameter-gets-operand-list
+
+# Macros are not callable ("not a function: ADDONE"), and macroexpand is
+# missing ("not a function: MACROEXPAND").
+macro/expansion-evaluated-in-caller
+macro/operands-not-evaluated
+macro/macroexpand-one-step
+
+# catch compares tags with EQ: the throw to (A B) is reported as
+# "unhandled THROW to (A B): 3".
+catch/equal-tag-match
+
+# unwind-protect cleanup does not run on throw or on error before the handler
+# (log stays 0), and an error in the cleanup form escapes instead of being
+# discarded.
+unwind/cleanup-runs-on-throw
+unwind/cleanup-runs-before-handler
+unwind/cleanup-error-discarded
+
+# make-error is missing ("not a function: MAKE-ERROR").
+error/make-error-message
+error/make-error-data
+
+# Capabilities are on in a fresh environment: (feature-enabled-p 'READ-FS) is T,
+# and with-capabilities does not narrow it.
+cap/feature-denied-in-fresh-env
+cap/with-capabilities-cannot-widen
+
+# Fuel primitives are missing ("not a function: KERNEL-FUEL-SET!"; the nested
+# with-fuel cases also error), and an infinite loop under with-fuel never
+# terminates (the runner times out).
+fuel/set-then-disarm
+fuel/nested-fence-attenuates
+fuel/nested-spend-debits-outer
+fuel/exhaustion-not-caught-inside-fence
+fuel/lower-inside-fence-allowed
