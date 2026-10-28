@@ -379,6 +379,24 @@ and the portable checker: `t` is `bool`; a branch ending in bare `nil` that
 meets `bool` is `bool`; an `any` body forces the return to `any`; an `if` with
 an `any` branch joins to `any`.
 
+## Typed JIT: redefinition and float negation fixes
+
+- Redefining a typed function with the same arity but different parameter or
+  return types left every compiled caller on the old ABI: with `inl` redefined
+  from `int64` to `float64`, a caller `(* (inl x) 2)` multiplied the float
+  result word as an integer. Callers cannot be re-elaborated, so each direct
+  caller's body is now dropped (the policy of `docs/typed-jit-design.md`
+  section 3.5). A strict call reports the stale caller and the callee that
+  changed; an auto-typed `defun` falls back to its dynamic closure; redefining
+  the caller revives it. Functions that had inlined a dropped caller are
+  rebuilt.
+- A `defun-typed` redefinition that the checker rejects keeps the previous
+  signature. It used to install the new signature over the old, still-running
+  body, so `see-type` reported the rejected signature and calls misread the
+  result word.
+- `(- x)` on `float64` is IEEE negation: `(- 0.0)` is `-0.0` in compiled code,
+  as in the evaluator. It compiled to `+0.0`.
+
 ## Native-tier correctness fixes (#500, #501, #429)
 
 - The auto-typed membrane treated every native `Err` as "arguments did not fit"
