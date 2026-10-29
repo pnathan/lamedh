@@ -80,13 +80,13 @@ use crate::LispVal;
 use crate::Shared;
 use crate::environment::Environment;
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
     bytes::complete::{is_not, tag, take_while, take_while1},
     character::complete::{alpha1, alphanumeric1, char, digit1, hex_digit1, multispace1, one_of},
     combinator::{cut, map, opt, recognize},
     multi::many0,
-    sequence::{delimited, pair, preceded, tuple},
+    sequence::{delimited, pair, preceded},
 };
 
 type ParseResult<'a> = IResult<&'a str, LispVal>;
@@ -161,7 +161,8 @@ fn parse_expr(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
                 parse_unquoted(env.clone(), remaining),
                 parse_function_shorthand(env.clone(), remaining),
             )),
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -222,10 +223,9 @@ fn skip_ws_and_conditionals(
                         // decimal literal inside it must not leave `OVERFLOW`
                         // set (issue #515).
                         let had_overflow = env.flag_set("OVERFLOW");
-                        let skipped = preceded(
-                            ws,
-                            parse_expr(env.clone(), remaining.saturating_sub(1)),
-                        )(rest2);
+                        let skipped =
+                            preceded(ws, parse_expr(env.clone(), remaining.saturating_sub(1)))
+                                .parse(rest2);
                         if !had_overflow {
                             env.clear_flag("OVERFLOW");
                         }
@@ -253,12 +253,13 @@ fn parse_conditional_directive<'a>(
     env: &Shared<Environment>,
     remaining: usize,
 ) -> IResult<&'a str, bool> {
-    let (rest, tag_str) = alt((tag("#+"), tag("#-")))(input)?;
+    let (rest, tag_str) = alt((tag("#+"), tag("#-"))).parse(input)?;
     let positive = tag_str == "#+";
     let (rest, feature_val) = cut(preceded(
         ws,
         parse_expr(env.clone(), remaining.saturating_sub(1)),
-    ))(rest)?;
+    ))
+    .parse(rest)?;
     let truth = eval_feature_expr(env, &feature_val).map_err(|_| {
         nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
     })?;
@@ -327,7 +328,7 @@ fn feature_expr_list_to_vec(list: &LispVal) -> Result<Vec<LispVal>, String> {
 
 // A parser for a comment
 fn parse_comment(input: &str) -> IResult<&str, &str> {
-    recognize(pair(tag(";"), opt(is_not("\n\r"))))(input)
+    recognize(pair(tag(";"), opt(is_not("\n\r")))).parse(input)
 }
 
 // A parser for a (nesting) block comment: #| ... |# (issue #248).
@@ -369,7 +370,8 @@ fn ws(input: &str) -> IResult<&str, &str> {
         multispace1,
         parse_comment,
         parse_block_comment,
-    ))))(input)
+    ))))
+    .parse(input)
 }
 
 // End-of-token check shared by every number parser (issue #503). A numeric
@@ -408,15 +410,13 @@ fn number_overflow(input: &str) -> nom::Err<nom::error::Error<&str>> {
 
 fn parse_float(input: &str) -> ParseResult<'_> {
     // `1.5`, `1.5e3`, and exponent-only `1e5` / `-2E-3`.
-    let exponent = || recognize(tuple((one_of("Ee"), opt(one_of("+-")), digit1)));
-    let (rest, s) = recognize(tuple((
+    let exponent = || recognize((one_of("Ee"), opt(one_of("+-")), digit1));
+    let (rest, s) = recognize((
         opt(tag("-")),
         digit1,
-        alt((
-            recognize(tuple((tag("."), digit1, opt(exponent())))),
-            exponent(),
-        )),
-    )))(input)?;
+        alt((recognize((tag("."), digit1, opt(exponent()))), exponent())),
+    ))
+    .parse(input)?;
     if !at_token_end(rest) {
         return Err(number_error(input));
     }
@@ -429,8 +429,8 @@ fn parse_float(input: &str) -> ParseResult<'_> {
 fn parse_octal_integer(input: &str) -> ParseResult<'_> {
     // Lisp 1.5: digits followed by Q means octal, e.g. 177Q = 127. The suffix
     // is case-insensitive, like hex's H.
-    let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
-    let (rest, _) = one_of("qQ")(rest)?;
+    let (rest, s) = recognize(pair(opt(tag("-")), digit1)).parse(input)?;
+    let (rest, _) = one_of("qQ").parse(rest)?;
     if !at_token_end(rest) {
         return Err(number_error(input));
     }
@@ -450,12 +450,12 @@ fn parse_hex_integer(input: &str) -> ParseResult<'_> {
     // START WITH A DECIMAL DIGIT (the assembly convention) — so short
     // letters-then-h names like `ch`, `each`, `fh` are ordinary symbols.
     // Write 0FFh (or #xFF) where you meant FFh.
-    let (rest, s) = recognize(pair(opt(tag("-")), hex_digit1))(input)?;
+    let (rest, s) = recognize(pair(opt(tag("-")), hex_digit1)).parse(input)?;
     let digits_start = s.trim_start_matches('-');
     if !digits_start.starts_with(|c: char| c.is_ascii_digit()) {
         return Err(number_error(input));
     }
-    let (rest, _) = one_of("hH")(rest)?;
+    let (rest, _) = one_of("hH").parse(rest)?;
     if !at_token_end(rest) {
         return Err(number_error(input));
     }
@@ -467,7 +467,7 @@ fn parse_hex_integer(input: &str) -> ParseResult<'_> {
 }
 
 fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
-    let (rest, s) = recognize(pair(opt(tag("-")), digit1))(input)?;
+    let (rest, s) = recognize(pair(opt(tag("-")), digit1)).parse(input)?;
     if !at_token_end(rest) {
         return Err(number_error(input));
     }
@@ -483,15 +483,15 @@ fn parse_integer_or_overflow_float(input: &str) -> ParseResult<'_> {
 // CL-style radix literals: #x1F / #X1f (hex), #b101 (binary), #o17 (octal),
 // with an optional sign after the marker (issue #248).
 fn parse_radix_literal(input: &str) -> ParseResult<'_> {
-    let (rest, _) = tag("#")(input)?;
-    let (rest, marker) = one_of("xXbBoO")(rest)?;
+    let (rest, _) = tag("#").parse(input)?;
+    let (rest, marker) = one_of("xXbBoO").parse(rest)?;
     let radix = match marker {
         'x' | 'X' => 16,
         'b' | 'B' => 2,
         _ => 8,
     };
-    let (rest, neg) = opt(tag("-"))(rest)?;
-    let (rest, digits) = take_while1(|c: char| c.is_digit(radix))(rest)?;
+    let (rest, neg) = opt(tag("-")).parse(rest)?;
+    let (rest, digits) = take_while1(|c: char| c.is_digit(radix)).parse(rest)?;
     // Boundary guard: a trailing constituent means this was malformed
     // (e.g. #b102 or #xFG) — fail rather than half-consume.
     if !at_token_end(rest) {
@@ -516,7 +516,8 @@ fn parse_number(input: &str) -> ParseResult<'_> {
         parse_hex_integer,
         parse_octal_integer,
         parse_integer_or_overflow_float,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 /// [`parse_number`], plus the issue #515 side effect: a decimal integer token
@@ -547,7 +548,7 @@ fn parse_number_flagging(env: Shared<Environment>) -> impl Fn(&str) -> ParseResu
 /// (no closing quote) remains `(quote a)`. Use `'\''` for the quote character.
 fn parse_char_literal(input: &str) -> ParseResult<'_> {
     let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
-    let (rest, _) = tag("'")(input)?;
+    let (rest, _) = tag("'").parse(input)?;
     let mut it = rest.char_indices();
     let (_, c0) = it.next().ok_or_else(err)?;
     let (code, consumed) = if c0 == '\\' {
@@ -603,7 +604,7 @@ const CHAR_NAMES: &[(&str, u8)] = &[
 /// code point must fit in a byte.
 fn parse_hash_char_literal(input: &str) -> ParseResult<'_> {
     let err = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
-    let (rest, _) = tag("#\\")(input)?;
+    let (rest, _) = tag("#\\").parse(input)?;
     let c0 = rest.chars().next().ok_or_else(err)?;
     let token_len = if c0.is_alphanumeric() {
         rest.find(|c: char| !c.is_alphanumeric())
@@ -626,7 +627,7 @@ fn parse_hash_char_literal(input: &str) -> ParseResult<'_> {
 
 fn parse_one_plus_minus(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (rest, sym) = alt((tag("1+"), tag("1-")))(input)?;
+        let (rest, sym) = alt((tag("1+"), tag("1-"))).parse(input)?;
         // `1-2` is not `1-` followed by `2` (issue #503).
         if !at_token_end(rest) {
             return Err(number_error(input));
@@ -660,7 +661,8 @@ fn parse_keyword_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResul
                 ),
             )),
             |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -727,7 +729,8 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
             map(take_while1(is_operator_char), |s: &str| {
                 LispVal::Symbol(env.intern_symbol(s))
             }),
-        ))(input)
+        ))
+        .parse(input)
     }
 }
 
@@ -736,14 +739,15 @@ fn parse_atom(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
 fn parse_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(
-            recognize(tuple((
+            recognize((
                 tag("*"),
                 alpha1,
                 many0(alt((alphanumeric1, tag("-")))),
                 tag("*"),
-            ))),
+            )),
             |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -754,19 +758,20 @@ fn parse_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResul
 fn parse_plus_earmuff_symbol(env: Shared<Environment>) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
         map(
-            recognize(tuple((
+            recognize((
                 tag("+"),
                 alpha1,
                 many0(alt((alphanumeric1, tag("-")))),
                 tag("+"),
-            ))),
+            )),
             |s: &str| LispVal::Symbol(env.intern_symbol(&s.to_uppercase())),
-        )(input)
+        )
+        .parse(input)
     }
 }
 
 fn parse_string(input: &str) -> ParseResult<'_> {
-    let (input, _) = char('"')(input)?;
+    let (input, _) = char('"').parse(input)?;
     let mut result = String::new();
     let mut remaining = input;
     loop {
@@ -834,7 +839,8 @@ fn parse_list_contents(env: Shared<Environment>, remaining: usize) -> impl Fn(&s
         let (input, tail) = opt(preceded(
             preceded(ws, char('.')),
             preceded(ws, parse_expr(env.clone(), remaining)),
-        ))(input)?;
+        ))
+        .parse(input)?;
         if tail.is_some() && exprs.is_empty() {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -863,7 +869,8 @@ fn parse_list(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> Pa
             char('('),
             parse_list_contents(env.clone(), remaining - 1),
             preceded(ws, cut(char(')'))),
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -878,7 +885,7 @@ fn parse_struct_literal(
     remaining: usize,
 ) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (rest, _) = alt((tag("#S"), tag("#s")))(input)?;
+        let (rest, _) = alt((tag("#S"), tag("#s"))).parse(input)?;
         // The literal costs one level and `parse_list` another, so fewer than
         // two remaining would underflow: report the depth limit instead.
         if remaining < 2 {
@@ -925,7 +932,7 @@ fn parse_struct_literal(
 // array across calls. A dotted tail is rejected.
 fn parse_array_literal(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> ParseResult {
     move |input: &str| {
-        let (rest, _) = tag("#")(input)?;
+        let (rest, _) = tag("#").parse(input)?;
         // `parse_list` itself counts the nesting level, so pass `remaining`
         // unchanged (`remaining - 1` would underflow at the limit).
         let (rest, body) = parse_list(env.clone(), remaining)(rest)?;
@@ -965,7 +972,8 @@ fn parse_quoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -> 
                     cdr: Shared::new(LispVal::Nil),
                 }),
             },
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -981,7 +989,8 @@ fn parse_quasiquoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str
                     cdr: Shared::new(LispVal::Nil),
                 }),
             },
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -1000,7 +1009,8 @@ fn parse_function_shorthand(
                     cdr: Shared::new(LispVal::Nil),
                 }),
             },
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -1016,7 +1026,8 @@ fn parse_unquoted(env: Shared<Environment>, remaining: usize) -> impl Fn(&str) -
                     cdr: Shared::new(LispVal::Nil),
                 }),
             },
-        )(input)
+        )
+        .parse(input)
     }
 }
 
@@ -1035,7 +1046,8 @@ fn parse_unquote_spliced(
                     cdr: Shared::new(LispVal::Nil),
                 }),
             },
-        )(input)
+        )
+        .parse(input)
     }
 }
 
