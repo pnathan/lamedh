@@ -828,6 +828,19 @@ every standard-library function, and the stdlib island installs with the
 kernel agreeing on every member (`tests/test_typed_island.rs`). See
 `docs/typed-island-frontend.md`.
 
+## `spawn` outcome messages are Lisp text, not Rust `Debug` renderings
+
+`(spawn-value (spawn () (error "boom")))` returned
+`(:ERROR "Signaled(Error(\"boom\", Nil))")` — the Rust `Debug` rendering of the
+child's error instead of its message. The `(:ERROR msg)` datum now carries the
+Lisp-visible message: a signalled condition's message (`"boom"`), a native
+error's plain text (`"CAR: expected a list, got 5"`), the kernel fuel wording
+(`"fuel exhausted (kernel step budget)"`), or the readable text for uncaught
+non-local exits. `await` re-signals in the parent as
+`"spawned child failed: boom"` instead of embedding the `Debug` rendering.
+**Behavior change:** code that pattern-matched the old `Debug` strings in a
+child's `(:ERROR ...)` outcome sees the plain message now.
+
 # v0.4.0 — 2026-07-16
 
 The 0.4.0 arc: more of the typed JIT's surface compiles to native code,

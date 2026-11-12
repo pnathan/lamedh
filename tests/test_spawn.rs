@@ -52,6 +52,52 @@ fn child_errors_are_data_and_reraisable() {
 }
 
 #[test]
+fn child_error_message_is_the_lisp_message_not_rust_debug() {
+    with_large_stack(|| {
+        let e = env();
+        // (error "boom") signals a condition whose message is "boom"; the
+        // outcome datum must carry that message, not a Rust Debug rendering
+        // like Signaled(Error("boom", Nil)).
+        assert_eq!(
+            eval_line("(spawn-value (spawn () (error \"boom\")))", &e),
+            "(:ERROR \"boom\")"
+        );
+        // Native errors carry their plain message too.
+        assert_eq!(
+            eval_line("(spawn-value (spawn () (car 5)))", &e),
+            "(:ERROR \"CAR: expected a list, got 5\")"
+        );
+        // A re-signalled condition value keeps its message as well.
+        assert_eq!(
+            eval_line("(spawn-value (spawn () (error (make-error \"m\" 'd))))", &e),
+            "(:ERROR \"m\")"
+        );
+        // Fuel exhaustion keeps its kernel wording.
+        assert_eq!(
+            eval_line("(spawn-value (spawn (:fuel 50) (while t nil)))", &e),
+            "(:ERROR \"fuel exhausted (kernel step budget)\")"
+        );
+        // Uncaught non-local exits get readable text, not Debug braces.
+        let out = eval_line("(spawn-value (spawn () (throw 'x 1)))", &e);
+        assert!(out.starts_with("(:ERROR \""), "got: {out}");
+        assert!(out.contains("THROW"), "got: {out}");
+        assert!(!out.contains("tag:"), "Debug rendering leaked: {out}");
+    });
+}
+
+#[test]
+fn await_reraised_child_error_carries_the_lisp_message() {
+    with_large_stack(|| {
+        let e = env();
+        let msg = eval_line(
+            "(handler-case (await (spawn () (error \"boom\"))) (error (er) (error-message er)))",
+            &e,
+        );
+        assert_eq!(msg, "\"spawned child failed: boom\"");
+    });
+}
+
+#[test]
 fn capabilities_attenuate_never_amplify() {
     with_large_stack(|| {
         let e = env();
