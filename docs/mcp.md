@@ -64,14 +64,19 @@ kernel step budget documented in Chapter 7 and behind `--fuel`; see
   operations and are **not** fenced — in particular `introspect` must run
   unmetered so `why-not-typed`'s compile probe reports accurately.
 
-**Known limitation.** Code that explicitly *catches* the `fuel exhausted`
-condition and re-enters a loop can evade the budget (the exhaustion signal
-disarms the counter so handler and cleanup forms can themselves run). This is
-the same class of documented hole noted for pre-compiled natives in
-`lib/22-guard.lisp`. Ordinary non-terminating programs — unbounded recursion,
-`(while t ...)`, the omega combinator — always terminate. Lamedh's interpreter
-is single-threaded (`Rc`-based values), so there is no wall-clock watchdog; the
-fuel fence is the termination mechanism.
+**Exhaustion cannot be caught from inside the fence that exhausts.** The
+`fuel exhausted` signal is not an ordinary `HANDLER-CASE`-catchable condition:
+a handler positioned *inside* the `WITH-FUEL` frame whose budget hit zero
+cannot intercept it and loop past it (KERNEL.md Part X, issue #457). Only the
+owning fence converts the signal back into an ordinary, catchable condition,
+and only for code *outside* it — so a nested fence's exhaustion *can* be caught
+by an enclosing handler, but every re-entry arms a fence that clamps to the
+enclosing remainder and debits it, so the catch-and-reloop pattern terminates
+when the outermost budget runs out. A small, bounded grace allowance — charged
+against the enclosing fence's remaining budget, never free — funds
+`UNWIND-PROTECT` cleanup on the way out. Ordinary non-terminating programs —
+unbounded recursion, `(while t ...)`, the omega combinator — always terminate;
+the per-call fuel fence is the termination mechanism.
 
 ## Protocol surface
 

@@ -277,6 +277,63 @@ fn typed_function_runaway_loop_terminates_with_fuel_error() {
 }
 
 #[test]
+fn fuel_exhaustion_cannot_be_caught_inside_owning_fence() {
+    // Issue #457 (KERNEL.md Part X, MUST-match): a guest HANDLER-CASE
+    // positioned inside the very fence that exhausts cannot intercept the
+    // exhaustion signal. The handler here wraps (while t nil) INSIDE the
+    // inner WITH-FUEL, so the call must fail with a fuel error, not return
+    // 'caught.
+    let responses = mcp_session(
+        &["--fuel", "500000"],
+        &[eval_req(
+            1,
+            "(with-fuel 400 (handler-case (while t nil) (error (e) 'caught)))",
+        )],
+    );
+    let resp = by_id(&responses, 1);
+    assert!(is_error(resp), "{resp:?}");
+    let text = call_text(resp);
+    assert!(text.contains("fuel"), "{text}");
+    assert!(!text.contains("CAUGHT"), "{text}");
+}
+
+#[test]
+fn fuel_catch_and_reloop_cannot_evade_the_budget() {
+    // The scenario docs/mcp.md used to call a "known limitation": catch the
+    // exhaustion and re-enter a loop. Each re-entry arms an inner fence that
+    // clamps to the enclosing remainder and debits it (KERNEL.md Part X step
+    // 4), so the loop terminates and the handler OUTSIDE the exhausted fence
+    // sees the converted, ordinary catchable condition.
+    let responses = mcp_session(
+        &["--fuel", "500000"],
+        &[eval_req(
+            1,
+            "(progn (defun spin () (handler-case (with-fuel 50 (while t nil)) (error (e) nil)) (spin)) (handler-case (with-fuel 5000 (spin)) (error (e) 'outer-caught)))",
+        )],
+    );
+    let resp = by_id(&responses, 1);
+    assert!(!is_error(resp), "{resp:?}");
+    assert_eq!(call_text(resp), "OUTER-CAUGHT");
+}
+
+#[test]
+fn unwind_protect_cleanup_runs_on_fuel_exhaustion() {
+    // The bounded grace allowance (charged against the enclosing fence's
+    // remaining budget, never free) lets UNWIND-PROTECT cleanup take metered
+    // steps on the way out of an exhausted fence.
+    let responses = mcp_session(
+        &["--fuel", "500000"],
+        &[eval_req(
+            1,
+            "(progn (def log nil) (handler-case (with-fuel 400 (unwind-protect (while t nil) (setq log 'cleaned))) (error (e) log)))",
+        )],
+    );
+    let resp = by_id(&responses, 1);
+    assert!(!is_error(resp), "{resp:?}");
+    assert_eq!(call_text(resp), "CLEANED");
+}
+
+#[test]
 fn shell_capability_denied_by_default() {
     // MCP mode is sandboxed by default: SHELL is off, so (shell ...) errors.
     let responses = mcp_session(&[], &[eval_req(1, "(shell \"echo hi\")")]);
