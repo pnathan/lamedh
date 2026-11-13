@@ -23,7 +23,7 @@ regex = "1"
 # native codegen).
 cranelift-jit = { version = "0.133", optional = true }
 cranelift-module = { version = "0.133", optional = true }
-cranelift-codegen = { version = "0.133", optional = true }
+cranelift-codegen = { version = "0.134", optional = true }
 cranelift-frontend = { version = "0.133", optional = true }
 
 # TLS port wrapping (issue #365, epic #253). Off by default -- an owner
