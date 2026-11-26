@@ -511,7 +511,7 @@ pub fn compile_native(
             }
         }
         b.seal_block(header);
-        b.finalize();
+        b.finalize(module.target_config());
     }
 
     let func_id = module
@@ -715,7 +715,7 @@ impl Emitter<'_, '_, '_> {
                 // out-of-range arm calls the trampoline; the in-range hot path
                 // is the same single `band` as before.
                 let v = self.emit_value(a);
-                let masked = self.b.ins().band_imm(v, 0xff);
+                let masked = self.b.ins().band_imm_s(v, 0xff);
                 let zero = self.iconst(0);
                 let max = self.iconst(255);
                 let ge0 = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, v, zero);
@@ -1168,7 +1168,7 @@ impl Emitter<'_, '_, '_> {
             3,
         ));
         for (i, v) in vals.iter().enumerate() {
-            self.b.ins().stack_store(*v, buf, (i * 8) as i32);
+            self.b.ins().stack_store(self.ptr, *v, buf, (i * 8) as i32);
         }
         let buf_addr = self.b.ins().stack_addr(self.ptr, buf, 0);
         let id_v = self.iconst(id as i64);
@@ -1297,15 +1297,19 @@ impl Emitter<'_, '_, '_> {
             3,
         ));
         let len_val = self.iconst(n);
-        self.b.ins().stack_store(len_val, slot, 0);
+        self.b.ins().stack_store(self.ptr, len_val, slot, 0);
         if vals.is_empty() {
             let zero = self.iconst(0);
             for i in 0..n {
-                self.b.ins().stack_store(zero, slot, ((i + 1) * 8) as i32);
+                self.b
+                    .ins()
+                    .stack_store(self.ptr, zero, slot, ((i + 1) * 8) as i32);
             }
         } else {
             for (i, v) in vals.iter().enumerate() {
-                self.b.ins().stack_store(*v, slot, ((i + 1) * 8) as i32);
+                self.b
+                    .ins()
+                    .stack_store(self.ptr, *v, slot, ((i + 1) * 8) as i32);
             }
         }
         self.b.ins().stack_addr(self.ptr, slot, 0)
@@ -1329,16 +1333,16 @@ impl Emitter<'_, '_, '_> {
     /// + field)`. Used by [`Core::InlineFieldGet`]/[`Core::InlineFieldSet`]/
     /// [`Core::ArraySetStride`].
     fn inline_field_addr(&mut self, base: Value, idx: Value, stride: usize, field: usize) -> Value {
-        let scaled = self.b.ins().imul_imm(idx, stride as i64);
-        let words = self.b.ins().iadd_imm(scaled, (1 + field) as i64);
-        let byte_off = self.b.ins().imul_imm(words, 8);
+        let scaled = self.b.ins().imul_imm_s(idx, stride as i64);
+        let words = self.b.ins().iadd_imm_s(scaled, (1 + field) as i64);
+        let byte_off = self.b.ins().imul_imm_s(words, 8);
         self.b.ins().iadd(base, byte_off)
     }
 
     /// Address of element `idx` in buffer `base`: `base + 8*(idx+1)`.
     fn elem_addr(&mut self, base: Value, idx: Value) -> Value {
-        let off = self.b.ins().iadd_imm(idx, 1);
-        let byte_off = self.b.ins().imul_imm(off, 8);
+        let off = self.b.ins().iadd_imm_s(idx, 1);
+        let byte_off = self.b.ins().imul_imm_s(off, 8);
         self.b.ins().iadd(base, byte_off)
     }
 
@@ -1389,7 +1393,7 @@ impl Emitter<'_, '_, '_> {
 
         self.b.switch_to_block(cold);
         self.b.seal_block(cold);
-        let addr = self.b.ins().iadd_imm(self.ctx_ptr, offset as i64);
+        let addr = self.b.ins().iadd_imm_s(self.ctx_ptr, offset as i64);
         let one = self.b.ins().iconst(types::I8, 1);
         self.b.ins().store(MemFlagsData::trusted(), one, addr, 0);
         self.b.ins().jump(cont, &[]);
@@ -1607,7 +1611,7 @@ impl Emitter<'_, '_, '_> {
         // non-negative by construction) since it only ever moves `vec_end`
         // further from 0 in magnitude, and the `i < vec_end` loop guard
         // below still degenerates to zero iterations.
-        let vec_end = self.b.ins().band_imm(min_len, -2i64);
+        let vec_end = self.b.ins().band_imm_s(min_len, -2i64);
         // The broadcast operand, typed once outside the loop.
         let scalar = scalar.map(|w| {
             let sv = match kind {
@@ -1643,7 +1647,7 @@ impl Emitter<'_, '_, '_> {
         let vr = lane(self, &xs);
         let addr_out = self.elem_addr(base_out, i);
         self.b.ins().store(unaligned, vr, addr_out, 0);
-        let next_i = self.b.ins().iadd_imm(i, 2);
+        let next_i = self.b.ins().iadd_imm_s(i, 2);
         self.b.ins().jump(loop_b, &[BlockArg::from(next_i)]);
         self.b.seal_block(loop_b); // both predecessors known now
 
@@ -1729,7 +1733,7 @@ impl Emitter<'_, '_, '_> {
             None => len_a,
         };
         // Largest multiple of 8 <= n (n <= 0 gives <= 0: loop skipped).
-        let vec_end = self.b.ins().band_imm(n, -8i64);
+        let vec_end = self.b.ins().band_imm_s(n, -8i64);
 
         let zero = self.iconst(0);
         let szero = match kind {
@@ -1780,7 +1784,7 @@ impl Emitter<'_, '_, '_> {
                 NumKind::F => self.b.ins().fadd(*acc, term),
             });
         }
-        let next_i = self.b.ins().iadd_imm(i, 8);
+        let next_i = self.b.ins().iadd_imm_s(i, 8);
         let mut back = vec![BlockArg::from(next_i)];
         back.extend(next.into_iter().map(BlockArg::from));
         self.b.ins().jump(loop_b, &back);
@@ -1830,7 +1834,7 @@ impl Emitter<'_, '_, '_> {
             None => sa,
         };
         let run2 = add(self, run, term);
-        let j2 = self.b.ins().iadd_imm(j, 1);
+        let j2 = self.b.ins().iadd_imm_s(j, 1);
         self.b
             .ins()
             .jump(tail_b, &[BlockArg::from(j2), BlockArg::from(run2)]);
@@ -1895,7 +1899,7 @@ impl Emitter<'_, '_, '_> {
             3,
         ));
         for (i, v) in vals.iter().enumerate() {
-            self.b.ins().stack_store(*v, buf, (i * 8) as i32);
+            self.b.ins().stack_store(self.ptr, *v, buf, (i * 8) as i32);
         }
         let buf_addr = self.b.ins().stack_addr(self.ptr, buf, 0);
 
@@ -1903,7 +1907,7 @@ impl Emitter<'_, '_, '_> {
             let ec = self.b.ins().call(self.enter_call_ref, &[self.ctx_ptr]);
             self.b.inst_results(ec)[0]
         };
-        let allowed = self.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
+        let allowed = self.b.ins().icmp_imm_s(IntCC::NotEqual, ok, 0);
 
         let outer_res =
             self.b
@@ -1922,7 +1926,7 @@ impl Emitter<'_, '_, '_> {
         self.b.seal_block(over_limit_b);
         let zero_len = self.iconst(0);
         let sentinel = self.alloc(zero_len);
-        self.b.ins().stack_store(sentinel, outer_res, 0);
+        self.b.ins().stack_store(self.ptr, sentinel, outer_res, 0);
         self.b.ins().jump(outer_merge_b, &[]);
 
         self.b.switch_to_block(call_b);
@@ -1940,12 +1944,12 @@ impl Emitter<'_, '_, '_> {
                 .call(self.resolve_pending_ref, &[self.ctx_ptr, call_result]);
             self.b.inst_results(rc)[0]
         };
-        self.b.ins().stack_store(resolved, outer_res, 0);
+        self.b.ins().stack_store(self.ptr, resolved, outer_res, 0);
         self.b.ins().jump(outer_merge_b, &[]);
 
         self.b.switch_to_block(outer_merge_b);
         self.b.seal_block(outer_merge_b);
-        self.b.ins().stack_load(types::I64, outer_res, 0)
+        self.b.ins().stack_load(self.ptr, types::I64, outer_res, 0)
     }
 
     /// The actual call dispatch `emit_call` wraps with the depth guard:
@@ -1997,7 +2001,7 @@ impl Emitter<'_, '_, '_> {
             .ins()
             .call_indirect(self.callee_sig, entry, &[buf_addr, self.ctx_ptr]);
         let dr = self.b.inst_results(dc)[0];
-        self.b.ins().stack_store(dr, res, 0);
+        self.b.ins().stack_store(self.ptr, dr, res, 0);
         self.b.ins().jump(merge_b, &[]);
 
         // Slow path: host trampoline -> registry dispatch.
@@ -2010,12 +2014,12 @@ impl Emitter<'_, '_, '_> {
             .ins()
             .call(self.tramp_ref, &[self.ctx_ptr, id_v, buf_addr, argc_v]);
         let sr = self.b.inst_results(sc)[0];
-        self.b.ins().stack_store(sr, res, 0);
+        self.b.ins().stack_store(self.ptr, sr, res, 0);
         self.b.ins().jump(merge_b, &[]);
 
         self.b.switch_to_block(merge_b);
         self.b.seal_block(merge_b);
-        self.b.ins().stack_load(types::I64, res, 0)
+        self.b.ins().stack_load(self.ptr, types::I64, res, 0)
     }
 }
 
