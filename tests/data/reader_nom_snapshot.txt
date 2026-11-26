@@ -1,0 +1,506 @@
+== ""
+all: 
+next: none
+d3: none
+incomplete: false
+== "   "
+all: 
+next: none
+d3: none
+incomplete: false
+== "; c\n"
+all: 
+next: none
+d3: none
+incomplete: false
+== "#| b |#"
+all: 
+next: none
+d3: none
+incomplete: false
+== "#| #| n |# |# 1"
+all: 1
+next: 1 rest=""
+d3: 1 rest=""
+incomplete: false
+== "#| open"
+all-err: parse error at line 1, column 1: unexpected input near '#| open'
+next-err: 0 unexpected input near '#| open'
+d3-err: 0 unexpected input near '#| open'
+incomplete: true
+== "("
+all-err: parse error at line 1, column 1: unexpected end of input (unclosed '(' or unterminated string?)
+next-err: 1 unexpected end of input (unclosed '(' or unterminated string?)
+d3-err: 1 unexpected end of input (unclosed '(' or unterminated string?)
+incomplete: true
+== ")"
+all-err: parse error at line 1, column 1: unexpected input near ')'
+next-err: 0 unexpected input near ')'
+d3-err: 0 unexpected input near ')'
+incomplete: false
+== "(1 2"
+all-err: parse error at line 1, column 1: unexpected end of input (unclosed '(' or unterminated string?)
+next-err: 4 unexpected end of input (unclosed '(' or unterminated string?)
+d3-err: 4 unexpected end of input (unclosed '(' or unterminated string?)
+incomplete: true
+== "(1 . 2)"
+all: (1 . 2)
+next: (1 . 2) rest=""
+d3: (1 . 2) rest=""
+incomplete: false
+== "(1 . )"
+all-err: parse error at line 1, column 4: unexpected input near '. )'
+next-err: 3 unexpected input near '. )'
+d3-err: 3 unexpected input near '. )'
+incomplete: false
+== "(. 1)"
+all-err: parse error at line 1, column 1: unexpected input near '(. 1)'
+next-err: 0 unexpected input near '(. 1)'
+d3-err: 0 unexpected input near '(. 1)'
+incomplete: false
+== "(1 . 2 3)"
+all-err: parse error at line 1, column 8: unexpected input near '3)'
+next-err: 7 unexpected input near '3)'
+d3-err: 7 unexpected input near '3)'
+incomplete: false
+== "'a"
+all: (QUOTE A)
+next: (QUOTE A) rest=""
+d3: (QUOTE A) rest=""
+incomplete: false
+== "'(a b)"
+all: (QUOTE (A B))
+next: (QUOTE (A B)) rest=""
+d3: (QUOTE (A B)) rest=""
+incomplete: false
+== "`(a ,b ,@c)"
+all: (QUASIQUOTE (A (UNQUOTE B) (UNQUOTE-SPLICING C)))
+next: (QUASIQUOTE (A (UNQUOTE B) (UNQUOTE-SPLICING C))) rest=""
+d3-err: 5 nesting too deep (limit 3)
+incomplete: false
+== "#'car"
+all: (FUNCTION CAR)
+next: (FUNCTION CAR) rest=""
+d3: (FUNCTION CAR) rest=""
+incomplete: false
+== "'"
+all-err: parse error at line 1, column 1: unexpected input near '''
+next-err: 0 unexpected input near '''
+d3-err: 0 unexpected input near '''
+incomplete: false
+== ","
+all-err: parse error at line 1, column 1: unexpected input near ','
+next-err: 0 unexpected input near ','
+d3-err: 0 unexpected input near ','
+incomplete: false
+== ",@"
+all-err: parse error at line 1, column 1: unexpected input near ',@'
+next-err: 0 unexpected input near ',@'
+d3-err: 0 unexpected input near ',@'
+incomplete: false
+== "\"str\""
+all: "str"
+next: "str" rest=""
+d3: "str" rest=""
+incomplete: false
+== "\"a\\nb\""
+all: "a\nb"
+next: "a\nb" rest=""
+d3: "a\nb" rest=""
+incomplete: false
+== "\"unterminated"
+all-err: parse error at line 1, column 2: unexpected input near 'unterminated'
+next-err: 1 unexpected input near 'unterminated'
+d3-err: 1 unexpected input near 'unterminated'
+incomplete: true
+== "\"bad\\q\""
+all: "bad\\q"
+next: "bad\\q" rest=""
+d3: "bad\\q" rest=""
+incomplete: false
+== "#\\a"
+all: 'a'
+next: 'a' rest=""
+d3: 'a' rest=""
+incomplete: false
+== "#\\Space"
+all: ' '
+next: ' ' rest=""
+d3: ' ' rest=""
+incomplete: false
+== "#\\"
+all-err: parse error at line 1, column 1: unexpected input near '#\'
+next-err: 0 unexpected input near '#\'
+d3-err: 0 unexpected input near '#\'
+incomplete: false
+== "'a'"
+all: 'a'
+next: 'a' rest=""
+d3: 'a' rest=""
+incomplete: false
+== "'ab"
+all: (QUOTE AB)
+next: (QUOTE AB) rest=""
+d3: (QUOTE AB) rest=""
+incomplete: false
+== "123"
+all: 123
+next: 123 rest=""
+d3: 123 rest=""
+incomplete: false
+== "-123"
+all: -123
+next: -123 rest=""
+d3: -123 rest=""
+incomplete: false
+== "+5"
+all: + | 5
+next: + rest="5"
+d3: + rest="5"
+incomplete: false
+== "1.5"
+all: 1.5
+next: 1.5 rest=""
+d3: 1.5 rest=""
+incomplete: false
+== "-1.5e3"
+all: -1500.0
+next: -1500.0 rest=""
+d3: -1500.0 rest=""
+incomplete: false
+== "1e5"
+all: 100000.0
+next: 100000.0 rest=""
+d3: 100000.0 rest=""
+incomplete: false
+== "1.5e"
+all-err: parse error at line 1, column 1: unexpected input near '1.5e'
+next-err: 0 unexpected input near '1.5e'
+d3-err: 0 unexpected input near '1.5e'
+incomplete: false
+== "123abc"
+all-err: parse error at line 1, column 1: unexpected input near '123abc'
+next-err: 0 unexpected input near '123abc'
+d3-err: 0 unexpected input near '123abc'
+incomplete: false
+== "2.0.3"
+all-err: parse error at line 1, column 1: unexpected input near '2.0.3'
+next-err: 0 unexpected input near '2.0.3'
+d3-err: 0 unexpected input near '2.0.3'
+incomplete: false
+== "1+"
+all: 1+
+next: 1+ rest=""
+d3: 1+ rest=""
+incomplete: false
+== "1-"
+all: 1-
+next: 1- rest=""
+d3: 1- rest=""
+incomplete: false
+== "1q"
+all: 1
+next: 1 rest=""
+d3: 1 rest=""
+incomplete: false
+== "17Q"
+all: 15
+next: 15 rest=""
+d3: 15 rest=""
+incomplete: false
+== "ffH"
+all: FFH
+next: FFH rest=""
+d3: FFH rest=""
+incomplete: false
+== "-ffH"
+all: - | FFH
+next: - rest="ffH"
+d3: - rest="ffH"
+incomplete: false
+== "#xff"
+all: 255
+next: 255 rest=""
+d3: 255 rest=""
+incomplete: false
+== "#b101"
+all: 5
+next: 5 rest=""
+d3: 5 rest=""
+incomplete: false
+== "#o17"
+all: 15
+next: 15 rest=""
+d3: 15 rest=""
+incomplete: false
+== "#x"
+all-err: parse error at line 1, column 1: unexpected input near '#x'
+next-err: 0 unexpected input near '#x'
+d3-err: 0 unexpected input near '#x'
+incomplete: false
+== "#xZZ"
+all-err: parse error at line 1, column 1: unexpected input near '#xZZ'
+next-err: 0 unexpected input near '#xZZ'
+d3-err: 0 unexpected input near '#xZZ'
+incomplete: false
+== "#b2"
+all-err: parse error at line 1, column 1: unexpected input near '#b2'
+next-err: 0 unexpected input near '#b2'
+d3-err: 0 unexpected input near '#b2'
+incomplete: false
+== "99999999999999999999"
+all: 100000000000000000000.0
+next: 100000000000000000000.0 rest=""
+d3: 100000000000000000000.0 rest=""
+incomplete: false
+== "-9223372036854775808"
+all: -9223372036854775808
+next: -9223372036854775808 rest=""
+d3: -9223372036854775808 rest=""
+incomplete: false
+== "9223372036854775808"
+all: 9223372036854776000.0
+next: 9223372036854776000.0 rest=""
+d3: 9223372036854776000.0 rest=""
+incomplete: false
+== "foo"
+all: FOO
+next: FOO rest=""
+d3: FOO rest=""
+incomplete: false
+== "FOO-bar"
+all: FOO-BAR
+next: FOO-BAR rest=""
+d3: FOO-BAR rest=""
+incomplete: false
+== "a.b"
+all-err: parse error at line 1, column 2: unexpected input near '.b'
+next: A rest=".b"
+d3: A rest=".b"
+incomplete: false
+== "a?"
+all: A?
+next: A? rest=""
+d3: A? rest=""
+incomplete: false
+== "<="
+all: <=
+next: <= rest=""
+d3: <= rest=""
+incomplete: false
+== "!x"
+all: ! | X
+next: ! rest="x"
+d3: ! rest="x"
+incomplete: false
+== "_x"
+all-err: parse error at line 1, column 1: unexpected input near '_x'
+next-err: 0 unexpected input near '_x'
+d3-err: 0 unexpected input near '_x'
+incomplete: false
+== "?_"
+all: ?_
+next: ?_ rest=""
+d3: ?_ rest=""
+incomplete: false
+== "nil"
+all: ()
+next: () rest=""
+d3: () rest=""
+incomplete: false
+== "()"
+all: ()
+next: () rest=""
+d3: () rest=""
+incomplete: false
+== "(a (b (c)))"
+all: (A (B (C)))
+next: (A (B (C))) rest=""
+d3-err: 7 nesting too deep (limit 3)
+incomplete: false
+== "(a ; c\n b)"
+all: (A B)
+next: (A B) rest=""
+d3: (A B) rest=""
+incomplete: false
+== "(a #| c |# b)"
+all: (A B)
+next: (A B) rest=""
+d3: (A B) rest=""
+incomplete: false
+== "#(1 2 3)"
+all: #(1 2 3)
+next: #(1 2 3) rest=""
+d3: #(1 2 3) rest=""
+incomplete: false
+== "#S(pt 1 2)"
+all: #S(PT 1 2)
+next: #S(PT 1 2) rest=""
+d3: #S(PT 1 2) rest=""
+incomplete: false
+== "#S"
+all-err: parse error at line 1, column 1: unexpected input near '#S'
+next-err: 0 unexpected input near '#S'
+d3-err: 0 unexpected input near '#S'
+incomplete: false
+== "#S("
+all-err: parse error at line 1, column 1: unexpected end of input (unclosed '(' or unterminated string?)
+next-err: 3 unexpected end of input (unclosed '(' or unterminated string?)
+d3-err: 3 unexpected end of input (unclosed '(' or unterminated string?)
+incomplete: true
+== "#+foo 1 2"
+all: 2
+next: 2 rest=""
+d3: 2 rest=""
+incomplete: false
+== "#-foo 1 2"
+all: 1 | 2
+next: 1 rest=" 2"
+d3: 1 rest=" 2"
+incomplete: false
+== "#+(and a b) 1 2"
+all: 2
+next: 2 rest=""
+d3: 2 rest=""
+incomplete: false
+== "#+"
+all-err: parse error at line 1, column 1: unexpected end of input (unclosed '(' or unterminated string?)
+next-err: 2 unexpected end of input (unclosed '(' or unterminated string?)
+d3-err: 2 unexpected end of input (unclosed '(' or unterminated string?)
+incomplete: false
+== "#+x"
+all-err: parse error at line 1, column 1: unexpected end of input (unclosed '(' or unterminated string?)
+next-err: 3 unexpected end of input (unclosed '(' or unterminated string?)
+d3-err: 3 unexpected end of input (unclosed '(' or unterminated string?)
+incomplete: false
+== "#+x ("
+all-err: parse error at line 1, column 1: unexpected end of input (unclosed '(' or unterminated string?)
+next-err: 5 unexpected end of input (unclosed '(' or unterminated string?)
+d3-err: 5 unexpected end of input (unclosed '(' or unterminated string?)
+incomplete: true
+== "#!/bin/x\n1"
+all: 1
+next-err: 0 unexpected input near '#!/bin/x'
+d3-err: 0 unexpected input near '#!/bin/x'
+incomplete: false
+== "(1 2) (3"
+all-err: parse error at line 1, column 7: unexpected end of input (unclosed '(' or unterminated string?)
+next: (1 2) rest=" (3"
+d3: (1 2) rest=" (3"
+incomplete: true
+== "a b c"
+all: A | B | C
+next: A rest=" b c"
+d3: A rest=" b c"
+incomplete: false
+== "(a . b) (c . d)"
+all: (A . B) | (C . D)
+next: (A . B) rest=" (c . d)"
+d3: (A . B) rest=" (c . d)"
+incomplete: false
+== "'''a"
+all: (QUOTE (QUOTE (QUOTE A)))
+next: (QUOTE (QUOTE (QUOTE A))) rest=""
+d3-err: 3 nesting too deep (limit 3)
+incomplete: false
+== "#:g"
+all-err: parse error at line 1, column 1: unexpected input near '#:g'
+next-err: 0 unexpected input near '#:g'
+d3-err: 0 unexpected input near '#:g'
+incomplete: false
+== "#"
+all-err: parse error at line 1, column 1: unexpected input near '#'
+next-err: 0 unexpected input near '#'
+d3-err: 0 unexpected input near '#'
+incomplete: false
+== "#z"
+all-err: parse error at line 1, column 1: unexpected input near '#z'
+next-err: 0 unexpected input near '#z'
+d3-err: 0 unexpected input near '#z'
+incomplete: false
+== "{"
+all-err: parse error at line 1, column 1: unexpected input near '{'
+next-err: 0 unexpected input near '{'
+d3-err: 0 unexpected input near '{'
+incomplete: false
+== "}"
+all-err: parse error at line 1, column 1: unexpected input near '}'
+next-err: 0 unexpected input near '}'
+d3-err: 0 unexpected input near '}'
+incomplete: false
+== "["
+all-err: parse error at line 1, column 1: unexpected input near '['
+next-err: 0 unexpected input near '['
+d3-err: 0 unexpected input near '['
+incomplete: false
+== "é"
+all-err: parse error at line 1, column 1: unexpected input near 'é'
+next-err: 0 unexpected input near 'é'
+d3-err: 0 unexpected input near 'é'
+incomplete: false
+== "(é)"
+all-err: parse error at line 1, column 2: unexpected input near 'é)'
+next-err: 1 unexpected input near 'é)'
+d3-err: 1 unexpected input near 'é)'
+incomplete: false
+== "\"é\""
+all: "é"
+next: "é" rest=""
+d3: "é" rest=""
+incomplete: false
+== "1 2 ) 3"
+all-err: parse error at line 1, column 5: unexpected input near ') 3'
+next: 1 rest=" 2 ) 3"
+d3: 1 rest=" 2 ) 3"
+incomplete: false
+== "(quote . a)"
+all: (QUOTE . A)
+next: (QUOTE . A) rest=""
+d3: (QUOTE . A) rest=""
+incomplete: false
+== "( 1 )"
+all: (1)
+next: (1) rest=""
+d3: (1) rest=""
+incomplete: false
+== "#\\("
+all: '('
+next: '(' rest=""
+d3: '(' rest=""
+incomplete: false
+== "#\\)"
+all: ')'
+next: ')' rest=""
+d3: ')' rest=""
+incomplete: false
+== "1."
+all-err: parse error at line 1, column 1: unexpected input near '1.'
+next-err: 0 unexpected input near '1.'
+d3-err: 0 unexpected input near '1.'
+incomplete: false
+== ".5"
+all-err: parse error at line 1, column 1: unexpected input near '.5'
+next-err: 0 unexpected input near '.5'
+d3-err: 0 unexpected input near '.5'
+incomplete: false
+== "-"
+all: -
+next: - rest=""
+d3: - rest=""
+incomplete: false
+== "+"
+all: +
+next: + rest=""
+d3: + rest=""
+incomplete: false
+== "-.5"
+all-err: parse error at line 1, column 2: unexpected input near '.5'
+next: - rest=".5"
+d3: - rest=".5"
+incomplete: false
+== "1e+5"
+all: 100000.0
+next: 100000.0 rest=""
+d3: 100000.0 rest=""
+incomplete: false
+deep: 512 nesting too deep (limit 512)

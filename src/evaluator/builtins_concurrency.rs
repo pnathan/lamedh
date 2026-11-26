@@ -173,6 +173,22 @@ fn deserialise_value(s: &str, env: &Shared<Environment>) -> Result<LispVal, Lisp
     })
 }
 
+/// The Lisp-visible message of a [`LispError`]: a signalled condition's
+/// message, a native error's plain text, the kernel fuel wording — never a
+/// Rust `Debug` rendering — so `(:ERROR msg)` payloads read like the errors
+/// they carry.
+fn lisp_error_message(e: &LispError) -> String {
+    match e {
+        LispError::Generic(s) => s.clone(),
+        LispError::Signaled(v) => match v.as_ref() {
+            LispVal::Error(err) => err.message.clone(),
+            other => crate::printer::print(other),
+        },
+        LispError::FuelExhausted => "fuel exhausted (kernel step budget)".to_string(),
+        other => format!("{other}"),
+    }
+}
+
 /// `(spawn-thread body-string caps-list fuel-or-nil)` — the kernel half of the
 /// `spawn` operative (issue #140, capability-process design). Spins a fresh
 /// 512 MiB interpreter thread with its own share-nothing environment: parse
@@ -252,7 +268,7 @@ pub(super) fn apply_spawn(
                     Ok(v) => format!("(:OK {})", crate::printer::print_unabridged(&v)),
                     Err(e) => format!(
                         "(:ERROR {})",
-                        crate::printer::print(&LispVal::String(format!("{e:?}")))
+                        crate::printer::print(&LispVal::String(lisp_error_message(&e)))
                     ),
                 },
                 Err(e) => format!("(:ERROR {})", crate::printer::print(&LispVal::String(e))),

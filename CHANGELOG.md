@@ -828,6 +828,33 @@ every standard-library function, and the stdlib island installs with the
 kernel agreeing on every member (`tests/test_typed_island.rs`). See
 `docs/typed-island-frontend.md`.
 
+## `spawn` outcome messages are Lisp text, not Rust `Debug` renderings
+
+`(spawn-value (spawn () (error "boom")))` returned
+`(:ERROR "Signaled(Error(\"boom\", Nil))")` — the Rust `Debug` rendering of the
+child's error instead of its message. The `(:ERROR msg)` datum now carries the
+Lisp-visible message: a signalled condition's message (`"boom"`), a native
+error's plain text (`"CAR: expected a list, got 5"`), the kernel fuel wording
+(`"fuel exhausted (kernel step budget)"`), or the readable text for uncaught
+non-local exits. `await` re-signals in the parent as
+`"spawned child failed: boom"` instead of embedding the `Debug` rendering.
+**Behavior change:** code that pattern-matched the old `Debug` strings in a
+child's `(:ERROR ...)` outcome sees the plain message now.
+
+## Docs: `docs/mcp.md` no longer claims fuel exhaustion is catchable inside its fence
+
+The "Known limitation" paragraph in `docs/mcp.md` still described the
+pre-#457 behavior (the exhaustion signal disarming the counter so guest code
+could catch it and loop unmetered). Since #457 that is exactly what cannot
+happen: exhaustion is not `HANDLER-CASE`-catchable inside the fence it
+exhausts, only the owning `WITH-FUEL` converts it to a catchable condition
+outside, and the grace allowance is bounded and charged to the enclosing
+budget (KERNEL.md Part X). The paragraph now states the actual contract, and
+`cli/tests/mcp_cli.rs` pins it end to end: exhaustion inside the fence errors
+(`isError: true`, never `'caught`), the catch-and-reloop pattern terminates
+with the outer handler seeing `OUTER-CAUGHT`, `UNWIND-PROTECT` cleanup still
+runs, and the server stays responsive afterwards.
+
 # v0.4.0 — 2026-07-16
 
 The 0.4.0 arc: more of the typed JIT's surface compiles to native code,
