@@ -1,4 +1,4 @@
-# v0.4.1 — unreleased
+# v0.4.1 — 2026-11-27
 
 ## **Breaking:** `min`/`max` follow IEEE 754-2019 for floats; int literals are not coerced (#530, #616)
 
