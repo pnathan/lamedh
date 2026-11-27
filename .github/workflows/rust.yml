@@ -11,6 +11,9 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  # On a tag push, release.yml calls this workflow as the gate in front of
+  # `cargo publish`: a tag is published only if every job passes.
+  workflow_call:
 
 permissions:
   contents: read
