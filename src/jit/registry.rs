@@ -196,10 +196,7 @@ impl TypedFn {
                     return false;
                 }
                 let mut seen_back_edge = HashSet::new();
-                if inline_reaches(funcs, &callee_core, self.id, &mut seen_back_edge) {
-                    return false;
-                }
-                true
+                !inline_reaches(funcs, &callee_core, self.id, &mut seen_back_edge)
             })
             .collect()
     }
