@@ -1,4 +1,4 @@
-# v0.4.1 — 2026-10-23
+# v0.4.1 — unreleased
 
 ## **Breaking:** `min`/`max` follow IEEE 754-2019 for floats; int literals are not coerced (#530, #616)
 
@@ -32,8 +32,8 @@ regression test.
   underflowing.
 - **`make-temp-file`, `make-temp-directory`:** a prefix containing a path
   separator, NUL or `..` is an error. Under `TEMP-FS` alone these could create
-  paths outside the temp directory. **Code that passed such a prefix now
-  errors.**
+  paths outside the temp directory. **Breaking:** code that passed such a
+  prefix now errors.
 - **Dynamic parameters:** a function with duplicate dynamic parameter names
   restores the saved values in reverse order, so the original global comes back.
 - **Compiled `COND`:** a fallback to the interpreter evaluates only the
@@ -43,7 +43,8 @@ regression test.
 - **`os-env-set*`, `os-env-unset*`** return `:INVALID-ARGUMENT` for names or
   values that `std::env` rejects (empty or containing `=` or NUL), where they
   panicked. **`os-signal*`** rejects pids at or below 0 or above `i32::MAX`
-  before the policy check.
+  before the policy check. **Breaking:** signalling a process group (pid 0 or
+  a negative pid) is now an `INVALID-ARGUMENT` error.
 - **Optimizer:** constant folding of `/` declines `i64::MIN / -1`.
 - **`max`, `min`** reduce in constant stack depth (superseded by the IEEE
   rewrite above, which keeps that property).
@@ -152,7 +153,7 @@ now errors.**
   interpreter, which charges one step per `while`/`for` iteration, self tail
   call and function entry. Armed fuel therefore costs the native speedup (#502).
 
-## Evaluator fixes: dynamic `LET`, `T`/keyword binders, long `,@` splices (#237)
+## Evaluator fixes: dynamic `LET`, `T`/keyword binders, long `,@` splices (#237, #633)
 
 - `LET` evaluates every init before installing any dynamic binding. With
   `*X*` = 1 and `*Y*` = 10, `(let ((*x* *y*) (*y* *x*)) (list *x* *y*))` gave
@@ -195,7 +196,7 @@ Fexprs and `VAU` operatives still run fresh every call. The tree-walker,
 cache so no prototype-world cells cross the fork. See Rust embedding API for the
 `LispVal::Macro` type change this required.
 
-## Integer/float comparison is exact (#516)
+## **Breaking:** integer/float comparison is exact (#516, #637)
 
 `=`, `<`, `>`, `<=` and `>=` on a mix of integer and float rounded the integer
 through `f64`, so integers above 2^53 compared equal to neighbouring floats:
@@ -322,7 +323,7 @@ hash alike and `NaN` finds `NaN`. It uses only primitives KERNEL.md Part XI
 requires, so it runs on hosts without the native `hash-table`. Tests:
 `tests/lisp/72-lamedh-hashtable.lisp`.
 
-## Stdlib fixes: `regex:find` START, `url:parse` empty authority, `~,Nf` on large values
+## Stdlib fixes: `regex:find` START, `url:parse` empty authority, `~,Nf` on large values (#635)
 
 - `(regex:find re s start)` searches the whole string from `START`, so `^` and
   `\b` see the text before it. It sliced `S` at `START`, so `(regex:find
@@ -396,7 +397,7 @@ and the portable checker: `t` is `bool`; a branch ending in bare `nil` that
 meets `bool` is `bool`; an `any` body forces the return to `any`; an `if` with
 an `any` branch joins to `any`.
 
-## Typed JIT: redefinition and float negation fixes
+## Typed JIT: redefinition and float negation fixes (#634)
 
 - Redefining a typed function with the same arity but different parameter or
   return types left every compiled caller on the old ABI: with `inl` redefined
@@ -534,17 +535,21 @@ in the commit messages and were not re-measured for this release.
   exhausted outer budget. `KERNEL-FUEL-SET!` inside a fence only narrows;
   widening or disarming signals an error, as in the Rust reference.
 - **Conformance suite** (`conformance/`, `tests/test_conformance.rs`, #621, #622):
-  143 implementation-neutral cases, `(case ID SPEC-REF SOURCE EXPECT)`, derived
+  144 implementation-neutral cases, `(case ID SPEC-REF SOURCE EXPECT)`, derived
   from KERNEL.md by Part. The Rust runner gives each case a fresh environment and
   fails any case over 1 s. Cases left out for now are listed in
-  `conformance/PENDING.md`. The SBCL and lamedh-asm ports do not run it yet.
+  `conformance/PENDING.md`. The SBCL and lamedh-asm ports run the same corpus in
+  their CI workflows (`conformance/ports/run-sbcl.lisp`, `run-asm.py`), each
+  against a per-port known-divergences list; a runner fails on a regression or
+  on a listed case that now passes (#626, #636, #637).
 - **SBCL port** (`sbcl/`, #449, #485): a standalone Common Lisp implementation
   with its own reader and evaluator that loads the reference `lib/*.lisp` as
   byte copies. Conformance work since: `/` takes two arguments and no CL ratios
   leak (#536); `mod` is Euclidean (#538); `zerop` rejects floats and `if` needs
-  three operands (#539); mixed int/float comparison is pairwise through `f64`
-  (#539); IEEE results for division by zero, `log 0`, `sqrt -1` (#534); `()`
-  prints as `()` and `print` frames as the reference (#537); a catchable
+  three operands (#539); mixed int/float comparison went through `f64`
+  (#539), then became exact with the Rust reference (#516, #637); IEEE
+  results for division by zero, `log 0`, `sqrt -1` (#534); `()` prints as `()`
+  and `print` frames as the reference (#537); a catchable
   recursion limit of 10,000 eval frames instead of a stack crash (#532);
   scripts evaluate form by form so a late parse error keeps earlier output
   (#541); a quoted symbol resolves as a function in `funcall`/`apply`/HOFs
@@ -828,7 +833,7 @@ every standard-library function, and the stdlib island installs with the
 kernel agreeing on every member (`tests/test_typed_island.rs`). See
 `docs/typed-island-frontend.md`.
 
-## `spawn` outcome messages are Lisp text, not Rust `Debug` renderings
+## `spawn` outcome messages are Lisp text, not Rust `Debug` renderings (#646)
 
 `(spawn-value (spawn () (error "boom")))` returned
 `(:ERROR "Signaled(Error(\"boom\", Nil))")` — the Rust `Debug` rendering of the
@@ -841,7 +846,7 @@ non-local exits. `await` re-signals in the parent as
 **Behavior change:** code that pattern-matched the old `Debug` strings in a
 child's `(:ERROR ...)` outcome sees the plain message now.
 
-## Docs: `docs/mcp.md` no longer claims fuel exhaustion is catchable inside its fence
+## Docs: `docs/mcp.md` no longer claims fuel exhaustion is catchable inside its fence (#647)
 
 The "Known limitation" paragraph in `docs/mcp.md` still described the
 pre-#457 behavior (the exhaustion signal disarming the counter so guest code
@@ -854,6 +859,20 @@ budget (KERNEL.md Part X). The paragraph now states the actual contract, and
 (`isError: true`, never `'caught`), the catch-and-reloop pattern terminates
 with the outer handler seeing `OUTER-CAUGHT`, `UNWIND-PROTECT` cleanup still
 runs, and the server stays responsive afterwards.
+
+## Dependencies
+
+- Cranelift 0.133 → 0.134 (`cranelift-jit`, `-module`, `-codegen`,
+  `-frontend`, bumped together); the native backend was ported to the new API
+  (#641, #650).
+- `nom` 7.1.3 → 8.0.0 (reader, still pinned exactly, #631).
+- `webpki-roots` 0.26 → 1.0 (#643); `rustls` 0.23.41 → 0.23.46 (#628). Both
+  are optional, behind the TLS features.
+- CLI: `rustyline` 14 → 17 (#630), `dirs` 6 → 7 (#642), `clap` 4.5 → 4.6
+  (#640).
+- Dev: `rcgen` 0.13 → 0.14 (#632). Grouped patch/minor bumps: #629, #649.
+- None of these crates' types appear in the `lamedh` public API, so embedders
+  need no code change.
 
 # v0.4.0 — 2026-07-16
 
